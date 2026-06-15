@@ -17,7 +17,8 @@ import type { Project, RouteDeps } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isAgentHubHosted, bareRepoPath, hostedRepoExists } from '../native-pr/host.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
-import { prCommits, prDiff, revParse } from '../native-pr/git-read.js';
+import { isSafeBranchName } from '../git-host/repo-read.js';
+import { git, prCommits, prDiff, prDiffStat, prFiles, revParse } from '../native-pr/git-read.js';
 import { NativePrError } from '../native-pr/errors.js';
 import { z, registerPath } from '../openapi/registry.js';
 
@@ -27,7 +28,7 @@ const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
 });
 
-const BRANCH_RE = /^[^\s~^:?*[\\]+$/;
+const MAX_BRANCH_CHANGE_FILES = 100;
 
 /** Cap diff text fed into the model — huge diffs get summarized headers. */
 const GENERATE_DIFF_BUDGET = 30_000;
@@ -102,6 +103,8 @@ export function parseGeneratedPrText(raw: string): { title: string; body: string
   return { title, body };
 }
 
+const PrErrorSchema = z.object({ error: z.string() });
+
 registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/pulls',
@@ -149,6 +152,55 @@ registerPath({
 });
 
 registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/pulls/branch-changes',
+  tags: ['Projects'],
+  summary: 'Preview branch changes for a native pull request',
+  description:
+    'Returns file-level changes for a branch pushed to an Agent Hub-hosted repo before creating a native PR. Base defaults to the hosted repo default branch.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    body: {
+      content: jsonContent(
+        z.object({
+          headBranch: z.string(),
+          baseBranch: z.string().optional(),
+        }),
+      ),
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: 'Branch file changes.',
+      content: jsonContent(
+        z.object({
+          headBranch: z.string(),
+          baseBranch: z.string(),
+          stats: z.object({
+            changedFiles: z.number(),
+            additions: z.number(),
+            deletions: z.number(),
+          }),
+          files: z.array(
+            z.object({
+              filename: z.string(),
+              status: z.enum(['added', 'removed', 'modified', 'renamed']),
+              additions: z.number(),
+              deletions: z.number(),
+            }),
+          ),
+          truncated: z.boolean(),
+        }),
+      ),
+    },
+    400: { description: 'Invalid branch or not Hub-hosted.', content: jsonContent(PrErrorSchema) },
+    404: { description: 'Unknown project or branch.', content: jsonContent(PrErrorSchema) },
+    502: { description: 'Git diff failed.', content: jsonContent(PrErrorSchema) },
+  },
+});
+
+registerPath({
   method: 'patch',
   path: '/api/projects/{projectId}/pulls/{number}',
   tags: ['Projects'],
@@ -185,7 +237,6 @@ registerPath({
 });
 
 const PrActionOkSchema = z.object({ pr: z.record(z.string(), z.unknown()) });
-const PrErrorSchema = z.object({ error: z.string() });
 
 registerPath({
   method: 'post',
@@ -354,13 +405,13 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     const prBody = typeof body.body === 'string' ? body.body : '';
     const baseRaw = typeof body.baseBranch === 'string' ? body.baseBranch.trim() : '';
-    if (!headBranch || !BRANCH_RE.test(headBranch)) {
+    if (!headBranch || !isSafeBranchName(headBranch)) {
       return res.status(400).json({ error: 'headBranch is required (a branch pushed to the Hub)' });
     }
     if (!title) {
       return res.status(400).json({ error: 'title is required' });
     }
-    if (baseRaw && !BRANCH_RE.test(baseRaw)) {
+    if (baseRaw && !isSafeBranchName(baseRaw)) {
       return res.status(400).json({ error: 'invalid baseBranch' });
     }
 
@@ -398,6 +449,63 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       return res.status(status).json({ error: msg });
     }
   });
+
+  router.post(
+    '/api/projects/:projectId/pulls/branch-changes',
+    async (req: Request, res: Response) => {
+      const project = deps.findProject(req.params.projectId as string) as Project | null;
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (!isAgentHubHosted(project) || !hostedRepoExists(project.id)) {
+        return res.status(400).json({ error: 'Project is not hosted on Agent Hub' });
+      }
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const headBranch = typeof body.headBranch === 'string' ? body.headBranch.trim() : '';
+      const baseRaw = typeof body.baseBranch === 'string' ? body.baseBranch.trim() : '';
+      if (!headBranch || !isSafeBranchName(headBranch)) {
+        return res.status(400).json({ error: 'headBranch is required' });
+      }
+      if (baseRaw && !isSafeBranchName(baseRaw)) {
+        return res.status(400).json({ error: 'invalid baseBranch' });
+      }
+
+      const repoPath = bareRepoPath(project.id);
+      const baseBranch = baseRaw || (await hostedRepoDefaultBranch(project.id)) || 'main';
+      const headSha = await revParse(repoPath, `refs/heads/${headBranch}`);
+      const baseSha = await revParse(repoPath, `refs/heads/${baseBranch}`);
+      if (!headSha || !baseSha) {
+        return res.status(404).json({ error: 'Branch not found on the hosted repo' });
+      }
+
+      try {
+        const mergeBaseSha = (await git(repoPath, ['merge-base', baseSha, headSha])).trim();
+        // PR preview must match GitHub-style file sets, not a direct base-tip
+        // vs head-tip diff. Resolving merge-base first keeps branches behind
+        // base from showing reverse changes introduced on base after branching.
+        const [stats, files] = await Promise.all([
+          prDiffStat(repoPath, mergeBaseSha, headSha),
+          prFiles(repoPath, mergeBaseSha, headSha),
+        ]);
+        const trimmedFiles = files.slice(0, MAX_BRANCH_CHANGE_FILES).map((file) => ({
+          filename: file.filename,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+        }));
+        return res.json({
+          headBranch,
+          baseBranch,
+          stats,
+          files: trimmedFiles,
+          truncated: files.length > trimmedFiles.length,
+        });
+      } catch (err: unknown) {
+        return res.status(502).json({
+          error: `Failed to read branch changes: ${err instanceof Error ? err.message : err}`,
+        });
+      }
+    },
+  );
 
   router.patch('/api/projects/:projectId/pulls/:number', (req: Request, res: Response) => {
     const project = deps.findProject(req.params.projectId as string) as Project | null;
@@ -582,10 +690,10 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const headBranch = typeof body.headBranch === 'string' ? body.headBranch.trim() : '';
       const baseRaw = typeof body.baseBranch === 'string' ? body.baseBranch.trim() : '';
-      if (!headBranch || !BRANCH_RE.test(headBranch)) {
+      if (!headBranch || !isSafeBranchName(headBranch)) {
         return res.status(400).json({ error: 'headBranch is required' });
       }
-      if (baseRaw && !BRANCH_RE.test(baseRaw)) {
+      if (baseRaw && !isSafeBranchName(baseRaw)) {
         return res.status(400).json({ error: 'invalid baseBranch' });
       }
 

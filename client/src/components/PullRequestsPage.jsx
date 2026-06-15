@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   GitPullRequest,
   GitMerge,
@@ -1115,6 +1115,117 @@ function titleFromBranch(branch) {
   return last ? last.charAt(0).toUpperCase() + last.slice(1) : branch;
 }
 
+function isAgentHubManagedSessionBranch(branch) {
+  return /^agent-hub\/[^/]+\/session-[^/]+$/.test(String(branch || ''));
+}
+
+function prHeadBranch(pr) {
+  return typeof pr?.head === 'string' ? pr.head : null;
+}
+
+const BRANCH_CHANGE_SCAN_CONCURRENCY = 4;
+
+export async function mapWithConcurrency(items, limit, mapper) {
+  const capped = Math.max(1, Math.min(limit, items.length));
+  const results = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: capped }, async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await mapper(items[index], index);
+      }
+    }),
+  );
+  return results;
+}
+
+function BranchChangesPreview({ projectId, branch, enabled = true }) {
+  const [state, setState] = useState({ loading: false, data: null, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    if (!enabled || !projectId || !branch) {
+      setState({ loading: false, data: null, error: null });
+      return () => {
+        alive = false;
+      };
+    }
+    setState({ loading: true, data: null, error: null });
+    api
+      .getNativePrBranchChanges(projectId, branch)
+      .then((data) => {
+        if (alive) setState({ loading: false, data, error: null });
+      })
+      .catch((err) => {
+        if (alive) {
+          setState({
+            loading: false,
+            data: null,
+            error: String(err?.message || err || 'Failed to load file changes'),
+          });
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, branch, enabled]);
+
+  if (!enabled || !branch) return null;
+
+  const stats = state.data?.stats;
+  const files = Array.isArray(state.data?.files) ? state.data.files : [];
+
+  return (
+    <div
+      className="border border-gray-800 bg-gray-950/70 rounded-lg overflow-hidden"
+      data-testid={`branch-changes-${branch}`}
+    >
+      <div className="px-3 py-2 border-b border-gray-800 flex items-center gap-2">
+        <span className="text-xs font-semibold text-gray-300">File changes</span>
+        <span className="flex-1" />
+        {state.loading && <Loader2 size={13} className="animate-spin text-gray-500" />}
+        {stats && (
+          <span className="text-xs text-gray-500">
+            {stats.changedFiles} file{stats.changedFiles === 1 ? '' : 's'}
+            <span className="text-emerald-400 ml-2">+{stats.additions}</span>
+            <span className="text-red-400 ml-1">-{stats.deletions}</span>
+          </span>
+        )}
+      </div>
+      {state.error ? (
+        <div className="px-3 py-2 text-xs text-amber-300">{state.error}</div>
+      ) : state.loading ? (
+        <div className="px-3 py-2 text-xs text-gray-500">Loading file changes...</div>
+      ) : files.length === 0 ? (
+        <div className="px-3 py-2 text-xs text-gray-500">No file changes against base.</div>
+      ) : (
+        <div className="max-h-48 overflow-y-auto divide-y divide-gray-900">
+          {files.map((file) => (
+            <div key={file.filename} className="px-3 py-2 flex items-center gap-3 text-xs">
+              <span className="w-16 shrink-0 uppercase text-[10px] text-gray-500">
+                {file.status}
+              </span>
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-gray-300"
+                title={file.filename}
+              >
+                {file.filename}
+              </span>
+              <span className="shrink-0 text-emerald-400">+{file.additions}</span>
+              <span className="shrink-0 text-red-400">-{file.deletions}</span>
+            </div>
+          ))}
+          {state.data?.truncated && (
+            <div className="px-3 py-2 text-xs text-gray-500">Showing first 100 files.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * GitHub-style "Compare & pull request" banner for a recently pushed
  * branch with no open PR. Expands into an inline create form.
@@ -1194,6 +1305,7 @@ function RecentPushBanner({ push, onCreate, projectId }) {
             placeholder={'## Summary\n…\n\n## Test plan\n…'}
             className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
           />
+          <BranchChangesPreview projectId={projectId} branch={push.branch} enabled={open} />
           {error && <p className="text-xs text-red-400">{error}</p>}
           <div className="flex items-center gap-2">
             <button
@@ -1229,7 +1341,7 @@ function RecentPushBanner({ push, onCreate, projectId }) {
  * branch, optionally AI-generate the text, create. Base is the default
  * branch (matching the create endpoint's default).
  */
-function NewPrPanel({ projectId, onCreate, onClose }) {
+function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set() }) {
   const [branchData, setBranchData] = useState(null);
   const [branch, setBranch] = useState('');
   const [title, setTitle] = useState('');
@@ -1237,6 +1349,7 @@ function NewPrPanel({ projectId, onCreate, onClose }) {
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState(null);
+  const [candidateChanges, setCandidateChanges] = useState({});
 
   useEffect(() => {
     let alive = true;
@@ -1250,9 +1363,58 @@ function NewPrPanel({ projectId, onCreate, onClose }) {
   }, [projectId]);
 
   const defaultBranch = branchData?.defaultBranch || 'main';
-  const candidates = (branchData?.branches || [])
-    .map((b) => b.name)
-    .filter((name) => name !== defaultBranch);
+  const rawCandidates = useMemo(
+    () =>
+      (branchData?.branches || [])
+        .map((b) => b.name)
+        .filter(
+          (name) =>
+            name !== defaultBranch &&
+            !isAgentHubManagedSessionBranch(name) &&
+            !excludedBranches.has(name),
+        ),
+    [branchData, defaultBranch, excludedBranches],
+  );
+  const candidates = rawCandidates.filter((name) => candidateChanges[name]?.hasChanges);
+  const candidateScanDone =
+    branchData !== null &&
+    rawCandidates.every((name) => {
+      const result = candidateChanges[name];
+      return result && ('hasChanges' in result || result.scanError);
+    });
+  const candidateScanFailed =
+    branchData !== null && rawCandidates.some((name) => candidateChanges[name]?.scanError);
+
+  useEffect(() => {
+    let alive = true;
+    if (branchData === null) return () => {};
+    if (rawCandidates.length === 0) {
+      setCandidateChanges({});
+      return () => {
+        alive = false;
+      };
+    }
+    setCandidateChanges(Object.fromEntries(rawCandidates.map((name) => [name, { loading: true }])));
+    mapWithConcurrency(rawCandidates, BRANCH_CHANGE_SCAN_CONCURRENCY, async (name) => {
+      try {
+        const changes = await api.getNativePrBranchChanges(projectId, name);
+        return [name, { hasChanges: Number(changes?.stats?.changedFiles || 0) > 0 }];
+      } catch {
+        return [name, { hasChanges: true, scanError: true }];
+      }
+    }).then((entries) => {
+      if (alive) setCandidateChanges(Object.fromEntries(entries));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, branchData, rawCandidates]);
+
+  useEffect(() => {
+    if (branch && candidateChanges[branch]?.hasChanges === false) {
+      setBranch('');
+    }
+  }, [branch, candidateChanges]);
 
   const pick = (name) => {
     setBranch(name);
@@ -1313,7 +1475,9 @@ function NewPrPanel({ projectId, onCreate, onClose }) {
           data-testid="new-pr-branch"
           className="bg-gray-950 border border-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-gray-600 max-w-[50%]"
         >
-          <option value="">{branchData === null ? 'Loading branches…' : 'Select a branch…'}</option>
+          <option value="">
+            {branchData === null || !candidateScanDone ? 'Loading branches…' : 'Select a branch…'}
+          </option>
           {candidates.map((name) => (
             <option key={name} value={name}>
               {name}
@@ -1325,9 +1489,14 @@ function NewPrPanel({ projectId, onCreate, onClose }) {
           {defaultBranch}
         </code>
       </div>
-      {branchData !== null && candidates.length === 0 && (
+      {branchData !== null && candidateScanDone && candidates.length === 0 && (
         <p className="text-xs text-gray-500">
-          No branches besides {defaultBranch} — push a branch first.
+          No branches with file changes against {defaultBranch}.
+        </p>
+      )}
+      {candidateScanDone && candidateScanFailed && (
+        <p className="text-xs text-amber-300">
+          Some branches could not be prechecked, so they remain selectable.
         </p>
       )}
       <input
@@ -1343,6 +1512,7 @@ function NewPrPanel({ projectId, onCreate, onClose }) {
         placeholder={'## Summary\n…\n\n## Test plan\n…'}
         className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-gray-600"
       />
+      <BranchChangesPreview projectId={projectId} branch={branch} enabled={!!branch} />
       {error && <p className="text-xs text-red-400">{error}</p>}
       <div className="flex items-center gap-2">
         <button
@@ -1776,6 +1946,14 @@ export default function PullRequestsPage({
     }
   }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList, onToast]);
 
+  const openPrHeadBranches = new Set((pulls || []).map(prHeadBranch).filter(Boolean));
+  const visibleRecentPushes = (recentPushes || []).filter(
+    (push) =>
+      push?.branch &&
+      !isAgentHubManagedSessionBranch(push.branch) &&
+      !openPrHeadBranches.has(push.branch),
+  );
+
   // ── Detail view ──
   if (selectedNumber) {
     if (detailLoading && !detail) {
@@ -1899,11 +2077,12 @@ export default function PullRequestsPage({
             projectId={projectId}
             onCreate={handleCreatePrFromBranch}
             onClose={() => setShowNewPr(false)}
+            excludedBranches={openPrHeadBranches}
           />
         )}
 
         {/* GitHub-style "Compare & pull request" banners for recent pushes */}
-        {recentPushes.map((push) => (
+        {visibleRecentPushes.map((push) => (
           <RecentPushBanner
             key={push.branch}
             push={push}

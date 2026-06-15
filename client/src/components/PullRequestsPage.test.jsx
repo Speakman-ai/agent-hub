@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
-import PullRequestsPage from './PullRequestsPage.jsx';
+import PullRequestsPage, { mapWithConcurrency } from './PullRequestsPage.jsx';
 import { api } from '../utils/api.js';
 
 /**
@@ -27,6 +27,13 @@ vi.mock('../utils/api.js', () => ({
     updateNativePr: vi.fn(),
     getGitHostRecentPushes: vi.fn(async () => ({ pushes: [] })),
     getGitHostBranches: vi.fn(async () => ({ defaultBranch: 'main', branches: [] })),
+    getNativePrBranchChanges: vi.fn(async () => ({
+      headBranch: 'feature/x',
+      baseBranch: 'main',
+      stats: { changedFiles: 1, additions: 1, deletions: 0 },
+      files: [{ filename: 'x.txt', status: 'added', additions: 1, deletions: 0 }],
+      truncated: false,
+    })),
     generatePrDescription: vi.fn(),
     rerunCiRun: vi.fn(),
     createNativePr: vi.fn(),
@@ -65,6 +72,23 @@ const project = {
     { id: 'agent-rev', name: 'Reviewer', role: 'reviewer', active: true },
   ],
 };
+
+describe('mapWithConcurrency', () => {
+  it('limits concurrent branch scans', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const result = await mapWithConcurrency([1, 2, 3, 4, 5, 6], 2, async (value) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active -= 1;
+      return value * 2;
+    });
+
+    expect(result).toEqual([2, 4, 6, 8, 10, 12]);
+    expect(maxActive).toBeLessThanOrEqual(2);
+  });
+});
 
 async function renderAndOpenDetail(props = {}) {
   api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
@@ -391,6 +415,9 @@ describe('<PullRequestsPage /> — recent-pushes banner (hosted projects)', () =
     // Form prefills a humanized title from the branch name.
     const form = await screen.findByTestId('recent-push-form-feature/fast-fix');
     expect(form.querySelector('input').value).toBe('Fast fix');
+    expect(await screen.findByTestId('branch-changes-feature/fast-fix')).toHaveTextContent(
+      'File changes',
+    );
 
     fireEvent.click(screen.getByTestId('recent-push-submit-feature/fast-fix'));
     await waitFor(() =>
@@ -410,6 +437,26 @@ describe('<PullRequestsPage /> — recent-pushes banner (hosted projects)', () =
     await screen.findByText('Fix the flaky test');
     expect(api.getGitHostRecentPushes).not.toHaveBeenCalled();
   });
+
+  it('hides managed session branches and branches that already have an open PR', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({
+      pulls: [{ ...prSummary, head: 'feature/already-open' }],
+    });
+    api.getGitHostRecentPushes.mockResolvedValue({
+      pushes: [
+        { branch: 'agent-hub/dev/session-abc12345', pushedAt: Date.now() - 60_000 },
+        { branch: 'feature/already-open', pushedAt: Date.now() - 50_000 },
+        { branch: 'feature/manual', pushedAt: Date.now() - 40_000 },
+      ],
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} />);
+
+    expect(await screen.findByTestId('recent-push-feature/manual')).toBeInTheDocument();
+    expect(screen.queryByTestId('recent-push-agent-hub/dev/session-abc12345')).toBeNull();
+    expect(screen.queryByTestId('recent-push-feature/already-open')).toBeNull();
+  });
 });
 
 describe('<PullRequestsPage /> — New pull request panel (hosted projects)', () => {
@@ -424,6 +471,16 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
     api.getGitHostBranches.mockResolvedValue({
       defaultBranch: 'main',
       branches: [{ name: 'main' }, { name: 'feature/picker' }],
+    });
+    api.getNativePrBranchChanges.mockResolvedValue({
+      headBranch: 'feature/picker',
+      baseBranch: 'main',
+      stats: { changedFiles: 2, additions: 5, deletions: 1 },
+      files: [
+        { filename: 'src/picker.jsx', status: 'modified', additions: 4, deletions: 1 },
+        { filename: 'src/picker.test.jsx', status: 'added', additions: 1, deletions: 0 },
+      ],
+      truncated: false,
     });
     api.generatePrDescription.mockResolvedValue({
       title: 'Add the picker',
@@ -453,6 +510,11 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
     );
     fireEvent.change(select, { target: { value: 'feature/picker' } });
 
+    expect(await screen.findByTestId('branch-changes-feature/picker')).toHaveTextContent(
+      'src/picker.jsx',
+    );
+    expect(api.getNativePrBranchChanges).toHaveBeenCalledWith('proj-1', 'feature/picker');
+
     fireEvent.click(screen.getByTestId('new-pr-generate'));
     await waitFor(() =>
       expect(api.generatePrDescription).toHaveBeenCalledWith('proj-1', 'feature/picker'),
@@ -468,6 +530,116 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
     );
     // Panel closes after creation.
     await waitFor(() => expect(screen.queryByTestId('new-pr-panel')).toBeNull());
+  });
+
+  it('does not offer managed session branches or branches with open PRs in the picker', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({
+      pulls: [{ ...prSummary, head: 'feature/already-open' }],
+    });
+    api.getGitHostRecentPushes.mockResolvedValue({ pushes: [] });
+    api.getGitHostBranches.mockResolvedValue({
+      defaultBranch: 'main',
+      branches: [
+        { name: 'main' },
+        { name: 'agent-hub/dev/session-abc12345' },
+        { name: 'feature/already-open' },
+        { name: 'feature/manual' },
+      ],
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button'));
+    const select = await screen.findByTestId('new-pr-branch');
+    await waitFor(() => expect(select.querySelectorAll('option')).toHaveLength(2));
+    expect([...select.querySelectorAll('option')].map((option) => option.value)).toEqual([
+      '',
+      'feature/manual',
+    ]);
+  });
+
+  it('does not offer branches without file changes in the picker', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({ pulls: [] });
+    api.getGitHostRecentPushes.mockResolvedValue({ pushes: [] });
+    api.getGitHostBranches.mockResolvedValue({
+      defaultBranch: 'main',
+      branches: [{ name: 'main' }, { name: 'feature/empty' }, { name: 'feature/manual' }],
+    });
+    api.getNativePrBranchChanges.mockImplementation(async (_projectId, branchName) => ({
+      headBranch: branchName,
+      baseBranch: 'main',
+      stats:
+        branchName === 'feature/manual'
+          ? { changedFiles: 1, additions: 2, deletions: 0 }
+          : { changedFiles: 0, additions: 0, deletions: 0 },
+      files:
+        branchName === 'feature/manual'
+          ? [{ filename: 'manual.txt', status: 'added', additions: 2, deletions: 0 }]
+          : [],
+      truncated: false,
+    }));
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button'));
+    const select = await screen.findByTestId('new-pr-branch');
+    await waitFor(() => expect(select.querySelectorAll('option')).toHaveLength(2));
+    expect([...select.querySelectorAll('option')].map((option) => option.value)).toEqual([
+      '',
+      'feature/manual',
+    ]);
+  });
+
+  it('keeps the picker in loading state while branch prechecks are still running', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({ pulls: [] });
+    api.getGitHostRecentPushes.mockResolvedValue({ pushes: [] });
+    api.getGitHostBranches.mockResolvedValue({
+      defaultBranch: 'main',
+      branches: [{ name: 'main' }, { name: 'feature/pending' }],
+    });
+    api.getNativePrBranchChanges.mockReturnValue(new Promise(() => {}));
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button'));
+    const select = await screen.findByTestId('new-pr-branch');
+    await waitFor(() => expect(api.getNativePrBranchChanges).toHaveBeenCalled());
+    expect(select.querySelector('option')?.textContent).toMatch(/Loading branches/);
+    expect(screen.queryByText(/No branches with file changes/i)).toBeNull();
+  });
+
+  it('keeps branches selectable when their precheck fails', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    api.getProjectPulls.mockResolvedValue({ pulls: [] });
+    api.getGitHostRecentPushes.mockResolvedValue({ pushes: [] });
+    api.getGitHostBranches.mockResolvedValue({
+      defaultBranch: 'main',
+      branches: [{ name: 'main' }, { name: 'feature/unknown' }, { name: 'feature/empty' }],
+    });
+    api.getNativePrBranchChanges.mockImplementation(async (_projectId, branchName) => {
+      if (branchName === 'feature/unknown') throw new Error('temporary git failure');
+      return {
+        headBranch: branchName,
+        baseBranch: 'main',
+        stats: { changedFiles: 0, additions: 0, deletions: 0 },
+        files: [],
+        truncated: false,
+      };
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button'));
+    const select = await screen.findByTestId('new-pr-branch');
+    await waitFor(() => expect(select.querySelectorAll('option')).toHaveLength(2));
+    expect([...select.querySelectorAll('option')].map((option) => option.value)).toEqual([
+      '',
+      'feature/unknown',
+    ]);
+    expect(screen.getByText(/could not be prechecked/i)).toBeInTheDocument();
   });
 });
 

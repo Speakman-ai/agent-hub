@@ -210,7 +210,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Recently pushed branches without an open pull request',
   description:
-    'Feeds the "Compare & pull request"-style banner on the Pulls page. In-memory, ~2h window; excludes the default branch and branches already covered by an open native PR.',
+    'Feeds the "Compare & pull request"-style banner on the Pulls page. In-memory, ~2h window; excludes the default branch, Agent Hub-managed session branches, zero-diff branches, and branches already covered by an open native PR.',
   request: { params: z.object({ projectId: z.string() }) },
   responses: {
     200: {
@@ -386,7 +386,7 @@ export default function createGitHostRoutes(deps: RouteDeps): Router {
       const project = findHostedProjectOr404(req, res);
       if (!project) return;
       const defaultBranch = await hostedRepoDefaultBranch(project.id);
-      res.json({ pushes: listRecentPushes(deps.stmts, project.id, defaultBranch) });
+      res.json({ pushes: await listRecentPushes(deps.stmts, project.id, defaultBranch) });
     },
   );
 

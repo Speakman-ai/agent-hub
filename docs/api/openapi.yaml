@@ -13240,7 +13240,7 @@ paths:
       tags:
         - Projects
       summary: Recently pushed branches without an open pull request
-      description: Feeds the "Compare & pull request"-style banner on the Pulls page. In-memory, ~2h window; excludes the default branch and branches already covered by an open native PR.
+      description: Feeds the "Compare & pull request"-style banner on the Pulls page. In-memory, ~2h window; excludes the default branch, Agent Hub-managed session branches, zero-diff branches, and branches already covered by an open native PR.
       parameters:
         - schema:
             type: string
@@ -16025,6 +16025,120 @@ paths:
                   - error
         "404":
           description: Unknown project or head branch not pushed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/projects/{projectId}/pulls/branch-changes:
+    post:
+      tags:
+        - Projects
+      summary: Preview branch changes for a native pull request
+      description: Returns file-level changes for a branch pushed to an Agent Hub-hosted repo before creating a native PR. Base defaults to the hosted repo default branch.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                headBranch:
+                  type: string
+                baseBranch:
+                  type: string
+              required:
+                - headBranch
+      responses:
+        "200":
+          description: Branch file changes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  headBranch:
+                    type: string
+                  baseBranch:
+                    type: string
+                  stats:
+                    type: object
+                    properties:
+                      changedFiles:
+                        type: number
+                      additions:
+                        type: number
+                      deletions:
+                        type: number
+                    required:
+                      - changedFiles
+                      - additions
+                      - deletions
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        filename:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                            - added
+                            - removed
+                            - modified
+                            - renamed
+                        additions:
+                          type: number
+                        deletions:
+                          type: number
+                      required:
+                        - filename
+                        - status
+                        - additions
+                        - deletions
+                  truncated:
+                    type: boolean
+                required:
+                  - headBranch
+                  - baseBranch
+                  - stats
+                  - files
+                  - truncated
+        "400":
+          description: Invalid branch or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or branch.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "502":
+          description: Git diff failed.
           content:
             application/json:
               schema:

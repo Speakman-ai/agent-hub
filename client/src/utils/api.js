@@ -420,6 +420,14 @@ export const api = {
   // Create (or reuse) a native PR for a branch already pushed to the Hub.
   createNativePr: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/pulls`, { method: 'POST', body: JSON.stringify(data) }),
+  getNativePrBranchChanges: (projectId, headBranch, baseBranch) =>
+    fetchJSON(`/projects/${projectId}/pulls/branch-changes`, {
+      method: 'POST',
+      body: JSON.stringify({
+        headBranch,
+        ...(baseBranch ? { baseBranch } : {}),
+      }),
+    }),
   // AI-suggested PR title/body from the branch diff (60-90s model call).
   generatePrDescription: (projectId, headBranch) =>
     fetchJSON(`/projects/${projectId}/pulls/generate-description`, {

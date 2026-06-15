@@ -9,6 +9,8 @@
  */
 
 import type { PullRequestRow, Stmts } from '../types.js';
+import { git, prDiffStat } from '../native-pr/git-read.js';
+import { gitHostRepoPath } from './repo-store.js';
 
 /** How long a push stays "recent" (matches GitHub's ~2h banner window). */
 const RECENT_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -20,6 +22,31 @@ interface RecentPush {
 
 /** projectId → branch → pushedAt */
 const pushes = new Map<string, Map<string, number>>();
+const RECENT_PUSH_DIFF_CONCURRENCY = 4;
+
+export function isAgentHubManagedSessionBranch(branch: string): boolean {
+  return /^agent-hub\/[^/]+\/session-[^/]+$/.test(branch);
+}
+
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const capped = Math.max(1, Math.min(limit, items.length));
+  const results = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: capped }, async () => {
+      while (next < items.length) {
+        const index = next;
+        next += 1;
+        results[index] = await mapper(items[index], index);
+      }
+    }),
+  );
+  return results;
+}
 
 /** Record branch updates from a push's ref list. Deletes evict. */
 export function recordRecentPush(projectId: string, updatedRefs: string[]): void {
@@ -43,24 +70,54 @@ export function recordRecentPush(projectId: string, updatedRefs: string[]): void
  * not the default branch, and no open native PR already covering the
  * branch. Newest first.
  */
-export function listRecentPushes(
+async function branchHasPrFileChanges(
+  projectId: string,
+  defaultBranch: string | null,
+  branch: string,
+): Promise<boolean> {
+  if (!defaultBranch) return true;
+  const repoPath = gitHostRepoPath(projectId);
+  try {
+    const baseRef = `refs/heads/${defaultBranch}`;
+    const headRef = `refs/heads/${branch}`;
+    const mergeBaseSha = (await git(repoPath, ['merge-base', baseRef, headRef])).trim();
+    const stats = await prDiffStat(repoPath, mergeBaseSha, headRef);
+    return stats.changedFiles > 0;
+  } catch {
+    return true;
+  }
+}
+
+export async function listRecentPushes(
   stmts: Stmts,
   projectId: string,
   defaultBranch: string | null,
-): RecentPush[] {
+): Promise<RecentPush[]> {
   const perProject = pushes.get(projectId);
   if (!perProject) return [];
-  const out: RecentPush[] = [];
+  const candidates: RecentPush[] = [];
   for (const [branch, pushedAt] of perProject) {
     if (Date.now() - pushedAt > RECENT_WINDOW_MS) continue;
     if (defaultBranch && branch === defaultBranch) continue;
+    if (isAgentHubManagedSessionBranch(branch)) continue;
     const open = stmts.getOpenPullRequestByHeadBranch.get(projectId, branch) as
       | PullRequestRow
       | undefined;
     if (open) continue;
-    out.push({ branch, pushedAt });
+    candidates.push({ branch, pushedAt });
   }
-  return out.sort((a, b) => b.pushedAt - a.pushedAt);
+  const checks = await mapWithConcurrency(
+    candidates,
+    RECENT_PUSH_DIFF_CONCURRENCY,
+    async (push) => ({
+      push,
+      hasChanges: await branchHasPrFileChanges(projectId, defaultBranch, push.branch),
+    }),
+  );
+  return checks
+    .filter((check) => check.hasChanges)
+    .map((check) => check.push)
+    .sort((a, b) => b.pushedAt - a.pushedAt);
 }
 
 /** Test seam. */

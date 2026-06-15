@@ -518,23 +518,101 @@ describe('branch protection', () => {
   });
 });
 
-describe('recent pushes (Compare & PR banner)', () => {
-  it('lists pushed branches, excluding the default branch and branches with open PRs', async () => {
+describe('POST /api/projects/:projectId/pulls/branch-changes', () => {
+  it('returns file changes for a pushed branch before PR creation', async () => {
     const { id, branch } = await hostedProjectWithBranch();
+
+    const res = await request
+      .post(`/api/projects/${id}/pulls/branch-changes`)
+      .send({ headBranch: branch })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      headBranch: branch,
+      baseBranch: 'main',
+      stats: { changedFiles: 1, additions: 1, deletions: 0 },
+      truncated: false,
+    });
+    expect(res.body.files).toEqual([
+      { filename: 'b.txt', status: 'added', additions: 1, deletions: 0 },
+    ]);
+  });
+
+  it('uses PR-style merge-base diff semantics when the branch is behind base', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    git(work, 'checkout main');
+    writeFileSync(path.join(work, 'a.txt'), 'base moved\n');
+    git(work, 'add a.txt');
+    git(work, 'commit -m "move base forward"');
+    git(work, 'push origin main');
+
+    const res = await request
+      .post(`/api/projects/${id}/pulls/branch-changes`)
+      .send({ headBranch: branch })
+      .expect(200);
+
+    expect(res.body.stats).toEqual({ changedFiles: 1, additions: 1, deletions: 0 });
+    expect(res.body.files).toEqual([
+      { filename: 'b.txt', status: 'added', additions: 1, deletions: 0 },
+    ]);
+  });
+
+  it('validates missing or unknown branches', async () => {
+    const { id } = await hostedProjectWithBranch();
+    await request.post(`/api/projects/${id}/pulls/branch-changes`).send({}).expect(400);
+    for (const headBranch of ['../evil', 'foo.lock', 'feature//bad', 'feature/..']) {
+      await request
+        .post(`/api/projects/${id}/pulls/branch-changes`)
+        .send({ headBranch })
+        .expect(400);
+    }
+    await request
+      .post(`/api/projects/${id}/pulls/branch-changes`)
+      .send({ headBranch: 'feature/manual', baseBranch: 'base.lock' })
+      .expect(400);
+    await request
+      .post(`/api/projects/${id}/pulls/branch-changes`)
+      .send({ headBranch: 'missing-branch' })
+      .expect(404);
+  });
+});
+
+describe('recent pushes (Compare & PR banner)', () => {
+  it('lists pushed branches, excluding default, managed session branches, and branches with open PRs', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    const emptyBranch = `empty-${uuidv4().slice(0, 8)}`;
+    git(work, 'checkout main');
+    git(work, `checkout -b ${emptyBranch}`);
+    git(work, `push -u origin ${emptyBranch}`);
+
+    const manualBranch = `manual-${uuidv4().slice(0, 8)}`;
+    git(work, 'checkout main');
+    git(work, `checkout -b ${manualBranch}`);
+    writeFileSync(path.join(work, 'manual.txt'), 'manual\n');
+    git(work, 'add manual.txt');
+    git(work, 'commit -m "manual change"');
+    git(work, `push -u origin ${manualBranch}`);
+
     const { recordRecentPush, __clearRecentPushes } = await import('../git-host/recent-pushes.js');
     __clearRecentPushes();
     // Simulate what the notify endpoint records on push.
-    recordRecentPush(id, [`refs/heads/${branch}`, 'refs/heads/main', 'refs/tags/v1']);
+    recordRecentPush(id, [
+      `refs/heads/${branch}`,
+      `refs/heads/${emptyBranch}`,
+      `refs/heads/${manualBranch}`,
+      'refs/heads/main',
+      'refs/tags/v1',
+    ]);
 
     let res = await request.get(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
-    expect(res.body.pushes).toHaveLength(1); // main (default) + tag excluded
-    expect(res.body.pushes[0]).toMatchObject({ branch });
+    expect(res.body.pushes).toHaveLength(1); // main, tag, managed session, and empty branches excluded
+    expect(res.body.pushes[0]).toMatchObject({ branch: manualBranch });
     expect(typeof res.body.pushes[0].pushedAt).toBe('number');
 
     // Opening a PR for the branch removes it from the banner list.
     await request
       .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'From banner' })
+      .send({ headBranch: manualBranch, title: 'From banner' })
       .expect(201);
     res = await request.get(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
     expect(res.body.pushes).toEqual([]);
@@ -546,6 +624,18 @@ describe('recent pushes (Compare & PR banner)', () => {
       .send({ id: plainId, name: plainId, cwd: '/tmp', color: '#3B82F6' })
       .expect(201);
     await request.get(`/api/projects/${plainId}/git-host/recent-pushes`).expect(404);
+  });
+
+  it('keeps recent pushes visible when the diff check fails', async () => {
+    const { id } = await hostedProjectWithBranch();
+    const missingBranch = `missing-${uuidv4().slice(0, 8)}`;
+    const { recordRecentPush, __clearRecentPushes } = await import('../git-host/recent-pushes.js');
+    __clearRecentPushes();
+    recordRecentPush(id, [`refs/heads/${missingBranch}`]);
+
+    const res = await request.get(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
+
+    expect(res.body.pushes).toEqual([expect.objectContaining({ branch: missingBranch })]);
   });
 });
 
