@@ -5214,6 +5214,49 @@ components:
         - agentId
         - draft
       description: RUM recorder-injection wizard session spawned successfully.
+    RumSetupApplyRequest:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: "Relative paths (inside the worktree) of the instrumentation files the wizard edited or created: the recorder target, any new client component, and each CSP file. Only these paths are staged + committed. Absolute paths and paths escaping the worktree are rejected."
+        session_id:
+          type: string
+          description: Target session id whose worktree receives the commit. The wizard passes its own session id. When omitted the server picks the most-recent project session that has a worktree, or auto-provisions a dedicated `[RUM Config]` worktree on a fresh branch when none exists.
+        message:
+          type: string
+          description: Optional commit message override. Defaults to a fixed RUM instrumentation title.
+      required:
+        - files
+      description: Apply payload for the RUM instrumentation wizard.
+    RumSetupApplyResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          enum:
+            - true
+        files:
+          type: array
+          items:
+            type: string
+          description: Normalized relative paths that were committed.
+        commit_sha:
+          type: string
+        branch:
+          type: string
+        session_id:
+          type: string
+      required:
+        - ok
+        - files
+        - commit_sha
+        - branch
+        - session_id
+      description: Instrumentation commit landed on the worktree branch.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -17044,6 +17087,58 @@ paths:
                 $ref: "#/components/schemas/RumWizardErrorResponse"
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+  /api/projects/{projectId}/rum/setup-apply:
+    post:
+      tags:
+        - RUM
+      summary: Commit wizard instrumentation edits to the worktree
+      description: |-
+        Admin+. Stages and commits the instrumentation files the recorder-
+        injection wizard edited (`files[]`) into the session worktree branch
+        with `git commit -o` (only the listed paths — unrelated pre-staged
+        work is left intact), then lets the existing Finalize Code Changes /
+        pulls flow push and open the PR. Target resolution order: (1) request
+        body's `session_id` when supplied (the wizard passes its own id), (2)
+        the most-recent project session that has a worktree, (3) auto-provision
+        a dedicated `[RUM Config]` session + worktree when none exists.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RumSetupApplyRequest"
+      responses:
+        "200":
+          description: Committed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumSetupApplyResponse"
+        "400":
+          description: "Payload invalid: empty/invalid files list, a listed path missing from the worktree or not a regular file, nothing to commit, or no worktree-bearing session found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumWizardErrorResponse"
+        "500":
+          description: Stage or commit failed.
           content:
             application/json:
               schema:
