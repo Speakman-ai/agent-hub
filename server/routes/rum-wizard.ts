@@ -163,11 +163,15 @@ export function buildRumKickoffPrompt(
   projectCwd: string,
   draft: RumSetupDraft,
   sessionId: string,
+  maskAllText: boolean = false,
 ): string {
   const draftJson = JSON.stringify(draft, null, 2);
   const target = draft.plan.targetFile ?? '(none detected — pick from entryCandidates)';
   const style = draft.plan.injectionStyle ?? '(undetermined)';
   const cspCount = draft.cspHits.length;
+  const maskingPolicy = maskAllText
+    ? 'mask ALL text and inputs — only structure, layout, navigation and interaction timing are recorded (strictest)'
+    : 'mask password and PII fields only — other input values and visible text are recorded verbatim';
   return [
     '# RUM Setup — recorder injection (required)',
     '',
@@ -190,6 +194,7 @@ export function buildRumKickoffPrompt(
     `- **PROJECT_ID**: \`${projectId}\``,
     `- **PROJECT_CWD**: \`${projectCwd}\``,
     `- **YOUR SESSION_ID**: \`${sessionId}\``,
+    `- **Recorder masking policy**: \`maskAllText = ${String(maskAllText)}\` — ${maskingPolicy}. Bake this into the recorder init so it is applied at capture time.`,
     '- **`$AGENT_HUB_URL`**, **`$AGENT_HUB_API_KEY`**: use these for any wizard API call. If a call returns HTTP 401 or 403, halt and report the auth failure. Never ask the operator to paste a token into chat.',
     '',
     '## Server-provided draft (repo scan — do not re-run scanners)',
@@ -203,7 +208,11 @@ export function buildRumKickoffPrompt(
     '## Required walkthrough order',
     '',
     '1. **Confirm the target** — Summarize framework, `plan.targetFile`, and `plan.injectionStyle`. If `plan.alreadyInstrumented` is true or `plan.targetFile` is null, use a fenced `agenthub:ask` (offer `entryCandidates` as options) before editing.',
-    "2. **Inject the recorder** — Edit `plan.targetFile` per `plan.injectionStyle`. For `client-component` (Next app-router Server Component layouts), create a `'use client'` child that starts the recorder in `useEffect` — never inline into the server layout. POST replays to `plan.recommendedConnectSrc` + `/api/replays`.",
+    "2. **Inject the recorder** — Edit `plan.targetFile` per `plan.injectionStyle`. For `client-component` (Next app-router Server Component layouts), create a `'use client'` child that starts the recorder in `useEffect` — never inline into the server layout. POST replays to `plan.recommendedConnectSrc` + `/api/replays`. Initialise the recorder with `maskAllInputs: " +
+      String(maskAllText) +
+      '` and `maskAllText: ' +
+      String(maskAllText) +
+      '` (both follow the masking policy above; password and PII fields are always masked regardless). See the rum-setup skill for the exact option placement.',
     '3. **Extend the CSP** — For every `cspHits` entry, add `plan.recommendedConnectSrc` to its `connect-src` directive (derive from `default-src` if absent). If `cspHits` is empty, note no CSP was found.',
     '4. **Verify + apply** — Type-check/build the target if a script exists, then commit your instrumentation by calling `POST $AGENT_HUB_URL/api/projects/' +
       projectId +
@@ -272,6 +281,16 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
         return;
       }
 
+      // Masking policy for the injected recorder, chosen per target app at
+      // setup time. Defaults to false = "passwords & PII only" (record other
+      // input values and visible text verbatim) — the sensible default for
+      // instrumenting third-party apps. The wizard always passes this through
+      // as an explicit recorder option (`maskOptionsForMode`), so the injected
+      // recorder never inherits the engine's fail-closed `DEFAULT_MASK_OPTIONS`
+      // baseline (which masks all inputs). The strict `true` (mask everything)
+      // is opt-in.
+      const maskAllText = (req.body as { maskAllText?: unknown })?.maskAllText === true;
+
       const draft = collectRumSetupDraft(cwd, {
         ingestOrigin: ingestOriginFromConfig(config?.publicUrl),
       });
@@ -300,7 +319,7 @@ export default function createRumWizardRoutes(deps: RouteDeps): Router {
       );
       setSessionOwner(sessionId, ownerUid);
 
-      const prompt = buildRumKickoffPrompt(project.id, cwd, draft, sessionId);
+      const prompt = buildRumKickoffPrompt(project.id, cwd, draft, sessionId, maskAllText);
       // Fire-and-forget chat handler — the HTTP response is already in
       // flight. The worktree is provisioned inside handleChat
       // (ensureWorktree) before the agent's first turn runs.

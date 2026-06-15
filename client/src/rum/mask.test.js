@@ -6,6 +6,7 @@ import {
   isFormControl,
   maskValue,
   shouldMaskValue,
+  maskOptionsForMode,
   DEFAULT_MASK_OPTIONS,
 } from './mask.js';
 
@@ -16,8 +17,61 @@ function makeEl(html) {
 }
 
 describe('DEFAULT_MASK_OPTIONS', () => {
-  it('masks all inputs by default (compliance fail-closed)', () => {
+  it('is the fail-closed baseline: masks all inputs when no mode is supplied', () => {
     expect(DEFAULT_MASK_OPTIONS.maskAllInputs).toBe(true);
+  });
+
+  it('bare default masks an ordinary input; the wizard passwords-only mode does not', () => {
+    // Encodes the distinction the two "defaults" must keep: a no-options call is
+    // fail-closed (mask all inputs), but the wizard's passwords-only selection
+    // (maskOptionsForMode(false)) deliberately records ordinary inputs.
+    const ordinary = makeEl('<input type="text" name="comment" />');
+    expect(classifyElement(ordinary)).toBe('mask'); // bare DEFAULT_MASK_OPTIONS
+    expect(classifyElement(ordinary, maskOptionsForMode(false))).toBe('unmask');
+  });
+});
+
+describe('maskOptionsForMode', () => {
+  it('default mode (false) is passwords-only: inputs and text both unmasked', () => {
+    const opts = maskOptionsForMode(false);
+    expect(opts.maskAllInputs).toBe(false);
+    expect(opts.maskAllText).toBe(false);
+  });
+
+  it('strict mode (true) masks all inputs and all text', () => {
+    const opts = maskOptionsForMode(true);
+    expect(opts.maskAllInputs).toBe(true);
+    expect(opts.maskAllText).toBe(true);
+  });
+
+  it('coerces any non-true value to the default passwords-only policy', () => {
+    for (const v of [undefined, 'yes', 1, null, 'true']) {
+      expect(maskOptionsForMode(v)).toEqual({
+        ...DEFAULT_MASK_OPTIONS,
+        maskAllInputs: false,
+        maskAllText: false,
+      });
+    }
+  });
+
+  it('text masking flows through classifyElement', () => {
+    const el = makeEl('<div>visible text</div>');
+    expect(classifyElement(el, maskOptionsForMode(false))).toBe('unmask');
+    expect(classifyElement(el, maskOptionsForMode(true))).toBe('mask');
+  });
+
+  it('passwords-only records a non-PII input verbatim but still masks passwords (advertised policy)', () => {
+    const text = makeEl('<input type="text" name="comment" />');
+    const pwd = makeEl('<input type="password" name="pw" />');
+    // The whole point of the default mode: ordinary inputs are recorded…
+    expect(classifyElement(text, maskOptionsForMode(false))).toBe('unmask');
+    // …while password/PII fields are always masked regardless of the mode.
+    expect(classifyElement(pwd, maskOptionsForMode(false))).toBe('mask');
+  });
+
+  it('strict masks even ordinary inputs', () => {
+    const text = makeEl('<input type="text" name="comment" />');
+    expect(classifyElement(text, maskOptionsForMode(true))).toBe('mask');
   });
 });
 

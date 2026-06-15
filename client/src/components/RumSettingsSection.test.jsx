@@ -3,6 +3,12 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import RumSettingsSection, { formatLastUsed } from './RumSettingsSection.jsx';
 import { api } from '../utils/api.js';
 import { copyToClipboard } from '../utils/export.js';
+import {
+  isSessionReplayEnabled,
+  setSessionReplayEnabled,
+  isMaskAllEnabled,
+  setReplayMaskingMode,
+} from '../utils/sessionReplay.js';
 
 vi.mock('../utils/api.js', () => ({
   api: {
@@ -16,6 +22,15 @@ vi.mock('../utils/api.js', () => ({
 
 vi.mock('../utils/export.js', () => ({
   copyToClipboard: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The replay toggle controls the Hub's own recorder; mock it so the test never
+// imports rrweb or touches real localStorage-backed recording state.
+vi.mock('../utils/sessionReplay.js', () => ({
+  isSessionReplayEnabled: vi.fn(() => true),
+  setSessionReplayEnabled: vi.fn().mockResolvedValue(false),
+  isMaskAllEnabled: vi.fn(() => true),
+  setReplayMaskingMode: vi.fn().mockResolvedValue('passwords-only'),
 }));
 
 const projects = [{ id: 'demo', name: 'Demo' }];
@@ -45,6 +60,72 @@ describe('RumSettingsSection', () => {
     expect(screen.getByText(/no projects yet/i)).toBeInTheDocument();
   });
 
+  it('renders the session-replay toggle reflecting the enabled state (on by default)', () => {
+    isSessionReplayEnabled.mockReturnValueOnce(true);
+    render(<RumSettingsSection projects={projects} />);
+    const toggle = screen.getByTestId('rum-replay-toggle');
+    expect(toggle).toHaveAttribute('role', 'switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('toggles session replay off, persisting the choice via setSessionReplayEnabled', async () => {
+    isSessionReplayEnabled.mockReturnValueOnce(true);
+    const showToast = vi.fn();
+    render(<RumSettingsSection projects={projects} showToast={showToast} />);
+
+    const toggle = screen.getByTestId('rum-replay-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(setSessionReplayEnabled).toHaveBeenCalledWith(false));
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.stringMatching(/disabled/i),
+        'success',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('defaults the masking toggle to on (mask all text & inputs) with no warning', () => {
+    isMaskAllEnabled.mockReturnValueOnce(true);
+    render(<RumSettingsSection projects={projects} />);
+    const toggle = screen.getByTestId('rum-mask-all-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByTestId('rum-mask-all-warning')).not.toBeInTheDocument();
+  });
+
+  it('switches to passwords-only masking and surfaces the content-capture warning', async () => {
+    isMaskAllEnabled.mockReturnValueOnce(true);
+    const showToast = vi.fn();
+    render(<RumSettingsSection projects={projects} showToast={showToast} />);
+
+    const toggle = screen.getByTestId('rum-mask-all-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(setReplayMaskingMode).toHaveBeenCalledWith(false));
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('rum-mask-all-warning')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.stringMatching(/password fields only/i),
+        'info',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('reflects a persisted passwords-only choice on mount (toggle off + warning)', () => {
+    isMaskAllEnabled.mockReturnValueOnce(false);
+    render(<RumSettingsSection projects={projects} />);
+    expect(screen.getByTestId('rum-mask-all-toggle')).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('rum-mask-all-warning')).toBeInTheDocument();
+  });
+
   it('scans the repo and shows detected framework + injection target', async () => {
     render(<RumSettingsSection projects={projects} />);
     await waitFor(() => expect(api.getRumSetupDraft).toHaveBeenCalledWith('demo'));
@@ -54,16 +135,32 @@ describe('RumSettingsSection', () => {
     expect(summary).toHaveTextContent(/client component/i);
   });
 
-  it('spawns the wizard and opens the session on success', async () => {
+  it('spawns the wizard and opens the session on success (default passwords-only masking)', async () => {
     api.startRumWizard.mockResolvedValueOnce({ sessionId: 'sess-1', agentId: 'agent-1' });
     const onOpenSession = vi.fn();
     render(<RumSettingsSection projects={projects} onOpenSession={onOpenSession} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Set up RUM/i }));
 
-    await waitFor(() => expect(api.startRumWizard).toHaveBeenCalledWith('demo'));
+    await waitFor(() =>
+      expect(api.startRumWizard).toHaveBeenCalledWith('demo', { maskAllText: false }),
+    );
     await waitFor(() =>
       expect(onOpenSession).toHaveBeenCalledWith({ sessionId: 'sess-1', agentId: 'agent-1' }),
+    );
+  });
+
+  it('passes strict masking (maskAllText=true) to the wizard when selected', async () => {
+    api.startRumWizard.mockResolvedValueOnce({ sessionId: 'sess-2', agentId: 'agent-1' });
+    render(<RumSettingsSection projects={projects} onOpenSession={vi.fn()} />);
+
+    fireEvent.change(screen.getByTestId('rum-inject-mask-select'), {
+      target: { value: 'mask-all' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Set up RUM/i }));
+
+    await waitFor(() =>
+      expect(api.startRumWizard).toHaveBeenCalledWith('demo', { maskAllText: true }),
     );
   });
 
@@ -238,7 +335,9 @@ describe('RumSettingsSection', () => {
     await waitFor(() => expect(api.getRumClients).toHaveBeenCalledWith('alpha'));
 
     fireEvent.click(screen.getByRole('button', { name: /Set up RUM/i }));
-    await waitFor(() => expect(api.startRumWizard).toHaveBeenCalledWith('alpha'));
+    await waitFor(() =>
+      expect(api.startRumWizard).toHaveBeenCalledWith('alpha', { maskAllText: false }),
+    );
 
     // Switch to Beta while the spawn is still in flight.
     rerender(
@@ -303,6 +402,13 @@ describe('RumSettingsSection', () => {
 
     expect(showToast).not.toHaveBeenCalledWith('Ingest token revoked.', 'success', 3000);
     confirmSpy.mockRestore();
+  });
+
+  it('reflects a persisted off state from isSessionReplayEnabled', async () => {
+    isSessionReplayEnabled.mockReturnValueOnce(false);
+    render(<RumSettingsSection projects={projects} />);
+    const toggle = await screen.findByTestId('rum-replay-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
 });
 

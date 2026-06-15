@@ -3,18 +3,32 @@ import {
   clampSampleRate,
   shouldSample,
   resolveSampleRate,
+  isSessionReplayEnabled,
+  setSessionReplayEnabled,
+  REPLAY_SAMPLE_RATE_KEY,
   pruneBuffer,
   hasFullSnapshot,
   submitReplay,
   SessionReplayRecorder,
   getRecorder,
   flushSessionReplayRef,
+  isMaskAllEnabled,
+  setReplayMaskingMode,
+  resolveMaskingMode,
+  buildRecordPrivacyOptions,
+  MASKING_MODES,
+  MASKING_MODE_KEY,
   _resetSessionReplayForTest,
   DEFAULT_RECORD_PRIVACY_OPTIONS,
   RRWEB_FULL_SNAPSHOT,
   RRWEB_META,
   REPLAY_INGEST_ENDPOINT,
 } from './sessionReplay.js';
+
+// startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
+// is deterministic and never spins up a real recorder in jsdom. record() returns
+// its stop fn, matching rrweb's contract.
+vi.mock('rrweb', () => ({ record: () => () => {} }));
 
 const ev = (type, timestamp, data = {}) => ({ type, timestamp, data });
 const meta = (ts) => ev(RRWEB_META, ts);
@@ -46,12 +60,17 @@ describe('shouldSample', () => {
 describe('resolveSampleRate', () => {
   afterEach(() => localStorage.removeItem('agent-hub-replay-sample-rate'));
 
-  it('defaults to 0 (off) with no override or env', () => {
-    expect(resolveSampleRate()).toBe(0);
+  it('defaults to 1 (on) with no override or env', () => {
+    // On by default — replay is the visual context behind bug reports.
+    expect(resolveSampleRate()).toBe(1);
   });
   it('honours a localStorage override', () => {
     localStorage.setItem('agent-hub-replay-sample-rate', '0.3');
     expect(resolveSampleRate()).toBe(0.3);
+  });
+  it('honours an explicit off override (0) over the on-by-default', () => {
+    localStorage.setItem('agent-hub-replay-sample-rate', '0');
+    expect(resolveSampleRate()).toBe(0);
   });
   it('clamps a localStorage override', () => {
     localStorage.setItem('agent-hub-replay-sample-rate', '5');
@@ -59,10 +78,131 @@ describe('resolveSampleRate', () => {
   });
 });
 
+describe('isSessionReplayEnabled / setSessionReplayEnabled', () => {
+  beforeEach(() => {
+    _resetSessionReplayForTest();
+    localStorage.removeItem('agent-hub-replay-sample-rate');
+  });
+  afterEach(() => {
+    _resetSessionReplayForTest();
+    localStorage.removeItem('agent-hub-replay-sample-rate');
+  });
+
+  it('is enabled by default (no stored choice)', () => {
+    expect(isSessionReplayEnabled()).toBe(true);
+  });
+
+  it('persists an off choice as "0" and reports disabled', async () => {
+    const state = await setSessionReplayEnabled(false);
+    expect(state).toBe(false);
+    expect(localStorage.getItem(REPLAY_SAMPLE_RATE_KEY)).toBe('0');
+    expect(isSessionReplayEnabled()).toBe(false);
+  });
+
+  it('persists an on choice as "1" and reports enabled', async () => {
+    localStorage.setItem(REPLAY_SAMPLE_RATE_KEY, '0');
+    const state = await setSessionReplayEnabled(true);
+    expect(state).toBe(true);
+    expect(localStorage.getItem(REPLAY_SAMPLE_RATE_KEY)).toBe('1');
+    expect(isSessionReplayEnabled()).toBe(true);
+  });
+
+  it('stops the active recorder when turned off', async () => {
+    const rec = getRecorder();
+    rec.active = true;
+    let stopped = false;
+    rec._stopFn = () => {
+      stopped = true;
+    };
+    await setSessionReplayEnabled(false);
+    expect(stopped).toBe(true);
+    expect(rec.active).toBe(false);
+  });
+});
+
+describe('masking mode', () => {
+  beforeEach(() => {
+    _resetSessionReplayForTest();
+    localStorage.removeItem(MASKING_MODE_KEY);
+  });
+  afterEach(() => {
+    _resetSessionReplayForTest();
+    localStorage.removeItem(MASKING_MODE_KEY);
+  });
+
+  it('buildRecordPrivacyOptions(mask-all) masks all inputs and all text', () => {
+    const opts = buildRecordPrivacyOptions(MASKING_MODES.ALL);
+    expect(opts.maskAllInputs).toBe(true);
+    expect(opts.maskTextSelector).toBe('*');
+    expect(opts.maskInputOptions).toEqual({ password: true });
+    // Class-based opt-outs survive in every mode.
+    expect(opts.unmaskTextClass).toBe('ah-replay-unmask');
+  });
+
+  it('buildRecordPrivacyOptions(passwords-only) masks only passwords, no text mask', () => {
+    const opts = buildRecordPrivacyOptions(MASKING_MODES.PASSWORDS);
+    expect(opts.maskAllInputs).toBe(false);
+    expect(opts.maskTextSelector).toBeUndefined();
+    expect(opts.maskInputOptions).toEqual({ password: true });
+    expect(opts.blockClass).toBe('ah-replay-block');
+  });
+
+  it('an unknown mode falls back to the strict mask-all options', () => {
+    const opts = buildRecordPrivacyOptions('nonsense');
+    expect(opts.maskAllInputs).toBe(true);
+    expect(opts.maskTextSelector).toBe('*');
+  });
+
+  it('DEFAULT_RECORD_PRIVACY_OPTIONS is the strict mask-all set', () => {
+    expect(DEFAULT_RECORD_PRIVACY_OPTIONS).toEqual(buildRecordPrivacyOptions(MASKING_MODES.ALL));
+  });
+
+  it('resolveMaskingMode defaults to mask-all and treats junk as mask-all', () => {
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.ALL);
+    localStorage.setItem(MASKING_MODE_KEY, 'garbage');
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.ALL);
+  });
+
+  it('resolveMaskingMode honours a persisted passwords-only choice', () => {
+    localStorage.setItem(MASKING_MODE_KEY, MASKING_MODES.PASSWORDS);
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.PASSWORDS);
+    expect(isMaskAllEnabled()).toBe(false);
+  });
+
+  it('setReplayMaskingMode persists the mode and reports via isMaskAllEnabled', async () => {
+    const m1 = await setReplayMaskingMode(false);
+    expect(m1).toBe(MASKING_MODES.PASSWORDS);
+    expect(localStorage.getItem(MASKING_MODE_KEY)).toBe(MASKING_MODES.PASSWORDS);
+    expect(isMaskAllEnabled()).toBe(false);
+
+    const m2 = await setReplayMaskingMode(true);
+    expect(m2).toBe(MASKING_MODES.ALL);
+    expect(localStorage.getItem(MASKING_MODE_KEY)).toBe(MASKING_MODES.ALL);
+    expect(isMaskAllEnabled()).toBe(true);
+  });
+
+  it('restarts an active recorder so the new mode takes effect', async () => {
+    const rec = getRecorder();
+    rec.active = true;
+    let stopped = 0;
+    rec._stopFn = () => {
+      stopped += 1;
+    };
+    // startRecorder imports rrweb; that import is unavailable in the test env, so
+    // start() is a no-op return — what we assert is that the live recorder was
+    // stopped to force a re-apply of privacy options.
+    await setReplayMaskingMode(false);
+    expect(stopped).toBe(1);
+  });
+});
+
 describe('REPLAY_INGEST_ENDPOINT', () => {
   it('derives from the bug-report endpoint origin', () => {
     expect(REPLAY_INGEST_ENDPOINT).toMatch(/\/api\/replays$/);
     expect(REPLAY_INGEST_ENDPOINT).not.toMatch(/bug-reports/);
+  });
+  it('points at the production hub (not the dev hub)', () => {
+    expect(REPLAY_INGEST_ENDPOINT).toBe('https://agenthub.surveytracker.io/api/replays');
   });
 });
 

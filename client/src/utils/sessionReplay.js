@@ -42,26 +42,80 @@ const FLUSH_TIMEOUT_MS = 5_000;
 // submit result so we never cache a timeout as `lastResult`.
 const FLUSH_TIMED_OUT = Symbol('flush-timed-out');
 
-// Privacy contract for the recorder. Agent Hub screens routinely show user
-// prompts, support content, terminal/session output, and possibly copied
-// secrets, so the replay is privacy-first by default: every input value is
-// masked and ALL text is masked (recorded as a same-length redaction) unless a
-// region opts back in. The replay still captures structure, layout, navigation,
-// clicks and interaction timing — enough to reproduce most UI bugs — without
-// exfiltrating content.
+// Privacy contract for the recorder. Two modes, selectable per deployment:
 //
-// Opt-out conventions (apply the class to a DOM region):
+//   - 'mask-all'  (default) — every input value AND all text is masked
+//     (recorded as a same-length redaction) unless a region opts back in with
+//     `ah-replay-unmask`. This is the right default for Agent Hub itself, whose
+//     screens routinely show user prompts, support content, terminal/session
+//     output, and copied secrets. The replay still captures structure, layout,
+//     navigation, clicks and timing — enough to reproduce most UI bugs —
+//     without exfiltrating content.
+//
+//   - 'passwords-only' — masks only `<input type="password">`; all other input
+//     values and visible text are recorded verbatim. Appropriate for instrumenting
+//     OTHER apps that don't surface secrets as text, where a readable replay is
+//     worth more than blanket redaction. Opt into this deliberately — it ships
+//     page content to the central hub.
+//
+// In every mode the class-based opt-outs still apply:
 //   - `ah-replay-block`   → element is fully blocked (recorded as a placeholder box)
 //   - `ah-replay-ignore`  → element's input events are ignored
 //   - `ah-replay-unmask`  → text inside is recorded verbatim (use sparingly)
-export const DEFAULT_RECORD_PRIVACY_OPTIONS = Object.freeze({
-  maskAllInputs: true,
-  maskInputOptions: Object.freeze({ password: true }),
-  maskTextSelector: '*',
+export const MASKING_MODE_KEY = 'agent-hub-replay-masking-mode';
+
+export const MASKING_MODES = Object.freeze({
+  ALL: 'mask-all',
+  PASSWORDS: 'passwords-only',
+});
+
+const REPLAY_CLASS_OPTIONS = Object.freeze({
   blockClass: 'ah-replay-block',
   ignoreClass: 'ah-replay-ignore',
   unmaskTextClass: 'ah-replay-unmask',
 });
+
+/**
+ * Build the rrweb `record()` privacy options for a masking mode. Pure — no DOM,
+ * no rrweb import — so it is unit-testable in isolation. Unknown modes fall back
+ * to the strict `mask-all` default (the safe direction).
+ */
+export function buildRecordPrivacyOptions(mode) {
+  if (mode === MASKING_MODES.PASSWORDS) {
+    return Object.freeze({
+      ...REPLAY_CLASS_OPTIONS,
+      maskAllInputs: false,
+      maskInputOptions: Object.freeze({ password: true }),
+    });
+  }
+  return Object.freeze({
+    ...REPLAY_CLASS_OPTIONS,
+    maskAllInputs: true,
+    maskInputOptions: Object.freeze({ password: true }),
+    maskTextSelector: '*',
+  });
+}
+
+/**
+ * Resolve the active masking mode from the localStorage override the RUM
+ * settings toggle writes. Defaults to the strict `mask-all` mode — a missing or
+ * unrecognised value is always treated as the safe, content-redacting default.
+ */
+export function resolveMaskingMode() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(MASKING_MODE_KEY);
+      if (v === MASKING_MODES.PASSWORDS) return MASKING_MODES.PASSWORDS;
+    }
+  } catch {
+    // ignore — fall through to the safe default
+  }
+  return MASKING_MODES.ALL;
+}
+
+// Strict, content-redacting options. Kept as the recorder's constructor default
+// and the resolved options for `mask-all` mode.
+export const DEFAULT_RECORD_PRIVACY_OPTIONS = buildRecordPrivacyOptions(MASKING_MODES.ALL);
 
 /** True when `events` contains at least one rrweb full-snapshot event. */
 export function hasFullSnapshot(events) {
@@ -74,6 +128,12 @@ export const REPLAY_INGEST_ENDPOINT = BUG_REPORT_ENDPOINT.replace(
   '/api/replays',
 );
 
+// localStorage key holding the user's explicit on/off choice (and any
+// fractional sample-rate an operator pokes in for repro). The RUM settings
+// toggle reads and writes this; it is the single source of truth for whether
+// the recorder runs, overriding the build-time env baseline.
+export const REPLAY_SAMPLE_RATE_KEY = 'agent-hub-replay-sample-rate';
+
 /** Clamp an arbitrary value to a valid sample rate in [0, 1]. */
 export function clampSampleRate(value) {
   const n = Number(value);
@@ -83,15 +143,20 @@ export function clampSampleRate(value) {
 }
 
 /**
- * Resolve the effective sample rate. Off (0) by default. A build-time Vite env
- * var sets the baseline; a localStorage override (handy for support repro /
- * manual enablement) wins when present.
+ * Resolve the effective sample rate. **On (1) by default** — session replay is
+ * the visual context that backs bug reports, so it records unless explicitly
+ * turned off. Resolution order:
+ *   1. localStorage override (the RUM settings toggle writes '1' / '0' here) —
+ *      always wins when present, so a user's explicit choice is honoured.
+ *   2. a build-time Vite env baseline (`VITE_SESSION_REPLAY_SAMPLE_RATE`) when
+ *      set — lets an operator dial a fractional rollout.
+ *   3. otherwise default to 1 (fully on).
  */
 export function resolveSampleRate() {
   let override;
   try {
     if (typeof localStorage !== 'undefined') {
-      override = localStorage.getItem('agent-hub-replay-sample-rate');
+      override = localStorage.getItem(REPLAY_SAMPLE_RATE_KEY);
     }
   } catch {
     override = undefined;
@@ -101,7 +166,14 @@ export function resolveSampleRate() {
     typeof import.meta !== 'undefined' && import.meta.env
       ? import.meta.env.VITE_SESSION_REPLAY_SAMPLE_RATE
       : undefined;
+  // Env unset → on by default. Env set (even "0") → honour the operator baseline.
+  if (envRate == null || envRate === '') return 1;
   return clampSampleRate(envRate);
+}
+
+/** True when session replay is currently enabled (effective sample rate > 0). */
+export function isSessionReplayEnabled() {
+  return resolveSampleRate() > 0;
 }
 
 /** Decide, once per session, whether this client samples in. */
@@ -369,10 +441,105 @@ export class SessionReplayRecorder {
 
 let _recorder = null;
 let _initialized = false;
+let _errorListenersWired = false;
 
 export function getRecorder() {
   if (!_recorder) _recorder = new SessionReplayRecorder({});
   return _recorder;
+}
+
+/**
+ * Wire record-on-error listeners exactly once per page. Idempotent so both the
+ * boot path (`initSessionReplay`) and a runtime enable (`setSessionReplayEnabled`)
+ * can call it without stacking duplicate handlers.
+ */
+function ensureErrorListeners() {
+  if (_errorListenersWired || typeof window === 'undefined') return;
+  _errorListenersWired = true;
+  const rec = getRecorder();
+  window.addEventListener('error', () => {
+    rec.handleError({ trigger: 'window.error' });
+  });
+  window.addEventListener('unhandledrejection', () => {
+    rec.handleError({ trigger: 'unhandledrejection' });
+  });
+}
+
+/** Lazy-load rrweb and start the rolling buffer. No-op if already recording. */
+async function startRecorder() {
+  const rec = getRecorder();
+  if (rec.active) return rec;
+  // Resolve the masking mode at start — rrweb fixes privacy options when
+  // `record()` is called, so the mode is applied here (and re-applied via a
+  // stop/start in setMaskingMode when it changes at runtime).
+  rec.recordOptions = buildRecordPrivacyOptions(resolveMaskingMode());
+  try {
+    const mod = await import('rrweb');
+    rec.start(mod.record);
+  } catch {
+    return null;
+  }
+  ensureErrorListeners();
+  return rec;
+}
+
+/**
+ * Turn session replay on or off at runtime and persist the choice. Writes the
+ * localStorage override `resolveSampleRate` reads ('1' / '0') so the decision
+ * survives reloads, then live-applies it: enabling starts the recorder (and
+ * record-on-error wiring); disabling stops it. Returns the new boolean state.
+ *
+ * Best-effort and never throws — a storage or rrweb-import failure must not
+ * break the settings UI that calls it.
+ */
+export async function setSessionReplayEnabled(enabled) {
+  const next = !!enabled;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(REPLAY_SAMPLE_RATE_KEY, next ? '1' : '0');
+    }
+  } catch {
+    // ignore — persistence is best-effort
+  }
+  if (next) {
+    await startRecorder();
+  } else if (_recorder) {
+    _recorder.stop();
+  }
+  return next;
+}
+
+/** True when the active masking mode is the strict, content-redacting default. */
+export function isMaskAllEnabled() {
+  return resolveMaskingMode() === MASKING_MODES.ALL;
+}
+
+/**
+ * Set the masking mode and persist it. `maskAll === true` selects the strict
+ * `mask-all` mode (redact all inputs + text); `false` selects `passwords-only`
+ * (mask only password inputs, record everything else). rrweb privacy options are
+ * fixed when `record()` starts, so when recording is live this stops and
+ * restarts the recorder to apply the new mode. Returns the persisted mode.
+ *
+ * Best-effort and never throws — a storage or rrweb-import failure must not
+ * break the settings UI that calls it.
+ */
+export async function setReplayMaskingMode(maskAll) {
+  const next = maskAll ? MASKING_MODES.ALL : MASKING_MODES.PASSWORDS;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(MASKING_MODE_KEY, next);
+    }
+  } catch {
+    // ignore — persistence is best-effort
+  }
+  // Re-apply live if currently recording: rrweb only reads privacy options at
+  // record() start, so a running recorder must be restarted to switch modes.
+  if (_recorder && _recorder.active) {
+    _recorder.stop();
+    await startRecorder();
+  }
+  return next;
 }
 
 /**
@@ -390,22 +557,7 @@ export async function initSessionReplay(opts = {}) {
   const rng = opts.rng ?? Math.random;
   if (!shouldSample(sampleRate, rng)) return null;
 
-  const rec = getRecorder();
-  try {
-    const mod = await import('rrweb');
-    rec.start(mod.record);
-  } catch {
-    return null;
-  }
-
-  window.addEventListener('error', () => {
-    rec.handleError({ trigger: 'window.error' });
-  });
-  window.addEventListener('unhandledrejection', () => {
-    rec.handleError({ trigger: 'unhandledrejection' });
-  });
-
-  return rec;
+  return startRecorder();
 }
 
 /**
@@ -429,4 +581,5 @@ export async function flushSessionReplayRef(meta, timeoutMs) {
 export function _resetSessionReplayForTest() {
   _recorder = null;
   _initialized = false;
+  _errorListenersWired = false;
 }

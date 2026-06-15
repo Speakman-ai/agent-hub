@@ -224,11 +224,13 @@ export const api = {
   // already-instrumented status. Returns `{ projectId, draft }`.
   getRumSetupDraft: (projectId) => fetchJSON(`/projects/${projectId}/rum/setup-draft`),
   // Spawn the worktree-backed `[RUM Setup]` wizard session loaded with
-  // the `rum-setup` skill. Returns `{ sessionId, agentId, draft, session }`.
-  startRumWizard: (projectId) =>
+  // the `rum-setup` skill. `maskAllText` (default false) is the per-target-app
+  // masking policy baked into the injected recorder. Returns
+  // `{ sessionId, agentId, draft, session }`.
+  startRumWizard: (projectId, { maskAllText = false } = {}) =>
     fetchJSON(`/projects/${projectId}/rum/setup-wizard`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({ maskAllText: !!maskAllText }),
     }),
   // Per-project RUM ingest clients (vendor-site `X-RUM-Token` creds).
   // List active (non-revoked) clients — metadata only, never the token.

@@ -21,10 +21,17 @@ import {
   Check,
   Copy,
   ShieldCheck,
+  Video,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { copyToClipboard } from '../utils/export.js';
 import { relativeTime } from '../utils/time.js';
+import {
+  isSessionReplayEnabled,
+  setSessionReplayEnabled,
+  isMaskAllEnabled,
+  setReplayMaskingMode,
+} from '../utils/sessionReplay.js';
 
 /**
  * Format an ingest client's `lastUsedAt` for display. Returns "never used"
@@ -70,6 +77,18 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   const [wizardStarting, setWizardStarting] = useState(false);
   const [wizardError, setWizardError] = useState(null);
   const [lastSessionId, setLastSessionId] = useState(null);
+  // Masking policy baked into the recorder the wizard injects into THIS target
+  // app (distinct from the Hub's own self-recording toggle above). Default
+  // false = mask passwords + PII only, record other content — matches
+  // rum/mask.js DEFAULT_MASK_OPTIONS and suits most third-party apps.
+  const [injectMaskAllText, setInjectMaskAllText] = useState(false);
+
+  // Session-replay recorder on/off (global to this Hub, persisted in
+  // localStorage via setSessionReplayEnabled — not per-project).
+  const [replayOn, setReplayOn] = useState(() => isSessionReplayEnabled());
+  const [replayToggling, setReplayToggling] = useState(false);
+  const [maskAll, setMaskAll] = useState(() => isMaskAllEnabled());
+  const [maskToggling, setMaskToggling] = useState(false);
 
   // Ingest-client state
   const [clients, setClients] = useState([]);
@@ -159,6 +178,48 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
 
   const project = projects.find((p) => p.id === projectId) || null;
 
+  const handleToggleReplay = useCallback(async () => {
+    if (replayToggling) return;
+    const next = !replayOn;
+    setReplayToggling(true);
+    // Optimistic — the recorder start/stop is best-effort and never throws.
+    setReplayOn(next);
+    try {
+      await setSessionReplayEnabled(next);
+      if (showToast) {
+        showToast(
+          next ? 'Session replay recording enabled.' : 'Session replay recording disabled.',
+          'success',
+          3000,
+        );
+      }
+    } finally {
+      setReplayToggling(false);
+    }
+  }, [replayOn, replayToggling, showToast]);
+
+  const handleToggleMaskAll = useCallback(async () => {
+    if (maskToggling) return;
+    const next = !maskAll;
+    setMaskToggling(true);
+    // Optimistic — setReplayMaskingMode is best-effort and never throws.
+    setMaskAll(next);
+    try {
+      await setReplayMaskingMode(next);
+      if (showToast) {
+        showToast(
+          next
+            ? 'Masking all text & inputs.'
+            : 'Masking password fields only — other content is recorded.',
+          next ? 'success' : 'info',
+          3500,
+        );
+      }
+    } finally {
+      setMaskToggling(false);
+    }
+  }, [maskAll, maskToggling, showToast]);
+
   const handleStartWizard = useCallback(async () => {
     if (!project || wizardStarting) return;
     // Capture the project this spawn belongs to. A late response must not
@@ -168,7 +229,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     setWizardStarting(true);
     setWizardError(null);
     try {
-      const res = await api.startRumWizard(pid);
+      const res = await api.startRumWizard(pid, { maskAllText: injectMaskAllText });
       if (activePidRef.current !== pid) return; // switched projects — drop result
       if (!res?.sessionId) {
         setWizardError('Server did not return a wizard session id');
@@ -188,7 +249,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     } finally {
       if (activePidRef.current === pid) setWizardStarting(false);
     }
-  }, [project, wizardStarting, onOpenSession]);
+  }, [project, wizardStarting, onOpenSession, injectMaskAllText]);
 
   const handleMint = useCallback(async () => {
     const name = newClientName.trim();
@@ -272,6 +333,91 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
           guided injection in chat, then mint a per-project ingest token for the recorder to
           authenticate replay uploads.
         </p>
+      </div>
+
+      {/* ── Session replay recording (global on/off) ────────────── */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-semibold text-gray-200 mb-1 flex items-center gap-2">
+              <Video size={14} className="text-fuchsia-400" />
+              Session replay recording
+            </h4>
+            <p className="text-xs text-gray-500 max-w-2xl">
+              Records a privacy-masked rrweb replay of this Hub&apos;s own UI and attaches it to bug
+              reports so the intake agent can see what happened. On by default; turn it off to stop
+              recording entirely. Applies to this browser and persists across reloads.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleToggleReplay}
+            disabled={replayToggling}
+            role="switch"
+            aria-checked={replayOn}
+            aria-label="Toggle session replay recording"
+            data-testid="rum-replay-toggle"
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+              replayOn ? 'bg-fuchsia-600' : 'bg-gray-600'
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                replayOn ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Masking strictness */}
+        <div className="mt-4 pt-4 border-t border-gray-700/70">
+          <div className="flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <h5 className="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2">
+                <ShieldCheck size={13} className="text-fuchsia-400" />
+                Mask all text &amp; inputs
+              </h5>
+              <p className="text-xs text-gray-500 max-w-2xl">
+                On (recommended for Agent Hub): redact every input value and all visible text — only
+                structure, layout and interaction timing are recorded. Turn off to mask{' '}
+                <strong className="text-gray-300">only password fields</strong> and record
+                everything else verbatim — appropriate when instrumenting other apps that don&apos;t
+                show secrets as text.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleMaskAll}
+              disabled={maskToggling}
+              role="switch"
+              aria-checked={maskAll}
+              aria-label="Toggle masking of all text and inputs"
+              data-testid="rum-mask-all-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                maskAll ? 'bg-fuchsia-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  maskAll ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+          {!maskAll && (
+            <div
+              className="mt-3 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5"
+              data-testid="rum-mask-all-warning"
+            >
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+              <span>
+                Passwords-only masking records all other input values and visible text in replays
+                uploaded to the hub. Don&apos;t use this on surfaces that show chat, terminal
+                output, tokens, or API keys.
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Repo scan summary ───────────────────────────────────── */}
@@ -382,6 +528,37 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
             {wizardStarting ? 'Starting…' : 'Set up RUM'}
           </button>
         </div>
+
+        {/* Per-app masking policy baked into the injected recorder */}
+        <div className="mt-3 pt-3 border-t border-gray-700/70">
+          <label
+            htmlFor="rum-inject-mask-mode"
+            className="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2"
+          >
+            <ShieldCheck size={13} className="text-fuchsia-400" />
+            Recorder masking for this app
+          </label>
+          <select
+            id="rum-inject-mask-mode"
+            data-testid="rum-inject-mask-select"
+            value={injectMaskAllText ? 'mask-all' : 'passwords-only'}
+            onChange={(e) => setInjectMaskAllText(e.target.value === 'mask-all')}
+            disabled={wizardStarting}
+            className="w-full max-w-md bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+          >
+            <option value="passwords-only">
+              Mask passwords &amp; PII only — record other content
+            </option>
+            <option value="mask-all">Mask all text &amp; inputs — strictest</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1 max-w-xl">
+            Baked into the recorder the wizard injects into{' '}
+            <strong className="text-gray-300">this target app</strong> — independent of Agent
+            Hub&apos;s own session-replay setting above. Default masks only password/PII fields so
+            replays stay readable; choose strict masking for apps that show secrets as text.
+          </p>
+        </div>
+
         {wizardError && (
           <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
             <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />

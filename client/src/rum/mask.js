@@ -20,14 +20,45 @@
  *   - unmask: `data-rum-unmask` / class `rum-unmask`
  */
 
-/** Default capture options. `maskAllInputs` is ON per the compliance rule. */
+// Fail-closed capture baseline used when NO masking mode is supplied (e.g. a
+// bare `captureSnapshot(root)` / `classifyElement(el)`). `maskAllInputs` is ON
+// so a caller that forgets to configure masking still leaks nothing. This is
+// NOT the RUM wizard's "passwords-only" policy — that is an explicit opt-out the
+// wizard always passes via `maskOptionsForMode(false)` (which turns this flag
+// off). Password / payment / PII fields are masked independently and always (see
+// `isAlwaysMaskedField`), regardless of these flags.
 export const DEFAULT_MASK_OPTIONS = Object.freeze({
   maskAllInputs: true,
-  // Text nodes are not masked wholesale by default; only inputs are. A page
-  // can still force masking on any subtree with a mask hint.
   maskAllText: false,
   maskChar: '*',
 });
+
+/**
+ * Resolve capture options for the RUM wizard's per-app masking mode. The single
+ * `maskAllText` boolean selects the whole policy — `maskAllInputs` moves with it,
+ * deliberately overriding the fail-closed `DEFAULT_MASK_OPTIONS.maskAllInputs`
+ * baseline:
+ *
+ *   - `false` — "passwords & PII only" (the wizard's default selection): record
+ *     other input values and all visible text verbatim; only password/PII fields
+ *     are masked (those are ALWAYS masked via `isAlwaysMaskedField`, regardless
+ *     of these flags). Resolves to `{ maskAllInputs: false, maskAllText: false }`.
+ *   - `true` — "mask everything": mask every input value AND all text; only
+ *     structure/layout/timing is captured. Resolves to
+ *     `{ maskAllInputs: true, maskAllText: true }`.
+ *
+ * Any non-`true` value is coerced to the passwords-only mode. Note this differs
+ * from a bare `DEFAULT_MASK_OPTIONS`, which masks all inputs — the wizard always
+ * calls this builder so the recorder it injects never relies on that baseline.
+ */
+export function maskOptionsForMode(maskAllText) {
+  const maskEverything = maskAllText === true;
+  return Object.freeze({
+    ...DEFAULT_MASK_OPTIONS,
+    maskAllInputs: maskEverything,
+    maskAllText: maskEverything,
+  });
+}
 
 /**
  * Regexes that mark a field as ALWAYS masked regardless of opt-out hints.

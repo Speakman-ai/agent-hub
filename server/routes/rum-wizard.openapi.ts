@@ -213,7 +213,18 @@ registerPath({
   ].join('\n'),
   request: {
     params: ProjectIdParam,
-    body: { content: jsonContent(z.object({}).openapi({ description: 'Body is empty.' })) },
+    body: {
+      content: jsonContent(
+        z
+          .object({
+            maskAllText: z.boolean().optional().openapi({
+              description:
+                "Masking policy for the injected recorder, chosen per target app at setup time. `false` (default) masks password + PII fields only and records other inputs/text verbatim — the right default for instrumenting third-party apps. `true` masks ALL text and inputs (only structure/layout/timing recorded). Baked into the recorder init the wizard writes; it is NOT Agent Hub's own self-recording setting.",
+            }),
+          })
+          .openapi({ description: 'Optional masking policy for the injected recorder.' }),
+      ),
+    },
   },
   responses: {
     201: {

@@ -19,6 +19,10 @@ describe('submitBugReport', () => {
     vi.restoreAllMocks();
   });
 
+  it('targets the production hub intake endpoint', () => {
+    expect(BUG_REPORT_ENDPOINT).toBe('https://agenthub.surveytracker.io/api/bug-reports');
+  });
+
   it('rejects an empty title', async () => {
     await expect(submitBugReport({ title: '   ' })).rejects.toThrow(/title is required/i);
     expect(fetch).not.toHaveBeenCalled();

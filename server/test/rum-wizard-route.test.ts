@@ -275,6 +275,24 @@ describe('buildRumKickoffPrompt', () => {
     expect(prompt).toContain('none detected');
   });
 
+  it('defaults the masking policy to passwords-only (both flags off)', () => {
+    const prompt = buildRumKickoffPrompt('proj-1', '/tmp/work', draft, 'sess-1');
+    expect(prompt).toContain('maskAllText = false');
+    expect(prompt).toContain('mask password and PII fields only');
+    // The inject step bakes BOTH flags off so ordinary inputs/text are recorded
+    // verbatim (passwords/PII still masked by the recorder).
+    expect(prompt).toContain('`maskAllInputs: false`');
+    expect(prompt).toContain('`maskAllText: false`');
+  });
+
+  it('threads a strict masking policy (both flags on) into the inject step', () => {
+    const prompt = buildRumKickoffPrompt('proj-1', '/tmp/work', draft, 'sess-1', true);
+    expect(prompt).toContain('maskAllText = true');
+    expect(prompt).toContain('mask ALL text and inputs');
+    expect(prompt).toContain('`maskAllInputs: true`');
+    expect(prompt).toContain('`maskAllText: true`');
+  });
+
   it('instructs the agent to commit via rum/setup-apply with the session id', () => {
     const prompt = buildRumKickoffPrompt('proj-9', '/tmp/work', draft, 'sess-9');
     expect(prompt).toContain('/rum/setup-apply');

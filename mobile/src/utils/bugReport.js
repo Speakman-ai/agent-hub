@@ -3,7 +3,7 @@
 import { captureScreen } from 'react-native-view-shot';
 
 export const BUG_REPORT_ENDPOINT =
-  'https://agenthub.dev.surveytracker.io/api/bug-reports';
+  'https://agenthub.surveytracker.io/api/bug-reports';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 /**

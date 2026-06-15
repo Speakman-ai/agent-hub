@@ -1,9 +1,10 @@
 // Bug report capture + submission helpers.
 //
-// The endpoint is intentionally hard-coded to the dev Agent Hub — bug reports
-// must always flow to the central intake regardless of where the client runs.
+// The endpoint is intentionally hard-coded to the production Agent Hub — bug
+// reports must always flow to the central intake regardless of where the
+// client runs.
 
-export const BUG_REPORT_ENDPOINT = 'https://agenthub.dev.surveytracker.io/api/bug-reports';
+export const BUG_REPORT_ENDPOINT = 'https://agenthub.surveytracker.io/api/bug-reports';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 /**

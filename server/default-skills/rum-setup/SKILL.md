@@ -52,6 +52,21 @@ editing — offer the ranked `entryCandidates` as options.
 
 Use `draft.plan.recommendedConnectSrc` as the ingest origin in the snippet.
 
+**Masking policy (from kickoff):** the kickoff prompt's bound values include a
+`maskAllText = <true|false>` flag — the operator's per-app masking choice. It selects
+the whole policy; **`maskAllInputs` moves with it** (set both to the same value):
+
+- `maskAllText: false` (default) → `{ maskAllInputs: false, maskAllText: false }` —
+  mask password + PII fields only (the recorder always masks those); record other
+  input values and visible text verbatim. Right for most third-party apps.
+- `maskAllText: true` → `{ maskAllInputs: true, maskAllText: true }` — mask all
+  inputs and all text; only structure/layout/timing is recorded. Use when the app
+  surfaces secrets as text.
+
+Use the exact value from the kickoff `maskAllText` for both flags; do not hardcode it.
+Do **not** set `maskAllInputs: true` in the default mode — that would mask every input
+and contradict the "record other content" policy the operator chose.
+
 ### `module-init` (SPA bootstrap, pages-router `_app`, Remix root)
 
 Add an `import` + an init call near the top of the module so it runs in the
@@ -59,7 +74,12 @@ browser on load:
 
 ```ts
 import { startRumRecorder } from '@agent-hub/rum'; // or the local recorder util
-startRumRecorder({ ingestUrl: '<recommendedConnectSrc>/api/replays' });
+const strict = /* maskAllText from kickoff */ false;
+startRumRecorder({
+  ingestUrl: '<recommendedConnectSrc>/api/replays',
+  maskAllInputs: strict, // passwords/PII are always masked regardless
+  maskAllText: strict,
+});
 ```
 
 ### `client-component` (Next.js app-router `app/layout.*` — a Server Component)
@@ -74,8 +94,13 @@ import { useEffect } from 'react';
 export default function RumRecorder() {
   useEffect(() => {
     let stop: undefined | (() => void);
+    const strict = /* maskAllText from kickoff */ false;
     import('@agent-hub/rum').then(({ startRumRecorder }) => {
-      stop = startRumRecorder({ ingestUrl: '<recommendedConnectSrc>/api/replays' });
+      stop = startRumRecorder({
+        ingestUrl: '<recommendedConnectSrc>/api/replays',
+        maskAllInputs: strict, // passwords/PII are always masked regardless
+        maskAllText: strict,
+      });
     });
     return () => stop?.();
   }, []);
