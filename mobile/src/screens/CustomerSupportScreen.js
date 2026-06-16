@@ -8,13 +8,19 @@ import {
   ActivityIndicator,
   Image,
   Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl } from '../utils/supportTickets';
+import {
+  sortTickets,
+  resolveReplayUrl,
+  resolveUploadUrl,
+  performTicketDelete,
+} from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
 
 const SEVERITY_COLOR = {
@@ -40,7 +46,7 @@ const STATUS_FILTERS = [
   { key: 'closed', label: 'Closed' },
 ];
 
-function TicketCard({ item, projectId, onOpenReplay }) {
+function TicketCard({ item, projectId, onOpenReplay, onDeleted }) {
   const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
   const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
   const hasReplay = item.type === 'bug' && item.replay_ref;
@@ -49,6 +55,8 @@ function TicketCard({ item, projectId, onOpenReplay }) {
 
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
 
   const handleConvert = async () => {
     if (converting || isConverted) return;
@@ -63,6 +71,29 @@ function TicketCard({ item, projectId, onOpenReplay }) {
     } finally {
       setConverting(false);
     }
+  };
+
+  const performDelete = async () => {
+    if (deleting) return;
+    // Optimistic-removal + error handling lives in a pure, unit-tested helper
+    // (performTicketDelete in utils/supportTickets) so the success/failure
+    // state transitions can't silently regress.
+    await performTicketDelete({
+      projectId,
+      ticketId: item.id,
+      deleteTicket: api.deleteSupportTicket,
+      setDeleting,
+      setDeleteError,
+      onDeleted,
+    });
+  };
+
+  const handleDelete = () => {
+    if (deleting) return;
+    Alert.alert('Delete support ticket?', 'This permanently removes the ticket.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: performDelete },
+    ]);
   };
 
   return (
@@ -130,7 +161,15 @@ function TicketCard({ item, projectId, onOpenReplay }) {
             </Text>
           </TouchableOpacity>
         )}
+        <TouchableOpacity
+          onPress={handleDelete}
+          disabled={deleting}
+          style={[styles.deleteButton, deleting && styles.convertButtonDisabled]}
+        >
+          <Text style={styles.deleteButtonText}>{deleting ? 'Deleting…' : '🗑 Delete'}</Text>
+        </TouchableOpacity>
         {convertError ? <Text style={styles.convertErrorText}>{convertError}</Text> : null}
+        {deleteError ? <Text style={styles.convertErrorText}>{deleteError}</Text> : null}
       </View>
     </View>
   );
@@ -193,8 +232,20 @@ export default function CustomerSupportScreen({ route }) {
     if (url) Linking.openURL(url).catch(() => {});
   }, []);
 
+  // Optimistically drop a row once its DELETE succeeds, independent of the
+  // support_ticket_deleted WebSocket echo (which still arrives for other
+  // clients).
+  const removeTicket = useCallback((ticketId) => {
+    setTickets((prev) => prev.filter((t) => t.id !== ticketId));
+  }, []);
+
   const renderItem = ({ item }) => (
-    <TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} />
+    <TicketCard
+      item={item}
+      projectId={projectId}
+      onOpenReplay={openReplay}
+      onDeleted={removeTicket}
+    />
   );
 
   return (
@@ -361,4 +412,12 @@ const styles = StyleSheet.create({
   convertButtonText: { fontSize: 12, color: colors.gray300, fontWeight: '600' },
   convertedText: { fontSize: 12, color: colors.emerald400 },
   convertErrorText: { fontSize: 11, color: colors.red400 },
+  deleteButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  deleteButtonText: { fontSize: 12, color: colors.red400, fontWeight: '600' },
 });

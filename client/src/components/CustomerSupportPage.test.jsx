@@ -9,6 +9,7 @@ vi.mock('../utils/api.js', () => ({
     getSupportTickets: vi.fn(),
     getSupportTicket: vi.fn(),
     convertSupportTicketToCard: vi.fn(),
+    deleteSupportTicket: vi.fn(),
   },
 }));
 
@@ -136,6 +137,77 @@ describe('CustomerSupportPage', () => {
     const med = screen.getByText('Existing medium');
     // The newly-arrived critical sorts above the existing medium.
     expect(crit.compareDocumentPosition(med) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('deletes a ticket after a two-step confirm, calling the API', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 'kill', subject: 'Delete me' })]);
+    api.deleteSupportTicket.mockResolvedValue({ ok: true });
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Delete me')).toBeInTheDocument());
+
+    // First click arms the confirm step — the API is not called yet.
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    expect(api.deleteSupportTicket).not.toHaveBeenCalled();
+    expect(screen.getByText('Delete?')).toBeInTheDocument();
+
+    // Confirm fires the delete.
+    fireEvent.click(screen.getByRole('button', { name: /confirm/i }));
+    await waitFor(() => expect(api.deleteSupportTicket).toHaveBeenCalledWith('proj-1', 'kill'));
+
+    // The initiating client removes the row optimistically on success — it must
+    // NOT wait on the support_ticket_deleted WebSocket echo (which may be
+    // dropped if the socket is disconnected/reconnecting).
+    await waitFor(() => expect(screen.queryByText('Delete me')).toBeNull());
+  });
+
+  it('removes the ticket from the open detail modal on a successful delete', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 'm1', subject: 'Modal delete' })]);
+    api.getSupportTicket.mockResolvedValue(ticket({ id: 'm1', subject: 'Modal delete' }));
+    api.deleteSupportTicket.mockResolvedValue({ ok: true });
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Modal delete')).toBeInTheDocument());
+
+    // Open the detail modal and delete from its footer.
+    fireEvent.click(screen.getByRole('button', { name: /open support ticket/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('support-ticket-detail-modal')).toBeInTheDocument(),
+    );
+    const modal = screen.getByTestId('support-ticket-detail-modal');
+    fireEvent.click(within(modal).getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(within(modal).getByRole('button', { name: /confirm/i }));
+
+    await waitFor(() => expect(api.deleteSupportTicket).toHaveBeenCalledWith('proj-1', 'm1'));
+    // Both the modal and the underlying list row disappear without a WS event.
+    await waitFor(() => expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull());
+    expect(screen.queryByText('Modal delete')).toBeNull();
+  });
+
+  it('cancels an armed delete without calling the API', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 'safe', subject: 'Keep me' })]);
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Keep me')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    expect(api.deleteSupportTicket).not.toHaveBeenCalled();
+    // Back to the un-armed Delete button.
+    expect(screen.getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
+  });
+
+  it('does not open the detail modal when the Delete action is clicked', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'No accidental open' })]);
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('No accidental open')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    // Arming the confirm must not trigger the full-card open button.
+    expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull();
+    expect(api.getSupportTicket).not.toHaveBeenCalled();
   });
 
   it('removes a ticket via the imperative handle', async () => {

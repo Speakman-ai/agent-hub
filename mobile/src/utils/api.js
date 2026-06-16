@@ -536,6 +536,10 @@ export const api = {
   // returns the existing card with `alreadyConverted: true`.
   convertSupportTicketToCard: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
+  // Permanently delete a support ticket. The server emits a
+  // support_ticket_deleted WebSocket event so open clients drop the row.
+  deleteSupportTicket: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}`, { method: 'DELETE' }),
 
   // Threads (persistent output logs for crons & heartbeats)
   getThreads: (projectId, type) => {

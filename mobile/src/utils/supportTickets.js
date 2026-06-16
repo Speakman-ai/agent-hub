@@ -29,3 +29,40 @@ export function resolveUploadUrl(ref) {
 
 // Back-compat alias: replay and screenshot refs share the same resolution.
 export const resolveReplayUrl = resolveUploadUrl;
+
+// Delete-flow state machine for a support-ticket card, factored out of the RN
+// component so vitest can cover the optimistic-removal and error paths without
+// mounting the component tree.
+//
+//   - On a successful DELETE: clear the `deleting` flag and remove the row via
+//     `onDeleted(ticketId)` immediately, WITHOUT waiting for the
+//     support_ticket_deleted WebSocket echo (a dropped/missed event would
+//     otherwise strand a deleted ticket on screen behind a disabled
+//     "Deleting…" button). The WebSocket event remains for cross-client sync.
+//   - On a failed DELETE: surface the error and re-enable the action by
+//     clearing the `deleting` flag, so the user can retry.
+//
+// `deleteTicket` is injected (the api.deleteSupportTicket wrapper) to keep this
+// pure. Returns true when the delete succeeded, false otherwise.
+export async function performTicketDelete({
+  projectId,
+  ticketId,
+  deleteTicket,
+  setDeleting,
+  setDeleteError,
+  onDeleted,
+}) {
+  setDeleting(true);
+  setDeleteError(null);
+  try {
+    await deleteTicket(projectId, ticketId);
+    // Clear the pending flag first in case the parent keeps this row mounted.
+    setDeleting(false);
+    onDeleted?.(ticketId);
+    return true;
+  } catch (err) {
+    setDeleteError(err?.message || 'Failed to delete');
+    setDeleting(false);
+    return false;
+  }
+}

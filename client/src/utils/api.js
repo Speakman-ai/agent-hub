@@ -1055,6 +1055,10 @@ export const api = {
   // alreadyConverted? }. Idempotent: re-converting returns the existing card.
   convertSupportTicketToCard: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
+  // Permanently delete a support ticket. The server emits a
+  // support_ticket_deleted WebSocket event so open clients drop the row.
+  deleteSupportTicket: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}`, { method: 'DELETE' }),
 
   // Session replays — record-on-error rrweb captures. Metadata + paginated
   // events back the sandboxed rrweb-player playback surface. Reads are

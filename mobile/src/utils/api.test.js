@@ -465,3 +465,19 @@ describe('api.getHealth — drawer footer / mount-effect contract', () => {
     expect(res).toEqual(payload);
   });
 });
+
+describe('api support-ticket helpers — URL + method parity with web client', () => {
+  it('deleteSupportTicket(projectId, id) → DELETE /projects/:id/support-tickets/:ticketId', async () => {
+    await api.deleteSupportTicket('agent-hub', 'tkt-1');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-1');
+    expect(init?.method).toBe('DELETE');
+  });
+
+  it('convertSupportTicketToCard(projectId, id) → POST /…/support-tickets/:id/convert', async () => {
+    await api.convertSupportTicketToCard('agent-hub', 'tkt-2');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-2/convert');
+    expect(init?.method).toBe('POST');
+  });
+});

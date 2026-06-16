@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl } from './supportTickets';
+import {
+  sortTickets,
+  resolveReplayUrl,
+  resolveUploadUrl,
+  performTicketDelete,
+} from './supportTickets';
 
 vi.mock('./config', () => ({
   getServerBaseUrl: () => 'https://hub.example.com',
@@ -64,5 +69,70 @@ describe('resolveUploadUrl', () => {
     expect(resolveUploadUrl('https://cdn.test/shot.png')).toBe('https://cdn.test/shot.png');
     expect(resolveUploadUrl(null)).toBe(null);
     expect(resolveReplayUrl).toBe(resolveUploadUrl);
+  });
+});
+
+describe('performTicketDelete', () => {
+  function makeHarness({ deleteTicket }) {
+    const calls = { setDeleting: [], setDeleteError: [], onDeleted: [] };
+    return {
+      args: {
+        projectId: 'proj-1',
+        ticketId: 'tkt-9',
+        deleteTicket,
+        setDeleting: (v) => calls.setDeleting.push(v),
+        setDeleteError: (v) => calls.setDeleteError.push(v),
+        onDeleted: (id) => calls.onDeleted.push(id),
+      },
+      calls,
+    };
+  }
+
+  it('on success: removes the row optimistically and clears deleting without a WS event', async () => {
+    const deleteTicket = vi.fn().mockResolvedValue(undefined);
+    const { args, calls } = makeHarness({ deleteTicket });
+
+    const ok = await performTicketDelete(args);
+
+    expect(ok).toBe(true);
+    expect(deleteTicket).toHaveBeenCalledWith('proj-1', 'tkt-9');
+    // Spinner turns on then off — the action is re-enabled, not left stuck.
+    expect(calls.setDeleting).toEqual([true, false]);
+    // Row dropped locally via onDeleted, independent of any WebSocket echo.
+    expect(calls.onDeleted).toEqual(['tkt-9']);
+    // Error cleared on entry, never set on the happy path.
+    expect(calls.setDeleteError).toEqual([null]);
+  });
+
+  it('on failure: surfaces the error, re-enables the action, and does NOT remove the row', async () => {
+    const deleteTicket = vi.fn().mockRejectedValue(new Error('network boom'));
+    const { args, calls } = makeHarness({ deleteTicket });
+
+    const ok = await performTicketDelete(args);
+
+    expect(ok).toBe(false);
+    // Spinner turns on then off so the user can retry — never stuck on "Deleting…".
+    expect(calls.setDeleting).toEqual([true, false]);
+    // Error message surfaced; row left in place (onDeleted not called).
+    expect(calls.setDeleteError).toEqual([null, 'network boom']);
+    expect(calls.onDeleted).toEqual([]);
+  });
+
+  it('falls back to a generic message when the error has none', async () => {
+    const deleteTicket = vi.fn().mockRejectedValue({});
+    const { args, calls } = makeHarness({ deleteTicket });
+
+    await performTicketDelete(args);
+
+    expect(calls.setDeleteError).toEqual([null, 'Failed to delete']);
+    expect(calls.onDeleted).toEqual([]);
+  });
+
+  it('tolerates a missing onDeleted callback on success', async () => {
+    const deleteTicket = vi.fn().mockResolvedValue(undefined);
+    const { args } = makeHarness({ deleteTicket });
+    args.onDeleted = undefined;
+
+    await expect(performTicketDelete(args)).resolves.toBe(true);
   });
 });

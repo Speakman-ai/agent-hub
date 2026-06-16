@@ -12,6 +12,7 @@ import {
   SquareKanban,
   Check,
   X,
+  Trash2,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { getServerBase } from '../utils/connection.js';
@@ -84,7 +85,74 @@ function resolveUploadUrl(ref) {
 // origin-resolution. Kept as a named export for existing consumers/tests.
 const resolveReplayUrl = resolveUploadUrl;
 
-function SupportTicketCard({ ticket, projectId, onOpen }) {
+// Two-step delete control shared by the card and the detail modal. The first
+// click arms a "Confirm" / "Cancel" pair so a single misclick can't destroy a
+// ticket. On a successful DELETE the initiating client removes the row itself
+// via `onDeleted` (optimistic update) — the support_ticket_deleted WebSocket
+// event is only cross-client synchronization, so a dropped/disconnected socket
+// can't leave a deleted ticket stranded in this client's list. `stretched`
+// re-enables pointer events for use over the card's full-card overlay button.
+function DeleteTicketButton({ projectId, ticketId, stretched = false, onDeleted }) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+  const pe = stretched ? 'pointer-events-auto relative' : '';
+
+  const handleDelete = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.deleteSupportTicket(projectId, ticketId);
+      // Remove locally on success rather than waiting on the WebSocket echo —
+      // the parent drops the row (and closes the modal) immediately.
+      onDeleted?.();
+    } catch (err) {
+      setDeleteError(err.message || 'Failed to delete');
+      setDeleting(false);
+      setConfirming(false);
+    }
+  };
+
+  if (confirming) {
+    return (
+      <span className={`${pe} inline-flex items-center gap-1.5`}>
+        <span className="text-[11px] text-gray-400">Delete?</span>
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          className={`${pe} inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-red-600/60 text-red-300 hover:bg-red-600/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+        >
+          {deleting ? 'Deleting…' : 'Confirm'}
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          disabled={deleting}
+          className={`${pe} text-xs px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 disabled:opacity-50 transition-colors`}
+        >
+          Cancel
+        </button>
+        {deleteError ? <span className="text-[11px] text-red-400">{deleteError}</span> : null}
+      </span>
+    );
+  }
+
+  return (
+    <span className={`${pe} inline-flex items-center gap-2`}>
+      <button
+        onClick={() => setConfirming(true)}
+        title="Delete this support ticket"
+        className={`${pe} inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-red-300 hover:border-red-600/60 hover:bg-red-600/10 transition-colors`}
+      >
+        <Trash2 size={13} />
+        Delete
+      </button>
+      {deleteError ? <span className="text-[11px] text-red-400">{deleteError}</span> : null}
+    </span>
+  );
+}
+
+function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
   const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
@@ -234,6 +302,12 @@ function SupportTicketCard({ ticket, projectId, onOpen }) {
               {convertError ? (
                 <span className="text-[11px] text-red-400">{convertError}</span>
               ) : null}
+              <DeleteTicketButton
+                projectId={projectId}
+                ticketId={ticket.id}
+                stretched
+                onDeleted={() => onDeleted?.(ticket.id)}
+              />
             </div>
           </div>
         </div>
@@ -250,7 +324,7 @@ function SupportTicketCard({ ticket, projectId, onOpen }) {
   );
 }
 
-function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose }) {
+function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDeleted }) {
   // Only the *fetched enrichment* is held locally — the complete
   // ai_investigation the list rows truncate to ai_summary. Every other field is
   // read straight from the live `liveTicket` prop (which the parent recomputes
@@ -451,6 +525,18 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose }) {
               </button>
             )}
             {convertError ? <span className="text-[11px] text-red-400">{convertError}</span> : null}
+            <div className="ml-auto">
+              <DeleteTicketButton
+                projectId={projectId}
+                ticketId={ticket.id}
+                onDeleted={() => {
+                  // Drop the row from the parent list; fall back to just
+                  // closing the modal if no removal handler was supplied.
+                  if (onDeleted) onDeleted(ticket.id);
+                  else onClose?.();
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -587,6 +673,7 @@ function CustomerSupportPageInner({ projectId }, ref) {
                 ticket={ticket}
                 projectId={projectId}
                 onOpen={(t) => setOpenTicket(t)}
+                onDeleted={removeTicket}
               />
             ))}
           </div>
@@ -598,6 +685,7 @@ function CustomerSupportPageInner({ projectId }, ref) {
           ticket={openTicket}
           projectId={projectId}
           onClose={() => setOpenTicket(null)}
+          onDeleted={removeTicket}
         />
       ) : null}
     </div>
