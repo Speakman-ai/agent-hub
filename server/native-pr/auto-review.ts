@@ -23,6 +23,8 @@ import { bareRepoPath, hostedRepoExists } from './host.js';
 import { buildNativePrUrl } from './url.js';
 import { revParse } from './git-read.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
+import { resolveEffectiveEngineAndModel } from '../effective-model.js';
+import { setSessionOwner } from '../session-ownership.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 
 export interface AutoReviewDeps {
@@ -35,6 +37,17 @@ export interface AutoReviewDeps {
 export interface AutoReviewOpts {
   /** Test seam: bypass the vitest env guard (handleChat mocked). */
   force?: boolean;
+  /**
+   * The authenticated Hub user who pushed the commits that triggered this
+   * review (from the smart-HTTP receive-pack auth, correlated via
+   * `recent-pusher.ts`). When set, the review runs as that user: their
+   * per-user reviewer engine/model overrides resolve the spawn, and the
+   * session is owned by them so the reviewer CLI uses their per-account
+   * credentials — mirroring the Finalize in-session reviewer. When null
+   * (anonymous / break-glass push), the userless one-shot resolver picks a
+   * host-runnable engine instead.
+   */
+  pushedByUserId?: string | null;
 }
 
 /** One dispatch per (project, pr, head sha) per process lifetime. */
@@ -85,32 +98,55 @@ export async function maybeRunPrAutoReview(
     const prUrl = buildNativePrUrl(project.id, pr.number);
     const sessionId = uuidv4();
     const taskId = uuidv4();
-    // System-initiated — no acting user. Per-account engines (Claude/Cursor/Codex)
-    // require user credentials; resolveOneShotEngine falls back to host-global
-    // Gemini when the reviewer's preferred engine isn't available (same as heartbeats).
+
+    // Resolve the engine/model the review runs on.
+    //
+    // When we know the pushing Hub user (authenticated receive-pack), run
+    // the review AS that user — exactly like the Finalize in-session
+    // reviewer keys off the session owner. `resolveEffectiveEngineAndModel`
+    // honors their per-user reviewer engine/model overrides, and the
+    // session is owned by them below so the CLI uses their per-account
+    // credentials. This stops a reviewer assigned a host-global engine
+    // (e.g. Gemini) from being silently selected for someone else's push.
+    //
+    // When there's no pushing user (anonymous / break-glass push), there
+    // are no per-account credentials to run under, so fall back to the
+    // userless one-shot resolver, which only picks host-runnable engines.
+    const pushedByUserId = opts.pushedByUserId ?? null;
     let engine: string;
     let model: string;
-    try {
-      const resolved = await resolveOneShotEngine(deps.config, {
-        preferred: reviewer.engine || 'claude-code',
-        preferredModel: reviewer.model ?? null,
-        userId: null,
+    if (pushedByUserId) {
+      const resolved = resolveEffectiveEngineAndModel(deps.config, {
+        agentId: reviewer.id,
+        agentEngine: reviewer.engine || 'claude-code',
+        agentModel: reviewer.model ?? null,
+        ownerUserId: pushedByUserId,
       });
       engine = resolved.engine;
       model = resolved.model;
-      if (resolved.fallbackUsed) {
-        console.warn(
-          `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${reviewer.engine || 'claude-code'}" unavailable (${resolved.fallbackFromReason}); using "${engine}".`,
-        );
+    } else {
+      try {
+        const resolved = await resolveOneShotEngine(deps.config, {
+          preferred: reviewer.engine || 'claude-code',
+          preferredModel: reviewer.model ?? null,
+          userId: null,
+        });
+        engine = resolved.engine;
+        model = resolved.model;
+        if (resolved.fallbackUsed) {
+          console.warn(
+            `[auto-review] ${project.id} pr#${pr.number}: reviewer engine "${reviewer.engine || 'claude-code'}" unavailable (${resolved.fallbackFromReason}); using "${engine}".`,
+          );
+        }
+      } catch (err: unknown) {
+        if (err instanceof NoEnginesAvailableError) {
+          console.warn(
+            `[auto-review] ${project.id} pr#${pr.number}: no AI engine available for background review — ${err.message}`,
+          );
+          return;
+        }
+        throw err;
       }
-    } catch (err: unknown) {
-      if (err instanceof NoEnginesAvailableError) {
-        console.warn(
-          `[auto-review] ${project.id} pr#${pr.number}: no AI engine available for background review — ${err.message}`,
-        );
-        return;
-      }
-      throw err;
     }
     const wt = defaultSessionUseWorktreeFlag(project);
     deps.stmts.createSession.run(
@@ -123,6 +159,9 @@ export async function maybeRunPrAutoReview(
       0,
       1,
     );
+    // Attribute the session to the pushing user so the reviewer CLI spawns
+    // under their per-account credentials (no-op when null).
+    setSessionOwner(sessionId, pushedByUserId);
 
     const prompt =
       `## Review pull request #${pr.number} (external push)\n\n` +

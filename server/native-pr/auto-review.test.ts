@@ -239,4 +239,48 @@ describe('maybeRunPrAutoReview', () => {
     expect(session.engine).toBe('gemini-cli');
     expect(session.model).toBe('gemini-2.5-pro');
   });
+
+  it('runs as the pushing user on the reviewer assignment, bypassing the userless host fallback', async () => {
+    // Regression for the "[Review PR #N] external push @ ... · gemini 2.5 pro"
+    // incident: a reviewer assigned a host-runnable engine was selected via
+    // the userless one-shot resolver (which can land on Gemini) for someone
+    // else's authenticated push, then the CLI died at runtime. When we know
+    // the pushing Hub user, the review must run AS them — their reviewer
+    // engine assignment + per-account credentials (session owner) — exactly
+    // like the Finalize in-session reviewer, and never consult the userless
+    // host fallback.
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'cursor-agent';
+
+    // Spy is armed to return Gemini (the incident's bad fallback). With a
+    // pushing user present it must NEVER be consulted.
+    resolveSpy.mockResolvedValue({
+      engine: 'gemini-cli',
+      model: 'gemini-2.5-pro',
+      fallbackUsed: true,
+      fallbackFromReason: 'cursor-agent:no-credentials',
+      availability: {} as engineResolver.ResolvedOneShotEngine['availability'],
+    });
+
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, pushedByUserId: 'ryan' },
+    );
+
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as {
+      engine: string;
+      owner_user_id: string | null;
+    };
+    // The reviewer's assigned engine, not the Gemini host fallback.
+    expect(session.engine).toBe('cursor-agent');
+    // Owned by the pusher so the CLI spawns under their per-account creds.
+    expect(session.owner_user_id).toBe('ryan');
+  });
 });

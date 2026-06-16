@@ -419,7 +419,7 @@ app.use(
     // Default-branch "CI on push" + PR-level CI for moved branches that
     // back an open native PR (external pushes, "push anyway" bypasses).
     // Fire-and-forget — the push-CI module guards/serializes internally.
-    onPush: (project, refs) => {
+    onPush: (project, refs, ctx) => {
       recordRecentPush(project.id, refs); // feeds the "Create pull request" banner
       handleHostedRepoPush(project, refs, { stmts: stmts!, broadcast });
       // Review safety net for external pushes: any moved branch backing
@@ -434,12 +434,19 @@ app.use(
           | import('./types.js').PullRequestRow
           | undefined;
         if (open) {
-          void maybeRunPrAutoReview(project, open, {
-            stmts: stmts!,
-            config,
-            broadcast,
-            handleChat: routeDeps.handleChat,
-          });
+          void maybeRunPrAutoReview(
+            project,
+            open,
+            {
+              stmts: stmts!,
+              config,
+              broadcast,
+              handleChat: routeDeps.handleChat,
+            },
+            // Run the review as the user who pushed, so it uses their
+            // reviewer engine/model + per-account credentials.
+            { pushedByUserId: ctx?.pushedByUserId ?? null },
+          );
         }
       }
     },

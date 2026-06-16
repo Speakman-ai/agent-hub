@@ -42,6 +42,7 @@ import {
   GIT_WWW_AUTHENTICATE,
   type GitCaller,
 } from './auth.js';
+import { recordPusher, releasePusher, takeRecentPusher } from './recent-pusher.js';
 
 type GitService = 'git-upload-pack' | 'git-receive-pack';
 
@@ -55,8 +56,18 @@ export interface GitSmartHttpDeps {
    * "CI on push" hook fired by the notify endpoint when refs move —
    * wired to `maybeRunPushCi` in index.ts (needs stmts, so it cannot be
    * constructed here). Optional: tests and the mirror-only path omit it.
+   *
+   * `ctx.pushedByUserId` is the authenticated Hub user who ran the
+   * `git-receive-pack` that triggered this notification (best-effort
+   * correlation via `recent-pusher.ts`), or null for an anonymous /
+   * break-glass push. Downstream uses it to run external-push auto-review
+   * as the pushing user (their reviewer engine/model + credentials).
    */
-  onPush?: (project: Project, updatedRefs: string[]) => void;
+  onPush?: (
+    project: Project,
+    updatedRefs: string[],
+    ctx?: { pushedByUserId?: string | null },
+  ) => void;
   dataDir?: string;
 }
 
@@ -183,7 +194,18 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
         return;
       }
       const access = service === 'git-receive-pack' ? 'write' : 'read';
-      if (!(await gateRequest(req, res, resolved.project, access))) return;
+      const caller = await gateRequest(req, res, resolved.project, access);
+      if (!caller) return;
+      // Stash the authenticated pusher so the post-receive notify hook
+      // (which has no user identity) can attribute the push to them. Only
+      // meaningful for receive-pack; upload-pack never notifies. The entry
+      // is scoped to this request's lifetime — released on close — so two
+      // overlapping pushes are detectable as ambiguous (and decline
+      // attribution) rather than cross-attributing to each other.
+      if (service === 'git-receive-pack') {
+        const pusherToken = recordPusher(resolved.project.id, caller.userId);
+        res.on('close', () => releasePusher(resolved.project.id, pusherToken));
+      }
 
       req.setTimeout(0);
       res.status(200);
@@ -275,9 +297,11 @@ export function createGitSmartHttpRoutes(deps: GitSmartHttpDeps): Router {
         );
       }
       if (project && deps.onPush) {
+        const pushedByUserId = takeRecentPusher(project.id);
         deps.onPush(
           project,
           updates.map((u) => u.ref),
+          { pushedByUserId },
         );
       }
       res.status(204).end();
