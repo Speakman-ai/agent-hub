@@ -189,7 +189,7 @@ const PR_PRIORITY_DOT = {
  * for any non-native URL that slips through, with a final fallback to the
  * project's PR list.
  *
- * @param {Array<{cardId, projectId, projectName, prUrl, prNumber, title, cardTitle, authorAgent, priority, updatedAt}>} [prs]
+ * @param {Array<{key, cardId, projectId, projectName, prUrl, prNumber, title, cardTitle, authorAgent, priority, updatedAt}>} [prs]
  * @param {(projectId: string) => void} [onOpenPulls]
  * @param {(url: string) => void} [onOpenExternalUrl]
  */
@@ -264,7 +264,7 @@ function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
             if (actionable) {
               return (
                 <button
-                  key={pr.cardId}
+                  key={pr.key || pr.cardId || pr.prUrl}
                   type="button"
                   className={rowClass}
                   onClick={() => activate(pr)}
@@ -274,7 +274,7 @@ function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
               );
             }
             return (
-              <div key={pr.cardId} className={rowClass}>
+              <div key={pr.key || pr.cardId || pr.prUrl} className={rowClass}>
                 {inner}
               </div>
             );

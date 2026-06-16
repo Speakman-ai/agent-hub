@@ -2105,8 +2105,11 @@ components:
           items:
             type: object
             properties:
+              key:
+                type: string
               cardId:
                 type: string
+                nullable: true
               projectId:
                 type: string
               projectName:
@@ -2115,19 +2118,21 @@ components:
                 type: string
               prNumber:
                 type: integer
-                nullable: true
               title:
                 type: string
               cardTitle:
                 type: string
+                nullable: true
               authorAgent:
                 type: string
                 nullable: true
               priority:
                 type: string
+                nullable: true
               updatedAt:
-                type: string
+                type: integer
             required:
+              - key
               - cardId
               - projectId
               - projectName

@@ -17,6 +17,42 @@ beforeAll(async () => {
   request = await getRequest();
 });
 
+/**
+ * Insert a native PR row directly into `pull_requests` — the authoritative
+ * source the dashboard "Open PRs" panel reads (same table the Pulls page
+ * serves from). Tests use this rather than spinning up the full native-PR
+ * creation flow.
+ */
+async function insertNativePr(opts: {
+  projectId: string;
+  number: number;
+  title: string;
+  author?: string;
+  status?: 'open' | 'merged' | 'closed';
+}): Promise<string> {
+  const { getDb } = await import('../db.js');
+  const db = getDb();
+  const id = `pr-${opts.projectId}-${opts.number}`;
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO pull_requests (
+       id, project_id, number, title, body, head_branch, base_branch,
+       head_sha, status, author, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, '', ?, 'main', 'deadbeef', ?, ?, ?, ?)`,
+  ).run(
+    id,
+    opts.projectId,
+    opts.number,
+    opts.title,
+    `feat-${opts.number}`,
+    opts.status ?? 'open',
+    opts.author ?? 'finalize',
+    now,
+    now,
+  );
+  return id;
+}
+
 interface DashboardBody {
   orgId: string;
   orgName: string;
@@ -52,16 +88,17 @@ interface DashboardBody {
     lastActivityAt: string;
   }>;
   openPRs: Array<{
-    cardId: string;
+    key: string;
+    cardId: string | null;
     projectId: string;
     projectName: string;
     prUrl: string;
-    prNumber: number | null;
+    prNumber: number;
     title: string;
-    cardTitle: string;
+    cardTitle: string | null;
     authorAgent: string | null;
-    priority: string;
-    updatedAt: string;
+    priority: string | null;
+    updatedAt: number;
   }>;
   recentActivity: Array<{
     type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
@@ -431,15 +468,17 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(entry!.meta?.prUrl).toBe(prUrl);
   });
 
-  it('lists cards with a native Agent Hub PR link in openPRs, enriched with project + card metadata', async () => {
+  it('lists open native PRs in openPRs, enriched with project + linked-card metadata', async () => {
     const project = await createProject({ name: 'Dashboard openPRs list project' });
     const projectId = project.id as string;
 
+    await insertNativePr({ projectId, number: 4242, title: 'Wire up the thing' });
+
+    // A card linking the same native PR url supplies priority + card id.
     const card = await createCard(projectId, {
       title: 'Open PR list card unique title',
       priority: 'high',
     });
-    // Native Agent Hub repository PR URL (`/projects/<id>/pulls/<n>`).
     const prUrl = `/projects/${projectId}/pulls/4242`;
     await request
       .put(`/api/projects/${projectId}/board/cards/${card.id as string}`)
@@ -450,138 +489,116 @@ describe('GET /api/orgs/:id/dashboard', () => {
     const body = res.body as DashboardBody;
 
     expect(Array.isArray(body.openPRs)).toBe(true);
-    const entry = body.openPRs.find((p) => p.cardId === (card.id as string));
+    const entry = body.openPRs.find((p) => p.prUrl === prUrl);
     expect(entry).toBeDefined();
-    expect(entry!.prUrl).toBe(prUrl);
     expect(entry!.projectId).toBe(projectId);
     expect(entry!.projectName).toBe('Dashboard openPRs list project');
+    expect(entry!.prNumber).toBe(4242);
+    // Title comes straight from the PR row, never the card.
+    expect(entry!.title).toBe('PR #4242: Wire up the thing');
+    // Linked-card enrichment: real card id + priority. The render key uses
+    // the card id when one is linked.
+    expect(entry!.cardId).toBe(card.id as string);
+    expect(entry!.key).toBe(card.id as string);
     expect(entry!.cardTitle).toBe('Open PR list card unique title');
-    // No pr_creation_logs row for this URL, so the title falls back to the
-    // card title and prNumber is null.
-    expect(entry!.title).toBe('Open PR list card unique title');
-    expect(entry!.prNumber).toBeNull();
     expect(entry!.priority).toBe('high');
 
-    // The list never exceeds the cap, and its length is consistent with the
-    // headline count being at least 1 (the card we just linked).
     expect(body.openPRs.length).toBeLessThanOrEqual(30);
     expect(body.headline.openPRs).toBeGreaterThanOrEqual(1);
   });
 
-  it('excludes GitHub-hosted PR URLs from openPRs — Agent Hub repository PRs only', async () => {
-    // Regression guard: the "Open PRs" list (and the headline counter that
-    // feeds the mobile tile) must show only native Agent Hub repository PRs.
-    // A card whose pr_url points at github.com must never appear, while a
-    // native `/projects/<id>/pulls/<n>` card on the same project does.
-    const project = await createProject({ name: 'Dashboard openPRs native-only project' });
+  it('counts an open native PR with NO linked kanban card (regression: card-derived list missed it)', async () => {
+    // The exact reported bug: the Pulls page reads `pull_requests`, but the
+    // dashboard used to derive open PRs from kanban cards. A native PR with no
+    // (or only a Done-parked) linked card showed on Pulls but counted as 0
+    // here. Now both read the same table.
+    const project = await createProject({ name: 'Dashboard openPRs no-card project' });
     const projectId = project.id as string;
 
-    const githubCard = await createCard(projectId, {
-      title: 'GitHub PR card must be hidden',
-      priority: 'high',
-    });
-    await request
-      .put(`/api/projects/${projectId}/board/cards/${githubCard.id as string}`)
-      .send({ prUrl: 'https://github.com/Speakman-ai/agent-hub/pull/7777' })
-      .expect(200);
-
-    const nativeCard = await createCard(projectId, {
-      title: 'Native PR card must be shown',
-      priority: 'high',
-    });
-    const nativeUrl = `/projects/${projectId}/pulls/123`;
-    await request
-      .put(`/api/projects/${projectId}/board/cards/${nativeCard.id as string}`)
-      .send({ prUrl: nativeUrl })
-      .expect(200);
+    await insertNativePr({ projectId, number: 71, title: 'Fix Grok CLI auth detection' });
 
     const res = await request.get('/api/orgs/default/dashboard').expect(200);
     const body = res.body as DashboardBody;
 
-    // GitHub PR card is excluded from the list…
-    expect(body.openPRs.some((p) => p.cardId === (githubCard.id as string))).toBe(false);
-    expect(body.openPRs.some((p) => p.prUrl.includes('github.com'))).toBe(false);
-    // …while the native Agent Hub repository PR card is present.
-    const nativeEntry = body.openPRs.find((p) => p.cardId === (nativeCard.id as string));
-    expect(nativeEntry).toBeDefined();
-    expect(nativeEntry!.prUrl).toBe(nativeUrl);
-
-    // The headline counter agrees with the list: every counted PR is native,
-    // so the count equals the number of native rows on the page (cap aside).
-    expect(body.headline.openPRs).toBe(body.openPRs.length);
+    const prUrl = `/projects/${projectId}/pulls/71`;
+    const entry = body.openPRs.find((p) => p.prUrl === prUrl);
+    expect(entry).toBeDefined();
+    // No linked card: cardId is null (never a non-card identifier), while the
+    // stable render key falls back to the PR url.
+    expect(entry!.cardId).toBeNull();
+    expect(entry!.key).toBe(prUrl);
+    expect(entry!.cardTitle).toBeNull();
+    expect(entry!.priority).toBeNull();
+    expect(entry!.title).toBe('PR #71: Fix Grok CLI auth detection');
+    expect(body.headline.openPRs).toBeGreaterThanOrEqual(1);
   });
 
-  it('excludes PR cards on boards whose project is not in the org roster from openPRs', async () => {
-    // Regression guard for the cross-org-scoping review: the openPRs detail
-    // list must be restricted to the org's *current* project roster
-    // (card → board → project → org), not just the per-org DB handle. A board
-    // row left behind by a since-deleted project (its project_id no longer in
-    // projects.json) must not leak its PR / card metadata into the list.
-    const { getDb } = await import('../db.js');
-    const db = getDb();
-
-    const ghostProjectId = `ghost-project-${Date.now()}`;
-    const ghostBoardId = `ghost-board-${Date.now()}`;
-    const ghostColumnId = `ghost-col-${Date.now()}`;
-    const ghostCardId = `ghost-card-${Date.now()}`;
-    const ghostPrUrl = 'https://github.com/Speakman-ai/agent-hub/pull/6666';
-
-    db.prepare(`INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)`).run(
-      ghostBoardId,
-      ghostProjectId,
-      'Orphaned board',
-    );
-    // A non-Done column so the card would otherwise pass the open-set filter.
-    db.prepare(
-      `INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, 'To Do', 0)`,
-    ).run(ghostColumnId, ghostBoardId);
-    db.prepare(
-      `INSERT INTO kanban_cards (id, column_id, board_id, title, priority, pr_url)
-       VALUES (?, ?, ?, ?, 'high', ?)`,
-    ).run(
-      ghostCardId,
-      ghostColumnId,
-      ghostBoardId,
-      'Leaked PR card from deleted project',
-      ghostPrUrl,
-    );
-
-    const res = await request.get('/api/orgs/default/dashboard').expect(200);
-    const body = res.body as DashboardBody;
-
-    // The orphaned card is absent from the list — neither by id nor by its
-    // ghost project / PR url.
-    expect(body.openPRs.some((p) => p.cardId === ghostCardId)).toBe(false);
-    expect(body.openPRs.some((p) => p.projectId === ghostProjectId)).toBe(false);
-    expect(body.openPRs.some((p) => p.prUrl === ghostPrUrl)).toBe(false);
-  });
-
-  it('excludes PR cards in Done-ish columns from openPRs (matches the headline semantics)', async () => {
-    const project = await createProject({ name: 'Dashboard openPRs Done-ish test' });
+  it('keeps an open native PR in openPRs even when its linked card is in a Done column', async () => {
+    // PR open-ness is now sourced from `pull_requests.status`, not the card's
+    // column. A still-open PR whose card a human parked in Done must remain
+    // visible until the PR itself is merged/closed.
+    const project = await createProject({ name: 'Dashboard openPRs done-card project' });
     const projectId = project.id as string;
+
+    await insertNativePr({ projectId, number: 88, title: 'Still open PR' });
 
     const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const board = boardRes.body as {
-      columns: Array<{ id: string; name: string }>;
-    };
+    const board = boardRes.body as { columns: Array<{ id: string; name: string }> };
     const doneCol = board.columns.find((c) => c.name === 'Done');
     expect(doneCol).toBeDefined();
 
     const card = await createCard(projectId, {
-      title: 'Merged PR card in Done column',
+      title: 'PR card parked in Done',
       columnId: doneCol!.id,
     });
+    const prUrl = `/projects/${projectId}/pulls/88`;
     await request
       .put(`/api/projects/${projectId}/board/cards/${card.id as string}`)
-      .send({ prUrl: 'https://github.com/Speakman-ai/agent-hub/pull/5555' })
+      .send({ prUrl })
       .expect(200);
 
     const res = await request.get('/api/orgs/default/dashboard').expect(200);
     const body = res.body as DashboardBody;
 
-    // A PR card sitting in a Done column is "closed" work — absent from the
-    // open PRs list, the same rule the headline openPRs counter uses.
-    expect(body.openPRs.some((p) => p.cardId === (card.id as string))).toBe(false);
+    const entry = body.openPRs.find((p) => p.prUrl === prUrl);
+    expect(entry).toBeDefined();
+    expect(entry!.prNumber).toBe(88);
+  });
+
+  it('drops merged/closed native PRs from openPRs (only status=open counts)', async () => {
+    const project = await createProject({ name: 'Dashboard openPRs status filter project' });
+    const projectId = project.id as string;
+
+    await insertNativePr({ projectId, number: 10, title: 'Open one', status: 'open' });
+    await insertNativePr({ projectId, number: 11, title: 'Merged one', status: 'merged' });
+    await insertNativePr({ projectId, number: 12, title: 'Closed one', status: 'closed' });
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    expect(body.openPRs.some((p) => p.prUrl === `/projects/${projectId}/pulls/10`)).toBe(true);
+    expect(body.openPRs.some((p) => p.prUrl === `/projects/${projectId}/pulls/11`)).toBe(false);
+    expect(body.openPRs.some((p) => p.prUrl === `/projects/${projectId}/pulls/12`)).toBe(false);
+  });
+
+  it('excludes native PRs whose project is not in the org roster from openPRs', async () => {
+    // Org scoping: a `pull_requests` row for a project_id that is not in this
+    // org's current roster (e.g. left behind by a since-deleted project) must
+    // not leak into the list or the count.
+    const ghostProjectId = `ghost-project-${Date.now()}`;
+    await insertNativePr({
+      projectId: ghostProjectId,
+      number: 6666,
+      title: 'Leaked PR from deleted project',
+    });
+
+    const res = await request.get('/api/orgs/default/dashboard').expect(200);
+    const body = res.body as DashboardBody;
+
+    expect(body.openPRs.some((p) => p.projectId === ghostProjectId)).toBe(false);
+    expect(body.openPRs.some((p) => p.prUrl === `/projects/${ghostProjectId}/pulls/6666`)).toBe(
+      false,
+    );
   });
 
   it('does not count cards in Done-ish columns toward openCards', async () => {

@@ -68,16 +68,19 @@ const ActiveSessionEntry = z.object({
 });
 
 const OpenPrEntry = z.object({
-  cardId: z.string(),
+  /** Stable list-render key — the card id when linked, else the PR url. Not a card identifier. */
+  key: z.string(),
+  /** Owning kanban card id, or null when no card links this PR. */
+  cardId: z.string().nullable(),
   projectId: z.string(),
   projectName: z.string(),
   prUrl: z.string(),
-  prNumber: z.number().int().nullable(),
+  prNumber: z.number().int(),
   title: z.string(),
-  cardTitle: z.string(),
+  cardTitle: z.string().nullable(),
   authorAgent: z.string().nullable(),
-  priority: z.string(),
-  updatedAt: z.string(),
+  priority: z.string().nullable(),
+  updatedAt: z.number().int(),
 });
 
 const ActivityEntry = z.object({

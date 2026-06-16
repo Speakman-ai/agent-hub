@@ -59,6 +59,7 @@ const SAMPLE = {
   ],
   openPRs: [
     {
+      key: 'card-pr-1',
       cardId: 'card-pr-1',
       projectId: 'proj-dash',
       projectName: 'Hub Web',
@@ -71,15 +72,18 @@ const SAMPLE = {
       updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
     },
     {
-      cardId: 'card-pr-2',
+      // Native PR with no linked kanban card: cardId is null and the render
+      // key falls back to the (unique) PR url.
+      key: '/projects/proj-other/pulls/778',
+      cardId: null,
       projectId: 'proj-other',
       projectName: 'Hub Server',
-      prUrl: 'https://github.com/acme/app/pull/778',
+      prUrl: '/projects/proj-other/pulls/778',
       prNumber: 778,
       title: 'PR #778: Add open PRs panel',
-      cardTitle: 'Add open PRs panel',
+      cardTitle: null,
       authorAgent: 'Hub Backend',
-      priority: 'medium',
+      priority: null,
       updatedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
     },
   ],
@@ -208,6 +212,20 @@ describe('DashboardView', () => {
     expect(panel).toHaveTextContent('Hub Backend');
     // Header count reflects the number of open PRs.
     expect(screen.getByText('2 open PRs')).toBeInTheDocument();
+  });
+
+  it('renders a native PR row with no linked card and opens the in-app Pulls view on click', async () => {
+    const onOpenPulls = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenPulls={onOpenPulls} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('PR #778: Add open PRs panel')).toBeInTheDocument();
+    });
+
+    // The cardId-null row still renders (stable key falls back to the url) and
+    // its native url deep-links into the project's Pulls view.
+    fireEvent.click(screen.getByText('PR #778: Add open PRs panel'));
+    expect(onOpenPulls).toHaveBeenCalledWith('proj-other');
   });
 
   it('opens the external PR host when an open PR row is clicked', async () => {

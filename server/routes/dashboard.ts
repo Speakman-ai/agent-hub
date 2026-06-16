@@ -7,7 +7,7 @@ import { getAuthRecord } from '../auth-store.js';
 import config from '../config.js';
 import type { RouteDeps } from '../types.js';
 import { isColumnDone, isColumnShippedLane } from '../kanban-blockers.js';
-import { isNativePrUrl } from '../native-pr/url.js';
+import { buildNativePrUrl } from '../native-pr/url.js';
 import { computeSessionState } from '../session-state.js';
 import { getUserById } from '../users-store.js';
 
@@ -68,16 +68,22 @@ interface PrCreationActivityRow {
   created_at: string;
 }
 
-interface OpenPrRow {
+/** A native open PR (from `pull_requests`), before kanban enrichment. */
+interface OpenNativePrRow {
+  prId: string;
+  projectId: string;
+  prNumber: number;
+  prTitle: string;
+  author: string;
+  updatedAt: number;
+}
+
+/** Kanban-card metadata used to enrich an open native PR row. */
+interface PrCardMetaRow {
   cardId: string;
   cardTitle: string;
-  prUrl: string;
   priority: string;
-  updatedAt: string;
-  projectId: string;
-  prNumber: number | null;
-  prTitle: string | null;
-  authorAgent: string | null;
+  prUrl: string;
 }
 
 /** Same semantics as headline "open" work: Done-ish columns + shipped lanes. */
@@ -329,74 +335,97 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       ).c || 0;
 
     // ── Open PRs (count + detail list) ─────────────────────────────
-    // "Open PRs" means *Agent Hub repository* PRs only — kanban cards
-    // carrying a non-empty `pr_url` that points at a native Hub PR
-    // (`/projects/<id>/pulls/<n>`) and are not yet in a Done-ish / shipped
-    // column. GitHub-hosted PR URLs are intentionally excluded from both the
-    // headline counter and the panel list: a card's `pr_url` is an opaque
-    // string, so `isNativePrUrl` is the single source of truth for "this PR
-    // lives in an Agent Hub repository". Each row is enriched per-row from
-    // `pr_creation_logs` (PR number / title / author) when a creation log
-    // exists for that URL, falling back to the card title when it doesn't.
+    // "Open PRs" means native *Agent Hub repository* PRs — rows in the
+    // `pull_requests` table with status='open' for one of this org's
+    // projects. This is the *same* source of truth the Pulls page reads
+    // (`nativePr.listPulls`), so the dashboard count can never disagree with
+    // the per-project PR viewer.
     //
-    // Org scoping: like `activeSessions` above, we don't lean solely on the
-    // per-org DB handle — we explicitly restrict to the org's *current*
-    // project roster (`getProjects()` is reloaded per-org from this org's
-    // projects.json). This walks card → board → project → org so a board row
-    // left behind by a since-deleted project can't surface its PR/card
-    // metadata in the list, keeping it consistent with the rest of the
-    // payload. With no projects there is nothing to list.
+    // This list used to be derived indirectly from kanban cards carrying a
+    // native `pr_url` not in a Done column. That undercounted: an open native
+    // PR with no linked card (or whose card had been parked in a Done column)
+    // rendered on the Pulls page but showed as 0 here. We now read
+    // `pull_requests` directly and *enrich* each row with kanban metadata
+    // (priority + the owning card id, used for the priority dot and in-app
+    // navigation) when a card happens to link the PR url.
     //
-    // The headline `openPRs` counter is derived from the same native set so
-    // the panel and the mobile "Open PRs" tile never disagree. We fetch all
-    // qualifying rows (native filter and the 30-row cap are applied in JS,
-    // since the URL scheme can't be expressed in SQL) and slice for the list.
+    // GitHub-hosted projects have no rows in `pull_requests` (the table is
+    // native-only), so they stay excluded from the count exactly as before.
+    // Org scoping mirrors the rest of the payload: `getDb()` is the active
+    // org's database and we restrict to the org's current project roster.
     const OPEN_PR_LIMIT = 30;
     const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
     const projectIds = [...projectNameById.keys()];
     const projectPlaceholders = projectIds.map(() => '?').join(',');
 
-    const openPrCandidates = projectIds.length
+    const openNativePrRows = projectIds.length
       ? (db
           .prepare(
-            `SELECT k.id as cardId, k.title as cardTitle, k.pr_url as prUrl, k.priority as priority,
-                k.updated_at as updatedAt, b.project_id as projectId,
-                (SELECT pr_number FROM pr_creation_logs WHERE pr_url = k.pr_url ORDER BY created_at DESC LIMIT 1) as prNumber,
-                (SELECT pr_title FROM pr_creation_logs WHERE pr_url = k.pr_url ORDER BY created_at DESC LIMIT 1) as prTitle,
-                (SELECT author_agent FROM pr_creation_logs WHERE pr_url = k.pr_url ORDER BY created_at DESC LIMIT 1) as authorAgent
-         FROM kanban_cards k
-         JOIN kanban_boards b ON b.id = k.board_id
-         WHERE k.pr_url IS NOT NULL AND k.pr_url != ''
-           AND k.column_id NOT IN (${placeholders})
-           AND b.project_id IN (${projectPlaceholders})
-         ORDER BY k.updated_at DESC`,
+            `SELECT id as prId, project_id as projectId, number as prNumber,
+                    title as prTitle, author as author, updated_at as updatedAt
+             FROM pull_requests
+             WHERE status = 'open' AND project_id IN (${projectPlaceholders})
+             ORDER BY updated_at DESC`,
           )
-          .all(...doneColumnIds, ...projectIds) as OpenPrRow[])
+          .all(...projectIds) as OpenNativePrRow[])
       : [];
 
-    // Agent Hub repository PRs only — drop GitHub (and any non-native) URLs.
-    const nativeOpenPrRows = openPrCandidates.filter((r) => isNativePrUrl(r.prUrl));
-    const openPRs = nativeOpenPrRows.length;
-    const openPrRows = nativeOpenPrRows.slice(0, OPEN_PR_LIMIT);
+    const openPRs = openNativePrRows.length;
 
-    const openPRsList = openPrRows.map((r) => ({
-      cardId: r.cardId,
-      projectId: r.projectId,
-      projectName: projectNameById.get(r.projectId) || r.projectId,
-      prUrl: r.prUrl,
-      prNumber: r.prNumber,
-      // Prefer the richer "PR #123: title" form when a creation log exists;
-      // otherwise fall back to the card's own title so external/legacy PRs
-      // (no creation log) still render a meaningful label.
-      title:
-        r.prNumber != null && r.prTitle
-          ? `PR #${r.prNumber}: ${r.prTitle}`
-          : r.prTitle || r.cardTitle,
-      cardTitle: r.cardTitle,
-      authorAgent: r.authorAgent,
-      priority: r.priority,
-      updatedAt: r.updatedAt,
-    }));
+    // pr_url → kanban-card lookup so an open PR that *does* have a linked card
+    // can surface that card's priority + id. A PR with no card is fine — we
+    // fall back to the PR's own metadata. The first (most-recently-updated)
+    // card wins for a given url.
+    const prCardMetaByUrl = new Map<string, PrCardMetaRow>();
+    if (projectIds.length) {
+      const cardRows = db
+        .prepare(
+          `SELECT k.id as cardId, k.title as cardTitle, k.priority as priority, k.pr_url as prUrl
+           FROM kanban_cards k
+           JOIN kanban_boards b ON b.id = k.board_id
+           WHERE k.pr_url IS NOT NULL AND k.pr_url != ''
+             AND b.project_id IN (${projectPlaceholders})
+           ORDER BY k.updated_at DESC`,
+        )
+        .all(...projectIds) as PrCardMetaRow[];
+      for (const c of cardRows) {
+        if (!prCardMetaByUrl.has(c.prUrl)) prCardMetaByUrl.set(c.prUrl, c);
+      }
+    }
+
+    // Per-url author-agent enrichment from the creation log (a display name
+    // like "agent-hub-dev"), preferred over the raw PR `author` (a userId or
+    // 'finalize'). Only queried for the rows we actually render.
+    const authorAgentStmt = db.prepare(
+      `SELECT author_agent as authorAgent FROM pr_creation_logs
+       WHERE pr_url = ? ORDER BY created_at DESC LIMIT 1`,
+    );
+
+    const openPrRows = openNativePrRows.slice(0, OPEN_PR_LIMIT);
+    const openPRsList = openPrRows.map((r) => {
+      const prUrl = buildNativePrUrl(r.projectId, r.prNumber);
+      const card = prCardMetaByUrl.get(prUrl);
+      const logRow = authorAgentStmt.get(prUrl) as { authorAgent: string | null } | undefined;
+      return {
+        // Stable, always-present list key. Prefer the linked card id; fall
+        // back to the (unique) PR url when no card links this PR. This is a
+        // rendering key only — never treat it as a card identifier.
+        key: card?.cardId ?? prUrl,
+        // The owning kanban card id, or null when no card links this PR.
+        // Kept strictly to real card ids so callers can safely run card
+        // operations / navigation on it.
+        cardId: card?.cardId ?? null,
+        projectId: r.projectId,
+        projectName: projectNameById.get(r.projectId) || r.projectId,
+        prUrl,
+        prNumber: r.prNumber,
+        title: `PR #${r.prNumber}: ${r.prTitle}`,
+        cardTitle: card?.cardTitle ?? null,
+        authorAgent: logRow?.authorAgent ?? null,
+        priority: card?.priority ?? null,
+        updatedAt: r.updatedAt,
+      };
+    });
 
     const escalations = (stmts.getAllActiveEscalations.all() as unknown[]).length;
 
