@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { gunzipSync } from 'zlib';
 import {
   clampSampleRate,
   shouldSample,
@@ -28,6 +29,7 @@ import {
   RRWEB_FULL_SNAPSHOT,
   RRWEB_META,
   REPLAY_INGEST_ENDPOINT,
+  gzipString,
 } from './sessionReplay.js';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
@@ -446,10 +448,34 @@ describe('hasFullSnapshot', () => {
   });
 });
 
-describe('submitReplay', () => {
-  afterEach(() => vi.restoreAllMocks());
+describe('gzipString', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
-  it('POSTs events as JSON and returns the parsed body', async () => {
+  it('produces gzip-framed bytes that inflate back to the input', async () => {
+    const text = JSON.stringify({ hello: 'world', n: [1, 2, 3] });
+    const bytes = await gzipString(text);
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(bytes[0]).toBe(0x1f);
+    expect(bytes[1]).toBe(0x8b);
+    expect(gunzipSync(bytes).toString('utf-8')).toBe(text);
+  });
+
+  it('returns null (caller falls back to JSON) when CompressionStream is missing', async () => {
+    vi.stubGlobal('CompressionStream', undefined);
+    expect(await gzipString('{}')).toBeNull();
+  });
+});
+
+describe('submitReplay', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('gzips events, POSTs them as octet-stream, and returns the parsed body', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ replayId: 'r1', replayRef: '/uploads/replay-r1.json' }), {
         status: 201,
@@ -463,6 +489,31 @@ describe('submitReplay', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/replays');
     expect(init.method).toBe('POST');
+    // Body is gzip-framed bytes (magic 0x1f 0x8b) sent as octet-stream, and
+    // round-trips back to the original payload once inflated.
+    expect(init.headers['Content-Type']).toBe('application/octet-stream');
+    const bytes = init.body instanceof Uint8Array ? init.body : new Uint8Array(init.body);
+    expect(bytes[0]).toBe(0x1f);
+    expect(bytes[1]).toBe(0x8b);
+    const decoded = JSON.parse(gunzipSync(bytes).toString('utf-8'));
+    expect(decoded.events).toHaveLength(1);
+    expect(decoded.meta).toEqual({ trigger: 't' });
+  });
+
+  it('falls back to uncompressed JSON when CompressionStream is unavailable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ replayId: 'r2', replayRef: '/uploads/replay-r2.json' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('CompressionStream', undefined);
+
+    const out = await submitReplay({ events: [snap(1)] }, '/api/replays');
+    expect(out.replayRef).toBe('/uploads/replay-r2.json');
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers['Content-Type']).toBe('application/json');
     expect(JSON.parse(init.body).events).toHaveLength(1);
   });
 

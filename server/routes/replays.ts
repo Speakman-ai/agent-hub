@@ -60,7 +60,6 @@ const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 // instead. Higher than the anonymous per-IP cap because it aggregates a whole
 // site's traffic, but still bounded so one project can't flood the store.
 export const RUM_PROJECT_RATE_LIMIT_MAX = 600;
-const MAX_BODY_BYTES = 8 * 1024 * 1024; // 8 MB of rrweb JSON
 const MAX_EVENTS = 20_000;
 // rrweb EventType.FullSnapshot. A replay that never carries a full snapshot
 // cannot be reconstructed, so we refuse it rather than store a dead ref.
@@ -314,7 +313,13 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
   router.post(
     '/api/replays',
     applyCors,
-    express.json({ limit: MAX_BODY_BYTES }),
+    // Accept the body as raw bytes so a large rrweb capture can arrive
+    // gzip-compressed (rrweb JSON compresses ~10-20x). express inflates a
+    // `Content-Encoding: gzip` body itself (bounded by `limit`); a raw
+    // gzip-framed body with no encoding header passes through and is inflated by
+    // decodeReplayBatchBody, which also handles a plain-JSON body. `limit` bounds
+    // the post-inflation byte count — the same ceiling the chunked endpoint uses.
+    express.raw({ type: () => true, limit: MAX_BATCH_DECOMPRESSED_BYTES }),
     async (req: Request, res: Response) => {
       try {
         // Optional vendor authentication via `X-RUM-Token`.
@@ -376,7 +381,16 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           }
         }
 
-        const parsed = validateReplayPayload(req.body);
+        // Decode (and transparently gunzip) the raw body only after the
+        // rate-limit admission above, so a throttled caller never forces gunzip
+        // work. Handles plain JSON, a gzip-framed body, and an already-inflated
+        // `Content-Encoding: gzip` body uniformly.
+        const decoded = decodeReplayBatchBody(req.body as Buffer);
+        if (!decoded.ok) {
+          return res.status(decoded.status).json({ error: decoded.error });
+        }
+
+        const parsed = validateReplayPayload(decoded.value);
         if (!parsed.ok) {
           return res.status(400).json({ error: parsed.error });
         }

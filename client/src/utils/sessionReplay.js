@@ -381,8 +381,34 @@ export function selectFlushWindow(events, now, windowMs = DEFAULT_WINDOW_MS) {
 }
 
 /**
+ * Gzip a UTF-8 string into raw gzip-framed bytes using the platform
+ * `CompressionStream`, or return null when compression isn't available or
+ * fails. The server sniffs the gzip magic bytes (no `Content-Encoding` header
+ * needed), so the returned bytes can be POSTed as `application/octet-stream`.
+ * Best-effort — any failure falls back to an uncompressed JSON upload.
+ */
+export async function gzipString(text) {
+  try {
+    if (typeof CompressionStream === 'undefined' || typeof Response === 'undefined') return null;
+    const stream = new Response(text).body?.pipeThrough(new CompressionStream('gzip'));
+    if (!stream) return null;
+    const buf = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buf);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * POST a buffered replay to the ingest endpoint. Resolves with the parsed
  * `{ replayId, replayRef }` on success; throws on a non-2xx response.
+ *
+ * The body is gzip-compressed when the platform supports it — rrweb JSON
+ * compresses ~10-20x, so a heavy page's snapshot that would blow past the
+ * server's body-size limit as raw JSON (HTTP 413) fits comfortably once
+ * gzipped. Compressed bytes are sent as `application/octet-stream` with the
+ * gzip magic bytes intact; the server inflates them transparently. Falls back
+ * to uncompressed JSON when `CompressionStream` is unavailable.
  */
 export async function submitReplay(
   { events, meta } = {},
@@ -398,11 +424,15 @@ export async function submitReplay(
     timeoutMs && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
       ? AbortSignal.timeout(timeoutMs)
       : undefined;
+  const json = JSON.stringify({ events, meta: meta || undefined });
+  const gzipped = await gzipString(json);
   const res = await fetch(endpoint, {
     method: 'POST',
     mode: 'cors',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ events, meta: meta || undefined }),
+    headers: gzipped
+      ? { 'Content-Type': 'application/octet-stream' }
+      : { 'Content-Type': 'application/json' },
+    body: gzipped || json,
     signal,
   });
   if (!res.ok) {

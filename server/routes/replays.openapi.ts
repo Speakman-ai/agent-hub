@@ -33,7 +33,10 @@ export const ReplayIngestRequestSchema = registerComponent(
         .optional()
         .openapi({ description: 'Optional context (trigger, url, ...).' }),
     })
-    .openapi({ description: 'A flushed session-replay buffer.' }),
+    .openapi({
+      description:
+        'A flushed session-replay buffer. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body).',
+    }),
 );
 
 const ReplayIngestSuccessResponse = z
@@ -95,6 +98,21 @@ const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
 });
 
+// Replay ingest accepts the JSON body OR its gzip-compressed bytes
+// (`application/octet-stream`, gzip-framed; the server inflates transparently).
+// Advertise both content types so a client generated from the spec can produce
+// the compressed happy path the recorder actually uses.
+const replayIngestContent = <T extends z.ZodTypeAny>(schema: T) => ({
+  ...jsonContent(schema),
+  'application/octet-stream': {
+    schema: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'gzip-compressed request JSON (gzip-framed bytes).',
+    }),
+  },
+});
+
 const errorResponse = (description: string) => ({
   description,
   content: jsonContent(ErrorResponse),
@@ -112,24 +130,28 @@ registerPath({
   method: 'post',
   path: '/api/replays',
   tags: ['Bug Reports'],
-  summary: 'Public session-replay ingest (JSON)',
+  summary: 'Public session-replay ingest (JSON or gzip)',
   description:
-    'Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`. Auth is optional: with no `X-RUM-Token` the request is anonymous, rate-limited 30 / hour per IP, and the row is left unattributed. With a valid per-project `X-RUM-Token` (minted via `POST /api/projects/{projectId}/rum/clients`) the capture is attributed to that project and rate-limited 600 / hour per project instead; an invalid token is rejected 401.',
+    'Body carries a non-empty `events` array of rrweb events. May be sent as raw `application/json` or gzip-compressed bytes (a gzip-framed `application/octet-stream` body, or `Content-Encoding: gzip`) — compression is recommended since rrweb JSON is large and the decompressed payload is bounded at 16 MB. Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`. Auth is optional: with no `X-RUM-Token` the request is anonymous, rate-limited 30 / hour per IP, and the row is left unattributed. With a valid per-project `X-RUM-Token` (minted via `POST /api/projects/{projectId}/rum/clients`) the capture is attributed to that project and rate-limited 600 / hour per project instead; an invalid token is rejected 401.',
   request: {
     headers: z.object({
       'x-rum-token': z.string().optional().openapi({
         description: 'Optional per-project RUM ingest token. When present it must be valid.',
       }),
     }),
-    body: { content: jsonContent(ReplayIngestRequestSchema) },
+    body: {
+      description:
+        'Either a raw JSON `ReplayIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).',
+      content: replayIngestContent(ReplayIngestRequestSchema),
+    },
   },
   responses: {
     201: { description: 'Stored.', content: jsonContent(ReplayIngestSuccessResponse) },
     400: errorResponse(
-      'Validation failed (empty events, bad event shape, non-object meta), or a malformed JSON body.',
+      'Validation failed (empty events, bad event shape, non-object meta), or a malformed JSON / gzip body.',
     ),
     401: errorResponse('An X-RUM-Token header was supplied but is invalid or revoked.'),
-    413: errorResponse('Request body exceeds the JSON size limit.'),
+    413: errorResponse('Request body (or its decompressed size) exceeds the 16 MB limit.'),
     429: errorResponse('Per-IP (anonymous) or per-project (token) rate limit exceeded.'),
     500: errorResponse('Handler threw while persisting the replay.'),
   },
@@ -194,7 +216,11 @@ registerPath({
     'Unauthenticated, rate-limited (600 / hour per IP). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Once a replay is attributed to a project / ticket / card it is finalized and rejects further chunks (409).',
   request: {
     ...replayIdParam,
-    body: { content: jsonContent(ReplayBatchRequestSchema) },
+    body: {
+      description:
+        'Either a raw JSON `ReplayBatchIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).',
+      content: replayIngestContent(ReplayBatchRequestSchema),
+    },
   },
   responses: {
     200: { description: 'Chunk appended.', content: jsonContent(ReplayBatchSuccessResponse) },

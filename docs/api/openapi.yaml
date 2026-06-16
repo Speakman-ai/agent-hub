@@ -4937,7 +4937,7 @@ components:
           description: Optional context (trigger, url, ...).
       required:
         - events
-      description: A flushed session-replay buffer.
+      description: "A flushed session-replay buffer. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body)."
     SessionReplayMetadata:
       type: object
       properties:
@@ -17099,8 +17099,8 @@ paths:
     post:
       tags:
         - Bug Reports
-      summary: Public session-replay ingest (JSON)
-      description: "Body is `application/json` with a non-empty `events` array of rrweb events (≤8 MB). Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`. Auth is optional: with no `X-RUM-Token` the request is anonymous, rate-limited 30 / hour per IP, and the row is left unattributed. With a valid per-project `X-RUM-Token` (minted via `POST /api/projects/{projectId}/rum/clients`) the capture is attributed to that project and rate-limited 600 / hour per project instead; an invalid token is rejected 401."
+      summary: Public session-replay ingest (JSON or gzip)
+      description: "Body carries a non-empty `events` array of rrweb events. May be sent as raw `application/json` or gzip-compressed bytes (a gzip-framed `application/octet-stream` body, or `Content-Encoding: gzip`) — compression is recommended since rrweb JSON is large and the decompressed payload is bounded at 16 MB. Persists the buffer and returns its `/uploads/replay-<id>.json` ref, usable as a support ticket `replayRef`. Auth is optional: with no `X-RUM-Token` the request is anonymous, rate-limited 30 / hour per IP, and the row is left unattributed. With a valid per-project `X-RUM-Token` (minted via `POST /api/projects/{projectId}/rum/clients`) the capture is attributed to that project and rate-limited 600 / hour per project instead; an invalid token is rejected 401."
       parameters:
         - schema:
             type: string
@@ -17110,10 +17110,16 @@ paths:
           name: x-rum-token
           in: header
       requestBody:
+        description: Either a raw JSON `ReplayIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/ReplayIngestRequest"
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: gzip-compressed request JSON (gzip-framed bytes).
       responses:
         "201":
           description: Stored.
@@ -17149,7 +17155,7 @@ paths:
                   - durationMs
                 description: The persisted replay id, its uploads ref, and blob stats.
         "400":
-          description: Validation failed (empty events, bad event shape, non-object meta), or a malformed JSON body.
+          description: Validation failed (empty events, bad event shape, non-object meta), or a malformed JSON / gzip body.
           content:
             application/json:
               schema:
@@ -17161,7 +17167,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "413":
-          description: Request body exceeds the JSON size limit.
+          description: Request body (or its decompressed size) exceeds the 16 MB limit.
           content:
             application/json:
               schema:
@@ -17208,10 +17214,16 @@ paths:
           name: id
           in: path
       requestBody:
+        description: Either a raw JSON `ReplayBatchIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/ReplayBatchIngestRequest"
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: gzip-compressed request JSON (gzip-framed bytes).
       responses:
         "200":
           description: Chunk appended.

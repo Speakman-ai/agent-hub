@@ -240,6 +240,33 @@ describe('POST /api/replays', () => {
     expect(existsSync(blob)).toBe(true);
   });
 
+  it('accepts a gzip-compressed body (raw gzip-framed bytes, no encoding header)', async () => {
+    // Regression: a heavy page's raw rrweb JSON exceeds the body-size limit and
+    // 413s. The recorder gzips it; the one-shot ingest must inflate it. A raw
+    // gzip-framed body with no Content-Encoding header is sniffed by magic bytes.
+    const body = gzipSync(
+      Buffer.from(JSON.stringify({ events: [META, SNAPSHOT, INCREMENTAL] }), 'utf-8'),
+    );
+    const res = await supertest(app)
+      .post('/api/replays')
+      .set('Content-Type', 'application/octet-stream')
+      .send(body)
+      .expect(201);
+    expect(res.body.eventCount).toBe(3);
+    expect(res.body.replayRef).toMatch(/^\/uploads\/replay-[\w-]+\.json$/);
+  });
+
+  it('accepts a gzip body sent with a Content-Encoding: gzip header', async () => {
+    const body = gzipSync(Buffer.from(JSON.stringify({ events: [META, SNAPSHOT] }), 'utf-8'));
+    const res = await supertest(app)
+      .post('/api/replays')
+      .set('Content-Type', 'application/octet-stream')
+      .set('Content-Encoding', 'gzip')
+      .send(body)
+      .expect(201);
+    expect(res.body.eventCount).toBe(2);
+  });
+
   it('returns 400 on an empty events array', async () => {
     const res = await supertest(app).post('/api/replays').send({ events: [] }).expect(400);
     expect(res.body.error).toMatch(/non-empty/);
@@ -259,6 +286,57 @@ describe('POST /api/replays', () => {
       .expect(400);
     expect(res.body.error).toMatch(/full snapshot/);
     expect(readdirSync(path.join(serverDir, 'uploads'))).toHaveLength(0);
+  });
+
+  // Reproduce the production middleware ordering: the global `express.json`
+  // parser is mounted BEFORE the replay routes (server/index.ts). It must skip
+  // the replay ingest paths, or it would consume an `application/json` body
+  // before `express.raw` sees it (leaving the route an empty stream) and would
+  // choke on gzip bytes. This guards the index.ts REPLAY_INGEST_PATH bypass.
+  describe('behind the global JSON parser (production ordering)', () => {
+    // Mirrors the skip predicate in server/index.ts.
+    const REPLAY_INGEST_PATH = /^\/api\/replays(?:\/[A-Za-z0-9._-]+\/events)?\/?$/;
+
+    function makeAppWithGlobalParser() {
+      const base = makeApp();
+      // Rebuild the express app so the global parser sits in front of the route.
+      const wrapped = express();
+      const globalJsonParser = express.json({ limit: '20mb' });
+      wrapped.use((req, res, next) => {
+        if (req.method === 'POST' && REPLAY_INGEST_PATH.test(req.path)) return next();
+        return globalJsonParser(req, res, next);
+      });
+      wrapped.use(base.app);
+      return { ...base, app: wrapped };
+    }
+
+    it('reaches the route with a gzip octet-stream body (global parser skips it)', async () => {
+      const { app: wrapped, serverDir: dir } = makeAppWithGlobalParser();
+      try {
+        const body = gzipSync(Buffer.from(JSON.stringify({ events: [META, SNAPSHOT] }), 'utf-8'));
+        const res = await supertest(wrapped)
+          .post('/api/replays')
+          .set('Content-Type', 'application/octet-stream')
+          .send(body)
+          .expect(201);
+        expect(res.body.eventCount).toBe(2);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('reaches the route with a plain application/json body (not eaten upstream)', async () => {
+      const { app: wrapped, serverDir: dir } = makeAppWithGlobalParser();
+      try {
+        const res = await supertest(wrapped)
+          .post('/api/replays')
+          .send({ events: [META, SNAPSHOT, INCREMENTAL] })
+          .expect(201);
+        expect(res.body.eventCount).toBe(3);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it('handles OPTIONS preflight with 204 + CORS headers', async () => {

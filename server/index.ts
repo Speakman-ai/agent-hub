@@ -466,6 +466,13 @@ app.use(
 // stream. Other content types already bypass `express.json` (it only matches
 // JSON) so this guard is scoped tightly to the upload endpoint.
 const ARTIFACT_UPLOAD_PATH = /^\/api\/sessions\/[^/]+\/artifacts\/?$/;
+// Public session-replay ingest (one-shot `/api/replays` and the chunked
+// `/api/replays/:id/events`) reads its own raw body via `express.raw` so a
+// large rrweb capture can arrive gzip-compressed. The global JSON parser would
+// otherwise consume an `application/json` replay body before the route sees it,
+// leaving `express.raw` with an empty stream. Skip it for those POSTs and let
+// the route own decoding (gzip-framed, `Content-Encoding: gzip`, or plain JSON).
+const REPLAY_INGEST_PATH = /^\/api\/replays(?:\/[A-Za-z0-9._-]+\/events)?\/?$/;
 const globalJsonParser = express.json({
   limit: '20mb',
   verify: (req: Request, _res, buf: Buffer) => {
@@ -473,7 +480,10 @@ const globalJsonParser = express.json({
   },
 });
 app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.method === 'POST' && ARTIFACT_UPLOAD_PATH.test(req.path)) {
+  if (
+    req.method === 'POST' &&
+    (ARTIFACT_UPLOAD_PATH.test(req.path) || REPLAY_INGEST_PATH.test(req.path))
+  ) {
     return next();
   }
   return globalJsonParser(req, res, next);
