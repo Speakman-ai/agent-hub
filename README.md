@@ -159,6 +159,9 @@ On first launch, visit the web client and complete the **`/api/auth/setup`**
 flow — it creates the first Owner account. No required env vars, no
 external services. SQLite is local, FTS5 is built into `better-sqlite3`.
 
+For contributor conventions, testing requirements, and AI-agent development
+guidance, see [`CLAUDE.md`](CLAUDE.md).
+
 ## Deployment Modes
 
 Agent Hub is a **server-first product with an optional native desktop
@@ -340,17 +343,18 @@ agent-hub/
 │       │   └── ...
 │       ├── hooks/          # useWebSocket.js for real-time connection
 │       └── utils/          # API client, time formatting, exports
-├── server/                 # Express.js backend
-│   ├── index.ts            # All REST + WebSocket routes (Express + WebSocket bootstrap)
-│   ├── db.js               # SQLite setup with auto-migrations
-│   ├── config.js           # Centralized configuration resolution
-│   ├── auth.js             # API key authentication middleware
-│   ├── wiki.js             # Wiki CRUD + FTS5 full-text search
-│   ├── heartbeat.js        # Cron and heartbeat scheduling
-│   ├── slack.js            # Multi-agent Slack bot
-│   ├── stream-parser.js    # CLI output stream parsing
-│   ├── worktree.js         # Git worktree management
-│   └── project-paths.js    # Workspace path resolution
+├── server/                 # Express.js backend (TypeScript, ESM)
+│   ├── index.ts            # Express + WebSocket bootstrap
+│   ├── routes/             # REST route modules (Zod + OpenAPI)
+│   ├── db.ts               # SQLite setup with auto-migrations
+│   ├── config.ts           # Centralized configuration resolution
+│   ├── auth.ts             # API key authentication middleware
+│   ├── wiki.ts             # Wiki CRUD + FTS5 full-text search
+│   ├── heartbeat.ts        # Cron and heartbeat scheduling
+│   ├── slack.ts            # Multi-agent Slack bot
+│   ├── stream-parser.ts    # CLI output stream parsing
+│   ├── worktree.ts         # Git worktree management
+│   └── project-paths.ts    # Workspace path resolution
 ├── mobile/                 # React Native + Expo mobile app
 │   ├── App.js              # Entry point with navigation
 │   └── src/                # Screens, components, utils
@@ -552,7 +556,7 @@ Never commit directly to `main`. Never push to `main` for feature work.
 - **PascalCase** for React components, **camelCase** for functions/variables, **kebab-case** for file names
 - **Tailwind CSS** utility classes, dark theme by default
 - **Raw SQL** with prepared statements via better-sqlite3 (no ORM)
-- **Single-file server** — all routes live in `server/index.ts`
+- **Modular routes** — REST handlers live in `server/routes/` with Zod schemas registered for OpenAPI
 
 ## Troubleshooting
 
