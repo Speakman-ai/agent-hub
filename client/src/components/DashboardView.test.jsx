@@ -486,6 +486,95 @@ describe('DashboardView', () => {
     expect(screen.getByText('2 in flight')).toBeInTheDocument();
   });
 
+  it('divides the active sessions into per-status groups in pipeline order', async () => {
+    const { container } = render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+
+    // One group section per distinct state, each labelled and counted.
+    const working = container.querySelector('[data-testid="active-sessions-group-working"]');
+    const reviewing = container.querySelector('[data-testid="active-sessions-group-reviewing"]');
+    expect(working).toBeInTheDocument();
+    expect(reviewing).toBeInTheDocument();
+    expect(working).toHaveTextContent('Working');
+    expect(working).toHaveTextContent('Refactor stream parser');
+    expect(reviewing).toHaveTextContent('Reviewing');
+    expect(reviewing).toHaveTextContent('Awaiting review feedback');
+
+    // working precedes reviewing in the canonical pipeline order.
+    const all = Array.prototype.slice.call(container.querySelectorAll('[data-testid]'));
+    expect(all.indexOf(working)).toBeLessThan(all.indexOf(reviewing));
+  });
+
+  it('defaults the active sessions filter to the current user and hides other owners', async () => {
+    // SAMPLE owns sess-1 by u1 (alice) and sess-2 by u2 (bob).
+    localStorage.setItem(
+      'agent-hub-jwt',
+      JSON.stringify({ token: 't', user: { id: 'u1', username: 'alice' } }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+
+    // Default shows only the current user's in-flight work.
+    const panel = screen.getByTestId('active-sessions');
+    expect(panel).toHaveTextContent('Refactor stream parser');
+    expect(panel).not.toHaveTextContent('Awaiting review feedback');
+    // Count reflects the filtered list.
+    expect(screen.getByText('1 in flight')).toBeInTheDocument();
+    // The filter control defaults to the current user's key.
+    expect(screen.getByTestId('active-sessions-owner-filter')).toHaveValue('id:u1');
+  });
+
+  it('reveals every owner when the filter switches to All users', async () => {
+    localStorage.setItem(
+      'agent-hub-jwt',
+      JSON.stringify({ token: 't', user: { id: 'u1', username: 'alice' } }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Refactor stream parser')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByTestId('active-sessions-owner-filter'), {
+      target: { value: '__all__' },
+    });
+
+    const panel = screen.getByTestId('active-sessions');
+    expect(panel).toHaveTextContent('Refactor stream parser');
+    expect(panel).toHaveTextContent('Awaiting review feedback');
+    expect(screen.getByText('2 in flight')).toBeInTheDocument();
+  });
+
+  it('shows an owner-specific empty state when you have no in-flight sessions', async () => {
+    // carol (u9) owns none of the sample sessions.
+    localStorage.setItem(
+      'agent-hub-jwt',
+      JSON.stringify({ token: 't', user: { id: 'u9', username: 'carol' } }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('active-sessions-owner-filter')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('No active sessions for the selected user.')).toBeInTheDocument();
+    expect(screen.getByText('0 in flight')).toBeInTheDocument();
+    // You can still flip to All users to see the rest.
+    fireEvent.change(screen.getByTestId('active-sessions-owner-filter'), {
+      target: { value: '__all__' },
+    });
+    expect(screen.getByTestId('active-sessions')).toHaveTextContent('Refactor stream parser');
+  });
+
   it('opens the session when an active session row is clicked', async () => {
     const onOpenSession = vi.fn();
     render(<DashboardView orgId="org-1" onOpenSession={onOpenSession} />);

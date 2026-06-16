@@ -7,6 +7,7 @@ import {
   resolveSessionState,
   SESSION_STATE_META,
   sessionStateMeta,
+  groupSessionsByState,
 } from './sessionState.js';
 
 describe('finalizeStatusToState', () => {
@@ -97,6 +98,55 @@ describe('sessionStateMeta', () => {
     expect(sessionStateMeta('bogus')).toBe(SESSION_STATE_META[DEFAULT_SESSION_STATE]);
     expect(sessionStateMeta(null)).toBe(SESSION_STATE_META[DEFAULT_SESSION_STATE]);
     expect(sessionStateMeta(undefined)).toBe(SESSION_STATE_META[DEFAULT_SESSION_STATE]);
+  });
+});
+
+describe('groupSessionsByState', () => {
+  it('buckets sessions and orders groups by canonical pipeline order', () => {
+    const sessions = [
+      { sessionId: 'a', state: 'reviewing' },
+      { sessionId: 'b', state: 'working' },
+      { sessionId: 'c', state: 'working' },
+      { sessionId: 'd', state: 'merged' },
+    ];
+    const groups = groupSessionsByState(sessions);
+    // working precedes reviewing precedes merged in SESSION_STATES order.
+    expect(groups.map((g) => g.state)).toEqual(['working', 'reviewing', 'merged']);
+    const working = groups.find((g) => g.state === 'working');
+    expect(working.sessions.map((s) => s.sessionId)).toEqual(['b', 'c']);
+    expect(working.meta).toBe(SESSION_STATE_META.working);
+  });
+
+  it('only emits states that have at least one session', () => {
+    const groups = groupSessionsByState([{ sessionId: 'a', state: 'pushed' }]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].state).toBe('pushed');
+  });
+
+  it('preserves insertion order within a bucket', () => {
+    const groups = groupSessionsByState([
+      { sessionId: 'x', state: 'working' },
+      { sessionId: 'y', state: 'working' },
+      { sessionId: 'z', state: 'working' },
+    ]);
+    expect(groups[0].sessions.map((s) => s.sessionId)).toEqual(['x', 'y', 'z']);
+  });
+
+  it('folds unknown/missing states into the default bucket', () => {
+    const groups = groupSessionsByState([
+      { sessionId: 'a', state: 'bogus' },
+      { sessionId: 'b' },
+      { sessionId: 'c', state: null },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].state).toBe(DEFAULT_SESSION_STATE);
+    expect(groups[0].sessions).toHaveLength(3);
+  });
+
+  it('returns an empty array for empty/invalid input', () => {
+    expect(groupSessionsByState([])).toEqual([]);
+    expect(groupSessionsByState(undefined)).toEqual([]);
+    expect(groupSessionsByState(null)).toEqual([]);
   });
 });
 

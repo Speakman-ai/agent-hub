@@ -15,7 +15,15 @@ import { getActiveOrg } from '../utils/orgs';
 import { relativeTime } from '../utils/time';
 import { colors } from '../theme/colors';
 import SessionStateIcon from '../components/SessionStateIcon';
-import { sessionStateMeta } from '../../../shared/utils/sessionState.js';
+import { groupSessionsByState } from '../../../shared/utils/sessionState.js';
+import {
+  ALL_OWNERS,
+  ownerKeyForUser,
+  defaultOwnerFilter,
+  buildOwnerOptions,
+  filterSessionsByOwner,
+} from '../../../shared/utils/sessionOwnerFilter.js';
+import { getAuthRecord } from '../utils/auth';
 import {
   formatHeadlineTiles,
   priorityRows,
@@ -53,6 +61,12 @@ export default function DashboardScreen() {
   // the user navigates away and back. The dashboard contract treats
   // cross-reload persistence as nice-to-have, not required.
   const [activeTypes, setActiveTypes] = useState(() => new Set());
+  // Active-sessions owner filter. Defaults to *your* sessions; "All users"
+  // reveals the rest. Local-only state, same lifetime contract as activeTypes.
+  const currentUser = getAuthRecord()?.user || null;
+  const currentUserKey = ownerKeyForUser(currentUser);
+  const currentUserName = (currentUser && currentUser.username) || null;
+  const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
 
   const toggleActivityType = useCallback((key) => {
     setActiveTypes((prev) => {
@@ -167,47 +181,110 @@ export default function DashboardScreen() {
 
             {/* Active sessions — every in-flight (non-merged) session, not
                 just the ones whose CLI is currently streaming. */}
-            <SectionHeader
-              title="Active sessions"
-              subtitle={`${(data.activeSessions || []).length} in flight`}
-            />
-            <View style={styles.card} testID="active-sessions">
-              {(data.activeSessions || []).length === 0 ? (
-                <Text style={styles.muted}>
-                  No active sessions. Everything has merged or there is no work in flight.
-                </Text>
-              ) : (
-                (data.activeSessions || []).map((s) => (
-                  <View key={s.sessionId} style={styles.activityRow}>
-                    <SessionStateIcon state={s.state} size={16} style={styles.activitySessionIcon} />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={styles.activityTitle} numberOfLines={1}>
-                        {s.sessionName || 'Untitled session'}
-                      </Text>
-                      <Text style={styles.activityMeta} numberOfLines={1}>
-                        {[
-                          s.agentName || s.agentId,
-                          s.ownerName ? `👤 ${s.ownerName}` : null,
-                          s.engine,
-                          s.model,
-                          s.prompt,
-                        ]
-                          .filter(Boolean)
-                          .join(' · ')}
+            {(() => {
+              const allSessions = data.activeSessions || [];
+              const ownerOptions = buildOwnerOptions(allSessions, {
+                currentUserKey,
+                currentUserName,
+              });
+              const selectedOwner = ownerOptions.some((o) => o.key === ownerFilter)
+                ? ownerFilter
+                : ALL_OWNERS;
+              const sessions = filterSessionsByOwner(allSessions, selectedOwner);
+              const filteredByOwner = selectedOwner !== ALL_OWNERS;
+              return (
+                <>
+                  <SectionHeader
+                    title="Active sessions"
+                    subtitle={`${sessions.length} in flight`}
+                  />
+                  {allSessions.length > 0 && (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      style={styles.ownerFilterRow}
+                      contentContainerStyle={styles.ownerFilterContent}
+                      testID="active-sessions-owner-filter"
+                    >
+                      {ownerOptions.map((o) => {
+                        const active = o.key === selectedOwner;
+                        return (
+                          <TouchableOpacity
+                            key={o.key}
+                            onPress={() => setOwnerFilter(o.key)}
+                            testID={`active-sessions-owner-filter-${o.key}`}
+                            accessibilityState={{ selected: active }}
+                            style={[styles.ownerChip, active && styles.ownerChipActive]}
+                          >
+                            <Text
+                              style={[styles.ownerChipText, active && styles.ownerChipTextActive]}
+                            >
+                              {o.label} ({o.count})
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  )}
+                  {sessions.length === 0 ? (
+                    <View style={styles.card} testID="active-sessions">
+                      <Text style={styles.muted}>
+                        {filteredByOwner
+                          ? 'No active sessions for the selected user.'
+                          : 'No active sessions. Everything has merged or there is no work in flight.'}
                       </Text>
                     </View>
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <Text style={styles.sessionStateLabel}>{sessionStateMeta(s.state).short}</Text>
-                      <Text style={styles.activityTime}>
-                        {s.startedAt || s.lastActivityAt
-                          ? relativeTime(s.startedAt || s.lastActivityAt)
-                          : ''}
-                      </Text>
+                  ) : (
+                    <View testID="active-sessions">
+                      {groupSessionsByState(sessions).map((group) => (
+                  <View key={group.state} testID={`active-sessions-group-${group.state}`}>
+                    <View style={styles.sessionGroupHeader}>
+                      <Text style={styles.sessionGroupLabel}>{group.meta.label}</Text>
+                      <Text style={styles.sessionGroupCount}>{group.sessions.length}</Text>
+                    </View>
+                    <View style={styles.card}>
+                      {group.sessions.map((s) => (
+                        <View key={s.sessionId} style={styles.activityRow}>
+                          <SessionStateIcon
+                            state={s.state}
+                            size={16}
+                            style={styles.activitySessionIcon}
+                          />
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text style={styles.activityTitle} numberOfLines={1}>
+                              {s.sessionName || 'Untitled session'}
+                            </Text>
+                            <Text style={styles.activityMeta} numberOfLines={1}>
+                              {[
+                                s.agentName || s.agentId,
+                                s.ownerName ? `👤 ${s.ownerName}` : null,
+                                s.engine,
+                                s.model,
+                                s.prompt,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </Text>
+                          </View>
+                          {/* The status is carried by the group header now; the
+                              row only shows its relative timestamp. */}
+                          <View style={{ alignItems: 'flex-end' }}>
+                            <Text style={styles.activityTime}>
+                              {s.startedAt || s.lastActivityAt
+                                ? relativeTime(s.startedAt || s.lastActivityAt)
+                                : ''}
+                            </Text>
+                          </View>
+                        </View>
+                      ))}
                     </View>
                   </View>
-                ))
-              )}
-            </View>
+                      ))}
+                    </View>
+                  )}
+                </>
+              );
+            })()}
 
             {/* Kanban — by column */}
             <SectionHeader
@@ -559,11 +636,51 @@ const styles = StyleSheet.create({
     width: 16,
     textAlign: 'center',
   },
-  sessionStateLabel: {
+  ownerFilterRow: {
+    marginBottom: 10,
+    flexGrow: 0,
+  },
+  ownerFilterContent: {
+    gap: 8,
+    paddingRight: 12,
+  },
+  ownerChip: {
+    borderColor: colors.gray800,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: colors.gray900,
+  },
+  ownerChipActive: {
+    borderColor: colors.blue500,
+    backgroundColor: colors.blue900_40,
+  },
+  ownerChipText: {
     color: colors.gray400,
-    fontSize: 9,
+    fontSize: 12,
+  },
+  ownerChipTextActive: {
+    color: colors.white,
+    fontWeight: '600',
+  },
+  sessionGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+    paddingHorizontal: 2,
+  },
+  sessionGroupLabel: {
+    color: colors.gray400,
+    fontSize: 11,
+    fontWeight: '600',
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.6,
+  },
+  sessionGroupCount: {
+    color: colors.gray600,
+    fontSize: 11,
   },
   activityTitle: {
     color: colors.white,

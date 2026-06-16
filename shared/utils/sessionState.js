@@ -166,3 +166,32 @@ export const SESSION_STATE_META = {
 export function sessionStateMeta(state) {
   return SESSION_STATE_META[state] || SESSION_STATE_META[DEFAULT_SESSION_STATE];
 }
+
+/**
+ * Bucket sessions by lifecycle state for the per-status dashboard sections.
+ * Groups come back in canonical pipeline order (early → late); only states
+ * that actually have at least one session appear. Unknown/missing states fold
+ * into {@link DEFAULT_SESSION_STATE} so every session lands in exactly one
+ * bucket. Insertion order within a bucket is preserved (the server already
+ * orders the active-sessions list by recency).
+ *
+ * @template {{ state?: string | null }} T
+ * @param {T[]} [sessions]
+ * @returns {Array<{ state: string, meta: { label: string, short: string, icon: string, color: string, anim: string }, sessions: T[] }>}
+ */
+export function groupSessionsByState(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  /** @type {Map<string, T[]>} */
+  const buckets = new Map();
+  for (const s of list) {
+    const state = isSessionState(s && s.state) ? s.state : DEFAULT_SESSION_STATE;
+    const bucket = buckets.get(state);
+    if (bucket) bucket.push(s);
+    else buckets.set(state, [s]);
+  }
+  return SESSION_STATES.filter((state) => buckets.has(state)).map((state) => ({
+    state,
+    meta: SESSION_STATE_META[state],
+    sessions: /** @type {T[]} */ (buckets.get(state)),
+  }));
+}

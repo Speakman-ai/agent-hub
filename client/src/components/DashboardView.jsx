@@ -14,7 +14,14 @@ import { getAuthRecord } from '../utils/auth.js';
 import { relativeTime } from '../utils/time.js';
 import { parseNativePrUrl } from '../utils/prFormatting.js';
 import SessionStateIcon from './SessionStateIcon.jsx';
-import { sessionStateMeta } from '../../../shared/utils/sessionState.js';
+import { sessionStateMeta, groupSessionsByState } from '../../../shared/utils/sessionState.js';
+import {
+  ALL_OWNERS,
+  ownerKeyForUser,
+  defaultOwnerFilter,
+  buildOwnerOptions,
+  filterSessionsByOwner,
+} from '../../../shared/utils/sessionOwnerFilter.js';
 
 /**
  * Org-wide dashboard. Renders the response from
@@ -41,7 +48,8 @@ export default function DashboardView({
   onOpenPulls,
   onOpenExternalUrl,
 }) {
-  const accountName = getAuthRecord()?.user?.username || 'Account';
+  const currentUser = getAuthRecord()?.user || null;
+  const accountName = currentUser?.username || 'Account';
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -139,7 +147,11 @@ export default function DashboardView({
 
         {data && (
           <>
-            <ActiveSessionsPanel sessions={data.activeSessions} onOpenSession={onOpenSession} />
+            <ActiveSessionsPanel
+              sessions={data.activeSessions}
+              onOpenSession={onOpenSession}
+              currentUser={currentUser}
+            />
             <OpenPRsPanel
               prs={data.openPRs}
               onOpenPulls={onOpenPulls}
@@ -285,86 +297,119 @@ function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
  * @param {Array<{sessionId, sessionName, agentId, agentName, agentColor, engine, model, prompt, state, ownerUserId, ownerName, startedAt, lastActivityAt}>} [sessions]
  * @param {(agentId: string, sessionId: string) => void} [onOpenSession]
  */
-function ActiveSessionsPanel({ sessions = [], onOpenSession }) {
+function ActiveSessionRow({ session: s, onOpenSession }) {
+  const actionable = Boolean(s.agentId && s.sessionId && onOpenSession);
+  const rowClass = actionable
+    ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
+    : 'px-4 py-3 flex items-center gap-3';
+  const meta = sessionStateMeta(s.state);
+  // Time-stamp by the freshest signal: an actively-streaming turn's start,
+  // otherwise the session's last activity.
+  const stamp = s.startedAt || s.lastActivityAt;
+  const inner = (
+    <>
+      <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center" title={meta.label}>
+        <SessionStateIcon state={s.state} size={14} />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{s.sessionName || 'Untitled session'}</div>
+        <div className="text-[11px] text-gray-500 truncate">
+          <span style={s.agentColor ? { color: s.agentColor } : undefined}>
+            {s.agentName || s.agentId}
+          </span>
+          {s.ownerName ? ` · 👤 ${s.ownerName}` : ''}
+          {s.engine ? ` · ${s.engine}` : ''}
+          {s.model ? ` · ${s.model}` : ''}
+          {s.prompt ? ` · ${s.prompt}` : ''}
+        </div>
+      </div>
+      {/* The status is now carried by the group header, so the row only needs
+          its relative timestamp on the right. */}
+      <div className="flex flex-col items-end flex-shrink-0">
+        <span className="text-[11px] text-gray-500">{stamp ? relativeTime(stamp) : ''}</span>
+      </div>
+    </>
+  );
+  if (actionable) {
+    return (
+      <button
+        type="button"
+        className={rowClass}
+        onClick={() => onOpenSession(String(s.agentId), String(s.sessionId))}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return <div className={rowClass}>{inner}</div>;
+}
+
+function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null }) {
   const list = Array.isArray(sessions) ? sessions : [];
+  const currentUserKey = ownerKeyForUser(currentUser);
+  const currentUserName = (currentUser && currentUser.username) || null;
+  // Default the queue to *your* sessions; "All users" reveals the rest.
+  const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
+  const ownerOptions = buildOwnerOptions(list, { currentUserKey, currentUserName });
+  // If the selected owner has dropped out of the list on a refetch, fall back
+  // to "All users" so the <select> never shows a stale/blank value.
+  const selected = ownerOptions.some((o) => o.key === ownerFilter) ? ownerFilter : ALL_OWNERS;
+  const filtered = filterSessionsByOwner(list, selected);
+  const groups = groupSessionsByState(filtered);
+  const filteredByOwner = selected !== ALL_OWNERS;
   return (
     <section aria-label="Active sessions" className="mb-8">
-      <div className="flex items-baseline justify-between mb-3">
+      <div className="flex items-baseline justify-between mb-3 gap-3">
         <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
           Active sessions
         </h2>
-        <div className="text-xs text-gray-500">{list.length} in flight</div>
+        <div className="flex items-center gap-3">
+          {list.length > 0 && (
+            <select
+              data-testid="active-sessions-owner-filter"
+              aria-label="Filter active sessions by user"
+              value={selected}
+              onChange={(e) => setOwnerFilter(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-md text-xs text-gray-200 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {ownerOptions.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label} ({o.count})
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="text-xs text-gray-500">{filtered.length} in flight</div>
+        </div>
       </div>
-      <div
-        data-testid="active-sessions"
-        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
-      >
-        {list.length === 0 ? (
-          <div className="px-4 py-6 text-center text-xs text-gray-600">
-            No active sessions. Everything has merged or there is no work in flight.
-          </div>
-        ) : (
-          list.map((s) => {
-            const actionable = Boolean(s.agentId && s.sessionId && onOpenSession);
-            const rowClass = actionable
-              ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
-              : 'px-4 py-3 flex items-center gap-3';
-            const meta = sessionStateMeta(s.state);
-            // Time-stamp by the freshest signal: an actively-streaming turn's
-            // start, otherwise the session's last activity.
-            const stamp = s.startedAt || s.lastActivityAt;
-            const inner = (
-              <>
-                <span
-                  className="flex h-4 w-4 flex-shrink-0 items-center justify-center"
-                  title={meta.label}
-                >
-                  <SessionStateIcon state={s.state} size={14} />
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-white truncate">
-                    {s.sessionName || 'Untitled session'}
-                  </div>
-                  <div className="text-[11px] text-gray-500 truncate">
-                    <span style={s.agentColor ? { color: s.agentColor } : undefined}>
-                      {s.agentName || s.agentId}
-                    </span>
-                    {s.ownerName ? ` · 👤 ${s.ownerName}` : ''}
-                    {s.engine ? ` · ${s.engine}` : ''}
-                    {s.model ? ` · ${s.model}` : ''}
-                    {s.prompt ? ` · ${s.prompt}` : ''}
-                  </div>
-                </div>
-                <div className="flex flex-col items-end flex-shrink-0 gap-0.5">
-                  <span className="text-[10px] uppercase tracking-wide text-gray-400">
-                    {meta.short}
-                  </span>
-                  <span className="text-[11px] text-gray-500">
-                    {stamp ? relativeTime(stamp) : ''}
-                  </span>
-                </div>
-              </>
-            );
-            if (actionable) {
-              return (
-                <button
-                  key={s.sessionId}
-                  type="button"
-                  className={rowClass}
-                  onClick={() => onOpenSession(String(s.agentId), String(s.sessionId))}
-                >
-                  {inner}
-                </button>
-              );
-            }
-            return (
-              <div key={s.sessionId} className={rowClass}>
-                {inner}
+      {filtered.length === 0 ? (
+        <div
+          data-testid="active-sessions"
+          className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-6 text-center text-xs text-gray-600"
+        >
+          {filteredByOwner
+            ? 'No active sessions for the selected user.'
+            : 'No active sessions. Everything has merged or there is no work in flight.'}
+        </div>
+      ) : (
+        <div data-testid="active-sessions" className="space-y-4">
+          {groups.map((group) => (
+            <div key={group.state} data-testid={`active-sessions-group-${group.state}`}>
+              <div className="flex items-baseline justify-between mb-1.5 px-1">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                  {group.meta.label}
+                </h3>
+                <span className="text-[11px] text-gray-600">{group.sessions.length}</span>
               </div>
-            );
-          })
-        )}
-      </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800">
+                {group.sessions.map((s) => (
+                  <ActiveSessionRow key={s.sessionId} session={s} onOpenSession={onOpenSession} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
