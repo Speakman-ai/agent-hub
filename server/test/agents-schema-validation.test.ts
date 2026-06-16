@@ -122,14 +122,17 @@ describe('Schema validation — PATCH /api/agents/:agentId', () => {
 });
 
 describe('Schema validation — POST /api/agents/bulk-engine', () => {
-  it('rejects empty body (400)', async () => {
-    const res = await request.post('/api/agents/bulk-engine').send({}).expect(400);
-    expect((res.body as { error: string }).error).toMatch(/invalid or missing engine/i);
+  // bulk-engine now writes per-user overrides and auth-gates ahead of body
+  // validation. This suite runs in no-auth-configured mode (no authUserId),
+  // so every request 401s before the Zod schema runs. The 400 + `details`
+  // shape for empty / non-string bodies is asserted with an authenticated
+  // caller in routes/agents-bulk-engine-per-user.test.ts.
+  it('auth-gates an empty body with 401', async () => {
+    await request.post('/api/agents/bulk-engine').send({}).expect(401);
   });
 
-  it('rejects non-string engine (400)', async () => {
-    const res = await request.post('/api/agents/bulk-engine').send({ engine: 42 }).expect(400);
-    expect(Array.isArray((res.body as { details: unknown[] }).details)).toBe(true);
+  it('auth-gates a non-string engine with 401', async () => {
+    await request.post('/api/agents/bulk-engine').send({ engine: 42 }).expect(401);
   });
 });
 

@@ -18,6 +18,11 @@ import {
   settingsEngineChoices,
   settingsModelsForEngine,
   settingsDefaultModelForEngine,
+  PER_USER_DEFAULT_MODEL,
+  settingsSelectedModelChip,
+  settingsResolveModelChip,
+  settingsEffectiveEngine,
+  settingsModelOverrideIsStale,
 } from '../../utils/settingsAgents';
 
 const EMPTY_NEW_FORM = { id: '', name: '', projectId: '', engine: 'claude-code', model: '', systemPrompt: '' };
@@ -43,7 +48,76 @@ function ChipRow({ options, selected, onSelect, labelFor = (o) => o }) {
   );
 }
 
-function EngineModelPickers({ modelConfig, engine, model, onEngine, onModel }) {
+function SharedEnginePicker({ modelConfig, engine, onEngine, label = 'Engine (shared)' }) {
+  const engines = settingsEngineChoices(modelConfig);
+  if (engines.length === 0) return null;
+  return (
+    <>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <ChipRow options={engines} selected={engine} onSelect={onEngine} />
+    </>
+  );
+}
+
+const SHARED_ENGINE_PICK = '__shared__';
+
+function PerUserEngineModelPickers({
+  modelConfig,
+  sharedEngine,
+  engineOverride,
+  modelOverride,
+  onEngineOverride,
+  onModelOverride,
+  overrideSaving,
+}) {
+  const effectiveEngine = settingsEffectiveEngine(engineOverride, sharedEngine);
+  const engines = settingsEngineChoices(modelConfig);
+  const models = settingsModelsForEngine(modelConfig, effectiveEngine);
+  const defaultModel = settingsDefaultModelForEngine(modelConfig, effectiveEngine);
+  const selectedModelChip = settingsSelectedModelChip(modelOverride, models);
+
+  return (
+    <View style={styles.onlyForMeBox}>
+      <Text style={styles.onlyForMeTitle}>Only for me</Text>
+      {engines.length > 0 && (
+        <>
+          <Text style={styles.fieldLabel}>Engine (only for me)</Text>
+          <ChipRow
+            options={[SHARED_ENGINE_PICK, ...engines]}
+            selected={engineOverride ? engineOverride : SHARED_ENGINE_PICK}
+            onSelect={(eng) =>
+              onEngineOverride(eng === SHARED_ENGINE_PICK ? '' : eng)
+            }
+            labelFor={(eng) =>
+              eng === SHARED_ENGINE_PICK ? `Shared (${sharedEngine || 'claude-code'})` : eng
+            }
+          />
+        </>
+      )}
+      {models.length > 0 && (
+        <>
+          <Text style={styles.fieldLabel}>
+            Model (only for me)
+            {overrideSaving ? ' · saving…' : ''}
+          </Text>
+          <ChipRow
+            options={[PER_USER_DEFAULT_MODEL, ...models]}
+            selected={selectedModelChip}
+            onSelect={(chip) => onModelOverride(settingsResolveModelChip(chip))}
+            labelFor={(m) =>
+              m === PER_USER_DEFAULT_MODEL
+                ? `Default (${defaultModel || 'shared'})`
+                : m.replace(/^claude-/, '').replace(/^gpt-/, '')
+            }
+          />
+        </>
+      )}
+      <Text style={styles.onlyForMeHint}>Only changes engine/model for your sessions.</Text>
+    </View>
+  );
+}
+
+function BulkEngineModelPickers({ modelConfig, engine, model, onEngine, onModel }) {
   const engines = settingsEngineChoices(modelConfig);
   const models = settingsModelsForEngine(modelConfig, engine);
   const defaultModel = settingsDefaultModelForEngine(modelConfig, engine);
@@ -51,14 +125,14 @@ function EngineModelPickers({ modelConfig, engine, model, onEngine, onModel }) {
     <>
       {engines.length > 0 && (
         <>
-          <Text style={styles.fieldLabel}>Engine</Text>
+          <Text style={styles.fieldLabel}>Engine (all agents, only for me)</Text>
           <ChipRow options={engines} selected={engine} onSelect={onEngine} />
         </>
       )}
       {models.length > 0 && (
         <>
           <Text style={styles.fieldLabel}>
-            Model{defaultModel ? ` — default: ${defaultModel}` : ''}
+            Model (only for me){defaultModel ? ` — default: ${defaultModel}` : ''}
           </Text>
           <ChipRow
             options={models}
@@ -87,6 +161,34 @@ export default function AgentsSection() {
   const [bulkEngine, setBulkEngine] = useState('claude-code');
   const [bulkModel, setBulkModel] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [modelOverrides, setModelOverrides] = useState({});
+  const [engineOverrides, setEngineOverrides] = useState({});
+  const [overrideSaving, setOverrideSaving] = useState({});
+
+  const loadOverrides = useCallback(async () => {
+    try {
+      const [modelBody, engineBody] = await Promise.all([
+        api.getMyAgentModelOverrides(),
+        api.getMyAgentEngineOverrides(),
+      ]);
+      setModelOverrides(
+        modelBody?.agentModelOverrides && typeof modelBody.agentModelOverrides === 'object'
+          ? modelBody.agentModelOverrides
+          : {},
+      );
+      const raw =
+        engineBody?.agentEngineOverrides && typeof engineBody.agentEngineOverrides === 'object'
+          ? engineBody.agentEngineOverrides
+          : {};
+      const flat = {};
+      for (const [id, entry] of Object.entries(raw)) {
+        if (entry && typeof entry.engine === 'string') flat[id] = entry.engine;
+      }
+      setEngineOverrides(flat);
+    } catch {
+      /* non-fatal */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -104,7 +206,8 @@ export default function AgentsSection() {
   useEffect(() => {
     load();
     api.getModelConfig().then(setModelConfig).catch(() => {});
-  }, [load]);
+    loadOverrides();
+  }, [load, loadOverrides]);
 
   const groups = useMemo(() => groupAgentsByProject(agents, projects), [agents, projects]);
 
@@ -117,9 +220,78 @@ export default function AgentsSection() {
     setEditForm({
       name: agent.name || '',
       engine: agent.engine || 'claude-code',
-      model: agent.model || '',
       systemPrompt: agent.systemPrompt || '',
     });
+  };
+
+  const saveModelOverride = async (agentId, model) => {
+    setModelOverrides((prev) => {
+      const next = { ...prev };
+      if (model) next[agentId] = model;
+      else delete next[agentId];
+      return next;
+    });
+    setOverrideSaving((prev) => ({ ...prev, [agentId]: true }));
+    try {
+      const body = model
+        ? await api.putMyAgentModelOverride(agentId, { model })
+        : await api.deleteMyAgentModelOverride(agentId);
+      if (body?.agentModelOverrides && typeof body.agentModelOverrides === 'object') {
+        setModelOverrides(body.agentModelOverrides);
+      }
+    } catch (err) {
+      await loadOverrides();
+      Alert.alert('Save failed', err?.message || 'Could not save model.');
+    } finally {
+      setOverrideSaving((prev) => ({ ...prev, [agentId]: false }));
+    }
+  };
+
+  const saveEngineOverride = async (agentId, engine, sharedEngine = 'claude-code') => {
+    // Switching the per-user engine can strand a model override from the old
+    // engine: the chip UI falls back to "Default", but the stored override
+    // would stay persisted — ready to send an incompatible engine/model pair
+    // to the runtime, or to reappear if the user switches back. Decide up
+    // front (against the current render's override) whether it needs clearing.
+    const effectiveEngine = settingsEffectiveEngine(engine, sharedEngine);
+    const mustClearModel = settingsModelOverrideIsStale(
+      modelOverrides[agentId] || '',
+      effectiveEngine,
+      modelConfig,
+    );
+
+    setEngineOverrides((prev) => {
+      const next = { ...prev };
+      if (engine) next[agentId] = engine;
+      else delete next[agentId];
+      return next;
+    });
+    setOverrideSaving((prev) => ({ ...prev, [agentId]: true }));
+    try {
+      const body = engine
+        ? await api.putMyAgentEngineOverride(agentId, { engine })
+        : await api.deleteMyAgentEngineOverride(agentId);
+      const raw =
+        body?.agentEngineOverrides && typeof body.agentEngineOverrides === 'object'
+          ? body.agentEngineOverrides
+          : {};
+      const flat = {};
+      for (const [id, entry] of Object.entries(raw)) {
+        if (entry && typeof entry.engine === 'string') flat[id] = entry.engine;
+      }
+      setEngineOverrides(flat);
+      // Reconcile the now-incompatible model override only after the engine
+      // change persisted. saveModelOverride('') owns its own state + error
+      // handling, so a clear failure surfaces without rolling back the engine.
+      if (mustClearModel) {
+        await saveModelOverride(agentId, '');
+      }
+    } catch (err) {
+      await loadOverrides();
+      Alert.alert('Save failed', err?.message || 'Could not save engine.');
+    } finally {
+      setOverrideSaving((prev) => ({ ...prev, [agentId]: false }));
+    }
   };
 
   const handleSave = async (agent) => {
@@ -131,6 +303,15 @@ export default function AgentsSection() {
     setSaving(true);
     try {
       await api.updateAgent(agent.id, payload);
+      // Reconcile a per-user model override the new shared engine made stale.
+      // Only relevant when no per-user engine override shadows the shared one
+      // (otherwise the effective engine, and the valid models, are unchanged).
+      if (payload.engine !== undefined) {
+        const effEngine = settingsEffectiveEngine(engineOverrides[agent.id] || '', payload.engine);
+        if (settingsModelOverrideIsStale(modelOverrides[agent.id] || '', effEngine, modelConfig)) {
+          await saveModelOverride(agent.id, '');
+        }
+      }
       setExpanded(null);
       await load();
     } catch (err) {
@@ -181,7 +362,10 @@ export default function AgentsSection() {
   const handleBulkApplyAll = () => {
     if (!modelConfig || agents.length === 0) return;
     const effectiveModel = bulkModel || settingsDefaultModelForEngine(modelConfig, bulkEngine);
-    Alert.alert('Switch all agents', `Set every agent to ${bulkEngine} / ${effectiveModel}?`, [
+    Alert.alert(
+      'Switch all agents',
+      `Set your personal defaults for every agent to ${bulkEngine} / ${effectiveModel}? This only affects your sessions.`,
+      [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Apply',
@@ -189,7 +373,7 @@ export default function AgentsSection() {
           setBulkSaving(true);
           try {
             await api.bulkSetAllAgentsEngine({ engine: bulkEngine, model: effectiveModel });
-            await load();
+            await loadOverrides();
           } catch (err) {
             Alert.alert('Bulk update failed', err?.message || 'Could not switch agents.');
           } finally {
@@ -197,7 +381,8 @@ export default function AgentsSection() {
           }
         },
       },
-    ]);
+    ],
+    );
   };
 
   if (loading) {
@@ -226,9 +411,9 @@ export default function AgentsSection() {
         <View style={styles.formCard}>
           <Text style={styles.formTitle}>Switch all agents</Text>
           <Text style={styles.formHint}>
-            Bulk engine + model (for example when a subscription ends).
+            Bulk engine + model for your sessions only (for example when a subscription ends).
           </Text>
-          <EngineModelPickers
+          <BulkEngineModelPickers
             modelConfig={modelConfig}
             engine={bulkEngine}
             model={bulkModel}
@@ -275,12 +460,11 @@ export default function AgentsSection() {
             onSelect={(projectId) => setNewForm({ ...newForm, projectId })}
             labelFor={(id) => projects.find((p) => p.id === id)?.name || id}
           />
-          <EngineModelPickers
+          <SharedEnginePicker
             modelConfig={modelConfig}
             engine={newForm.engine}
-            model={newForm.model}
-            onEngine={(engine) => setNewForm({ ...newForm, engine, model: '' })}
-            onModel={(model) => setNewForm({ ...newForm, model })}
+            onEngine={(engine) => setNewForm({ ...newForm, engine })}
+            label="Engine (shared default)"
           />
           <Text style={styles.fieldLabel}>System prompt (optional)</Text>
           <TextInput
@@ -316,6 +500,9 @@ export default function AgentsSection() {
           ) : (
             group.agents.map((agent) => {
               const isExpanded = expanded === agent.id;
+              const myModel = modelOverrides[agent.id];
+              const myEngine = engineOverrides[agent.id];
+              const displayEngine = myEngine || agent.engine || 'claude-code';
               return (
                 <View key={agent.id} style={styles.card}>
                   <TouchableOpacity style={styles.cardRow} onPress={() => handleExpand(agent)}>
@@ -326,8 +513,8 @@ export default function AgentsSection() {
                         <Text style={styles.mono}>{agent.id}</Text>
                       </View>
                       <Text style={styles.cardMeta}>
-                        {agent.engine || 'claude-code'}
-                        {agent.model ? ` · ${agent.model}` : ''}
+                        {displayEngine}
+                        {myModel ? ` · ${myModel}` : ''}
                       </Text>
                     </View>
                     <Text style={styles.expandIcon}>{isExpanded ? '▲' : '▼'}</Text>
@@ -342,18 +529,25 @@ export default function AgentsSection() {
                         style={styles.formInput}
                         placeholderTextColor={colors.gray500}
                       />
-                      <EngineModelPickers
+                      <SharedEnginePicker
                         modelConfig={modelConfig}
                         engine={editForm.engine}
-                        model={editForm.model}
-                        onEngine={(engine) =>
-                          setEditForm({
-                            ...editForm,
+                        onEngine={(engine) => setEditForm({ ...editForm, engine })}
+                      />
+                      <PerUserEngineModelPickers
+                        modelConfig={modelConfig}
+                        sharedEngine={editForm.engine || agent.engine || 'claude-code'}
+                        engineOverride={engineOverrides[agent.id] || ''}
+                        modelOverride={modelOverrides[agent.id] || ''}
+                        onEngineOverride={(engine) =>
+                          saveEngineOverride(
+                            agent.id,
                             engine,
-                            model: settingsDefaultModelForEngine(modelConfig, engine),
-                          })
+                            editForm.engine || agent.engine || 'claude-code',
+                          )
                         }
-                        onModel={(model) => setEditForm({ ...editForm, model })}
+                        onModelOverride={(model) => saveModelOverride(agent.id, model)}
+                        overrideSaving={!!overrideSaving[agent.id]}
                       />
                       <Text style={styles.fieldLabel}>System prompt</Text>
                       <TextInput
@@ -521,6 +715,25 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.gray500,
     marginTop: 2,
+  },
+  onlyForMeBox: {
+    marginTop: 8,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.35)',
+    backgroundColor: 'rgba(49, 46, 129, 0.2)',
+  },
+  onlyForMeTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.indigo400,
+    marginBottom: 4,
+  },
+  onlyForMeHint: {
+    fontSize: 10,
+    color: colors.gray500,
+    marginTop: 6,
   },
   chipRow: {
     flexDirection: 'row',

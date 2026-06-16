@@ -7,6 +7,7 @@ import config, { resolveGrokSpawnModel } from './config.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
 import type { AppConfig, DesignMessageRow } from './types.js';
 
 export const DESIGN_CHAT_ENGINES = [
@@ -48,6 +49,7 @@ export function resolveDesignModelForEngine(
     explicitModel: explicit,
     agentModel: null,
     ownerUserId: ownerUserId ?? null,
+    agentId: DESIGN_SKILL_PRINCIPAL_AGENT_ID,
   });
   if (allowed.length === 0 || allowed.includes(resolved)) {
     return resolved;

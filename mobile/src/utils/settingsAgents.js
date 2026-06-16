@@ -70,7 +70,7 @@ export function buildCreateAgentPayload(form) {
 export function buildUpdateAgentPayload(original, edit) {
   const payload = {};
   if (!original || !edit) return payload;
-  for (const field of ['name', 'engine', 'model', 'systemPrompt']) {
+  for (const field of ['name', 'engine', 'systemPrompt']) {
     const next = edit[field];
     if (next !== undefined && next !== (original[field] ?? '')) {
       payload[field] = next;
@@ -98,4 +98,57 @@ export function settingsModelsForEngine(modelConfig, engine) {
 export function settingsDefaultModelForEngine(modelConfig, engine) {
   if (!modelConfig) return '';
   return modelConfig.engineDefaultModels?.[engine] || modelConfig.defaultModel || '';
+}
+
+/**
+ * Sentinel chip value for "use the shared/engine default model" in the
+ * per-user model picker. Selecting it clears the caller's personal override
+ * (the parent maps `''` → DELETE /api/auth/me/agent-model-overrides/:id), so
+ * the agent tracks the server default again — even if that default later
+ * changes. Without this the picker can only ever swap one concrete override
+ * for another and never get back to default behaviour.
+ */
+export const PER_USER_DEFAULT_MODEL = '__default__';
+
+/**
+ * Which model chip should render active in the per-user picker. Returns the
+ * caller's override when it is still a valid model for the current engine,
+ * otherwise the {@link PER_USER_DEFAULT_MODEL} sentinel so the "Default" chip
+ * highlights whenever no (valid) personal override is set.
+ */
+export function settingsSelectedModelChip(modelOverride, models) {
+  const valid = Array.isArray(models) ? models : [];
+  return modelOverride && valid.includes(modelOverride) ? modelOverride : PER_USER_DEFAULT_MODEL;
+}
+
+/**
+ * Resolve a model-chip press to the value handed to the override saver. The
+ * {@link PER_USER_DEFAULT_MODEL} sentinel resolves to `''` (clear the
+ * override, back to shared/default); any concrete model id passes through
+ * unchanged.
+ */
+export function settingsResolveModelChip(chip) {
+  return chip === PER_USER_DEFAULT_MODEL ? '' : chip;
+}
+
+/**
+ * The engine actually in effect for a user's sessions with an agent: their
+ * personal engine override when set, otherwise the shared engine, otherwise
+ * the built-in default. Mirrors the resolution the runtime uses.
+ */
+export function settingsEffectiveEngine(engineOverride, sharedEngine) {
+  return engineOverride || sharedEngine || 'claude-code';
+}
+
+/**
+ * True when a stored per-user model override is no longer valid for the
+ * `effectiveEngine` (e.g. the user just switched their engine override, so a
+ * model from the previous engine is now incompatible). Callers clear the
+ * override in that case so the runtime never receives a mismatched
+ * engine/model pair and the picker's "Default" fallback reflects real state.
+ * An empty override is never stale (there is nothing to clear).
+ */
+export function settingsModelOverrideIsStale(modelOverride, effectiveEngine, modelConfig) {
+  if (!modelOverride) return false;
+  return !settingsModelsForEngine(modelConfig, effectiveEngine).includes(modelOverride);
 }

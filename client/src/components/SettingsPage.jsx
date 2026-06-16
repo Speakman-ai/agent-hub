@@ -16,6 +16,7 @@ import PersonalOAuthConfigSection from './PersonalOAuthConfigSection.jsx';
 import AuthUpgradeBanner from './AuthUpgradeBanner.jsx';
 import PerUserModelSelect from './PerUserModelSelect.jsx';
 import PerUserEngineSelect from './PerUserEngineSelect.jsx';
+import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOverride.js';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import GitHostSettingsSection from './GitHostSettingsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
@@ -4180,23 +4181,24 @@ export function AgentConfigSection({
     const effectiveModel = bulkModel || getDefaultModel(bulkEngine);
     if (
       !window.confirm(
-        `Set all ${configurableAgents.length} agents to engine "${bulkEngine}" with model "${effectiveModel}"?`,
+        `Set your personal default for all ${configurableAgents.length} agents to engine "${bulkEngine}" with model "${effectiveModel}"? This only affects your sessions — not other users.`,
       )
     ) {
       return;
     }
     setBulkSaving(true);
     try {
-      await Promise.all(
-        configurableAgents.map((agent) =>
-          api.updateAgent(agent.id, { engine: bulkEngine, model: effectiveModel }),
-        ),
+      await api.bulkSetAllAgentsEngine({ engine: bulkEngine, model: effectiveModel });
+      const [modelBody, engineBody] = await Promise.all([
+        api.getMyAgentModelOverrides(),
+        api.getMyAgentEngineOverrides(),
+      ]);
+      setModelOverrides(parseModelMap(modelBody) ?? {});
+      setEngineOverrides(parseEngineMap(engineBody) ?? {});
+      showToast?.(
+        `Updated your defaults for ${configurableAgents.length} agent(s) to ${bulkEngine}.`,
+        'success',
       );
-      const list = await api.getAgents();
-      setAgents(list);
-      setEdits({});
-      if (onAgentsChange) onAgentsChange();
-      showToast?.(`Updated ${configurableAgents.length} agent(s) to ${bulkEngine}.`, 'success');
     } catch (e) {
       console.error('Bulk agent engine update failed:', e);
       const msg = e instanceof Error ? e.message : 'Bulk engine update failed.';
@@ -4233,9 +4235,26 @@ export function AgentConfigSection({
     try {
       const data = edits[agentId];
       if (!data) return;
-      const { id: _id, lastActivity: _lastActivity, lastMessage: _lastMessage, ...payload } = data;
+      const {
+        id: _id,
+        lastActivity: _lastActivity,
+        lastMessage: _lastMessage,
+        model: _model,
+        ...payload
+      } = data;
       const updated = await api.updateAgent(agentId, payload);
       setAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, ...updated } : a)));
+      // Reconcile a per-user model override the new shared engine made stale.
+      // Only relevant when the user has no per-user engine override shadowing
+      // the shared one (otherwise the effective engine — and thus the valid
+      // models — is unchanged). Clears the override so persisted state matches
+      // the "Default" the model picker now shows.
+      if (payload.engine !== undefined) {
+        const eff = effectiveEngine(engineOverrides[agentId], updated?.engine ?? payload.engine);
+        if (modelOverrideIsStale(modelOverrides[agentId], modelConfig, eff)) {
+          await saveModelOverride(agentId, '');
+        }
+      }
       setEdits((prev) => {
         const n = { ...prev };
         delete n[agentId];
@@ -4886,12 +4905,12 @@ export function AgentConfigSection({
       {agents.length > 0 && modelConfig && (
         <div className="bg-gray-800/80 rounded-xl p-4 mb-4 space-y-3 border border-gray-700/50">
           <p className="text-xs text-gray-400">
-            Switch every agent at once (for example when moving off a provider or subscription). The
-            server validates the model against the selected engine.
+            Switch every agent at once for your own sessions only (for example when moving off a
+            provider or subscription). Does not change shared agent settings for other users.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
             <div>
-              <label className={labelClass}>Engine (all agents)</label>
+              <label className={labelClass}>Engine (all agents, only for me)</label>
               <select
                 value={bulkEngine}
                 onChange={(e) => {
@@ -4908,7 +4927,7 @@ export function AgentConfigSection({
               </select>
             </div>
             <div>
-              <label className={labelClass}>Model</label>
+              <label className={labelClass}>Model (only for me)</label>
               <select
                 value={bulkModel || getDefaultModel(bulkEngine)}
                 onChange={(e) => setBulkModel(e.target.value)}
@@ -5215,11 +5234,9 @@ export function AgentConfigSection({
                       <label className={labelClass}>Engine (shared)</label>
                       <select
                         value={edit.engine || 'claude-code'}
-                        onChange={(e) => {
-                          setEdit(agent.id, 'engine', e.target.value);
-                          setEdit(agent.id, 'model', getDefaultModel(e.target.value));
-                        }}
+                        onChange={(e) => setEdit(agent.id, 'engine', e.target.value)}
                         className={inputClass}
+                        data-testid="agent-shared-engine"
                       >
                         {engineChoices.map((e) => (
                           <option key={e} value={e}>

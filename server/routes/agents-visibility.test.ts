@@ -9,8 +9,8 @@
  *     `server/project-visibility.ts`). A User who is not the owner of a
  *     private project must not see that project's agents listed.
  *
- *   - `POST /api/agents/bulk-engine` only mutates agents whose project the
- *     caller can view. The `updated` count in the response reflects that.
+ *   - `POST /api/agents/bulk-engine` only writes per-user overrides for agents
+ *     in projects the caller can view (see agents-bulk-engine-per-user.test.ts).
  *
  *   - `PATCH /api/agents/:agentId` and the other `/api/agents/:agentId/*`
  *     handlers return 404 (`{error:'Agent not found'}`) when the caller
@@ -218,32 +218,6 @@ describe('agents route — project visibility filter', () => {
       await request(app).patch('/api/agents/a-private').send({ name: 'Renamed' }).expect(200);
       const priv = projects.find((p) => p.id === 'proj-private')!;
       expect(priv.agents[0].name).toBe('Renamed');
-    });
-  });
-
-  describe('POST /api/agents/bulk-engine', () => {
-    it('only mutates agents in projects the caller can view', async () => {
-      const app = await mount({ authUserId: 'other-user', authUser: 'other', authRole: 'User' });
-      const res = await request(app)
-        .post('/api/agents/bulk-engine')
-        .send({ engine: 'claude-code', model: 'claude-sonnet-4-5-20250929' })
-        .expect(200);
-      expect(res.body.updated).toBe(1); // only the shared project's single agent
-      // Private project's agent is untouched — its initial 'cursor-agent'
-      // engine survives the bulk update; the shared agent is rewritten.
-      const priv = projects.find((p) => p.id === 'proj-private')!;
-      expect(priv.agents[0].engine).toBe('cursor-agent');
-      const shared = projects.find((p) => p.id === 'proj-shared')!;
-      expect(shared.agents[0].engine).toBe('claude-code');
-    });
-
-    it('walks every project under bypass identities', async () => {
-      const app = await mount({ authLocalOrgBypass: true, authRole: 'Owner' });
-      const res = await request(app)
-        .post('/api/agents/bulk-engine')
-        .send({ engine: 'claude-code', model: 'claude-sonnet-4-5-20250929' })
-        .expect(200);
-      expect(res.body.updated).toBe(2);
     });
   });
 

@@ -19,6 +19,11 @@ vi.mock('../utils/api.js', () => ({
         engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'] },
       }),
     ),
+    getMyAgentModelOverrides: vi.fn(() => Promise.resolve({ agentModelOverrides: {} })),
+    putMyAgentModelOverride: vi.fn((_id, body) =>
+      Promise.resolve({ agentModelOverrides: { __design_studio__: body.model } }),
+    ),
+    deleteMyAgentModelOverride: vi.fn(() => Promise.resolve({ agentModelOverrides: {} })),
     updateDesign: vi.fn(() => Promise.resolve({})),
     forwardDesign: vi.fn(() =>
       Promise.resolve({ session: { id: 'sess-fwd', agent_id: 'agent-b', name: '[Design Fwd] X' } }),
@@ -441,6 +446,65 @@ describe('DesignView', () => {
         );
         expect(onDesignForwarded).toHaveBeenCalled();
       });
+    });
+  });
+
+  // Reviewer regression: switching the Design Studio engine must reconcile the
+  // caller's per-user model override. An override pinned for the old engine is
+  // invalid for the new one (the model select already shows "Default"), so it
+  // must be cleared — otherwise the persisted override stays out of sync with
+  // the UI and can be sent to the runtime as a mismatched engine/model pair.
+  describe('per-user model override reconciliation on engine change', () => {
+    const TWO_ENGINE_CONFIG = {
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'codex-cli': 'gpt-5.2' },
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
+        'codex-cli': ['gpt-5.2', 'gpt-5.5'],
+      },
+    };
+
+    beforeEach(() => {
+      api.updateDesign.mockClear();
+      api.deleteMyAgentModelOverride.mockClear();
+      api.getModelConfig.mockClear();
+      api.getMyAgentModelOverrides.mockClear();
+    });
+
+    it('clears an override that is incompatible with the newly selected engine', async () => {
+      api.getModelConfig.mockResolvedValueOnce(TWO_ENGINE_CONFIG);
+      api.getMyAgentModelOverrides.mockResolvedValueOnce({
+        agentModelOverrides: { __design_studio__: 'claude-sonnet-4-6' },
+      });
+      api.updateDesign.mockResolvedValueOnce({ id: 'd-1', agent_engine: 'codex-cli' });
+      api.deleteMyAgentModelOverride.mockResolvedValueOnce({ agentModelOverrides: {} });
+
+      render(<DesignView {...baseProps} />);
+      const engineSelect = await screen.findByTestId('design-studio-engine');
+      fireEvent.change(engineSelect, { target: { value: 'codex-cli' } });
+
+      await waitFor(() => {
+        expect(api.updateDesign).toHaveBeenCalledWith('d-1', {
+          agentEngine: 'codex-cli',
+          agentModel: null,
+        });
+        expect(api.deleteMyAgentModelOverride).toHaveBeenCalledWith('__design_studio__');
+      });
+    });
+
+    it('does not clear when there is no per-user model override to reconcile', async () => {
+      api.getModelConfig.mockResolvedValueOnce(TWO_ENGINE_CONFIG);
+      api.getMyAgentModelOverrides.mockResolvedValueOnce({ agentModelOverrides: {} });
+      api.updateDesign.mockResolvedValueOnce({ id: 'd-1', agent_engine: 'codex-cli' });
+
+      render(<DesignView {...baseProps} />);
+      const engineSelect = await screen.findByTestId('design-studio-engine');
+      fireEvent.change(engineSelect, { target: { value: 'codex-cli' } });
+
+      await waitFor(() => {
+        expect(api.updateDesign).toHaveBeenCalled();
+      });
+      expect(api.deleteMyAgentModelOverride).not.toHaveBeenCalled();
     });
   });
 });

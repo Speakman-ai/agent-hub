@@ -4,6 +4,7 @@ import ForwardDesignModal from './ForwardDesignModal.jsx';
 import { relativeTime } from '../utils/time.js';
 import { getServerBase } from '../utils/connection.js';
 import { exportDesignPdf } from '../utils/exportDesignPdf.js';
+import { modelOverrideIsStale } from '../utils/perUserModelOverride.js';
 import { api } from '../utils/api.js';
 
 /**
@@ -24,8 +25,12 @@ const DESIGN_ENGINE_LABELS = {
   'codex-cli': 'Codex',
 };
 
+/** Matches `DESIGN_SKILL_PRINCIPAL_AGENT_ID` in `server/design-skill-principal.ts`. */
+const DESIGN_STUDIO_AGENT_ID = '__design_studio__';
+
 /**
  * Engine + model for Design Studio (mirrors session engine/model allowlists from GET /api/config/models).
+ * Model is per-user — persisted via `/api/auth/me/agent-model-overrides`, never the design row.
  */
 function DesignStudioEngineModelSelect({
   design,
@@ -34,6 +39,26 @@ function DesignStudioEngineModelSelect({
   showToast,
   onDesignRecordUpdated,
 }) {
+  const [modelOverride, setModelOverride] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getMyAgentModelOverrides()
+      .then((body) => {
+        if (cancelled) return;
+        const map =
+          body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
+            ? body.agentModelOverrides
+            : {};
+        setModelOverride(map[DESIGN_STUDIO_AGENT_ID] || '');
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!modelConfig?.engineValidModels) return null;
 
   const engineOptions = DESIGN_STUDIO_ENGINES.filter(
@@ -51,14 +76,27 @@ function DesignStudioEngineModelSelect({
   const hubDefault =
     modelConfig.engineDefaultModels?.[engineValue] || modelConfig.defaultModel || '';
 
-  const configured = typeof design?.agent_model === 'string' ? design.agent_model.trim() : '';
-  const modelValue = configured && allowed.includes(configured) ? configured : '__default__';
+  const trimmedOverride = modelOverride?.trim();
+  const modelValue =
+    trimmedOverride && allowed.includes(trimmedOverride) ? trimmedOverride : '__default__';
 
   const handleEngineChange = async (e) => {
     const v = e.target.value;
     try {
       const updated = await api.updateDesign(design.id, { agentEngine: v, agentModel: null });
       onDesignRecordUpdated?.(updated);
+      // Reconcile a per-user model override left over from the previous engine:
+      // if it isn't valid for the newly selected engine, clear it so the
+      // persisted override matches the "Default" the model select now shows
+      // (and the runtime never gets a mismatched engine/model pair).
+      if (modelOverrideIsStale(modelOverride, modelConfig, v)) {
+        const body = await api.deleteMyAgentModelOverride(DESIGN_STUDIO_AGENT_ID);
+        const map =
+          body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
+            ? body.agentModelOverrides
+            : {};
+        setModelOverride(map[DESIGN_STUDIO_AGENT_ID] || '');
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast?.(msg, 'error');
@@ -67,10 +105,22 @@ function DesignStudioEngineModelSelect({
 
   const handleModelChange = async (e) => {
     const v = e.target.value;
-    const payload = v === '__default__' ? { agentModel: null } : { agentModel: v };
     try {
-      const updated = await api.updateDesign(design.id, payload);
-      onDesignRecordUpdated?.(updated);
+      if (v === '__default__') {
+        const body = await api.deleteMyAgentModelOverride(DESIGN_STUDIO_AGENT_ID);
+        const map =
+          body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
+            ? body.agentModelOverrides
+            : {};
+        setModelOverride(map[DESIGN_STUDIO_AGENT_ID] || '');
+      } else {
+        const body = await api.putMyAgentModelOverride(DESIGN_STUDIO_AGENT_ID, { model: v });
+        const map =
+          body?.agentModelOverrides && typeof body.agentModelOverrides === 'object'
+            ? body.agentModelOverrides
+            : {};
+        setModelOverride(map[DESIGN_STUDIO_AGENT_ID] || v);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       showToast?.(msg, 'error');
@@ -97,14 +147,14 @@ function DesignStudioEngineModelSelect({
         </select>
       </label>
       <label className="flex items-center gap-2 text-xs text-gray-500">
-        <span className="hidden sm:inline whitespace-nowrap">Model</span>
+        <span className="hidden sm:inline whitespace-nowrap">Model (only for me)</span>
         <select
           value={modelValue}
           onChange={handleModelChange}
           disabled={disabled}
           data-testid="design-studio-model"
           className="bg-gray-900 border border-gray-700 text-gray-200 rounded-md px-2 py-1 max-w-[200px] sm:max-w-[240px] truncate text-xs focus:outline-none focus:border-gray-500 disabled:opacity-50"
-          title={`Model for ${engineValue}`}
+          title={`Your model for ${engineValue} — does not affect other users`}
         >
           <option value="__default__">{`Default (${hubDefault})`}</option>
           {allowed.map((id) => (

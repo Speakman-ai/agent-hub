@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import path from 'path';
 import type { z } from 'zod';
+import type { AuthenticatedRequest } from '../auth.js';
 import { defaultModelForEngine } from '../config.js';
 import { getDb } from '../db.js';
 import { unscheduleHeartbeat } from '../heartbeat.js';
@@ -11,6 +12,7 @@ import { HOOK_EVENTS } from '../hooks.js';
 import type { RouteDeps, Agent, Project, HookConfig } from '../types.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { getUserPreferencesRow, mergeUserPreferencesJson } from '../user-preferences-store.js';
 import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
@@ -125,6 +127,11 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
   const router = Router();
 
   router.post('/api/agents/bulk-engine', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const userId = authedReq.authUserId?.trim();
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
     const parsed = parseBody(BulkEngineRequestSchema, req, res);
     if (!parsed) return;
     const { engine, model } = parsed;
@@ -139,22 +146,28 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     if (model && allowed.includes(model)) {
       resolved = model;
     }
-    // Visibility scope: only mutate agents in projects the caller can view.
-    // This matches `GET /api/agents` (which only enumerates visible agents)
-    // so a User running "switch all my agents to claude-code" doesn't
-    // silently rewrite the engine on another tenant's private project.
+    // Per-user bulk switch: writes the caller's own engine + model overrides
+    // for every agent they can see — never the shared `agents` row.
     const caller = resolveVisibilityCaller(req);
-    let updated = 0;
+    const agentIds: string[] = [];
     for (const p of deps.getProjects()) {
       if (!canViewProject(p, caller)) continue;
       for (const a of p.agents) {
-        a.engine = engine;
-        a.model = resolved;
-        updated++;
+        agentIds.push(a.id);
       }
     }
-    saveProjects();
-    res.json({ updated, engine, model: resolved });
+    const currentPrefs = getUserPreferencesRow(userId);
+    const nextEngineOverrides = { ...(currentPrefs.agentEngineOverrides ?? {}) };
+    const nextModelOverrides = { ...(currentPrefs.agentModelOverrides ?? {}) };
+    for (const agentId of agentIds) {
+      nextEngineOverrides[agentId] = { engine };
+      nextModelOverrides[agentId] = resolved;
+    }
+    mergeUserPreferencesJson(userId, {
+      agentEngineOverrides: nextEngineOverrides,
+      agentModelOverrides: nextModelOverrides,
+    });
+    res.json({ updated: agentIds.length, engine, model: resolved });
   });
 
   router.get('/api/agents', (req: Request, res: Response) => {
@@ -209,10 +222,23 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     const parsed = parseBody(UpdateAgentRequestSchema, req, res);
     if (!parsed) return;
 
+    // Model picks are per-user now (`/api/auth/me/agent-model-overrides`); the
+    // shared agent row no longer stores a model. Reject an explicit `model`
+    // with a clear 400 instead of silently dropping it and returning 200 —
+    // otherwise a client believes its shared-model write succeeded when the
+    // row is unchanged. (`model` stays in the request schema on purpose so we
+    // can detect and reject it here rather than have Zod strip it silently.)
+    if (parsed.model !== undefined) {
+      return res.status(400).json({
+        error:
+          'model is per-user and cannot be set via PATCH /api/agents/:agentId. ' +
+          'Use PUT /api/auth/me/agent-model-overrides/:agentId instead.',
+      });
+    }
+
     const allowed = [
       'name',
       'engine',
-      'model',
       'systemPrompt',
       'color',
       'avatar',
@@ -228,6 +254,8 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
         (agent as Record<string, unknown>)[key] = (parsed as Record<string, unknown>)[key];
       }
     }
+    // Model picks are per-user (`/api/auth/me/agent-model-overrides`); ignore
+    // any `model` field here so a settings save can't rewrite the shared row.
     if (parsed.browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = parsed.browserToolsEnabled;
     }

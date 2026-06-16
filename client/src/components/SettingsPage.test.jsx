@@ -812,6 +812,88 @@ describe('AgentConfigSection — per-user override saves are race-safe', () => {
   });
 });
 
+describe('AgentConfigSection — shared engine change reconciles per-user model override', () => {
+  beforeEach(() => {
+    api.getConfig.mockResolvedValue({ claudeBin: '/bin/claude', _file: {} });
+    api.get.mockResolvedValue({});
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'codex-cli': 'gpt-5.2' },
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
+        'codex-cli': ['gpt-5.2', 'gpt-5.5'],
+      },
+    });
+    api.getMyAgentEngineOverrides.mockResolvedValue({ agentEngineOverrides: {} });
+    api.getSkills.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const agent = {
+    id: 'agent-a',
+    name: 'Agent A',
+    role: 'lead',
+    engine: 'claude-code',
+    active: true,
+    projectId: 'p1',
+  };
+
+  function renderSection() {
+    return render(
+      <AgentConfigSection
+        projects={[{ id: 'p1', name: 'Acme', cwd: '/tmp', agents: [] }]}
+        agents={[agent]}
+        projectId="p1"
+        onAgentsChange={() => {}}
+      />,
+    );
+  }
+
+  it('clears a per-user model override made stale by saving a new shared engine', async () => {
+    // Pinned model is valid for claude-code but not codex-cli.
+    api.getMyAgentModelOverrides.mockResolvedValue({
+      agentModelOverrides: { 'agent-a': 'claude-sonnet-4-6' },
+    });
+    api.updateAgent.mockResolvedValue({ ...agent, engine: 'codex-cli' });
+
+    const { findByText, getByTestId } = renderSection();
+    fireEvent.click(await findByText('Agent A'));
+    fireEvent.change(getByTestId('agent-shared-engine'), { target: { value: 'codex-cli' } });
+    fireEvent.click(await findByText('Save'));
+
+    await waitFor(() => expect(api.updateAgent).toHaveBeenCalled());
+    expect(api.updateAgent.mock.calls[0][1].engine).toBe('codex-cli');
+    await waitFor(() => expect(api.deleteMyAgentModelOverride).toHaveBeenCalledWith('agent-a'));
+  });
+
+  it('keeps a per-user model override still valid for the new shared engine', async () => {
+    // Pinned model is valid for BOTH engines → must survive the engine change.
+    api.getModelConfig.mockResolvedValue({
+      defaultModel: 'shared-default',
+      engineDefaultModels: { 'claude-code': 'shared-default', 'codex-cli': 'shared-default' },
+      engineValidModels: {
+        'claude-code': ['shared-default', 'shared-b'],
+        'codex-cli': ['shared-default', 'shared-c'],
+      },
+    });
+    api.getMyAgentModelOverrides.mockResolvedValue({
+      agentModelOverrides: { 'agent-a': 'shared-default' },
+    });
+    api.updateAgent.mockResolvedValue({ ...agent, engine: 'codex-cli' });
+
+    const { findByText, getByTestId } = renderSection();
+    fireEvent.click(await findByText('Agent A'));
+    fireEvent.change(getByTestId('agent-shared-engine'), { target: { value: 'codex-cli' } });
+    fireEvent.click(await findByText('Save'));
+
+    await waitFor(() => expect(api.updateAgent).toHaveBeenCalled());
+    expect(api.deleteMyAgentModelOverride).not.toHaveBeenCalled();
+  });
+});
+
 describe('AgentConfigSection — allowed-skills multi-select', () => {
   beforeEach(() => {
     api.getConfig.mockResolvedValue({ claudeBin: '/bin/claude', _file: {} });

@@ -314,9 +314,9 @@ registerPath({
   method: 'post',
   path: '/api/agents/bulk-engine',
   tags: ['Agents'],
-  summary: 'Bulk-set engine (and optionally model) on every agent in every project',
+  summary: 'Bulk-set per-user engine + model overrides for every visible agent',
   description:
-    "Falls back to the engine's default model when `model` is missing or not in the engine's allowlist. Returns the count of agents updated.",
+    "Requires authentication. Writes the caller's own `agentEngineOverrides` and `agentModelOverrides` for every agent in projects they can view — never the shared `agents` row. Falls back to the engine's default model when `model` is missing or not in the engine's allowlist.",
   request: { body: { content: jsonContent(BulkEngineRequestSchema) } },
   responses: {
     200: {
@@ -324,6 +324,7 @@ registerPath({
       content: jsonContent(BulkEngineResponseComponent),
     },
     400: errorResponse('Validation failed or unknown engine.'),
+    401: errorResponse('Authentication required.'),
   },
 });
 

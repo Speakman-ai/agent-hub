@@ -800,50 +800,20 @@ describe('Agents', () => {
   });
 
   describe('POST /api/agents/bulk-engine', () => {
-    it('sets engine and model on every agent', async () => {
-      const proj = await createProject();
-      const a1 = await createAgent({ projectId: proj.id as string, name: 'Bulk A1' });
-      const a2 = await createAgent({
-        projectId: proj.id as string,
-        name: 'Bulk A2',
-        engine: 'cursor-agent',
-        model: 'composer-2.5',
-      });
-      const res = await request
-        .post('/api/agents/bulk-engine')
-        .send({ engine: 'codex-cli', model: 'gpt-5.2' })
-        .expect(200);
-
-      expect(res.body.updated).toBeGreaterThanOrEqual(2);
-      expect(res.body.engine).toBe('codex-cli');
-      expect(res.body.model).toBe('gpt-5.2');
-
-      const list = await request.get('/api/agents').expect(200);
-      const row1 = list.body.find((a: { id: string }) => a.id === a1.id);
-      const row2 = list.body.find((a: { id: string }) => a.id === a2.id);
-      expect(row1.engine).toBe('codex-cli');
-      expect(row2.engine).toBe('codex-cli');
-      expect(row1.model).toBe('gpt-5.2');
-      expect(row2.model).toBe('gpt-5.2');
+    it('returns 401 when unauthenticated', async () => {
+      await request.post('/api/agents/bulk-engine').send({ engine: 'claude-code' }).expect(401);
     });
 
-    it('falls back to the engine default when model is invalid', async () => {
-      const proj = await createProject();
-      await createAgent({ projectId: proj.id as string });
-      const res = await request
-        .post('/api/agents/bulk-engine')
-        .send({ engine: 'codex-cli', model: 'definitely-not-a-codex-model' })
-        .expect(200);
-
-      expect(res.body.engine).toBe('codex-cli');
-      expect(res.body.model).toBe('gpt-5.5');
-    });
-
-    it('returns 400 for an unknown engine', async () => {
+    // The endpoint writes per-user overrides, so it auth-gates before it
+    // validates the body — an unauthenticated caller gets 401 even with an
+    // invalid engine. (The 400 validation path is covered with an
+    // authenticated caller in routes/agents-bulk-engine-per-user.test.ts;
+    // this no-auth integration harness never carries an authUserId.)
+    it('auth-gates before body validation (401, not 400)', async () => {
       await request
         .post('/api/agents/bulk-engine')
         .send({ engine: 'not-an-engine', model: 'x' })
-        .expect(400);
+        .expect(401);
     });
   });
 
@@ -861,6 +831,28 @@ describe('Agents', () => {
 
     it('returns 404 for nonexistent agent', async () => {
       await request.patch('/api/agents/nope').send({ name: 'X' }).expect(404);
+    });
+
+    it('rejects model in PATCH body with 400 (model is per-user)', async () => {
+      const agent = await createAgent({ model: 'claude-sonnet-4-6' });
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ model: 'gpt-5.5' })
+        .expect(400);
+      expect(res.body.error).toMatch(/model is per-user/i);
+      // The shared row must be untouched by the rejected write.
+      const after = await request.get('/api/agents').expect(200);
+      const row = after.body.find((a: { id: string }) => a.id === agent.id);
+      expect(row.model).toBe('claude-sonnet-4-6');
+    });
+
+    it('still applies other fields when model is absent', async () => {
+      const agent = await createAgent({ model: 'claude-sonnet-4-6' });
+      const res = await request
+        .patch(`/api/agents/${agent.id}`)
+        .send({ name: 'Renamed Agent' })
+        .expect(200);
+      expect(res.body.name).toBe('Renamed Agent');
     });
 
     it('persists an icon-style avatar', async () => {

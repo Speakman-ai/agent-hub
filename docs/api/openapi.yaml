@@ -5700,8 +5700,8 @@ paths:
     post:
       tags:
         - Agents
-      summary: Bulk-set engine (and optionally model) on every agent in every project
-      description: Falls back to the engine's default model when `model` is missing or not in the engine's allowlist. Returns the count of agents updated.
+      summary: Bulk-set per-user engine + model overrides for every visible agent
+      description: Requires authentication. Writes the caller's own `agentEngineOverrides` and `agentModelOverrides` for every agent in projects they can view — never the shared `agents` row. Falls back to the engine's default model when `model` is missing or not in the engine's allowlist.
       requestBody:
         content:
           application/json:
@@ -5724,6 +5724,12 @@ paths:
                 $ref: "#/components/schemas/AgentsBulkEngineResponse"
         "400":
           description: Validation failed or unknown engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentErrorResponse"
+        "401":
+          description: Authentication required.
           content:
             application/json:
               schema:
