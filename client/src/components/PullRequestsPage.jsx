@@ -681,7 +681,7 @@ function PrDetail({
               title={
                 pr.review_requested
                   ? 'Clear the review-request flag'
-                  : 'Flag this PR for human review'
+                  : 'Request a review — dispatches the project Reviewer agent against this PR'
               }
               data-testid="pr-request-review-button"
               className="flex items-center gap-1.5 text-sm text-amber-300 hover:text-amber-100 transition-colors disabled:opacity-50"

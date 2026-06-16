@@ -55,12 +55,18 @@ export interface AutoReviewOpts {
    */
   pushedByUserId?: string | null;
   /**
-   * Why this auto-review is being considered. PR creation is the only flow
-   * allowed to fall back to `pr.author` when receive-pack attribution is
-   * unavailable, because the content is being reviewed as part of opening that
-   * author's PR. Head updates require `pushedByUserId`.
+   * Why this auto-review is being considered. PR creation and an explicit
+   * manual "Request review" press are the flows allowed to fall back to
+   * `pr.author` when receive-pack attribution is unavailable — the content is
+   * being reviewed on the author's behalf, not for a pusher-attributed head
+   * update. Head updates require `pushedByUserId`.
+   *
+   * `manual_request` is the human pressing "Request review" in the PR UI. It
+   * bypasses the branch-protection `requiredReview` gate, the Finalize-validated
+   * passthrough, and the per-head-sha dedup — the user explicitly asked for a
+   * review even when the gate is off or the head was already validated.
    */
-  trigger?: 'pr_create' | 'head_update';
+  trigger?: 'pr_create' | 'head_update' | 'manual_request';
 }
 
 /** Hub user to run the review as — never falls back to a different engine. */
@@ -70,7 +76,7 @@ function resolveAutoReviewActingUser(
 ): string | null {
   const pushed = opts.pushedByUserId?.trim();
   if (pushed) return pushed;
-  if (opts.trigger !== 'pr_create') return null;
+  if (opts.trigger !== 'pr_create' && opts.trigger !== 'manual_request') return null;
   const author = pr.author?.trim();
   if (author && isKnownHubUserId(author)) return author;
   return null;
@@ -98,9 +104,12 @@ export async function maybeRunPrAutoReview(
   try {
     if (process.env.AGENT_HUB_DISABLE_AUTO_REVIEW === '1' && !opts.force) return;
     if (project.gitHost !== 'agenthub') return;
+    const manual = opts.trigger === 'manual_request';
     // Option-1 gating: auto-review exists to keep the required-review
     // gate flowing for external pushes; without the gate it's not needed.
-    if (project.branchProtection?.requiredReview !== true) return;
+    // A manual "Request review" press is explicit human intent, so it runs
+    // regardless of whether branch protection requires a review.
+    if (!manual && project.branchProtection?.requiredReview !== true) return;
     if (pr.status && pr.status !== 'open') return;
     if (!hostedRepoExists(project.id)) return;
 
@@ -117,13 +126,22 @@ export async function maybeRunPrAutoReview(
     if (!headSha) return; // branch gone
 
     // Session-validation passthrough: Finalize already reviewed this sha.
-    if (deps.stmts.getValidatedFinalizeRunForSha.get(project.id, pr.head_branch, headSha)) {
+    // A manual request overrides this — the human asked for a fresh review.
+    if (
+      !manual &&
+      deps.stmts.getValidatedFinalizeRunForSha.get(project.id, pr.head_branch, headSha)
+    ) {
       return;
     }
 
+    // Per-head-sha dedup keeps external-push triggers from re-dispatching. A
+    // manual request is explicit intent and bypasses it (the human may want a
+    // re-review of the same head), so it neither consults nor records the key.
     const key = `${project.id}#${pr.number}@${headSha}`;
-    if (dispatched.has(key)) return;
-    dispatched.add(key);
+    if (!manual) {
+      if (dispatched.has(key)) return;
+      dispatched.add(key);
+    }
 
     const prUrl = buildNativePrUrl(project.id, pr.number);
     const sessionId = uuidv4();
@@ -201,26 +219,25 @@ export async function maybeRunPrAutoReview(
         return;
       }
     }
+    const sessionName = manual
+      ? `[Review PR #${pr.number}] requested @ ${headSha.slice(0, 8)}`.slice(0, 100)
+      : `[Review PR #${pr.number}] external push @ ${headSha.slice(0, 8)}`.slice(0, 100);
     const wt = defaultSessionUseWorktreeFlag(project);
-    deps.stmts.createSession.run(
-      sessionId,
-      reviewer.id,
-      `[Review PR #${pr.number}] external push @ ${headSha.slice(0, 8)}`.slice(0, 100),
-      engine,
-      model,
-      wt,
-      0,
-      1,
-    );
+    deps.stmts.createSession.run(sessionId, reviewer.id, sessionName, engine, model, wt, 0, 1);
     // Attribute the session to the acting user so the reviewer CLI spawns
     // under their per-account credentials (no-op when null).
     setSessionOwner(sessionId, actingUserId);
 
+    const promptHeader = manual
+      ? `## Review pull request #${pr.number} (review requested)\n\n` +
+        `A human pressed "Request review" on this Hub-hosted PR. You are the project Reviewer — ` +
+        `review the change and post your verdict.\n\n`
+      : `## Review pull request #${pr.number} (external push)\n\n` +
+        `New commits reached this Hub-hosted PR from outside a validated session, and this project's ` +
+        `branch protection requires an approving review before merge. You are the project Reviewer — ` +
+        `review the change and post your verdict.\n\n`;
     const prompt =
-      `## Review pull request #${pr.number} (external push)\n\n` +
-      `New commits reached this Hub-hosted PR from outside a validated session, and this project's ` +
-      `branch protection requires an approving review before merge. You are the project Reviewer — ` +
-      `review the change and post your verdict.\n\n` +
+      promptHeader +
       `### How to load the PR\n` +
       `- PR URL: ${prUrl} (head: \`${pr.head_branch}\` @ ${headSha})\n` +
       `- Diff: \`curl -s "$AGENT_HUB_URL/api/pr/diff?prUrl=${encodeURIComponent(prUrl)}" -H "X-API-Key: $AGENT_HUB_API_KEY"\`\n` +

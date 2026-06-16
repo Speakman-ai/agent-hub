@@ -18,6 +18,7 @@ import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import { setSessionOwner } from '../session-ownership.js';
 import config from '../config.js';
+import * as autoReview from '../native-pr/auto-review.js';
 
 let request: supertest.Agent;
 let gitHostRepoPath: typeof import('../git-host/repo-store.js').gitHostRepoPath;
@@ -306,6 +307,40 @@ describe('native PR review lifecycle', () => {
       .expect(201);
     detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.review_decision).toBe('APPROVED');
+  });
+
+  it('request-review dispatches the Reviewer agent (manual_request); clearing the flag does not', async () => {
+    // The dispatch itself is unit-tested in native-pr/auto-review.test.ts; here
+    // we prove the ROUTE is wired to it. The dispatch helper is short-circuited
+    // by the test-env AGENT_HUB_DISABLE_AUTO_REVIEW guard, so spy on it directly
+    // rather than asserting a spawned session — this catches a regression in the
+    // route→dispatch wiring regardless of the guard, and proves the route does
+    // NOT pass the test-only `force` seam (production env leaves the guard unset).
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Needs review' }).expect(201);
+
+    const spy = vi.spyOn(autoReview, 'maybeRunPrAutoReview').mockResolvedValue(undefined);
+    try {
+      // requested=true → dispatch fires with the manual_request trigger and the
+      // PR identity, and crucially WITHOUT `force` (a production-faithful call).
+      await authedPost(`/api/projects/${id}/pulls/1/request-review`).send({}).expect(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const call = spy.mock.calls[0]!;
+      const prArg = call[1] as { number: number; head_branch: string; status: string };
+      const optsArg = call[3] as { trigger?: string; force?: boolean } | undefined;
+      expect((call[0] as { id: string }).id).toBe(id);
+      expect(prArg).toMatchObject({ number: 1, head_branch: branch, status: 'open' });
+      expect(optsArg?.trigger).toBe('manual_request');
+      expect(optsArg?.force).toBeUndefined();
+
+      // Clearing the flag (requested=false) must NOT dispatch.
+      await authedPost(`/api/projects/${id}/pulls/1/request-review`)
+        .send({ requested: false })
+        .expect(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('inline comments: add, render in detail + autofix context, validate, delete', async () => {

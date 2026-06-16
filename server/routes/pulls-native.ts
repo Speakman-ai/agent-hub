@@ -20,6 +20,7 @@ import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { isSafeBranchName } from '../git-host/repo-read.js';
 import { git, prCommits, prDiff, prDiffStat, prFiles, revParse } from '../native-pr/git-read.js';
 import { NativePrError } from '../native-pr/errors.js';
+import { maybeRunPrAutoReview } from '../native-pr/auto-review.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import { resolveCardSessionId } from '../kanban-caller-session.js';
 import config from '../config.js';
@@ -639,6 +640,36 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
           requested,
           actor: areq.authUser ?? areq.authUserId ?? 'user',
         });
+        // Flagging for review should actually produce one: dispatch the project
+        // Reviewer agent against this PR. Fire-and-forget — a missing reviewer
+        // agent or an unavailable engine logs and no-ops inside the helper, so
+        // the flag still lands and the response is unaffected. Clearing the flag
+        // (requested=false) never dispatches.
+        //
+        // We deliberately do NOT pass `force`: that is a test-only seam to
+        // bypass the `AGENT_HUB_DISABLE_AUTO_REVIEW` guard, which is set ONLY in
+        // server/test/setup.ts. In production the guard env is unset, so this
+        // dispatches normally; under test it stays inert (no real Reviewer CLI
+        // spawn). The route→dispatch wiring is covered by spying on the helper
+        // in pulls-native.test.ts, independent of that guard.
+        if (requested) {
+          void maybeRunPrAutoReview(
+            ctx.project,
+            {
+              number: row.number,
+              head_branch: row.head_branch,
+              status: row.status,
+              author: row.author,
+            },
+            {
+              stmts: deps.stmts,
+              config: deps.config,
+              broadcast: deps.broadcast,
+              handleChat: deps.handleChat,
+            },
+            { trigger: 'manual_request', pushedByUserId: areq.authUserId ?? null },
+          );
+        }
         res.json({ pr: row });
       } catch (err: unknown) {
         sendNativeError(res, err);

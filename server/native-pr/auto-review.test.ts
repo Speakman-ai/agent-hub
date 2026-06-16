@@ -327,6 +327,89 @@ describe('maybeRunPrAutoReview', () => {
     expect(probeSpy).not.toHaveBeenCalled();
   });
 
+  describe('manual "Request review" trigger', () => {
+    it('dispatches even when branch protection does not require review', async () => {
+      const { project, branch } = await hostedPrProject();
+      // requiredReview off — the external-push path would skip here.
+      project.branchProtection = {};
+      const handleChat = vi.fn();
+      await maybeRunPrAutoReview(
+        project,
+        { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+        { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+        { force: true, trigger: 'manual_request' },
+      );
+      expect(handleChat).toHaveBeenCalledOnce();
+      const msg = handleChat.mock.calls[0]![1] as { sessionId: string; content: string };
+      expect(msg.content).toContain('review requested');
+      const session = stmts.getSession.get(msg.sessionId) as {
+        agent_id: string;
+        name: string;
+        owner_user_id: string | null;
+      };
+      expect(session.agent_id).toBe(`${project.id}-reviewer`);
+      expect(session.name).toContain('requested @');
+      // Falls back to the PR author when no explicit pusher is attributed.
+      expect(session.owner_user_id).toBe('ryan');
+    });
+
+    it('bypasses the Finalize-validated passthrough and the per-head-sha dedup', async () => {
+      const { project, branch, headSha } = await hostedPrProject();
+      project.branchProtection = {};
+
+      // Mark the head Finalize-validated — the external-push path would skip.
+      const runId = `fin-${uuidv4().slice(0, 8)}`;
+      stmts.insertFinalizeRun.run(
+        runId,
+        'card',
+        null,
+        project.id,
+        branch,
+        headSha,
+        `t|${runId}`,
+        'queued',
+        null,
+        'ui_button',
+        null,
+        'u',
+        'U',
+        'u@x',
+        null,
+        Date.now(),
+        'full',
+        null,
+      );
+      stmts.markFinalizeRunReadyToPush.run(headSha, runId);
+
+      const handleChat = vi.fn();
+      const deps = {
+        stmts,
+        config,
+        broadcast: vi.fn(),
+        handleChat: handleChat as RouteDeps['handleChat'],
+      };
+      const pr = { number: 1, head_branch: branch, status: 'open' as const, author: 'ryan' };
+      await maybeRunPrAutoReview(project, pr, deps, { force: true, trigger: 'manual_request' });
+      // A second manual request on the SAME head still dispatches (re-review).
+      await maybeRunPrAutoReview(project, pr, deps, { force: true, trigger: 'manual_request' });
+      expect(handleChat).toHaveBeenCalledTimes(2);
+    });
+
+    it('no-ops without a reviewer agent (flag-only, no crash)', async () => {
+      const { project, branch } = await hostedPrProject();
+      project.branchProtection = {};
+      project.agents = project.agents.filter((a) => a.role !== 'reviewer');
+      const handleChat = vi.fn();
+      await maybeRunPrAutoReview(
+        project,
+        { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+        { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+        { force: true, trigger: 'manual_request' },
+      );
+      expect(handleChat).not.toHaveBeenCalled();
+    });
+  });
+
   it('uses the PR author as acting user on PR creation when receive-pack attribution is absent', async () => {
     const { project, branch } = await hostedPrProject();
     const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
