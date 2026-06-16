@@ -264,6 +264,45 @@ describe('CustomerSupportPage — ticket detail view', () => {
     expect(screen.getByText('Description')).toBeInTheDocument();
   });
 
+  it('renders the ticket Description and AI investigation as formatted markdown, not raw source', async () => {
+    // The modal reads `body` from the live list prop and backfills the AI
+    // investigation from the dedicated detail fetch — exercise both paths.
+    api.getSupportTickets.mockResolvedValue([
+      ticket({
+        id: 'md',
+        subject: 'Markdown ticket',
+        body: '## Steps\n\n- **User ID**: 1\n- visit [home](https://example.com)',
+      }),
+    ]);
+    api.getSupportTicket.mockResolvedValue(
+      ticket({
+        id: 'md',
+        subject: 'Markdown ticket',
+        body: '## Steps\n\n- **User ID**: 1\n- visit [home](https://example.com)',
+        ai_investigation: '### Root cause\n\nA **null** reference in `handler`.',
+        ai_investigated_at: '2026-06-14 11:00:00',
+      }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Markdown ticket')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /open support ticket/i }));
+
+    const modal = await screen.findByTestId('support-ticket-detail-modal');
+
+    // Markdown is converted to DOM elements, so the literal markers must not survive as text.
+    await waitFor(() => expect(within(modal).queryByText(/## Steps/)).toBeNull());
+    expect(within(modal).queryByText(/\*\*User ID\*\*/)).toBeNull();
+
+    // Headings, bold runs, links and inline code render as real elements.
+    expect(within(modal).getByRole('heading', { name: 'Steps' })).toBeInTheDocument();
+    expect(within(modal).getByText('User ID').tagName).toBe('STRONG');
+    const link = within(modal).getByRole('link', { name: 'home' });
+    expect(link.getAttribute('href')).toBe('https://example.com');
+    expect(within(modal).getByRole('heading', { name: 'Root cause' })).toBeInTheDocument();
+    expect(within(modal).getByText('handler').tagName).toBe('CODE');
+  });
+
   it('uses a non-interactive card container with a dedicated open button, not nested interactive controls', async () => {
     api.getSupportTickets.mockResolvedValue([
       ticket({ id: 't1', subject: 'A11y', type: 'bug', replay_ref: '/uploads/replay-x.json' }),

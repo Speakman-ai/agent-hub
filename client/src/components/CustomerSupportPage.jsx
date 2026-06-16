@@ -18,6 +18,7 @@ import { api } from '../utils/api.js';
 import { getServerBase } from '../utils/connection.js';
 import ReplayPlayerModal from './ReplayPlayerModal.jsx';
 import { parseReplayIdFromRef } from '../utils/replayPlayer.js';
+import { MarkdownContent } from './MarkdownRenderer.jsx';
 
 function relativeTime(ts) {
   if (!ts) return '';
@@ -453,8 +454,8 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
                   Description
                 </div>
-                <div className="text-sm text-gray-300 whitespace-pre-wrap break-words">
-                  {ticket.body}
+                <div className="markdown-content text-sm text-gray-300 break-words">
+                  <MarkdownContent content={ticket.body} />
                 </div>
               </div>
             ) : null}
@@ -467,8 +468,8 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
                     AI investigation
                   </div>
                 </div>
-                <div className="text-xs text-gray-300 mt-1.5 whitespace-pre-wrap break-words">
-                  {investigation}
+                <div className="markdown-content text-xs text-gray-300 mt-1.5 break-words">
+                  <MarkdownContent content={investigation} />
                 </div>
                 {ticket.ai_investigated_at ? (
                   <div className="text-[10px] text-gray-600 mt-1.5">
