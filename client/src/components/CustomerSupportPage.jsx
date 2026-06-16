@@ -153,7 +153,180 @@ function DeleteTicketButton({ projectId, ticketId, stretched = false, onDeleted 
   );
 }
 
-function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
+// Manually-settable ticket lifecycle states. `converted` is intentionally
+// absent — conversion is an action (it promotes the ticket to a card and
+// removes it), not a status a human picks from a dropdown.
+const STATUS_OPTIONS = [
+  { value: 'new', label: 'New' },
+  { value: 'investigating', label: 'Investigating' },
+  { value: 'closed', label: 'Closed' },
+];
+
+// Inline status changer. Replaces the old read-only status badge so an operator
+// can move a ticket through its lifecycle (New → Investigating → Closed)
+// without leaving the queue. Optimistically reflects the change via `onUpdated`
+// (the parent's upsert), then reconciles with the server's returned row; a
+// failed PATCH reverts to the original ticket. `stretched` re-enables pointer
+// events for use over the card's full-card overlay button.
+function StatusSelect({ projectId, ticket, stretched = false, onUpdated }) {
+  const [saving, setSaving] = useState(false);
+  const pe = stretched ? 'pointer-events-auto relative' : '';
+  // A legacy/automatic state (e.g. an old `converted` row) isn't in the manual
+  // option list — surface it as the current value so the control still renders
+  // a sensible label, but don't offer it as a pickable choice.
+  const isLegacy = !STATUS_OPTIONS.some((o) => o.value === ticket.status);
+
+  const handleChange = async (e) => {
+    const next = e.target.value;
+    if (next === ticket.status || saving) return;
+    setSaving(true);
+    onUpdated?.({ ...ticket, status: next }); // optimistic
+    try {
+      const updated = await api.setSupportTicketStatus(projectId, ticket.id, next);
+      if (updated) onUpdated?.(updated);
+    } catch {
+      onUpdated?.(ticket); // revert on failure
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <select
+      value={ticket.status}
+      onChange={handleChange}
+      disabled={saving}
+      aria-label="Ticket status"
+      title="Change ticket status"
+      data-testid="ticket-status-select"
+      className={`${pe} text-[10px] uppercase tracking-wide bg-gray-800/60 border border-gray-700 rounded px-1.5 py-0.5 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed`}
+    >
+      {isLegacy ? <option value={ticket.status}>{ticket.status}</option> : null}
+      {STATUS_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+// Convert-to-card control with an optional "assign an agent now" picker.
+// Converting promotes the ticket to a To Do kanban card AND removes the source
+// ticket, so the assign choice has to be made at convert time — there's no
+// converted ticket to act on afterwards. When an agent is chosen, the new card
+// is assigned (which spawns a session) right after it's created.
+//
+// On full success the ticket is dropped locally via `onConverted` (the server
+// also broadcasts support_ticket_deleted for cross-client sync). If the assign
+// step fails, conversion still landed the card, but the assignment is treated
+// as a FAILED action: we do NOT optimistically remove the ticket/close the
+// modal here — instead we keep the inline error visible AND raise a durable
+// `onNotify` toast, so the failure can't be swallowed by the control vanishing.
+// The server already removed the ticket during conversion, so the
+// support_ticket_deleted WebSocket echo reconciles the list; the toast is the
+// user-visible record of the partial failure. `stretched` re-enables pointer
+// events for use over the card's full-card overlay button.
+function ConvertControl({
+  projectId,
+  ticketId,
+  agents = [],
+  stretched = false,
+  size = 'sm',
+  onConverted,
+  onNotify,
+}) {
+  const [agentId, setAgentId] = useState('');
+  const [converting, setConverting] = useState(false);
+  const [error, setError] = useState(null);
+  const pe = stretched ? 'pointer-events-auto relative' : '';
+  const btnPad = size === 'md' ? 'px-2.5 py-1.5' : 'px-2 py-1';
+
+  const handleConvert = async () => {
+    if (converting) return;
+    setConverting(true);
+    setError(null);
+
+    let result;
+    try {
+      result = await api.convertSupportTicketToCard(projectId, ticketId);
+    } catch (err) {
+      setError(err.message || 'Failed to convert');
+      setConverting(false);
+      return;
+    }
+
+    const cardId = result?.card?.id;
+    if (agentId && cardId) {
+      try {
+        await api.assignCard(projectId, cardId, agentId);
+      } catch (err) {
+        // Conversion landed the card, but the agent assignment failed. Surface
+        // a durable warning and DON'T remove the ticket optimistically — leave
+        // the inline error up so the user sees it (and can assign on the board).
+        const msg = `Converted to a card, but assigning the agent failed: ${
+          err.message || 'unknown error'
+        }. You can assign it on the board.`;
+        setError(msg);
+        setConverting(false);
+        onNotify?.(msg, 'warning');
+        return;
+      }
+    }
+
+    // Convert (and assign, if requested) fully succeeded — drop the ticket
+    // locally without waiting on the support_ticket_deleted WebSocket echo.
+    onConverted?.(ticketId);
+  };
+
+  return (
+    <span className={`${pe} inline-flex items-center gap-2 flex-wrap`}>
+      {agents.length > 0 ? (
+        <select
+          value={agentId}
+          onChange={(e) => setAgentId(e.target.value)}
+          disabled={converting}
+          aria-label="Assign an agent to the new card"
+          title="Optionally assign an agent to the new card"
+          data-testid="convert-assign-agent"
+          className={`${pe} text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50`}
+        >
+          <option value="">No agent</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name || a.id}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      <button
+        onClick={handleConvert}
+        disabled={converting}
+        title={
+          agentId
+            ? 'Create a To Do card and assign the chosen agent'
+            : 'Create a To Do kanban card from this ticket'
+        }
+        className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+      >
+        <SquareKanban size={13} />
+        {converting ? 'Converting…' : agentId ? 'Convert & assign' : 'Convert to card'}
+      </button>
+      {error ? <span className="text-[11px] text-red-400">{error}</span> : null}
+    </span>
+  );
+}
+
+function SupportTicketCard({
+  ticket,
+  projectId,
+  agents,
+  onOpen,
+  onDeleted,
+  onConverted,
+  onUpdated,
+  onNotify,
+}) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
   const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
@@ -165,27 +338,10 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
   const isUnread = !ticket.read_at;
 
   const [watchingReplay, setWatchingReplay] = useState(false);
-  const [converting, setConverting] = useState(false);
-  const [convertError, setConvertError] = useState(null);
-  // A ticket is "converted" once its status flips (the WebSocket-pushed row
-  // carries the new status + converted_card_id, so the button reflects the
-  // result without a manual refetch).
+  // A ticket is "converted" only for legacy rows that still carry the old
+  // converted state — conversion now removes the ticket outright, so this
+  // branch is just back-compat for any pre-existing converted row.
   const isConverted = ticket.status === 'converted' || !!ticket.converted_card_id;
-
-  const handleConvert = async () => {
-    if (converting || isConverted) return;
-    setConverting(true);
-    setConvertError(null);
-    try {
-      await api.convertSupportTicketToCard(projectId, ticket.id);
-      // The support_ticket_updated WebSocket event re-renders this card as
-      // converted; no local state mutation needed.
-    } catch (err) {
-      setConvertError(err.message || 'Failed to convert');
-    } finally {
-      setConverting(false);
-    }
-  };
 
   const handleOpen = () => onOpen?.(ticket);
 
@@ -232,9 +388,7 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
               <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
                 {type.label}
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/60 text-gray-500">
-                {ticket.status}
-              </span>
+              <StatusSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
               <span className="text-[11px] text-gray-600 ml-auto">
                 {relativeTime(ticket.created_at)}
               </span>
@@ -309,19 +463,15 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
                   Converted to card
                 </span>
               ) : (
-                <button
-                  onClick={handleConvert}
-                  disabled={converting}
-                  title="Create a To Do kanban card from this ticket"
-                  className="pointer-events-auto relative inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  <SquareKanban size={13} />
-                  {converting ? 'Converting…' : 'Convert to card'}
-                </button>
+                <ConvertControl
+                  projectId={projectId}
+                  ticketId={ticket.id}
+                  agents={agents}
+                  stretched
+                  onConverted={onConverted}
+                  onNotify={onNotify}
+                />
               )}
-              {convertError ? (
-                <span className="text-[11px] text-red-400">{convertError}</span>
-              ) : null}
               <DeleteTicketButton
                 projectId={projectId}
                 ticketId={ticket.id}
@@ -344,7 +494,16 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
   );
 }
 
-function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDeleted }) {
+function SupportTicketDetailModal({
+  ticket: liveTicket,
+  projectId,
+  agents,
+  onClose,
+  onDeleted,
+  onConverted,
+  onUpdated,
+  onNotify,
+}) {
   // Only the *fetched enrichment* is held locally — the complete
   // ai_investigation the list rows truncate to ai_summary. Every other field is
   // read straight from the live `liveTicket` prop (which the parent recomputes
@@ -353,8 +512,6 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
   // instead of going stale.
   const [enrichment, setEnrichment] = useState(null);
   const [watchingReplay, setWatchingReplay] = useState(false);
-  const [converting, setConverting] = useState(false);
-  const [convertError, setConvertError] = useState(null);
 
   // Fetch the full ticket from the dedicated detail endpoint for this id. Reset
   // the enrichment first so a previous ticket's investigation can't bleed
@@ -403,22 +560,6 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
   const isConverted = ticket.status === 'converted' || !!ticket.converted_card_id;
   const investigation = ticket.ai_investigation?.trim() || ticket.ai_summary?.trim() || null;
 
-  const handleConvert = async () => {
-    if (converting || isConverted) return;
-    setConverting(true);
-    setConvertError(null);
-    try {
-      await api.convertSupportTicketToCard(projectId, ticket.id);
-      // The support_ticket_updated WebSocket event updates the parent list,
-      // which flows back through the `liveTicket` prop and re-renders this
-      // modal as converted — no local ticket copy to keep in sync.
-    } catch (err) {
-      setConvertError(err.message || 'Failed to convert');
-    } finally {
-      setConverting(false);
-    }
-  };
-
   return (
     <>
       <div
@@ -446,9 +587,13 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
                 <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
                   {type.label}
                 </span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/60 text-gray-500">
-                  {ticket.status}
-                </span>
+                {isConverted ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/60 text-gray-500">
+                    {ticket.status}
+                  </span>
+                ) : (
+                  <StatusSelect projectId={projectId} ticket={ticket} onUpdated={onUpdated} />
+                )}
               </div>
               <h2 className="text-base text-gray-100 font-semibold mt-2 break-words">{title}</h2>
               <div className="text-[11px] text-gray-600 mt-1 flex items-center gap-1.5 flex-wrap">
@@ -534,17 +679,22 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
                 Converted to card{ticket.converted_card_id ? ` · ${ticket.converted_card_id}` : ''}
               </span>
             ) : (
-              <button
-                onClick={handleConvert}
-                disabled={converting}
-                title="Create a To Do kanban card from this ticket"
-                className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <SquareKanban size={13} />
-                {converting ? 'Converting…' : 'Convert to card'}
-              </button>
+              <ConvertControl
+                projectId={projectId}
+                ticketId={ticket.id}
+                agents={agents}
+                size="md"
+                onNotify={onNotify}
+                onConverted={(id) => {
+                  // Full success — drop the ticket from the list and close this
+                  // modal (it has nothing left to show). On a partial failure
+                  // (assign failed) ConvertControl does NOT call this, so the
+                  // modal stays open with the inline error.
+                  if (onConverted) onConverted(id);
+                  onClose?.();
+                }}
+              />
             )}
-            {convertError ? <span className="text-[11px] text-red-400">{convertError}</span> : null}
             <div className="ml-auto">
               <DeleteTicketButton
                 projectId={projectId}
@@ -572,7 +722,7 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose, onDe
   );
 }
 
-function CustomerSupportPageInner({ projectId }, ref) {
+function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -739,14 +889,18 @@ function CustomerSupportPageInner({ projectId }, ref) {
             </p>
           </div>
         ) : (
-          <div className="p-3 space-y-2 max-w-3xl mx-auto">
+          <div className="p-3 space-y-2 max-w-5xl mx-auto">
             {tickets.map((ticket) => (
               <SupportTicketCard
                 key={ticket.id}
                 ticket={ticket}
                 projectId={projectId}
+                agents={agents}
                 onOpen={handleOpenTicket}
                 onDeleted={removeTicket}
+                onConverted={removeTicket}
+                onUpdated={upsertTicket}
+                onNotify={onNotify}
               />
             ))}
           </div>
@@ -757,8 +911,12 @@ function CustomerSupportPageInner({ projectId }, ref) {
         <SupportTicketDetailModal
           ticket={openTicket}
           projectId={projectId}
+          agents={agents}
           onClose={() => setOpenTicket(null)}
           onDeleted={removeTicket}
+          onConverted={removeTicket}
+          onUpdated={upsertTicket}
+          onNotify={onNotify}
         />
       ) : null}
     </div>

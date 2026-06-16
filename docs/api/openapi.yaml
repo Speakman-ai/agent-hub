@@ -5444,17 +5444,21 @@ components:
     ConvertSupportTicketResponse:
       type: object
       properties:
-        ticket:
-          $ref: "#/components/schemas/SupportTicket"
         card:
           $ref: "#/components/schemas/KanbanCard"
-        alreadyConverted:
+        ticketId:
+          type: string
+          description: Id of the source ticket that was converted and removed.
+        deleted:
           type: boolean
-          description: True when the ticket was already linked to an existing card.
+          enum:
+            - true
+          description: Always true — the source ticket is removed once promoted to the board.
       required:
-        - ticket
         - card
-      description: The converted ticket plus the kanban card it became.
+        - ticketId
+        - deleted
+      description: The kanban card the ticket became; the source ticket is removed.
     WikiPage:
       type: object
       properties:
@@ -18132,7 +18136,7 @@ paths:
       tags:
         - Support
       summary: Convert a support ticket into a To Do kanban card
-      description: "Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), flips the ticket to converted, and links the card id back. Idempotent: returns the existing card if already converted."
+      description: "Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels) and then removes the source ticket — the card is the single source of truth. Not idempotent: re-converting the same ticket id 404s."
       parameters:
         - schema:
             type: string
@@ -18149,14 +18153,8 @@ paths:
           name: id
           in: path
       responses:
-        "200":
-          description: Ticket was already converted; returns the existing card.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ConvertSupportTicketResponse"
         "201":
-          description: Ticket converted to a new card.
+          description: Ticket converted to a new card and removed from the queue.
           content:
             application/json:
               schema:

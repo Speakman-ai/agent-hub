@@ -9,6 +9,8 @@ vi.mock('../utils/api.js', () => ({
     getSupportTickets: vi.fn(),
     getSupportTicket: vi.fn(),
     convertSupportTicketToCard: vi.fn(),
+    assignCard: vi.fn(),
+    setSupportTicketStatus: vi.fn(),
     deleteSupportTicket: vi.fn(),
     markSupportTicketRead: vi.fn().mockResolvedValue({}),
     markSupportTicketUnread: vi.fn().mockResolvedValue({}),
@@ -472,6 +474,144 @@ describe('CustomerSupportPage — ticket detail view', () => {
     // Clicking an action must not also trigger the full-card open button.
     expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull();
     expect(api.getSupportTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('CustomerSupportPage — convert removes the ticket + optional agent assign', () => {
+  it('removes the ticket from the list after a successful convert (no agent)', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Promote me' })]);
+    api.convertSupportTicketToCard.mockResolvedValue({
+      card: { id: 'card-1' },
+      ticketId: 't1',
+      deleted: true,
+    });
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Promote me')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /convert to card/i }));
+
+    await waitFor(() =>
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1'),
+    );
+    // The ticket is dropped locally without waiting on the WebSocket echo.
+    await waitFor(() => expect(screen.queryByText('Promote me')).toBeNull());
+    // With no agent picked, the new card is not assigned.
+    expect(api.assignCard).not.toHaveBeenCalled();
+  });
+
+  it('offers an agent picker and assigns the new card when an agent is chosen', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Assign on convert' })]);
+    api.convertSupportTicketToCard.mockResolvedValue({
+      card: { id: 'card-9' },
+      ticketId: 't1',
+      deleted: true,
+    });
+    api.assignCard.mockResolvedValue({ sessionId: 's1', card: { id: 'card-9' } });
+
+    render(
+      <CustomerSupportPage projectId="proj-1" agents={[{ id: 'agent-1', name: 'Builder' }]} />,
+    );
+    await waitFor(() => expect(screen.getByText('Assign on convert')).toBeInTheDocument());
+
+    // Pick an agent, then convert.
+    fireEvent.change(screen.getByTestId('convert-assign-agent'), {
+      target: { value: 'agent-1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /convert & assign/i }));
+
+    await waitFor(() =>
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1'),
+    );
+    // The freshly-created card is assigned to the chosen agent.
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1'));
+    await waitFor(() => expect(screen.queryByText('Assign on convert')).toBeNull());
+  });
+
+  it('surfaces a durable warning and keeps the ticket when the agent assignment fails', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Assign fails' })]);
+    api.convertSupportTicketToCard.mockResolvedValue({
+      card: { id: 'card-9' },
+      ticketId: 't1',
+      deleted: true,
+    });
+    api.assignCard.mockRejectedValue(new Error('Agent not found'));
+    const onNotify = vi.fn();
+
+    render(
+      <CustomerSupportPage
+        projectId="proj-1"
+        agents={[{ id: 'agent-1', name: 'Builder' }]}
+        onNotify={onNotify}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Assign fails')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('convert-assign-agent'), {
+      target: { value: 'agent-1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /convert & assign/i }));
+
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1'));
+    // A durable warning is raised (it can't be swallowed by the row vanishing).
+    await waitFor(() =>
+      expect(onNotify).toHaveBeenCalledWith(
+        expect.stringMatching(/assigning the agent failed/i),
+        'warning',
+      ),
+    );
+    // The assign failure is NOT treated as a silent success: the ticket is not
+    // optimistically removed, and the inline error is visible.
+    expect(screen.getByText('Assign fails')).toBeInTheDocument();
+    expect(screen.getByText(/assigning the agent failed/i)).toBeInTheDocument();
+  });
+
+  it('does not render an agent picker when the project has no agents', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'No agents' })]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('No agents')).toBeInTheDocument());
+    expect(screen.queryByTestId('convert-assign-agent')).toBeNull();
+    // The plain convert action is still available.
+    expect(screen.getByRole('button', { name: /convert to card/i })).toBeInTheDocument();
+  });
+});
+
+describe('CustomerSupportPage — change ticket status', () => {
+  it('changes a ticket status via the inline status select', async () => {
+    api.getSupportTickets.mockResolvedValue([
+      ticket({ id: 't1', subject: 'Status me', status: 'new' }),
+    ]);
+    api.setSupportTicketStatus.mockResolvedValue(
+      ticket({ id: 't1', subject: 'Status me', status: 'investigating' }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Status me')).toBeInTheDocument());
+
+    const select = screen.getByTestId('ticket-status-select');
+    expect(select.value).toBe('new');
+    fireEvent.change(select, { target: { value: 'investigating' } });
+
+    await waitFor(() =>
+      expect(api.setSupportTicketStatus).toHaveBeenCalledWith('proj-1', 't1', 'investigating'),
+    );
+    // The optimistic + server-confirmed update leaves the row showing the new state.
+    await waitFor(() =>
+      expect(screen.getByTestId('ticket-status-select').value).toBe('investigating'),
+    );
+  });
+
+  it('offers New / Investigating / Closed but not Converted as manual choices', async () => {
+    api.getSupportTickets.mockResolvedValue([
+      ticket({ id: 't1', subject: 'Options', status: 'new' }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Options')).toBeInTheDocument());
+
+    const values = Array.from(screen.getByTestId('ticket-status-select').options).map(
+      (o) => o.value,
+    );
+    expect(values).toEqual(['new', 'investigating', 'closed']);
   });
 });
 

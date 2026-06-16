@@ -4550,7 +4550,12 @@ export default function App({ initialView } = {}) {
                   />
                 )
               ) : currentView === 'support' && supportProjectId ? (
-                <CustomerSupportPage ref={supportListRef} projectId={supportProjectId} />
+                <CustomerSupportPage
+                  ref={supportListRef}
+                  projectId={supportProjectId}
+                  agents={agents.filter((a) => a.projectId === supportProjectId)}
+                  onNotify={(message, type = 'info') => showToast(message, type, 8000)}
+                />
               ) : currentView === 'pulls' && pullsProjectId ? (
                 <PullRequestsPage
                   projectId={pullsProjectId}

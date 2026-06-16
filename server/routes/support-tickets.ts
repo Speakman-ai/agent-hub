@@ -6,7 +6,6 @@ import {
   listSupportTickets,
   updateSupportTicketStatus,
   recordSupportTicketInvestigation,
-  convertSupportTicketToCard,
   deleteSupportTicket,
   markSupportTicketRead,
   markSupportTicketUnread,
@@ -24,6 +23,7 @@ import {
 import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
 import { getOrCreateBoard } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
+import { getDb } from '../db.js';
 
 /**
  * Best-effort attribution of a session replay (referenced by `replayRef`) to a
@@ -317,12 +317,19 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
    *
    * Creates a To Do card carrying over the ticket's title/description, a
    * severity→priority mapping, and `support,<type>` labels, with a footer in
-   * the description linking back to the source ticket. The ticket is then
-   * flipped to `converted` and stamped with the new card id.
+   * the description linking back to the source ticket. The source ticket is
+   * then **removed** — once promoted to the board the card is the single
+   * source of truth, so the ticket queue isn't left holding a stale duplicate.
    *
-   * Idempotent: a ticket already linked to a still-existing card returns that
-   * card (200) instead of creating a duplicate. If the linked card was since
-   * deleted, conversion runs again.
+   * Returns `{ card, ticketId, deleted: true }`. Because the ticket is gone
+   * afterwards, the operation is not idempotent: re-POSTing the same ticket id
+   * 404s (there's nothing left to convert).
+   *
+   * Card-creation and ticket-deletion run in a single synchronous SQLite
+   * transaction that re-claims the ticket inside the transaction. This makes
+   * conversion duplicate-safe: a retry (e.g. after a lost/slow 201) finds the
+   * ticket already gone and 404s instead of inserting a second card — there is
+   * no create-then-delete window for a concurrent request to slip into.
    */
   router.post(
     '/api/projects/:projectId/support-tickets/:id/convert',
@@ -333,18 +340,6 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       const ticket = getSupportTicket(req.params.id as string);
       if (!ticket || ticket.project_id !== project.id) {
         return res.status(404).json({ error: 'Support ticket not found' });
-      }
-
-      // Double-conversion guard: if the ticket is already linked to a card that
-      // still exists, return it unchanged rather than spawning a duplicate.
-      if (ticket.converted_card_id) {
-        const existingCard = stmts.getKanbanCard.get(ticket.converted_card_id) as
-          | KanbanCardRow
-          | undefined;
-        if (existingCard) {
-          return res.status(200).json({ ticket, card: existingCard, alreadyConverted: true });
-        }
-        // The previously-linked card was deleted — fall through and re-create.
       }
 
       const { board, columns } = getOrCreateBoard(stmts, project.id);
@@ -363,44 +358,64 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
       const cardId = uuidv4();
 
-      stmts.createKanbanCard.run(
-        cardId,
-        todo.id,
-        board.id,
-        fields.title,
-        fields.description,
-        fields.priority,
-        null, // assignee
-        fields.labels,
-        null, // session_id
-        null, // github_issue_url
-        'support-ticket', // created_by
-        null, // assign_model
-        maxPos,
-      );
+      // Atomic create-card + delete-ticket. The transaction re-reads the ticket
+      // and bails (returns null) if it has already been converted/deleted by a
+      // concurrent or retried request — so at most one card is ever created for
+      // a given ticket. better-sqlite3 transactions run synchronously, and
+      // nothing between the top-of-handler read and this block awaits, so no
+      // second request can observe the ticket as still-present after the claim.
+      const convert = getDb().transaction((): KanbanCardRow | null => {
+        if (!getSupportTicket(ticket.id)) return null; // already converted — lost the race
+        stmts.createKanbanCard.run(
+          cardId,
+          todo.id,
+          board.id,
+          fields.title,
+          fields.description,
+          fields.priority,
+          null, // assignee
+          fields.labels,
+          null, // session_id
+          null, // github_issue_url
+          'support-ticket', // created_by
+          null, // assign_model
+          maxPos,
+        );
+        deleteSupportTicket(ticket.id);
+        return stmts.getKanbanCard.get(cardId) as KanbanCardRow;
+      });
 
-      // Converting a ticket means an operator acted on it, so it's no longer an
-      // unread request — clear it from the unread counter.
-      markSupportTicketRead(ticket.id);
-      const updatedTicket = convertSupportTicketToCard(ticket.id, cardId)!;
-      const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow;
+      const card = convert();
+      if (!card) {
+        // A concurrent/retried convert already promoted this ticket; the card it
+        // created is the canonical one, so don't create a duplicate.
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
 
-      // Carry the replay attribution onto the new card (project/ticket links
-      // are preserved via COALESCE).
+      // Carry the replay attribution onto the new card. The source ticket has
+      // been deleted, so attribute to the card (and project) only — a
+      // supportTicketId pointer would dangle now that the row is gone.
       if (ticket.replay_ref) {
         await tryLinkReplay(stmts, ticket.replay_ref, {
           projectId: project.id,
-          supportTicketId: ticket.id,
           cardId,
         });
       }
 
-      broadcast({ type: 'kanban_update', projectId: project.id });
-      broadcastTicket('support_ticket_updated', updatedTicket.project_id, {
-        ticket: updatedTicket,
-      });
+      // Preserve the screenshot file: `buildCardFieldsFromTicket` bakes the ref
+      // into the card description as a markdown image, so the card still needs
+      // it even though the ticket row is gone.
+      if (
+        ticket.screenshot_ref &&
+        !(typeof card.description === 'string' && card.description.includes(ticket.screenshot_ref))
+      ) {
+        await deleteSupportTicketScreenshot(deps.serverDir, ticket.screenshot_ref);
+      }
 
-      res.status(201).json({ ticket: updatedTicket, card });
+      broadcast({ type: 'kanban_update', projectId: project.id });
+      broadcastTicket('support_ticket_deleted', project.id, { ticketId: ticket.id });
+
+      res.status(201).json({ card, ticketId: ticket.id, deleted: true });
     },
   );
 

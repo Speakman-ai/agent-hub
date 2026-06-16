@@ -157,9 +157,9 @@ describe('support-tickets routes', () => {
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
       .expect(201);
 
-    // Ticket is flipped to converted and linked to the new card.
-    expect(convert.body.ticket.status).toBe('converted');
-    expect(convert.body.ticket.converted_card_id).toBe(convert.body.card.id);
+    // Response reports the card it became and that the source ticket was removed.
+    expect(convert.body.deleted).toBe(true);
+    expect(convert.body.ticketId).toBe(ticketId);
 
     // Card carries over the mapped fields.
     const card = convert.body.card;
@@ -175,30 +175,61 @@ describe('support-tickets routes', () => {
     expect(card.column_id).toBe(todo.id);
     const onBoard = board.body.cards.find((c: { id: string }) => c.id === card.id);
     expect(onBoard).toBeTruthy();
+
+    // The source ticket is gone from the queue.
+    await request.get(`/api/projects/${projectId}/support-tickets/${ticketId}`).expect(404);
   });
 
-  it('is idempotent — re-converting returns the existing card without duplicating', async () => {
+  it('removes the ticket after converting — re-converting the same id 404s', async () => {
     const projectId = await newProjectId();
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
-      .send({ body: 'duplicate me', severity: 'low', type: 'question' })
+      .send({ body: 'convert me once', severity: 'low', type: 'question' })
       .expect(201);
     const ticketId = created.body.id as string;
 
     const first = await request
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
       .expect(201);
-    const second = await request
+    // The ticket no longer exists, so a second convert has nothing to act on.
+    await request
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
-      .expect(200);
+      .expect(404);
 
-    expect(second.body.alreadyConverted).toBe(true);
-    expect(second.body.card.id).toBe(first.body.card.id);
-
-    // Only one card exists on the board for this ticket.
+    // Exactly one card was created (no duplicate from a retry).
     const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const matching = board.body.cards.filter((c: { id: string }) => c.id === first.body.card.id);
     expect(matching).toHaveLength(1);
+    // And the ticket is absent from the list.
+    const list = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(list.body.find((t: { id: string }) => t.id === ticketId)).toBeUndefined();
+  });
+
+  it('is duplicate-safe — concurrent converts create exactly one card', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'race me', severity: 'medium', type: 'bug' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    // Fire two converts at once (models a retry after a slow/lost 201). The
+    // atomic create+delete-with-claim must let exactly one win and 404 the
+    // other rather than inserting a second card.
+    const [a, b] = await Promise.all([
+      request.post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`),
+      request.post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 404]);
+
+    // Only one support-ticket card landed on the board for this ticket.
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const supportCards = board.body.cards.filter(
+      (c: { labels: string | null; description: string | null }) =>
+        (c.labels || '').includes('support') && (c.description || '').includes(ticketId),
+    );
+    expect(supportCards).toHaveLength(1);
   });
 
   it('404s converting an unknown ticket or project', async () => {
@@ -330,29 +361,26 @@ describe('support-tickets routes', () => {
     await request.get(secondRef).expect(200); // new file live
   });
 
-  it('PATCH replacing a screenshot PRESERVES the prior file when a converted card still embeds it', async () => {
+  it('converting a ticket PRESERVES its screenshot file (the new card embeds it) while removing the ticket', async () => {
     const projectId = await newProjectId();
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
-      .send({ body: 'convert then replace', severity: 'high', screenshot: PNG_DATA_URL })
+      .send({ body: 'convert with screenshot', severity: 'high', screenshot: PNG_DATA_URL })
       .expect(201);
     const id = created.body.id as string;
-    const firstRef = created.body.screenshot_ref as string;
+    const ref = created.body.screenshot_ref as string;
+    await request.get(ref).expect(200);
 
-    // Convert: the card description bakes in firstRef as a markdown image.
+    // Convert: the card description bakes in the ref as a markdown image, so the
+    // file must survive the ticket deletion.
     const convert = await request
       .post(`/api/projects/${projectId}/support-tickets/${id}/convert`)
       .expect(201);
-    expect(convert.body.card.description).toContain(firstRef);
+    expect(convert.body.card.description).toContain(ref);
 
-    // Replacing the ticket's screenshot must NOT delete firstRef — the card
-    // still references it.
-    await request
-      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
-      .send({ screenshot: PNG_DATA_URL })
-      .expect(200);
-
-    await request.get(firstRef).expect(200); // preserved for the card
+    await request.get(ref).expect(200); // preserved for the card
+    // The source ticket itself is gone.
+    await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(404);
   });
 
   it('DELETE removes the screenshot file of an unconverted ticket', async () => {
@@ -367,21 +395,6 @@ describe('support-tickets routes', () => {
 
     await request.delete(`/api/projects/${projectId}/support-tickets/${id}`).expect(200);
     await request.get(ref).expect(404);
-  });
-
-  it('DELETE preserves the screenshot file when a converted card still embeds it', async () => {
-    const projectId = await newProjectId();
-    const created = await request
-      .post(`/api/projects/${projectId}/support-tickets`)
-      .send({ body: 'delete converted', severity: 'low', screenshot: PNG_DATA_URL })
-      .expect(201);
-    const id = created.body.id as string;
-    const ref = created.body.screenshot_ref as string;
-
-    await request.post(`/api/projects/${projectId}/support-tickets/${id}/convert`).expect(201);
-    await request.delete(`/api/projects/${projectId}/support-tickets/${id}`).expect(200);
-
-    await request.get(ref).expect(200); // card still needs it
   });
 
   it('PATCH with an invalid screenshot fails the whole update with a 400', async () => {
@@ -491,7 +504,7 @@ describe('support-tickets routes', () => {
     expect(again.body.marked).toBe(0);
   });
 
-  it('converting a ticket marks it read', async () => {
+  it('converting a ticket removes it, clearing it from the unread count', async () => {
     const projectId = await newProjectId();
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
@@ -499,12 +512,16 @@ describe('support-tickets routes', () => {
       .expect(201);
     const id = created.body.id as string;
 
+    // The fresh ticket counts as unread.
+    expect(
+      (await request.get(`/api/projects/${projectId}/support-tickets/unread-count`).expect(200))
+        .body.count,
+    ).toBe(1);
+
     await request.post(`/api/projects/${projectId}/support-tickets/${id}/convert`).expect(201);
 
-    const detail = await request
-      .get(`/api/projects/${projectId}/support-tickets/${id}`)
-      .expect(200);
-    expect(detail.body.read_at).not.toBeNull();
+    // The ticket is gone, so the unread count drops back to zero.
+    await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(404);
     expect(
       (await request.get(`/api/projects/${projectId}/support-tickets/unread-count`).expect(200))
         .body.count,

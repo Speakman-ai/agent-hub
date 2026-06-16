@@ -228,14 +228,15 @@ const ConvertSupportTicketResponse = registerComponent(
   'ConvertSupportTicketResponse',
   z
     .object({
-      ticket: SupportTicketComponent,
       card: KanbanCardComponent,
-      alreadyConverted: z
-        .boolean()
-        .optional()
-        .openapi({ description: 'True when the ticket was already linked to an existing card.' }),
+      ticketId: z
+        .string()
+        .openapi({ description: 'Id of the source ticket that was converted and removed.' }),
+      deleted: z.literal(true).openapi({
+        description: 'Always true — the source ticket is removed once promoted to the board.',
+      }),
     })
-    .openapi({ description: 'The converted ticket plus the kanban card it became.' }),
+    .openapi({ description: 'The kanban card the ticket became; the source ticket is removed.' }),
 );
 
 registerPath({
@@ -244,15 +245,11 @@ registerPath({
   tags: ['Support'],
   summary: 'Convert a support ticket into a To Do kanban card',
   description:
-    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), flips the ticket to converted, and links the card id back. Idempotent: returns the existing card if already converted.',
+    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels) and then removes the source ticket — the card is the single source of truth. Not idempotent: re-converting the same ticket id 404s.',
   request: { params: ticketParams },
   responses: {
-    200: {
-      description: 'Ticket was already converted; returns the existing card.',
-      content: jsonContent(ConvertSupportTicketResponse),
-    },
     201: {
-      description: 'Ticket converted to a new card.',
+      description: 'Ticket converted to a new card and removed from the queue.',
       content: jsonContent(ConvertSupportTicketResponse),
     },
     404: errorResponse('Project or ticket not found.'),

@@ -1051,8 +1051,16 @@ export const api = {
     return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
   },
   getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
-  // Promote a support ticket to a To Do kanban card. Returns { ticket, card,
-  // alreadyConverted? }. Idempotent: re-converting returns the existing card.
+  // Change a ticket's lifecycle status (new | investigating | closed). Returns
+  // the updated ticket and emits a support_ticket_updated WebSocket event.
+  setSupportTicketStatus: (projectId, id, status) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
+  // Promote a support ticket to a To Do kanban card and REMOVE the source
+  // ticket. Returns { card, ticketId, deleted: true }. Not idempotent:
+  // re-converting the same id 404s (the ticket no longer exists).
   convertSupportTicketToCard: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
   // Permanently delete a support ticket. The server emits a
