@@ -902,6 +902,20 @@ export const api = {
   logoutMyCodex: () =>
     fetchJSON('/auth/me/codex-auth/browser', { method: 'DELETE', timeout: 65000 }),
 
+  // Grok (xAI Grok Build CLI) device-auth — consumed by `MyGrokAuthSection`.
+  // Forwards to the `/auth/me/grok-auth/browser/*` routes in
+  // server/routes/per-user-engine-auth.ts.
+  getMyGrokBrowserAuth: () => fetchJSON('/auth/me/grok-auth/browser'),
+  startMyGrokDeviceLogin: () =>
+    fetchJSON('/auth/me/grok-auth/browser/device-login', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      timeout: 50000,
+    }),
+  cancelMyGrokDeviceLogin: () =>
+    fetchJSON('/auth/me/grok-auth/browser/cancel-login', { method: 'POST' }),
+  logoutMyGrok: () => fetchJSON('/auth/me/grok-auth/browser', { method: 'DELETE', timeout: 65000 }),
+
   // Per-project export/import
   exportProject: (projectId) => fetchJSON(`/projects/${projectId}/export`),
   importProject: (projectId, data) =>

@@ -9,9 +9,21 @@ import {
 } from './settingsCliKeys.js';
 
 describe('CLI_KEY_PROVIDERS', () => {
-  it('covers all four engines with unique ids', () => {
+  it('covers all five engines with unique ids', () => {
     const ids = CLI_KEY_PROVIDERS.map((p) => p.id);
-    expect(ids).toEqual(['claude', 'cursor', 'gemini', 'codex']);
+    expect(ids).toEqual(['claude', 'cursor', 'gemini', 'codex', 'grok']);
+  });
+
+  it('grok pastes an xAI key and routes to /auth/me/grok-auth', () => {
+    const grok = CLI_KEY_PROVIDERS.find((p) => p.id === 'grok');
+    expect(grok).toBeTruthy();
+    expect(grok.placeholder).toBe('xai-...');
+    // Single-key engines write { apiKey } against /auth/me/<id>-auth.
+    expect(buildPutMyAuthBody('grok', ' xai-k ')).toEqual({ apiKey: 'xai-k' });
+    expect(providerKeyConfigured('grok', { apiKey: 'xai…1' })).toBe(true);
+    expect(providerStatusLabel('grok', { apiKey: null, hostConfigFallback: { apiKey: true } })).toBe(
+      'Using host-configured key',
+    );
   });
 });
 

@@ -17,6 +17,7 @@ import {
 import { perUserHomePath } from './per-user-home.js';
 import { hasPopulatedCodexDeviceAuth } from './per-user-codex-device-login.js';
 import { detectCodexAuthMode } from './codex-auth.js';
+import { detectGrokAuthMode } from './grok-device-auth-parse.js';
 
 function perUserHomeHasCursorCache(userId: string, dataDir: string): boolean {
   try {
@@ -33,6 +34,22 @@ function perUserHomeHasCodexCache(userId: string, dataDir: string): boolean {
     const home = perUserHomePath(userId, dataDir);
     const info = detectCodexAuthMode(path.join(home, '.codex'));
     return info.present && (info.mode === 'chatgpt' || info.mode === 'apikey');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the user's per-user HOME contains a `grok login` OAuth token at
+ * `.grok/auth.json`. The Grok Build CLI caches its device-auth token there;
+ * since every grok spawn HOME-pins this same tree, an on-disk OAuth token is
+ * usable per-user material that should win over the host xAI key.
+ */
+export function perUserHomeHasGrokCache(userId: string, dataDir: string): boolean {
+  try {
+    const home = perUserHomePath(userId, dataDir);
+    const info = detectGrokAuthMode(path.join(home, '.grok'));
+    return info.present && info.mode === 'oauth';
   } catch {
     return false;
   }
@@ -249,10 +266,14 @@ export function userHasPerUserCliIdentity(userId: string, dataDir: string): bool
     const codex = getUserCodexAuth(userId);
     if (codex?.apiKey) return true;
 
+    const grok = getUserGrokAuth(userId);
+    if (grok?.apiKey) return true;
+
     if (hasPopulatedCodexDeviceAuth(userId, dataDir)) return true;
     if (perUserHomeHasCursorCache(userId, dataDir)) return true;
     if (perUserHomeHasCodexCache(userId, dataDir)) return true;
     if (perUserHomeHasClaudeCache(userId, dataDir)) return true;
+    if (perUserHomeHasGrokCache(userId, dataDir)) return true;
 
     return false;
   } catch {

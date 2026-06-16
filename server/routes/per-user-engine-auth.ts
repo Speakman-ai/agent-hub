@@ -20,6 +20,11 @@
  *   POST   /api/auth/me/codex-auth/browser/cancel-login  cancel
  *   DELETE /api/auth/me/codex-auth/browser               wipe ~/.codex cache
  *
+ *   GET    /api/auth/me/grok-auth/browser                status
+ *   POST   /api/auth/me/grok-auth/browser/device-login   start device auth
+ *   POST   /api/auth/me/grok-auth/browser/cancel-login   cancel
+ *   DELETE /api/auth/me/grok-auth/browser                wipe ~/.grok cache
+ *
  * Auth: every endpoint requires an authenticated caller. We never
  * accept a `userId` query/body — the active caller's id (from
  * `authedReq.authUserId`) is the only addressable identity, which
@@ -41,6 +46,12 @@ import {
   extractCodexDeviceUrl,
   extractCodexDeviceUserCode,
 } from '../codex-device-auth-parse.js';
+import {
+  computeGrokUiStatus,
+  detectGrokAuthMode,
+  extractGrokDeviceUrl,
+  extractGrokDeviceUserCode,
+} from '../grok-device-auth-parse.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { ensurePerUserHome, perUserHomePath, clearPerUserCliCache } from '../per-user-home.js';
 import { invalidateCursorAuthCacheForScope } from '../cursor-auth-cache.js';
@@ -291,6 +302,109 @@ registerPath({
   },
 });
 
+// ── Grok (xAI Grok Build CLI) ───────────────────────────────────────────
+//
+// Mirrors the legacy Codex `/browser/device-login` shape: `grok login
+// --device-auth` prints a verification URL + short code, and the resulting
+// token caches at `$HOME/.grok/auth.json`. Because the grok CLI has no
+// dedicated home env var (it reads `$HOME/.grok`) and every session spawn
+// already pins HOME to the acting user's per-user tree, signing in here makes
+// the OAuth token visible to every downstream grok spawn the user owns — no
+// extra spawn-env wiring required. The CLI prefers its cached token over the
+// `XAI_API_KEY` env var, so OAuth is preferred over a pasted key automatically.
+const PerUserGrokStatus = z.object({
+  uiStatus: z.string(),
+  binary: z.object({ present: z.boolean(), path: z.string() }),
+  oauth: z.object({
+    loggedIn: z.boolean().nullable(),
+    mode: z.string().nullable().optional(),
+    authJsonPath: z.string().nullable().optional(),
+  }),
+  loginInProgress: z.boolean(),
+  activeMethod: z.enum(['oauth', 'none']),
+  statusError: z.string().nullable(),
+});
+
+const PerUserGrokLoginResponse = z.object({
+  ok: z.boolean(),
+  loginId: z.string().optional(),
+  deviceAuthUrl: z.string().optional(),
+  userCode: z.string().optional(),
+  output: z.string().optional(),
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/auth/me/grok-auth/browser',
+  tags: ['Auth'],
+  summary: 'Per-user Grok "Sign in with browser" status.',
+  responses: {
+    200: {
+      description: 'Caller-scoped Grok OAuth state.',
+      content: { 'application/json': { schema: PerUserGrokStatus } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/grok-auth/browser/device-login',
+  tags: ['Auth'],
+  summary: 'Start a per-user Grok device-auth (xAI) login.',
+  responses: {
+    200: {
+      description: 'Device code emitted or login outcome.',
+      content: { 'application/json': { schema: PerUserGrokLoginResponse } },
+    },
+    400: {
+      description: 'Grok binary missing.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/grok-auth/browser/cancel-login',
+  tags: ['Auth'],
+  summary: 'Cancel an in-progress per-user Grok device login.',
+  responses: {
+    200: {
+      description: 'Cancellation receipt.',
+      content: { 'application/json': { schema: CancelResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/auth/me/grok-auth/browser',
+  tags: ['Auth'],
+  summary: 'Sign the per-user Grok cache out (wipe ~/.grok).',
+  responses: {
+    200: {
+      description: 'Cache cleared.',
+      content: { 'application/json': { schema: DeleteResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────
 interface RunResult {
   stdout: string;
@@ -348,9 +462,10 @@ function requireAuthUserId(req: Request, res: Response): string | null {
 // / codex-auth.ts where there's one shared operator).
 type LoginRecord = { proc: ChildProcess; loginId: string };
 const activeLogins = new Map<string, LoginRecord>();
-const loginKey = (engine: 'cursor' | 'codex', userId: string): string => `${engine}:${userId}`;
+const loginKey = (engine: 'cursor' | 'codex' | 'grok', userId: string): string =>
+  `${engine}:${userId}`;
 
-function cancelLogin(engine: 'cursor' | 'codex', userId: string): boolean {
+function cancelLogin(engine: 'cursor' | 'codex' | 'grok', userId: string): boolean {
   const key = loginKey(engine, userId);
   const rec = activeLogins.get(key);
   if (!rec) return false;
@@ -384,11 +499,12 @@ function cancelP4CodexLogin(userId: string): boolean {
 
 // ── Router factory ─────────────────────────────────────────────────────
 export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
-  const { config, broadcast, getCursorBin, getCodexBin } = deps;
+  const { config, broadcast, getCursorBin, getCodexBin, getGrokBin } = deps;
   const router = Router();
 
   const cursorBinPath = (): string => getCursorBin?.() ?? config.cursorBin;
   const codexBinPath = (): string => getCodexBin?.() ?? config.codexBin;
+  const grokBinPath = (): string => getGrokBin?.() ?? config.grokBin;
 
   // ── Cursor ──────────────────────────────────────────────────────────
   router.get('/api/auth/me/cursor-auth/browser', async (req: Request, res: Response) => {
@@ -970,6 +1086,209 @@ export default function createPerUserEngineAuthRoutes(deps: RouteDeps): Router {
     }
     clearActiveCodexDeviceLogin(userId);
     res.json({ ok: true, output: 'Device login cancelled' });
+  });
+
+  // ── Grok (xAI Grok Build CLI) device-auth ───────────────────────────
+  router.get('/api/auth/me/grok-auth/browser', (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+
+    const bin = grokBinPath();
+    const binaryPresent = existsSync(bin);
+    const loginInProgress = activeLogins.has(loginKey('grok', userId));
+
+    let home: string;
+    try {
+      home = ensurePerUserHome(userId, config.dataDir);
+    } catch (err) {
+      return res.json({
+        uiStatus: 'error',
+        binary: { present: binaryPresent, path: bin },
+        oauth: { loggedIn: false, mode: null, authJsonPath: null },
+        loginInProgress,
+        activeMethod: 'none' as const,
+        statusError: (err as Error).message,
+      });
+    }
+
+    const grokHome = path.join(home, '.grok');
+    const authInfo = detectGrokAuthMode(grokHome);
+    const oauthFromFile = authInfo.present && authInfo.mode === 'oauth';
+    const oauthLoggedIn: boolean | null = !binaryPresent ? null : oauthFromFile;
+
+    const uiStatus = computeGrokUiStatus({
+      binaryPresent,
+      loginInProgress,
+      apiKeyConfigured: false,
+      oauthFromFile,
+    });
+
+    res.json({
+      uiStatus,
+      binary: { present: binaryPresent, path: bin },
+      oauth: {
+        loggedIn: oauthLoggedIn,
+        mode: binaryPresent ? authInfo.mode : null,
+        authJsonPath: binaryPresent ? authInfo.path : null,
+      },
+      loginInProgress,
+      activeMethod: oauthFromFile ? ('oauth' as const) : ('none' as const),
+      statusError: binaryPresent
+        ? null
+        : `Grok binary not found at ${bin}. Set grokBin in Settings → General.`,
+    });
+  });
+
+  router.post('/api/auth/me/grok-auth/browser/device-login', (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+    cancelLogin('grok', userId);
+
+    const bin = grokBinPath();
+    if (!existsSync(bin)) {
+      return res.status(400).json({ ok: false, error: `Grok binary not found at ${bin}` });
+    }
+
+    let home: string;
+    try {
+      home = ensurePerUserHome(userId, config.dataDir);
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+
+    const loginId = Date.now().toString(36);
+    const proc = spawn(bin, ['login', '--device-auth'], {
+      cwd: home,
+      env: { ...process.env, HOME: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    trackChild(proc);
+    activeLogins.set(loginKey('grok', userId), { proc, loginId });
+
+    let allOutput = '';
+    let responded = false;
+
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    const clearLoginTimeout = (): void => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+    };
+
+    const trySend = (): void => {
+      if (responded) return;
+      const url = extractGrokDeviceUrl(allOutput);
+      const userCode = extractGrokDeviceUserCode(allOutput);
+      if (url && userCode) {
+        responded = true;
+        clearLoginTimeout();
+        res.json({ ok: true, loginId, deviceAuthUrl: url, userCode });
+      }
+    };
+
+    const onData = (chunk: Buffer): void => {
+      allOutput += chunk.toString();
+      trySend();
+    };
+
+    proc.stdout?.on('data', onData);
+    proc.stderr?.on('data', onData);
+
+    proc.on('close', (code) => {
+      clearLoginTimeout();
+      const key = loginKey('grok', userId);
+      const current = activeLogins.get(key);
+      if (current?.loginId === loginId) activeLogins.delete(key);
+
+      if (!responded) {
+        responded = true;
+        res.json({
+          ok: false,
+          loginId,
+          output: allOutput.trim() || `Device login exited with code ${code}`,
+        });
+      } else if (broadcast) {
+        const status = code === 0 ? 'success' : 'failed';
+        broadcast({
+          type: 'per-user-grok-auth-update',
+          userId,
+          loginId,
+          status,
+          ...(status === 'failed' && {
+            error: allOutput.trim().slice(0, 500) || 'Device login failed',
+          }),
+        });
+      }
+    });
+
+    proc.on('error', (err) => {
+      clearLoginTimeout();
+      const key = loginKey('grok', userId);
+      const current = activeLogins.get(key);
+      if (current?.loginId === loginId) activeLogins.delete(key);
+      if (!responded) {
+        responded = true;
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    timeoutHandle = setTimeout(() => {
+      timeoutHandle = null;
+      if (!responded) {
+        responded = true;
+        res.json({
+          ok: false,
+          output: allOutput.trim() || 'Timed out waiting for Grok device code',
+        });
+        try {
+          killProcessGroup(proc, 'SIGTERM');
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 45_000);
+  });
+
+  router.post('/api/auth/me/grok-auth/browser/cancel-login', (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+    const cancelled = cancelLogin('grok', userId);
+    res.json({
+      ok: true,
+      output: cancelled ? 'Device login cancelled' : 'No device login in progress',
+    });
+  });
+
+  router.delete('/api/auth/me/grok-auth/browser', async (req: Request, res: Response) => {
+    const userId = requireAuthUserId(req, res);
+    if (!userId) return;
+
+    const bin = grokBinPath();
+    let cliOutput = '';
+    if (existsSync(bin)) {
+      try {
+        const home = perUserHomePath(userId, config.dataDir);
+        if (existsSync(home)) {
+          // `grok logout` is best-effort — not all CLI builds expose it. We
+          // wipe the on-disk cache below regardless of its outcome.
+          const result = await runCli(bin, ['logout'], { home, timeout: 60_000 });
+          cliOutput = (result.stdout + result.stderr).trim();
+        }
+      } catch {
+        /* ignore — proceed to local wipe regardless */
+      }
+    }
+
+    try {
+      clearPerUserCliCache(userId, config.dataDir, '.grok');
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: (err as Error).message });
+    }
+
+    const summary = ['Per-user Grok cache cleared', cliOutput].filter(Boolean).join(' — ');
+    res.json({ ok: true, output: summary });
   });
 
   return router;

@@ -5,9 +5,10 @@ import path from 'path';
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('./auth-store.js');
-const { createUser, setUserCursorAuth } = await import('./users-store.js');
+const { createUser, setUserCursorAuth, setUserGrokAuth } = await import('./users-store.js');
 const { ensurePerUserHome } = await import('./per-user-home.js');
-const { userHasPerUserCliIdentity } = await import('./per-user-cli-spawn.js');
+const { userHasPerUserCliIdentity, perUserHomeHasGrokCache } =
+  await import('./per-user-cli-spawn.js');
 
 let dataDir = '';
 
@@ -41,5 +42,31 @@ describe('userHasPerUserCliIdentity', () => {
     mkdirSync(path.join(home, '.cursor'), { recursive: true });
     writeFileSync(path.join(home, '.cursor', 'token.json'), '{"token":"x"}');
     expect(userHasPerUserCliIdentity(user.id, dataDir)).toBe(true);
+  });
+
+  it('returns true when the user has a stored Grok API key', () => {
+    const user = createUser({ username: 'grok-key-user', passwordHash: 'x' });
+    setUserGrokAuth(user.id, { apiKey: 'xai-test' });
+    expect(userHasPerUserCliIdentity(user.id, dataDir)).toBe(true);
+  });
+
+  it('returns true when per-user HOME has a grok login OAuth token', () => {
+    const user = createUser({ username: 'grok-oauth-user', passwordHash: 'x' });
+    const home = ensurePerUserHome(user.id, dataDir);
+    mkdirSync(path.join(home, '.grok'), { recursive: true });
+    writeFileSync(
+      path.join(home, '.grok', 'auth.json'),
+      JSON.stringify({ access_token: 'a', refresh_token: 'r' }),
+    );
+    expect(perUserHomeHasGrokCache(user.id, dataDir)).toBe(true);
+    expect(userHasPerUserCliIdentity(user.id, dataDir)).toBe(true);
+  });
+
+  it('does not count a grok auth.json that holds only an api key as an OAuth cache', () => {
+    const user = createUser({ username: 'grok-apikey-file-user', passwordHash: 'x' });
+    const home = ensurePerUserHome(user.id, dataDir);
+    mkdirSync(path.join(home, '.grok'), { recursive: true });
+    writeFileSync(path.join(home, '.grok', 'auth.json'), JSON.stringify({ api_key: 'xai-onfile' }));
+    expect(perUserHomeHasGrokCache(user.id, dataDir)).toBe(false);
   });
 });

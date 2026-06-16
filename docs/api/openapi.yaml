@@ -15347,6 +15347,160 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/grok-auth/browser:
+    get:
+      tags:
+        - Auth
+      summary: Per-user Grok "Sign in with browser" status.
+      responses:
+        "200":
+          description: Caller-scoped Grok OAuth state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uiStatus:
+                    type: string
+                  binary:
+                    type: object
+                    properties:
+                      present:
+                        type: boolean
+                      path:
+                        type: string
+                    required:
+                      - present
+                      - path
+                  oauth:
+                    type: object
+                    properties:
+                      loggedIn:
+                        type: boolean
+                        nullable: true
+                      mode:
+                        type: string
+                        nullable: true
+                      authJsonPath:
+                        type: string
+                        nullable: true
+                    required:
+                      - loggedIn
+                  loginInProgress:
+                    type: boolean
+                  activeMethod:
+                    type: string
+                    enum:
+                      - oauth
+                      - none
+                  statusError:
+                    type: string
+                    nullable: true
+                required:
+                  - uiStatus
+                  - binary
+                  - oauth
+                  - loginInProgress
+                  - activeMethod
+                  - statusError
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags:
+        - Auth
+      summary: Sign the per-user Grok cache out (wipe ~/.grok).
+      responses:
+        "200":
+          description: Cache cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/grok-auth/browser/device-login:
+    post:
+      tags:
+        - Auth
+      summary: Start a per-user Grok device-auth (xAI) login.
+      responses:
+        "200":
+          description: Device code emitted or login outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  loginId:
+                    type: string
+                  deviceAuthUrl:
+                    type: string
+                  userCode:
+                    type: string
+                  output:
+                    type: string
+                required:
+                  - ok
+        "400":
+          description: Grok binary missing.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/grok-auth/browser/cancel-login:
+    post:
+      tags:
+        - Auth
+      summary: Cancel an in-progress per-user Grok device login.
+      responses:
+        "200":
+          description: Cancellation receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  output:
+                    type: string
+                required:
+                  - ok
+                  - output
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/projects/{projectId}/previews:
     get:
       summary: List active worktree previews for a project

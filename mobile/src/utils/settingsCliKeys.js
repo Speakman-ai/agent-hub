@@ -38,6 +38,15 @@ export const CLI_KEY_PROVIDERS = [
     placeholder: 'sk-...',
     description: 'Used when sessions you own spawn the Codex CLI.',
   },
+  {
+    id: 'grok',
+    label: 'Grok',
+    keyLabel: 'xAI API key',
+    placeholder: 'xai-...',
+    description:
+      'Used when sessions you own spawn the Grok Build CLI. On web/desktop you can ' +
+      'instead "Sign in with browser" (xAI device-code OAuth); on mobile, paste a key.',
+  },
 ];
 
 /**

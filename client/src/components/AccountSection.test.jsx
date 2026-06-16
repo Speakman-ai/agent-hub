@@ -157,8 +157,8 @@ describe('AccountSection — Grok personal credentials', () => {
 
     render(<AccountSection />);
 
-    // The generic single-key panel renders "Personal Grok credentials" once
-    // its getter resolves — proving AccountSection wired the Grok descriptor.
+    // MyGrokAuthSection renders "Personal Grok credentials" once its paste-key
+    // getter resolves — proving AccountSection wired the dedicated Grok panel.
     expect(await screen.findByText('Personal Grok credentials')).toBeInTheDocument();
     expect(screen.getByLabelText('Grok API key')).toBeInTheDocument();
     expect(grokHit).toBe(true);

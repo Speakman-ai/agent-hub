@@ -13,13 +13,13 @@ import {
   Trash2,
   Users,
   X,
-  Zap,
 } from 'lucide-react';
 import RoleBadge from './RoleBadge.jsx';
 import MyClaudeAuthSection from './MyClaudeAuthSection.jsx';
 import MySingleKeyAuthSection from './MySingleKeyAuthSection.jsx';
 import MyCursorAuthSection from './MyCursorAuthSection.jsx';
 import MyCodexAuthSection from './MyCodexAuthSection.jsx';
+import MyGrokAuthSection from './MyGrokAuthSection.jsx';
 import MySkillCredentialSection from './MySkillCredentialSection.jsx';
 import { api } from '../utils/api.js';
 import { getAuthHeaders, getApiBase } from '../utils/connection.js';
@@ -222,16 +222,7 @@ export default function AccountSection() {
 
       {me && <MyCodexAuthSection />}
 
-      {me && (
-        <MySingleKeyAuthSection
-          engineLabel="Grok"
-          Icon={Zap}
-          placeholder="xai-..."
-          hostSettingHint="Settings → Plugin API keys → xAI"
-          getter={() => api.getMyGrokAuth()}
-          setter={(body) => api.putMyGrokAuth(body)}
-        />
-      )}
+      {me && <MyGrokAuthSection />}
 
       {me && (
         <MySkillCredentialSection

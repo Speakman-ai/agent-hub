@@ -41,6 +41,7 @@ function fakeSpawnProc(events: {
 function buildApp(opts: {
   cursorBin: string;
   codexBin: string;
+  grokBin?: string;
   dataDir: string;
   userId?: string | null;
 }): express.Express {
@@ -50,6 +51,7 @@ function buildApp(opts: {
 function buildAppWithDeps(opts: {
   cursorBin: string;
   codexBin: string;
+  grokBin?: string;
   dataDir: string;
   userId?: string | null;
 }): { app: express.Express; broadcast: ReturnType<typeof vi.fn> } {
@@ -66,16 +68,19 @@ function buildAppWithDeps(opts: {
   });
 
   const broadcast = vi.fn();
+  const grokBin = opts.grokBin ?? join(opts.dataDir, 'grok-default-missing');
   const deps = {
     config: {
       cursorBin: opts.cursorBin,
       codexBin: opts.codexBin,
+      grokBin,
       dataDir: opts.dataDir,
       codexApiKey: null,
     },
     broadcast,
     getCursorBin: () => opts.cursorBin,
     getCodexBin: () => opts.codexBin,
+    getGrokBin: () => grokBin,
   } as unknown as RouteDeps;
 
   app.use(createPerUserEngineAuthRoutes(deps));
@@ -90,18 +95,27 @@ Follow these steps to sign in with ChatGPT using device code authorization:
 2. Enter this one-time code
    UYG9-Q1Q9N
 `;
+const sampleGrokDeviceOutput = `
+To sign in, open the following URL on any device:
+   https://auth.x.ai/device
+and enter this code:
+   QRST-7H2K
+`;
 
 describe('per-user engine auth routes', () => {
   let tmpDir: string;
   let cursorBin: string;
   let codexBin: string;
+  let grokBin: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'per-user-auth-rt-'));
     cursorBin = join(tmpDir, 'cursor-agent');
     codexBin = join(tmpDir, 'codex');
+    grokBin = join(tmpDir, 'grok');
     writeFileSync(cursorBin, '');
     writeFileSync(codexBin, '');
+    writeFileSync(grokBin, '');
     spawnMock.mockReset();
     resetActiveCodexDeviceLoginsForTest();
   });
@@ -449,6 +463,142 @@ describe('per-user engine auth routes', () => {
       const res = await request(app).post('/api/auth/me/codex-auth/login/cancel').expect(200);
       expect(res.body.ok).toBe(true);
       expect(res.body.output).toMatch(/no device login in progress/i);
+    });
+  });
+
+  // ── Grok (xAI Grok Build CLI) device-auth ──────────────────────────
+  describe('Grok device-auth', () => {
+    it('returns 401 across all grok routes when unauthenticated', async () => {
+      const app = buildApp({ cursorBin, codexBin, grokBin, dataDir: tmpDir, userId: null });
+      const responses = await Promise.all([
+        request(app).get('/api/auth/me/grok-auth/browser'),
+        request(app).post('/api/auth/me/grok-auth/browser/device-login'),
+        request(app).post('/api/auth/me/grok-auth/browser/cancel-login'),
+        request(app).delete('/api/auth/me/grok-auth/browser'),
+      ]);
+      for (const res of responses) expect(res.status).toBe(401);
+    });
+
+    it('POST device-login returns deviceAuthUrl + userCode and HOME-pins the spawn', async () => {
+      const userId = 'user-grok';
+      const app = buildApp({ cursorBin, codexBin, grokBin, dataDir: tmpDir, userId });
+
+      spawnMock.mockImplementation((cmd, args, opts) => {
+        expect(cmd).toBe(grokBin);
+        expect(args).toEqual(['login', '--device-auth']);
+        const env = (opts as { env: Record<string, string> }).env;
+        expect(env.HOME).toBe(join(tmpDir, 'per-user-creds', userId, 'home'));
+        return fakeSpawnProc({ stdoutChunks: [sampleGrokDeviceOutput], closeCode: 0 });
+      });
+
+      const res = await request(app)
+        .post('/api/auth/me/grok-auth/browser/device-login')
+        .expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.deviceAuthUrl).toBe('https://auth.x.ai/device');
+      expect(res.body.userCode).toBe('QRST-7H2K');
+      expect(res.body.loginId).toBeTruthy();
+    });
+
+    it('POST device-login → 400 when the grok binary is missing', async () => {
+      const missingBin = join(tmpDir, 'nope-grok');
+      const app = buildApp({
+        cursorBin,
+        codexBin,
+        grokBin: missingBin,
+        dataDir: tmpDir,
+        userId: 'u1',
+      });
+      const res = await request(app)
+        .post('/api/auth/me/grok-auth/browser/device-login')
+        .expect(400);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.error).toContain('Grok binary not found');
+    });
+
+    it('GET status reports OAuth when per-user .grok/auth.json holds tokens', async () => {
+      const userId = 'user-grok-status';
+      const home = join(tmpDir, 'per-user-creds', userId, 'home');
+      mkdirSync(join(home, '.grok'), { recursive: true });
+      writeFileSync(
+        join(home, '.grok', 'auth.json'),
+        JSON.stringify({ access_token: 'x', refresh_token: 'r' }),
+      );
+
+      const app = buildApp({ cursorBin, codexBin, grokBin, dataDir: tmpDir, userId });
+      const res = await request(app).get('/api/auth/me/grok-auth/browser').expect(200);
+      expect(res.body.binary.present).toBe(true);
+      expect(res.body.oauth.mode).toBe('oauth');
+      expect(res.body.oauth.loggedIn).toBe(true);
+      expect(res.body.activeMethod).toBe('oauth');
+      expect(res.body.uiStatus).toBe('authenticated');
+    });
+
+    it('GET status reports binary-missing when the grok bin is absent', async () => {
+      const missingBin = join(tmpDir, 'nope-grok');
+      const app = buildApp({
+        cursorBin,
+        codexBin,
+        grokBin: missingBin,
+        dataDir: tmpDir,
+        userId: 'u1',
+      });
+      const res = await request(app).get('/api/auth/me/grok-auth/browser').expect(200);
+      expect(res.body.binary.present).toBe(false);
+      expect(res.body.statusError).toContain('Grok binary not found');
+    });
+
+    it('DELETE wipes the per-user .grok cache', async () => {
+      const userId = 'user-grok-wipe';
+      const home = join(tmpDir, 'per-user-creds', userId, 'home');
+      mkdirSync(join(home, '.grok'), { recursive: true });
+      writeFileSync(join(home, '.grok', 'auth.json'), '{}');
+
+      const app = buildApp({ cursorBin, codexBin, grokBin, dataDir: tmpDir, userId });
+      spawnMock.mockImplementation(() =>
+        fakeSpawnProc({ stdoutChunks: ['Logged out'], closeCode: 0 }),
+      );
+
+      const res = await request(app).delete('/api/auth/me/grok-auth/browser').expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(existsSync(join(home, '.grok'))).toBe(false);
+    });
+
+    it('cancel-login is idempotent', async () => {
+      const app = buildApp({ cursorBin, codexBin, grokBin, dataDir: tmpDir, userId: 'grok-clean' });
+      const res = await request(app)
+        .post('/api/auth/me/grok-auth/browser/cancel-login')
+        .expect(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.output).toMatch(/no device login in progress/i);
+    });
+
+    it('broadcasts per-user-grok-auth-update on the post-URL-emit close path', async () => {
+      const { app, broadcast } = buildAppWithDeps({
+        cursorBin,
+        codexBin,
+        grokBin,
+        dataDir: tmpDir,
+        userId: 'grok-broadcast',
+      });
+      spawnMock.mockImplementation(() =>
+        fakeSpawnProc({ stdoutChunks: [sampleGrokDeviceOutput], closeCode: 0 }),
+      );
+
+      const res = await request(app)
+        .post('/api/auth/me/grok-auth/browser/device-login')
+        .expect(200);
+      expect(res.body.ok).toBe(true);
+
+      await new Promise<void>((r) => setImmediate(r));
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'per-user-grok-auth-update',
+          userId: 'grok-broadcast',
+          status: 'success',
+          loginId: res.body.loginId,
+        }),
+      );
     });
   });
 
