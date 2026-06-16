@@ -50,6 +50,26 @@ describe('server/Dockerfile', () => {
     );
   });
 
+  it('installs the AWS Session Manager plugin in the runtime stage', () => {
+    // `aws ssm start-session` (SSM shells + port forwarding) shells out to the
+    // session-manager-plugin binary; AWS CLI v2 alone is not enough. This guards
+    // the regression where SSM sessions ENOENT out of the box.
+    const dockerfile = readFileSync(dockerfilePath, 'utf8');
+    const runtimeIdx = dockerfile.indexOf('FROM node:22-slim AS runtime');
+    expect(runtimeIdx).toBeGreaterThan(-1);
+    const runtimeStage = dockerfile.slice(runtimeIdx);
+    // Fetches the official .deb and installs it.
+    expect(runtimeStage, 'expected runtime stage to download the plugin .deb').toContain(
+      'session-manager-downloads/plugin/latest/',
+    );
+    expect(runtimeStage, 'expected runtime stage to dpkg-install the plugin').toMatch(
+      /dpkg -i\s+\S*session-manager-plugin\.deb/,
+    );
+    // Arch-aware: both amd64 and arm64 plugin builds are mapped.
+    expect(runtimeStage).toContain('ubuntu_64bit');
+    expect(runtimeStage).toContain('ubuntu_arm64');
+  });
+
   it('installs every supported agent-engine CLI in the runtime stage', () => {
     // Each engine in ALL_SUPPORTED_ENGINES needs its CLI baked into the image
     // so the engine works out of the box (config.ts points the *Bin paths at

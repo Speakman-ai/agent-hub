@@ -124,6 +124,21 @@ RUN arch="$(dpkg --print-architecture)" \
  && /tmp/aws/install \
  && rm -rf /tmp/aws /tmp/awscliv2.zip
 
+# AWS Session Manager plugin (required for `aws ssm start-session` — SSM shell
+# sessions and port forwarding). The AWS CLI shells out to this binary, so the
+# CLI alone is not enough. Official .deb packages map dpkg arch to AWS's
+# ubuntu_64bit / ubuntu_arm64 builds.
+RUN arch="$(dpkg --print-architecture)" \
+ && case "$arch" in \
+      amd64) smp_arch=ubuntu_64bit ;; \
+      arm64) smp_arch=ubuntu_arm64 ;; \
+      *) echo "session-manager-plugin: unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${smp_arch}/session-manager-plugin.deb" \
+      -o /tmp/session-manager-plugin.deb \
+ && dpkg -i /tmp/session-manager-plugin.deb \
+ && rm -f /tmp/session-manager-plugin.deb
+
 # Docker CLI + Compose v2 plugin (no daemon, no buildx). The runtime
 # container talks to the *host* docker daemon over a bind-mounted
 # /var/run/docker.sock so PR-env orchestration (legacy; removed by
