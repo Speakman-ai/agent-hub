@@ -228,11 +228,30 @@ export function buildPrDetails(
   diffStat: string,
 ): { title: string; body: string } {
   const firstCommit = commits[0];
-  const title = normalizeTitle(firstCommit?.subject ?? args.card.title);
+  const cardTitle = args.card.title?.trim() ?? '';
   const cardDescription = args.card.description?.trim() ?? '';
+  // Trimmed, possibly-empty newest-commit subject. Trimming here (rather than
+  // trusting collectPrCommits to drop empty subjects) keeps buildPrDetails
+  // defensive when called with malformed/whitespace subjects.
+  const firstSubject = firstCommit?.subject?.trim() ?? '';
+  // `git log <base>..HEAD` is newest-first, so commits[0] is the *last* commit
+  // on the branch. A single commit describes the whole change, so its subject
+  // is a good title. But with several commits the newest one describes only the
+  // last turn (e.g. "Address review: ...") — naming the PR after it buries the
+  // session's actual goal. In that case prefer the kanban card title (what the
+  // session set out to do); the per-commit detail still lands in ## Commits.
+  // `||` (not `??`) so an empty string always falls through to the next
+  // source, ending at the raw card title — never an empty/"Untitled" PR name.
+  const multiCommit = commits.length > 1;
+  const titleSource = multiCommit ? cardTitle || firstSubject : firstSubject || cardTitle;
+  const title = normalizeTitle(titleSource || args.card.title);
   const sections: string[] = ['## Summary'];
 
-  if (firstCommit) {
+  if (multiCommit) {
+    // Goal-first: summarize the PR as a whole with the card (what was asked),
+    // not the newest commit. The individual commits are listed below.
+    sections.push(cardDescription || cardTitle || `Completed ${args.card.title}.`);
+  } else if (firstCommit) {
     sections.push(
       firstCommit.body ? `${firstCommit.subject}\n\n${firstCommit.body}` : firstCommit.subject,
     );
@@ -242,7 +261,7 @@ export function buildPrDetails(
     sections.push(`Completed ${args.card.title}.`);
   }
 
-  if (commits.length > 1) {
+  if (multiCommit) {
     sections.push('');
     sections.push('## Commits');
     for (const commit of commits.slice(0, 20)) {
@@ -253,7 +272,10 @@ export function buildPrDetails(
     }
   }
 
-  if (firstCommit && cardDescription) {
+  // Original-task context only adds value when the Summary came from a commit
+  // (single-commit case). For multi-commit branches the Summary already IS the
+  // card, so repeating it under ## Original task would be redundant.
+  if (!multiCommit && firstCommit && cardDescription) {
     sections.push('');
     sections.push('## Original task');
     sections.push(cardDescription);

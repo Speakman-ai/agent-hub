@@ -972,10 +972,14 @@ export function pickPrTitleFromCommits(
 /**
  * Turn a raw commit/card title into a clean PR title.
  *
- * - When `commits` is supplied and contains at least one descriptive commit
- *   subject, that subject wins — commit messages describe what was *done*,
- *   while card / session titles often capture what was *asked* (and may be a
- *   long problem statement that gets truncated mid-word at the 70-char cap).
+ * - When `commits` holds a *single* descriptive commit subject, that subject
+ *   wins — one commit describes the whole change, and commit messages describe
+ *   what was *done* (while card / session titles capture what was *asked* and
+ *   may be a long problem statement that gets truncated at the 70-char cap).
+ * - When `commits` holds *several* commits, the newest subject describes only
+ *   the last turn (e.g. "Address review: ..."), so it no longer represents the
+ *   PR. There `rawTitle` (the session goal — card/session title) wins, falling
+ *   back to a commit subject only when `rawTitle` is empty.
  * - Otherwise falls back to `rawTitle`.
  * - Collapses whitespace, trims trailing punctuation.
  * - Sentence-cases the first letter (unless it's already uppercased).
@@ -987,7 +991,12 @@ export function buildPrTitle(
   commits?: ReadonlyArray<string | CommitInfo>,
 ): string {
   const fromCommit = pickPrTitleFromCommits(commits);
-  const source = fromCommit ?? rawTitle;
+  // Single commit → its subject describes the whole change, so prefer it.
+  // Several commits → the newest subject is just the last turn, so prefer the
+  // session goal (rawTitle), falling back to a commit subject only when empty.
+  const rawTrimmed = (rawTitle ?? '').trim();
+  const multiCommit = (commits?.length ?? 0) > 1;
+  const source = multiCommit ? rawTrimmed || fromCommit : (fromCommit ?? rawTitle);
   const normalized = (source ?? '').replace(/\s+/g, ' ').trim();
   if (!normalized) return 'Untitled change';
 
@@ -1076,18 +1085,28 @@ export function buildPrBody(input: PrBodyInput): string {
   // the subject so the legacy subject-only path is unchanged.
   const commitList = normalizeCommitInputs(commits);
   const cardDescription = card?.description?.trim() || '';
-  const commitDrivenSummary = commitList.length > 0;
+  const cardTitle = card?.title?.trim() || '';
+  // Tracks whether the Summary lede came from a commit (vs the card). When the
+  // card already drove the Summary we must NOT repeat it under ## Original task.
+  let summaryFromCommit = commitList.length > 0;
   let summary: string;
   if (commitList.length === 1) {
     const only = commitList[0];
     summary = only.body ? `${only.subject}\n\n${only.body}` : only.subject;
   } else if (commitList.length > 1) {
     // For multi-commit branches the bulleted ## Commits section below renders
-    // the full list; here in Summary we surface a one-line lede so the PR is
-    // skimmable. Prefer the most recent (newest-first) descriptive subject.
-    summary = pickPrTitleFromCommits(commitList) ?? commitList[0].subject;
+    // the full list. The newest commit (newest-first) only describes the last
+    // turn, so the Summary lede should describe the PR as a whole — use the
+    // session goal (card description / title), not the latest commit subject.
+    if (cardDescription || cardTitle) {
+      summary = cardDescription || cardTitle;
+      summaryFromCommit = false;
+    } else {
+      summary = pickPrTitleFromCommits(commitList) ?? commitList[0].subject;
+    }
   } else if (cardDescription) {
     summary = cardDescription;
+    summaryFromCommit = false;
   } else {
     summary = `Task completed by ${agentName}.`;
   }
@@ -1130,10 +1149,10 @@ export function buildPrBody(input: PrBodyInput): string {
   }
 
   // Original task — preserve the card description (problem statement) as
-  // origin context, but only when commits already drove the Summary above.
-  // Without this, the long user-prose card description would either be the
-  // Summary (wrong — it's the problem, not the solution) or be lost entirely.
-  if (commitDrivenSummary && cardDescription) {
+  // origin context, but only when a commit drove the Summary above. When the
+  // card description already IS the Summary (multi-commit goal-first lede, or
+  // the no-commit fallback) repeating it here would be redundant.
+  if (summaryFromCommit && cardDescription) {
     sections.push('');
     sections.push('## Original task');
     sections.push(cardDescription);

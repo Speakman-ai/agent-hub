@@ -92,6 +92,82 @@ describe('parsePrListUrl', () => {
   });
 });
 
+describe('buildPrDetails', () => {
+  function mkArgs(overrides?: Partial<KanbanCardRow>) {
+    return {
+      runId: 'run-1',
+      worktreePath: '/tmp/wt',
+      branch: 'feature/x',
+      baseBranch: 'main',
+      headSha: 'deadbeefcafe',
+      card: { ...mkCard(), ...overrides },
+      project: mkProject(),
+    };
+  }
+
+  it('uses the single commit subject + body for the title and Summary, card under Original task', () => {
+    const { title, body } = __test.buildPrDetails(
+      mkArgs(),
+      [{ subject: 'feat: add export button', body: 'Wires the toolbar action.' }],
+      '',
+    );
+    expect(title).toBe('feat: add export button');
+    expect(body).toMatch(/## Summary\nfeat: add export button\n\nWires the toolbar action\./);
+    // Single-commit branch: card description preserved as origin context.
+    expect(body).toContain('## Original task');
+    expect(body).toContain('User asked Agent Hub to fill out the PR title and description.');
+    expect(body).not.toContain('## Commits');
+  });
+
+  it('names a multi-commit PR after the session goal (card title), not the newest commit', () => {
+    // Regression: git log is newest-first, so commits[0] is the last turn.
+    // The PR should be named after the kanban card (the session goal).
+    const { title, body } = __test.buildPrDetails(
+      mkArgs({ title: 'Add per-user GitHub login' }),
+      [
+        { subject: 'Address review: abort timeout + drop-branch backoff reset' },
+        { subject: 'feat: per-user GitHub login via PAT + setup-wizard step' },
+      ],
+      '',
+    );
+    expect(title).toBe('Add per-user GitHub login');
+    // Summary leads with the card (goal), not the newest commit.
+    expect(body).toMatch(
+      /## Summary\nUser asked Agent Hub to fill out the PR title and description\./,
+    );
+    expect(body).not.toMatch(/## Summary\nAddress review/);
+    // Per-commit detail stays in the Commits list.
+    expect(body).toContain('## Commits');
+    expect(body).toContain('- Address review: abort timeout + drop-branch backoff reset');
+    expect(body).toContain('- feat: per-user GitHub login via PAT + setup-wizard step');
+    // Card already drove the Summary, so it is not repeated under Original task.
+    expect(body).not.toContain('## Original task');
+  });
+
+  it('falls back to the card title for a multi-commit Summary when the card has no description', () => {
+    const { title, body } = __test.buildPrDetails(
+      mkArgs({ title: 'Add per-user GitHub login', description: null }),
+      [{ subject: 'fix review' }, { subject: 'feat: per-user GitHub login' }],
+      '',
+    );
+    expect(title).toBe('Add per-user GitHub login');
+    expect(body).toMatch(/## Summary\nAdd per-user GitHub login/);
+    expect(body).toContain('## Commits');
+  });
+
+  it('falls back to the card title when a single commit subject is empty/whitespace', () => {
+    // Defensive: a malformed/empty commit subject must not produce an empty or
+    // "Untitled change" PR name when a real card title exists. `||` (not `??`)
+    // drives the fallback so an empty-string subject degrades to the card.
+    const { title } = __test.buildPrDetails(
+      mkArgs({ title: 'Add per-user GitHub login' }),
+      [{ subject: '   ' }],
+      '',
+    );
+    expect(title).toBe('Add per-user GitHub login');
+  });
+});
+
 describe('createPushAndCreatePr', () => {
   beforeEach(() => {
     mockExecFile.mockReset();

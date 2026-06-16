@@ -2458,21 +2458,23 @@ describe('buildPrTitle', () => {
     );
   });
 
-  it('uses the newest descriptive commit when multiple are present', () => {
-    const cardTitle = 'Some long question from the user';
+  it('prefers the session goal (card title) over the newest commit when multiple commits exist', () => {
+    // The newest commit on a multi-turn branch describes only the last turn
+    // (e.g. addressing review feedback), not the PR as a whole. With several
+    // commits the card title — the session's goal — should name the PR.
+    const cardTitle = 'Add per-user GitHub login';
     const commits = [
-      'feat: decouple personal GitHub OAuth from the GitHub App',
+      'Address review: abort timeout + drop-branch backoff reset',
       'feat: per-user GitHub login via PAT + setup-wizard step',
     ];
-    expect(buildPrTitle(cardTitle, commits)).toBe(
-      'feat: decouple personal GitHub OAuth from the GitHub App',
-    );
+    expect(buildPrTitle(cardTitle, commits)).toBe('Add per-user GitHub login');
   });
 
-  it('skips generic commit subjects (wip, fixup!, "chore: format") and tries the next', () => {
-    const cardTitle = 'Fallback card title';
+  it('falls back to the newest descriptive commit on a multi-commit branch when no card title exists', () => {
+    // With several commits but no session goal to fall back on, skip generic
+    // subjects (wip / fixup!) and use the newest descriptive one.
     const commits = ['wip: still poking at this', 'fixup! earlier work', 'feat: add export button'];
-    expect(buildPrTitle(cardTitle, commits)).toBe('feat: add export button');
+    expect(buildPrTitle('', commits)).toBe('feat: add export button');
   });
 
   it('falls back to the card / session title when every commit looks generic', () => {
@@ -2550,6 +2552,47 @@ describe('buildPrBody', () => {
     expect(body).toContain('- Fix null pointer');
     expect(body).toContain('- Add regression test');
     expect(body).toContain('- Tidy imports');
+  });
+
+  it('leads the Summary with the session goal (card description) on a multi-commit branch', () => {
+    // Regression: the newest commit on a multi-turn branch only describes the
+    // last turn. The Summary lede must describe the PR as a whole — the card
+    // (what was asked) — with the per-commit detail relegated to ## Commits.
+    const card = {
+      id: 'c1',
+      title: 'Add per-user GitHub login',
+      description: 'Let each user connect their own GitHub account for pushes and PRs.',
+    } as never;
+    const body = buildPrBody({
+      agentName,
+      card,
+      commits: [
+        'Address review: abort timeout + drop-branch backoff reset',
+        'feat: per-user GitHub login via PAT + setup-wizard step',
+      ],
+    });
+    expect(body).toMatch(
+      /## Summary\nLet each user connect their own GitHub account for pushes and PRs\./,
+    );
+    // The newest commit subject is NOT the lede.
+    expect(body).not.toMatch(/## Summary\nAddress review/);
+    // Per-commit detail still appears in the Commits list.
+    expect(body).toContain('## Commits');
+    expect(body).toContain('- Address review: abort timeout + drop-branch backoff reset');
+    expect(body).toContain('- feat: per-user GitHub login via PAT + setup-wizard step');
+    // The card already drove the Summary, so it is NOT repeated under Original task.
+    expect(body).not.toContain('## Original task');
+  });
+
+  it('falls back to the card title for the Summary when a multi-commit branch has no description', () => {
+    const card = { id: 'c1', title: 'Add per-user GitHub login' } as never;
+    const body = buildPrBody({
+      agentName,
+      card,
+      commits: ['Address review fixes', 'feat: per-user GitHub login'],
+    });
+    expect(body).toMatch(/## Summary\nAdd per-user GitHub login/);
+    expect(body).toContain('## Commits');
   });
 
   it('omits "## Original task" when no card description is present', () => {
