@@ -911,6 +911,9 @@ export interface SupportTicketRow {
   screenshot_ref: string | null;
   // Set when the ticket is promoted to a kanban card (status → 'converted').
   converted_card_id: string | null;
+  // Timestamp a human first viewed the ticket, or null when still unread.
+  // Drives the per-project unread counter on the Support sidebar item.
+  read_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1641,6 +1644,10 @@ export interface Stmts {
   setSupportTicketScreenshotRef: Stmt;
   setSupportTicketBody: Stmt;
   convertSupportTicketToCard: Stmt;
+  markSupportTicketRead: Stmt;
+  markSupportTicketUnread: Stmt;
+  markAllSupportTicketsRead: Stmt;
+  countUnreadSupportTickets: Stmt;
   deleteSupportTicket: Stmt;
   deleteSupportTicketsByProject: Stmt;
 

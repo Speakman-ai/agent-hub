@@ -381,6 +381,10 @@ export default function App({ initialView } = {}) {
   const [supportProjectId, setSupportProjectId] = useState(null);
   // Ref to push WebSocket support_ticket_* updates into CustomerSupportPage
   const supportListRef = useRef(null);
+  // Unread support-ticket counts per project: { [projectId]: number }. Seeded
+  // from the server on load and kept live by the unreadCount the support_ticket_*
+  // WebSocket events carry, so the Support sidebar badge survives a refresh.
+  const [unreadTicketCounts, setUnreadTicketCounts] = useState({});
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -542,6 +546,38 @@ export default function App({ initialView } = {}) {
   }, []);
   const pullsProjectIdRef = useRef(pullsProjectId);
   pullsProjectIdRef.current = pullsProjectId;
+
+  // Seed per-project unread support-ticket counts once projects are known, so
+  // the Support sidebar badge is correct on a cold load. After this, the counts
+  // ride live on the support_ticket_* WebSocket events. Runs once; never
+  // clobbers a value a WebSocket event already delivered.
+  const ticketCountsSeededRef = useRef(false);
+  useEffect(() => {
+    if (ticketCountsSeededRef.current) return;
+    if (!projects || projects.length === 0) return;
+    ticketCountsSeededRef.current = true;
+    let cancelled = false;
+    Promise.all(
+      projects.map((p) =>
+        api
+          .getSupportUnreadCount(p.id)
+          .then((r) => [p.id, r?.count ?? 0])
+          .catch(() => [p.id, 0]),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      setUnreadTicketCounts((prev) => {
+        const next = { ...prev };
+        for (const [pid, count] of entries) {
+          if (next[pid] === undefined) next[pid] = count;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
 
@@ -2064,20 +2100,38 @@ export default function App({ initialView } = {}) {
 
         // ── Support ticket queue ─────────────────────────────────
         case 'support_ticket_created': {
+          if (data.projectId && typeof data.unreadCount === 'number') {
+            setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: data.unreadCount }));
+          }
           if (supportListRef.current && supportProjectIdRef.current === data.ticket?.project_id) {
             supportListRef.current.addTicket(data.ticket);
           }
           break;
         }
         case 'support_ticket_updated': {
+          if (data.projectId && typeof data.unreadCount === 'number') {
+            setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: data.unreadCount }));
+          }
           if (supportListRef.current && supportProjectIdRef.current === data.ticket?.project_id) {
             supportListRef.current.updateTicket(data.ticket);
           }
           break;
         }
         case 'support_ticket_deleted': {
+          if (data.projectId && typeof data.unreadCount === 'number') {
+            setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: data.unreadCount }));
+          }
           if (supportListRef.current && supportProjectIdRef.current === data.projectId) {
             supportListRef.current.removeTicket(data.ticketId);
+          }
+          break;
+        }
+        case 'support_tickets_read_all': {
+          if (data.projectId) {
+            setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: 0 }));
+          }
+          if (supportListRef.current && supportProjectIdRef.current === data.projectId) {
+            supportListRef.current.markAllRead?.();
           }
           break;
         }
@@ -4210,6 +4264,7 @@ export default function App({ initialView } = {}) {
             pullsProjectId={pullsProjectId}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
+            unreadTicketCounts={unreadTicketCounts}
             activeReviews={activeReviews}
             designs={designs}
             activeDesignId={activeDesignId}

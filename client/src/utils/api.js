@@ -1059,6 +1059,20 @@ export const api = {
   // support_ticket_deleted WebSocket event so open clients drop the row.
   deleteSupportTicket: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}`, { method: 'DELETE' }),
+  // Number of unread tickets (read_at NULL) for the project — drives the
+  // Support sidebar badge. Returns { count }.
+  getSupportUnreadCount: (projectId) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/unread-count`),
+  // Mark a single ticket read / unread. Each emits a support_ticket_updated
+  // WebSocket event carrying the refreshed per-project unreadCount.
+  markSupportTicketRead: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/read`, { method: 'POST' }),
+  markSupportTicketUnread: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/unread`, { method: 'POST' }),
+  // Mark every unread ticket in the project read. Emits a
+  // support_tickets_read_all WebSocket event. Returns { marked, unreadCount }.
+  markAllSupportTicketsRead: (projectId) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
 
   // Session replays — record-on-error rrweb captures. Metadata + paginated
   // events back the sandboxed rrweb-player playback surface. Reads are

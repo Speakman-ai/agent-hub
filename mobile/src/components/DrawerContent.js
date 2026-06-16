@@ -41,6 +41,7 @@ export default function DrawerContent({ navigation }) {
     activeTasks,
     finalizeStatusBySession,
     unreadThreadCounts,
+    unreadTicketCounts,
     reloadMessages,
   } = useApp();
 
@@ -355,6 +356,16 @@ export default function DrawerContent({ navigation }) {
                         {unreadThreadCounts[project.id] > 99
                           ? '99+'
                           : unreadThreadCounts[project.id]}
+                      </Text>
+                    </View>
+                  )}
+                {entry.key === 'support' &&
+                  unreadTicketCounts?.[project.id] > 0 && (
+                    <View style={styles.unreadBadge}>
+                      <Text style={styles.unreadBadgeText}>
+                        {unreadTicketCounts[project.id] > 99
+                          ? '99+'
+                          : unreadTicketCounts[project.id]}
                       </Text>
                     </View>
                   )}

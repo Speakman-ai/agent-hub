@@ -8,6 +8,10 @@ import {
   recordSupportTicketInvestigation,
   convertSupportTicketToCard,
   deleteSupportTicket,
+  markSupportTicketRead,
+  markSupportTicketUnread,
+  markAllSupportTicketsRead,
+  countUnreadSupportTickets,
   SUPPORT_TICKET_STATUSES,
 } from '../support-tickets-store.js';
 import type { SupportTicketStatus, SupportTicketRow } from '../types.js';
@@ -69,6 +73,20 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
   const { broadcast, findProject, stmts } = deps;
   const router = Router();
 
+  /**
+   * Broadcast a support-ticket mutation, always stamping the project's current
+   * unread count so subscribers (Support sidebar badge) stay accurate without a
+   * refetch. `extra` carries the event-specific payload (`ticket` for
+   * create/update, `ticketId` for delete).
+   */
+  const broadcastTicket = (
+    type: string,
+    projectId: string,
+    extra: Record<string, unknown>,
+  ): void => {
+    broadcast({ type, projectId, unreadCount: countUnreadSupportTickets(projectId), ...extra });
+  };
+
   router.get('/api/projects/:projectId/support-tickets', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -85,6 +103,16 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     });
     res.json(tickets);
   });
+
+  // Registered before the `/:id` route so the literal path wins the match.
+  router.get(
+    '/api/projects/:projectId/support-tickets/unread-count',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      res.json({ count: countUnreadSupportTickets(project.id) });
+    },
+  );
 
   router.get('/api/projects/:projectId/support-tickets/:id', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
@@ -217,7 +245,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
             await deleteSupportTicketScreenshot(deps.serverDir, previousRef);
           }
         }
-        broadcast({ type: 'support_ticket_updated', ticket });
+        broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
         res.json(ticket);
       } catch (err) {
         // A later mutation rejected (e.g. invalid status). If we wrote a new
@@ -230,6 +258,57 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         }
         res.status(400).json({ error: (err as Error).message });
       }
+    },
+  );
+
+  // Mark every unread ticket in the project read (clears the sidebar badge).
+  // Registered before the `/:id/...` routes so the literal path wins the match.
+  router.post(
+    '/api/projects/:projectId/support-tickets/read-all',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const marked = markAllSupportTicketsRead(project.id);
+      const unreadCount = countUnreadSupportTickets(project.id);
+      // A single light event rather than one per ticket: subscribers reset the
+      // project's badge to 0 and locally flag their loaded rows read.
+      broadcast({ type: 'support_tickets_read_all', projectId: project.id, unreadCount });
+      res.json({ marked, unreadCount });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/read',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const existing = getSupportTicket(req.params.id as string);
+      if (!existing || existing.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      const ticket = markSupportTicketRead(existing.id)!;
+      broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
+      res.json(ticket);
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/unread',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const existing = getSupportTicket(req.params.id as string);
+      if (!existing || existing.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      const ticket = markSupportTicketUnread(existing.id)!;
+      broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
+      res.json(ticket);
     },
   );
 
@@ -300,6 +379,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         maxPos,
       );
 
+      // Converting a ticket means an operator acted on it, so it's no longer an
+      // unread request — clear it from the unread counter.
+      markSupportTicketRead(ticket.id);
       const updatedTicket = convertSupportTicketToCard(ticket.id, cardId)!;
       const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow;
 
@@ -314,7 +396,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       }
 
       broadcast({ type: 'kanban_update', projectId: project.id });
-      broadcast({ type: 'support_ticket_updated', ticket: updatedTicket });
+      broadcastTicket('support_ticket_updated', updatedTicket.project_id, {
+        ticket: updatedTicket,
+      });
 
       res.status(201).json({ ticket: updatedTicket, card });
     },
@@ -340,11 +424,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       ) {
         await deleteSupportTicketScreenshot(deps.serverDir, ticket.screenshot_ref);
       }
-      broadcast({
-        type: 'support_ticket_deleted',
-        ticketId: ticket.id,
-        projectId: project.id,
-      });
+      broadcastTicket('support_ticket_deleted', project.id, { ticketId: ticket.id });
       res.json({ ok: true });
     },
   );

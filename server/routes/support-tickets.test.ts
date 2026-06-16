@@ -404,6 +404,122 @@ describe('support-tickets routes', () => {
     expect(detail.body.status).toBe('new');
   });
 
+  it('new tickets start unread and the unread-count reflects them', async () => {
+    const projectId = await newProjectId();
+
+    // Fresh queue: zero unread.
+    const zero = await request
+      .get(`/api/projects/${projectId}/support-tickets/unread-count`)
+      .expect(200);
+    expect(zero.body).toEqual({ count: 0 });
+
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'unread on arrival', severity: 'medium', type: 'question' })
+      .expect(201);
+    expect(created.body.read_at).toBeNull();
+
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'also unread', severity: 'low', type: 'question' })
+      .expect(201);
+
+    const two = await request
+      .get(`/api/projects/${projectId}/support-tickets/unread-count`)
+      .expect(200);
+    expect(two.body).toEqual({ count: 2 });
+  });
+
+  it('marks a ticket read and unread, adjusting the count each way', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'toggle me', severity: 'high', type: 'question' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    // Mark read.
+    const read = await request
+      .post(`/api/projects/${projectId}/support-tickets/${id}/read`)
+      .expect(200);
+    expect(read.body.read_at).not.toBeNull();
+    expect(
+      (await request.get(`/api/projects/${projectId}/support-tickets/unread-count`).expect(200))
+        .body.count,
+    ).toBe(0);
+
+    // Re-reading is idempotent (still read, count stays 0).
+    const readAgain = await request
+      .post(`/api/projects/${projectId}/support-tickets/${id}/read`)
+      .expect(200);
+    expect(readAgain.body.read_at).toBe(read.body.read_at);
+
+    // Mark unread again.
+    const unread = await request
+      .post(`/api/projects/${projectId}/support-tickets/${id}/unread`)
+      .expect(200);
+    expect(unread.body.read_at).toBeNull();
+    expect(
+      (await request.get(`/api/projects/${projectId}/support-tickets/unread-count`).expect(200))
+        .body.count,
+    ).toBe(1);
+  });
+
+  it('read-all clears every unread ticket in the project', async () => {
+    const projectId = await newProjectId();
+    for (const sev of ['low', 'high', 'medium']) {
+      await request
+        .post(`/api/projects/${projectId}/support-tickets`)
+        .send({ body: `bulk ${sev}`, severity: sev, type: 'question' })
+        .expect(201);
+    }
+
+    const result = await request
+      .post(`/api/projects/${projectId}/support-tickets/read-all`)
+      .expect(200);
+    expect(result.body.marked).toBe(3);
+    expect(result.body.unreadCount).toBe(0);
+
+    // Every row now carries a read_at.
+    const list = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(list.body.every((t: { read_at: string | null }) => t.read_at !== null)).toBe(true);
+
+    // A second read-all marks nothing.
+    const again = await request
+      .post(`/api/projects/${projectId}/support-tickets/read-all`)
+      .expect(200);
+    expect(again.body.marked).toBe(0);
+  });
+
+  it('converting a ticket marks it read', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'convert clears unread', severity: 'high', type: 'question' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    await request.post(`/api/projects/${projectId}/support-tickets/${id}/convert`).expect(201);
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(detail.body.read_at).not.toBeNull();
+    expect(
+      (await request.get(`/api/projects/${projectId}/support-tickets/unread-count`).expect(200))
+        .body.count,
+    ).toBe(0);
+  });
+
+  it('404s read/unread/read-all/unread-count for unknown project or ticket', async () => {
+    const projectId = await newProjectId();
+    await request.get('/api/projects/nope/support-tickets/unread-count').expect(404);
+    await request.post('/api/projects/nope/support-tickets/read-all').expect(404);
+    await request.post(`/api/projects/${projectId}/support-tickets/ghost/read`).expect(404);
+    await request.post(`/api/projects/${projectId}/support-tickets/ghost/unread`).expect(404);
+    await request.post('/api/projects/nope/support-tickets/ghost/read').expect(404);
+  });
+
   it('PATCH rolls back a newly-written screenshot when a later mutation rejects', async () => {
     const projectId = await newProjectId();
     const created = await request

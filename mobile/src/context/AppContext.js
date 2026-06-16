@@ -96,6 +96,10 @@ export function AppProvider({ children }) {
   // Last `support_ticket_*` WS event for the Customer Support screen.
   //   { type, projectId, ticket?, ticketId?, bump }
   const [lastSupportTicketEvent, setLastSupportTicketEvent] = useState(null);
+  // Unread support-ticket counts keyed by projectId — drives the Support drawer
+  // badge. Seeded on demand and kept live by the unreadCount the
+  // support_ticket_* events carry.
+  const [unreadTicketCounts, setUnreadTicketCounts] = useState({});
   // Last `finalize_wizard_*` WS event for the Settings → Finalize panel.
   // Mirrors the web component's `agenthub:finalize_wizard_complete`
   // window CustomEvent — RN has no DOM event bus, so we surface the last
@@ -718,6 +722,9 @@ export function AppProvider({ children }) {
         break;
       case 'support_ticket_created':
       case 'support_ticket_updated':
+        if (data.projectId && typeof data.unreadCount === 'number') {
+          setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: data.unreadCount }));
+        }
         setLastSupportTicketEvent({
           type: data.type,
           projectId: data.ticket?.project_id,
@@ -726,10 +733,23 @@ export function AppProvider({ children }) {
         });
         break;
       case 'support_ticket_deleted':
+        if (data.projectId && typeof data.unreadCount === 'number') {
+          setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: data.unreadCount }));
+        }
         setLastSupportTicketEvent({
           type: 'support_ticket_deleted',
           projectId: data.projectId,
           ticketId: data.ticketId,
+          bump: Date.now(),
+        });
+        break;
+      case 'support_tickets_read_all':
+        if (data.projectId) {
+          setUnreadTicketCounts((prev) => ({ ...prev, [data.projectId]: 0 }));
+        }
+        setLastSupportTicketEvent({
+          type: 'support_tickets_read_all',
+          projectId: data.projectId,
           bump: Date.now(),
         });
         break;
@@ -1607,6 +1627,68 @@ export function AppProvider({ children }) {
   }, []);
 
   /**
+   * Seed the unread support-ticket count for a project from the server. Called
+   * by the Support screen on mount so the drawer badge is correct on a cold
+   * load; after this the WebSocket unreadCount keeps it live.
+   */
+  const refreshSupportUnreadCount = useCallback(async (projectId) => {
+    if (!projectId) return;
+    try {
+      const { count } = await api.getSupportUnreadCount(projectId);
+      setUnreadTicketCounts((prev) => ({ ...prev, [projectId]: count ?? 0 }));
+    } catch {
+      /* best-effort; WebSocket events still keep the badge current */
+    }
+  }, []);
+
+  /** Optimistically set a project's unread support-ticket count (e.g. to 0). */
+  const setSupportUnreadCount = useCallback((projectId, count) => {
+    if (!projectId) return;
+    setUnreadTicketCounts((prev) => ({ ...prev, [projectId]: Math.max(0, count) }));
+  }, []);
+
+  // Provider-level seed of the Support drawer badge: as soon as the project list
+  // is known, fetch each project's unread count so the badge is correct on a
+  // cold app launch — not only after the user opens a project's Support screen.
+  // Mirrors the web client, which seeds from the project list in App.jsx. Each
+  // project is seeded once; the WebSocket `unreadCount` keeps it live after.
+  // Resets when the list empties (logout) so the next login re-seeds.
+  const seededTicketProjectsRef = useRef(new Set());
+  useEffect(() => {
+    if (!projects || projects.length === 0) {
+      seededTicketProjectsRef.current = new Set();
+      return;
+    }
+    const toSeed = projects.filter(
+      (p) => p?.id && !seededTicketProjectsRef.current.has(p.id),
+    );
+    if (toSeed.length === 0) return;
+    toSeed.forEach((p) => seededTicketProjectsRef.current.add(p.id));
+    let cancelled = false;
+    Promise.all(
+      toSeed.map((p) =>
+        api
+          .getSupportUnreadCount(p.id)
+          .then((r) => [p.id, r?.count ?? 0])
+          .catch(() => [p.id, 0]),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      setUnreadTicketCounts((prev) => {
+        const next = { ...prev };
+        for (const [pid, count] of entries) {
+          // Don't clobber a fresher value a WebSocket event already delivered.
+          if (next[pid] === undefined) next[pid] = count;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+
+  /**
    * ThreadsScreen calls this when the user enters the list view for a project,
    * so the WS handler knows which project is currently focused (used later if
    * we want to keep the list live without also pinging the badge).
@@ -1751,6 +1833,9 @@ export function AppProvider({ children }) {
     unreadThreadCounts,
     lastThreadEvent,
     lastSupportTicketEvent,
+    unreadTicketCounts,
+    refreshSupportUnreadCount,
+    setSupportUnreadCount,
     markProjectThreadsRead,
     setActiveThreadsProject,
     setActiveThread,

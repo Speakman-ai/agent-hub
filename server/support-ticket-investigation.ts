@@ -30,7 +30,11 @@ import path from 'path';
 import type { AppConfig, BroadcastFn, SupportTicketRow } from './types.js';
 import { resolveOneShotEngine } from './engine-resolver.js';
 import { runOneShotPrompt } from './one-shot-spawn.js';
-import { getSupportTicket, recordSupportTicketInvestigation } from './support-tickets-store.js';
+import {
+  getSupportTicket,
+  recordSupportTicketInvestigation,
+  countUnreadSupportTickets,
+} from './support-tickets-store.js';
 import configDefault, { buildSpawnEnv } from './config.js';
 
 /** Cap on how much replay text we splice into the prompt. */
@@ -313,7 +317,12 @@ export async function investigateSupportTicket(
 
   const updated = recordSupportTicketInvestigation(ticketId, { summary, details });
   if (updated && deps.broadcast) {
-    deps.broadcast({ type: 'support_ticket_updated', ticket: updated });
+    deps.broadcast({
+      type: 'support_ticket_updated',
+      ticket: updated,
+      projectId: updated.project_id,
+      unreadCount: countUnreadSupportTickets(updated.project_id),
+    });
   }
   return updated;
 }

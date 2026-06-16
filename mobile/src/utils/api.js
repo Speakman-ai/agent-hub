@@ -540,6 +540,17 @@ export const api = {
   // support_ticket_deleted WebSocket event so open clients drop the row.
   deleteSupportTicket: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}`, { method: 'DELETE' }),
+  // Unread ticket count (read_at NULL) — drives the Support drawer badge.
+  getSupportUnreadCount: (projectId) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/unread-count`),
+  // Mark a single ticket read / unread; each emits support_ticket_updated.
+  markSupportTicketRead: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/read`, { method: 'POST' }),
+  markSupportTicketUnread: (projectId, id) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}/unread`, { method: 'POST' }),
+  // Mark every unread ticket in the project read; emits support_tickets_read_all.
+  markAllSupportTicketsRead: (projectId) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
 
   // Threads (persistent output logs for crons & heartbeats)
   getThreads: (projectId, type) => {

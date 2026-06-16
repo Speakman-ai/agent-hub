@@ -14,6 +14,7 @@ import {
   createSupportTicket,
   setSupportTicketReplayRef,
   setSupportTicketBody,
+  countUnreadSupportTickets,
   type CreateSupportTicketInput,
 } from './support-tickets-store.js';
 import { triggerSupportTicketInvestigation } from './support-ticket-investigation.js';
@@ -130,7 +131,12 @@ export async function intakeSupportTicket(
     }
   }
 
-  deps.broadcast({ type: 'support_ticket_created', ticket });
+  deps.broadcast({
+    type: 'support_ticket_created',
+    ticket,
+    projectId: ticket.project_id,
+    unreadCount: countUnreadSupportTickets(ticket.project_id),
+  });
 
   // Bug tickets get an initial AI investigation pass that fills in the
   // ai_summary / ai_investigation fields. Fire-and-forget: the ticket has

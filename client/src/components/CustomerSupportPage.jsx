@@ -160,6 +160,9 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
   const replayId = ticket.type === 'bug' ? parseReplayIdFromRef(ticket.replay_ref) : null;
   const screenshotUrl = resolveUploadUrl(ticket.screenshot_ref);
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
+  // Unread = the server hasn't stamped read_at yet. Drives the visual accent
+  // and the dot; opening the ticket flips it (see onOpen in the list).
+  const isUnread = !ticket.read_at;
 
   const [watchingReplay, setWatchingReplay] = useState(false);
   const [converting, setConverting] = useState(false);
@@ -198,7 +201,10 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
     <>
       <div
         data-testid="support-ticket-card"
-        className="relative bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors focus-within:ring-1 focus-within:ring-blue-500/50"
+        data-unread={isUnread ? 'true' : 'false'}
+        className={`relative bg-gray-900 border rounded-lg p-4 hover:border-gray-700 transition-colors focus-within:ring-1 focus-within:ring-blue-500/50 ${
+          isUnread ? 'border-gray-800 border-l-2 border-l-blue-500' : 'border-gray-800'
+        }`}
       >
         <button
           type="button"
@@ -211,6 +217,13 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
           <Icon size={16} className={`flex-shrink-0 mt-0.5 ${type.className}`} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
+              {isUnread ? (
+                <span
+                  data-testid="unread-dot"
+                  title="Unread"
+                  className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
+                />
+              ) : null}
               <span
                 className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border ${severityClass}`}
               >
@@ -227,7 +240,13 @@ function SupportTicketCard({ ticket, projectId, onOpen, onDeleted }) {
               </span>
             </div>
 
-            <div className="text-sm text-gray-200 font-medium mt-1.5 break-words">{title}</div>
+            <div
+              className={`text-sm mt-1.5 break-words ${
+                isUnread ? 'text-gray-50 font-semibold' : 'text-gray-200 font-medium'
+              }`}
+            >
+              {title}
+            </div>
 
             {ticket.subject?.trim() && ticket.body?.trim() ? (
               <div className="text-xs text-gray-500 mt-1 line-clamp-3 whitespace-pre-wrap break-words">
@@ -610,12 +629,54 @@ function CustomerSupportPageInner({ projectId }, ref) {
     setOpenTicket((cur) => (cur && cur.id === ticketId ? null : cur));
   };
 
+  // Flag a loaded row read locally (optimistic) so the unread dot/accent clears
+  // the instant the user acts — the server's support_ticket_updated echo
+  // confirms it and refreshes the sidebar badge.
+  const markReadLocally = (ticketId, readAt) => {
+    setTickets((prev) =>
+      prev.map((t) => (t.id === ticketId && !t.read_at ? { ...t, read_at: readAt } : t)),
+    );
+    setOpenTicket((cur) =>
+      cur && cur.id === ticketId && !cur.read_at ? { ...cur, read_at: readAt } : cur,
+    );
+  };
+
+  const markAllReadLocally = () => {
+    const stamp = new Date().toISOString();
+    setTickets((prev) => prev.map((t) => (t.read_at ? t : { ...t, read_at: stamp })));
+    setOpenTicket((cur) => (cur && !cur.read_at ? { ...cur, read_at: stamp } : cur));
+  };
+
+  // Open a ticket's detail view and mark it read. Optimistic locally; the POST
+  // is fire-and-forget (the WebSocket echo is the source of truth).
+  const handleOpenTicket = (ticket) => {
+    setOpenTicket(ticket);
+    if (ticket && !ticket.read_at) {
+      markReadLocally(ticket.id, new Date().toISOString());
+      api.markSupportTicketRead(projectId, ticket.id).catch(() => {
+        /* best-effort; the badge stays accurate via the next WebSocket event */
+      });
+    }
+  };
+
+  const handleMarkAllRead = () => {
+    markAllReadLocally();
+    api.markAllSupportTicketsRead(projectId).catch(() => {
+      /* best-effort; cross-client sync still arrives via WebSocket */
+    });
+  };
+
+  const hasUnread = tickets.some((t) => !t.read_at);
+
   useImperativeHandle(
     ref,
     () => ({
       addTicket: upsertTicket,
       updateTicket: upsertTicket,
       removeTicket,
+      // Cross-client read-all: another client (or the sidebar) cleared the
+      // queue; flag our loaded rows read without a refetch.
+      markAllRead: markAllReadLocally,
     }),
     // statusFilter is read inside upsertTicket; rebuild the handle when it changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -629,6 +690,17 @@ function CustomerSupportPageInner({ projectId }, ref) {
         <LifeBuoy size={16} className="text-blue-400" />
         <h2 className="text-sm font-medium text-gray-200">Customer Support</h2>
         <div className="flex items-center gap-1 ml-auto flex-wrap justify-end">
+          {hasUnread ? (
+            <button
+              onClick={handleMarkAllRead}
+              data-testid="mark-all-read"
+              title="Mark every request in this project read"
+              className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 hover:bg-gray-800 transition-colors mr-1"
+            >
+              <Check size={12} />
+              Mark all read
+            </button>
+          ) : null}
           {STATUS_FILTERS.map((f) => (
             <button
               key={f.key}
@@ -673,7 +745,7 @@ function CustomerSupportPageInner({ projectId }, ref) {
                 key={ticket.id}
                 ticket={ticket}
                 projectId={projectId}
-                onOpen={(t) => setOpenTicket(t)}
+                onOpen={handleOpenTicket}
                 onDeleted={removeTicket}
               />
             ))}

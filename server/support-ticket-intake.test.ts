@@ -8,7 +8,8 @@ vi.mock('./support-ticket-investigation.js', () => ({
 
 import { getStmts } from './db.js';
 import { createSupportTicket, getSupportTicket } from './support-tickets-store.js';
-import { setGuardedReplayRef } from './support-ticket-intake.js';
+import { setGuardedReplayRef, intakeSupportTicket } from './support-ticket-intake.js';
+import config from './config.js';
 
 function seedReplay(id: string, projectId: string | null): void {
   getStmts().insertSessionReplay.run(
@@ -74,5 +75,34 @@ describe('setGuardedReplayRef', () => {
   it('returns null for a missing ticket', async () => {
     const updated = await setGuardedReplayRef(stmts, 'no-such-ticket', 'gref-c', null);
     expect(updated).toBeNull();
+  });
+});
+
+describe('intakeSupportTicket — created broadcast payload', () => {
+  const stmts = getStmts();
+
+  // Regression: the sidebar/drawer unread badge only updates on a
+  // support_ticket_* event that carries `projectId` + numeric `unreadCount`.
+  // The authenticated create path (and the public bug-report path) both land
+  // tickets through intakeSupportTicket, so the created broadcast MUST carry
+  // both fields — otherwise badges go stale until another count-bearing event.
+  it('emits projectId + unreadCount on support_ticket_created', async () => {
+    const broadcast = vi.fn();
+    const projectId = `intake-bcast-${Date.now()}`;
+
+    const ticket = await intakeSupportTicket(
+      { projectId, type: 'question', severity: 'low', body: 'how do I export?' },
+      { stmts, broadcast, config, serverDir: '.' },
+    );
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const payload = broadcast.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      type: 'support_ticket_created',
+      projectId,
+      unreadCount: 1, // the just-created (unread) ticket
+    });
+    expect(payload.ticket.id).toBe(ticket.id);
+    expect(typeof payload.unreadCount).toBe('number');
   });
 });

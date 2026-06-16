@@ -10,6 +10,10 @@ vi.mock('../utils/api.js', () => ({
     getSupportTicket: vi.fn(),
     convertSupportTicketToCard: vi.fn(),
     deleteSupportTicket: vi.fn(),
+    markSupportTicketRead: vi.fn().mockResolvedValue({}),
+    markSupportTicketUnread: vi.fn().mockResolvedValue({}),
+    markAllSupportTicketsRead: vi.fn().mockResolvedValue({ marked: 0, unreadCount: 0 }),
+    getSupportUnreadCount: vi.fn().mockResolvedValue({ count: 0 }),
   },
 }));
 
@@ -468,5 +472,73 @@ describe('CustomerSupportPage — ticket detail view', () => {
     // Clicking an action must not also trigger the full-card open button.
     expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull();
     expect(api.getSupportTicket).not.toHaveBeenCalled();
+  });
+});
+
+describe('CustomerSupportPage — read/unread', () => {
+  it('shows the unread accent for unread tickets and not for read ones', async () => {
+    api.getSupportTickets.mockResolvedValue([
+      ticket({ id: 'u', subject: 'Unread one', read_at: null }),
+      ticket({ id: 'r', subject: 'Read one', read_at: '2026-06-14 11:00:00' }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Unread one')).toBeInTheDocument());
+
+    const cards = screen.getAllByTestId('support-ticket-card');
+    const unreadCard = cards.find((c) => within(c).queryByText('Unread one'));
+    const readCard = cards.find((c) => within(c).queryByText('Read one'));
+    expect(unreadCard.getAttribute('data-unread')).toBe('true');
+    expect(readCard.getAttribute('data-unread')).toBe('false');
+    expect(within(unreadCard).getByTestId('unread-dot')).toBeInTheDocument();
+    expect(within(readCard).queryByTestId('unread-dot')).toBeNull();
+  });
+
+  it('marks a ticket read on open, clearing its unread accent', async () => {
+    api.getSupportTickets.mockResolvedValue([
+      ticket({ id: 'open-me', subject: 'Open me', read_at: null }),
+    ]);
+    api.getSupportTicket.mockResolvedValue(ticket({ id: 'open-me', subject: 'Open me' }));
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Open me')).toBeInTheDocument());
+    expect(screen.getByTestId('unread-dot')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /open support ticket: open me/i }));
+
+    await waitFor(() =>
+      expect(api.markSupportTicketRead).toHaveBeenCalledWith('proj-1', 'open-me'),
+    );
+    // The optimistic local flip clears the dot without waiting on the WebSocket.
+    await waitFor(() => expect(screen.queryByTestId('unread-dot')).toBeNull());
+  });
+
+  it('marks all read via the header action and hides it once nothing is unread', async () => {
+    api.getSupportTickets.mockResolvedValue([
+      ticket({ id: 'a', subject: 'Aaa', read_at: null }),
+      ticket({ id: 'b', subject: 'Bbb', read_at: null }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Aaa')).toBeInTheDocument());
+    expect(screen.getAllByTestId('unread-dot')).toHaveLength(2);
+
+    fireEvent.click(screen.getByTestId('mark-all-read'));
+
+    await waitFor(() => expect(api.markAllSupportTicketsRead).toHaveBeenCalledWith('proj-1'));
+    await waitFor(() => expect(screen.queryByTestId('unread-dot')).toBeNull());
+    // With nothing unread, the button disappears.
+    expect(screen.queryByTestId('mark-all-read')).toBeNull();
+  });
+
+  it('clears local unread state when the markAllRead handle fires (cross-client)', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 'x', subject: 'Xyz', read_at: null })]);
+    const ref = createRef();
+    render(<CustomerSupportPage ref={ref} projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Xyz')).toBeInTheDocument());
+    expect(screen.getByTestId('unread-dot')).toBeInTheDocument();
+
+    act(() => {
+      ref.current.markAllRead();
+    });
+    await waitFor(() => expect(screen.queryByTestId('unread-dot')).toBeNull());
   });
 });

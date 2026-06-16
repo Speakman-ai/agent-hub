@@ -207,6 +207,41 @@ export function convertSupportTicketToCard(id: string, cardId: string): SupportT
   return getSupportTicket(id);
 }
 
+/**
+ * Mark a ticket read (stamp `read_at` if it was unread). Returns the updated
+ * row, or null if the ticket doesn't exist. Idempotent: re-reading an
+ * already-read ticket is a no-op that returns the unchanged row.
+ */
+export function markSupportTicketRead(id: string): SupportTicketRow | null {
+  if (!getSupportTicket(id)) return null;
+  getStmts().markSupportTicketRead.run(id);
+  return getSupportTicket(id);
+}
+
+/**
+ * Mark a ticket unread (clear `read_at`). Returns the updated row, or null if
+ * the ticket doesn't exist. Idempotent on an already-unread ticket.
+ */
+export function markSupportTicketUnread(id: string): SupportTicketRow | null {
+  if (!getSupportTicket(id)) return null;
+  getStmts().markSupportTicketUnread.run(id);
+  return getSupportTicket(id);
+}
+
+/**
+ * Mark every unread ticket in a project read. Returns the number of rows that
+ * flipped from unread to read.
+ */
+export function markAllSupportTicketsRead(projectId: string): number {
+  return getStmts().markAllSupportTicketsRead.run(projectId).changes;
+}
+
+/** Count a project's unread tickets (read_at IS NULL). */
+export function countUnreadSupportTickets(projectId: string): number {
+  const row = getStmts().countUnreadSupportTickets.get(projectId) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
 /** Delete a ticket. Returns true if a row was removed. */
 export function deleteSupportTicket(id: string): boolean {
   const result = getStmts().deleteSupportTicket.run(id);

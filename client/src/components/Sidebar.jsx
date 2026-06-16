@@ -90,6 +90,7 @@ export default function Sidebar({
   notesProjectId,
   workflowBadgeByProject = {},
   unreadThreadCounts = {},
+  unreadTicketCounts = {},
   activeReviews = {},
   designs = [],
   activeDesignId,
@@ -1038,6 +1039,13 @@ export default function Sidebar({
                           >
                             <LifeBuoy size={14} className="flex-shrink-0" />
                             <span className="truncate">Support</span>
+                            {unreadTicketCounts[project.id] > 0 && (
+                              <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
+                                {unreadTicketCounts[project.id] > 99
+                                  ? '99+'
+                                  : unreadTicketCounts[project.id]}
+                              </span>
+                            )}
                           </button>
 
                           {/* Configuration — collapsed under "<project> Settings". */}

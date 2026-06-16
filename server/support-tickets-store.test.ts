@@ -10,6 +10,10 @@ import {
   setSupportTicketReplayRef,
   convertSupportTicketToCard,
   deleteSupportTicket,
+  markSupportTicketRead,
+  markSupportTicketUnread,
+  markAllSupportTicketsRead,
+  countUnreadSupportTickets,
   SUPPORT_TICKET_SEVERITIES,
 } from './support-tickets-store.js';
 import { getDb } from './db.js';
@@ -210,5 +214,62 @@ describe('support-tickets-store — lifecycle & mutations', () => {
     expect(deleteSupportTicket(t.id)).toBe(true);
     expect(getSupportTicket(t.id)).toBeNull();
     expect(deleteSupportTicket(t.id)).toBe(false);
+  });
+});
+
+describe('support-tickets-store — read/unread', () => {
+  it('new tickets are unread (read_at null) and count as unread', () => {
+    const t = createSupportTicket({ projectId: 'p1', body: 'b' });
+    expect(t.read_at).toBeNull();
+    expect(countUnreadSupportTickets('p1')).toBe(1);
+  });
+
+  it('markSupportTicketRead stamps read_at and is idempotent', () => {
+    const t = createSupportTicket({ projectId: 'p1', body: 'b' });
+    const read = markSupportTicketRead(t.id)!;
+    expect(read.read_at).not.toBeNull();
+    expect(countUnreadSupportTickets('p1')).toBe(0);
+
+    // Re-reading does not change the original timestamp.
+    const again = markSupportTicketRead(t.id)!;
+    expect(again.read_at).toBe(read.read_at);
+  });
+
+  it('markSupportTicketUnread clears read_at', () => {
+    const t = createSupportTicket({ projectId: 'p1', body: 'b' });
+    markSupportTicketRead(t.id);
+    const unread = markSupportTicketUnread(t.id)!;
+    expect(unread.read_at).toBeNull();
+    expect(countUnreadSupportTickets('p1')).toBe(1);
+  });
+
+  it('mark helpers return null for an unknown ticket', () => {
+    expect(markSupportTicketRead('nope')).toBeNull();
+    expect(markSupportTicketUnread('nope')).toBeNull();
+  });
+
+  it('markAllSupportTicketsRead clears the project and returns the marked count', () => {
+    createSupportTicket({ projectId: 'p1', body: 'a' });
+    createSupportTicket({ projectId: 'p1', body: 'b' });
+    const other = createSupportTicket({ projectId: 'p2', body: 'c' });
+
+    expect(markAllSupportTicketsRead('p1')).toBe(2);
+    expect(countUnreadSupportTickets('p1')).toBe(0);
+    // A second pass marks nothing.
+    expect(markAllSupportTicketsRead('p1')).toBe(0);
+    // Other projects are untouched.
+    expect(countUnreadSupportTickets('p2')).toBe(1);
+    expect(getSupportTicket(other.id)!.read_at).toBeNull();
+  });
+
+  it('counts unread per project independently', () => {
+    createSupportTicket({ projectId: 'p1', body: 'a' });
+    const b = createSupportTicket({ projectId: 'p1', body: 'b' });
+    createSupportTicket({ projectId: 'p2', body: 'c' });
+
+    markSupportTicketRead(b.id);
+    expect(countUnreadSupportTickets('p1')).toBe(1);
+    expect(countUnreadSupportTickets('p2')).toBe(1);
+    expect(countUnreadSupportTickets('p3')).toBe(0);
   });
 });

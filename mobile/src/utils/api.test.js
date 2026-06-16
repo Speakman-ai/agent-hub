@@ -480,4 +480,32 @@ describe('api support-ticket helpers — URL + method parity with web client', (
     expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-2/convert');
     expect(init?.method).toBe('POST');
   });
+
+  it('getSupportUnreadCount(projectId) → GET /…/support-tickets/unread-count', async () => {
+    await api.getSupportUnreadCount('agent-hub');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/unread-count');
+    expect(init?.method).toBeUndefined(); // GET
+  });
+
+  it('markSupportTicketRead(projectId, id) → POST /…/support-tickets/:id/read', async () => {
+    await api.markSupportTicketRead('agent-hub', 'tkt-3');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-3/read');
+    expect(init?.method).toBe('POST');
+  });
+
+  it('markSupportTicketUnread(projectId, id) → POST /…/support-tickets/:id/unread', async () => {
+    await api.markSupportTicketUnread('agent-hub', 'tkt-4');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-4/unread');
+    expect(init?.method).toBe('POST');
+  });
+
+  it('markAllSupportTicketsRead(projectId) → POST /…/support-tickets/read-all', async () => {
+    await api.markAllSupportTicketsRead('agent-hub');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/read-all');
+    expect(init?.method).toBe('POST');
+  });
 });

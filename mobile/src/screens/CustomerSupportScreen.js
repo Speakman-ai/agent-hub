@@ -46,12 +46,13 @@ const STATUS_FILTERS = [
   { key: 'closed', label: 'Closed' },
 ];
 
-function TicketCard({ item, projectId, onOpenReplay, onDeleted }) {
+function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress }) {
   const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
   const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
   const hasReplay = item.type === 'bug' && item.replay_ref;
   const screenshotUrl = resolveUploadUrl(item.screenshot_ref);
   const isConverted = item.status === 'converted' || !!item.converted_card_id;
+  const isUnread = !item.read_at;
 
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState(null);
@@ -97,8 +98,15 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted }) {
   };
 
   return (
-    <View style={styles.card}>
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={() => onPress?.(item)}
+      testID="support-ticket-card"
+      accessibilityState={{ selected: !isUnread }}
+      style={[styles.card, isUnread && styles.cardUnread]}
+    >
       <View style={styles.badgeRow}>
+        {isUnread ? <View testID="unread-dot" style={styles.unreadDot} /> : null}
         <View style={[styles.severityBadge, { borderColor: severityColor }]}>
           <Text style={[styles.severityText, { color: severityColor }]}>{item.severity}</Text>
         </View>
@@ -111,7 +119,7 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted }) {
         <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
       </View>
 
-      <Text style={styles.cardTitle}>{title}</Text>
+      <Text style={[styles.cardTitle, isUnread && styles.cardTitleUnread]}>{title}</Text>
 
       {item.subject?.trim() && item.body?.trim() ? (
         <Text style={styles.cardBody} numberOfLines={3}>
@@ -171,12 +179,17 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted }) {
         {convertError ? <Text style={styles.convertErrorText}>{convertError}</Text> : null}
         {deleteError ? <Text style={styles.convertErrorText}>{deleteError}</Text> : null}
       </View>
-    </View>
+    </TouchableOpacity>
   );
 }
 
 export default function CustomerSupportScreen({ route }) {
-  const { projects, lastSupportTicketEvent } = useApp();
+  const {
+    projects,
+    lastSupportTicketEvent,
+    refreshSupportUnreadCount,
+    setSupportUnreadCount,
+  } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
   const projectId = route?.params?.projectId || projects?.[0]?.id;
@@ -208,6 +221,12 @@ export default function CustomerSupportScreen({ route }) {
     load();
   }, [load]);
 
+  // Seed the drawer's unread badge from the server on mount / project change so
+  // it's correct on a cold load; WebSocket unreadCount keeps it live after.
+  useEffect(() => {
+    if (projectId) refreshSupportUnreadCount(projectId);
+  }, [projectId, refreshSupportUnreadCount]);
+
   // React to live WebSocket events from AppContext
   useEffect(() => {
     if (!lastSupportTicketEvent) return;
@@ -216,6 +235,11 @@ export default function CustomerSupportScreen({ route }) {
 
     if (type === 'support_ticket_deleted') {
       setTickets((prev) => prev.filter((t) => t.id !== ticketId));
+      return;
+    }
+    if (type === 'support_tickets_read_all') {
+      const stamp = new Date().toISOString();
+      setTickets((prev) => prev.map((t) => (t.read_at ? t : { ...t, read_at: stamp })));
       return;
     }
     if (!ticket) return;
@@ -232,6 +256,29 @@ export default function CustomerSupportScreen({ route }) {
     if (url) Linking.openURL(url).catch(() => {});
   }, []);
 
+  // Tapping a ticket marks it read: optimistic local flip + fire-and-forget
+  // POST (the WebSocket echo refreshes the drawer badge).
+  const markRead = useCallback(
+    (ticket) => {
+      if (!ticket || ticket.read_at) return;
+      const stamp = new Date().toISOString();
+      setTickets((prev) =>
+        prev.map((t) => (t.id === ticket.id && !t.read_at ? { ...t, read_at: stamp } : t)),
+      );
+      api.markSupportTicketRead(projectId, ticket.id).catch(() => {});
+    },
+    [projectId],
+  );
+
+  const hasUnread = tickets.some((t) => !t.read_at);
+
+  const markAllRead = useCallback(() => {
+    const stamp = new Date().toISOString();
+    setTickets((prev) => prev.map((t) => (t.read_at ? t : { ...t, read_at: stamp })));
+    setSupportUnreadCount(projectId, 0);
+    api.markAllSupportTicketsRead(projectId).catch(() => {});
+  }, [projectId, setSupportUnreadCount]);
+
   // Optimistically drop a row once its DELETE succeeds, independent of the
   // support_ticket_deleted WebSocket echo (which still arrives for other
   // clients).
@@ -245,6 +292,7 @@ export default function CustomerSupportScreen({ route }) {
       projectId={projectId}
       onOpenReplay={openReplay}
       onDeleted={removeTicket}
+      onPress={markRead}
     />
   );
 
@@ -255,6 +303,15 @@ export default function CustomerSupportScreen({ route }) {
           <Text style={styles.menuIcon}>{'☰'}</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Customer Support</Text>
+        {hasUnread ? (
+          <TouchableOpacity
+            onPress={markAllRead}
+            testID="mark-all-read"
+            style={styles.markAllButton}
+          >
+            <Text style={styles.markAllText}>Mark all read</Text>
+          </TouchableOpacity>
+        ) : null}
         {project && (
           <Text style={styles.projectLabel} numberOfLines={1}>
             {project.name}
@@ -315,6 +372,15 @@ const styles = StyleSheet.create({
   menuButton: { padding: 4 },
   menuIcon: { fontSize: 22, color: colors.gray400 },
   title: { fontSize: 17, fontWeight: '600', color: colors.white, flexShrink: 1 },
+  markAllButton: {
+    marginLeft: 'auto',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  markAllText: { fontSize: 11, color: colors.gray300, fontWeight: '600' },
   projectLabel: { marginLeft: 'auto', fontSize: 12, color: colors.gray500, maxWidth: 120 },
   filterRow: {
     flexDirection: 'row',
@@ -345,6 +411,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginBottom: 8,
   },
+  cardUnread: { borderLeftWidth: 3, borderLeftColor: colors.blue400 },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.blue400 },
   badgeRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 },
   severityBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1 },
   severityText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
@@ -364,6 +432,7 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 10, color: colors.gray500 },
   time: { fontSize: 11, color: colors.gray600, marginLeft: 'auto' },
   cardTitle: { fontSize: 14, color: colors.gray200, fontWeight: '600', marginTop: 6 },
+  cardTitleUnread: { color: colors.white, fontWeight: '700' },
   cardBody: { fontSize: 12, color: colors.gray500, marginTop: 4 },
   reporter: { fontSize: 11, color: colors.gray600, marginTop: 6 },
   aiBox: {

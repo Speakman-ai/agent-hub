@@ -662,12 +662,19 @@ function initDb(dataDir: string): void {
       -- existing installs.
       screenshot_ref TEXT,
       converted_card_id TEXT,
+      -- Timestamp a human first viewed the ticket (NULL = unread). Drives the
+      -- per-project unread counter on the Support sidebar item. Global per
+      -- project, not per-user (matches escalations.acknowledged). See migration
+      -- block below for existing installs.
+      read_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_support_tickets_project ON support_tickets(project_id);
     CREATE INDEX IF NOT EXISTS idx_support_tickets_status
       ON support_tickets(project_id, status);
+    CREATE INDEX IF NOT EXISTS idx_support_tickets_unread
+      ON support_tickets(project_id, read_at);
 
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
@@ -1255,6 +1262,17 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT screenshot_ref FROM support_tickets LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE support_tickets ADD COLUMN screenshot_ref TEXT');
+  }
+
+  // Read/unread state on support tickets (existing installs predate the column
+  // in the CREATE TABLE above). NULL = unread; a timestamp = read.
+  try {
+    db.prepare('SELECT read_at FROM support_tickets LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE support_tickets ADD COLUMN read_at TEXT');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_support_tickets_unread ON support_tickets(project_id, read_at)',
+    );
   }
 
   // Resolve-PR sessions store the PR's head branch here so the worktree is
@@ -3677,6 +3695,26 @@ function initDb(dataDir: string): void {
       `UPDATE support_tickets
          SET converted_card_id = ?, status = 'converted', updated_at = datetime('now')
        WHERE id = ?`,
+    ),
+    // Read/unread state. Mark-read is a no-op on an already-read ticket (the
+    // `read_at IS NULL` guard) so a redundant open doesn't churn updated_at.
+    markSupportTicketRead: db.prepare(
+      `UPDATE support_tickets
+         SET read_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ? AND read_at IS NULL`,
+    ),
+    markSupportTicketUnread: db.prepare(
+      `UPDATE support_tickets
+         SET read_at = NULL, updated_at = datetime('now')
+       WHERE id = ? AND read_at IS NOT NULL`,
+    ),
+    markAllSupportTicketsRead: db.prepare(
+      `UPDATE support_tickets
+         SET read_at = datetime('now'), updated_at = datetime('now')
+       WHERE project_id = ? AND read_at IS NULL`,
+    ),
+    countUnreadSupportTickets: db.prepare(
+      `SELECT COUNT(*) AS n FROM support_tickets WHERE project_id = ? AND read_at IS NULL`,
     ),
     deleteSupportTicket: db.prepare('DELETE FROM support_tickets WHERE id = ?'),
     deleteSupportTicketsByProject: db.prepare('DELETE FROM support_tickets WHERE project_id = ?'),

@@ -42,6 +42,10 @@ export const SupportTicketComponent = registerComponent(
         .nullable()
         .openapi({ description: 'Server-relative ref to an attached screenshot, or null.' }),
       converted_card_id: z.string().nullable(),
+      read_at: z
+        .string()
+        .nullable()
+        .openapi({ description: 'Timestamp the ticket was first read, or null when unread.' }),
       created_at: z.string(),
       updated_at: z.string(),
     })
@@ -117,12 +121,73 @@ registerPath({
 
 registerPath({
   method: 'get',
+  path: '/api/projects/{projectId}/support-tickets/unread-count',
+  tags: ['Support'],
+  summary: 'Count a project’s unread support tickets',
+  description: 'Returns the number of tickets with read_at NULL. Drives the Support sidebar badge.',
+  request: { params: projectIdParams },
+  responses: {
+    200: {
+      description: 'Unread ticket count.',
+      content: jsonContent(z.object({ count: z.number().int().nonnegative() })),
+    },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
   path: '/api/projects/{projectId}/support-tickets/{id}',
   tags: ['Support'],
   summary: 'Fetch a single support ticket',
   request: { params: ticketParams },
   responses: {
     200: { description: 'The ticket.', content: jsonContent(SupportTicketComponent) },
+    404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/read-all',
+  tags: ['Support'],
+  summary: 'Mark all of a project’s tickets read',
+  description: 'Stamps read_at on every unread ticket in the project and clears the sidebar badge.',
+  request: { params: projectIdParams },
+  responses: {
+    200: {
+      description: 'Tickets marked read.',
+      content: jsonContent(
+        z.object({
+          marked: z.number().int().nonnegative(),
+          unreadCount: z.number().int().nonnegative(),
+        }),
+      ),
+    },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/read',
+  tags: ['Support'],
+  summary: 'Mark a support ticket read',
+  request: { params: ticketParams },
+  responses: {
+    200: { description: 'The updated ticket.', content: jsonContent(SupportTicketComponent) },
+    404: errorResponse('Project or ticket not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/unread',
+  tags: ['Support'],
+  summary: 'Mark a support ticket unread',
+  request: { params: ticketParams },
+  responses: {
+    200: { description: 'The updated ticket.', content: jsonContent(SupportTicketComponent) },
     404: errorResponse('Project or ticket not found.'),
   },
 });
