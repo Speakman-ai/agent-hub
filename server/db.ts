@@ -87,6 +87,17 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Pre-bootstrap migration: support_tickets.read_at. Like the webhook_events
+  // block above, this must run before the bootstrap `db.exec` because that
+  // block creates `idx_support_tickets_unread` on `(project_id, read_at)`.
+  // Legacy installs where support_tickets already exists but read_at does not
+  // would otherwise fail before the post-bootstrap migration can add it.
+  try {
+    db.exec('ALTER TABLE support_tickets ADD COLUMN read_at TEXT');
+  } catch (_e) {
+    /* table doesn't exist yet (fresh install) or column already present */
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,

@@ -88,6 +88,7 @@ function readPackageVersion(): string {
 async function loadRouteModules(): Promise<string[]> {
   const routesDir = join(serverRoot, 'routes');
   const loaded: string[] = [];
+  const failures: string[] = [];
   let entries: string[];
   try {
     entries = readdirSync(routesDir);
@@ -106,12 +107,17 @@ async function loadRouteModules(): Promise<string[]> {
       await import(pathToFileURL(full).href);
       loaded.push(basename(name, '.ts'));
     } catch (err) {
-      // Side-effect import failure is non-fatal: we want the generator to
-      // produce *something* even if a single route file is broken. Log
-      // loudly so CI surfaces the issue.
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`generate-openapi: failed to import ${full}: ${msg}`);
+      failures.push(`${full}: ${msg}`);
     }
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      [
+        `failed to import ${failures.length} route module(s); refusing to emit a partial OpenAPI spec`,
+        ...failures.map((failure) => `  - ${failure}`),
+      ].join('\n'),
+    );
   }
   return loaded;
 }
