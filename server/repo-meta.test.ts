@@ -177,3 +177,30 @@ describe('server/Dockerfile — Cursor Agent + Codex CLI', () => {
     expect(playwright).toBeGreaterThan(curlInstall);
   });
 });
+
+/**
+ * Browser tool reliability: the prod image must install Chromium in a way that
+ * can't drift between build and runtime. These guards lock in the fixes for the
+ * ECONNREFUSED launch failures — a pinned browser path, the pinned playwright
+ * doing the install, and Playwright-managed system deps.
+ */
+describe('server/Dockerfile — Playwright Chromium install hardening', () => {
+  const dockerfile = readFileSync(path.join(serverDir, 'Dockerfile'), 'utf8');
+
+  it('pins PLAYWRIGHT_BROWSERS_PATH so executablePath() resolves identically at build and run time', () => {
+    expect(dockerfile).toMatch(/ENV\s+PLAYWRIGHT_BROWSERS_PATH=\/ms-playwright/);
+  });
+
+  it('downloads Chromium with the pinned server playwright (cd /app/server), not `npx --yes playwright`', () => {
+    // Pinned form → browser revision matches the runtime playwright lib.
+    expect(dockerfile).toMatch(/cd\s+\/app\/server\s+&&\s+npx\s+playwright\s+install\s+chromium/);
+    // `npx --yes` at /app fetches the LATEST playwright + a mismatched revision.
+    expect(dockerfile).not.toMatch(/npx\s+--yes\s+playwright\s+install\s+chromium/);
+  });
+
+  it('installs Chromium system deps via Playwright (install-deps), not a hand-maintained apt list', () => {
+    expect(dockerfile).toMatch(/npx\s+playwright\s+install-deps\s+chromium/);
+    // The old hand-maintained lib list must be gone so it can't drift.
+    expect(dockerfile).not.toMatch(/libnss3 libatk1\.0-0 libatk-bridge2\.0-0/);
+  });
+});

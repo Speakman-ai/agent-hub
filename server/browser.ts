@@ -28,6 +28,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
 import type { V3 } from '@browserbasehq/stagehand';
 import {
   browserAllowDownloadsFromConfig,
@@ -163,6 +164,30 @@ export async function resolveDefaultChromiumPath(): Promise<string | undefined> 
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Build a one-line, human-readable diagnostic describing how Chromium will be
+ * located for a launch. Surfaced in the error message (and a server log) when
+ * Stagehand's `init()` fails, so a bare `ECONNREFUSED` / spawn error becomes
+ * actionable: it tells you the resolved executable path, whether that path
+ * actually exists on disk, and the value of `PLAYWRIGHT_BROWSERS_PATH` (the env
+ * that pins the browser location across image build vs. runtime).
+ *
+ * Pure and side-effect-free apart from a single `existsSync` stat, so it is
+ * cheap to call on the error path and trivial to unit-test.
+ */
+export function describeChromiumLaunchEnv(executablePath: string | undefined): string {
+  const browsersPath =
+    process.env.PLAYWRIGHT_BROWSERS_PATH || '(unset → defaults to ~/.cache/ms-playwright)';
+  let execNote: string;
+  if (!executablePath) {
+    execNote = 'executablePath=(unresolved — Stagehand falls back to system Chrome discovery)';
+  } else {
+    const exists = existsSync(executablePath) ? 'exists' : 'MISSING ON DISK';
+    execNote = `executablePath=${executablePath} [${exists}]`;
+  }
+  return `PLAYWRIGHT_BROWSERS_PATH=${browsersPath}; ${execNote}`;
 }
 
 /**
@@ -345,8 +370,24 @@ async function performLaunchBrowserSession(opts: BrowserSessionOptions): Promise
       effectiveOpts.executablePath = await resolveDefaultChromiumPath();
     }
     const builtOpts = buildStagehandOptions(effectiveOpts);
+    const launchDiag = describeChromiumLaunchEnv(effectiveOpts.executablePath);
     const sh = new Stagehand(builtOpts);
-    await sh.init();
+    try {
+      await sh.init();
+    } catch (initErr) {
+      const msg = initErr instanceof Error ? initErr.message : String(initErr);
+      // Best-effort teardown so a half-initialized Stagehand can't leak a
+      // Chromium process when init throws partway through.
+      try {
+        await (sh as unknown as { close?: (o?: { force?: boolean }) => Promise<void> }).close?.({
+          force: true,
+        });
+      } catch {
+        /* already dead — ignore */
+      }
+      console.warn(`[browser] Stagehand init failed: ${msg} — ${launchDiag}`);
+      throw new Error(`Chromium launch failed during Stagehand init: ${msg}. ${launchDiag}`);
+    }
 
     try {
       await installBrowserSessionHardening(sh as V3, {

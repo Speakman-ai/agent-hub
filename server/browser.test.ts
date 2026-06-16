@@ -5,7 +5,8 @@
  * real browser binary.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { fileURLToPath } from 'url';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   DEFAULT_CHROMIUM_ARGS,
   DEFAULT_STAGEHAND_OPTIONS,
@@ -17,6 +18,7 @@ import {
   buildStagehandOptions,
   closeAllBrowserSessions,
   closeBrowserSession,
+  describeChromiumLaunchEnv,
   getBrowserSession,
   listBrowserSessions,
   type BrowserSession,
@@ -101,6 +103,44 @@ describe('buildStagehandOptions', () => {
   it('omits executablePath when the caller does not set one', () => {
     const opts = buildStagehandOptions();
     expect(opts.localBrowserLaunchOptions.executablePath).toBeUndefined();
+  });
+});
+
+describe('describeChromiumLaunchEnv', () => {
+  const prev = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    else process.env.PLAYWRIGHT_BROWSERS_PATH = prev;
+  });
+
+  it('reports the pinned PLAYWRIGHT_BROWSERS_PATH when set', () => {
+    process.env.PLAYWRIGHT_BROWSERS_PATH = '/ms-playwright';
+    const diag = describeChromiumLaunchEnv('/ms-playwright/chromium-1234/chrome-linux/chrome');
+    expect(diag).toContain('PLAYWRIGHT_BROWSERS_PATH=/ms-playwright');
+  });
+
+  it('flags an unset browsers path so an unpinned image is obvious', () => {
+    delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+    const diag = describeChromiumLaunchEnv(undefined);
+    expect(diag).toContain('unset');
+    expect(diag).toContain('~/.cache/ms-playwright');
+  });
+
+  it('marks a resolved executable that is missing on disk (the revision-mismatch failure mode)', () => {
+    const diag = describeChromiumLaunchEnv('/does/not/exist/chrome');
+    expect(diag).toContain('/does/not/exist/chrome');
+    expect(diag).toContain('MISSING ON DISK');
+  });
+
+  it('marks a resolved executable that exists on disk', () => {
+    // Use this test file itself as a guaranteed-present path.
+    const diag = describeChromiumLaunchEnv(fileURLToPath(import.meta.url));
+    expect(diag).toContain('[exists]');
+  });
+
+  it('notes the system-Chrome fallback when no executable could be resolved', () => {
+    const diag = describeChromiumLaunchEnv(undefined);
+    expect(diag).toContain('unresolved');
   });
 });
 

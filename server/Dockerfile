@@ -73,12 +73,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && git config --system --add safe.directory '*' \
  && rm -rf /var/lib/apt/lists/*
 
-# Chromium system libs (playwright chromium runtime deps)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxkbcommon0 \
-    libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
-    libcairo2 libasound2 libxshmfence1 libx11-xcb1 \
- && rm -rf /var/lib/apt/lists/*
+# Chromium runtime system libs are NOT hand-maintained here. They are installed
+# later via Playwright's own `install-deps` (after server/node_modules is copied)
+# so the dep set always matches the *pinned* Chromium build and can't silently
+# drift — a stale hand-list is exactly what makes Chromium launch then crash,
+# which surfaces to Stagehand as a CDP ECONNREFUSED. See the
+# PLAYWRIGHT_BROWSERS_PATH block in the runtime stage below.
 
 # Python 3 + pip — required for any project whose `commands.install` shells
 # out to `pip` / `python` during the pre-commit dependency-install step
@@ -186,6 +186,25 @@ RUN mkdir -p /data /app/uploads /home/node/.agent-hub/projects /home/node/.agent
     && chown node:node /data /app/uploads \
     && chown -R node:node /home/node/.agent-hub
 
+# Playwright Chromium — system deps + fixed install location.
+#
+# PLAYWRIGHT_BROWSERS_PATH decouples the browser install dir from $HOME/user, so
+# `chromium.executablePath()` resolves to the SAME path at build time (root) and
+# at run time (the node user) regardless of which HOME the server runs under —
+# the old default (~/.cache/ms-playwright) silently breaks if those differ.
+#
+# `playwright install-deps chromium` (root/apt) installs the exact system
+# libraries the *pinned* playwright in server/node_modules needs, replacing the
+# hand-maintained apt list that could drift from the installed Chromium build.
+# A drifted/incomplete lib set lets Chromium spawn and then crash, which the
+# Stagehand CDP handshake reports as ECONNREFUSED — the failure mode we're
+# closing here. The browser binary itself is downloaded below as the node user.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright \
+    && chown node:node /ms-playwright \
+    && cd /app/server && npx playwright install-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+
 # Cursor Agent CLI — official installer drops the `agent` symlink at
 # ~/.local/bin/agent; config.ts defaults cursorBin there for HOME=/home/node so
 # Settings auth flows work without manual path overrides. Install URL:
@@ -200,8 +219,13 @@ RUN curl -fsSL https://cursor.com/install | bash
 # Install URL: https://x.ai/cli — see https://docs.x.ai/build/overview
 RUN curl -fsSL https://x.ai/cli/install.sh | bash
 
-# Install Playwright Chromium as the node user
-RUN npx --yes playwright install chromium
+# Download Playwright's Chromium as the node user using the PINNED playwright in
+# server/node_modules (note `cd /app/server` + bare `npx playwright`, NOT
+# `npx --yes playwright`). `npx --yes` at /app cannot resolve the local pinned
+# playwright, so it fetches the LATEST playwright and a Chromium revision that
+# won't match the runtime lib — leaving chromium.executablePath() pointing at a
+# build that isn't there. Installs into PLAYWRIGHT_BROWSERS_PATH (set above).
+RUN cd /app/server && npx playwright install chromium
 
 ENV AGENT_HUB_DATA_DIR=/data
 ENV AGENT_HUB_HOST=0.0.0.0
