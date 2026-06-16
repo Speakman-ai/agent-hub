@@ -7,8 +7,10 @@ import { mkdtempSync } from 'fs';
 import {
   parseScreenshotDataUrl,
   persistSupportTicketScreenshot,
+  persistSupportTicketScreenshotBuffer,
   deleteSupportTicketScreenshot,
   sniffImageMime,
+  validateScreenshotBuffer,
   MAX_SCREENSHOT_BYTES,
 } from './support-ticket-screenshot.js';
 
@@ -123,6 +125,64 @@ describe('sniffImageMime', () => {
     expect(sniffImageMime(Buffer.from('a'))).toBeNull();
     expect(sniffImageMime(Buffer.from([0xff, 0xd8]))).toBeNull(); // truncated JPEG
     expect(sniffImageMime(Buffer.from('RIFF', 'latin1'))).toBeNull(); // RIFF without WEBP
+  });
+});
+
+describe('validateScreenshotBuffer', () => {
+  it('accepts recognized image bytes and returns mime/ext (ignoring declared type)', () => {
+    expect(validateScreenshotBuffer(Buffer.from(PNG_B64, 'base64'))).toEqual({
+      mime: 'image/png',
+      ext: 'png',
+    });
+    expect(validateScreenshotBuffer(JPEG_SIG)).toEqual({ mime: 'image/jpeg', ext: 'jpg' });
+    expect(validateScreenshotBuffer(GIF_SIG)).toEqual({ mime: 'image/gif', ext: 'gif' });
+    expect(validateScreenshotBuffer(WEBP_SIG)).toEqual({ mime: 'image/webp', ext: 'webp' });
+  });
+
+  it('rejects empty bytes', () => {
+    expect(() => validateScreenshotBuffer(Buffer.alloc(0))).toThrow(/empty/);
+  });
+
+  it('rejects non-image bytes', () => {
+    expect(() => validateScreenshotBuffer(Buffer.from('not an image', 'utf8'))).toThrow(
+      /not a recognized image/,
+    );
+  });
+
+  it('rejects an oversize buffer', () => {
+    // PNG magic + filler past the cap so it sniffs as an image but trips the size guard.
+    const big = Buffer.concat([
+      Buffer.from(PNG_B64, 'base64'),
+      Buffer.alloc(MAX_SCREENSHOT_BYTES, 0x41),
+    ]);
+    expect(() => validateScreenshotBuffer(big)).toThrow(/exceeds/);
+  });
+});
+
+describe('persistSupportTicketScreenshotBuffer', () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tmpDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  it('writes raw image bytes under /uploads and returns a server-relative ref', async () => {
+    const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-buf-'));
+    tmpDirs.push(serverDir);
+
+    const png = Buffer.from(PNG_B64, 'base64');
+    const ref = await persistSupportTicketScreenshotBuffer(serverDir, png);
+    expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
+
+    const onDisk = await readFile(path.join(serverDir, ref.replace(/^\//, '')));
+    expect(onDisk.equals(png)).toBe(true);
+  });
+
+  it('rejects a non-image buffer without writing a file', async () => {
+    const serverDir = mkdtempSync(path.join(os.tmpdir(), 'support-shot-buf-'));
+    tmpDirs.push(serverDir);
+    await expect(
+      persistSupportTicketScreenshotBuffer(serverDir, Buffer.from('nope', 'utf8')),
+    ).rejects.toThrow(/not a recognized image/);
   });
 });
 

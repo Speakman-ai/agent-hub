@@ -248,17 +248,37 @@ describe('POST /api/bug-reports', () => {
     expect(ticket!.body).not.toContain('evil.example');
   });
 
-  it('tolerates (and ignores) a legacy screenshot part', async () => {
-    const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    const before = listSupportTickets('agent-hub').length;
-    await supertest(app)
+  it('persists a screenshot part and stores it as the ticket screenshot_ref', async () => {
+    // A minimal but valid PNG (magic + IHDR) — sniffImageMime keys off the
+    // 8-byte signature, so this is enough to be accepted as image/png.
+    const PNG = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+      0x52,
+    ]);
+    const res = await supertest(app)
       .post('/api/bug-reports')
       .field('title', 'Has screenshot')
       .field('severity', 'low')
-      .attach('screenshot', PNG_MAGIC, { filename: 'shot.png', contentType: 'image/png' })
+      .attach('screenshot', PNG, { filename: 'shot.png', contentType: 'image/png' })
       .expect(201);
-    // Ticket still lands; the screenshot is simply not referenced anywhere.
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.screenshot_ref).toMatch(/^\/uploads\/support-screenshot-[\w.-]+\.png$/);
+  });
+
+  it('drops a non-image screenshot part but still lands the ticket', async () => {
+    const NOT_AN_IMAGE = Buffer.from('this is not an image', 'utf8');
+    const before = listSupportTickets('agent-hub').length;
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Junk attachment')
+      .field('severity', 'low')
+      .attach('screenshot', NOT_AN_IMAGE, { filename: 'shot.png', contentType: 'image/png' })
+      .expect(201);
+
+    // Report still lands; the bogus attachment is simply not referenced.
     expect(listSupportTickets('agent-hub').length).toBe(before + 1);
+    expect(getSupportTicket(res.body.ticketId)!.screenshot_ref).toBeNull();
   });
 
   it('returns 400 when title is missing', async () => {

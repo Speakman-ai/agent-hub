@@ -41,7 +41,7 @@ export const BugReportFormFieldsComponent = registerComponent(
       }),
       screenshot: z.string().optional().openapi({
         description:
-          'Deprecated/ignored. A legacy PNG/JPEG part is tolerated for backwards compatibility but no longer persisted — session replay supersedes it.',
+          'Optional image part (PNG/JPEG/WebP/GIF, ≤8 MB). Validated by magic-byte signature, persisted under /uploads, and stored as the ticket `screenshot_ref` so it renders inline in the Customer Support queue. A bad/oversize/non-image part is dropped (the report still lands).',
         format: 'binary',
       }),
     })
@@ -84,7 +84,7 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Public bug-report intake (multipart)',
   description:
-    'Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". A legacy `screenshot` part is tolerated but ignored.',
+    'Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". An optional `screenshot` image part is persisted and shown inline on the ticket.',
   request: {
     body: {
       content: {

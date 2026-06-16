@@ -1999,7 +1999,7 @@ components:
         screenshot:
           type: string
           format: binary
-          description: Deprecated/ignored. A legacy PNG/JPEG part is tolerated for backwards compatibility but no longer persisted — session replay supersedes it.
+          description: Optional image part (PNG/JPEG/WebP/GIF, ≤8 MB). Validated by magic-byte signature, persisted under /uploads, and stored as the ticket `screenshot_ref` so it renders inline in the Customer Support queue. A bad/oversize/non-image part is dropped (the report still lands).
       required:
         - title
       description: Multipart form fields for the bug-report intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
@@ -10869,7 +10869,7 @@ paths:
       tags:
         - Bug Reports
       summary: Public bug-report intake (multipart)
-      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". A legacy `screenshot` part is tolerated but ignored.
+      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum a `title` field. Lands a `bug` support ticket in the `agent-hub` Customer Support queue (severity-ordered, with a one-shot AI investigation); an operator promotes it to a kanban card via "Convert to card". An optional `screenshot` image part is persisted and shown inline on the ticket.
       requestBody:
         content:
           multipart/form-data:

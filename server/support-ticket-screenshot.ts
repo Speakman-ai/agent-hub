@@ -147,6 +147,41 @@ export function parseScreenshotDataUrl(raw: string): ParsedScreenshot {
 }
 
 /**
+ * Validate already-decoded image bytes the same way {@link parseScreenshotDataUrl}
+ * validates a data URL: non-empty, within the size cap, and a recognized image
+ * format by magic-byte signature. The declared content-type (from a multipart
+ * part, say) is never trusted — only the sniffed signature decides the mime, so
+ * this can't become an arbitrary-blob upload path. Returns the canonical mime +
+ * extension; throws an `Error` with a caller-friendly message otherwise.
+ */
+export function validateScreenshotBuffer(buffer: Buffer): { mime: string; ext: string } {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('screenshot is empty');
+  }
+  if (buffer.length > MAX_SCREENSHOT_BYTES) {
+    const mb = (MAX_SCREENSHOT_BYTES / (1024 * 1024)).toFixed(0);
+    throw new Error(`screenshot exceeds the ${mb} MB limit`);
+  }
+  const mime = sniffImageMime(buffer);
+  if (!mime) {
+    throw new Error('screenshot is not a recognized image (png, jpeg, webp, gif)');
+  }
+  return { mime, ext: EXT_BY_MIME[mime]! };
+}
+
+/** Write validated image bytes under `<serverDir>/uploads`, returning the
+ *  server-relative `screenshot_ref` to store on the ticket. */
+async function writeScreenshot(serverDir: string, buffer: Buffer, ext: string): Promise<string> {
+  const uploadsDir = path.join(serverDir, 'uploads');
+  mkdirSync(uploadsDir, { recursive: true });
+  const filename = `support-screenshot-${uuidv4()}.${ext}`;
+  // Async write: a screenshot can be several MB and this runs on a public
+  // intake path; persisting it must not block the event loop.
+  await writeFile(path.join(uploadsDir, filename), buffer);
+  return `/uploads/${filename}`;
+}
+
+/**
  * Validate + persist a screenshot data URL under `<serverDir>/uploads`.
  * Returns the server-relative ref (`/uploads/support-screenshot-<id>.<ext>`)
  * to store on the ticket. Throws (via {@link parseScreenshotDataUrl}) on
@@ -157,13 +192,22 @@ export async function persistSupportTicketScreenshot(
   dataUrl: string,
 ): Promise<string> {
   const { ext, buffer } = parseScreenshotDataUrl(dataUrl);
-  const uploadsDir = path.join(serverDir, 'uploads');
-  mkdirSync(uploadsDir, { recursive: true });
-  const filename = `support-screenshot-${uuidv4()}.${ext}`;
-  // Async write: a screenshot can be several MB and this runs on a public
-  // intake path; persisting it must not block the event loop.
-  await writeFile(path.join(uploadsDir, filename), buffer);
-  return `/uploads/${filename}`;
+  return writeScreenshot(serverDir, buffer, ext);
+}
+
+/**
+ * Validate + persist raw image bytes (e.g. a `multipart/form-data` file part)
+ * under `<serverDir>/uploads`, returning the server-relative ref. Unlike
+ * {@link persistSupportTicketScreenshot} the input is the decoded buffer, not a
+ * base64 data URL — used by the public bug-report intake, which parses multipart
+ * bytes directly. Throws (via {@link validateScreenshotBuffer}) on invalid input.
+ */
+export async function persistSupportTicketScreenshotBuffer(
+  serverDir: string,
+  buffer: Buffer,
+): Promise<string> {
+  const { ext } = validateScreenshotBuffer(buffer);
+  return writeScreenshot(serverDir, buffer, ext);
 }
 
 /**

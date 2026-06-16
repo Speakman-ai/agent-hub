@@ -2,6 +2,10 @@ import { Router, Request, Response, NextFunction } from 'express';
 import express from 'express';
 import type { RouteDeps, SupportTicketSeverity } from '../types.js';
 import { intakeSupportTicket } from '../support-ticket-intake.js';
+import {
+  persistSupportTicketScreenshotBuffer,
+  deleteSupportTicketScreenshot,
+} from '../support-ticket-screenshot.js';
 
 /**
  * Public, rate-limited bug-report intake endpoint.
@@ -13,9 +17,12 @@ import { intakeSupportTicket } from '../support-ticket-intake.js';
  * The operator triages from the queue and promotes a ticket to a kanban card
  * with the existing "Convert to card" action.
  *
- * Visual context comes from the attached session replay (rrweb), so screenshots
- * are no longer used: any `screenshot` part in the multipart body is accepted
- * for backwards compatibility but ignored (not persisted, not referenced).
+ * Visual context comes from an attached session replay (rrweb) when the reporter
+ * has the recorder, and/or a `screenshot` image part: the screenshot is persisted
+ * under `/uploads` and stored as the ticket's `screenshot_ref` so the Customer
+ * Support queue renders it inline (the same column the authenticated support-ticket
+ * route fills). A reporter widget that can only grab a screenshot (no rrweb) still
+ * gets its photo through.
  *
  * The endpoint is intentionally unauthenticated (it's a cross-hub feedback
  * surface), so we gate it with an in-memory per-IP rate limiter: max
@@ -24,7 +31,9 @@ import { intakeSupportTicket } from '../support-ticket-intake.js';
 
 const RATE_LIMIT_MAX = 10;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const MAX_MULTIPART_BYTES = 6 * 1024 * 1024; // tolerate a legacy screenshot part we ignore
+// Fit an 8 MB screenshot (MAX_SCREENSHOT_BYTES, sent as raw multipart bytes —
+// not base64) plus the short text fields, with headroom.
+const MAX_MULTIPART_BYTES = 10 * 1024 * 1024;
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const VALID_CLIENT_TYPES = new Set(['web', 'electron', 'mobile']);
 const INTAKE_PROJECT_ID = 'agent-hub';
@@ -226,6 +235,8 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
       limit: MAX_MULTIPART_BYTES,
     }),
     async (req: Request, res: Response) => {
+      // Hoisted so the catch below can roll back an orphaned screenshot file.
+      let screenshotRef: string | null = null;
       try {
         // ── Rate limit ─────────────────────────────────────
         const ip = ipFromReq(req);
@@ -250,8 +261,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           return res.status(400).json({ error: 'Empty request body' });
         }
 
-        // `files` (e.g. a legacy `screenshot` part) is parsed but ignored.
-        const { fields } = parseMultipart(rawBody, boundary);
+        const { fields, files } = parseMultipart(rawBody, boundary);
 
         // ── Validate fields ────────────────────────────────
         const title = (fields.title || '').trim();
@@ -289,9 +299,24 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const currentAgentId = (fields.currentAgentId || '').toString();
         const replayRef = sanitizeReplayRef(fields.replayRef);
 
-        // A `screenshot` part may still be present from older clients — the
-        // multipart parser tolerates it, but we no longer persist or reference
-        // it (session replay supersedes it). Intentionally ignore `files`.
+        // Persist an optional `screenshot` image part so the photo shows inline
+        // in the Customer Support queue (stored as the ticket's
+        // `screenshot_ref`). The bytes are validated by magic-byte signature —
+        // the declared content-type is not trusted. A bad/oversize/non-image
+        // part is dropped (logged) rather than failing the whole report: this is
+        // an unauthenticated feedback surface and a usable bug report should
+        // still land even when its attachment is junk.
+        const screenshotFile = files.screenshot;
+        if (screenshotFile && screenshotFile.data.length > 0) {
+          try {
+            screenshotRef = await persistSupportTicketScreenshotBuffer(
+              serverDir,
+              screenshotFile.data,
+            );
+          } catch (err) {
+            console.warn('[Bug Reports] screenshot dropped:', (err as Error).message);
+          }
+        }
 
         // ── Resolve the intake (agent-hub) project ─────────
         const project = findProject(INTAKE_PROJECT_ID);
@@ -332,6 +357,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
             body: buildBugReportTicketBody({ ...bodyFields, replayRef: null }),
             reporter: clientTypeRaw ? `bug-report (${clientTypeRaw})` : 'bug-report',
             replayRef,
+            screenshotRef,
           },
           {
             stmts,
@@ -352,6 +378,9 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
 
         return res.status(201).json({ ticketId: ticket.id, status: 'received' });
       } catch (err) {
+        // The ticket didn't land — remove a screenshot we may have written so it
+        // isn't orphaned under /uploads.
+        await deleteSupportTicketScreenshot(serverDir, screenshotRef);
         const message = err instanceof Error ? err.message : String(err);
         console.error('[Bug Reports] Unexpected failure:', message);
         return res.status(500).json({ error: message });
