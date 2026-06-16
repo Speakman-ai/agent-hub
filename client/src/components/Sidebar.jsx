@@ -302,6 +302,20 @@ export default function Sidebar({
             <span className="flex-1 truncate text-sm font-medium">Dashboard</span>
           </button>
 
+          {/* Org-wide support overview — aggregates every project's support
+              issues into one severity-ordered list with a project filter. */}
+          <button
+            onClick={() => onNavigate('support-overview')}
+            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
+              currentView === 'support-overview'
+                ? 'bg-gray-800 text-white'
+                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            }`}
+          >
+            <LifeBuoy size={14} className="flex-shrink-0" />
+            <span className="flex-1 truncate text-sm font-medium">Support Issues</span>
+          </button>
+
           {cronSessions.length > 0 && (
             <div className="mb-4">
               <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2 flex items-center gap-1.5">

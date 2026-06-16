@@ -12,7 +12,7 @@
  * prepared statements directly.
  */
 import { v4 as uuidv4 } from 'uuid';
-import { getStmts } from './db.js';
+import { getStmts, getDb } from './db.js';
 import type {
   SupportTicketRow,
   SupportTicketType,
@@ -124,6 +124,52 @@ export function listSupportTickets(
     ) as SupportTicketRow[];
   }
   return stmts.listSupportTicketsByProject.all(projectId) as SupportTicketRow[];
+}
+
+/**
+ * Severity rank used by every list query: SQLite has no native enum ordering,
+ * so a CASE expression maps the severity enum to a sort rank (critical first).
+ * Ties break newest-first. Kept here as the single source of truth so the
+ * project-scoped and cross-project queries stay in lock-step.
+ */
+const SEVERITY_ORDER_SQL = `CASE severity
+    WHEN 'critical' THEN 0
+    WHEN 'high' THEN 1
+    WHEN 'medium' THEN 2
+    WHEN 'low' THEN 3
+    ELSE 4 END ASC,
+    created_at DESC,
+    rowid DESC`;
+
+/**
+ * List support tickets across ALL projects, ordered by severity (critical →
+ * low) then newest. Powers the cross-project support overview. Pass `projectId`
+ * to scope to a single project and/or `status` to filter to one lifecycle
+ * state — both are optional and compose. The query is built dynamically (rather
+ * than via a prepared statement) because the optional filters yield four
+ * combinations; the severity ordering is identical to the per-project queries.
+ */
+export function listAllSupportTickets(
+  opts: { projectId?: string; status?: SupportTicketStatus } = {},
+): SupportTicketRow[] {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (opts.projectId) {
+    where.push('project_id = ?');
+    params.push(opts.projectId);
+  }
+  if (opts.status) {
+    if (!isStatus(opts.status)) {
+      throw new Error(`status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}`);
+    }
+    where.push('status = ?');
+    params.push(opts.status);
+  }
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const sql = `SELECT * FROM support_tickets ${whereClause} ORDER BY ${SEVERITY_ORDER_SQL}`;
+  return getDb()
+    .prepare(sql)
+    .all(...params) as SupportTicketRow[];
 }
 
 /**

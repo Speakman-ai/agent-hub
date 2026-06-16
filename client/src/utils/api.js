@@ -1082,6 +1082,16 @@ export const api = {
   markAllSupportTicketsRead: (projectId) =>
     fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
 
+  // Cross-project support overview — every project's support tickets in one
+  // severity-ordered list (critical → low). Returns { tickets, projects } where
+  // each ticket carries a `project_name` and `projects` is the full set of
+  // projects-with-tickets (for a stable filter, independent of the active
+  // filter). Optional `status` filters lifecycle state server-side.
+  getAllSupportTickets: (status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return fetchJSON(`/support-tickets${qs}`);
+  },
+
   // Session replays — record-on-error rrweb captures. Metadata + paginated
   // events back the sandboxed rrweb-player playback surface. Reads are
   // authenticated + per-replay authorized server-side.

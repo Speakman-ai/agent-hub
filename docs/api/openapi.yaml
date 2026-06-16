@@ -5459,6 +5459,53 @@ components:
         - ticketId
         - deleted
       description: The kanban card the ticket became; the source ticket is removed.
+    SupportTicketOverviewErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for the support-overview route.
+    SupportTicketWithProject:
+      allOf:
+        - $ref: "#/components/schemas/SupportTicket"
+        - type: object
+          properties:
+            project_name:
+              type: string
+              description: Display name of the ticket's project (falls back to its id).
+          required:
+            - project_name
+      description: A support ticket enriched with its project name.
+    SupportOverviewResponse:
+      type: object
+      properties:
+        tickets:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportTicketWithProject"
+        projects:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              count:
+                type: integer
+                minimum: 0
+            required:
+              - id
+              - name
+              - count
+          description: Distinct projects that currently have support tickets, ordered by descending ticket count then name. Always the full unfiltered set so the client filter stays complete.
+      required:
+        - tickets
+        - projects
+      description: Cross-project support tickets plus project filter options.
     WikiPage:
       type: object
       properties:
@@ -18183,6 +18230,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/support-tickets:
+    get:
+      tags:
+        - Support
+      summary: List support tickets across all projects, ordered by severity
+      description: Aggregates every project’s support tickets into one severity-ordered list (critical → low, then newest). Optional `status` and `projectId` query filters compose and are applied server-side.
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - new
+              - investigating
+              - converted
+              - closed
+            description: Filter to a single lifecycle status.
+          required: false
+          description: Filter to a single lifecycle status.
+          name: status
+          in: query
+        - schema:
+            type: string
+            description: Scope to a single project (404 if unknown).
+          required: false
+          description: Scope to a single project (404 if unknown).
+          name: projectId
+          in: query
+      responses:
+        "200":
+          description: Tickets (each with project_name) ordered by severity, plus project filter options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportOverviewResponse"
+        "400":
+          description: Invalid status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketOverviewErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketOverviewErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:

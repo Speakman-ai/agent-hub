@@ -115,6 +115,7 @@ import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './wo
 import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
 import createSupportTicketRoutes from './routes/support-tickets.js';
+import createSupportTicketsOverviewRoutes from './routes/support-tickets-overview.js';
 import createFinalizeRoutes from './routes/finalize.js';
 import createFinalizeParityRoutes from './routes/finalize-parity.js';
 import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
@@ -1040,6 +1041,7 @@ app.use(createThreadRoutes(routeDeps));
 app.use(createWorkflowRoutes(routeDeps));
 app.use(createEscalationRoutes(routeDeps));
 app.use(createSupportTicketRoutes(routeDeps));
+app.use(createSupportTicketsOverviewRoutes(routeDeps));
 app.use(createInstanceBackupRoutes(routeDeps));
 app.use(createIosBuildRoutes(routeDeps));
 app.use(createPrActionRoutes(routeDeps));
