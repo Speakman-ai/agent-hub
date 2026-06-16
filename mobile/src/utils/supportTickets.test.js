@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { sortTickets, resolveReplayUrl } from './supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl } from './supportTickets';
 
 vi.mock('./config', () => ({
   getServerBaseUrl: () => 'https://hub.example.com',
@@ -53,5 +53,16 @@ describe('resolveReplayUrl', () => {
   it('returns null for an empty ref', () => {
     expect(resolveReplayUrl(null)).toBe(null);
     expect(resolveReplayUrl('')).toBe(null);
+  });
+});
+
+describe('resolveUploadUrl', () => {
+  it('resolves screenshot refs the same way (and is what resolveReplayUrl aliases)', () => {
+    expect(resolveUploadUrl('/uploads/support-screenshot-abc.png')).toBe(
+      'https://hub.example.com/uploads/support-screenshot-abc.png',
+    );
+    expect(resolveUploadUrl('https://cdn.test/shot.png')).toBe('https://cdn.test/shot.png');
+    expect(resolveUploadUrl(null)).toBe(null);
+    expect(resolveReplayUrl).toBe(resolveUploadUrl);
   });
 });

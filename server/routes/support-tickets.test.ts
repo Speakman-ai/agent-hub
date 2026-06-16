@@ -1,6 +1,24 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type supertest from 'supertest';
+import { readdirSync, rmSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { getRequest, createProject } from '../test/helpers.js';
+
+// Screenshot files land in the server's real /uploads dir (serverDir = server/).
+const UPLOADS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'uploads');
+function screenshotFiles(): string[] {
+  try {
+    return readdirSync(UPLOADS_DIR).filter((f) => f.startsWith('support-screenshot-'));
+  } catch {
+    return [];
+  }
+}
+
+// Successful create/patch paths persist screenshots into the real uploads dir.
+// Snapshot what's there before the suite and remove anything new afterward so
+// the worktree isn't littered and later tests aren't polluted.
+let baselineScreenshots: Set<string>;
 
 // Stub the investigation trigger so creating a bug ticket in these tests never
 // spawns a CLI (the real fire-and-forget path would shell out to an engine).
@@ -14,7 +32,16 @@ let request: supertest.Agent;
 
 beforeAll(async () => {
   request = await getRequest();
+  baselineScreenshots = new Set(screenshotFiles());
 }, 60_000);
+
+afterAll(() => {
+  for (const f of screenshotFiles()) {
+    if (!baselineScreenshots.has(f)) {
+      rmSync(path.join(UPLOADS_DIR, f), { force: true });
+    }
+  }
+});
 
 async function newProjectId(): Promise<string> {
   const project = await createProject();
@@ -201,5 +228,205 @@ describe('support-tickets routes', () => {
       .send({ body: 'how do I export?', type: 'question' })
       .expect(201);
     expect(triggerInvestigation).not.toHaveBeenCalled();
+  });
+
+  // 1x1 transparent PNG.
+  const PNG_DATA_URL =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+  it('persists an attached screenshot and exposes its ref on the ticket', async () => {
+    const projectId = await newProjectId();
+
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'visual glitch on dashboard', severity: 'medium', screenshot: PNG_DATA_URL })
+      .expect(201);
+
+    const ref = created.body.screenshot_ref as string;
+    expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
+
+    // The persisted file is served from /uploads as a PNG.
+    const fetched = await request.get(ref).expect(200);
+    expect(fetched.headers['content-type']).toMatch(/image\/png/);
+
+    // The detail endpoint returns the same ref.
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .expect(200);
+    expect(detail.body.screenshot_ref).toBe(ref);
+  });
+
+  it('rejects an invalid screenshot data URL with a 400 and creates no ticket', async () => {
+    const projectId = await newProjectId();
+
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'bad shot', severity: 'low', screenshot: 'data:application/pdf;base64,Zm9v' })
+      .expect(400);
+
+    const list = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(list.body).toHaveLength(0);
+  });
+
+  it('rolls back the screenshot file when the ticket fails to land (no orphan)', async () => {
+    const projectId = await newProjectId();
+    const before = screenshotFiles();
+
+    // A valid screenshot but an invalid type — intake throws AFTER the file is
+    // written, so the route must delete the orphan.
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'orphan check', type: 'not-a-type', screenshot: PNG_DATA_URL })
+      .expect(400);
+
+    const after = screenshotFiles();
+    expect(after.filter((f) => !before.includes(f))).toEqual([]);
+  });
+
+  it('PATCH attaches a screenshot, then clearing it deletes the orphaned file', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'attach later', severity: 'high' })
+      .expect(201);
+    const id = created.body.id as string;
+    expect(created.body.screenshot_ref).toBeNull();
+
+    const attached = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ screenshot: PNG_DATA_URL })
+      .expect(200);
+    const ref = attached.body.screenshot_ref as string;
+    expect(ref).toMatch(/^\/uploads\/support-screenshot-[\w-]+\.png$/);
+    await request.get(ref).expect(200); // file is live
+
+    const cleared = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ screenshot: null })
+      .expect(200);
+    expect(cleared.body.screenshot_ref).toBeNull();
+    // The now-unreferenced file must be deleted (not just unlinked from the row).
+    await request.get(ref).expect(404);
+  });
+
+  it('PATCH replacing a screenshot deletes the prior file', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'replace me', severity: 'high', screenshot: PNG_DATA_URL })
+      .expect(201);
+    const id = created.body.id as string;
+    const firstRef = created.body.screenshot_ref as string;
+    await request.get(firstRef).expect(200);
+
+    const replaced = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ screenshot: PNG_DATA_URL })
+      .expect(200);
+    const secondRef = replaced.body.screenshot_ref as string;
+    expect(secondRef).not.toBe(firstRef);
+
+    await request.get(firstRef).expect(404); // prior file gone
+    await request.get(secondRef).expect(200); // new file live
+  });
+
+  it('PATCH replacing a screenshot PRESERVES the prior file when a converted card still embeds it', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'convert then replace', severity: 'high', screenshot: PNG_DATA_URL })
+      .expect(201);
+    const id = created.body.id as string;
+    const firstRef = created.body.screenshot_ref as string;
+
+    // Convert: the card description bakes in firstRef as a markdown image.
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${id}/convert`)
+      .expect(201);
+    expect(convert.body.card.description).toContain(firstRef);
+
+    // Replacing the ticket's screenshot must NOT delete firstRef — the card
+    // still references it.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ screenshot: PNG_DATA_URL })
+      .expect(200);
+
+    await request.get(firstRef).expect(200); // preserved for the card
+  });
+
+  it('DELETE removes the screenshot file of an unconverted ticket', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'delete me', severity: 'low', screenshot: PNG_DATA_URL })
+      .expect(201);
+    const id = created.body.id as string;
+    const ref = created.body.screenshot_ref as string;
+    await request.get(ref).expect(200);
+
+    await request.delete(`/api/projects/${projectId}/support-tickets/${id}`).expect(200);
+    await request.get(ref).expect(404);
+  });
+
+  it('DELETE preserves the screenshot file when a converted card still embeds it', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'delete converted', severity: 'low', screenshot: PNG_DATA_URL })
+      .expect(201);
+    const id = created.body.id as string;
+    const ref = created.body.screenshot_ref as string;
+
+    await request.post(`/api/projects/${projectId}/support-tickets/${id}/convert`).expect(201);
+    await request.delete(`/api/projects/${projectId}/support-tickets/${id}`).expect(200);
+
+    await request.get(ref).expect(200); // card still needs it
+  });
+
+  it('PATCH with an invalid screenshot fails the whole update with a 400', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'guard the patch', severity: 'high', subject: 'orig' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'investigating', screenshot: 'not-a-data-url' })
+      .expect(400);
+
+    // The status change must NOT have applied (screenshot validation runs first).
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('new');
+  });
+
+  it('PATCH rolls back a newly-written screenshot when a later mutation rejects', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'patch orphan check', severity: 'high' })
+      .expect(201);
+    const id = created.body.id as string;
+    const before = screenshotFiles();
+
+    // Valid screenshot (file gets written) but an invalid status (mutation
+    // throws) — the route must delete the orphan and leave the row unchanged.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'bogus-status', screenshot: PNG_DATA_URL })
+      .expect(400);
+
+    const after = screenshotFiles();
+    expect(after.filter((f) => !before.includes(f))).toEqual([]);
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('new');
+    expect(detail.body.screenshot_ref).toBeNull();
   });
 });

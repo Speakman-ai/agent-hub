@@ -657,6 +657,10 @@ function initDb(dataDir: string): void {
       ai_investigation TEXT,
       ai_investigated_at TEXT,
       replay_ref TEXT,
+      -- Optional server-relative ref to a screenshot the reporter attached
+      -- (/uploads/support-screenshot-<id>.<ext>). See migration block below for
+      -- existing installs.
+      screenshot_ref TEXT,
       converted_card_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1243,6 +1247,14 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT git_worktree_detected FROM sessions LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE sessions ADD COLUMN git_worktree_detected INTEGER DEFAULT NULL');
+  }
+
+  // Optional reporter-attached screenshot ref on support tickets (existing
+  // installs predate the column in the CREATE TABLE above).
+  try {
+    db.prepare('SELECT screenshot_ref FROM support_tickets LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE support_tickets ADD COLUMN screenshot_ref TEXT');
   }
 
   // Resolve-PR sessions store the PR's head branch here so the worktree is
@@ -3615,8 +3627,8 @@ function initDb(dataDir: string): void {
     // newest, via a CASE rank since SQLite has no native enum ordering.
     createSupportTicket: db.prepare(
       `INSERT INTO support_tickets
-         (id, project_id, type, severity, status, subject, body, reporter, replay_ref)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, project_id, type, severity, status, subject, body, reporter, replay_ref, screenshot_ref)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getSupportTicket: db.prepare('SELECT * FROM support_tickets WHERE id = ?'),
     listSupportTicketsByProject: db.prepare(
@@ -3654,6 +3666,9 @@ function initDb(dataDir: string): void {
     ),
     setSupportTicketReplayRef: db.prepare(
       `UPDATE support_tickets SET replay_ref = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setSupportTicketScreenshotRef: db.prepare(
+      `UPDATE support_tickets SET screenshot_ref = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     setSupportTicketBody: db.prepare(
       `UPDATE support_tickets SET body = ?, updated_at = datetime('now') WHERE id = ?`,

@@ -37,6 +37,10 @@ export const SupportTicketComponent = registerComponent(
       ai_investigation: z.string().nullable(),
       ai_investigated_at: z.string().nullable(),
       replay_ref: z.string().nullable(),
+      screenshot_ref: z
+        .string()
+        .nullable()
+        .openapi({ description: 'Server-relative ref to an attached screenshot, or null.' }),
       converted_card_id: z.string().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
@@ -51,6 +55,10 @@ export const CreateSupportTicketRequestSchema = z.object({
   subject: z.string().optional(),
   reporter: z.string().optional(),
   replayRef: z.string().optional(),
+  screenshot: z.string().optional().openapi({
+    description:
+      'Optional screenshot as a base64 data URL (data:image/png|jpeg|webp|gif;base64,...). Persisted server-side and exposed via screenshot_ref.',
+  }),
 });
 
 export const PatchSupportTicketRequestSchema = z
@@ -59,8 +67,14 @@ export const PatchSupportTicketRequestSchema = z
     aiSummary: z.string().nullable().optional(),
     aiInvestigation: z.string().nullable().optional(),
     replayRef: z.string().nullable().optional(),
+    screenshot: z.string().nullable().optional().openapi({
+      description:
+        'Attach a screenshot (base64 data URL) or clear it with null. Persisted server-side; exposed via screenshot_ref.',
+    }),
   })
-  .openapi({ description: 'Partial update: status transition and/or AI/replay fields.' });
+  .openapi({
+    description: 'Partial update: status transition and/or AI/replay/screenshot fields.',
+  });
 
 const projectIdParams = z.object({
   projectId: z.string().openapi({ description: 'Project slug or id.' }),

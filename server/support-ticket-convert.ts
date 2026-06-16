@@ -56,7 +56,20 @@ export function buildCardFieldsFromTicket(ticket: SupportTicketRow): CardFieldsF
   const title = subject || firstLine || `Support ticket ${ticket.id.slice(0, 8)}`;
 
   const footer = `Converted from support ticket \`${ticket.id}\` (${ticket.type}, ${ticket.severity}).`;
-  const description = body ? `${body}\n\n---\n${footer}` : footer;
+  // Preserve a reporter-attached screenshot on the card as a markdown image so
+  // it survives the conversion. The ref is stored server-relative (/uploads/…)
+  // on purpose: the card markdown renderer runs every image/link `src` through
+  // `resolveServerMediaUrl` (see client/src/components/MarkdownRenderer.jsx),
+  // which prefixes /uploads paths with the server origin in remote mode — the
+  // same resolution chat attachments and other card descriptions rely on. An
+  // absolute URL baked in here would instead break if the deployment's public
+  // origin ever changes.
+  const screenshotLine = ticket.screenshot_ref
+    ? `\n\n**Screenshot:** ![screenshot](${ticket.screenshot_ref})`
+    : '';
+  const description = body
+    ? `${body}\n\n---\n${footer}${screenshotLine}`
+    : `${footer}${screenshotLine}`;
 
   const labels = `support,${ticket.type}`;
 

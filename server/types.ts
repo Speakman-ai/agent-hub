@@ -906,6 +906,9 @@ export interface SupportTicketRow {
   ai_investigated_at: string | null;
   // Optional reference to a captured session replay attached to the ticket.
   replay_ref: string | null;
+  // Optional server-relative ref to a screenshot the reporter attached
+  // (/uploads/support-screenshot-<id>.<ext>).
+  screenshot_ref: string | null;
   // Set when the ticket is promoted to a kanban card (status → 'converted').
   converted_card_id: string | null;
   created_at: string;
@@ -1635,6 +1638,7 @@ export interface Stmts {
   updateSupportTicketStatus: Stmt;
   updateSupportTicketInvestigation: Stmt;
   setSupportTicketReplayRef: Stmt;
+  setSupportTicketScreenshotRef: Stmt;
   setSupportTicketBody: Stmt;
   convertSupportTicketToCard: Stmt;
   deleteSupportTicket: Stmt;

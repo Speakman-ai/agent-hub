@@ -60,6 +60,7 @@ export interface CreateSupportTicketInput {
   subject?: string;
   reporter?: string | null;
   replayRef?: string | null;
+  screenshotRef?: string | null;
 }
 
 /**
@@ -94,6 +95,7 @@ export function createSupportTicket(input: CreateSupportTicketInput): SupportTic
     body,
     input.reporter ?? null,
     input.replayRef ?? null,
+    input.screenshotRef ?? null,
   );
   return getSupportTicket(id)!;
 }
@@ -181,6 +183,16 @@ export function setSupportTicketReplayRef(
 ): SupportTicketRow | null {
   if (!getSupportTicket(id)) return null;
   getStmts().setSupportTicketReplayRef.run(replayRef, id);
+  return getSupportTicket(id);
+}
+
+/** Attach (or clear, with null) a screenshot reference. */
+export function setSupportTicketScreenshotRef(
+  id: string,
+  screenshotRef: string | null,
+): SupportTicketRow | null {
+  if (!getSupportTicket(id)) return null;
+  getStmts().setSupportTicketScreenshotRef.run(screenshotRef, id);
   return getSupportTicket(id);
 }
 

@@ -16,12 +16,16 @@ export function sortTickets(list) {
   });
 }
 
-// Resolve a replay reference to an openable URL. Absolute URLs pass through;
-// server-relative paths (e.g. /uploads/...) are prefixed with the server base.
-export function resolveReplayUrl(ref) {
+// Resolve a server-stored reference (replay or screenshot) to an openable URL.
+// Absolute URLs pass through; server-relative paths (e.g. /uploads/...) are
+// prefixed with the server base.
+export function resolveUploadUrl(ref) {
   if (!ref) return null;
   if (/^https?:\/\//i.test(ref)) return ref;
   const base = getServerBaseUrl();
   if (ref.startsWith('/')) return `${base}${ref}`;
   return `${base}/${ref}`;
 }
+
+// Back-compat alias: replay and screenshot refs share the same resolution.
+export const resolveReplayUrl = resolveUploadUrl;

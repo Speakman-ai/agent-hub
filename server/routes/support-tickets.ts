@@ -10,8 +10,13 @@ import {
   deleteSupportTicket,
   SUPPORT_TICKET_STATUSES,
 } from '../support-tickets-store.js';
-import type { SupportTicketStatus } from '../types.js';
+import type { SupportTicketStatus, SupportTicketRow } from '../types.js';
 import { intakeSupportTicket, setGuardedReplayRef } from '../support-ticket-intake.js';
+import { setSupportTicketScreenshotRef } from '../support-tickets-store.js';
+import {
+  persistSupportTicketScreenshot,
+  deleteSupportTicketScreenshot,
+} from '../support-ticket-screenshot.js';
 import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
 import { getOrCreateBoard } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
@@ -33,6 +38,25 @@ async function tryLinkReplay(
   } catch (err) {
     console.error('[SupportTickets] Failed to link replay:', (err as Error).message);
   }
+}
+
+/**
+ * Whether a screenshot ref is still embedded in the markdown of the card this
+ * ticket was converted to. The convert path bakes the screenshot ref into the
+ * card description (`![screenshot](/uploads/...)`), so a file referenced by a
+ * live converted card must NOT be deleted when the ticket's own attachment is
+ * later replaced or cleared. Each screenshot file has a unique uuid name and is
+ * only ever referenced by its own ticket + that ticket's converted card, so
+ * checking this one card is sufficient.
+ */
+function screenshotReferencedByConvertedCard(
+  stmts: RouteDeps['stmts'],
+  ticket: SupportTicketRow,
+  ref: string,
+): boolean {
+  if (!ticket.converted_card_id) return false;
+  const card = stmts.getKanbanCard.get(ticket.converted_card_id) as KanbanCardRow | undefined;
+  return Boolean(card && typeof card.description === 'string' && card.description.includes(ref));
 }
 
 /**
@@ -77,14 +101,28 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const { type, severity, subject, body, reporter, replayRef } = req.body as {
+    const { type, severity, subject, body, reporter, replayRef, screenshot } = req.body as {
       type?: string;
       severity?: string;
       subject?: string;
       body?: string;
       reporter?: string;
       replayRef?: string;
+      screenshot?: string;
     };
+
+    // Persist the optional screenshot (a base64 data URL) before landing the
+    // ticket. The file is written first because the ref must be stored with the
+    // row; if the ticket then fails to land we roll the file back below so a
+    // rejected request never leaves an orphan under /uploads.
+    let screenshotRef: string | null = null;
+    if (screenshot) {
+      try {
+        screenshotRef = await persistSupportTicketScreenshot(deps.serverDir, screenshot);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
+    }
 
     try {
       const ticket = await intakeSupportTicket(
@@ -96,11 +134,15 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           body: body ?? '',
           reporter: reporter ?? null,
           replayRef: replayRef ?? null,
+          screenshotRef,
         },
         { stmts, broadcast, config: deps.config, serverDir: deps.serverDir, cwd: project.cwd },
       );
       res.status(201).json(ticket);
     } catch (err) {
+      // The ticket didn't land — remove the screenshot we just wrote so it
+      // isn't orphaned (intake validates body/type/severity and can throw).
+      await deleteSupportTicketScreenshot(deps.serverDir, screenshotRef);
       res.status(400).json({ error: (err as Error).message });
     }
   });
@@ -116,12 +158,29 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Support ticket not found' });
       }
 
-      const { status, aiSummary, aiInvestigation, replayRef } = req.body as {
+      const { status, aiSummary, aiInvestigation, replayRef, screenshot } = req.body as {
         status?: string;
         aiSummary?: string | null;
         aiInvestigation?: string | null;
         replayRef?: string | null;
+        screenshot?: string | null;
       };
+
+      // Resolve the screenshot mutation up-front so a bad data URL fails the
+      // whole PATCH with a 400 before any field is written. `null` clears the
+      // existing attachment; a string is persisted and its ref stored.
+      let screenshotRef: string | null | undefined;
+      if (screenshot !== undefined) {
+        if (screenshot === null || screenshot === '') {
+          screenshotRef = null;
+        } else {
+          try {
+            screenshotRef = await persistSupportTicketScreenshot(deps.serverDir, screenshot);
+          } catch (err) {
+            return res.status(400).json({ error: (err as Error).message });
+          }
+        }
+      }
 
       try {
         let ticket = existing;
@@ -143,9 +202,32 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           // resolve a foreign capture.
           ticket = (await setGuardedReplayRef(stmts, ticket.id, project.id, replayRef))!;
         }
+        if (screenshotRef !== undefined) {
+          const previousRef = existing.screenshot_ref;
+          ticket = setSupportTicketScreenshotRef(ticket.id, screenshotRef)!;
+          // A replaced/cleared screenshot leaves the prior file orphaned and
+          // still publicly fetchable under /uploads. Delete it — unless this
+          // ticket's converted card still embeds that ref in its markdown (the
+          // historical attachment the card needs).
+          if (
+            previousRef &&
+            previousRef !== screenshotRef &&
+            !screenshotReferencedByConvertedCard(stmts, ticket, previousRef)
+          ) {
+            await deleteSupportTicketScreenshot(deps.serverDir, previousRef);
+          }
+        }
         broadcast({ type: 'support_ticket_updated', ticket });
         res.json(ticket);
       } catch (err) {
+        // A later mutation rejected (e.g. invalid status). If we wrote a new
+        // screenshot file up-front, roll it back so the rejected PATCH leaves no
+        // orphan. `screenshotRef` is a string only when a new file was written
+        // (null = clear, undefined = untouched), so this never deletes the
+        // ticket's existing attachment.
+        if (typeof screenshotRef === 'string') {
+          await deleteSupportTicketScreenshot(deps.serverDir, screenshotRef);
+        }
         res.status(400).json({ error: (err as Error).message });
       }
     },
@@ -238,23 +320,34 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     },
   );
 
-  router.delete('/api/projects/:projectId/support-tickets/:id', (req: Request, res: Response) => {
-    const project = findProject(req.params.projectId as string);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
+  router.delete(
+    '/api/projects/:projectId/support-tickets/:id',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const ticket = getSupportTicket(req.params.id as string);
-    if (!ticket || ticket.project_id !== project.id) {
-      return res.status(404).json({ error: 'Support ticket not found' });
-    }
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
 
-    deleteSupportTicket(ticket.id);
-    broadcast({
-      type: 'support_ticket_deleted',
-      ticketId: ticket.id,
-      projectId: project.id,
-    });
-    res.json({ ok: true });
-  });
+      deleteSupportTicket(ticket.id);
+      // The row is gone — its screenshot file would otherwise stay orphaned and
+      // publicly fetchable. Delete it unless a converted card still embeds it.
+      if (
+        ticket.screenshot_ref &&
+        !screenshotReferencedByConvertedCard(stmts, ticket, ticket.screenshot_ref)
+      ) {
+        await deleteSupportTicketScreenshot(deps.serverDir, ticket.screenshot_ref);
+      }
+      broadcast({
+        type: 'support_ticket_deleted',
+        ticketId: ticket.id,
+        projectId: project.id,
+      });
+      res.json({ ok: true });
+    },
+  );
 
   return router;
 }

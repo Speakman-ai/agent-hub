@@ -6,6 +6,7 @@ import {
   FlatList,
   StyleSheet,
   ActivityIndicator,
+  Image,
   Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,7 +14,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { sortTickets, resolveReplayUrl } from '../utils/supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl } from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
 
 const SEVERITY_COLOR = {
@@ -43,6 +44,7 @@ function TicketCard({ item, projectId, onOpenReplay }) {
   const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
   const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
   const hasReplay = item.type === 'bug' && item.replay_ref;
+  const screenshotUrl = resolveUploadUrl(item.screenshot_ref);
   const isConverted = item.status === 'converted' || !!item.converted_card_id;
 
   const [converting, setConverting] = useState(false);
@@ -93,6 +95,19 @@ function TicketCard({ item, projectId, onOpenReplay }) {
           <Text style={styles.aiLabel}>AI investigation</Text>
           <Text style={styles.aiText}>{item.ai_summary}</Text>
         </View>
+      ) : null}
+
+      {screenshotUrl ? (
+        <TouchableOpacity
+          onPress={() => Linking.openURL(screenshotUrl).catch(() => {})}
+          testID="ticket-screenshot"
+        >
+          <Image
+            source={{ uri: screenshotUrl }}
+            style={styles.screenshot}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
       ) : null}
 
       {hasReplay ? (
@@ -318,6 +333,15 @@ const styles = StyleSheet.create({
   },
   aiText: { fontSize: 12, color: colors.gray300 },
   replayLink: { fontSize: 12, color: colors.blue400, marginTop: 8 },
+  screenshot: {
+    marginTop: 8,
+    width: '100%',
+    height: 160,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray900,
+  },
   actionRow: {
     flexDirection: 'row',
     alignItems: 'center',

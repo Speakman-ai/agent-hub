@@ -69,10 +69,10 @@ function sortTickets(list) {
   });
 }
 
-// Resolve a replay reference to a clickable URL. Absolute URLs pass through;
-// server-relative paths (e.g. an /uploads/... attachment) are prefixed with the
-// active server origin so remote-mode clients hit the right host.
-function resolveReplayUrl(ref) {
+// Resolve a server-stored reference to a clickable URL. Absolute URLs pass
+// through; server-relative paths (e.g. an /uploads/... attachment) are prefixed
+// with the active server origin so remote-mode clients hit the right host.
+function resolveUploadUrl(ref) {
   if (!ref) return null;
   if (/^https?:\/\//i.test(ref)) return ref;
   const base = getServerBase();
@@ -80,11 +80,16 @@ function resolveReplayUrl(ref) {
   return `${base}/${ref}`;
 }
 
+// Back-compat alias: the replay ref and screenshot ref share the same upload
+// origin-resolution. Kept as a named export for existing consumers/tests.
+const resolveReplayUrl = resolveUploadUrl;
+
 function SupportTicketCard({ ticket, projectId, onOpen }) {
   const type = TYPE_META[ticket.type] || TYPE_META.other;
   const { Icon } = type;
   const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
   const replayId = ticket.type === 'bug' ? parseReplayIdFromRef(ticket.replay_ref) : null;
+  const screenshotUrl = resolveUploadUrl(ticket.screenshot_ref);
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
 
   const [watchingReplay, setWatchingReplay] = useState(false);
@@ -177,6 +182,24 @@ function SupportTicketCard({ ticket, projectId, onOpen }) {
                   </div>
                 </div>
               </div>
+            ) : null}
+
+            {screenshotUrl ? (
+              <a
+                href={screenshotUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="pointer-events-auto relative block mt-2 w-fit"
+                data-testid="ticket-screenshot-thumb"
+              >
+                <img
+                  src={screenshotUrl}
+                  alt="Reporter screenshot"
+                  className="max-h-32 rounded border border-gray-700 object-contain"
+                  loading="lazy"
+                />
+              </a>
             ) : null}
 
             {replayId ? (
@@ -281,6 +304,7 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose }) {
   const { Icon } = type;
   const severityClass = SEVERITY_BADGE[ticket.severity] || SEVERITY_BADGE.low;
   const replayId = ticket.type === 'bug' ? parseReplayIdFromRef(ticket.replay_ref) : null;
+  const screenshotUrl = resolveUploadUrl(ticket.screenshot_ref);
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
   const isConverted = ticket.status === 'converted' || !!ticket.converted_card_id;
   const investigation = ticket.ai_investigation?.trim() || ticket.ai_summary?.trim() || null;
@@ -377,6 +401,21 @@ function SupportTicketDetailModal({ ticket: liveTicket, projectId, onClose }) {
                     Investigated {relativeTime(ticket.ai_investigated_at)}
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+
+            {screenshotUrl ? (
+              <div data-testid="detail-screenshot">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                  Screenshot
+                </div>
+                <a href={screenshotUrl} target="_blank" rel="noreferrer" className="block w-fit">
+                  <img
+                    src={screenshotUrl}
+                    alt="Reporter screenshot"
+                    className="max-h-80 rounded-md border border-gray-700 object-contain"
+                  />
+                </a>
               </div>
             ) : null}
 

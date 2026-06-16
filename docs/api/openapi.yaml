@@ -5402,6 +5402,10 @@ components:
         replay_ref:
           type: string
           nullable: true
+        screenshot_ref:
+          type: string
+          nullable: true
+          description: Server-relative ref to an attached screenshot, or null.
         converted_card_id:
           type: string
           nullable: true
@@ -5422,6 +5426,7 @@ components:
         - ai_investigation
         - ai_investigated_at
         - replay_ref
+        - screenshot_ref
         - converted_card_id
         - created_at
         - updated_at
@@ -17807,6 +17812,9 @@ paths:
                   type: string
                 replayRef:
                   type: string
+                screenshot:
+                  type: string
+                  description: Optional screenshot as a base64 data URL (data:image/png|jpeg|webp|gif;base64,...). Persisted server-side and exposed via screenshot_ref.
               required:
                 - body
       responses:
@@ -17902,7 +17910,11 @@ paths:
                 replayRef:
                   type: string
                   nullable: true
-              description: "Partial update: status transition and/or AI/replay fields."
+                screenshot:
+                  type: string
+                  nullable: true
+                  description: Attach a screenshot (base64 data URL) or clear it with null. Persisted server-side; exposed via screenshot_ref.
+              description: "Partial update: status transition and/or AI/replay/screenshot fields."
       responses:
         "200":
           description: Updated ticket.

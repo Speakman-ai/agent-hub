@@ -231,6 +231,46 @@ describe('CustomerSupportPage — ticket detail view', () => {
     await waitFor(() => expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull());
   });
 
+  it('renders an attached screenshot on the card and in the detail modal', async () => {
+    const shot = ticket({
+      id: 't1',
+      subject: 'Visual bug',
+      screenshot_ref: '/uploads/support-screenshot-abc.png',
+    });
+    api.getSupportTickets.mockResolvedValue([shot]);
+    api.getSupportTicket.mockResolvedValue(shot);
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Visual bug')).toBeInTheDocument());
+
+    // Card thumbnail resolves the /uploads ref against the server base.
+    const thumb = screen.getByTestId('ticket-screenshot-thumb');
+    const thumbImg = within(thumb).getByRole('img');
+    expect(thumbImg).toHaveAttribute(
+      'src',
+      'https://hub.example.com/uploads/support-screenshot-abc.png',
+    );
+
+    // Open the modal and assert the larger screenshot renders too.
+    fireEvent.click(screen.getByRole('button', { name: /open support ticket/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('support-ticket-detail-modal')).toBeInTheDocument(),
+    );
+    const modal = screen.getByTestId('support-ticket-detail-modal');
+    const detail = within(modal).getByTestId('detail-screenshot');
+    expect(within(detail).getByRole('img')).toHaveAttribute(
+      'src',
+      'https://hub.example.com/uploads/support-screenshot-abc.png',
+    );
+  });
+
+  it('shows no screenshot affordance when screenshot_ref is null', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', screenshot_ref: null })]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Something broke')).toBeInTheDocument());
+    expect(screen.queryByTestId('ticket-screenshot-thumb')).toBeNull();
+  });
+
   it('propagates same-ticket WebSocket updates into the open detail modal', async () => {
     api.getSupportTickets.mockResolvedValue([
       ticket({ id: 't1', subject: 'Live updates', status: 'new' }),
