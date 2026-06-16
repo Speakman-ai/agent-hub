@@ -8,6 +8,9 @@ import {
   REPLAY_SAMPLE_RATE_KEY,
   pruneBuffer,
   selectFlushWindow,
+  countSnapshotElements,
+  countElementsInNode,
+  PREMOUNT_SHELL_MAX_ELEMENTS,
   hasFullSnapshot,
   submitReplay,
   SessionReplayRecorder,
@@ -36,6 +39,35 @@ const ev = (type, timestamp, data = {}) => ({ type, timestamp, data });
 const meta = (ts) => ev(RRWEB_META, ts);
 const snap = (ts) => ev(RRWEB_FULL_SNAPSHOT, ts);
 const incr = (ts) => ev(3, ts);
+
+// A serialized rrweb DOM tree (document → html → body → `elements - 2` divs)
+// carrying exactly `elements` element nodes (serialized NodeType.Element === 2).
+const elemTree = (elements) => {
+  const kids = [];
+  for (let i = 0; i < Math.max(0, elements - 2); i++) {
+    kids.push({ type: 2, tagName: 'div', attributes: {}, childNodes: [] });
+  }
+  return {
+    type: 0,
+    childNodes: [
+      {
+        type: 2,
+        tagName: 'html',
+        attributes: {},
+        childNodes: [{ type: 2, tagName: 'body', attributes: {}, childNodes: kids }],
+      },
+    ],
+  };
+};
+// A full-snapshot event whose captured DOM holds `elements` element nodes.
+const snapEl = (ts, elements) => ev(RRWEB_FULL_SNAPSHOT, ts, { node: elemTree(elements) });
+// A mutation incremental (IncrementalSource.Mutation === 0) that adds `n` nodes.
+const mut = (ts, n) => ev(3, ts, { source: 0, adds: Array.from({ length: n }, () => ({})) });
+// A mutation incremental that adds a SINGLE node whose serialized subtree holds
+// `elements` element nodes — the shape rrweb produces when an SPA mounts a whole
+// container at once (one `adds` entry, large `childNodes`).
+const mutSubtree = (ts, elements) =>
+  ev(3, ts, { source: 0, adds: [{ parentId: 1, nextId: null, node: elemTree(elements) }] });
 
 describe('clampSampleRate', () => {
   it('clamps to [0,1] and treats junk as 0', () => {
@@ -332,6 +364,77 @@ describe('selectFlushWindow', () => {
     expect(selectFlushWindow(empty, 1000, 100)).toBe(empty);
     expect(selectFlushWindow(null, 1000, 100)).toBe(null);
   });
+
+  it('opens on the first populated snapshot, not a pre-mount shell, in a short session', () => {
+    // Regression for the "blank replay" bug: the whole session (12.7s) is shorter
+    // than the 45s window, so the boot loading-spinner snapshot stays in-window.
+    // The time-based cutoff can't drop it, so the OLD heuristic opened there
+    // (blank). The app mounts mid-session (a populated checkout), then the user
+    // interacts. The replay must open on the populated checkout and KEEP the
+    // trailing interactions — not the shell, and not only the final static frame.
+    const events = [
+      meta(0),
+      snapEl(5, 16), // pre-mount loading spinner (shell)
+      mut(2000, 80), // app mounts via mutations
+      meta(2100),
+      snapEl(2105, 800), // populated post-mount checkout
+      incr(8000), // user interaction after mount
+      incr(12000),
+    ];
+    const out = selectFlushWindow(events, 12005, 45000);
+    expect(out[0]).toEqual(meta(2100));
+    expect(out[1]).toEqual(snapEl(2105, 800));
+    // The dead pre-mount lead-in is dropped …
+    expect(out).not.toContainEqual(snapEl(5, 16));
+    // … but the interactions that followed the mount are preserved.
+    expect(out).toContainEqual(incr(8000));
+    expect(out).toContainEqual(incr(12000));
+  });
+
+  it('keeps the oldest in-window snapshot when it is already populated', () => {
+    // A session that opened on real content must NOT be re-anchored — we want the
+    // full trailing window of context, exactly as before.
+    const events = [meta(900), snapEl(905, 600), incr(950), meta(980), snapEl(985, 900)];
+    const out = selectFlushWindow(events, 1000, 45000);
+    expect(out[0]).toEqual(meta(900));
+    expect(out[1]).toEqual(snapEl(905, 600));
+    expect(out).toContainEqual(snapEl(985, 900));
+  });
+
+  it('keeps a lone shell snapshot when there is nothing more populated to skip to', () => {
+    // Only one snapshot, and it is a shell: open on it rather than dropping the
+    // sole replayable anchor (flush() still ships SOMETHING over nothing).
+    const events = [meta(0), snapEl(5, 10), incr(100)];
+    const out = selectFlushWindow(events, 200, 45000);
+    expect(out[0]).toEqual(meta(0));
+    expect(out[1]).toEqual(snapEl(5, 10));
+  });
+});
+
+describe('countSnapshotElements', () => {
+  it('counts element nodes in a captured DOM tree', () => {
+    expect(countSnapshotElements(snapEl(1, 16))).toBe(16);
+    expect(countSnapshotElements(snapEl(1, 890))).toBe(890);
+  });
+
+  it('returns 0 for an event with no node tree', () => {
+    expect(countSnapshotElements(snap(1))).toBe(0);
+    expect(countSnapshotElements(null)).toBe(0);
+    expect(countSnapshotElements(undefined)).toBe(0);
+  });
+
+  it('countElementsInNode walks a node subtree (rrweb mutation-add shape)', () => {
+    // A single mutation add can carry a whole mounted subtree under one node.
+    const added = mutSubtree(1, 120).data.adds[0].node;
+    expect(countElementsInNode(added)).toBe(120);
+    expect(countElementsInNode(null)).toBe(0);
+    expect(countElementsInNode({ type: 3, textContent: 'x' })).toBe(0); // leaf text
+  });
+
+  it('a boot spinner sits below the pre-mount shell threshold; a real page is above it', () => {
+    expect(countSnapshotElements(snapEl(1, 16))).toBeLessThanOrEqual(PREMOUNT_SHELL_MAX_ELEMENTS);
+    expect(countSnapshotElements(snapEl(1, 800))).toBeGreaterThan(PREMOUNT_SHELL_MAX_ELEMENTS);
+  });
 });
 
 describe('hasFullSnapshot', () => {
@@ -439,6 +542,70 @@ describe('SessionReplayRecorder', () => {
     const rec = new SessionReplayRecorder({ now: () => 1000 });
     rec.start(record); // fakeRecord exposes no takeFullSnapshot static
     expect(rec.forceFullSnapshot()).toBe(false);
+  });
+
+  it('takes one fresh checkout once the SPA mounts after a pre-mount shell', () => {
+    // The recording opens on a near-empty boot shell; the app then mounts via
+    // mutations. The recorder should take exactly ONE post-mount checkout so the
+    // buffer holds a populated anchor early in the session.
+    const { record, calls } = fakeRecord();
+    let now = 1000;
+    const takeFullSnapshot = vi.fn(() => {
+      calls.emit(meta(now));
+      calls.emit(snapEl(now, 800)); // a populated checkout
+    });
+    const rec = new SessionReplayRecorder({ now: () => now, takeFullSnapshot });
+    rec.start(record);
+
+    calls.emit(meta(0));
+    calls.emit(snapEl(5, 16)); // pre-mount shell
+    now = 1000;
+    calls.emit(mut(900, 30)); // mounting… below threshold so far
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
+    calls.emit(mut(950, 40)); // cumulative 70 >= MOUNT_NODE_THRESHOLD → checkout
+    expect(takeFullSnapshot).toHaveBeenCalledTimes(1);
+
+    // Further mutations don't trigger another checkout (one-shot).
+    calls.emit(mut(1200, 200));
+    expect(takeFullSnapshot).toHaveBeenCalledTimes(1);
+    // The populated checkout is in the buffer.
+    expect(rec.snapshot()).toContainEqual(snapEl(1000, 800));
+  });
+
+  it('detects a mount delivered as ONE add with a large subtree (not just adds.length)', () => {
+    // Regression: rrweb can serialize a whole mounted container under a single
+    // `adds` entry. Counting adds.length would see "1" and never fire; we must
+    // count the element nodes inside the added subtree.
+    const { record, calls } = fakeRecord();
+    let now = 1000;
+    const takeFullSnapshot = vi.fn(() => {
+      calls.emit(meta(now));
+      calls.emit(snapEl(now, 800));
+    });
+    const rec = new SessionReplayRecorder({ now: () => now, takeFullSnapshot });
+    rec.start(record);
+
+    calls.emit(meta(0));
+    calls.emit(snapEl(5, 16)); // pre-mount shell
+    now = 1000;
+    // A single mutation add carrying a 200-element subtree (one adds entry).
+    calls.emit(mutSubtree(900, 200));
+    expect(takeFullSnapshot).toHaveBeenCalledTimes(1);
+    expect(rec.snapshot()).toContainEqual(snapEl(1000, 800));
+  });
+
+  it('does NOT take a post-mount checkout when the recording opened populated', () => {
+    // A session that started on real content needs no extra checkout — behaviour
+    // is unchanged for the common case.
+    const { record, calls } = fakeRecord();
+    const takeFullSnapshot = vi.fn();
+    const rec = new SessionReplayRecorder({ now: () => 1000, takeFullSnapshot });
+    rec.start(record);
+
+    calls.emit(meta(0));
+    calls.emit(snapEl(5, 500)); // already populated
+    calls.emit(mut(100, 300)); // lots of churn, but no shell → no forced checkout
+    expect(takeFullSnapshot).not.toHaveBeenCalled();
   });
 
   it('flush() forces a fresh checkout so a stale pre-mount buffer opens on the current state', async () => {

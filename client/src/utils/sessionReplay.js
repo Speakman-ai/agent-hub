@@ -26,6 +26,18 @@ export const DEFAULT_WINDOW_MS = 45_000;
 export const DEFAULT_MAX_EVENTS = 5_000;
 // Don't bother shipping a buffer that can't reconstruct anything.
 const MIN_FLUSH_EVENTS = 2;
+// A full snapshot whose captured DOM has at most this many element nodes is
+// treated as a pre-mount "shell" (e.g. the app's initial loading spinner before
+// the SPA mounts real content) rather than a populated page. Real app screens
+// have hundreds of elements; a boot splash has a handful. Used both to decide
+// whether the recording opened on a shell (so the recorder takes an early
+// post-mount checkout) and to skip such a shell as the replay's OPENING frame.
+export const PREMOUNT_SHELL_MAX_ELEMENTS = 50;
+// How many nodes the SPA must add (via mutation incrementals) after a pre-mount
+// shell snapshot before we consider it "mounted" and take a fresh full snapshot
+// — so the rolling buffer holds a populated anchor near the start of the
+// session, not just the empty boot splash.
+const MOUNT_NODE_THRESHOLD = 50;
 // Collapse a storm of uncaught errors into at most one upload per window.
 const ERROR_FLUSH_THROTTLE_MS = 30_000;
 // Hard ceiling on how long the ingest upload may run before it's aborted, so a
@@ -259,6 +271,37 @@ export function pruneBuffer(
 }
 
 /**
+ * Count the element nodes (rrweb serialized NodeType.Element === 2 — distinct
+ * from the rrweb EventType.FullSnapshot, which is also 2) inside a serialized
+ * rrweb node and its entire `childNodes` subtree. Returns 0 for a null/leaf
+ * node. Iterative to stay safe on deep DOMs. Pure — no DOM, no rrweb import.
+ */
+export function countElementsInNode(root) {
+  if (!root) return 0;
+  let count = 0;
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (!node) continue;
+    if (node.type === 2) count += 1; // serialized element node
+    const kids = node.childNodes;
+    if (Array.isArray(kids)) {
+      for (let i = 0; i < kids.length; i++) stack.push(kids[i]);
+    }
+  }
+  return count;
+}
+
+/**
+ * Count the element nodes inside a full-snapshot event's captured DOM tree.
+ * Returns 0 when the event carries no node tree (synthetic/legacy events), so
+ * callers treat "unknown" as "don't skip / not a shell". Pure.
+ */
+export function countSnapshotElements(snapshotEvent) {
+  return countElementsInNode(snapshotEvent && snapshotEvent.data && snapshotEvent.data.node);
+}
+
+/**
  * Select the slice of a rolling buffer to upload as a replay, opening on a
  * RECENT full snapshot.
  *
@@ -289,18 +332,47 @@ export function selectFlushWindow(events, now, windowMs = DEFAULT_WINDOW_MS) {
   if (!Array.isArray(events) || events.length === 0) return events;
   const cutoff = now - windowMs;
 
-  let oldestInWindow = -1; // first (oldest) full snapshot with ts >= cutoff
+  const inWindow = []; // indices of full snapshots with ts >= cutoff, oldest→newest
   let newestSnapshot = -1; // last full snapshot overall
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
     if (!e || e.type !== RRWEB_FULL_SNAPSHOT) continue;
     newestSnapshot = i;
-    if (oldestInWindow === -1 && e.timestamp >= cutoff) oldestInWindow = i;
+    if (e.timestamp >= cutoff) inWindow.push(i);
   }
 
   if (newestSnapshot === -1) return events; // no snapshot — flush() declines it
 
-  let startIdx = oldestInWindow !== -1 ? oldestInWindow : newestSnapshot;
+  let startIdx;
+  if (inWindow.length === 0) {
+    // Every snapshot predates the window → open on the freshest state available.
+    startIdx = newestSnapshot;
+  } else {
+    // Default: the oldest in-window snapshot, to keep a full window of context.
+    //
+    // But a session SHORTER than the trailing window keeps its very first,
+    // pre-mount snapshot in-window — a near-empty app shell (e.g. a loading
+    // spinner captured before the SPA mounted). Opening there makes the replay
+    // look blank for the whole lead-in. So skip leading pre-mount SHELLS as long
+    // as a later in-window snapshot is more populated: the replay opens on the
+    // first real, rendered state while still preserving the interaction history
+    // that follows it. (The time-based cutoff above already drops shells that
+    // fall outside the window; this also handles the short-session case the
+    // cutoff can't.) When counts are unknown (no node tree) nothing is skipped,
+    // so the behaviour is unchanged for callers that don't carry DOM trees.
+    const counts = inWindow.map((i) => countSnapshotElements(events[i]));
+    const maxCount = Math.max(...counts);
+    let pos = 0;
+    while (
+      pos < inWindow.length - 1 &&
+      counts[pos] <= PREMOUNT_SHELL_MAX_ELEMENTS &&
+      counts[pos] < maxCount
+    ) {
+      pos += 1;
+    }
+    startIdx = inWindow[pos];
+  }
+
   // Include the Meta event rrweb emits immediately before a snapshot.
   if (startIdx > 0 && events[startIdx - 1] && events[startIdx - 1].type === RRWEB_META) {
     startIdx -= 1;
@@ -385,6 +457,16 @@ export class SessionReplayRecorder {
     // -Infinity so the very first error-triggered flush is never throttled.
     this._lastErrorFlushAt = -Infinity;
     this.lastResult = null;
+
+    // Post-mount checkout state. When a recording opens on a pre-mount shell
+    // (empty #root + a boot spinner), the only snapshot near the start is
+    // un-replayable blank. We watch the mutations that mount the SPA and, once
+    // enough nodes have been added, take ONE fresh full snapshot so the buffer
+    // holds a populated anchor early in the session (see _maybeSnapshotOnMount).
+    this._sawInitialSnapshot = false;
+    this._initialSnapshotWasShell = false;
+    this._mountedNodesAdded = 0;
+    this._tookMountSnapshot = false;
   }
 
   /** Begin recording. `recordFn` overrides the injected rrweb `record`. */
@@ -399,6 +481,13 @@ export class SessionReplayRecorder {
     this._takeFullSnapshot =
       this._injectedTakeFullSnapshot ||
       (typeof record.takeFullSnapshot === 'function' ? record.takeFullSnapshot : null);
+    // Fresh mount-detection state for this recording session (record() emits a
+    // new initial snapshot we must re-classify after a stop/start, e.g. on a
+    // masking-mode change).
+    this._sawInitialSnapshot = false;
+    this._initialSnapshotWasShell = false;
+    this._mountedNodesAdded = 0;
+    this._tookMountSnapshot = false;
     this.active = true;
     this._stopFn =
       record({
@@ -413,6 +502,63 @@ export class SessionReplayRecorder {
   _handleEmit(event) {
     this.buffer.push(event);
     this.buffer = pruneBuffer(this.buffer, this._now(), this.windowMs, this.maxEvents);
+    this._maybeSnapshotOnMount(event);
+  }
+
+  /**
+   * Take a single fresh full snapshot the moment the SPA first mounts real
+   * content, when the recording opened on a pre-mount shell.
+   *
+   * rrweb's first snapshot is taken at `record()` start — if the app's #root is
+   * still an empty loading splash then, that boot snapshot is a near-empty
+   * shell. For a short session (shorter than the trailing window) that shell
+   * stays in-window and becomes the replay's opening frame, so the replay looks
+   * blank until playback reaches the mount mutations. By forcing one checkout
+   * once enough nodes have been added, the buffer gains a populated snapshot
+   * early in the session; `selectFlushWindow` then opens the upload on THAT real
+   * state while keeping every interaction that follows it.
+   *
+   * One-shot and self-guarding: only fires when the initial snapshot was a shell,
+   * never re-enters (the forced snapshot's own emit is ignored), and is a no-op
+   * for recordings that already opened populated — so it changes nothing for the
+   * common case.
+   */
+  _maybeSnapshotOnMount(event) {
+    if (this._tookMountSnapshot || !event) return;
+    if (event.type === RRWEB_FULL_SNAPSHOT) {
+      // Classify the FIRST snapshot: did the recording open on a shell?
+      if (!this._sawInitialSnapshot) {
+        this._sawInitialSnapshot = true;
+        this._initialSnapshotWasShell = countSnapshotElements(event) <= PREMOUNT_SHELL_MAX_ELEMENTS;
+      }
+      return;
+    }
+    // Only chase a mount when the recording opened on a shell. A session that
+    // started populated needs no extra checkout.
+    if (!this._initialSnapshotWasShell) return;
+    // Accumulate ELEMENT nodes added by mutation incrementals
+    // (IncrementalSource.Mutation === 0). rrweb can serialize a whole mounted
+    // subtree under a SINGLE `adds` entry (one top-level node with a large
+    // `childNodes` subtree), so `adds.length` undercounts — an SPA mount that
+    // adds hundreds of elements in one add would never reach the threshold.
+    // Count the elements inside each added node's subtree instead. Fall back to
+    // the add count when an add carries no serialized node (element-less / legacy
+    // shapes) so a stream of node-less adds can't stall the detector.
+    const data = event.type === 3 ? event.data : null;
+    if (data && data.source === 0 && Array.isArray(data.adds)) {
+      let added = 0;
+      for (let i = 0; i < data.adds.length; i++) {
+        added += countElementsInNode(data.adds[i] && data.adds[i].node);
+      }
+      if (added === 0) added = data.adds.length;
+      this._mountedNodesAdded += added;
+      if (this._mountedNodesAdded >= MOUNT_NODE_THRESHOLD) {
+        // Set the guard BEFORE forcing the snapshot — forceFullSnapshot() emits
+        // synchronously back into _handleEmit, and this prevents re-entry.
+        this._tookMountSnapshot = true;
+        this.forceFullSnapshot();
+      }
+    }
   }
 
   /** Snapshot the current buffer (defensive copy). */
