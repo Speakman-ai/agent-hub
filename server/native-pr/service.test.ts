@@ -77,6 +77,8 @@ async function seedHostedRepoWithBranch(
   return { work, bare, headSha };
 }
 
+const TEST_PR_AUTHOR = '00000000-0000-4000-8000-000000000010';
+
 describe('NativePrService', () => {
   it('full lifecycle: create → list/detail shapes → merge → card Done + events + afterMerge', async () => {
     const projectId = `npr-${uuidv4().slice(0, 8)}`;
@@ -117,7 +119,7 @@ describe('NativePrService', () => {
       headSha,
       title: 'Add feature flag',
       body: 'Adds the feature.',
-      author: 'finalize',
+      author: TEST_PR_AUTHOR,
     });
     expect(created.created).toBe(true);
     expect(created.prUrl).toBe(`/projects/${projectId}/pulls/1`);
@@ -131,7 +133,7 @@ describe('NativePrService', () => {
       state: 'open',
       draft: false,
       html_url: created.prUrl,
-      user: 'finalize',
+      user: TEST_PR_AUTHOR,
       head: branch,
       base: 'main',
       labels: [],
@@ -197,7 +199,7 @@ describe('NativePrService', () => {
       headSha,
       title: 'Conflicting change',
       body: '',
-      author: 'finalize',
+      author: TEST_PR_AUTHOR,
     });
 
     const detail = await service.getDetail({ project, number: 1 });
@@ -211,6 +213,50 @@ describe('NativePrService', () => {
     });
     expect(result).toMatchObject({ ok: false, status: 409, mergeable: false });
     expect(service.listPulls({ project, state: 'open', limit: 10 })).toHaveLength(1);
+  });
+
+  it('marks PR head-change callbacks as created vs reused-head update', async () => {
+    const projectId = `npr-${uuidv4().slice(0, 8)}`;
+    const project = makeProject(projectId);
+    const branch = 'agent-hub/dev/session-reused';
+    const { work, headSha } = await seedHostedRepoWithBranch(projectId, branch);
+    const onPrHeadChanged = vi.fn();
+    const service = createNativePrService({
+      stmts,
+      broadcast: () => {},
+      onPrHeadChanged,
+    });
+
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha,
+      title: 'Initial PR',
+      body: '',
+      author: TEST_PR_AUTHOR,
+    });
+
+    git(work, 'checkout ' + branch);
+    writeFileSync(path.join(work, 'feature.txt'), 'feature\nmore\n');
+    git(work, 'add feature.txt');
+    git(work, 'commit -m "update feature"');
+    const updatedHeadSha = git(work, 'rev-parse HEAD');
+    git(work, `push origin ${branch}`);
+
+    service.createOrGetOpenPr({
+      project,
+      headBranch: branch,
+      baseBranch: 'main',
+      headSha: updatedHeadSha,
+      title: 'Updated PR',
+      body: 'new body',
+      author: TEST_PR_AUTHOR,
+    });
+
+    expect(onPrHeadChanged).toHaveBeenCalledTimes(2);
+    expect(onPrHeadChanged.mock.calls[0][2]).toEqual({ reason: 'created' });
+    expect(onPrHeadChanged.mock.calls[1][2]).toEqual({ reason: 'head_updated' });
   });
 
   it('close transitions the row; double-close and non-hosted projects are rejected', async () => {

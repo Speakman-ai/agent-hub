@@ -114,7 +114,8 @@ export function detectGrokAuthMode(grokHome?: string): GrokAuthInfo {
       hasNonEmpty(parsed.access_token) ||
       hasNonEmpty(parsed.refresh_token) ||
       hasNonEmpty(parsed.id_token) ||
-      hasNonEmptyNestedToken(parsed.tokens);
+      hasNonEmptyNestedToken(parsed.tokens) ||
+      hasGrokOidcIssuerEntries(parsed);
     if (hasOAuth) return { mode: 'oauth', path, present: true };
     const hasApiKey =
       hasNonEmpty(parsed.api_key) || hasNonEmpty(parsed.apiKey) || hasNonEmpty(parsed.XAI_API_KEY);
@@ -138,6 +139,24 @@ function hasNonEmptyNestedToken(tokens: unknown): boolean {
   if (tokens == null || typeof tokens !== 'object') return false;
   const t = tokens as Record<string, unknown>;
   return hasNonEmpty(t.access_token) || hasNonEmpty(t.refresh_token) || hasNonEmpty(t.id_token);
+}
+
+/**
+ * Current Grok Build CLI (2026) stores OIDC sessions under issuer-keyed entries
+ * like `"https://auth.x.ai::<client_id>": { key, refresh_token, auth_mode, … }`.
+ * The access JWT lives in `key`, not top-level `access_token`.
+ */
+function hasGrokOidcIssuerEntries(parsed: Record<string, unknown>): boolean {
+  for (const value of Object.values(parsed)) {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const hasAccess =
+      hasNonEmpty(entry.key) || hasNonEmpty(entry.access_token) || hasNonEmpty(entry.id_token);
+    const hasRefresh = hasNonEmpty(entry.refresh_token);
+    if (hasAccess && hasRefresh) return true;
+    if (entry.auth_mode === 'oidc' && (hasAccess || hasRefresh)) return true;
+  }
+  return false;
 }
 
 /**

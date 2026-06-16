@@ -29,6 +29,7 @@ import {
   resolveReviewerGhConfigDir,
 } from './spawn-github-credentials.js';
 import { getSessionOwner } from './session-ownership.js';
+import { resolveNativePrAuthorUserId } from './native-pr/author-user.js';
 import { getActiveAccessToken } from './github-connections-store.js';
 import {
   ensureSessionWorktreeDependenciesInstalled,
@@ -1907,6 +1908,25 @@ async function commitPushAndCreatePR(
       // branches (see `pre-push-rebase.ts`); we just don't need it here.
     }
 
+    // Hosted projects MUST attribute the native PR to a real Hub user. Resolve
+    // that attribution BEFORE the push side effect below: if it can't be
+    // resolved (auth-enabled deployment, no session owner), fail here rather
+    // than after creating/updating the remote branch — otherwise we'd strand a
+    // dangling pushed branch that can never receive a PR.
+    let hostedAuthorUserId: string | null = null;
+    if (hosted) {
+      try {
+        hostedAuthorUserId = resolveNativePrAuthorUserId({ sessionId });
+      } catch {
+        return {
+          ok: false,
+          error: 'Cannot create pull request: session has no attributed Hub user.',
+          code: 'pr_failed',
+          branch: changes.branch,
+        };
+      }
+    }
+
     const pushArgs = buildPushArgs({
       branch: changes.branch,
       rebaseRewroteHistory,
@@ -2109,6 +2129,18 @@ async function commitPushAndCreatePR(
         /* head sha is metadata on the PR row; push already succeeded */
       }
       const baseBranch = resolvedBaseBranch ?? (await resolveDefaultBranch(effectiveCwd)) ?? 'main';
+      // Attribution was resolved (and validated) before the push above; a
+      // missing author would have failed there, never reaching PR creation.
+      // This guard is defensive and keeps the type non-null for createOrGetOpenPr.
+      if (hostedAuthorUserId == null) {
+        return {
+          ok: false,
+          error: 'Cannot create pull request: session has no attributed Hub user.',
+          code: 'pr_failed',
+          branch: changes.branch,
+        };
+      }
+      const authorUserId = hostedAuthorUserId;
       try {
         const { prUrl, created } = nativePr.createOrGetOpenPr({
           project,
@@ -2117,7 +2149,7 @@ async function commitPushAndCreatePR(
           headSha,
           title: prTitle,
           body: prBody,
-          author: agent.name || 'session',
+          author: authorUserId,
         });
         prLog(`\n${created ? 'Created' : 'Updated'} Agent Hub pull request: ${prUrl}\n`);
         console.log(

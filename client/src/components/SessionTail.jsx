@@ -506,6 +506,7 @@ export function eventsToBlocks(events) {
   // Second pass: walk events, coalescing text and explore-tool runs.
   let textBuf = null; // { partials: '', final: '' }
   let exploredBuf = null; // { items: [{ use, result }] }
+  let thinkingBuf = '';
 
   const flushText = () => {
     if (!textBuf) return;
@@ -547,9 +548,16 @@ export function eventsToBlocks(events) {
     exploredBuf = null;
   };
 
+  const flushThinking = () => {
+    if (!thinkingBuf) return;
+    blocks.push({ kind: 'thinking', event: { type: 'thinking', text: thinkingBuf } });
+    thinkingBuf = '';
+  };
+
   const flushAll = () => {
     flushExplored();
     flushText();
+    flushThinking();
   };
 
   for (let i = 0; i < list.length; i++) {
@@ -561,6 +569,7 @@ export function eventsToBlocks(events) {
     // logical phase). Buffer text separately so a clean burst stays clean.
     if (t === 'assistant_text') {
       flushExplored();
+      flushThinking();
       if (!textBuf) textBuf = { partials: '', final: '' };
       if (event.partial) textBuf.partials += event.text;
       else textBuf.final += event.text;
@@ -570,6 +579,13 @@ export function eventsToBlocks(events) {
     // Tool results are folded into their paired tool_use; on their own they
     // never break an explored run.
     if (t === 'tool_result') continue;
+
+    if (t === 'thinking') {
+      flushExplored();
+      flushText();
+      thinkingBuf += event.text || '';
+      continue;
+    }
 
     // Hidden / internal: don't surface, but also don't break the buffers —
     // these can interleave with reads without changing the "burst" semantics.
@@ -595,6 +611,7 @@ export function eventsToBlocks(events) {
       const isExplore = EXPLORE_TOOLS.has(use.tool) && !result?.isError;
       if (isExplore) {
         flushText();
+        flushThinking();
         if (!exploredBuf) exploredBuf = { items: [] };
         exploredBuf.items.push({ use, result });
         continue;
@@ -612,7 +629,6 @@ export function eventsToBlocks(events) {
     flushAll();
 
     if (t === 'system') blocks.push({ kind: 'system', event });
-    else if (t === 'thinking') blocks.push({ kind: 'thinking', event });
     else if (t === 'result') blocks.push({ kind: 'result', event });
     else if (t === 'ask_user_question') blocks.push({ kind: 'ask_question', event });
     else if (t === 'error') blocks.push({ kind: 'error', event });
@@ -771,7 +787,7 @@ function ThinkingBlock({ text, defaultOpen }) {
           <MessageCircle size={12} /> thinking
         </span>
         <span className="text-gray-600 truncate flex-1 text-left">
-          {!open && text.slice(0, 80)}
+          {!open && text.replace(/\s+/g, ' ').trim().slice(0, 80)}
         </span>
       </button>
       {open && (

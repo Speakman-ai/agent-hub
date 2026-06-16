@@ -101,7 +101,7 @@ export interface ResolveSessionCliSpawnEnvOpts {
 }
 
 /** Engines whose credentials are strictly per-account (no host fallback). */
-const PER_ACCOUNT_ENGINES = new Set(['claude-code', 'cursor-agent', 'codex-cli']);
+const PER_ACCOUNT_ENGINES = new Set(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
 
 /**
  * Thrown when a per-account engine spawn cannot be attributed to an acting
@@ -152,6 +152,11 @@ export function userHasEngineCreds(
         if (hasPopulatedCodexDeviceAuth(userId, dataDir)) return true;
         return perUserHomeHasCodexCache(userId, dataDir);
       }
+      case 'grok-cli': {
+        const grok = getUserGrokAuth(userId);
+        if (grok?.apiKey) return true;
+        return perUserHomeHasGrokCache(userId, dataDir);
+      }
       default:
         // gemini-cli (host key allowed) + unknown engines are not gated here.
         return true;
@@ -163,7 +168,7 @@ export function userHasEngineCreds(
 
 /**
  * Hard-fail guard for per-account engine spawns. Throws
- * `EngineAuthRequiredError` when `engine` is one of claude/cursor/codex and
+ * `EngineAuthRequiredError` when `engine` is one of claude/cursor/codex/grok and
  * `userId` is missing or has no creds for that engine. No-op for Gemini /
  * unknown engines.
  */

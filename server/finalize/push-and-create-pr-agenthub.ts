@@ -28,6 +28,7 @@ import {
   execGit,
   resolveExpectedRemoteSha,
 } from './push-and-create-pr.js';
+import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import type { PushAndCreatePrArgs, PushAndCreatePrResult } from './orchestrator.js';
 
 const PUSH_TIMEOUT_MS = 5 * 60 * 1000;
@@ -55,6 +56,15 @@ export async function pushAndCreateNativePr(
         `Recreate the session worktree after enabling Agent Hub git hosting.`,
     );
   }
+
+  // Resolve the native-PR author BEFORE any remote mutation. PR creation is
+  // intentionally blocked without an attributed Hub user, so an auth-enabled
+  // deployment with no session owner must fail here — before the push —
+  // rather than after, which would strand a pushed branch with no PR.
+  const authorUserId = resolveNativePrAuthorUserId({
+    explicitUserId: args.authorUserId,
+    sessionId: args.sessionId,
+  });
 
   // Pin the lease to an explicit ls-remote SHA so it does not depend on
   // origin's fetch refspec (session clones fetch only `main`). A bare
@@ -85,7 +95,7 @@ export async function pushAndCreateNativePr(
     headSha: args.headSha,
     title,
     body,
-    author: 'finalize',
+    author: authorUserId,
   });
   return { prUrl };
 }

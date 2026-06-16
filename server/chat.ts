@@ -8,7 +8,11 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
-import config, { buildSpawnEnv, resolveAgentHubApiBaseForSpawn } from './config.js';
+import config, {
+  buildSpawnEnv,
+  resolveAgentHubApiBaseForSpawn,
+  resolveGrokSpawnModel,
+} from './config.js';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
@@ -23,6 +27,7 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
+import { maybeFinalizeExternalPushAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
 import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -2562,6 +2567,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: err.message,
           });
+          maybeFinalizeExternalPushAutoReviewSession(
+            { stmts, broadcast },
+            { sessionId, agentId, error: err.message },
+          );
           return;
         }
         throw err;
@@ -2582,6 +2591,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: errText,
           });
+          maybeFinalizeExternalPushAutoReviewSession(
+            { stmts, broadcast },
+            { sessionId, agentId, error: errText },
+          );
           return;
         }
       }
@@ -2845,8 +2858,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         const prompt = capped.prompt;
         args = ['-p', prompt, '--output-format', 'streaming-json', '--no-auto-update'];
-        if (model) {
-          args.push('--model', model);
+        const grokModel = resolveGrokSpawnModel(model, config);
+        if (grokModel) {
+          args.push('--model', grokModel);
         }
         const isAskMode = !!session!.ask_mode;
         if (!isAskMode) {
@@ -3940,6 +3954,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               S.updateNoteProcessing.run('error', JSON.stringify({ error: errorMsg }), np.id);
             }
           } catch {}
+          maybeFinalizeExternalPushAutoReviewSession(
+            { stmts: S, broadcast },
+            { sessionId, agentId, error: errorMsg },
+          );
           drainQueue(sessionId);
           return;
         }
@@ -4709,6 +4727,25 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             const m = err instanceof Error ? err.message : String(err);
             console.warn(`[react-budget] failed to persist system notice: ${m}`);
           }
+        }
+
+        // External-push auto-review sessions are ephemeral, but archival must
+        // wait for a TERMINAL turn. While a ReAct continuation is pending
+        // (shouldAutoContinue), the reviewer may still be loading wiki/web/skill
+        // context before emitting its verdict — soft-deleting the session now
+        // would hide it before the follow-up model turn runs, and if that turn
+        // later fails the error-path finalize would no-op on the already-deleted
+        // session (deleted_at set), suppressing the failure review on the PR.
+        // Finalize on the terminal continuation turn instead. It also owns
+        // background-task completion (done vs error) for these sessions, so it
+        // runs BEFORE the generic completion block below — otherwise that block
+        // would claim the task as `done` and the helper could no longer flip it
+        // to `error` on a turn that ended with both output and an error.
+        if (!shouldAutoContinue) {
+          maybeFinalizeExternalPushAutoReviewSession(
+            { stmts: S, broadcast },
+            { sessionId, agentId, error: turnEndError?.errorText ?? null },
+          );
         }
 
         try {

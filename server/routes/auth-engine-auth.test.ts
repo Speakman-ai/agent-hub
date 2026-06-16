@@ -165,14 +165,13 @@ const engineFixtures: EngineFixture[] = [
   {
     engine: 'grok',
     path: '/api/auth/me/grok-auth',
-    // Grok (xAI) is host-configured like Gemini: the host xaiApiKey is a
-    // valid fallback, so `hostConfigFallback.apiKey` must reflect it.
+    // Grok (xAI) is strictly per-account — no host fallback.
     setHost: (v) => {
       mockConfig.xaiApiKey = v;
     },
     read: (userId) => getUserGrokAuth(userId),
     sampleKey: 'xai-RoundTrip-1234',
-    hasHostFallback: true,
+    hasHostFallback: false,
   },
 ];
 

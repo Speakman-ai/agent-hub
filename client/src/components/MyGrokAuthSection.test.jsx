@@ -106,6 +106,12 @@ describe('MyGrokAuthSection', () => {
       userCode: 'AAAA-BBBB',
     });
 
+    // Two unauthenticated responses are consumed before polling begins:
+    //   1. the mount-time fetchBrowserAuth()
+    //   2. the fresh-status pre-check inside handleDeviceLogin (a no-op
+    //      guard that skips device login when already authenticated)
+    // Only then does the poll see `authenticated` and stop.
+    api.getMyGrokBrowserAuth.mockResolvedValueOnce(defaultBrowserAuth());
     api.getMyGrokBrowserAuth.mockResolvedValueOnce(defaultBrowserAuth());
     api.getMyGrokBrowserAuth.mockResolvedValue(
       defaultBrowserAuth({

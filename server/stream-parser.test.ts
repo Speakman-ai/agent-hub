@@ -1657,12 +1657,14 @@ describe('createStreamParser — Grok Build CLI', () => {
     expect(ask).toBeDefined();
   });
 
-  it('surfaces error notifications as unknown events', () => {
+  it('surfaces error notifications as terminal isError results', () => {
     const events = parse([
       JSON.stringify({ jsonrpc: '2.0', method: 'error', error: { message: 'boom' } }),
     ]);
     expect(events).toHaveLength(1);
-    expect(events[0].type).toBe('unknown');
+    expect(events[0].type).toBe('result');
+    expect((events[0] as { isError: boolean }).isError).toBe(true);
+    expect((events[0] as { stopReason: string }).stopReason).toBe('error');
     expect((events[0] as { text: string }).text).toContain('boom');
   });
 
@@ -1671,6 +1673,76 @@ describe('createStreamParser — Grok Build CLI', () => {
       JSON.stringify({ jsonrpc: '2.0', id: 0, result: { protocolVersion: 1 } }),
     ]);
     expect(events).toHaveLength(0);
+  });
+
+  describe('native NDJSON stream (grok-composer)', () => {
+    it('emits thinking + partial text for thought/text chunks', () => {
+      const events = parse([
+        JSON.stringify({ type: 'thought', data: 'ponder' }),
+        JSON.stringify({ type: 'text', data: 'Hel' }),
+        JSON.stringify({ type: 'text', data: 'lo' }),
+      ]);
+      expect(events.map((e) => e.type)).toEqual(['thinking', 'assistant_text', 'assistant_text']);
+      expect((events[0] as { text: string }).text).toBe('ponder');
+      expect((events[1] as { text: string }).text).toBe('Hel');
+      expect((events[1] as { partial: boolean }).partial).toBe(true);
+    });
+
+    it('finalizes on native end events with stopReason EndTurn', () => {
+      const events = parse([
+        JSON.stringify({ type: 'text', data: 'Hi.' }),
+        JSON.stringify({ type: 'text', data: ' What next?' }),
+        JSON.stringify({
+          type: 'end',
+          stopReason: 'EndTurn',
+          sessionId: '019ed10b-5247-79f3-9b4e-6ca2493f8aff',
+        }),
+      ]);
+      const finalText = events.find(
+        (e) => e.type === 'assistant_text' && (e as { partial: boolean }).partial === false,
+      );
+      expect(finalText).toBeDefined();
+      expect((finalText as { text: string }).text).toBe('Hi. What next?');
+      const result = events.find((e) => e.type === 'result');
+      expect(result).toBeDefined();
+      expect((result as { stopReason: string }).stopReason).toBe('EndTurn');
+      expect(events.some((e) => e.type === 'unknown')).toBe(false);
+    });
+
+    it('surfaces a native error frame as a terminal isError result (drives the failed-turn lifecycle)', () => {
+      const events = parse([JSON.stringify({ type: 'error', message: 'rate limited' })]);
+      // Must NOT be a non-terminal `unknown` event — that let a model-side
+      // error be treated as noise instead of a failed turn.
+      expect(events.some((e) => e.type === 'unknown')).toBe(false);
+      const result = events.find((e) => e.type === 'result') as {
+        isError: boolean;
+        text: string;
+        stopReason: string;
+      };
+      expect(result).toBeDefined();
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain('rate limited');
+      expect(result.stopReason).toBe('error');
+    });
+
+    it('preserves assistant text streamed before a native error frame', () => {
+      const events = parse([
+        JSON.stringify({ type: 'text', data: 'Partial ans' }),
+        JSON.stringify({ type: 'text', data: 'wer' }),
+        JSON.stringify({ type: 'error', message: 'stream interrupted' }),
+      ]);
+      // The buffered text is flushed as a final (non-partial) assistant_text.
+      const finalText = events.find(
+        (e) => e.type === 'assistant_text' && (e as { partial: boolean }).partial === false,
+      ) as { text: string } | undefined;
+      expect(finalText?.text).toBe('Partial answer');
+      const result = events.find((e) => e.type === 'result') as {
+        isError: boolean;
+        text: string;
+      };
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain('stream interrupted');
+    });
   });
 });
 

@@ -1,8 +1,8 @@
 // Per-engine availability + auth probes for one-shot prompt sites
 // (project analyze, heartbeats, crons, memory reconciliation, etc.).
 //
-// Auth model: strictly per-account. Claude / Cursor / Codex availability is
-// resolved ONLY from the acting user's own stored keys and per-user HOME
+// Auth model: strictly per-account. Claude / Cursor / Codex / Grok availability
+// is resolved ONLY from the acting user's own stored keys and per-user HOME
 // OAuth caches — there is no host or org-owner fallback. A probe with no
 // `userId` reports those engines as unavailable. Gemini is the one exception:
 // it is host-configured (it backs wiki embeddings + the Gemini CLI), so its
@@ -17,7 +17,6 @@ import path from 'path';
 import type { AppConfig } from './types.js';
 import { invalidateCursorAuthCache } from './cursor-auth-cache.js';
 import { userHasEngineCreds } from './per-user-cli-spawn.js';
-import { getUserGrokAuth } from './users-store.js';
 
 export type SupportedEngine =
   | 'claude-code'
@@ -61,9 +60,9 @@ interface ProbeOptions {
   /** Override env reads — primarily for tests. */
   env?: NodeJS.ProcessEnv;
   /**
-   * Acting user whose per-account credentials decide Claude / Cursor / Codex
-   * availability. There is no host fallback — when absent, those engines are
-   * unavailable.
+   * Acting user whose per-account credentials decide Claude / Cursor / Codex /
+   * Grok availability. There is no host fallback — when absent, those engines
+   * are unavailable.
    */
   userId?: string | null;
 }
@@ -116,10 +115,7 @@ export async function probeEngineAvailability(
     };
   }
 
-  // Grok Build CLI — host-configured like Gemini for API-key automation, with
-  // browser login accepted when the host HOME already has Grok's cached token.
-  // xAI documents browser auth on first launch, but not the cache file as a
-  // stable public API; this check is best-effort and read-only.
+  // Grok Build CLI — strictly per-account (same as Claude / Cursor / Codex).
   if (engine === 'grok-cli') {
     const bin = cfg.grokBin;
     if (!bin || !existsSync(bin)) {
@@ -130,8 +126,16 @@ export async function probeEngineAvailability(
         detail: `grok binary not found at "${bin || '(unset)'}". Install the Grok Build CLI or update grokBin in Settings.`,
       };
     }
-    const userGrokKey = userId ? getUserGrokAuth(userId)?.apiKey : null;
-    if (userGrokKey || cfg.xaiApiKey || env.XAI_API_KEY || hasGrokCachedLogin(env)) {
+    if (!userId) {
+      return {
+        engine,
+        available: false,
+        reason: 'no-credentials',
+        detail:
+          'No acting user for this grok-cli run. AI credentials are strictly per-account; attribute the run to a user with their own Grok login.',
+      };
+    }
+    if (userHasEngineCreds(engine, userId, cfg.dataDir)) {
       return { engine, available: true };
     }
     return {
@@ -139,7 +143,7 @@ export async function probeEngineAvailability(
       available: false,
       reason: 'no-credentials',
       detail:
-        'No Grok credentials. Add your own xAI key under Account settings, set XAI_API_KEY / xaiApiKey in Settings, or run `grok login`.',
+        'No grok-cli credentials on your account. Add your own Grok login under Account settings — there is no host or org-owner fallback.',
     };
   }
 

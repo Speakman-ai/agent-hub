@@ -18,6 +18,17 @@ import type { AppConfig, Project } from '../types.js';
 
 const TEST_CONFIG = {} as Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
 
+// Controllable native-PR author resolver so a test can force the
+// "no attributed Hub user" failure without mutating process-wide auth state.
+const VALID_AUTHOR = '00000000-0000-4000-8000-000000000001';
+const authorMock = vi.hoisted(() => ({
+  resolve: (): string => '00000000-0000-4000-8000-000000000001',
+}));
+vi.mock('../native-pr/author-user.js', async (importActual) => {
+  const actual = await importActual<typeof import('../native-pr/author-user.js')>();
+  return { ...actual, resolveNativePrAuthorUserId: () => authorMock.resolve() };
+});
+
 function git(cwd: string, cmd: string): string {
   return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
 }
@@ -57,6 +68,7 @@ describe('pushAndCreateNativePr (via createPushAndCreatePr host branch)', () => 
     git(worktree, 'commit -m "feat: add feature"');
 
     project = { id: projectId, name: projectId, cwd: '', ahw: '', gitHost: 'agenthub' } as Project;
+    authorMock.resolve = () => VALID_AUTHOR;
   });
 
   afterEach(() => {
@@ -70,6 +82,7 @@ describe('pushAndCreateNativePr (via createPushAndCreatePr host branch)', () => 
       baseBranch: 'main',
       headSha: git(worktree, 'rev-parse HEAD'),
       worktreePath: worktree,
+      authorUserId: '00000000-0000-4000-8000-000000000001',
       card: { id: 'card-1', title: 'Add feature', description: 'Feature card' },
     } as unknown as PushAndCreatePrArgs;
   }
@@ -101,7 +114,7 @@ describe('pushAndCreateNativePr (via createPushAndCreatePr host branch)', () => 
     const call = createOrGetOpenPr.mock.calls[0][0] as Record<string, unknown>;
     expect(call.title).toBe('feat: add feature');
     expect(String(call.body)).toContain('## Summary');
-    expect(call.author).toBe('finalize');
+    expect(call.author).toBe('00000000-0000-4000-8000-000000000001');
     expect(call.baseBranch).toBe('main');
   });
 
@@ -126,6 +139,22 @@ describe('pushAndCreateNativePr (via createPushAndCreatePr host branch)', () => 
     // The push to the dead HTTP URL fails, but AFTER the origin guard —
     // proving the guard accepted the URL shape.
     await expect(fn(makeArgs())).rejects.toThrow(/git push failed/);
+  });
+
+  it('resolves the author before pushing — missing attribution fails without mutating the remote', async () => {
+    // Regression: author attribution used to be resolved AFTER the push, so an
+    // auth-enabled deployment with no session owner would strand a pushed
+    // branch with no PR. Attribution must now fail before any remote mutation.
+    authorMock.resolve = () => {
+      throw new Error('Native PR creation requires an attributed Hub user');
+    };
+    const { service, createOrGetOpenPr } = makeNativePrStub();
+    const fn = createPushAndCreatePr({ config: TEST_CONFIG, nativePr: service });
+
+    await expect(fn(makeArgs())).rejects.toThrow(/attributed Hub user/);
+    expect(createOrGetOpenPr).not.toHaveBeenCalled();
+    // Crucially: the branch was never pushed to the bare origin.
+    expect(() => git(bare, 'rev-parse refs/heads/agent-hub/dev/session-12345678')).toThrow();
   });
 
   it('throws a clear wiring error when nativePr is missing', async () => {

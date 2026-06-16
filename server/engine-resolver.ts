@@ -53,8 +53,8 @@ export interface ResolveOneShotEngineInput {
    */
   availability?: Record<SupportedEngine, EngineAvailability>;
   /**
-   * Acting user whose per-account credentials decide Claude / Cursor / Codex
-   * availability. There is no host fallback — when absent, only the
+   * Acting user whose per-account credentials decide Claude / Cursor / Codex /
+   * Grok availability. There is no host fallback — when absent, only the
    * host-configured Gemini engine can resolve.
    */
   userId?: string | null;
@@ -92,15 +92,12 @@ export interface ResolvedOneShotEngine {
  * from the Gemini free tier on 2026-04-01, so a host free-tier key now 429s
  * (`limit: 0`) anyway — letting background features (support-ticket AI
  * investigation, memory reconcile, auto-review, userless heartbeats) silently
- * fall back to it left them dead. Grok takes Gemini's old slot as the
- * host-configured automation fallback: like Gemini it resolves from a host
- * key (`xaiApiKey` / `XAI_API_KEY` / `grok login` cache) with no per-account
- * credential, so it can drive userless runs. This mirrors the analyze-path
- * `ANALYZE_FALLBACK_CHAIN` in routes/projects.ts, which already excludes
- * Gemini. NOTE: a host that configures ONLY Gemini (for RAG) and no
- * Claude/Cursor/Codex/Grok credentials will now get a clear
- * `NoEnginesAvailableError` for background work instead of silently running
- * on Gemini — that is the intended behaviour.
+ * fall back to it left them dead. Grok is in the agent fallback chain but,
+ * like Claude/Cursor/Codex, requires an acting user with per-account creds —
+ * it is not a host-automation fallback. NOTE: a host that configures ONLY
+ * Gemini (for RAG) and no per-user agent credentials will get a clear
+ * `NoEnginesAvailableError` for userless background work instead of silently
+ * running on a host key — that is the intended behaviour.
  */
 export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = [
   'claude-code',

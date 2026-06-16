@@ -180,11 +180,9 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // drop --model when an unsupported/stale ID is still persisted on a
   // session (so resumes from old DBs don't spin forever).
   'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
-  // Grok Build CLI model slug per xAI docs (https://docs.x.ai/build/cli).
-  // The headless CLI model id aligns with the Responses API early-access slug
-  // `grok-build-0.1` (replaces the retired grok-code-fast-1). Keep in sync with
+  // Grok Build CLI model slugs from `grok models` (2026-06). Keep in sync with
   // client TopBar.jsx and mobile engineOptions.js.
-  'grok-cli': ['grok-build-0.1'],
+  'grok-cli': ['grok-build', 'grok-composer-2.5-fast'],
 };
 
 const mergedEngineValidModelsRaw =
@@ -203,7 +201,7 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
   // "Codex not working (round 2)".
   'codex-cli': 'gpt-5.5',
-  'grok-cli': 'grok-build-0.1',
+  'grok-cli': 'grok-composer-2.5-fast',
 };
 
 const mergedEngineDefaultModelsRaw =
@@ -385,10 +383,11 @@ const config: AppConfig = {
   // intentionally NO host-wide key for these engines: every spawn must use
   // the acting user's own login.
   //
-  // OpenAI, Gemini, and xAI stay host-configured. `openaiApiKey` powers
-  // Whisper transcription + LLM session titles; `geminiApiKey` backs wiki
-  // embeddings + the Gemini CLI; `xaiApiKey` backs Grok transcription and the
-  // Grok CLI when the host has not run `grok login`.
+  // OpenAI, Gemini, and xAI stay host-configured for non-agent surfaces.
+  // `openaiApiKey` powers Whisper transcription + LLM session titles;
+  // `geminiApiKey` backs wiki embeddings + the Gemini CLI;
+  // `xaiApiKey` backs Grok transcription only — agent Grok CLI spawns are
+  // strictly per-account.
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
   xaiApiKey: resolve('XAI_API_KEY', 'xaiApiKey', null),
@@ -498,6 +497,31 @@ const config: AppConfig = {
 
 export function defaultModelForEngine(engine: string): string {
   return config.engineDefaultModels[engine] || config.defaultModel;
+}
+
+/** Retired Grok CLI slugs → current `grok models` ids. */
+export const GROK_LEGACY_MODEL_ALIASES: Record<string, string> = {
+  'grok-build-0.1': 'grok-build',
+  'grok-code-fast-1': 'grok-build',
+};
+
+/**
+ * Map a persisted session model to a Grok CLI `--model` value. Unknown /
+ * retired ids fall back to `engineDefaultModels['grok-cli']`.
+ */
+export function resolveGrokSpawnModel(
+  model: string | null | undefined,
+  cfg: Pick<AppConfig, 'engineValidModels' | 'engineDefaultModels'>,
+): string | undefined {
+  const trimmed = model?.trim();
+  if (!trimmed) return undefined;
+  const mapped = GROK_LEGACY_MODEL_ALIASES[trimmed] ?? trimmed;
+  const allowed = cfg.engineValidModels?.['grok-cli'];
+  if (!allowed || allowed.length === 0) return mapped;
+  if (allowed.includes(mapped)) return mapped;
+  const fallback = cfg.engineDefaultModels?.['grok-cli']?.trim();
+  if (fallback && allowed.includes(fallback)) return fallback;
+  return undefined;
 }
 
 /**
@@ -770,14 +794,9 @@ export function applyEngineScopedSpawnEnv(
   delete env.XAI_API_KEY;
   if (engine !== 'grok-cli') return env;
   // Grok Build CLI reads XAI_API_KEY from the environment when no `grok login`
-  // cached token is present. Precedence: the acting user's own per-user key
-  // (`overrideXaiApiKey`) → host config → inherited process env. Scope it to
-  // Grok only because other agent CLIs can execute shell commands and should
-  // not be able to read the xAI key from their environment.
-  const xaiApiKey =
-    presentString(overrideXaiApiKey) ??
-    presentString(cfg.xaiApiKey) ??
-    presentString(process.env.XAI_API_KEY);
+  // cached token is present in the acting user's HOME. Only the per-user key
+  // may be injected — there is no host fallback.
+  const xaiApiKey = presentString(overrideXaiApiKey);
   if (xaiApiKey) {
     env.XAI_API_KEY = xaiApiKey;
   }

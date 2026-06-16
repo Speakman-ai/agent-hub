@@ -384,7 +384,7 @@ export interface PullRequestRow {
   base_branch: string;
   head_sha: string;
   status: 'open' | 'merged' | 'closed';
-  /** userId or 'finalize' for orchestrator-created PRs. */
+  /** Hub user id who opened the pull request. */
   author: string;
   merged_sha: string | null;
   merged_by: string | null;

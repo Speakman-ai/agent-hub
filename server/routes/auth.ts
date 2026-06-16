@@ -1851,9 +1851,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       path: '/api/auth/me/grok-auth',
       get: getUserGrokAuth,
       set: setUserGrokAuth,
-      // Grok (xAI) is host-configured like Gemini: per-user key wins, but the
-      // host xaiApiKey is a valid fallback for spawns.
-      hostHasKey: () => !!config.xaiApiKey,
+      // Grok auth is strictly per-account — no host fallback.
+      hostHasKey: () => false,
     },
   ];
 

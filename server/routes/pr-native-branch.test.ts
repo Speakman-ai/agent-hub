@@ -82,7 +82,7 @@ async function seedHostedProjectWithPr(): Promise<{
     headSha,
     title: 'Add feat',
     body: 'Adds feat.txt',
-    author: 'finalize',
+    author: '00000000-0000-4000-8000-000000000011',
   });
   return { projectId, branch, prUrl, bare };
 }

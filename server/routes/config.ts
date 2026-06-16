@@ -20,7 +20,7 @@ import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
-import { hasGrokCachedLogin } from '../engine-availability.js';
+import { probeEngineAvailability } from '../engine-availability.js';
 import { normalizeCronEngine, normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
 import { resolveCronEngine } from '../cron-engine.js';
 import { getProjects } from '../project-model.js';
@@ -287,14 +287,9 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       dataDir: config.dataDir,
     });
     const geminiAuthenticated = !!(config.geminiApiKey || process.env.GEMINI_API_KEY);
-    // Grok is host-authenticated like Gemini — either via XAI_API_KEY or an
-    // existing `grok login` cache under the server HOME. It is not yet a
-    // per-account engine in getEngineAuthStatus.
-    const grokAuthenticated = !!(
-      config.xaiApiKey ||
-      process.env.XAI_API_KEY ||
-      hasGrokCachedLogin()
-    );
+    const grokProbe = await probeEngineAvailability('grok-cli', config, {
+      userId: authedReq.authUserId ?? null,
+    });
 
     res.json(
       buildAuthenticatedModelConfig(config, {
@@ -302,7 +297,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         'cursor-agent': engineStatus.cursor,
         'gemini-cli': geminiAuthenticated,
         'codex-cli': engineStatus.codex,
-        'grok-cli': grokAuthenticated,
+        'grok-cli': grokProbe.available,
       }),
     );
   });

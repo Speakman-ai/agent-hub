@@ -3,6 +3,7 @@
  * for `design-chat.ts`. See `design-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import config, { resolveGrokSpawnModel } from './config.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -181,8 +182,9 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     // system prompt + history bootstrap ride in the prompt body each turn.
     const prompt = `${systemPrompt}\n\n${promptWithHistory}`;
     const args = ['-p', prompt, '--output-format', 'streaming-json', '--no-auto-update'];
-    if (model) {
-      args.push('--model', model);
+    const grokModel = resolveGrokSpawnModel(model, config);
+    if (grokModel) {
+      args.push('--model', grokModel);
     }
     // Design Studio has no Ask/plan mode — always auto-approve tool calls for
     // parity with Claude's bypassPermissions default.

@@ -220,7 +220,7 @@ describe('buildDesignSpawnArgs', () => {
     const { bin, args } = buildDesignSpawnArgs({
       ...baseInput,
       engine: 'grok-cli',
-      model: 'grok-build-0.1',
+      model: 'grok-composer-2.5-fast',
       engineSessionId: null,
       isNewEngineSession: true,
     });
@@ -232,7 +232,7 @@ describe('buildDesignSpawnArgs', () => {
     expect(args).toContain('streaming-json');
     expect(args).toContain('--always-approve');
     expect(args).toContain('--model');
-    expect(args).toContain('grok-build-0.1');
+    expect(args).toContain('grok-composer-2.5-fast');
   });
 
   it('codex-cli: first exec has no resume subcommand', () => {

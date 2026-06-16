@@ -24,6 +24,8 @@ const MODEL_KNOWN_LABELS = {
   'gpt-5.4': 'GPT-5.4',
   'gpt-5.4-mini': 'GPT-5.4 Mini',
   'gpt-5.2': 'GPT-5.2',
+  'grok-build': 'Grok Build',
+  'grok-composer-2.5-fast': 'Composer 2.5 Fast',
   'grok-build-0.1': 'Grok Build',
 };
 

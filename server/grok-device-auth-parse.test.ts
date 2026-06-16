@@ -137,6 +137,19 @@ describe('detectGrokAuthMode', () => {
     expect(detectGrokAuthMode(home).mode).toBe('oauth');
   });
 
+  it('reports oauth for issuer-keyed OIDC entries (current Grok CLI auth.json)', () => {
+    const home = writeAuth(
+      JSON.stringify({
+        'https://auth.x.ai::client-id': {
+          key: 'jwt-access-token',
+          refresh_token: 'refresh',
+          auth_mode: 'oidc',
+        },
+      }),
+    );
+    expect(detectGrokAuthMode(home)).toMatchObject({ mode: 'oauth', present: true });
+  });
+
   it('returns present+unknown for an empty object', () => {
     const home = writeAuth('{}');
     expect(detectGrokAuthMode(home)).toMatchObject({ mode: 'unknown', present: true });

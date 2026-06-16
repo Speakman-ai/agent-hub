@@ -625,16 +625,22 @@ export default function App({ initialView } = {}) {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getModelConfig()
-      .then((cfg) => {
-        if (!cancelled) setModelConfig(cfg);
-      })
-      .catch((err) => {
-        console.warn('[modelConfig] GET /api/config/models failed:', err?.message || err);
-      });
+    const loadModelConfig = () => {
+      api
+        .getModelConfig()
+        .then((cfg) => {
+          if (!cancelled) setModelConfig(cfg);
+        })
+        .catch((err) => {
+          console.warn('[modelConfig] GET /api/config/models failed:', err?.message || err);
+        });
+    };
+    loadModelConfig();
+    const onEngineAuthChanged = () => loadModelConfig();
+    window.addEventListener('agent-hub:engine-auth-changed', onEngineAuthChanged);
     return () => {
       cancelled = true;
+      window.removeEventListener('agent-hub:engine-auth-changed', onEngineAuthChanged);
     };
   }, []);
 
@@ -3409,7 +3415,7 @@ export default function App({ initialView } = {}) {
       if (fromConfig) return fromConfig;
       if (engine === 'cursor-agent') return 'composer-2.5';
       if (engine === 'codex-cli') return 'gpt-5.5';
-      if (engine === 'grok-cli') return 'grok-build-0.1';
+      if (engine === 'grok-cli') return 'grok-composer-2.5-fast';
       return 'claude-opus-4-8';
     },
     [modelConfig],

@@ -34,6 +34,8 @@ import {
 } from './git-read.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
+import { isKnownHubUserId } from './author-user.js';
+import { NativePrError } from './errors.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -73,7 +75,6 @@ import { mergePullRequest, type MergeMethod } from './merge.js';
 import { handleCardOnMerge } from './card-on-merge.js';
 
 export { NativePrError } from './errors.js';
-import { NativePrError } from './errors.js';
 
 export interface NativePrServiceDeps {
   stmts: Stmts;
@@ -84,11 +85,16 @@ export interface NativePrServiceDeps {
    */
   afterMerge?: (args: { project: Project; baseBranch: string; mergedSha: string }) => Promise<void>;
   /**
-   * Fired when a PR is created or an open PR is reused with a fresh head
-   * sha — the PR-level CI trigger (which skips Finalize-validated heads).
-   * Fire-and-forget.
+   * Fired when a PR is created or an open PR is reused with a fresh head sha.
+   * Fire-and-forget. The reason lets consumers distinguish PR creation from a
+   * later head update; credential-sensitive consumers must not treat both as
+   * PR-author-owned work.
    */
-  onPrHeadChanged?: (project: Project, row: PullRequestRow) => void;
+  onPrHeadChanged?: (
+    project: Project,
+    row: PullRequestRow,
+    meta: { reason: 'created' | 'head_updated' },
+  ) => void;
 }
 
 export interface NativePrService {
@@ -471,6 +477,9 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
   return {
     createOrGetOpenPr({ project, headBranch, baseBranch, headSha, title, body, author }) {
       requireHostedRepo(project);
+      if (!isKnownHubUserId(author)) {
+        throw new NativePrError('Pull request author must be a Hub user id', 400);
+      }
       const { row, created } = createOrGetOpenPullRequest(stmts, {
         projectId: project.id,
         headBranch,
@@ -488,7 +497,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         action: created ? 'opened' : 'updated',
       });
       try {
-        deps.onPrHeadChanged?.(project, row);
+        deps.onPrHeadChanged?.(project, row, { reason: created ? 'created' : 'head_updated' });
       } catch {
         /* CI trigger must never fail PR creation */
       }

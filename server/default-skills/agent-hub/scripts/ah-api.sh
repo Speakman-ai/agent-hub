@@ -137,6 +137,14 @@ ah_api() {
     had_key=1
   fi
 
+  # Attach the acting session id so server routes that attribute work to a
+  # session owner (kanban card linking, native PR author) can resolve it even
+  # when the request authenticates with the global break-glass apiKey, which
+  # carries no per-user identity. Harmless on routes that ignore the header.
+  if [[ -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
+    auth_args+=(-H "X-Agent-Hub-Session-Id: $AGENT_HUB_SESSION_ID")
+  fi
+
   local body_file
   body_file="$(mktemp)"
   local http_code

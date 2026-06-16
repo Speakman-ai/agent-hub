@@ -34,14 +34,17 @@ export const ENGINE_MODELS = {
   ],
   // Grok Build CLI — xAI. Keep in sync with server/config.ts and
   // client/src/components/TopBar.jsx.
-  'grok-cli': [{ id: 'grok-build-0.1', label: 'Grok Build', short: 'Grok' }],
+  'grok-cli': [
+    { id: 'grok-composer-2.5-fast', label: 'Composer 2.5 Fast', short: 'Composer' },
+    { id: 'grok-build', label: 'Grok Build', short: 'Build' },
+  ],
 };
 
 export const ENGINE_DEFAULT_MODELS = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'codex-cli': 'gpt-5.5',
-  'grok-cli': 'grok-build-0.1',
+  'grok-cli': 'grok-composer-2.5-fast',
 };
 
 export function modelDisplay(id) {

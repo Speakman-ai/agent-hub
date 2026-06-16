@@ -15,6 +15,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
+import { notifyEngineAuthChanged } from '../utils/engineAuthEvents.js';
 import { StatusChip } from './MyClaudeAuthSection.jsx';
 
 /**
@@ -72,6 +73,10 @@ export default function MyGrokAuthSection() {
     try {
       const data = await api.getMyGrokBrowserAuth();
       setBrowserAuth(data);
+      if (data.oauth?.loggedIn === true || data.uiStatus === 'authenticated') {
+        setActionMsg(null);
+        notifyEngineAuthChanged();
+      }
     } catch (err) {
       setBrowserAuth(null);
       setBrowserError(err.message || 'Failed to load Grok sign-in status');
@@ -113,6 +118,17 @@ export default function MyGrokAuthSection() {
     setDeviceUserCode(null);
     setActionMsg(null);
     try {
+      // Fresh status — device login is a no-op when already authenticated;
+      // without this check a fast CLI exit looked like a failure.
+      const existing = await api.getMyGrokBrowserAuth();
+      if (existing.oauth?.loggedIn === true || existing.uiStatus === 'authenticated') {
+        setBrowserAuth(existing);
+        setLoginLoading(false);
+        setActionMsg({ type: 'success', msg: 'Grok authenticated on this host.' });
+        notifyEngineAuthChanged();
+        return;
+      }
+
       const data = await api.startMyGrokDeviceLogin();
       if (data.deviceAuthUrl && data.userCode) {
         setDeviceAuthUrl(data.deviceAuthUrl);
@@ -140,16 +156,22 @@ export default function MyGrokAuthSection() {
               setDeviceUserCode(null);
               setLoginLoading(false);
               setActionMsg({ type: 'success', msg: 'Grok authenticated on this host.' });
+              notifyEngineAuthChanged();
             } else if (!st.loginInProgress) {
               clearLoginTimers();
               setBrowserAuth(st);
               setDeviceAuthUrl(null);
               setDeviceUserCode(null);
               setLoginLoading(false);
-              setActionMsg({
-                type: 'error',
-                msg: st.statusError || 'Device login did not finish — try again.',
-              });
+              if (st.oauth?.loggedIn === true || st.uiStatus === 'authenticated') {
+                setActionMsg({ type: 'success', msg: 'Grok authenticated on this host.' });
+                notifyEngineAuthChanged();
+              } else {
+                setActionMsg({
+                  type: 'error',
+                  msg: st.statusError || 'Device login did not finish — try again.',
+                });
+              }
             }
           } catch {
             /* keep polling */

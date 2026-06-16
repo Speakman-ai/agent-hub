@@ -19,7 +19,7 @@ import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps } from '../types.js';
-import * as engineResolver from '../engine-resolver.js';
+import * as engineAvailability from '../engine-availability.js';
 
 let maybeRunPrAutoReview: typeof import('./auto-review.js').maybeRunPrAutoReview;
 let __clearAutoReviewDispatches: typeof import('./auto-review.js').__clearAutoReviewDispatches;
@@ -27,7 +27,7 @@ let stmts: import('../types.js').Stmts;
 let config: import('../types.js').AppConfig;
 let request: Awaited<ReturnType<typeof import('../test/helpers.js').getRequest>>;
 let gitHostRepoPath: typeof import('../git-host/repo-store.js').gitHostRepoPath;
-let resolveSpy: MockInstance<typeof engineResolver.resolveOneShotEngine>;
+let probeSpy: MockInstance<typeof engineAvailability.probeEngineAvailability>;
 
 beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
@@ -40,22 +40,14 @@ beforeAll(async () => {
 
 beforeEach(() => {
   __clearAutoReviewDispatches();
-  // Engine resolution is environment-dependent: with no acting user, only a
-  // host-global Gemini key resolves (see engine-availability.ts). CI runners
-  // have no GEMINI_API_KEY, so the real resolver throws NoEnginesAvailableError
-  // and the dispatch path silently returns. Pin a deterministic default so the
-  // dispatch-path tests don't depend on ambient credentials; tests that care
-  // about the fallback behaviour override this spy.
-  resolveSpy = vi.spyOn(engineResolver, 'resolveOneShotEngine').mockResolvedValue({
+  probeSpy = vi.spyOn(engineAvailability, 'probeEngineAvailability').mockResolvedValue({
     engine: 'claude-code',
-    model: 'claude-sonnet-4-5',
-    fallbackUsed: false,
-    availability: {} as engineResolver.ResolvedOneShotEngine['availability'],
+    available: true,
   });
 });
 
 afterEach(() => {
-  resolveSpy.mockRestore();
+  probeSpy.mockRestore();
 });
 
 function git(cwd: string, cmd: string): string {
@@ -113,9 +105,9 @@ describe('maybeRunPrAutoReview', () => {
     const handleChat = vi.fn();
     await maybeRunPrAutoReview(
       project,
-      { number: 1, head_branch: branch, status: 'open' },
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
-      { force: true },
+      { force: true, trigger: 'pr_create' },
     );
     expect(handleChat).toHaveBeenCalledOnce();
     const msg = handleChat.mock.calls[0]![1] as {
@@ -133,9 +125,9 @@ describe('maybeRunPrAutoReview', () => {
     // Dedupe: same head sha never dispatches twice.
     await maybeRunPrAutoReview(
       project,
-      { number: 1, head_branch: branch, status: 'open' },
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
-      { force: true },
+      { force: true, trigger: 'pr_create' },
     );
     expect(handleChat).toHaveBeenCalledOnce();
   });
@@ -152,9 +144,12 @@ describe('maybeRunPrAutoReview', () => {
 
     // requiredReview off → skip.
     project.branchProtection = {};
-    await maybeRunPrAutoReview(project, { number: 1, head_branch: branch, status: 'open' }, deps, {
-      force: true,
-    });
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'pr_create' },
+    );
     expect(handleChat).not.toHaveBeenCalled();
     project.branchProtection = { requiredReview: true };
 
@@ -181,18 +176,24 @@ describe('maybeRunPrAutoReview', () => {
       null,
     );
     stmts.markFinalizeRunReadyToPush.run(headSha, runId);
-    await maybeRunPrAutoReview(project, { number: 1, head_branch: branch, status: 'open' }, deps, {
-      force: true,
-    });
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'pr_create' },
+    );
     expect(handleChat).not.toHaveBeenCalled();
 
     // No reviewer agent → skip (warn).
     const { findProject } = await import('../project-model.js');
     const p2 = findProject(project.id) as Project;
     p2.agents = p2.agents.filter((a) => a.role !== 'reviewer');
-    await maybeRunPrAutoReview(p2, { number: 1, head_branch: branch, status: 'open' }, deps, {
-      force: true,
-    });
+    await maybeRunPrAutoReview(
+      p2,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'pr_create' },
+    );
     expect(handleChat).not.toHaveBeenCalled();
   });
 
@@ -201,86 +202,151 @@ describe('maybeRunPrAutoReview', () => {
     const handleChat = vi.fn();
     await maybeRunPrAutoReview(
       project,
-      { number: 1, head_branch: branch, status: 'open' },
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
     );
     expect(handleChat).not.toHaveBeenCalled();
   });
 
-  it('falls back to a host-global engine when the reviewer engine needs a user', async () => {
+  it('skips instead of falling back when the reviewer engine is unavailable', async () => {
     const { project, branch } = await hostedPrProject();
     const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
     reviewer.engine = 'codex-cli';
     reviewer.model = 'gpt-5.5';
 
-    resolveSpy.mockResolvedValue({
-      engine: 'gemini-cli',
-      model: 'gemini-2.5-pro',
-      fallbackUsed: true,
-      fallbackFromReason: 'codex-cli:no-credentials',
-      availability: {} as engineResolver.ResolvedOneShotEngine['availability'],
+    probeSpy.mockResolvedValue({
+      engine: 'codex-cli',
+      available: false,
+      reason: 'no-credentials',
+      detail: 'No Codex credentials',
     });
 
     const handleChat = vi.fn();
     await maybeRunPrAutoReview(
       project,
-      { number: 1, head_branch: branch, status: 'open' },
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
-      { force: true },
+      { force: true, trigger: 'pr_create' },
     );
 
-    expect(resolveSpy).toHaveBeenCalledWith(
-      config,
-      expect.objectContaining({ preferred: 'codex-cli', userId: null }),
-    );
-    expect(handleChat).toHaveBeenCalledOnce();
-    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
-    const session = stmts.getSession.get(msg.sessionId) as { engine: string; model: string };
-    expect(session.engine).toBe('gemini-cli');
-    expect(session.model).toBe('gemini-2.5-pro');
+    expect(handleChat).not.toHaveBeenCalled();
   });
 
-  it('runs as the pushing user on the reviewer assignment, bypassing the userless host fallback', async () => {
-    // Regression for the "[Review PR #N] external push @ ... · gemini 2.5 pro"
-    // incident: a reviewer assigned a host-runnable engine was selected via
-    // the userless one-shot resolver (which can land on Gemini) for someone
-    // else's authenticated push, then the CLI died at runtime. When we know
-    // the pushing Hub user, the review must run AS them — their reviewer
-    // engine assignment + per-account credentials (session owner) — exactly
-    // like the Finalize in-session reviewer, and never consult the userless
-    // host fallback.
+  it('probes against the per-user spawn env (per-user HOME), not bare process.env', async () => {
+    // Regression: the availability probe used to run with no `env`, so
+    // probeEngineAvailability read the host process.env HOME/config instead of
+    // the per-user spawn environment handleChat builds for the owned reviewer
+    // session. A reviewer authenticated only through their own login (per-user
+    // HOME OAuth cache, or a per-user GEMINI_API_KEY) could then be pre-skipped
+    // as `no-credentials` even though the spawn would have authenticated. The
+    // probe must receive the same per-user spawn env (HOME pinned to the acting
+    // user's tree).
+    const { project, branch } = await hostedPrProject();
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'pr_create' },
+    );
+
+    expect(probeSpy).toHaveBeenCalledOnce();
+    const probeOpts = probeSpy.mock.calls[0]![2];
+    expect(probeOpts?.userId).toBe('ryan');
+    expect(probeOpts?.env).toBeDefined();
+    const { perUserHomePath } = await import('../per-user-home.js');
+    expect(probeOpts!.env!.HOME).toBe(perUserHomePath('ryan', config.dataDir));
+  });
+
+  it('uses the reviewer assignment even when a host-global engine is available', async () => {
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'codex-cli';
+
+    probeSpy.mockImplementation(async (engine) => ({
+      engine,
+      available: engine === 'codex-cli' || engine === 'grok-cli',
+    }));
+
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'pr_create' },
+    );
+
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as { engine: string };
+    expect(session.engine).toBe('codex-cli');
+    expect(probeSpy).toHaveBeenCalledWith(
+      'codex-cli',
+      config,
+      expect.objectContaining({ userId: 'ryan' }),
+    );
+  });
+
+  it('runs as the pushing user on the reviewer assignment', async () => {
     const { project, branch } = await hostedPrProject();
     const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
     reviewer.engine = 'cursor-agent';
 
-    // Spy is armed to return Gemini (the incident's bad fallback). With a
-    // pushing user present it must NEVER be consulted.
-    resolveSpy.mockResolvedValue({
-      engine: 'gemini-cli',
-      model: 'gemini-2.5-pro',
-      fallbackUsed: true,
-      fallbackFromReason: 'cursor-agent:no-credentials',
-      availability: {} as engineResolver.ResolvedOneShotEngine['availability'],
-    });
-
     const handleChat = vi.fn();
     await maybeRunPrAutoReview(
       project,
-      { number: 1, head_branch: branch, status: 'open' },
+      { number: 1, head_branch: branch, status: 'open', author: 'other-user' },
       { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
       { force: true, pushedByUserId: 'ryan' },
     );
 
-    expect(resolveSpy).not.toHaveBeenCalled();
     expect(handleChat).toHaveBeenCalledOnce();
     const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
     const session = stmts.getSession.get(msg.sessionId) as {
       engine: string;
       owner_user_id: string | null;
     };
-    // The reviewer's assigned engine, not the Gemini host fallback.
     expect(session.engine).toBe('cursor-agent');
-    // Owned by the pusher so the CLI spawns under their per-account creds.
+    expect(session.owner_user_id).toBe('ryan');
+  });
+
+  it('skips a head update with no attributed pusher instead of using the PR author', async () => {
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'codex-cli';
+
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'head_update', pushedByUserId: null },
+    );
+
+    expect(handleChat).not.toHaveBeenCalled();
+    expect(probeSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses the PR author as acting user on PR creation when receive-pack attribution is absent', async () => {
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'codex-cli';
+
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'pr_create' },
+    );
+
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as {
+      engine: string;
+      owner_user_id: string | null;
+    };
+    expect(session.engine).toBe('codex-cli');
     expect(session.owner_user_id).toBe('ryan');
   });
 });

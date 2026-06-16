@@ -211,12 +211,12 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
     }
   });
 
-  it('scopes host XAI_API_KEY to grok-cli spawns only', () => {
+  it('does not inject host XAI_API_KEY into grok-cli spawns', () => {
     const env = buildSpawnEnv({ ...config, xaiApiKey: 'xai-host' }, { engine: 'grok-cli' });
-    expect(env.XAI_API_KEY).toBe('xai-host');
+    expect(env.XAI_API_KEY).toBeUndefined();
   });
 
-  it('per-user grok key overrides the host xAI key on grok-cli spawns', () => {
+  it('injects the per-user grok key on grok-cli spawns', () => {
     const env = buildSpawnEnv(
       { ...config, xaiApiKey: 'xai-host' },
       { engine: 'grok-cli', userOverride: { grokApiKey: 'xai-user' } },
@@ -224,12 +224,12 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
     expect(env.XAI_API_KEY).toBe('xai-user');
   });
 
-  it('falls back to the host xAI key when the user has no grok override', () => {
+  it('does not fall back to the host xAI key when the user has no grok override', () => {
     const env = buildSpawnEnv(
       { ...config, xaiApiKey: 'xai-host' },
       { engine: 'grok-cli', userOverride: { cursorApiKey: 'curs-user' } },
     );
-    expect(env.XAI_API_KEY).toBe('xai-host');
+    expect(env.XAI_API_KEY).toBeUndefined();
   });
 
   it('a per-user grok key still never leaks into a non-grok spawn', () => {
@@ -240,7 +240,7 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
     expect(env.XAI_API_KEY).toBeUndefined();
   });
 
-  it('applyEngineScopedSpawnEnv prefers the override key over host for grok-cli', () => {
+  it('applyEngineScopedSpawnEnv uses only the per-user override for grok-cli', () => {
     const env = applyEngineScopedSpawnEnv(
       {},
       { ...config, xaiApiKey: 'xai-host' },
@@ -248,6 +248,11 @@ describe('buildSpawnEnv — per-user Cursor / Codex (per-account) + global Gemin
       'xai-user-override',
     );
     expect(env.XAI_API_KEY).toBe('xai-user-override');
+  });
+
+  it('applyEngineScopedSpawnEnv ignores host xAI key when no override is provided', () => {
+    const env = applyEngineScopedSpawnEnv({}, { ...config, xaiApiKey: 'xai-host' }, 'grok-cli');
+    expect(env.XAI_API_KEY).toBeUndefined();
   });
 
   it('sanitizes direct helper callers before applying engine-scoped keys', () => {

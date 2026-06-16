@@ -36,6 +36,7 @@ import { existsSync } from 'fs';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { shouldPassModelFlag, detectCodexAuthMode } from './codex-auth.js';
+import { resolveGrokSpawnModel } from './config.js';
 import type { AppConfig } from './types.js';
 import { resolveCodexHomeForProbe } from './host-cli-home.js';
 import type { SupportedEngine } from './engine-availability.js';
@@ -119,7 +120,8 @@ export function buildOneShotSpawnArgs(
     // which DO feed stdout through the parser, request streaming-json.
     const body = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
     const args = ['-p', body, '--no-auto-update', '--always-approve'];
-    if (trimmedModel) args.push('--model', trimmedModel);
+    const grokModel = resolveGrokSpawnModel(trimmedModel, cfg);
+    if (grokModel) args.push('--model', grokModel);
     return { bin: cfg.grokBin, args };
   }
 

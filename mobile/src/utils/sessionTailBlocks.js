@@ -43,6 +43,7 @@ export function eventsToBlocks(events) {
 
   let textBuf = null;
   let exploredBuf = null;
+  let thinkingBuf = '';
 
   const flushText = () => {
     if (!textBuf) return;
@@ -63,9 +64,16 @@ export function eventsToBlocks(events) {
     exploredBuf = null;
   };
 
+  const flushThinking = () => {
+    if (!thinkingBuf) return;
+    blocks.push({ kind: 'thinking', event: { type: 'thinking', text: thinkingBuf } });
+    thinkingBuf = '';
+  };
+
   const flushAll = () => {
     flushExplored();
     flushText();
+    flushThinking();
   };
 
   for (let i = 0; i < list.length; i++) {
@@ -75,6 +83,7 @@ export function eventsToBlocks(events) {
 
     if (t === 'assistant_text') {
       flushExplored();
+      flushThinking();
       if (!textBuf) textBuf = { partials: '', final: '' };
       if (event.partial) textBuf.partials += event.text || '';
       else textBuf.final += event.text || '';
@@ -82,6 +91,13 @@ export function eventsToBlocks(events) {
     }
 
     if (t === 'tool_result') continue;
+
+    if (t === 'thinking') {
+      flushExplored();
+      flushText();
+      thinkingBuf += event.text || '';
+      continue;
+    }
 
     if (t === 'progress_step') continue;
     if (t === 'browser_tool_activity') continue;
@@ -100,6 +116,7 @@ export function eventsToBlocks(events) {
       const isExplore = EXPLORE_TOOLS.has(use.tool) && !result?.isError;
       if (isExplore) {
         flushText();
+        flushThinking();
         if (!exploredBuf) exploredBuf = { items: [] };
         exploredBuf.items.push({ use, result });
         continue;
@@ -116,7 +133,6 @@ export function eventsToBlocks(events) {
     flushAll();
 
     if (t === 'system') blocks.push({ kind: 'system', event });
-    else if (t === 'thinking') blocks.push({ kind: 'thinking', event });
     else if (t === 'result') blocks.push({ kind: 'result', event });
     else if (t === 'ask_user_question') blocks.push({ kind: 'ask_question', event });
     else if (t === 'error') blocks.push({ kind: 'error', event });

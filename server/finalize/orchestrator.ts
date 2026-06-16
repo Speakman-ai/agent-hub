@@ -181,6 +181,8 @@ export interface PushAndCreatePrArgs {
    * has no usable token (e.g. no connected GitHub identity).
    */
   sessionId?: string | null;
+  /** Hub user id stamped on Agent Hub-native PR rows. Set by push-run. */
+  authorUserId?: string | null;
   env?: NodeJS.ProcessEnv;
 }
 

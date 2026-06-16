@@ -913,3 +913,35 @@ describe('eventsToBlocks — control block stripping (regression: v1.13.0)', () 
     expect(blocks.filter((b) => b.kind === 'text')).toHaveLength(0);
   });
 });
+
+describe('eventsToBlocks — thinking coalescing', () => {
+  const wrap = (events) => events.map((event, i) => ({ seq: i, event }));
+
+  it('merges consecutive thinking chunks into one block', () => {
+    const events = wrap([
+      { type: 'thinking', text: 'The user ' },
+      { type: 'thinking', text: 'said Hi' },
+      { type: 'thinking', text: ' — respond naturally.' },
+      { type: 'assistant_text', text: 'Hi there!', partial: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    expect(blocks.filter((b) => b.kind === 'thinking')).toHaveLength(1);
+    expect(blocks[0].event.text).toBe('The user said Hi — respond naturally.');
+    expect(blocks[1].kind).toBe('text');
+  });
+
+  it('keeps separate thinking blocks when interrupted by a tool call', () => {
+    const events = wrap([
+      { type: 'thinking', text: 'first thought' },
+      { type: 'tool_use', id: 't1', tool: 'Read', input: { path: 'a.ts' } },
+      { type: 'tool_result', toolUseId: 't1', content: 'ok', isError: false },
+      { type: 'thinking', text: 'second thought' },
+      { type: 'assistant_text', text: 'Done.', partial: false },
+    ]);
+    const blocks = eventsToBlocks(events);
+    const thinking = blocks.filter((b) => b.kind === 'thinking');
+    expect(thinking).toHaveLength(2);
+    expect(thinking[0].event.text).toBe('first thought');
+    expect(thinking[1].event.text).toBe('second thought');
+  });
+});

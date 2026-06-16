@@ -28,6 +28,7 @@ import { getSessionCommittableChanges } from './worktree-changes.js';
 import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { readFinalizeLoopRound, writeFinalizeRunTerminalTimeline } from './timeline-message.js';
 import type { ReviewerVerdict } from './reviewer-dispatch.js';
+import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -201,6 +202,19 @@ async function executePush(args: {
       worktreePath: session.worktree_path,
       getEpic: (epicId) => stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
+    // Native-PR author attribution is only required for Agent Hub-hosted PR
+    // rows; GitHub PR creation does not need (and does not consume) a Hub
+    // author. Resolving it unconditionally would let an auth-enabled but
+    // userless/unowned session fail in resolveNativePrAuthorUserId before the
+    // GitHub push/PR path even runs. Gate on gitHost so only the native path
+    // requires attribution (and keep the triggered-by hint for it).
+    const authorUserId =
+      project.gitHost === 'agenthub'
+        ? resolveNativePrAuthorUserId({
+            sessionId: session.id,
+            triggeredByUserId: run.triggered_by_user_id,
+          })
+        : null;
     pushResult = await pushFn({
       runId: run.id,
       worktreePath: session.worktree_path,
@@ -210,6 +224,7 @@ async function executePush(args: {
       card,
       project,
       sessionId: session.id,
+      authorUserId,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -553,6 +568,12 @@ export async function runSessionPushToGithub(
       worktreePath: session.worktree_path,
       getEpic: (epicId) => deps.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined,
     });
+    // See above: native-PR attribution applies only to Agent Hub-hosted rows;
+    // GitHub-backed projects must not fail attribution before their push runs.
+    const authorUserId =
+      project.gitHost === 'agenthub'
+        ? resolveNativePrAuthorUserId({ sessionId: session.id })
+        : null;
     const pushResult = await pushFn({
       runId,
       worktreePath: session.worktree_path,
@@ -562,6 +583,7 @@ export async function runSessionPushToGithub(
       card,
       project,
       sessionId: session.id,
+      authorUserId,
     });
     if (!pushResult.prUrl) {
       console.error(

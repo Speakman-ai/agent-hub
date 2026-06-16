@@ -315,6 +315,21 @@ describe('eventsToBlocks — misc', () => {
   });
 });
 
+describe('eventsToBlocks — thinking coalescing', () => {
+  it('merges consecutive thinking chunks into one block', () => {
+    const blocks = eventsToBlocks(
+      wrap([
+        { type: 'thinking', text: 'The user ' },
+        { type: 'thinking', text: 'said Hi' },
+        { type: 'assistant_text', text: 'Hi there!', partial: false },
+      ]),
+    );
+    expect(blocks.filter((b) => b.kind === 'thinking')).toHaveLength(1);
+    expect(blocks[0].event.text).toBe('The user said Hi');
+    expect(blocks[1].kind).toBe('text');
+  });
+});
+
 describe('describeTool', () => {
   it('matches web headlines for Read/Grep', () => {
     expect(describeTool('Read', { file_path: '/project/src/foo.ts' }).headline).toBe('Read foo.ts');

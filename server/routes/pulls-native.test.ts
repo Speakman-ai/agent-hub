@@ -4,21 +4,92 @@
  */
 import '../test/setup.js';
 import type supertest from 'supertest';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
+import { saveAuthRecord, generateJwtSecret, reloadAuthRecord } from '../auth-store.js';
+import { signJwt } from '../jwt.js';
+import { createUser } from '../users-store.js';
+import { createMembership } from '../memberships-store.js';
+import { getActiveOrgId } from '../orgs.js';
+import { setSessionOwner } from '../session-ownership.js';
+import config from '../config.js';
 
 let request: supertest.Agent;
 let gitHostRepoPath: typeof import('../git-host/repo-store.js').gitHostRepoPath;
+let pullsTestUser: { id: string; token: string };
+let pullsAuthPath = '';
+/** auth.json contents before this suite overwrote them (null = no file). */
+let priorAuthJson: string | null = null;
+
+function authHeader() {
+  return { Authorization: `Bearer ${pullsTestUser.token}` };
+}
+
+function authedGet(url: string) {
+  return request.get(url).set(authHeader());
+}
+function authedPost(url: string) {
+  return request.post(url).set(authHeader());
+}
+function authedPatch(url: string) {
+  return request.patch(url).set(authHeader());
+}
+function authedDelete(url: string) {
+  return request.delete(url).set(authHeader());
+}
 
 beforeAll(async () => {
   request = await getRequest();
+
+  pullsAuthPath = path.join(config.dataDir, 'auth.json');
+  // Snapshot any pre-existing auth record so teardown can restore it — this
+  // suite enables auth process-wide, and the in-memory cache would otherwise
+  // bleed into later unauthenticated route tests in the same worker.
+  priorAuthJson = existsSync(pullsAuthPath) ? readFileSync(pullsAuthPath, 'utf-8') : null;
+  const jwtSecret = generateJwtSecret();
+  saveAuthRecord({
+    username: 'pulls-native-owner',
+    passwordHash: 'scrypt$ignored',
+    jwtSecret,
+    role: 'Owner',
+  });
+  reloadAuthRecord();
+  const row = createUser({
+    username: `pulls-native-user-${Date.now()}`,
+    passwordHash: 'h',
+  });
+  createMembership(row.id, getActiveOrgId(), 'Admin');
+  pullsTestUser = {
+    id: row.id,
+    token: signJwt(row.username, jwtSecret, {
+      expiresInSec: 3600,
+      claims: { role: 'Owner', uid: row.id },
+    }),
+  };
   ({ gitHostRepoPath } = await import('../git-host/repo-store.js'));
 });
+
+afterAll(() => {
+  // Restore the prior auth.json (or remove the one this suite created) AND
+  // drop the in-memory cache, so later tests in this worker re-read the
+  // restored/absent record instead of inheriting this suite's auth-enabled
+  // state.
+  if (priorAuthJson !== null) {
+    writeFileSync(pullsAuthPath, priorAuthJson, { mode: 0o600 });
+  } else if (pullsAuthPath && existsSync(pullsAuthPath)) {
+    unlinkSync(pullsAuthPath);
+  }
+  reloadAuthRecord();
+});
+
+function postPulls(projectId: string) {
+  return authedPost(`/api/projects/${projectId}/pulls`);
+}
 
 function git(cwd: string, cmd: string): string {
   return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
@@ -26,17 +97,13 @@ function git(cwd: string, cmd: string): string {
 
 async function hostedProjectWithBranch(): Promise<{ id: string; branch: string; work: string }> {
   const id = `pulls-native-${uuidv4().slice(0, 8)}`;
-  await request
-    .post('/api/projects')
+  await authedPost('/api/projects')
     .send({ id, name: id, cwd: '/tmp', color: '#3B82F6' })
     .expect(201);
-  await request
-    .post(`/api/projects/${id}/git-host/enable`)
-    .send({ importFrom: 'empty' })
-    .expect(202);
+  await authedPost(`/api/projects/${id}/git-host/enable`).send({ importFrom: 'empty' }).expect(202);
   await vi.waitFor(
     async () => {
-      const res = await request.get(`/api/projects/${id}/git-host`).expect(200);
+      const res = await authedGet(`/api/projects/${id}/git-host`).expect(200);
       expect(res.body.importState?.status).toBe('ready');
     },
     { timeout: 10_000 },
@@ -66,8 +133,7 @@ describe('POST /api/projects/:projectId/pulls', () => {
   it('creates a native PR for a pushed branch and is idempotent on reuse', async () => {
     const { id, branch } = await hostedProjectWithBranch();
 
-    const created = await request
-      .post(`/api/projects/${id}/pulls`)
+    const created = await postPulls(id)
       .send({ headBranch: branch, title: 'Add b', body: '## Summary\nadds b' })
       .expect(201);
     expect(created.body).toMatchObject({
@@ -76,14 +142,13 @@ describe('POST /api/projects/:projectId/pulls', () => {
       created: true,
     });
 
-    const reused = await request
-      .post(`/api/projects/${id}/pulls`)
+    const reused = await postPulls(id)
       .send({ headBranch: branch, title: 'Add b (updated)' })
       .expect(201);
     expect(reused.body).toMatchObject({ number: 1, created: false });
 
     // Shows up on the (native-branched) pulls list.
-    const list = await request.get(`/api/projects/${id}/pulls`).expect(200);
+    const list = await authedGet(`/api/projects/${id}/pulls`).expect(200);
     expect(list.body.pulls[0]).toMatchObject({
       number: 1,
       title: 'Add b (updated)',
@@ -92,27 +157,57 @@ describe('POST /api/projects/:projectId/pulls', () => {
     });
   });
 
+  it('attributes the author via session owner for the global break-glass apiKey path', async () => {
+    // Agents call POST /pulls through ah-api.sh, which authenticates with the
+    // global break-glass apiKey (Owner role, no per-user `authUserId`). The PR
+    // author must still resolve — from the acting session's owner, sent via the
+    // X-Agent-Hub-Session-Id header. Regression guard for the hardening that
+    // briefly 401'd this documented flow.
+    const { id, branch } = await hostedProjectWithBranch();
+    const { getDb } = await import('../db.js');
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    getDb()
+      .prepare(
+        'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(sessionId, 'dev', 'PR attribution session', 'claude', 'sonnet', 0, 0, 0);
+    setSessionOwner(sessionId, pullsTestUser.id);
+
+    const priorApiKey = config.apiKey;
+    config.apiKey = 'break-glass-test-key';
+    try {
+      // Break-glass apiKey + session header → author resolves to the owner.
+      await request
+        .post(`/api/projects/${id}/pulls`)
+        .set('x-api-key', 'break-glass-test-key')
+        .set('X-Agent-Hub-Session-Id', sessionId)
+        .send({ headBranch: branch, title: 'Break-glass PR' })
+        .expect(201);
+
+      // Without any attribution signal, the same auth-enabled deployment still
+      // refuses (no user to credit).
+      const blocked = await request
+        .post(`/api/projects/${id}/pulls`)
+        .set('x-api-key', 'break-glass-test-key')
+        .send({ headBranch: branch, title: 'No attribution PR' })
+        .expect(401);
+      expect(blocked.body.error).toMatch(/authentication required/i);
+    } finally {
+      config.apiKey = priorApiKey;
+    }
+  });
+
   it('rejects unknown branches, bad input, and non-hosted projects', async () => {
     const { id } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: 'never-pushed', title: 'x' })
-      .expect(404);
-    await request.post(`/api/projects/${id}/pulls`).send({ title: 'no head' }).expect(400);
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: 'b', title: '' })
-      .expect(400);
+    await postPulls(id).send({ headBranch: 'never-pushed', title: 'x' }).expect(404);
+    await postPulls(id).send({ title: 'no head' }).expect(400);
+    await postPulls(id).send({ headBranch: 'b', title: '' }).expect(400);
 
     const plainId = `pulls-native-plain-${uuidv4().slice(0, 8)}`;
-    await request
-      .post('/api/projects')
+    await authedPost('/api/projects')
       .send({ id: plainId, name: plainId, cwd: '/tmp', color: '#3B82F6' })
       .expect(201);
-    const res = await request
-      .post(`/api/projects/${plainId}/pulls`)
-      .send({ headBranch: 'main', title: 'x' })
-      .expect(400);
+    const res = await postPulls(plainId).send({ headBranch: 'main', title: 'x' }).expect(400);
     expect(res.body.error).toMatch(/not hosted on Agent Hub/);
   });
 });
@@ -120,98 +215,83 @@ describe('POST /api/projects/:projectId/pulls', () => {
 describe('PATCH /api/projects/:projectId/pulls/:number', () => {
   it('edits title/body of an open PR; locks closed PRs', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
+    await postPulls(id)
       .send({ headBranch: branch, title: 'Original', body: 'old body' })
       .expect(201);
 
-    const edited = await request
-      .patch(`/api/projects/${id}/pulls/1`)
+    const edited = await authedPatch(`/api/projects/${id}/pulls/1`)
       .send({ title: 'Edited title', body: 'new body' })
       .expect(200);
     expect(edited.body.pr).toMatchObject({ title: 'Edited title', body: 'new body' });
 
     // Validation: nothing to change / empty title.
-    await request.patch(`/api/projects/${id}/pulls/1`).send({}).expect(400);
-    await request.patch(`/api/projects/${id}/pulls/1`).send({ title: '   ' }).expect(400);
-    await request.patch(`/api/projects/${id}/pulls/99`).send({ title: 'x' }).expect(404);
+    await authedPatch(`/api/projects/${id}/pulls/1`).send({}).expect(400);
+    await authedPatch(`/api/projects/${id}/pulls/1`).send({ title: '   ' }).expect(400);
+    await authedPatch(`/api/projects/${id}/pulls/99`).send({ title: 'x' }).expect(404);
 
     // Close it, then edits are locked.
-    await request
-      .post('/api/pr/close')
+    await authedPost('/api/pr/close')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
-    await request.patch(`/api/projects/${id}/pulls/1`).send({ title: 'nope' }).expect(409);
+    await authedPatch(`/api/projects/${id}/pulls/1`).send({ title: 'nope' }).expect(409);
   });
 });
 
 describe('native PR review lifecycle', () => {
   it('close → reopen round-trips; merged PRs cannot reopen', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Round trip' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Round trip' }).expect(201);
 
     // Reopen while open → 409.
-    await request.post(`/api/projects/${id}/pulls/1/reopen`).expect(409);
+    await authedPost(`/api/projects/${id}/pulls/1/reopen`).expect(409);
 
-    await request
-      .post('/api/pr/close')
+    await authedPost('/api/pr/close')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
-    const reopened = await request.post(`/api/projects/${id}/pulls/1/reopen`).expect(200);
+    const reopened = await authedPost(`/api/projects/${id}/pulls/1/reopen`).expect(200);
     expect(reopened.body.pr).toMatchObject({ status: 'open', closed_at: null });
 
     // Merge it, then reopen is permanently refused.
-    await request
-      .post('/api/pr/merge')
+    await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
-    const refused = await request.post(`/api/projects/${id}/pulls/1/reopen`).expect(409);
+    const refused = await authedPost(`/api/projects/${id}/pulls/1/reopen`).expect(409);
     expect(refused.body.error).toMatch(/merged/);
   });
 
   it('request-review flags the PR; a verdict clears it; reviews render in detail', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Needs review' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Needs review' }).expect(201);
 
-    const flagged = await request
-      .post(`/api/projects/${id}/pulls/1/request-review`)
+    const flagged = await authedPost(`/api/projects/${id}/pulls/1/request-review`)
       .send({})
       .expect(200);
     expect(flagged.body.pr.review_requested_at).toBeTruthy();
 
     // List rows surface REVIEW_REQUIRED while flagged.
-    const list = await request.get(`/api/projects/${id}/pulls`).expect(200);
+    const list = await authedGet(`/api/projects/${id}/pulls`).expect(200);
     expect(list.body.pulls[0]).toMatchObject({
       review_requested: true,
       review_decision: 'REVIEW_REQUIRED',
     });
 
     // Comment reviews need a body and do NOT clear the flag.
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'commented', body: '' })
       .expect(400);
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'commented', body: 'looking…' })
       .expect(201);
-    let detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.review_requested).toBe(true);
 
     // A changes-requested verdict clears the flag and drives the decision.
-    const review = await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    const review = await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'changes_requested', body: 'Please rename the helper.' })
       .expect(201);
     expect(review.body.review).toMatchObject({ state: 'CHANGES_REQUESTED' });
 
-    detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.review_requested).toBe(false);
     expect(detail.body.pr.review_decision).toBe('CHANGES_REQUESTED');
     expect(detail.body.reviews).toHaveLength(2);
@@ -221,37 +301,29 @@ describe('native PR review lifecycle', () => {
     });
 
     // Approval supersedes for the same reviewer.
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'approved', body: 'LGTM now' })
       .expect(201);
-    detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.review_decision).toBe('APPROVED');
   });
 
   it('inline comments: add, render in detail + autofix context, validate, delete', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Commented' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Commented' }).expect(201);
 
     // Validation.
-    await request
-      .post(`/api/projects/${id}/pulls/1/comments`)
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
       .send({ filePath: '', line: 1, body: 'x' })
       .expect(400);
-    await request
-      .post(`/api/projects/${id}/pulls/1/comments`)
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
       .send({ filePath: 'b.txt', line: 0, body: 'x' })
       .expect(400);
-    await request
-      .post(`/api/projects/${id}/pulls/1/comments`)
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
       .send({ filePath: 'b.txt', line: 1, body: '  ' })
       .expect(400);
 
-    const created = await request
-      .post(`/api/projects/${id}/pulls/1/comments`)
+    const created = await authedPost(`/api/projects/${id}/pulls/1/comments`)
       .send({ filePath: 'b.txt', line: 1, side: 'new', body: 'rename this' })
       .expect(201);
     expect(created.body.comment).toMatchObject({
@@ -261,7 +333,7 @@ describe('native PR review lifecycle', () => {
       body: 'rename this',
     });
 
-    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.inline_comments).toHaveLength(1);
     expect(detail.body.inline_comments[0]).toMatchObject({ file_path: 'b.txt', line: 1 });
     // Folded into the issue-comment shape (timeline + autofix context).
@@ -269,37 +341,33 @@ describe('native PR review lifecycle', () => {
 
     // Delete round-trip.
     const commentId = created.body.comment.id as string;
-    await request.delete(`/api/projects/${id}/pulls/1/comments/${commentId}`).expect(200);
-    const after = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    await authedDelete(`/api/projects/${id}/pulls/1/comments/${commentId}`).expect(200);
+    const after = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(after.body.inline_comments).toHaveLength(0);
-    await request.delete(`/api/projects/${id}/pulls/1/comments/${commentId}`).expect(404);
+    await authedDelete(`/api/projects/${id}/pulls/1/comments/${commentId}`).expect(404);
 
     // Comments lock once the PR is closed.
-    await request
-      .post('/api/pr/close')
+    await authedPost('/api/pr/close')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
-    await request
-      .post(`/api/projects/${id}/pulls/1/comments`)
+    await authedPost(`/api/projects/${id}/pulls/1/comments`)
       .send({ filePath: 'b.txt', line: 1, body: 'too late' })
       .expect(409);
   });
 
   it('resolve (Autofix) spawns against native PR context', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
+    await postPulls(id)
       .send({ headBranch: branch, title: 'Fix me', body: 'has issues' })
       .expect(201);
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'changes_requested', body: 'tighten the loop' })
       .expect(201);
 
     // No agent configured for the fresh project → expect the agent guard,
     // proving the native PR fetch path succeeded (404 unknown agent, not
     // 400 githubRepo-missing / 502 fetch failure).
-    const res = await request.post(`/api/projects/${id}/pulls/1/resolve`).send({ agentId: 'nope' });
+    const res = await authedPost(`/api/projects/${id}/pulls/1/resolve`).send({ agentId: 'nope' });
     expect(res.status).toBe(404);
     expect(res.body.error).toMatch(/Unknown agent/);
   });
@@ -308,13 +376,10 @@ describe('native PR review lifecycle', () => {
 describe('PR validation passthrough surface', () => {
   it('detail shows finalize_validated + check rows when Finalize validated the head sha', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Validated work' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Validated work' }).expect(201);
 
     // Before any validation: flag off, no checks.
-    let detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.finalize_validated).toBe(false);
     expect(detail.body.checks).toEqual([]);
 
@@ -349,7 +414,7 @@ describe('PR validation passthrough surface', () => {
     stmts!.markFinalizeRunReadyToPush.run(headSha, runId);
     stmts!.upsertFinalizeRunJob.run(runId, 'unit', '', 'passed', 0, Date.now(), Date.now());
 
-    detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.finalize_validated).toBe(true);
     expect(detail.body.checks).toHaveLength(1);
     expect(detail.body.checks[0]).toMatchObject({
@@ -373,33 +438,26 @@ describe('branch protection', () => {
     git(work, 'commit -m "add ci"');
     git(work, `push origin ${branch}`);
 
-    await request
-      .patch(`/api/projects/${id}`)
+    await authedPatch(`/api/projects/${id}`)
       .send({ branchProtection: { requiredChecks: true, requiredReview: true } })
       .expect(200);
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Protected' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Protected' }).expect(201);
 
     // Blocked: no review yet.
-    let res = await request
-      .post('/api/pr/merge')
+    let res = await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(409);
     expect(res.body.error).toMatch(/approving review/);
 
     // Detail mirrors the same reason for the Merge button.
-    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.merge_blocked_reason).toMatch(/approving review/);
 
     // Approve — now blocked on checks (ci.yaml exists, no run yet).
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'approved', body: 'lgtm' })
       .expect(201);
-    res = await request
-      .post('/api/pr/merge')
+    res = await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(409);
     expect(res.body.error).toMatch(/Branch protection: checks /);
@@ -434,48 +492,38 @@ describe('branch protection', () => {
     );
     stmts!.markFinalizeRunReadyToPush.run(headSha, runId);
 
-    await request
-      .post('/api/pr/merge')
+    await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
   });
 
   it('changes-requested blocks merge even without other gates tripping', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .patch(`/api/projects/${id}`)
+    await authedPatch(`/api/projects/${id}`)
       .send({ branchProtection: { requiredReview: true } })
       .expect(200);
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Blocked by review' })
-      .expect(201);
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await postPulls(id).send({ headBranch: branch, title: 'Blocked by review' }).expect(201);
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'changes_requested', body: 'fix first' })
       .expect(201);
-    const res = await request
-      .post('/api/pr/merge')
+    const res = await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(409);
     expect(res.body.error).toMatch(/requested changes/);
 
     // Approval (same reviewer's later verdict) unblocks; no ci.yaml at the
     // head commit so requiredChecks would be vacuous anyway.
-    await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'approved', body: 'fixed' })
       .expect(201);
-    await request
-      .post('/api/pr/merge')
+    await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
   });
 
   it('blockDirectPushes rejects pushes to the default branch but merges still land', async () => {
     const { id, branch, work } = await hostedProjectWithBranch();
-    await request
-      .patch(`/api/projects/${id}`)
+    await authedPatch(`/api/projects/${id}`)
       .send({ branchProtection: { blockDirectPushes: true } })
       .expect(200);
     const bare = gitHostRepoPath(id);
@@ -506,12 +554,8 @@ describe('branch protection', () => {
 
     // And a PR merge still moves main (update-ref bypasses receive hooks).
     const before = git(bare, 'rev-parse refs/heads/main');
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Via PR' })
-      .expect(201);
-    await request
-      .post('/api/pr/merge')
+    await postPulls(id).send({ headBranch: branch, title: 'Via PR' }).expect(201);
+    await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
     expect(git(bare, 'rev-parse refs/heads/main')).not.toBe(before);
@@ -522,8 +566,7 @@ describe('POST /api/projects/:projectId/pulls/branch-changes', () => {
   it('returns file changes for a pushed branch before PR creation', async () => {
     const { id, branch } = await hostedProjectWithBranch();
 
-    const res = await request
-      .post(`/api/projects/${id}/pulls/branch-changes`)
+    const res = await authedPost(`/api/projects/${id}/pulls/branch-changes`)
       .send({ headBranch: branch })
       .expect(200);
 
@@ -546,8 +589,7 @@ describe('POST /api/projects/:projectId/pulls/branch-changes', () => {
     git(work, 'commit -m "move base forward"');
     git(work, 'push origin main');
 
-    const res = await request
-      .post(`/api/projects/${id}/pulls/branch-changes`)
+    const res = await authedPost(`/api/projects/${id}/pulls/branch-changes`)
       .send({ headBranch: branch })
       .expect(200);
 
@@ -559,19 +601,14 @@ describe('POST /api/projects/:projectId/pulls/branch-changes', () => {
 
   it('validates missing or unknown branches', async () => {
     const { id } = await hostedProjectWithBranch();
-    await request.post(`/api/projects/${id}/pulls/branch-changes`).send({}).expect(400);
+    await authedPost(`/api/projects/${id}/pulls/branch-changes`).send({}).expect(400);
     for (const headBranch of ['../evil', 'foo.lock', 'feature//bad', 'feature/..']) {
-      await request
-        .post(`/api/projects/${id}/pulls/branch-changes`)
-        .send({ headBranch })
-        .expect(400);
+      await authedPost(`/api/projects/${id}/pulls/branch-changes`).send({ headBranch }).expect(400);
     }
-    await request
-      .post(`/api/projects/${id}/pulls/branch-changes`)
+    await authedPost(`/api/projects/${id}/pulls/branch-changes`)
       .send({ headBranch: 'feature/manual', baseBranch: 'base.lock' })
       .expect(400);
-    await request
-      .post(`/api/projects/${id}/pulls/branch-changes`)
+    await authedPost(`/api/projects/${id}/pulls/branch-changes`)
       .send({ headBranch: 'missing-branch' })
       .expect(404);
   });
@@ -604,26 +641,22 @@ describe('recent pushes (Compare & PR banner)', () => {
       'refs/tags/v1',
     ]);
 
-    let res = await request.get(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
+    let res = await authedGet(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
     expect(res.body.pushes).toHaveLength(1); // main, tag, managed session, and empty branches excluded
     expect(res.body.pushes[0]).toMatchObject({ branch: manualBranch });
     expect(typeof res.body.pushes[0].pushedAt).toBe('number');
 
     // Opening a PR for the branch removes it from the banner list.
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: manualBranch, title: 'From banner' })
-      .expect(201);
-    res = await request.get(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
+    await postPulls(id).send({ headBranch: manualBranch, title: 'From banner' }).expect(201);
+    res = await authedGet(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
     expect(res.body.pushes).toEqual([]);
 
     // Non-hosted project → 404.
     const plainId = `pulls-rp-plain-${uuidv4().slice(0, 8)}`;
-    await request
-      .post('/api/projects')
+    await authedPost('/api/projects')
       .send({ id: plainId, name: plainId, cwd: '/tmp', color: '#3B82F6' })
       .expect(201);
-    await request.get(`/api/projects/${plainId}/git-host/recent-pushes`).expect(404);
+    await authedGet(`/api/projects/${plainId}/git-host/recent-pushes`).expect(404);
   });
 
   it('keeps recent pushes visible when the diff check fails', async () => {
@@ -633,7 +666,7 @@ describe('recent pushes (Compare & PR banner)', () => {
     __clearRecentPushes();
     recordRecentPush(id, [`refs/heads/${missingBranch}`]);
 
-    const res = await request.get(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
+    const res = await authedGet(`/api/projects/${id}/git-host/recent-pushes`).expect(200);
 
     expect(res.body.pushes).toEqual([expect.objectContaining({ branch: missingBranch })]);
   });
@@ -642,10 +675,7 @@ describe('recent pushes (Compare & PR banner)', () => {
 describe('setup-failure surfacing on PR checks', () => {
   it('a run that failed before producing jobs shows a synthetic failed check', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Broken CI' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Broken CI' }).expect(201);
 
     const { stmts } = await import('../db.js');
     const bare = gitHostRepoPath(id);
@@ -675,7 +705,7 @@ describe('setup-failure surfacing on PR checks', () => {
     );
     stmts!.failFinalizeRun.run('failed', 'ci_config_invalid', runId);
 
-    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.checks).toHaveLength(1);
     expect(detail.body.checks[0]).toMatchObject({
       name: 'ci/setup (ci_config_invalid)',
@@ -689,11 +719,8 @@ describe('CI empty-state explanation (checks_note)', () => {
   it('explains missing config, v1 config, and v2-not-started', async () => {
     // hostedProjectWithBranch seeds no ci.yaml → "No CI is configured".
     const { id, branch, work } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Explain me' })
-      .expect(201);
-    let detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Explain me' }).expect(201);
+    let detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.checks_note).toMatch(/No CI is configured/);
 
     // v1 config → finalize-only migration hint.
@@ -705,7 +732,7 @@ describe('CI empty-state explanation (checks_note)', () => {
     git(work, 'add -A');
     git(work, 'commit -m "v1 ci"');
     git(work, `push origin ${branch}`);
-    detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.checks_note).toMatch(/version 1 \(Finalize-only\)/);
 
     // v2 config with no run yet → "not started" (PR CI is disabled in
@@ -717,7 +744,7 @@ describe('CI empty-state explanation (checks_note)', () => {
     git(work, 'add -A');
     git(work, 'commit -m "v2 ci"');
     git(work, `push origin ${branch}`);
-    detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.checks_note).toMatch(/not started yet/);
   });
 });
@@ -752,29 +779,26 @@ describe('POST ci-runs/:runId/rerun guards', () => {
     };
 
     mkRun('rr-fin', 'ui_button', 'pushed');
-    const fin = await request.post(`/api/projects/${id}/ci-runs/rr-fin/rerun`).send({});
+    const fin = await authedPost(`/api/projects/${id}/ci-runs/rr-fin/rerun`).send({});
     expect(fin.status).toBe(400);
 
     mkRun('rr-live', 'pr_push', 'queued');
-    const live = await request.post(`/api/projects/${id}/ci-runs/rr-live/rerun`).send({});
+    const live = await authedPost(`/api/projects/${id}/ci-runs/rr-live/rerun`).send({});
     expect(live.status).toBe(409);
 
     mkRun('rr-done', 'pr_push', 'failed');
-    const done = await request.post(`/api/projects/${id}/ci-runs/rr-done/rerun`).send({});
+    const done = await authedPost(`/api/projects/${id}/ci-runs/rr-done/rerun`).send({});
     expect(done.status).toBe(202);
     expect(done.body).toEqual({ ok: true });
 
-    await request.post(`/api/projects/${id}/ci-runs/missing/rerun`).send({}).expect(404);
+    await authedPost(`/api/projects/${id}/ci-runs/missing/rerun`).send({}).expect(404);
   });
 });
 
 describe('checks merge across runs (per-job re-run keeps all checks visible)', () => {
   it('shows every job with its newest verdict across multiple runs', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Merged checks' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Merged checks' }).expect(201);
 
     const { stmts } = await import('../db.js');
     const bare = gitHostRepoPath(id);
@@ -831,7 +855,7 @@ describe('checks merge across runs (per-job re-run keeps all checks visible)', (
     stmts!.failFinalizeRun.run('succeeded', null, 'mc-run2');
     stmts!.upsertFinalizeRunJob.run('mc-run2', 'frontend-tests', '', 'passed', 0, 3, 4);
 
-    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     const byName = Object.fromEntries(
       (detail.body.checks as Array<{ name: string }>).map((c) => [c.name, c]),
     );
@@ -852,8 +876,7 @@ describe('POST pulls/generate-description (AI assist)', () => {
       return 'TITLE: Add b file support\nBODY:\n## Summary\n- adds b.txt\n\n## Test plan\n- CI';
     });
     try {
-      const res = await request
-        .post(`/api/projects/${id}/pulls/generate-description`)
+      const res = await authedPost(`/api/projects/${id}/pulls/generate-description`)
         .send({ headBranch: branch })
         .expect(200);
       expect(res.body).toEqual({
@@ -868,14 +891,12 @@ describe('POST pulls/generate-description (AI assist)', () => {
       __setPrTextGeneratorForTests(async () => {
         throw new Error('model exploded');
       });
-      const fail = await request
-        .post(`/api/projects/${id}/pulls/generate-description`)
+      const fail = await authedPost(`/api/projects/${id}/pulls/generate-description`)
         .send({ headBranch: branch })
         .expect(502);
       expect(fail.body.error).toMatch(/model exploded/);
 
-      await request
-        .post(`/api/projects/${id}/pulls/generate-description`)
+      await authedPost(`/api/projects/${id}/pulls/generate-description`)
         .send({ headBranch: 'missing-branch' })
         .expect(404);
     } finally {
@@ -888,8 +909,7 @@ describe('POST git-host/default-branch', () => {
   it('moves HEAD to an existing branch; validates names', async () => {
     const { id, branch } = await hostedProjectWithBranch();
 
-    const ok = await request
-      .post(`/api/projects/${id}/git-host/default-branch`)
+    const ok = await authedPost(`/api/projects/${id}/git-host/default-branch`)
       .send({ branch })
       .expect(200);
     expect(ok.body.defaultBranch).toBe(branch);
@@ -898,12 +918,10 @@ describe('POST git-host/default-branch', () => {
       execSync(`git -C "${bare}" symbolic-ref HEAD`, { stdio: 'pipe' }).toString().trim(),
     ).toBe(`refs/heads/${branch}`);
 
-    await request
-      .post(`/api/projects/${id}/git-host/default-branch`)
+    await authedPost(`/api/projects/${id}/git-host/default-branch`)
       .send({ branch: 'does-not-exist' })
       .expect(404);
-    await request
-      .post(`/api/projects/${id}/git-host/default-branch`)
+    await authedPost(`/api/projects/${id}/git-host/default-branch`)
       .send({ branch: '../evil' })
       .expect(400);
   });
@@ -912,10 +930,7 @@ describe('POST git-host/default-branch', () => {
 describe('linked card + list CI status', () => {
   it('list rows and detail carry linked_card and check_rollup', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Card-linked' })
-      .expect(201);
+    await postPulls(id).send({ headBranch: branch, title: 'Card-linked' }).expect(201);
 
     const { stmts } = await import('../db.js');
     // Link a kanban card to the PR by its native URL.
@@ -967,7 +982,7 @@ describe('linked card + list CI status', () => {
     stmts!.failFinalizeRun.run('succeeded', null, 'lk-run');
     stmts!.upsertFinalizeRunJob.run('lk-run', 'unit', '', 'passed', 0, 1, 2);
 
-    const list = await request.get(`/api/projects/${id}/pulls`).expect(200);
+    const list = await authedGet(`/api/projects/${id}/pulls`).expect(200);
     expect(list.body.pulls[0].linked_card).toMatchObject({
       id: 'card-lk1',
       title: 'Ship the widget',
@@ -975,7 +990,7 @@ describe('linked card + list CI status', () => {
     expect(list.body.pulls[0].check_rollup).toHaveLength(1);
     expect(list.body.pulls[0].check_rollup[0]).toMatchObject({ conclusion: 'success' });
 
-    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.pr.linked_card).toMatchObject({ id: 'card-lk1' });
   });
 });
@@ -983,13 +998,9 @@ describe('linked card + list CI status', () => {
 describe('deleteBranchOnMerge setting + branch deletion', () => {
   it('keeps the head branch after merge when deleteBranchOnMerge=false', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request.patch(`/api/projects/${id}`).send({ deleteBranchOnMerge: false }).expect(200);
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Keep my branch' })
-      .expect(201);
-    await request
-      .post('/api/pr/merge')
+    await authedPatch(`/api/projects/${id}`).send({ deleteBranchOnMerge: false }).expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Keep my branch' }).expect(201);
+    await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
     // Branch survives the merge.
@@ -999,12 +1010,8 @@ describe('deleteBranchOnMerge setting + branch deletion', () => {
 
   it('default behavior deletes the head branch after merge', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Cleanup me' })
-      .expect(201);
-    await request
-      .post('/api/pr/merge')
+    await postPulls(id).send({ headBranch: branch, title: 'Cleanup me' }).expect(201);
+    await authedPost('/api/pr/merge')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
     const bare = gitHostRepoPath(id);
@@ -1017,49 +1024,41 @@ describe('deleteBranchOnMerge setting + branch deletion', () => {
     const { id, branch } = await hostedProjectWithBranch();
 
     // Refuses the default branch.
-    const def = await request.delete(`/api/projects/${id}/git-host/branches/main`).expect(409);
+    const def = await authedDelete(`/api/projects/${id}/git-host/branches/main`).expect(409);
     expect(def.body.error).toMatch(/default branch/);
 
     // Refuses a branch backing an open PR.
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Open PR' })
-      .expect(201);
-    const inUse = await request
-      .delete(`/api/projects/${id}/git-host/branches/${encodeURIComponent(branch)}`)
-      .expect(409);
+    await postPulls(id).send({ headBranch: branch, title: 'Open PR' }).expect(201);
+    const inUse = await authedDelete(
+      `/api/projects/${id}/git-host/branches/${encodeURIComponent(branch)}`,
+    ).expect(409);
     expect(inUse.body.error).toMatch(/open PR #1/);
 
     // Close the PR — now deletion succeeds.
-    await request
-      .post('/api/pr/close')
+    await authedPost('/api/pr/close')
       .send({ prUrl: `/projects/${id}/pulls/1` })
       .expect(200);
-    await request
-      .delete(`/api/projects/${id}/git-host/branches/${encodeURIComponent(branch)}`)
-      .expect(200);
+    await authedDelete(
+      `/api/projects/${id}/git-host/branches/${encodeURIComponent(branch)}`,
+    ).expect(200);
     const bare = gitHostRepoPath(id);
     expect(() =>
       execSync(`git -C "${bare}" rev-parse --verify refs/heads/${branch}`, { stdio: 'pipe' }),
     ).toThrow();
 
-    await request.delete(`/api/projects/${id}/git-host/branches/never-existed`).expect(404);
+    await authedDelete(`/api/projects/${id}/git-host/branches/never-existed`).expect(404);
   });
 });
 
 describe('review reviewer-name override', () => {
   it('attributes the review to the supplied reviewer name (agent reviews)', async () => {
     const { id, branch } = await hostedProjectWithBranch();
-    await request
-      .post(`/api/projects/${id}/pulls`)
-      .send({ headBranch: branch, title: 'Agent-reviewed' })
-      .expect(201);
-    const res = await request
-      .post(`/api/projects/${id}/pulls/1/reviews`)
+    await postPulls(id).send({ headBranch: branch, title: 'Agent-reviewed' }).expect(201);
+    const res = await authedPost(`/api/projects/${id}/pulls/1/reviews`)
       .send({ state: 'changes_requested', body: 'tighten', reviewer: 'Demo Reviewer' })
       .expect(201);
     expect(res.body.review.user).toBe('Demo Reviewer');
-    const detail = await request.get(`/api/projects/${id}/pulls/1`).expect(200);
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
     expect(detail.body.reviews[0].user).toBe('Demo Reviewer');
     expect(detail.body.pr.review_decision).toBe('CHANGES_REQUESTED');
   });

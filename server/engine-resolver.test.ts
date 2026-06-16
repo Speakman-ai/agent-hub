@@ -133,19 +133,17 @@ describe('resolveOneShotEngine', () => {
     expect(r.fallbackUsed).toBe(false); // No "preferred" was missed
   });
 
-  it('never auto-selects gemini-cli for a userless run — grok is the host fallback', async () => {
+  it('never auto-selects gemini-cli — walks the agent chain instead', async () => {
     // Regression for the support-ticket AI investigation 429 storm: it resolves
     // with `preferred: 'claude-code'` and no acting user, so claude/cursor/codex
     // are all unavailable (per-account, no host fallback). Gemini USED to be the
     // sole host-configured fallback, so the chain landed on it — and after Google
     // removed Pro from the free tier (2026-04-01) every such run 429'd with
     // limit:0. Gemini is now reserved for RAG only; the default chain must skip
-    // it and fall to host-configured Grok instead, even when Gemini is the only
-    // other "available" engine.
+    // it even when Gemini is the only other "available" engine in the probe map.
     const r = await resolveOneShotEngine(CFG, {
       preferred: 'claude-code',
       availability: makeAvailability({
-        // Both host-configured engines report available...
         'gemini-cli': ok('gemini-cli'),
         'grok-cli': ok('grok-cli'),
       }),

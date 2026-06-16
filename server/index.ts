@@ -444,8 +444,11 @@ app.use(
               handleChat: routeDeps.handleChat,
             },
             // Run the review as the user who pushed, so it uses their
-            // reviewer engine/model + per-account credentials.
-            { pushedByUserId: ctx?.pushedByUserId ?? null },
+            // reviewer engine/model + per-account credentials. If receive-pack
+            // attribution is unavailable for a head update, skip instead of
+            // falling back to the PR author (the pushed content is controlled
+            // by the latest pusher).
+            { pushedByUserId: ctx?.pushedByUserId ?? null, trigger: 'head_update' },
           );
         }
       }
@@ -507,14 +510,19 @@ const nativePr = createNativePrService({
   // otherwise run PR-level CI so the PR still shows check status. Covers
   // the create-time race where the push hook fired before the PR row
   // existed.
-  onPrHeadChanged: (project, row) => {
+  onPrHeadChanged: (project, row, meta) => {
     void maybeRunPrCi(project, row, { stmts: stmts!, broadcast });
-    void maybeRunPrAutoReview(project, row, {
-      stmts: stmts!,
-      config,
-      broadcast,
-      handleChat: routeDeps.handleChat,
-    });
+    void maybeRunPrAutoReview(
+      project,
+      row,
+      {
+        stmts: stmts!,
+        config,
+        broadcast,
+        handleChat: routeDeps.handleChat,
+      },
+      { trigger: meta.reason === 'created' ? 'pr_create' : 'head_update' },
+    );
   },
 });
 

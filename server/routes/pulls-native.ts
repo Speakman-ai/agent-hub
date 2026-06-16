@@ -20,6 +20,10 @@ import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { isSafeBranchName } from '../git-host/repo-read.js';
 import { git, prCommits, prDiff, prDiffStat, prFiles, revParse } from '../native-pr/git-read.js';
 import { NativePrError } from '../native-pr/errors.js';
+import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
+import { resolveCardSessionId } from '../kanban-caller-session.js';
+import config from '../config.js';
+import { getAuthRecord } from '../auth-store.js';
 import { z, registerPath } from '../openapi/registry.js';
 
 const execFileP = promisify(execFile);
@@ -124,6 +128,10 @@ registerPath({
             .openapi({ description: 'Defaults to the default branch.' }),
           title: z.string().min(1),
           body: z.string().optional(),
+          sessionId: z.string().nullable().optional().openapi({
+            description:
+              'Acting session id used to attribute the PR author to the session owner when the caller has no per-user identity (e.g. the global break-glass apiKey). Falls back to the X-Agent-Hub-Session-Id header / spawn-creds key.',
+          }),
         }),
       ),
       required: true,
@@ -432,6 +440,32 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
 
     const baseBranch = baseRaw || (await hostedRepoDefaultBranch(project.id)) || 'main';
     const areq = req as AuthenticatedRequest;
+
+    // Resolve the Hub user to stamp on the PR. The JWT / per-user-apiKey path
+    // sets `authUserId` directly. The global break-glass apiKey path (agents
+    // calling via `ah-api.sh`) sets no user id, so fall back to the acting
+    // session's owner — resolved from the body `sessionId`, the
+    // `X-Agent-Hub-Session-Id` header, or the spawn-creds key, same precedence
+    // as kanban card linking. No-auth / local-bundled deployments attribute to
+    // the synthetic `local` Owner (see resolveNativePrAuthorUserId).
+    const rawSessionId = (body as { sessionId?: unknown }).sessionId;
+    const bodySessionId =
+      typeof rawSessionId === 'string' ? rawSessionId : rawSessionId === null ? null : undefined;
+    const sessionId = resolveCardSessionId(req, bodySessionId);
+    let authorUserId: string;
+    try {
+      authorUserId = resolveNativePrAuthorUserId({
+        explicitUserId: areq.authUserId,
+        sessionId,
+      });
+    } catch {
+      const authRequired = Boolean(config.apiKey || getAuthRecord());
+      return res.status(authRequired ? 401 : 400).json({
+        error: authRequired
+          ? 'Authentication required to create a pull request'
+          : 'Pull request creation requires an attributed Hub user',
+      });
+    }
     try {
       const { row, prUrl, created } = deps.nativePr.createOrGetOpenPr({
         project,
@@ -440,7 +474,7 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         headSha,
         title,
         body: prBody,
-        author: areq.authUser ?? areq.authUserId ?? 'agent',
+        author: authorUserId,
       });
       return res.status(201).json({ prUrl, number: row.number, created });
     } catch (err: unknown) {

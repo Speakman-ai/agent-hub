@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolvePushGateBaseline, runFinalizePush, runSessionPushToGithub } from './push-run.js';
+import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import type { FinalizeRunRow, KanbanCardRow, Project, SessionRow } from '../types.js';
 
 vi.mock('./worktree-changes.js', () => ({
   getSessionCommittableChanges: vi
     .fn()
     .mockResolvedValue({ ok: true, changes: { hasUnpushed: true } }),
+}));
+
+vi.mock('../native-pr/author-user.js', () => ({
+  resolveNativePrAuthorUserId: vi.fn(() => 'u1'),
+  isKnownHubUserId: vi.fn(() => true),
 }));
 
 const baseRun = (): FinalizeRunRow =>
@@ -84,6 +90,59 @@ function lastTerminalMetadata(addMessage: { run: { mock: { calls: unknown[][] } 
   }
   return null;
 }
+
+describe('runFinalizePush native-PR attribution gating', () => {
+  it('does not resolve native-PR attribution for a GitHub-backed project (passes authorUserId=null)', async () => {
+    // Regression: native-PR author attribution applies ONLY to Agent
+    // Hub-hosted PR rows. For a GitHub project, resolving it before pushFn
+    // could fail an auth-enabled/userless session in resolveNativePrAuthorUserId
+    // even though GitHub PR creation needs no Hub author.
+    const { deps } = makeDeps();
+    const mockResolve = vi.mocked(resolveNativePrAuthorUserId);
+    mockResolve.mockClear();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+    const githubProject = { id: 'proj-1', githubRepo: 'o/r' } as Project; // no gitHost
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project: githubProject,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(pushAndCreatePr.mock.calls[0]![0]).toMatchObject({ authorUserId: null });
+  });
+
+  it('resolves native-PR attribution for an Agent Hub-hosted project', async () => {
+    const { deps } = makeDeps();
+    const mockResolve = vi.mocked(resolveNativePrAuthorUserId);
+    mockResolve.mockClear();
+    mockResolve.mockReturnValue('u1');
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: '/projects/proj-1/pulls/1' });
+    const hostedProject = { id: 'proj-1', gitHost: 'agenthub' } as Project;
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project: hostedProject,
+      run: baseRun(),
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(mockResolve).toHaveBeenCalledOnce();
+    expect(pushAndCreatePr.mock.calls[0]![0]).toMatchObject({ authorUserId: 'u1' });
+  });
+});
 
 describe('runFinalizePush force', () => {
   it('allows push when force=true even if status is dispatching', async () => {

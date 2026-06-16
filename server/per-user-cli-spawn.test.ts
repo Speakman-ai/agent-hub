@@ -62,6 +62,19 @@ describe('userHasPerUserCliIdentity', () => {
     expect(userHasPerUserCliIdentity(user.id, dataDir)).toBe(true);
   });
 
+  it('returns true for issuer-keyed OIDC grok auth.json (current CLI format)', () => {
+    const user = createUser({ username: 'grok-oidc-user', passwordHash: 'x' });
+    const home = ensurePerUserHome(user.id, dataDir);
+    mkdirSync(path.join(home, '.grok'), { recursive: true });
+    writeFileSync(
+      path.join(home, '.grok', 'auth.json'),
+      JSON.stringify({
+        'https://auth.x.ai::client-id': { key: 'jwt', refresh_token: 'r', auth_mode: 'oidc' },
+      }),
+    );
+    expect(perUserHomeHasGrokCache(user.id, dataDir)).toBe(true);
+  });
+
   it('does not count a grok auth.json that holds only an api key as an OAuth cache', () => {
     const user = createUser({ username: 'grok-apikey-file-user', passwordHash: 'x' });
     const home = ensurePerUserHome(user.id, dataDir);

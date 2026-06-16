@@ -17,7 +17,7 @@ export interface CreateOrGetOpenPrArgs {
   headBranch: string;
   baseBranch: string;
   headSha: string;
-  /** userId, or 'finalize' for orchestrator-created PRs. */
+  /** Hub user id who opened the pull request. */
   author: string;
 }
 

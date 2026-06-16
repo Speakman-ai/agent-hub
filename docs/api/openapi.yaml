@@ -12467,6 +12467,10 @@ paths:
                   minLength: 1
                 body:
                   type: string
+                sessionId:
+                  type: string
+                  nullable: true
+                  description: Acting session id used to attribute the PR author to the session owner when the caller has no per-user identity (e.g. the global break-glass apiKey). Falls back to the X-Agent-Hub-Session-Id header / spawn-creds key.
               required:
                 - headBranch
                 - title

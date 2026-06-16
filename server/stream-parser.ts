@@ -1021,9 +1021,15 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
 //
 // Shape reference: xAI Grok Build CLI headless mode
 // (https://docs.x.ai/build/cli/headless-scripting). `grok -p "..."
-// --output-format streaming-json` emits newline-delimited Agent Client
-// Protocol (ACP) JSON-RPC notifications:
+// --output-format streaming-json` emits newline-delimited JSON. Two shapes
+// appear in the wild:
 //
+// **Native NDJSON** (grok-composer / current builds):
+//   { "type":"thought", "data":"..." }  — reasoning delta
+//   { "type":"text",    "data":"..." }  — assistant text delta
+//   { "type":"end",     "stopReason":"EndTurn", "sessionId":"..." }
+//
+// **ACP JSON-RPC** (older grok-build path):
 //   { "jsonrpc":"2.0", "method":"session/update", "params": {
 //       "sessionId": "...",
 //       "update": { "sessionUpdate":"agent_message_chunk",
@@ -1035,56 +1041,150 @@ function normalizeGemini(raw: Record<string, unknown>): StreamEvent[] {
 //   tool_call            — tool invocation        (emit tool_use)
 //   tool_call_update     — tool status/result     (emit tool_result on terminal status)
 //
-// The terminal signal is the JSON-RPC *response* to the `session/prompt`
-// request: `{ "jsonrpc":"2.0", "id":<n>, "result": { "stopReason":"..." } }`.
+// The terminal signal is either a native `{ type:"end", stopReason }` line or
+// the JSON-RPC *response* to the `session/prompt` request:
+// `{ "jsonrpc":"2.0", "id":<n>, "result": { "stopReason":"..." } }`.
 // On that we finalize: run ask/step extraction over the accumulated message
 // and emit a non-partial assistant_text (replacing the streamed buffer) plus
 // a `result` event. Token deltas otherwise accumulate into `partialFallback`
 // on the caller side, so text is never lost even if the terminal line is
 // missing. Field names follow the ACP spec; fallbacks tolerate minor drift.
+
+function finalizeGrokAgentMessageTurn(
+  agentMessage: { text: string },
+  stopReason: string | null,
+  usage?: Record<string, unknown>,
+): StreamEvent[] {
+  const finalText = agentMessage.text;
+  agentMessage.text = '';
+  const out: StreamEvent[] = [];
+  if (finalText) {
+    const { strippedText: afterAsk, asks } = extractAskBlocks(finalText);
+    const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
+    out.push({
+      type: 'assistant_text',
+      text: afterSteps,
+      partial: false,
+      replacesAssistantBuffer: true,
+    });
+    for (const s of steps) out.push(stepEvent(s));
+    for (const ask of asks) out.push(askEvent(ask));
+  }
+  const inTok =
+    (usage?.inputTokens as number | undefined) ?? (usage?.input_tokens as number | undefined);
+  const outTok =
+    (usage?.outputTokens as number | undefined) ?? (usage?.output_tokens as number | undefined);
+  const reasonLower = stopReason?.toLowerCase() ?? '';
+  out.push({
+    type: 'result',
+    text: finalText,
+    durationMs: null,
+    costUsd: null,
+    numTurns: null,
+    isError: reasonLower === 'error' || reasonLower === 'failed',
+    stopReason,
+    inputTokens: typeof inTok === 'number' && Number.isFinite(inTok) ? inTok : null,
+    outputTokens: typeof outTok === 'number' && Number.isFinite(outTok) ? outTok : null,
+  });
+  return out;
+}
+
+function grokNativeStreamChunk(raw: Record<string, unknown>): string {
+  if (typeof raw.data === 'string') return raw.data;
+  if (typeof raw.text === 'string') return raw.text;
+  if (typeof raw.content === 'string') return raw.content;
+  return '';
+}
+
+function finalizeGrokError(agentMessage: { text: string }, message: string): StreamEvent[] {
+  const out: StreamEvent[] = [];
+  // Preserve any assistant text streamed before the error so a partial answer
+  // isn't lost, and reset the buffer.
+  const buffered = agentMessage.text;
+  agentMessage.text = '';
+  if (buffered) {
+    out.push({
+      type: 'assistant_text',
+      text: buffered,
+      partial: false,
+      replacesAssistantBuffer: true,
+    });
+  }
+  // A model-side streaming error frame must drive the normal failed-turn
+  // lifecycle (sessions.last_turn_error, Finalize-automation block, transient
+  // auto-retry) even when the CLI then exits cleanly. Emitting an `unknown`
+  // event let the error be treated as non-terminal noise. Emit a terminal
+  // `result` with isError:true whose text carries the error; chat.ts captures
+  // that as the turn's streamErrorMessage exactly like the Codex
+  // `turn.failed` -> result{isError} path.
+  out.push({
+    type: 'result',
+    text: `grok error: ${message}`,
+    durationMs: null,
+    costUsd: null,
+    numTurns: null,
+    isError: true,
+    stopReason: 'error',
+    inputTokens: null,
+    outputTokens: null,
+  });
+  return out;
+}
+
+function normalizeGrokNativeStream(
+  raw: Record<string, unknown>,
+  agentMessage: { text: string },
+): StreamEvent[] | null {
+  const kind = typeof raw.type === 'string' ? raw.type : undefined;
+  if (!kind || raw.jsonrpc !== undefined || raw.method !== undefined || raw.result !== undefined) {
+    return null;
+  }
+  switch (kind) {
+    case 'thought': {
+      const chunk = grokNativeStreamChunk(raw);
+      return chunk ? [{ type: 'thinking', text: chunk }] : [];
+    }
+    case 'text': {
+      const chunk = grokNativeStreamChunk(raw);
+      if (!chunk) return [];
+      agentMessage.text += chunk;
+      return [{ type: 'assistant_text', text: chunk, partial: true }];
+    }
+    case 'end': {
+      const stopReason =
+        (raw.stopReason as string | undefined) ?? (raw.stop_reason as string | undefined) ?? null;
+      const usage = (raw.usage as Record<string, unknown> | undefined) ?? undefined;
+      return finalizeGrokAgentMessageTurn(agentMessage, stopReason, usage);
+    }
+    case 'error': {
+      const message =
+        (raw.message as string | undefined) ||
+        grokNativeStreamChunk(raw) ||
+        JSON.stringify(raw).slice(0, 200);
+      return finalizeGrokError(agentMessage, message);
+    }
+    default:
+      return null;
+  }
+}
+
 function normalizeGrok(
   raw: Record<string, unknown>,
   agentMessage: { text: string },
 ): StreamEvent[] {
+  const native = normalizeGrokNativeStream(raw, agentMessage);
+  if (native !== null) return native;
+
   // Terminal JSON-RPC response: `{ id, result: { stopReason } }`.
   const result = raw.result as Record<string, unknown> | undefined;
   const isJsonRpc = raw.jsonrpc !== undefined || raw.method !== undefined || result !== undefined;
   if (result && (result.stopReason !== undefined || result.stop_reason !== undefined)) {
-    const finalText = agentMessage.text;
-    agentMessage.text = '';
-    const out: StreamEvent[] = [];
-    if (finalText) {
-      const { strippedText: afterAsk, asks } = extractAskBlocks(finalText);
-      const { strippedText: afterSteps, steps } = extractStepMarkers(afterAsk);
-      // Replace the streamed partial buffer with the cleaned, finalized text so
-      // the persisted message matches what's rendered (pickers stripped out).
-      out.push({
-        type: 'assistant_text',
-        text: afterSteps,
-        partial: false,
-        replacesAssistantBuffer: true,
-      });
-      for (const s of steps) out.push(stepEvent(s));
-      for (const ask of asks) out.push(askEvent(ask));
-    }
-    const usage = (result.usage as Record<string, unknown> | undefined) ?? {};
-    const inTok =
-      (usage.inputTokens as number | undefined) ?? (usage.input_tokens as number | undefined);
-    const outTok =
-      (usage.outputTokens as number | undefined) ?? (usage.output_tokens as number | undefined);
-    out.push({
-      type: 'result',
-      text: finalText,
-      durationMs: null,
-      costUsd: null,
-      numTurns: null,
-      isError:
-        (result.stopReason as string) === 'error' || (result.stop_reason as string) === 'error',
-      stopReason: (result.stopReason as string) ?? (result.stop_reason as string) ?? null,
-      inputTokens: typeof inTok === 'number' && Number.isFinite(inTok) ? inTok : null,
-      outputTokens: typeof outTok === 'number' && Number.isFinite(outTok) ? outTok : null,
-    });
-    return out;
+    const stopReason =
+      (result.stopReason as string | undefined) ??
+      (result.stop_reason as string | undefined) ??
+      null;
+    const usage = (result.usage as Record<string, unknown> | undefined) ?? undefined;
+    return finalizeGrokAgentMessageTurn(agentMessage, stopReason, usage);
   }
 
   // JSON-RPC response carrying the new session id (`session/new` result).
@@ -1164,7 +1264,7 @@ function normalizeGrok(
     const errObj = raw.error as Record<string, unknown> | undefined;
     const message =
       (errObj?.message as string) ?? (raw.message as string) ?? JSON.stringify(raw.error ?? raw);
-    return [{ type: 'unknown', text: `grok error: ${message}` }];
+    return finalizeGrokError(agentMessage, message);
   }
 
   // Unknown JSON-RPC bookkeeping lines (handshake, request echoes) are noise.

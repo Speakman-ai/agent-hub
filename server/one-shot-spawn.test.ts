@@ -94,7 +94,7 @@ describe('buildOneShotSpawnArgs — gemini-cli', () => {
 describe('buildOneShotSpawnArgs — grok-cli', () => {
   it('concatenates system + prompt and sets headless flags', () => {
     const out = buildOneShotSpawnArgs(
-      { engine: 'grok-cli', model: 'grok-build-0.1', prompt: 'P', systemPrompt: 'S' },
+      { engine: 'grok-cli', model: 'grok-composer-2.5-fast', prompt: 'P', systemPrompt: 'S' },
       CFG,
     );
     expect(out.bin).toBe('/bin/grok');
@@ -103,13 +103,27 @@ describe('buildOneShotSpawnArgs — grok-cli', () => {
     expect(out.args).toContain('--no-auto-update');
     expect(out.args).toContain('--always-approve');
     expect(out.args).toContain('--model');
-    expect(out.args).toContain('grok-build-0.1');
+    expect(out.args).toContain('grok-composer-2.5-fast');
   });
 
   it('omits --model when no model is provided', () => {
     const out = buildOneShotSpawnArgs({ engine: 'grok-cli', model: '', prompt: 'P' }, CFG);
     expect(out.args).not.toContain('--model');
     expect(out.args[1]).toBe('P');
+  });
+
+  it('maps retired grok-build-0.1 to grok-build when allowlist is configured', () => {
+    const cfg = {
+      ...CFG,
+      engineValidModels: { 'grok-cli': ['grok-build', 'grok-composer-2.5-fast'] },
+      engineDefaultModels: { 'grok-cli': 'grok-composer-2.5-fast' },
+    } as AppConfig;
+    const out = buildOneShotSpawnArgs(
+      { engine: 'grok-cli', model: 'grok-build-0.1', prompt: 'P' },
+      cfg,
+    );
+    expect(out.args).toContain('--model');
+    expect(out.args).toContain('grok-build');
   });
 });
 

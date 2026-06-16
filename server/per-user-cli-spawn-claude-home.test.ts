@@ -177,15 +177,15 @@ describe('resolveSessionCliSpawnEnv — per-account auth + per-user HOME', () =>
     }
   });
 
-  it('grok-cli spawn receives the host xAI key', () => {
-    const env = resolveSessionCliSpawnEnv({
-      cfg: { ...makeCfg(tmpDataDir), xaiApiKey: 'xai-host' } as AppConfig,
-      ownerId: null,
-      credsOwnerId: null,
-      engine: 'grok-cli',
-    });
-
-    expect(env.XAI_API_KEY).toBe('xai-host');
+  it('grok-cli spawn hard-fails without an acting user even when the host has an xAI key', () => {
+    expect(() =>
+      resolveSessionCliSpawnEnv({
+        cfg: { ...makeCfg(tmpDataDir), xaiApiKey: 'xai-host' } as AppConfig,
+        ownerId: null,
+        credsOwnerId: null,
+        engine: 'grok-cli',
+      }),
+    ).toThrow(EngineAuthRequiredError);
   });
 
   it('cursor-agent spawn hard-fails when the user has only Codex (no Cursor creds)', () => {
