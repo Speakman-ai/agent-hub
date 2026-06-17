@@ -40,17 +40,28 @@ services:
       retries: 3
       start_period: 10s
 
+  # Runs the Vite dev server for live HMR against the worktree the Hub
+  # bind-mounts at /app (see .agent-hub/preview.json `entryWorkdir`). Assumes
+  # subdomain preview mode (app served at base `/`); in path-prefix mode a dev
+  # server's absolute URLs don't resolve. See ops/RUNBOOK-subdomain-preview-hmr.md.
   client:
+    # :main supplies the Node runtime; the worktree mount overlays /app, so the
+    # client source + client/node_modules (incl. vite) come from the session.
     image: ${AGENT_HUB_SERVER_IMAGE:-public.ecr.aws/h9t4v7h0/agent-hub:main}
-    command:
-      [
-        'node',
-        '-e',
-        "const http=require('http'),fs=require('fs'),path=require('path');const root='/app/client/dist';const types={'.html':'text/html','.js':'application/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.json':'application/json'};http.createServer((req,res)=>{const u=new URL(req.url,'http://preview.local');if(u.pathname.startsWith('/api/')||u.pathname.startsWith('/uploads/')){const p=http.request({hostname:'server',port:3051,path:req.url,method:req.method,headers:req.headers},r=>{res.writeHead(r.statusCode||502,r.headers);r.pipe(res);});p.on('error',e=>{res.writeHead(502);res.end(e.message);});req.pipe(p);return;}let file=path.join(root,u.pathname==='/'?'index.html':u.pathname);if(!file.startsWith(root)){res.writeHead(403);res.end();return;}fs.stat(file,(err,st)=>{if(err||!st.isFile())file=path.join(root,'index.html');fs.readFile(file,(readErr,body)=>{if(readErr){res.writeHead(404);res.end('not found');return;}res.writeHead(200,{'content-type':types[path.extname(file)]||'application/octet-stream'});res.end(body);});});}).listen(80,'0.0.0.0');",
-      ]
+    working_dir: /app/client
+    # `exec` so vite is PID 1 and gets SIGTERM cleanly on `compose down`.
+    # AGENT_HUB_PREVIEW=1 switches vite.config.js into HMR-over-proxy mode
+    # (proxy /api to the `server` service, bind 0.0.0.0:$FRONTEND_PORT,
+    # allowedHosts, HMR ws via the Hub proxy tunnel).
+    command: ['sh', '-c', 'exec node_modules/.bin/vite']
     restart: unless-stopped
     environment:
+      - AGENT_HUB_PREVIEW=1
       - FRONTEND_PORT=${FRONTEND_PORT:-80}
+      # Lets vite.config.js scope server.allowedHosts to `.<base>` (the
+      # *.preview.<base> session subdomains) instead of allowing any Host.
+      # Inherited from the Hub process; empty in path-prefix/local setups.
+      - AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=${AGENT_HUB_PREVIEW_SUBDOMAIN_BASE:-}
     depends_on:
       server:
         condition: service_healthy

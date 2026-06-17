@@ -27,6 +27,11 @@ enable_dedicated_alb    = true
 web_cidr_blocks         = ["0.0.0.0/0"]
 alb_ingress_cidr_blocks = ["0.0.0.0/0"]
 
+# Subdomain preview mode → live HMR previews (wildcard cert + Route 53 alias +
+# ALB listener cert for *.preview.agenthub.surveytracker.io). Pair with
+# AGENT_HUB_PREVIEW_SUBDOMAIN_BASE on the Hub. See ops/RUNBOOK-subdomain-preview-hmr.md
+enable_preview_subdomain = true
+
 # ── Access: SSM only ─────────────────────────────────────────────────────────
 create_ssh_key      = false
 enable_ssh_ingress  = false

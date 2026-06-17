@@ -31,8 +31,6 @@ function renderTopBar(overrides = {}) {
     messages: [],
     activeSessionId: 'session-1',
     activeSessionState: 'reviewing',
-    sessionAskMode: false,
-    onAskModeChange: () => {},
     projectId: 'proj-a',
     showToast: () => {},
     onOpenForward: () => {},
@@ -44,6 +42,12 @@ function renderTopBar(overrides = {}) {
 }
 
 describe('<TopBar /> engine picker', () => {
+  it('does not render the Ask/Agent mode toggle (removed from the top bar)', () => {
+    renderTopBar();
+    // The toggle was the only control with an "Ask mode: …" title.
+    expect(screen.queryByTitle(/Ask mode/i)).toBeNull();
+  });
+
   it('renders the active session lifecycle icon in the header', () => {
     renderTopBar();
     expect(screen.getByTestId('topbar-session-state-icon')).toHaveAttribute(

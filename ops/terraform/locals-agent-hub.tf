@@ -129,6 +129,15 @@ locals {
       "AGENT_HUB_PREVIEW_HEALTH_HOST=host.docker.internal",
       "AGENT_HUB_PREVIEW_READY_TIMEOUT_MS=600000",
     ],
+    # Subdomain preview mode (live HMR): activate the server-side dispatcher
+    # whenever the wildcard cert + Route 53 alias exist (enable_preview_subdomain).
+    # Pairs with the *.preview.<alb_fqdn> infra in alb.tf — both are required,
+    # so deriving this from the same local keeps them from drifting apart (the
+    # exact half-configured state that silently broke HMR before). See
+    # ops/RUNBOOK-subdomain-preview-hmr.md.
+    local.preview_subdomain_create ? [
+      "AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=${local.preview_subdomain_base}",
+    ] : [],
     # Remote Finalize fleet wiring (backend=remote, worktree bucket, autoscaler
     # cluster/service + bounds, fleet token) — empty unless enable_finalize_runners.
     local.finalize_hub_fleet_env,
@@ -145,7 +154,7 @@ locals {
     )
     : ""
   )
-  use_ecr_pull             = var.bootstrap_agent_hub && length(local.agent_hub_image_uri_trim) > 0
+  use_ecr_pull = var.bootstrap_agent_hub && length(local.agent_hub_image_uri_trim) > 0
   # When ECR pull is active it takes precedence over docker-build-from-clone.
   use_docker_bootstrap = var.bootstrap_agent_hub && var.agent_hub_bootstrap_docker && !local.use_ecr_pull
   use_pm2_bootstrap    = var.bootstrap_agent_hub && !var.agent_hub_bootstrap_docker && !local.use_ecr_pull
@@ -163,23 +172,23 @@ locals {
   user_data_templated = templatefile(
     "${path.module}/agent-hub-user-data.tftpl",
     {
-      node_major             = var.node_major_version
-      app_user               = var.app_user
-      bootstrap              = var.bootstrap_agent_hub
-      use_ecr_pull           = local.use_ecr_pull
-      use_docker_bootstrap   = local.use_docker_bootstrap
-      use_pm2_bootstrap      = local.use_pm2_bootstrap
-      data_root_for_docker   = local.data_root_for_docker
-      app_port               = tostring(var.agent_hub_target_port)
-      git_url                = local.git_url_for_bootstrap
-      git_ref                = var.agent_hub_git_ref
-      repo_dir               = "/home/${var.app_user}/${var.agent_hub_repo_basename}"
-      env_b64                = local.agent_hub_bootstrap_env_b64
-      docker_env_b64         = local.docker_bootstrap_env_b64
-      image_uri              = local.agent_hub_image_uri_trim
+      node_major                = var.node_major_version
+      app_user                  = var.app_user
+      bootstrap                 = var.bootstrap_agent_hub
+      use_ecr_pull              = local.use_ecr_pull
+      use_docker_bootstrap      = local.use_docker_bootstrap
+      use_pm2_bootstrap         = local.use_pm2_bootstrap
+      data_root_for_docker      = local.data_root_for_docker
+      app_port                  = tostring(var.agent_hub_target_port)
+      git_url                   = local.git_url_for_bootstrap
+      git_ref                   = var.agent_hub_git_ref
+      repo_dir                  = "/home/${var.app_user}/${var.agent_hub_repo_basename}"
+      env_b64                   = local.agent_hub_bootstrap_env_b64
+      docker_env_b64            = local.docker_bootstrap_env_b64
+      image_uri                 = local.agent_hub_image_uri_trim
       finalize_runner_image_uri = local.agent_hub_finalize_runner_image_uri
-      ssm_deb_url            = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
-      libprofiler_stub_c_b64 = local.libprofiler_stub_c_b64
+      ssm_deb_url               = "https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb"
+      libprofiler_stub_c_b64    = local.libprofiler_stub_c_b64
       # Finalize fleet base-image pull-through cache (registry:2 proxy on this Hub).
       enable_finalize_registry_mirror = var.enable_finalize_registry_mirror
       finalize_dockerhub_secret_arn   = var.finalize_dockerhub_secret_arn

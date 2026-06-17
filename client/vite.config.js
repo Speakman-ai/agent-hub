@@ -5,12 +5,19 @@ import { execSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { resolveBuildVersion } from './src/utils/resolveBuildVersion.js';
+import { buildPreviewServerConfig, isPreviewMode } from './src/utils/previewServerConfig.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Agent Hub session-preview (live HMR) mode — gated entirely on AGENT_HUB_PREVIEW=1
+// so normal `npm run dev` / `npm run build` are unaffected. See
+// ./src/utils/previewServerConfig.js + ops/RUNBOOK-subdomain-preview-hmr.md.
+const previewServer = buildPreviewServerConfig(process.env);
+
 // In Docker production builds, set VITE_API_PORT="" so the client uses
-// same-origin WebSocket via nginx. In dev, defaults to 3051.
-const apiPort = process.env.VITE_API_PORT ?? '3051';
+// same-origin WebSocket via nginx. In dev, defaults to 3051. In preview mode the
+// client talks same-origin (Vite proxies /api to the compose `server` service).
+const apiPort = isPreviewMode(process.env) ? '' : (process.env.VITE_API_PORT ?? '3051');
 
 // Resolve the app version baked into the bundle. Implementation lives in
 // `./src/utils/resolveBuildVersion.js` so it's directly unit-testable; see
@@ -49,7 +56,9 @@ export default defineConfig({
       process.env.VITE_DESKTOP_UPDATE_CHECK_URL || '',
     ),
   },
-  server: {
+  // In preview mode use the HMR-over-proxy server config; otherwise the normal
+  // local dev server (untouched).
+  server: previewServer ?? {
     port: 3050,
     host: '0.0.0.0',
     // Proxy only applies in dev mode (not production builds)

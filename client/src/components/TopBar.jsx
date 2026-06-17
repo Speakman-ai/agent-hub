@@ -75,8 +75,6 @@ export default function TopBar({
   messages,
   activeSessionId,
   activeSessionState,
-  sessionAskMode,
-  onAskModeChange,
   projectId,
   showToast,
   onOpenForward,
@@ -199,33 +197,6 @@ export default function TopBar({
         )}
       </div>
       <div className="flex items-center gap-1.5 md:gap-3">
-        {/* Desktop: Ask Mode Toggle */}
-        {agent && (
-          <button
-            onClick={() => onAskModeChange(!sessionAskMode)}
-            className={`hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg transition-colors border ${
-              sessionAskMode
-                ? 'bg-blue-900/30 border-blue-700/50 text-blue-400 hover:bg-blue-900/50'
-                : 'bg-gray-800 border-gray-700 text-gray-500 hover:bg-gray-700'
-            }`}
-            title={`Ask mode: ${sessionAskMode ? 'ON — read-only, no file changes or commands' : 'OFF — agent can make changes'}`}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-3.5 w-3.5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fillRule="evenodd"
-                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z"
-                clipRule="evenodd"
-              />
-            </svg>
-            <span>{sessionAskMode ? 'Ask' : 'Agent'}</span>
-          </button>
-        )}
-
         {/* Desktop: Engine Selector */}
         {agent && (
           <div className="hidden sm:flex items-center gap-1.5" ref={engineRef}>
@@ -405,22 +376,6 @@ export default function TopBar({
                       {m.id === sessionModel && <span className="text-emerald-400 text-xs">✓</span>}
                     </button>
                   ))}
-                  <div className="border-t border-gray-700 my-1" />
-                  <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
-                    Mode
-                  </div>
-                  <button
-                    onClick={() => {
-                      onAskModeChange(!sessionAskMode);
-                      setMobileMenuOpen(false);
-                    }}
-                    className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
-                      sessionAskMode ? 'text-blue-400' : 'text-gray-400'
-                    }`}
-                  >
-                    <span>{sessionAskMode ? 'Ask (read-only)' : 'Agent (full access)'}</span>
-                    {sessionAskMode && <span className="text-blue-400 text-xs">✓</span>}
-                  </button>
                 </div>
               </>
             )}

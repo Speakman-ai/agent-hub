@@ -13,7 +13,10 @@
         "entryService": "client",
         "entryPort": 80,
         "file": "compose.preview.yml",
-        "healthPath": "/"
+        "healthPath": "/",
+        "entryWorkdir": "/app",
+        "entrySourceDir": ".",
+        "shadowDirs": []
       }
     }
   }

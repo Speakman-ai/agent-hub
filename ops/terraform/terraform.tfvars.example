@@ -40,3 +40,27 @@ allowed_origins = "AUTO"
 #
 # agent_hub_default_username = "admin"
 # agent_hub_default_password = "auto"
+
+# ── Subdomain preview mode (live HMR for session previews) ───────────────────
+# REQUIRED for hot-reloading previews. When OFF (the default), previews are
+# served under a path prefix (…/preview/proxy/) and the proxy strips that
+# prefix, so dev servers (Vite / `ng serve`) white-screen on their absolute
+# asset/HMR URLs — forcing every project onto a static, rebuild-to-see-changes
+# preview. Turning this ON provisions a wildcard ACM cert + Route 53 alias +
+# ALB listener cert for `*.preview.<alb_fqdn>`, so each preview lives at
+# `<sessionId>.preview.<alb_fqdn>`, the app renders at `/`, and dev-server HMR
+# Just Works.
+#
+# Preconditions (already satisfied on the agenthub.surveytracker.io deploy —
+# the apex ACM cert + ALB exist): enable_dedicated_alb = true AND a Route 53
+# hosted zone for base_domain (route53_zone_id set, or lookup/create).
+#
+# After `terraform apply`, set the MATCHING env on the Hub (this is the half
+# that also has to be restored — see ops/RUNBOOK-subdomain-preview-hmr.md):
+#   /home/agenthub/agent-hub/.env:  AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=preview.<alb_fqdn>
+#   then: sudo systemctl restart agenthub-server
+# The cert/DNS without the env var (or vice-versa) is a no-op — both are
+# required. Subdomain mode is Hub-wide: enabling it restores HMR for every
+# project sharing this ALB at once.
+#
+# enable_preview_subdomain = true

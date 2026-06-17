@@ -8,6 +8,7 @@ import type { BroadcastFn, Project, SessionRow } from '../types.js';
 import type { PreviewRuntimeLike } from './preview-block.js';
 import { handlePreviewBlock, resolvePreviewHandlerReadyTimeoutMs } from './preview-block.js';
 import type { PreviewTask } from './preview-block.js';
+import { projectWithWorktreePreviewOverride } from './worktree-preview-config.js';
 
 export interface StartSessionPreviewBody {
   route?: string;
@@ -64,6 +65,10 @@ export async function startSessionPreview(
     };
   }
   const worktreePath = effectiveCwdForSession(project.cwd, session);
+  // Let the session worktree's .agent-hub/preview.json drive its own preview
+  // compose config (e.g. entryWorkdir live-mount → HMR). The runtime otherwise
+  // reads only the project record, so a committed repo edit wouldn't take effect.
+  const effectiveProject = projectWithWorktreePreviewOverride(project, worktreePath);
   const route =
     typeof body?.route === 'string' && body.route.trim().startsWith('/')
       ? body.route.trim()
@@ -78,7 +83,7 @@ export async function startSessionPreview(
         : 'Started from session toolbar',
   };
 
-  const composeConfigured = !!project.prEnv?.preview?.compose?.entryService;
+  const composeConfigured = !!effectiveProject.prEnv?.preview?.compose?.entryService;
   const previewRuntime = composeConfigured
     ? (deps.getPreviewComposeRuntime?.() ?? null)
     : (deps.getPreviewRuntime?.() ?? null);
@@ -86,10 +91,10 @@ export async function startSessionPreview(
   void handlePreviewBlock(sessionId, task, {
     runtime: previewRuntime,
     broadcast,
-    project,
+    project: effectiveProject,
     worktreePath,
     readyTimeoutMs: resolvePreviewHandlerReadyTimeoutMs(
-      project,
+      effectiveProject,
       config.previewComposeReadyTimeoutMs,
     ),
   }).catch((err: unknown) => {

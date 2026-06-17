@@ -4305,8 +4305,6 @@ export default function App({ initialView } = {}) {
                 messages={messages}
                 activeSessionId={activeSessionId}
                 activeSessionState={activeSessionState}
-                sessionAskMode={sessionAskMode}
-                onAskModeChange={handleAskModeChange}
                 projectId={
                   currentView.startsWith('kanban:')
                     ? currentView.split(':')[1]
