@@ -5,6 +5,14 @@
 @tailwind components;
 @tailwind utilities;
 
+html,
+body,
+#root {
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
@@ -169,6 +177,11 @@ pre.whitespace-pre-wrap,
   .sidebar-container {
     width: 18rem;
   }
+}
+
+.sidebar-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 
 /* Touch-friendly targets */

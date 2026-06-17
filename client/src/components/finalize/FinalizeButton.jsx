@@ -269,7 +269,7 @@ export default function FinalizeButton({
 
   const baseBtnClasses = compact
     ? 'inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border transition-colors'
-    : 'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors';
+    : 'flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors sm:w-auto sm:min-w-0 sm:inline-flex';
   // While the run executes its trigger flips into a red "Stop" affordance.
   const triggerClasses = (busy, passed) => {
     if (busy) {
@@ -298,7 +298,7 @@ export default function FinalizeButton({
   const showPush = githubConnected && sessionId;
 
   return (
-    <div className="relative inline-flex items-center gap-1">
+    <div className="relative flex shrink-0 gap-2 sm:inline-flex sm:items-center sm:gap-1">
       <button
         type="button"
         onClick={inFlight ? handleStop : handleStart}

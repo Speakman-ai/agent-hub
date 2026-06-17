@@ -4147,7 +4147,7 @@ export default function App({ initialView } = {}) {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
+    <div className="flex flex-col h-dvh max-h-dvh overflow-hidden bg-gray-950 text-gray-100">
       {/* "Update available" modal — rendered at the top level so it floats
           above the sidebar and main content. Only shows when the Electron
           client is older than the server it's connected to. */}
@@ -4186,7 +4186,7 @@ export default function App({ initialView } = {}) {
 
         {/* Sidebar */}
         <div
-          className={`fixed md:relative z-50 md:z-auto transition-transform duration-200 ${
+          className={`fixed md:relative inset-y-0 left-0 z-50 md:z-auto flex h-dvh max-h-dvh md:h-full md:max-h-none overflow-hidden transition-transform duration-200 ${
             sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
           }`}
         >
@@ -4211,6 +4211,10 @@ export default function App({ initialView } = {}) {
               return row;
             }}
             showToast={showToast}
+            connected={connected}
+            reconnecting={reconnecting}
+            bugReportProjectId={currentProjectId}
+            bugReportAgentId={activeAgentId}
             sessions={sessions}
             activeSessionId={activeSessionId}
             onSelectSession={(id) => focusAgentSession(undefined, id)}
@@ -4284,51 +4288,70 @@ export default function App({ initialView } = {}) {
           />
         </div>
 
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Top bar */}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+          {/* Session top bar — only on an active chat session, not dashboard/kanban/etc. */}
           {!isWizardView(currentView) && (
             <>
-              <TopBar
-                agent={chatAgent}
-                accentColor={chatAccentColor}
-                connected={connected}
-                reconnecting={reconnecting}
-                onNewSession={handleNewSession}
-                onNavigate={setCurrentView}
-                onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
-                sessionEngine={sessionEngine}
-                onEngineChange={handleEngineChange}
-                sessionModel={sessionModel}
-                onModelChange={handleModelChange}
-                modelConfig={modelConfig}
-                messages={messages}
-                activeSessionId={activeSessionId}
-                activeSessionState={activeSessionState}
-                projectId={
-                  currentView.startsWith('kanban:')
-                    ? currentView.split(':')[1]
-                    : currentView.startsWith('workflows:')
-                      ? currentView.slice('workflows:'.length)
-                      : workflowEditRoute?.projectId ||
-                        projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
-                }
-                showToast={showToast}
-                onOpenForward={() => setShowForward(true)}
-                canForward={
-                  !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
-                }
-                onOpenLinkDesign={() => setShowLinkDesign(true)}
-                canLinkDesign={!!activeSessionId}
-                linkedDesignActive={!!linkedDesign}
-              />
+              {currentView === 'chat' && activeSessionId ? (
+                <>
+                  <TopBar
+                    agent={chatAgent}
+                    accentColor={chatAccentColor}
+                    onNewSession={handleNewSession}
+                    onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+                    sessionEngine={sessionEngine}
+                    onEngineChange={handleEngineChange}
+                    sessionModel={sessionModel}
+                    onModelChange={handleModelChange}
+                    modelConfig={modelConfig}
+                    messages={messages}
+                    activeSessionId={activeSessionId}
+                    activeSessionState={activeSessionState}
+                    projectId={
+                      workflowEditRoute?.projectId ||
+                      projects.find((p) => p.agents?.some((a) => a.id === activeAgentId))?.id
+                    }
+                    showToast={showToast}
+                    onOpenForward={() => setShowForward(true)}
+                    canForward={
+                      !!activeSessionId && filterForwardTargets(agents, activeAgent).length > 0
+                    }
+                    onOpenLinkDesign={() => setShowLinkDesign(true)}
+                    canLinkDesign={!!activeSessionId}
+                    linkedDesignActive={!!linkedDesign}
+                  />
 
-              {currentView === 'chat' && activeSessionId && (
-                <SessionSummarySidebar
-                  sessionId={activeSessionId}
-                  isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
-                  variant="top"
-                  onOpenPrDetail={handleOpenPrDetail}
-                />
+                  <SessionSummarySidebar
+                    sessionId={activeSessionId}
+                    isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
+                    variant="top"
+                    onOpenPrDetail={handleOpenPrDetail}
+                  />
+                </>
+              ) : (
+                <div className="md:hidden flex items-center px-3 py-2 border-b border-gray-800 bg-gray-900/50 electron-no-drag">
+                  <button
+                    type="button"
+                    onClick={() => setSidebarOpen((prev) => !prev)}
+                    className="text-gray-400 hover:text-white p-2 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                    aria-label="Open sidebar"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-6 w-6"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 6h16M4 12h16M4 18h16"
+                      />
+                    </svg>
+                  </button>
+                </div>
               )}
 
               {currentView.startsWith('kanban:') ? (
@@ -4653,8 +4676,8 @@ export default function App({ initialView } = {}) {
                       onUpdated={handleSessionAgentsUpdated}
                     />
                   )}
-                  <div className="flex-1 flex min-h-0 min-w-0 overflow-hidden lg:flex-row">
-                    <div className="flex-1 flex flex-col min-w-0 min-h-0">
+                  <div className="flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden lg:flex-row">
+                    <div className="flex flex-1 flex-col min-w-0 min-h-0 overflow-hidden">
                       {/* Messages */}
                       <div
                         ref={scrollContainerRef}
@@ -4970,137 +4993,141 @@ export default function App({ initialView } = {}) {
                         )}
 
                       {activeSessionId && (
-                        <div className="px-3 md:px-6 pb-2 flex items-center gap-2 border-t border-gray-800/80 pt-2">
-                          {/* Changes (code diff) toggle — opens the diff pane on
+                        <div className="shrink-0 border-t border-gray-800/80">
+                          <div className="px-3 md:px-6 pb-2 flex flex-wrap justify-center gap-2 sm:flex-nowrap sm:justify-start sm:items-center pt-2">
+                            {/* Changes (code diff) toggle — opens the diff pane on
                             the right, replacing the preview pane if open. */}
-                          <button
-                            type="button"
-                            data-testid="toggle-changes-pane"
-                            aria-pressed={showSessionDiffPane}
-                            onClick={() => {
-                              const opening = !diffPaneOpenBySession[activeSessionId];
-                              setDiffPaneOpenBySession((prev) => ({
-                                ...prev,
-                                [activeSessionId]: opening,
-                              }));
-                              if (opening) {
-                                setArtifactsPaneOpenBySession((prev) => ({
-                                  ...prev,
-                                  [activeSessionId]: false,
-                                }));
-                              }
-                            }}
-                            title="View session file changes"
-                            className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
-                              showSessionDiffPane
-                                ? 'bg-sky-700/70 text-sky-50 border-sky-600'
-                                : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-                            }`}
-                          >
-                            <GitBranch size={13} /> Changes
-                            {diffFileCountBySession[activeSessionId] > 0 && (
-                              <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
-                                {diffFileCountBySession[activeSessionId]}
-                              </span>
-                            )}
-                          </button>
-                          {/* Artifacts toggle — opens the artifacts pane, which
-                            shares the right slot with Changes/preview. */}
-                          <button
-                            type="button"
-                            data-testid="toggle-artifacts-pane"
-                            aria-pressed={showSessionArtifactsPane}
-                            onClick={() => {
-                              const opening = !artifactsPaneOpenBySession[activeSessionId];
-                              setArtifactsPaneOpenBySession((prev) => ({
-                                ...prev,
-                                [activeSessionId]: opening,
-                              }));
-                              if (opening) {
+                            <button
+                              type="button"
+                              data-testid="toggle-changes-pane"
+                              aria-pressed={showSessionDiffPane}
+                              onClick={() => {
+                                const opening = !diffPaneOpenBySession[activeSessionId];
                                 setDiffPaneOpenBySession((prev) => ({
                                   ...prev,
-                                  [activeSessionId]: false,
+                                  [activeSessionId]: opening,
                                 }));
+                                if (opening) {
+                                  setArtifactsPaneOpenBySession((prev) => ({
+                                    ...prev,
+                                    [activeSessionId]: false,
+                                  }));
+                                }
+                              }}
+                              title="View session file changes"
+                              className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
+                                showSessionDiffPane
+                                  ? 'bg-sky-700/70 text-sky-50 border-sky-600'
+                                  : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                              }`}
+                            >
+                              <GitBranch size={13} /> Changes
+                              {diffFileCountBySession[activeSessionId] > 0 && (
+                                <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
+                                  {diffFileCountBySession[activeSessionId]}
+                                </span>
+                              )}
+                            </button>
+                            {/* Artifacts toggle — opens the artifacts pane, which
+                            shares the right slot with Changes/preview. */}
+                            <button
+                              type="button"
+                              data-testid="toggle-artifacts-pane"
+                              aria-pressed={showSessionArtifactsPane}
+                              onClick={() => {
+                                const opening = !artifactsPaneOpenBySession[activeSessionId];
+                                setArtifactsPaneOpenBySession((prev) => ({
+                                  ...prev,
+                                  [activeSessionId]: opening,
+                                }));
+                                if (opening) {
+                                  setDiffPaneOpenBySession((prev) => ({
+                                    ...prev,
+                                    [activeSessionId]: false,
+                                  }));
+                                }
+                              }}
+                              title="View documents the agent generated"
+                              className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
+                                showSessionArtifactsPane
+                                  ? 'bg-violet-700/70 text-violet-50 border-violet-600'
+                                  : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                              }`}
+                            >
+                              <Package size={13} /> Artifacts
+                              {artifactCountBySession[activeSessionId] > 0 && (
+                                <span className="ml-0.5 rounded-full bg-violet-500/30 text-violet-100 px-1.5 text-[10px] font-semibold">
+                                  {artifactCountBySession[activeSessionId]}
+                                </span>
+                              )}
+                            </button>
+                            <SessionPreviewStartButton
+                              sessionId={activeSessionId}
+                              project={activeChatProject}
+                              previewEvent={previewEventBySession[activeSessionId]}
+                              disabled={!connected || !activeChatProject}
+                              starting={!!previewStartingBySession[activeSessionId]}
+                              workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
+                              workspaceNotReady={
+                                !!activeSession &&
+                                isSessionWorktreeEnabled(activeSession) &&
+                                !isSessionWorkspaceReady(activeSession)
                               }
-                            }}
-                            title="View documents the agent generated"
-                            className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border ${
-                              showSessionArtifactsPane
-                                ? 'bg-violet-700/70 text-violet-50 border-violet-600'
-                                : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-                            }`}
-                          >
-                            <Package size={13} /> Artifacts
-                            {artifactCountBySession[activeSessionId] > 0 && (
-                              <span className="ml-0.5 rounded-full bg-violet-500/30 text-violet-100 px-1.5 text-[10px] font-semibold">
-                                {artifactCountBySession[activeSessionId]}
-                              </span>
-                            )}
-                          </button>
-                          <SessionPreviewStartButton
-                            sessionId={activeSessionId}
-                            project={activeChatProject}
-                            previewEvent={previewEventBySession[activeSessionId]}
-                            disabled={!connected || !activeChatProject}
-                            starting={!!previewStartingBySession[activeSessionId]}
-                            workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
-                            workspaceNotReady={
-                              !!activeSession &&
-                              isSessionWorktreeEnabled(activeSession) &&
-                              !isSessionWorkspaceReady(activeSession)
-                            }
-                            onStart={handleStartSessionPreview}
-                            onConfigure={handlePreviewConfigure}
-                          />
-                          {/* Finalize Code Changes — replaces the legacy ship affordance. */}
-                          {activeSessionId && activeChatProject?.id ? (
-                            <>
-                              <FinalizeAutomationSelect
-                                sessionId={activeSessionId}
-                                session={activeSession}
-                                disabled={!connected}
-                                askMode={sessionAskMode}
-                                onAskModeChange={handleAskModeChange}
-                                onError={(msg) => showToast(msg, 'error', 8000)}
-                              />
-                              <FinalizeButton
-                                projectId={activeChatProject.id}
-                                cardId={activeSession?.card_id ?? null}
-                                sessionId={activeSessionId}
-                                branchLabel={activeSession?.worktree_branch || ''}
-                                pendingChanges={changesReady[activeSessionId] ?? null}
-                                onError={(msg) => showToast(msg, 'error', 8000)}
-                                hosted={activeChatProject?.gitHost === 'agenthub'}
-                                isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
-                              />
-                            </>
-                          ) : null}
+                              onStart={handleStartSessionPreview}
+                              onConfigure={handlePreviewConfigure}
+                            />
+                            {/* Finalize Code Changes — replaces the legacy ship affordance. */}
+                            {activeSessionId && activeChatProject?.id ? (
+                              <>
+                                <FinalizeAutomationSelect
+                                  sessionId={activeSessionId}
+                                  session={activeSession}
+                                  disabled={!connected}
+                                  askMode={sessionAskMode}
+                                  onAskModeChange={handleAskModeChange}
+                                  onError={(msg) => showToast(msg, 'error', 8000)}
+                                />
+                                <FinalizeButton
+                                  projectId={activeChatProject.id}
+                                  cardId={activeSession?.card_id ?? null}
+                                  sessionId={activeSessionId}
+                                  branchLabel={activeSession?.worktree_branch || ''}
+                                  pendingChanges={changesReady[activeSessionId] ?? null}
+                                  onError={(msg) => showToast(msg, 'error', 8000)}
+                                  hosted={activeChatProject?.gitHost === 'agenthub'}
+                                  isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
+                                />
+                              </>
+                            ) : null}
+                          </div>
                         </div>
                       )}
 
                       {/* Input */}
-                      <MessageInput
-                        ref={messageInputRef}
-                        onSend={handleSend}
-                        onCancel={handleCancel}
-                        disabled={!activeAgent || !connected}
-                        isProcessing={isProcessing}
-                        queueLength={(messageQueues[activeSessionId] || []).length}
-                        agentColor={chatAccentColor}
-                        skills={skills}
-                        askMode={sessionAskMode}
-                        readOnly={activeAgent?.role === 'reviewer'}
-                        draftKey={activeSessionId || activeAgentId || 'none'}
-                        onFileError={(msg) => showToast(msg, 'error', 6000)}
-                        composerPrefill={composerPrefill}
-                        onComposerPrefillClear={() => setComposerPrefill(null)}
-                        onReplaceQueuedMessage={handleEditQueuedMessage}
-                        sessionAgents={sessionAgents}
-                        enableMentions={sessionAgents.length > 1}
-                        readbackEnabled={readback.enabled}
-                        readbackSupported={readback.supported}
-                        onToggleReadback={readback.toggle}
-                      />
+                      <div className="shrink-0">
+                        <MessageInput
+                          ref={messageInputRef}
+                          onSend={handleSend}
+                          onCancel={handleCancel}
+                          disabled={!activeAgent || !connected}
+                          isProcessing={isProcessing}
+                          queueLength={(messageQueues[activeSessionId] || []).length}
+                          agentColor={chatAccentColor}
+                          skills={skills}
+                          askMode={sessionAskMode}
+                          readOnly={activeAgent?.role === 'reviewer'}
+                          draftKey={activeSessionId || activeAgentId || 'none'}
+                          onFileError={(msg) => showToast(msg, 'error', 6000)}
+                          composerPrefill={composerPrefill}
+                          onComposerPrefillClear={() => setComposerPrefill(null)}
+                          onReplaceQueuedMessage={handleEditQueuedMessage}
+                          sessionAgents={sessionAgents}
+                          enableMentions={sessionAgents.length > 1}
+                          readbackEnabled={readback.enabled}
+                          readbackSupported={readback.supported}
+                          onToggleReadback={readback.toggle}
+                        />
+                      </div>
                     </div>
                     {showSessionPreviewPane && (
                       <SessionPreviewPane

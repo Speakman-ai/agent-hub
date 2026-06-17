@@ -25,7 +25,7 @@ export default function SessionPreviewStartButton({
         type="button"
         onClick={onConfigure}
         disabled={disabled || !onConfigure}
-        className="inline-flex items-center gap-1.5 text-xs text-amber-200/90 hover:text-amber-100 border border-amber-800/50 rounded-lg px-2.5 py-1.5 bg-amber-950/30"
+        className="flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs text-amber-200/90 hover:text-amber-100 border border-amber-800/50 rounded-lg px-2.5 py-1.5 bg-amber-950/30 sm:w-auto sm:min-w-0"
         data-testid="session-preview-configure-button"
       >
         <Settings2 size={14} />
@@ -54,7 +54,7 @@ export default function SessionPreviewStartButton({
             ? 'Waiting for the session worktree'
             : undefined
       }
-      className="inline-flex items-center gap-1.5 text-xs font-medium text-sky-200 hover:text-white border border-sky-700/60 rounded-lg px-2.5 py-1.5 bg-sky-950/40 hover:bg-sky-900/50 disabled:opacity-50"
+      className="flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs font-medium text-sky-200 hover:text-white border border-sky-700/60 rounded-lg px-2.5 py-1.5 bg-sky-950/40 hover:bg-sky-900/50 disabled:opacity-50 sm:w-auto sm:min-w-0"
       data-testid="session-start-preview-button"
     >
       {busy ? <Loader2 size={14} className="animate-spin" /> : <Monitor size={14} />}

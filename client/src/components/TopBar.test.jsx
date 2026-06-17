@@ -1,12 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 
-// Stub BugReportButton — its transitive dynamic import of html2canvas fails to
-// resolve under vitest's import-analysis pass (pre-existing across the suite).
-vi.mock('./BugReportButton.jsx', () => ({
-  default: () => null,
-}));
-
 const TopBar = (await import('./TopBar.jsx')).default;
 
 const baseAgent = {
@@ -19,10 +13,7 @@ const baseAgent = {
 function renderTopBar(overrides = {}) {
   const props = {
     agent: baseAgent,
-    connected: true,
-    reconnecting: false,
     onNewSession: () => {},
-    onNavigate: () => {},
     onToggleSidebar: () => {},
     sessionEngine: 'claude-code',
     onEngineChange: vi.fn(),
@@ -56,11 +47,12 @@ describe('<TopBar /> engine picker', () => {
     );
   });
 
-  it('renders the active session id in the header', () => {
+  it('renders the active session id truncated in the header', () => {
     renderTopBar({ activeSessionId: 'session-debug-123' });
     const sessionId = screen.getByTestId('topbar-session-id');
     expect(sessionId.textContent).toContain('Session');
-    expect(sessionId.textContent).toContain('session-debug-123');
+    expect(sessionId.textContent).toContain('…ebug-123');
+    expect(sessionId.textContent).not.toContain('session-debug-123');
     expect(sessionId).toHaveAttribute('title', 'Copy session id: session-debug-123');
   });
 
@@ -195,17 +187,26 @@ describe('<TopBar /> engine picker', () => {
 });
 
 describe('<TopBar /> reviewer-agent "+ New" gating', () => {
+  it('renders the "+ New" button for non-reviewer agents', () => {
+    renderTopBar({ agent: { ...baseAgent, role: 'lead' } });
+    expect(screen.getByRole('button', { name: '+ New' })).toBeTruthy();
+  });
+
   it('hides the "+ New" button when the active agent has role=reviewer', () => {
     renderTopBar({ agent: { ...baseAgent, role: 'reviewer' } });
     // The "+ New" button is the only button whose visible label is "+ New".
     expect(screen.queryByRole('button', { name: '+ New' })).toBeNull();
   });
 
-  it('renders the "+ New" button for non-reviewer agents', () => {
-    renderTopBar({ agent: { ...baseAgent, role: 'lead' } });
-    expect(screen.getByRole('button', { name: '+ New' })).toBeTruthy();
+  it('calls onNewSession when the "+ New" button is clicked', () => {
+    const onNewSession = vi.fn();
+    renderTopBar({ agent: { ...baseAgent, role: 'lead' }, onNewSession });
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    expect(onNewSession).toHaveBeenCalledTimes(1);
   });
+});
 
+describe('<TopBar /> accent color', () => {
   it('uses accentColor for the header dot and border when provided', () => {
     const { container } = renderTopBar({
       accentColor: '#10B981',

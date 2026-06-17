@@ -45,6 +45,7 @@ import { daysUntilPurge } from '../utils/time.js';
 import SidebarSessionOrchestration from './SidebarSessionOrchestration.jsx';
 import SessionStateIcon from './SessionStateIcon.jsx';
 import { deriveSessionState } from '../utils/deriveSessionState.js';
+import BugReportButton from './BugReportButton.jsx';
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -112,6 +113,11 @@ export default function Sidebar({
   /** Optional PAV controls for the active chat session (left sidebar). */
   onOrchestrationSave,
   showToast,
+  connected = false,
+  reconnecting = false,
+  /** Project context for bug reports (optional — falls back to central intake). */
+  bugReportProjectId,
+  bugReportAgentId,
   /** Electron: parent provides canonical /api/health so footer matches update prompt. */
   electronSuppressHealthFetch = false,
   electronHealthSnapshot = null,
@@ -275,7 +281,7 @@ export default function Sidebar({
       )}
 
       {/* Projects & Agents */}
-      <div className="flex-1 overflow-y-auto min-h-0 relative">
+      <div className="sidebar-scroll flex-1 overflow-y-auto min-h-0 relative overscroll-y-contain">
         {isLoading && (
           <div
             className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-gray-900/85 backdrop-blur-[1px] pointer-events-none"
@@ -288,6 +294,27 @@ export default function Sidebar({
           </div>
         )}
         <div className="p-3">
+          <div className="flex items-center gap-2 mb-3">
+            <span
+              className={`flex-1 min-w-0 text-xs px-2.5 py-2 rounded-lg text-center truncate ${
+                connected
+                  ? 'bg-emerald-900/50 text-emerald-400'
+                  : reconnecting
+                    ? 'bg-yellow-900/50 text-yellow-400'
+                    : 'bg-red-900/50 text-red-400'
+              }`}
+              title={connected ? 'Connected' : reconnecting ? 'Reconnecting…' : 'Disconnected'}
+              data-testid="sidebar-connection-status"
+            >
+              {connected ? '● Connected' : reconnecting ? '● Reconnecting…' : '● Disconnected'}
+            </span>
+            <BugReportButton
+              projectId={bugReportProjectId}
+              agentId={bugReportAgentId}
+              onToast={showToast}
+            />
+          </div>
+
           {/* Org-scoped dashboard — sits above the project list because it's
               not tied to any single project. */}
           <button

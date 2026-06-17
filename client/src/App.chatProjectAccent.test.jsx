@@ -102,11 +102,15 @@ describe('App — project accent on cross-project session switch', () => {
   it('updates TopBar accent when focusing a session in another project', async () => {
     render(<App />);
 
+    await waitFor(() => expect(typeof globalThis.__ahTestFocusSession).toBe('function'));
+
+    await act(async () => {
+      globalThis.__ahTestFocusSession('a-hub', 's-hub');
+    });
+
     await waitFor(() => {
       expect(screen.getByTestId('topbar-stub')).toHaveAttribute('data-accent-color', '#8B5CF6');
     });
-
-    await waitFor(() => expect(typeof globalThis.__ahTestFocusSession).toBe('function'));
 
     await act(async () => {
       globalThis.__ahTestFocusSession('a-st', 's-st');

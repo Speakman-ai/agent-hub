@@ -73,7 +73,7 @@ export default function FinalizeAutomationSelect({
     FINALIZE_AUTOMATION_OPTIONS[0];
 
   return (
-    <div className="relative inline-flex">
+    <div className="relative flex w-[150px] min-w-[150px] shrink-0 sm:inline-flex sm:w-auto sm:min-w-0">
       <button
         type="button"
         disabled={disabled || pending}
@@ -84,8 +84,8 @@ export default function FinalizeAutomationSelect({
         onClick={() => setOpen((v) => !v)}
         className={
           compact
-            ? 'inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60'
-            : 'inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60'
+            ? 'flex w-full justify-center items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
+            : 'flex w-full justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
         }
       >
         <span>{selected.label}</span>

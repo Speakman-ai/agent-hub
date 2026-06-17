@@ -684,8 +684,9 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_support_tickets_project ON support_tickets(project_id);
     CREATE INDEX IF NOT EXISTS idx_support_tickets_status
       ON support_tickets(project_id, status);
-    CREATE INDEX IF NOT EXISTS idx_support_tickets_unread
-      ON support_tickets(project_id, read_at);
+    -- idx_support_tickets_unread is created in the migration block below after
+    -- read_at is ensured on legacy installs (bootstrap index here would fail
+    -- when support_tickets exists without the column).
 
     -- Wiki pages: per-project knowledge base with full-text search
     CREATE TABLE IF NOT EXISTS wiki_pages (
@@ -1281,10 +1282,10 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT read_at FROM support_tickets LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE support_tickets ADD COLUMN read_at TEXT');
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_support_tickets_unread ON support_tickets(project_id, read_at)',
-    );
   }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_support_tickets_unread ON support_tickets(project_id, read_at)',
+  );
 
   // Resolve-PR sessions store the PR's head branch here so the worktree is
   // provisioned directly on that branch (commits append to the existing PR and

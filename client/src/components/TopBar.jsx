@@ -7,8 +7,12 @@ import {
 } from '../utils/export.js';
 import { Palette } from 'lucide-react';
 import { api } from '../utils/api.js';
-import BugReportButton from './BugReportButton.jsx';
 import SessionStateIcon from './SessionStateIcon.jsx';
+
+function truncateSessionId(id, tailLen = 8) {
+  if (!id || id.length <= tailLen) return id;
+  return `…${id.slice(-tailLen)}`;
+}
 
 const ENGINE_OPTIONS = [
   { id: 'claude-code', label: 'Claude Code', color: '#8B5CF6' },
@@ -62,10 +66,7 @@ function fallbackModelsForEngine(engine) {
 export default function TopBar({
   agent,
   accentColor,
-  connected,
-  reconnecting,
   onNewSession,
-  onNavigate,
   onToggleSidebar,
   sessionEngine,
   onEngineChange,
@@ -158,7 +159,6 @@ export default function TopBar({
             />
           </svg>
         </button>
-        <BugReportButton projectId={projectId} agentId={agent?.id} onToast={showToast} />
         {agent && (
           <>
             <span
@@ -179,13 +179,13 @@ export default function TopBar({
                   <button
                     type="button"
                     onClick={copyActiveSessionId}
-                    className="inline-flex flex-shrink min-w-0 max-w-[7rem] items-center rounded-md border border-gray-700 bg-gray-800 px-2 py-0.5 font-mono text-[11px] text-gray-300 hover:border-gray-600 hover:bg-gray-700 hover:text-white sm:max-w-[18rem]"
+                    className="hidden sm:inline-flex flex-shrink min-w-0 max-w-[7rem] items-center rounded-md border border-gray-700 bg-gray-800 px-2 py-0.5 font-mono text-[11px] text-gray-300 hover:border-gray-600 hover:bg-gray-700 hover:text-white sm:max-w-[18rem]"
                     title={`Copy session id: ${activeSessionId}`}
                     aria-label={`Copy session id ${activeSessionId}`}
                     data-testid="topbar-session-id"
                   >
                     <span className="mr-1 text-gray-500">Session</span>
-                    <span className="truncate">{activeSessionId}</span>
+                    <span className="truncate">{truncateSessionId(activeSessionId)}</span>
                   </button>
                 )}
               </div>
@@ -382,22 +382,6 @@ export default function TopBar({
           </div>
         )}
 
-        {/* Connection status - icon only on mobile */}
-        <span
-          className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${
-            connected
-              ? 'bg-emerald-900/50 text-emerald-400'
-              : reconnecting
-                ? 'bg-yellow-900/50 text-yellow-400'
-                : 'bg-red-900/50 text-red-400'
-          }`}
-          title={connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
-        >
-          <span className="sm:hidden">●</span>
-          <span className="hidden sm:inline">
-            {connected ? '● Connected' : reconnecting ? '● Reconnecting...' : '● Disconnected'}
-          </span>
-        </span>
         {/* Export conversation dropdown */}
         {agent && messages?.length > 0 && (
           <div className="relative" ref={exportRef}>
@@ -661,36 +645,20 @@ export default function TopBar({
             <Palette className="h-5 w-5" />
           </button>
         )}
-        {/* Reviewer agents are spawned only by the Finalize review phase —
-            hide the "+ New" affordance so users don't try to start a thread
-            the server will refuse to create. */}
+        {/* New-session affordance for the active chat header. Mobile users
+            start a new session from the persistent sidebar (opened via the
+            hamburger), so this is desktop-only to keep the mobile header lean.
+            Reviewer agents are spawned only by the Finalize review phase, so
+            hide "+ New" for them — the server refuses to create the thread. */}
         {agent?.role !== 'reviewer' && (
           <button
             onClick={onNewSession}
-            disabled={!agent}
+            disabled={!agent || !onNewSession}
             className="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 hidden sm:block"
           >
             + New
           </button>
         )}
-        <button
-          onClick={() => onNavigate('settings')}
-          className="text-gray-400 hover:text-white p-2 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
-          title="Settings"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </button>
       </div>
     </div>
   );
