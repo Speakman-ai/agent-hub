@@ -26,6 +26,22 @@ export function hasActiveSession(card) {
 }
 
 /**
+ * Scope an app-wide agent list to a single project. Agents are loaded
+ * globally (every project the user can view) and carry a `projectId`; the
+ * assignee picker should only offer agents that belong to the card's own
+ * project. A falsy `projectId` returns the list unchanged so callers without
+ * a project context still see agents.
+ *
+ * @param {Array<{projectId?: string}>} agents
+ * @param {string} [projectId]
+ */
+export function filterAgentsByProject(agents, projectId) {
+  if (!Array.isArray(agents)) return [];
+  if (!projectId) return agents;
+  return agents.filter((a) => a && a.projectId === projectId);
+}
+
+/**
  * Build the dropdown option list for the assignee picker modal:
  * an "Unassigned" row plus one row per known agent.
  *

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Plus,
   GripVertical,
@@ -18,6 +18,7 @@ import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
+import { filterAgentsByProject } from '../utils/kanbanAgents.js';
 import { MarkdownContent } from './MarkdownRenderer.jsx';
 import FinalizeCardBadge from './finalize/CardBadge.jsx';
 import EpicFilterDropdown from './EpicFilterDropdown.jsx';
@@ -49,6 +50,14 @@ export default function KanbanBoard({
   onNavigateToSession,
   onOpenEpics,
 }) {
+  // The assignment dropdown must only offer agents that belong to this
+  // project — agents are loaded app-wide and flattened across every visible
+  // project, so scope them to `projectId` before rendering options.
+  const projectAgents = useMemo(
+    () => filterAgentsByProject(agents, projectId),
+    [agents, projectId],
+  );
+
   const [_board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
   const [cards, setCards] = useState([]);
@@ -1433,7 +1442,7 @@ export default function KanbanBoard({
                           className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
                         >
                           <option value="">Unassigned</option>
-                          {agents.map((a) => (
+                          {projectAgents.map((a) => (
                             <option key={a.id} value={a.name}>
                               {a.name}
                             </option>

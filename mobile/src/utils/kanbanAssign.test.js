@@ -3,10 +3,51 @@ import {
   findAgentByName,
   hasActiveSession,
   buildAssigneeOptions,
+  filterAgentsByProject,
   validModelsForAgent,
   engineEntriesWithModels,
   effectiveAssignEngine,
 } from './kanbanAssign.js';
+
+describe('filterAgentsByProject', () => {
+  const agents = [
+    { id: 'a1', name: 'Alpha', projectId: 'proj-1' },
+    { id: 'a2', name: 'Beta', projectId: 'proj-2' },
+    { id: 'a3', name: 'Gamma', projectId: 'proj-1' },
+  ];
+
+  it('returns only agents belonging to the given project', () => {
+    expect(filterAgentsByProject(agents, 'proj-1').map((a) => a.id)).toEqual(['a1', 'a3']);
+  });
+
+  it('does not leak agents from other projects (regression for the assign picker)', () => {
+    const result = filterAgentsByProject(agents, 'proj-2');
+    expect(result).toHaveLength(1);
+    expect(result.some((a) => a.projectId !== 'proj-2')).toBe(false);
+  });
+
+  it('returns an empty array when nothing matches', () => {
+    expect(filterAgentsByProject(agents, 'nope')).toEqual([]);
+  });
+
+  it('returns the full list when projectId is missing', () => {
+    expect(filterAgentsByProject(agents, undefined)).toEqual(agents);
+    expect(filterAgentsByProject(agents, '')).toEqual(agents);
+  });
+
+  it('handles nullish / non-array input safely', () => {
+    expect(filterAgentsByProject(null, 'proj-1')).toEqual([]);
+    expect(filterAgentsByProject(undefined, 'proj-1')).toEqual([]);
+    expect(filterAgentsByProject([null, { id: 'a1', projectId: 'proj-1' }], 'proj-1')).toEqual([
+      { id: 'a1', projectId: 'proj-1' },
+    ]);
+  });
+
+  it('composes with buildAssigneeOptions to scope the picker', () => {
+    const opts = buildAssigneeOptions(filterAgentsByProject(agents, 'proj-1'));
+    expect(opts.map((o) => o.name)).toEqual(['Unassigned', 'Alpha', 'Gamma']);
+  });
+});
 
 describe('findAgentByName', () => {
   const agents = [

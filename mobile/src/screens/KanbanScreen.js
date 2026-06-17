@@ -34,6 +34,7 @@ import {
   findAgentByName,
   hasActiveSession,
   buildAssigneeOptions,
+  filterAgentsByProject,
   validModelsForAgent,
   engineEntriesWithModels,
 } from '../utils/kanbanAssign';
@@ -66,6 +67,13 @@ export default function KanbanScreen({ route, navigation }) {
   const { projectId, project } = route.params || {};
   const { agents, kanbanRefreshKey, setActiveAgentId, setActiveSessionId } = useApp();
   const { openSidebar } = useContext(SidebarContext);
+
+  // Agents are loaded app-wide across every visible project; the assignee
+  // picker must only offer agents that belong to this project.
+  const projectAgents = useMemo(
+    () => filterAgentsByProject(agents, projectId),
+    [agents, projectId],
+  );
 
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -832,7 +840,7 @@ export default function KanbanScreen({ route, navigation }) {
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>Assign agent</Text>
               <ScrollView style={{ maxHeight: 320 }}>
-                {buildAssigneeOptions(agents).map((opt) => (
+                {buildAssigneeOptions(projectAgents).map((opt) => (
                   <TouchableOpacity
                     key={opt.id || '__unassigned__'}
                     style={styles.modalOption}

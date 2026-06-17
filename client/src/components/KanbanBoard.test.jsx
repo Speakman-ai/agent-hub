@@ -376,8 +376,8 @@ describe('KanbanBoard reassign active session', () => {
         project={{ name: 'P' }}
         refreshKey={0}
         agents={[
-          { id: 'agent-a', name: 'AgentA', engine: 'claude-code' },
-          { id: 'agent-b', name: 'AgentB', engine: 'claude-code' },
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' },
+          { id: 'agent-b', name: 'AgentB', engine: 'claude-code', projectId: 'p1' },
         ]}
       />,
     );
@@ -415,6 +415,46 @@ describe('KanbanBoard reassign active session', () => {
     await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', {}));
   });
 
+  it('only offers agents from the current project in the assign dropdown', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Unassigned card',
+          column_id: 'col-todo',
+          position: 0,
+        },
+      ]),
+    );
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' },
+          // Belongs to a different project — must NOT appear in this board's picker.
+          { id: 'agent-z', name: 'AgentZ', engine: 'claude-code', projectId: 'other' },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Unassigned card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Unassigned card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    const combos = within(modal).getAllByRole('combobox');
+    const assigneeSelect = combos.find((c) =>
+      Array.from(c.options).some((o) => o.textContent === 'Unassigned'),
+    );
+    expect(assigneeSelect).toBeDefined();
+
+    const optionNames = Array.from(assigneeSelect.options).map((o) => o.textContent);
+    expect(optionNames).toContain('AgentA');
+    expect(optionNames).not.toContain('AgentZ');
+  });
+
   it('passes model to assignCard when Session model override is chosen', async () => {
     api.getBoard.mockResolvedValue(
       makeBoard([
@@ -435,8 +475,8 @@ describe('KanbanBoard reassign active session', () => {
         project={{ name: 'P' }}
         refreshKey={0}
         agents={[
-          { id: 'agent-a', name: 'AgentA', engine: 'claude-code' },
-          { id: 'agent-b', name: 'AgentB', engine: 'claude-code' },
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' },
+          { id: 'agent-b', name: 'AgentB', engine: 'claude-code', projectId: 'p1' },
         ]}
       />,
     );
@@ -483,8 +523,8 @@ describe('KanbanBoard reassign active session', () => {
         project={{ name: 'P' }}
         refreshKey={0}
         agents={[
-          { id: 'agent-a', name: 'AgentA', engine: 'claude-code' },
-          { id: 'agent-b', name: 'AgentB', engine: 'claude-code' },
+          { id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' },
+          { id: 'agent-b', name: 'AgentB', engine: 'claude-code', projectId: 'p1' },
         ]}
       />,
     );
@@ -522,7 +562,7 @@ describe('KanbanBoard reassign active session', () => {
         projectId="p1"
         project={{ name: 'P' }}
         refreshKey={0}
-        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
       />,
     );
     await waitFor(() => expect(screen.getByText('Active card')).toBeInTheDocument());
@@ -577,7 +617,7 @@ describe('KanbanBoard reassign active session', () => {
         projectId="p1"
         project={{ name: 'P' }}
         refreshKey={0}
-        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
       />,
     );
     await waitFor(() => expect(screen.getByText('Active card')).toBeInTheDocument());
@@ -805,7 +845,7 @@ describe('KanbanBoard Session engine dropdown', () => {
         projectId="p1"
         project={{ name: 'P' }}
         refreshKey={0}
-        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
       />,
     );
     await waitFor(() => expect(screen.getByText('Unassigned card')).toBeInTheDocument());
@@ -872,7 +912,7 @@ describe('KanbanBoard Session engine dropdown', () => {
         projectId="p1"
         project={{ name: 'P' }}
         refreshKey={0}
-        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code' }]}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
       />,
     );
     await waitFor(() => expect(screen.getByText('Active card')).toBeInTheDocument());
