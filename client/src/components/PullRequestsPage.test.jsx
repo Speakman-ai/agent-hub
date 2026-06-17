@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import PullRequestsPage, { mapWithConcurrency } from './PullRequestsPage.jsx';
 import { api } from '../utils/api.js';
 
@@ -640,6 +640,34 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
       'feature/unknown',
     ]);
     expect(screen.getByText(/could not be prechecked/i)).toBeInTheDocument();
+  });
+});
+
+describe('<PullRequestsPage /> — PR description markdown', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the PR description as formatted markdown, not raw source', async () => {
+    api.getProjectPulls.mockResolvedValue({ pulls: [prSummary] });
+    api.getProjectPullDetail.mockResolvedValue({
+      ...detailResponse,
+      pr: {
+        ...detailResponse.pr,
+        body: '## Summary\n\n- **Risk**: low\n- see [docs](https://example.com)',
+      },
+    });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test'));
+
+    const description = await screen.findByTestId('pr-description');
+    expect(description.querySelector('h2')).toHaveTextContent('Summary');
+    expect(screen.getByText('Risk').tagName).toBe('STRONG');
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute(
+      'href',
+      'https://example.com',
+    );
+    expect(within(description).queryByText(/## Summary/)).toBeNull();
   });
 });
 

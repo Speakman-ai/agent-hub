@@ -8,6 +8,10 @@ import config from '../config.js';
 import type { RouteDeps } from '../types.js';
 import { isColumnDone, isColumnShippedLane } from '../kanban-blockers.js';
 import { buildNativePrUrl } from '../native-pr/url.js';
+import { mergeTree, revParse } from '../native-pr/git-read.js';
+import { bareRepoPath, hostedRepoExists, isAgentHubHosted } from '../native-pr/host.js';
+import { reviewDecisionFor } from '../native-pr/review-decision.js';
+import { mapWithConcurrency } from '../git-host/recent-pushes.js';
 import { computeSessionState } from '../session-state.js';
 import { getUserById } from '../users-store.js';
 
@@ -19,6 +23,16 @@ import { getUserById } from '../users-store.js';
 function authIsConfigured(): boolean {
   return Boolean(getAuthRecord()) || Boolean(config.apiKey);
 }
+
+/**
+ * Cap the per-request git fan-out used to compute open-PR mergeability on the
+ * dashboard. Each rendered row can spawn two `revParse` calls plus a
+ * `mergeTree`, so processing all 30 rows at once would launch ~90 concurrent
+ * git operations — and every concurrent dashboard load multiplies that. Bound
+ * the row-level concurrency so the worst case is a small, predictable pool of
+ * git processes instead of an unbounded burst on this broad org landing page.
+ */
+export const MERGEABILITY_CONCURRENCY = 4;
 
 interface KanbanBreakdownRow {
   column_name: string;
@@ -76,6 +90,9 @@ interface OpenNativePrRow {
   prTitle: string;
   author: string;
   updatedAt: number;
+  headBranch: string;
+  baseBranch: string;
+  reviewRequestedAt: number | null;
 }
 
 /** Kanban-card metadata used to enrich an open native PR row. */
@@ -84,6 +101,7 @@ interface PrCardMetaRow {
   cardTitle: string;
   priority: string;
   prUrl: string;
+  reviewStatus: string | null;
 }
 
 /** Same semantics as headline "open" work: Done-ish columns + shipped lanes. */
@@ -106,7 +124,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
    * stateless and avoids having to juggle multiple per-org connections on a
    * read path. Membership gating mirrors `/api/orgs/:id/members`.
    */
-  router.get('/api/orgs/:id/dashboard', (req: Request, res: Response) => {
+  router.get('/api/orgs/:id/dashboard', async (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     const { id: rawOrgId } = req.params as { id: string };
 
@@ -355,6 +373,7 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     // org's database and we restrict to the org's current project roster.
     const OPEN_PR_LIMIT = 30;
     const projectNameById = new Map(projects.map((p) => [p.id, p.name]));
+    const projectById = new Map(projects.map((p) => [p.id, p]));
     const projectIds = [...projectNameById.keys()];
     const projectPlaceholders = projectIds.map(() => '?').join(',');
 
@@ -362,7 +381,9 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
       ? (db
           .prepare(
             `SELECT id as prId, project_id as projectId, number as prNumber,
-                    title as prTitle, author as author, updated_at as updatedAt
+                    title as prTitle, author as author, updated_at as updatedAt,
+                    head_branch as headBranch, base_branch as baseBranch,
+                    review_requested_at as reviewRequestedAt
              FROM pull_requests
              WHERE status = 'open' AND project_id IN (${projectPlaceholders})
              ORDER BY updated_at DESC`,
@@ -380,7 +401,8 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     if (projectIds.length) {
       const cardRows = db
         .prepare(
-          `SELECT k.id as cardId, k.title as cardTitle, k.priority as priority, k.pr_url as prUrl
+          `SELECT k.id as cardId, k.title as cardTitle, k.priority as priority,
+                  k.pr_url as prUrl, k.review_status as reviewStatus
            FROM kanban_cards k
            JOIN kanban_boards b ON b.id = k.board_id
            WHERE k.pr_url IS NOT NULL AND k.pr_url != ''
@@ -402,30 +424,60 @@ export default function createDashboardRoutes(deps: RouteDeps): Router {
     );
 
     const openPrRows = openNativePrRows.slice(0, OPEN_PR_LIMIT);
-    const openPRsList = openPrRows.map((r) => {
-      const prUrl = buildNativePrUrl(r.projectId, r.prNumber);
-      const card = prCardMetaByUrl.get(prUrl);
-      const logRow = authorAgentStmt.get(prUrl) as { authorAgent: string | null } | undefined;
-      return {
-        // Stable, always-present list key. Prefer the linked card id; fall
-        // back to the (unique) PR url when no card links this PR. This is a
-        // rendering key only — never treat it as a card identifier.
-        key: card?.cardId ?? prUrl,
-        // The owning kanban card id, or null when no card links this PR.
-        // Kept strictly to real card ids so callers can safely run card
-        // operations / navigation on it.
-        cardId: card?.cardId ?? null,
-        projectId: r.projectId,
-        projectName: projectNameById.get(r.projectId) || r.projectId,
-        prUrl,
-        prNumber: r.prNumber,
-        title: `PR #${r.prNumber}: ${r.prTitle}`,
-        cardTitle: card?.cardTitle ?? null,
-        authorAgent: logRow?.authorAgent ?? null,
-        priority: card?.priority ?? null,
-        updatedAt: r.updatedAt,
-      };
-    });
+    const openPRsList = await mapWithConcurrency(
+      openPrRows,
+      MERGEABILITY_CONCURRENCY,
+      async (r) => {
+        const prUrl = buildNativePrUrl(r.projectId, r.prNumber);
+        const card = prCardMetaByUrl.get(prUrl);
+        const logRow = authorAgentStmt.get(prUrl) as { authorAgent: string | null } | undefined;
+
+        let mergeable: boolean | null = null;
+        const project = projectById.get(r.projectId);
+        if (project && isAgentHubHosted(project) && hostedRepoExists(project.id)) {
+          try {
+            const repoPath = bareRepoPath(project.id);
+            const [baseSha, headSha] = await Promise.all([
+              revParse(repoPath, `refs/heads/${r.baseBranch}`),
+              revParse(repoPath, `refs/heads/${r.headBranch}`),
+            ]);
+            if (baseSha && headSha) {
+              mergeable = (await mergeTree(repoPath, baseSha, headSha)).mergeable;
+            }
+          } catch {
+            mergeable = null;
+          }
+        }
+
+        const reviewDecision = reviewDecisionFor(stmts, r.projectId, {
+          number: r.prNumber,
+          review_requested_at: r.reviewRequestedAt,
+        });
+
+        return {
+          // Stable, always-present list key. Prefer the linked card id; fall
+          // back to the (unique) PR url when no card links this PR. This is a
+          // rendering key only — never treat it as a card identifier.
+          key: card?.cardId ?? prUrl,
+          // The owning kanban card id, or null when no card links this PR.
+          // Kept strictly to real card ids so callers can safely run card
+          // operations / navigation on it.
+          cardId: card?.cardId ?? null,
+          projectId: r.projectId,
+          projectName: projectNameById.get(r.projectId) || r.projectId,
+          prUrl,
+          prNumber: r.prNumber,
+          title: `PR #${r.prNumber}: ${r.prTitle}`,
+          cardTitle: card?.cardTitle ?? null,
+          authorAgent: logRow?.authorAgent ?? null,
+          priority: card?.priority ?? null,
+          updatedAt: r.updatedAt,
+          mergeable,
+          reviewDecision,
+          reviewStatus: card?.reviewStatus ?? null,
+        };
+      },
+    );
 
     const escalations = (stmts.getAllActiveEscalations.all() as unknown[]).length;
 

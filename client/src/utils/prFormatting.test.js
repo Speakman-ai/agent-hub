@@ -7,6 +7,7 @@ import {
   diffSummary,
   prStateBadge,
   linkedPrDisplayStatus,
+  openPrDashboardStatusBadge,
   summarizeChecks,
   checksBadge,
   summarizeReviews,
@@ -186,6 +187,33 @@ describe('prStateBadge', () => {
 
   it('handles null', () => {
     expect(prStateBadge(null).label).toBe('unknown');
+  });
+});
+
+describe('openPrDashboardStatusBadge', () => {
+  it('prioritizes conflicts over review state', () => {
+    expect(
+      openPrDashboardStatusBadge({
+        mergeable: false,
+        reviewDecision: 'APPROVED',
+        reviewStatus: 'approved',
+      }),
+    ).toMatchObject({ label: 'Conflicts' });
+  });
+
+  it('maps review states to dashboard labels', () => {
+    expect(openPrDashboardStatusBadge({ reviewDecision: 'CHANGES_REQUESTED' })).toMatchObject({
+      label: 'Requested changes',
+    });
+    expect(openPrDashboardStatusBadge({ reviewDecision: 'APPROVED' })).toMatchObject({
+      label: 'Approved',
+    });
+    expect(openPrDashboardStatusBadge({ reviewDecision: 'REVIEW_REQUIRED' })).toMatchObject({
+      label: 'Awaiting review',
+    });
+    expect(openPrDashboardStatusBadge({ reviewStatus: 'awaiting_review' })).toMatchObject({
+      label: 'Awaiting review',
+    });
   });
 });
 

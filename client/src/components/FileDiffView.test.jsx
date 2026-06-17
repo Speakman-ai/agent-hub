@@ -17,6 +17,7 @@ describe('FileDiffView inline comments', () => {
     render(
       <FileDiffView
         patch={PATCH}
+        defaultOpen
         comments={[
           {
             id: 'c1',
@@ -39,7 +40,7 @@ describe('FileDiffView inline comments', () => {
 
   it('opens the composer on a line and submits with the right anchor', async () => {
     const onAddComment = vi.fn(async () => {});
-    render(<FileDiffView patch={PATCH} comments={[]} onAddComment={onAddComment} />);
+    render(<FileDiffView patch={PATCH} defaultOpen comments={[]} onAddComment={onAddComment} />);
 
     // '+const b = 2;' is new-file line 2.
     fireEvent.click(screen.getByTestId('diff-line-comment-src/app.js-new-2'));
@@ -62,7 +63,7 @@ describe('FileDiffView inline comments', () => {
   });
 
   it('anchors deletions to the old side', () => {
-    render(<FileDiffView patch={PATCH} comments={[]} onAddComment={vi.fn()} />);
+    render(<FileDiffView patch={PATCH} defaultOpen comments={[]} onAddComment={vi.fn()} />);
     // '-const c = 3;' is old-file line 2.
     expect(screen.getByTestId('diff-line-comment-src/app.js-old-2')).toBeInTheDocument();
   });
@@ -81,6 +82,7 @@ describe('FileDiffView inline comments', () => {
     const { rerender } = render(
       <FileDiffView
         patch={PATCH}
+        defaultOpen
         comments={[comment]}
         onAddComment={vi.fn()}
         onDeleteComment={onDelete}
@@ -89,13 +91,20 @@ describe('FileDiffView inline comments', () => {
     fireEvent.click(screen.getByTestId('inline-comment-delete-c9'));
     expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'c9' }));
 
-    rerender(<FileDiffView patch={PATCH} comments={[comment]} />);
+    rerender(<FileDiffView patch={PATCH} defaultOpen comments={[comment]} />);
     expect(screen.queryByTestId('inline-comment-delete-c9')).toBeNull();
   });
 
   it('renders plain (non-commentable) when onAddComment is absent — Repository page mode', () => {
-    render(<FileDiffView patch={PATCH} />);
+    render(<FileDiffView patch={PATCH} defaultOpen />);
     expect(screen.queryByTestId('diff-line-comment-src/app.js-new-2')).toBeNull();
+    expect(screen.getByText('+const b = 2;')).toBeInTheDocument();
+  });
+
+  it('keeps every file section collapsed by default', () => {
+    render(<FileDiffView patch={PATCH} />);
+    expect(screen.queryByText('+const b = 2;')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('commit-file-src/app.js'));
     expect(screen.getByText('+const b = 2;')).toBeInTheDocument();
   });
 });

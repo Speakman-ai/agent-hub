@@ -99,6 +99,9 @@ interface DashboardBody {
     authorAgent: string | null;
     priority: string | null;
     updatedAt: number;
+    mergeable: boolean | null;
+    reviewDecision: string | null;
+    reviewStatus: string | null;
   }>;
   recentActivity: Array<{
     type: 'card_created' | 'card_updated' | 'session_created' | 'escalation' | 'pr_created';
@@ -502,6 +505,9 @@ describe('GET /api/orgs/:id/dashboard', () => {
     expect(entry!.key).toBe(card.id as string);
     expect(entry!.cardTitle).toBe('Open PR list card unique title');
     expect(entry!.priority).toBe('high');
+    expect(entry).toHaveProperty('mergeable');
+    expect(entry).toHaveProperty('reviewDecision');
+    expect(entry).toHaveProperty('reviewStatus');
 
     expect(body.openPRs.length).toBeLessThanOrEqual(30);
     expect(body.headline.openPRs).toBeGreaterThanOrEqual(1);

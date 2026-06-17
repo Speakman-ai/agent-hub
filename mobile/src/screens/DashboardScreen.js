@@ -26,21 +26,11 @@ import {
 import { getAuthRecord } from '../utils/auth';
 import {
   formatHeadlineTiles,
-  priorityRows,
-  columnRows,
   activityLabel,
   filterActivity,
   countByType,
   ACTIVITY_TYPE_KEYS,
-  PRIORITY_KEYS,
 } from '../utils/dashboard';
-
-const PRIORITY_COLOR = {
-  urgent: colors.red500,
-  high: colors.amber400,
-  medium: colors.yellow400,
-  low: colors.emerald400,
-};
 
 const ACTIVITY_DOT = {
   card_created: colors.emerald400,
@@ -124,8 +114,6 @@ export default function DashboardScreen() {
   }, [load]);
 
   const tiles = data ? formatHeadlineTiles(data.headline) : [];
-  const cols = data ? columnRows(data.kanban?.byColumn) : [];
-  const prios = data ? priorityRows(data.kanban?.byPriority) : [];
   const allActivity = data?.recentActivity || [];
   const activity = filterActivity(allActivity, activeTypes);
   const activityCounts = countByType(allActivity);
@@ -286,60 +274,6 @@ export default function DashboardScreen() {
               );
             })()}
 
-            {/* Kanban — by column */}
-            <SectionHeader
-              title="Kanban"
-              subtitle={`${data.kanban?.totalCards ?? 0} cards · ${data.kanban?.totalBoards ?? 0} boards`}
-            />
-            <View style={styles.card} testID="kanban-by-column">
-              <Text style={styles.cardLabel}>By column</Text>
-              {cols.length === 0 ? (
-                <Text style={styles.muted}>No columns yet.</Text>
-              ) : (
-                cols.map((row, i) => (
-                  <View key={`${row.columnName}-${i}`} style={styles.barRow}>
-                    <Text style={styles.barLabel} numberOfLines={1}>
-                      {row.columnName}
-                    </Text>
-                    <View style={styles.barTrack}>
-                      <View
-                        style={[
-                          styles.barFill,
-                          {
-                            width: `${Math.max(2, row.percent)}%`,
-                            backgroundColor: colors.blue500,
-                          },
-                        ]}
-                      />
-                    </View>
-                    <Text style={styles.barCount}>{row.count}</Text>
-                  </View>
-                ))
-              )}
-            </View>
-
-            {/* Kanban — by priority */}
-            <View style={styles.card} testID="kanban-by-priority">
-              <Text style={styles.cardLabel}>By priority (open)</Text>
-              {prios.map((row) => (
-                <View key={row.key} style={styles.barRow}>
-                  <Text style={[styles.barLabel, styles.capitalize]}>{row.key}</Text>
-                  <View style={styles.barTrack}>
-                    <View
-                      style={[
-                        styles.barFill,
-                        {
-                          width: `${Math.max(2, row.percent)}%`,
-                          backgroundColor: PRIORITY_COLOR[row.key] || colors.gray500,
-                        },
-                      ]}
-                    />
-                  </View>
-                  <Text style={styles.barCount}>{row.count}</Text>
-                </View>
-              ))}
-            </View>
-
             {/* Recent activity */}
             <SectionHeader title="Recent activity" />
             <ScrollView
@@ -434,10 +368,6 @@ function SectionHeader({ title, subtitle }) {
     </View>
   );
 }
-
-// Re-export priority keys for any future tests/screens that want the same
-// ordering without needing to import from utils directly.
-export { PRIORITY_KEYS };
 
 const styles = StyleSheet.create({
   container: {

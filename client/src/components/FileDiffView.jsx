@@ -213,7 +213,8 @@ export function FileDiffSection({
 
 /**
  * Full diff rendering: split a raw unified diff into per-file sections.
- * Sections auto-collapse for very large diffs so the page stays usable.
+ * Sections start collapsed by default so large PRs stay scannable; pass
+ * `defaultOpen` to expand every file on first render (e.g. in tests).
  * `comments` (inline review comments) are routed to their file sections.
  */
 export default function FileDiffView({
@@ -222,6 +223,7 @@ export default function FileDiffView({
   comments = [],
   onAddComment = null,
   onDeleteComment = null,
+  defaultOpen = false,
 }) {
   const files = splitUnifiedDiff(patch);
   if (files.length === 0) {
@@ -233,7 +235,7 @@ export default function FileDiffView({
         <FileDiffSection
           key={`${section.filename}-${i}`}
           section={section}
-          defaultOpen={files.length <= 25 || comments.some((c) => c.file_path === section.filename)}
+          defaultOpen={defaultOpen}
           comments={comments.filter((c) => c.file_path === section.filename)}
           onAddComment={onAddComment}
           onDeleteComment={onDeleteComment}

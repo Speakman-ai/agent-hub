@@ -81,6 +81,12 @@ const OpenPrEntry = z.object({
   authorAgent: z.string().nullable(),
   priority: z.string().nullable(),
   updatedAt: z.number().int(),
+  /** Native PR mergeability; null when not yet computed or repo unavailable. */
+  mergeable: z.boolean().nullable(),
+  /** GitHub-style review decision derived from native PR reviews. */
+  reviewDecision: z.string().nullable(),
+  /** Linked kanban card review_status, when a card links this PR. */
+  reviewStatus: z.string().nullable(),
 });
 
 const ActivityEntry = z.object({

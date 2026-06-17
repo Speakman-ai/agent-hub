@@ -57,8 +57,6 @@ const STATUS_FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'new', label: 'New' },
   { key: 'investigating', label: 'Investigating' },
-  { key: 'converted', label: 'Converted' },
-  { key: 'closed', label: 'Closed' },
 ];
 
 function sortTickets(list) {

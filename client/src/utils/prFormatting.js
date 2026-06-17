@@ -198,6 +198,46 @@ export function linkedPrDisplayStatus({ pr, linkedCardReviewStatus, reviews }) {
 }
 
 /**
+ * Single status pill for an open PR on the org dashboard. Conflicts beat review
+ * state; changes-requested beats approved; awaiting review is the fallback when
+ * a review is outstanding.
+ *
+ * @param {{ mergeable?: boolean|null, reviewDecision?: string|null, reviewStatus?: string|null }} pr
+ * @returns {{ key: string, label: string, color: string, bg: string }|null}
+ */
+export function openPrDashboardStatusBadge(pr) {
+  if (!pr) return null;
+  if (pr.mergeable === false) {
+    return { key: 'conflicts', label: 'Conflicts', color: TOKEN.red.text, bg: TOKEN.red.bg };
+  }
+
+  const card = (pr.reviewStatus || '').toLowerCase();
+  const decision = (pr.reviewDecision || '').toUpperCase();
+
+  if (card === 'changes_requested' || decision === 'CHANGES_REQUESTED') {
+    return {
+      key: 'requested_changes',
+      label: 'Requested changes',
+      color: TOKEN.red.text,
+      bg: TOKEN.red.bg,
+    };
+  }
+  if (decision === 'APPROVED' || card === 'approved') {
+    return { key: 'approved', label: 'Approved', color: TOKEN.emerald.text, bg: TOKEN.emerald.bg };
+  }
+  if (card === 'awaiting_review' || card === 'reviewing' || decision === 'REVIEW_REQUIRED') {
+    return {
+      key: 'awaiting_review',
+      label: 'Awaiting review',
+      color: TOKEN.yellow.text,
+      bg: TOKEN.yellow.bg,
+    };
+  }
+
+  return null;
+}
+
+/**
  * Decide whether the "Mergeable" / "Conflicts" badge should render.
  * Only show when `mergeable` is a real boolean. `null` means GitHub is still
  * computing — suppress the badge rather than showing a misleading "Conflicts".

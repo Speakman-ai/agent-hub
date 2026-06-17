@@ -2825,6 +2825,15 @@ components:
                 nullable: true
               updatedAt:
                 type: integer
+              mergeable:
+                type: boolean
+                nullable: true
+              reviewDecision:
+                type: string
+                nullable: true
+              reviewStatus:
+                type: string
+                nullable: true
             required:
               - key
               - cardId
@@ -2837,6 +2846,9 @@ components:
               - authorAgent
               - priority
               - updatedAt
+              - mergeable
+              - reviewDecision
+              - reviewStatus
         recentActivity:
           type: array
           items:

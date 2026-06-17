@@ -17,6 +17,7 @@ import {
 import { Pencil, Check, X, Sparkles, SquareKanban, ChevronDown, ChevronRight } from 'lucide-react';
 import { api } from '../utils/api.js';
 import FileDiffView from './FileDiffView.jsx';
+import { MarkdownContent } from './MarkdownRenderer.jsx';
 import {
   relativePrTime,
   diffSummary,
@@ -854,9 +855,12 @@ function PrDetail({
         {!editing && pr.body && (
           <>
             <SectionHeader>Description</SectionHeader>
-            <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans bg-gray-900/40 border border-gray-800 rounded-lg p-3">
-              {pr.body}
-            </pre>
+            <div
+              className="markdown-content text-sm text-gray-300 break-words bg-gray-900/40 border border-gray-800 rounded-lg p-3"
+              data-testid="pr-description"
+            >
+              <MarkdownContent content={pr.body} />
+            </div>
           </>
         )}
 
@@ -880,41 +884,6 @@ function PrDetail({
             />
           )}
         </div>
-
-        <SectionHeader>Files changed</SectionHeader>
-        <PrFilesChanged
-          prUrl={pr.html_url}
-          inlineComments={isNative ? (detail.inline_comments ?? []) : []}
-          onAddComment={
-            editable
-              ? async ({ filePath, line, side, body }) => {
-                  try {
-                    await api.addNativePrComment(projectId, pr.number, {
-                      filePath,
-                      line,
-                      side,
-                      body,
-                    });
-                    onRefresh();
-                  } catch (err) {
-                    toastErr(err);
-                  }
-                }
-              : null
-          }
-          onDeleteComment={
-            editable
-              ? async (comment) => {
-                  try {
-                    await api.deleteNativePrComment(projectId, pr.number, comment.id);
-                    onRefresh();
-                  } catch (err) {
-                    toastErr(err);
-                  }
-                }
-              : null
-          }
-        />
 
         {isNative && (
           <>
@@ -1064,6 +1033,44 @@ function PrDetail({
         {Array.isArray(detail.commits) && detail.commits.length > 0 && (
           <PrCommitsSection commits={detail.commits} />
         )}
+
+        {/* Files changed — last on the page: diffs can be very long and each
+            file section starts collapsed so review/activity/checks stay in
+            view without scrolling past a wall of patch text. */}
+        <SectionHeader>Files changed</SectionHeader>
+        <PrFilesChanged
+          prUrl={pr.html_url}
+          inlineComments={isNative ? (detail.inline_comments ?? []) : []}
+          onAddComment={
+            editable
+              ? async ({ filePath, line, side, body }) => {
+                  try {
+                    await api.addNativePrComment(projectId, pr.number, {
+                      filePath,
+                      line,
+                      side,
+                      body,
+                    });
+                    onRefresh();
+                  } catch (err) {
+                    toastErr(err);
+                  }
+                }
+              : null
+          }
+          onDeleteComment={
+            editable
+              ? async (comment) => {
+                  try {
+                    await api.deleteNativePrComment(projectId, pr.number, comment.id);
+                    onRefresh();
+                  } catch (err) {
+                    toastErr(err);
+                  }
+                }
+              : null
+          }
+        />
 
         <div className="h-10" />
       </div>

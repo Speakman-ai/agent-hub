@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import DashboardView, { sortSupportBySeverity } from './DashboardView.jsx';
 
 const SAMPLE = {
@@ -70,6 +70,9 @@ const SAMPLE = {
       authorAgent: 'Hub Frontend',
       priority: 'high',
       updatedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      mergeable: null,
+      reviewDecision: 'REVIEW_REQUIRED',
+      reviewStatus: 'awaiting_review',
     },
     {
       // Native PR with no linked kanban card: cardId is null and the render
@@ -85,6 +88,9 @@ const SAMPLE = {
       authorAgent: 'Hub Backend',
       priority: null,
       updatedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+      mergeable: false,
+      reviewDecision: null,
+      reviewStatus: null,
     },
   ],
   recentActivity: [
@@ -223,14 +229,14 @@ describe('DashboardView', () => {
     expect(screen.queryByTestId('dashboard-new-project-cta')).not.toBeInTheDocument();
   });
 
-  it('renders active sessions above open PRs above the kanban breakdown', async () => {
+  it('renders active sessions above open PRs above recent activity', async () => {
     const { container } = render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
       expect(screen.getByTestId('open-prs')).toBeInTheDocument();
     });
 
-    const order = ['active-sessions', 'open-prs', 'kanban-by-column', 'recent-activity'];
+    const order = ['active-sessions', 'open-prs', 'recent-activity'];
     const positions = order.map((id) =>
       Array.prototype.indexOf.call(
         container.querySelectorAll('[data-testid]'),
@@ -257,6 +263,18 @@ describe('DashboardView', () => {
     expect(panel).toHaveTextContent('Hub Backend');
     // Header count reflects the number of open PRs.
     expect(screen.getByText('2 open PRs')).toBeInTheDocument();
+  });
+
+  it('renders review status badges on open PR rows', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('open-pr-status-badge')).toHaveLength(2);
+    });
+
+    const badges = screen.getAllByTestId('open-pr-status-badge');
+    expect(badges[0]).toHaveTextContent('Awaiting review');
+    expect(badges[1]).toHaveTextContent('Conflicts');
   });
 
   it('renders a native PR row with no linked card and opens the in-app Pulls view on click', async () => {
@@ -305,30 +323,16 @@ describe('DashboardView', () => {
     expect(screen.getByText('0 open PRs')).toBeInTheDocument();
   });
 
-  it('renders the kanban breakdown bars and priority counts', async () => {
+  it('does not render the kanban breakdown section', async () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('kanban-by-column')).toBeInTheDocument();
+      expect(screen.getByTestId('open-prs')).toBeInTheDocument();
     });
 
-    const byColumn = screen.getByTestId('kanban-by-column');
-    expect(byColumn).toHaveTextContent('To Do');
-    expect(byColumn).toHaveTextContent('In Progress');
-    expect(byColumn).toHaveTextContent('Review');
-    // Largest count should be visible verbatim
-    expect(byColumn).toHaveTextContent('20');
-
-    const byPriority = screen.getByTestId('kanban-by-priority');
-    // All four buckets always render even when zero — sanity check the
-    // counts come through.
-    expect(byPriority).toHaveTextContent('urgent');
-    expect(byPriority).toHaveTextContent('high');
-    expect(byPriority).toHaveTextContent('medium');
-    expect(byPriority).toHaveTextContent('low');
-    expect(byPriority).toHaveTextContent('2');
-    expect(byPriority).toHaveTextContent('4');
-    expect(byPriority).toHaveTextContent('8');
+    expect(screen.queryByTestId('kanban-by-column')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('kanban-by-priority')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Kanban breakdown')).not.toBeInTheDocument();
   });
 
   it('renders the recent activity feed with each item title', async () => {
@@ -799,6 +803,18 @@ describe('DashboardView — Support issues panel', () => {
       );
       expect(statusCall).toBeTruthy();
     });
+  });
+
+  it('does not offer converted or closed status filters', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('support-issues')).toBeInTheDocument();
+    });
+
+    const panel = screen.getByLabelText('Support issues');
+    expect(within(panel).queryByRole('button', { name: 'Converted' })).not.toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Closed' })).not.toBeInTheDocument();
   });
 
   it('shows an empty state when there are no tickets', async () => {

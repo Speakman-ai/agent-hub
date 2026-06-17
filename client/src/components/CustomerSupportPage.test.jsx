@@ -427,11 +427,13 @@ describe('CustomerSupportPage — ticket detail view', () => {
   });
 
   it('keeps the detail modal open when a status filter would drop the ticket from the list', async () => {
-    // 'all'/'new' return the ticket; the narrower 'converted' filter returns an
+    // 'all'/'new' return the ticket; the narrower 'investigating' filter returns an
     // empty list (the open 'new' ticket is no longer in view).
     api.getSupportTickets.mockImplementation((_projectId, status) =>
       Promise.resolve(
-        status === 'converted' ? [] : [ticket({ id: 't1', subject: 'Stay open', status: 'new' })],
+        status === 'investigating'
+          ? []
+          : [ticket({ id: 't1', subject: 'Stay open', status: 'new' })],
       ),
     );
     api.getSupportTicket.mockResolvedValue(
@@ -447,7 +449,7 @@ describe('CustomerSupportPage — ticket detail view', () => {
     );
 
     // Switch to a filter that excludes the open ticket.
-    fireEvent.click(screen.getByRole('button', { name: 'Converted' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Investigating' }));
 
     // The list card drops out of view, but the modal must stay open — the user
     // keeps their place rather than having it yanked away.

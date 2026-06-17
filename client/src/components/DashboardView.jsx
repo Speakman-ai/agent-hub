@@ -15,7 +15,7 @@ import { api } from '../utils/api.js';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import { getAuthRecord } from '../utils/auth.js';
 import { relativeTime } from '../utils/time.js';
-import { parseNativePrUrl } from '../utils/prFormatting.js';
+import { parseNativePrUrl, openPrDashboardStatusBadge } from '../utils/prFormatting.js';
 import SessionStateIcon from './SessionStateIcon.jsx';
 import { sessionStateMeta, groupSessionsByState } from '../../../shared/utils/sessionState.js';
 import {
@@ -31,7 +31,6 @@ import {
  * `GET /api/orgs/:id/dashboard`, top to bottom:
  *   - active sessions (every in-flight session that has not merged yet)
  *   - open PRs (cards with an unmerged PR link)
- *   - kanban breakdown (byColumn + byPriority bar charts)
  *   - recent activity feed
  *
  * Refetches when `orgId` changes (so the OrgSwitcher just works).
@@ -163,7 +162,6 @@ export default function DashboardView({
               onOpenExternalUrl={onOpenExternalUrl}
             />
             <SupportIssuesPanel onOpenProjectSupport={onOpenProjectSupport} />
-            <KanbanBreakdown kanban={data.kanban} />
             <RecentActivity
               items={data.recentActivity}
               onOpenSession={onOpenSession}
@@ -195,7 +193,7 @@ const PR_PRIORITY_DOT = {
  * for any non-native URL that slips through, with a final fallback to the
  * project's PR list.
  *
- * @param {Array<{key, cardId, projectId, projectName, prUrl, prNumber, title, cardTitle, authorAgent, priority, updatedAt}>} [prs]
+ * @param {Array<{key, cardId, projectId, projectName, prUrl, prNumber, title, cardTitle, authorAgent, priority, updatedAt, mergeable, reviewDecision, reviewStatus}>} [prs]
  * @param {(projectId: string) => void} [onOpenPulls]
  * @param {(url: string) => void} [onOpenExternalUrl]
  */
@@ -242,6 +240,7 @@ function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
         ) : (
           list.map((pr) => {
             const actionable = isActionable(pr);
+            const statusBadge = openPrDashboardStatusBadge(pr);
             const rowClass = actionable
               ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
               : 'px-4 py-3 flex items-center gap-3';
@@ -249,7 +248,17 @@ function OpenPRsPanel({ prs = [], onOpenPulls, onOpenExternalUrl }) {
               <>
                 <GitPullRequest size={16} className="text-violet-400 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm text-white truncate">{pr.title || pr.cardTitle}</div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    {statusBadge ? (
+                      <span
+                        data-testid="open-pr-status-badge"
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold flex-shrink-0 ${statusBadge.bg} ${statusBadge.color}`}
+                      >
+                        {statusBadge.label}
+                      </span>
+                    ) : null}
+                    <div className="text-sm text-white truncate">{pr.title || pr.cardTitle}</div>
+                  </div>
                   <div className="text-[11px] text-gray-500 truncate">
                     {pr.projectName || pr.projectId}
                     {pr.authorAgent ? ` · ${pr.authorAgent}` : ''}
@@ -435,8 +444,6 @@ const SUPPORT_STATUS_FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'new', label: 'New' },
   { key: 'investigating', label: 'Investigating' },
-  { key: 'converted', label: 'Converted' },
-  { key: 'closed', label: 'Closed' },
 ];
 
 // Severity-first, newest-within-severity. Exported for unit testing.
@@ -582,89 +589,6 @@ function SupportIssueRow({ ticket, onOpenProjectSupport }) {
     <div data-testid="support-issue-row" className={rowClass}>
       {inner}
     </div>
-  );
-}
-
-const PRIORITY_COLORS = {
-  urgent: 'bg-rose-500',
-  high: 'bg-orange-400',
-  medium: 'bg-amber-400',
-  low: 'bg-emerald-400',
-};
-
-function KanbanBreakdown({ kanban }) {
-  if (!kanban) return null;
-  const { totalBoards = 0, totalCards = 0, byColumn = [], byPriority = {} } = kanban;
-  const columnMax = Math.max(1, ...byColumn.map((b) => b.count || 0));
-  const priorityMax = Math.max(
-    1,
-    ...['urgent', 'high', 'medium', 'low'].map((k) => byPriority[k] || 0),
-  );
-
-  return (
-    <section aria-label="Kanban breakdown" className="mb-8">
-      <div className="flex items-baseline justify-between mb-3">
-        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Kanban</h2>
-        <div className="text-xs text-gray-500">
-          {totalCards} card{totalCards === 1 ? '' : 's'} across {totalBoards} board
-          {totalBoards === 1 ? '' : 's'}
-        </div>
-      </div>
-
-      <div className="grid md:grid-cols-2 gap-4">
-        <div
-          data-testid="kanban-by-column"
-          className="bg-gray-900 border border-gray-800 rounded-xl p-4"
-        >
-          <div className="text-xs text-gray-400 mb-3 font-medium">By column</div>
-          {byColumn.length === 0 ? (
-            <div className="text-xs text-gray-600">No columns yet.</div>
-          ) : (
-            <ul className="space-y-2">
-              {byColumn.map((row, i) => (
-                <li key={`${row.columnName}-${i}`} className="flex items-center gap-3 text-xs">
-                  <span className="w-32 truncate text-gray-300">{row.columnName}</span>
-                  <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500"
-                      style={{
-                        width: `${Math.max(2, ((row.count || 0) / columnMax) * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="w-8 text-right text-gray-400 tabular-nums">{row.count}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div
-          data-testid="kanban-by-priority"
-          className="bg-gray-900 border border-gray-800 rounded-xl p-4"
-        >
-          <div className="text-xs text-gray-400 mb-3 font-medium">By priority (open)</div>
-          <ul className="space-y-2">
-            {['urgent', 'high', 'medium', 'low'].map((p) => (
-              <li key={p} className="flex items-center gap-3 text-xs">
-                <span className="w-32 truncate text-gray-300 capitalize">{p}</span>
-                <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${PRIORITY_COLORS[p]}`}
-                    style={{
-                      width: `${Math.max(2, ((byPriority[p] || 0) / priorityMax) * 100)}%`,
-                    }}
-                  />
-                </div>
-                <span className="w-8 text-right text-gray-400 tabular-nums">
-                  {byPriority[p] || 0}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </section>
   );
 }
 
