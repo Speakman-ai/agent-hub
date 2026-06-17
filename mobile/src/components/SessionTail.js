@@ -69,7 +69,7 @@ function ExploredChip({ items }) {
         accessibilityRole="button"
         testID="explored-chip"
       >
-        <Text style={exploredStyles.glyph}>{'\uD83D\uDCC2'}</Text>
+        <Text style={exploredStyles.glyph}>{'Dir'}</Text>
         <Text style={exploredStyles.label}>Explored</Text>
         <Text style={exploredStyles.summary} numberOfLines={1}>
           {summary}
@@ -371,10 +371,10 @@ function SessionTail({
             <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]} />
             {toolCount > 0 && (
               <Text style={styles.summaryText}>
-                {'\uD83D\uDD27'} {toolCount} tool{toolCount > 1 ? 's' : ''}
+                {toolCount} tool{toolCount > 1 ? 's' : ''}
               </Text>
             )}
-            {thinkingCount > 0 && <Text style={styles.summaryText}>{'\uD83D\uDCAD'} thinking</Text>}
+            {thinkingCount > 0 && <Text style={styles.summaryText}>thinking</Text>}
             {resultBlock ? (
               <Text style={styles.summaryText}>
                 {'\u23F1'}{' '}
@@ -432,7 +432,7 @@ function SessionTail({
             const t = block.event?.text || '';
             return (
               <TouchableOpacity key={idx} style={styles.eventRow} onPress={toggle}>
-                <Text style={styles.eventIcon}>{'\uD83D\uDCAD'}</Text>
+                <Text style={styles.eventIcon}>{'...'}</Text>
                 <View style={styles.eventContent}>
                   <Text style={styles.eventLabel}>Thinking</Text>
                   {isBlockExpanded ? (

@@ -7,6 +7,9 @@ import {
   ScrollView,
   StyleSheet,
   ActivityIndicator,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
@@ -59,6 +62,7 @@ export default function ThreadsScreen({ route, navigation }) {
   const { openSidebar } = useContext(SidebarContext);
 
   const projectId = route?.params?.projectId || projects?.[0]?.id;
+  const deepLinkThreadId = route?.params?.threadId;
   const project = projects?.find((p) => p.id === projectId);
 
   const [threads, setThreads] = useState([]);
@@ -71,6 +75,8 @@ export default function ThreadsScreen({ route, navigation }) {
   const [entries, setEntries] = useState([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [entriesError, setEntriesError] = useState(null);
+  const [composeText, setComposeText] = useState('');
+  const [composeSending, setComposeSending] = useState(false);
 
   const scrollRef = useRef(null);
   const wasAtBottomRef = useRef(true);
@@ -165,12 +171,38 @@ export default function ThreadsScreen({ route, navigation }) {
     [setActiveThread],
   );
 
+  // Notification deep-link: open thread once the list loads.
+  const deepLinkHandledRef = useRef(null);
+  useEffect(() => {
+    if (!deepLinkThreadId || loading || threads.length === 0) return;
+    if (deepLinkHandledRef.current === deepLinkThreadId) return;
+    const thread = threads.find((t) => t.id === deepLinkThreadId);
+    if (!thread) return;
+    deepLinkHandledRef.current = deepLinkThreadId;
+    handleSelectThread(thread);
+  }, [deepLinkThreadId, loading, threads, handleSelectThread]);
+
   const handleBack = useCallback(() => {
     setSelectedThread(null);
     setEntries([]);
     setEntriesError(null);
+    setComposeText('');
     setActiveThread(null);
   }, [setActiveThread]);
+
+  const handlePostEntry = useCallback(async () => {
+    if (!selectedThread?.id || !composeText.trim() || composeSending) return;
+    setComposeSending(true);
+    try {
+      const entry = await api.postThreadEntry(selectedThread.id, composeText.trim());
+      setComposeText('');
+      if (entry) setEntries((prev) => mergeLiveEntry(prev, entry));
+    } catch (err) {
+      setEntriesError(err.message || 'Failed to post entry');
+    } finally {
+      setComposeSending(false);
+    }
+  }, [selectedThread, composeText, composeSending]);
 
   // Clear active-thread tracking when the screen unmounts
   useEffect(() => {
@@ -222,60 +254,88 @@ export default function ThreadsScreen({ route, navigation }) {
             </Text>
           </View>
         ) : (
-          <ScrollView
-            ref={scrollRef}
-            onScroll={handleScroll}
-            scrollEventThrottle={100}
-            contentContainerStyle={styles.entriesContainer}
-          >
-            <Text style={styles.entriesMeta}>
-              {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
-            </Text>
-            {entries.map((entry, idx) => {
-              const prev = idx > 0 ? entries[idx - 1] : null;
-              const showSep = shouldShowDateSeparator(prev, entry);
-              const isError = entry.content?.startsWith('ERROR:');
-              const entryDate = new Date(
-                entry.timestamp?.includes('T')
-                  ? entry.timestamp
-                  : entry.timestamp + 'Z',
-              );
-              return (
-                <View key={entry.id}>
-                  {showSep && (
-                    <View style={styles.dateSeparator}>
-                      <View style={styles.dateSeparatorLine} />
-                      <Text style={styles.dateSeparatorText}>
-                        {entryDate.toLocaleDateString(undefined, {
-                          weekday: 'short',
-                          month: 'short',
-                          day: 'numeric',
-                        })}
-                      </Text>
-                      <View style={styles.dateSeparatorLine} />
-                    </View>
-                  )}
-                  <View
-                    style={[
-                      styles.entryCard,
-                      isError && styles.entryCardError,
-                    ]}
-                  >
-                    <Text style={styles.entryTimestamp}>
-                      {formatEntryTimestamp(entry.timestamp)}
-                    </Text>
-                    {isError ? (
-                      <Text style={styles.entryErrorText}>{entry.content}</Text>
-                    ) : (
-                      <Markdown style={mdStyles}>
-                        {entry.content || ''}
-                      </Markdown>
+          <>
+            <ScrollView
+              ref={scrollRef}
+              onScroll={handleScroll}
+              scrollEventThrottle={100}
+              contentContainerStyle={styles.entriesContainer}
+            >
+              <Text style={styles.entriesMeta}>
+                {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+              </Text>
+              {entries.map((entry, idx) => {
+                const prev = idx > 0 ? entries[idx - 1] : null;
+                const showSep = shouldShowDateSeparator(prev, entry);
+                const isError = entry.content?.startsWith('ERROR:');
+                const entryDate = new Date(
+                  entry.timestamp?.includes('T')
+                    ? entry.timestamp
+                    : entry.timestamp + 'Z',
+                );
+                return (
+                  <View key={entry.id}>
+                    {showSep && (
+                      <View style={styles.dateSeparator}>
+                        <View style={styles.dateSeparatorLine} />
+                        <Text style={styles.dateSeparatorText}>
+                          {entryDate.toLocaleDateString(undefined, {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                          })}
+                        </Text>
+                        <View style={styles.dateSeparatorLine} />
+                      </View>
                     )}
+                    <View
+                      style={[
+                        styles.entryCard,
+                        isError && styles.entryCardError,
+                      ]}
+                    >
+                      <Text style={styles.entryTimestamp}>
+                        {formatEntryTimestamp(entry.timestamp)}
+                      </Text>
+                      {isError ? (
+                        <Text style={styles.entryErrorText}>{entry.content}</Text>
+                      ) : (
+                        <Markdown style={mdStyles}>
+                          {entry.content || ''}
+                        </Markdown>
+                      )}
+                    </View>
                   </View>
-                </View>
-              );
-            })}
-          </ScrollView>
+                );
+              })}
+            </ScrollView>
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              keyboardVerticalOffset={80}
+            >
+              <View style={styles.composeRow}>
+                <TextInput
+                  style={styles.composeInput}
+                  value={composeText}
+                  onChangeText={setComposeText}
+                  placeholder="Add a note to this thread…"
+                  placeholderTextColor={colors.gray600}
+                  multiline
+                />
+                <TouchableOpacity
+                  style={[styles.composeButton, (!composeText.trim() || composeSending) && styles.composeButtonDisabled]}
+                  onPress={handlePostEntry}
+                  disabled={!composeText.trim() || composeSending}
+                >
+                  {composeSending ? (
+                    <ActivityIndicator size="small" color={colors.white} />
+                  ) : (
+                    <Text style={styles.composeButtonText}>Send</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </KeyboardAvoidingView>
+          </>
         )}
       </SafeAreaView>
     );
@@ -529,4 +589,36 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
+  composeRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    backgroundColor: colors.gray950,
+  },
+  composeInput: {
+    flex: 1,
+    minHeight: 40,
+    maxHeight: 100,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: colors.gray200,
+    fontSize: 14,
+  },
+  composeButton: {
+    backgroundColor: colors.blue600,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    minWidth: 56,
+    alignItems: 'center',
+  },
+  composeButtonDisabled: { opacity: 0.5 },
+  composeButtonText: { color: colors.white, fontWeight: '600', fontSize: 13 },
 });

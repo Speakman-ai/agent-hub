@@ -243,11 +243,11 @@ describe('findEpic', () => {
 });
 
 describe('epicDropdownLabel', () => {
-  it('prepends the zap glyph for autonomous epics (parity with web)', () => {
-    expect(epicDropdownLabel({ name: 'Live', autonomous: 1 })).toBe('\u26A1 Live');
+  it('prepends Auto: for autonomous epics', () => {
+    expect(epicDropdownLabel({ name: 'Live', autonomous: 1 })).toBe('Auto: Live');
   });
 
-  it('omits the glyph for non-autonomous epics', () => {
+  it('omits the prefix for non-autonomous epics', () => {
     expect(epicDropdownLabel({ name: 'Idle', autonomous: 0 })).toBe('Idle');
   });
 

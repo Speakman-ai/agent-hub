@@ -10,7 +10,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import {
@@ -102,7 +102,7 @@ export default function ReviewerThreadsCard({ projectId, runId, status }) {
   return (
     <View style={styles.card} testID="reviewer-threads-card">
       <View style={styles.header}>
-        <Ionicons name="chatbubbles-outline" size={14} color={colors.gray300} />
+        <AppIcon name="chatbubbles-outline" size={14} color={colors.gray300} />
         <Text style={styles.title}>Review</Text>
         {threads.length > 0 && (
           <Text style={styles.count}>
@@ -111,7 +111,7 @@ export default function ReviewerThreadsCard({ projectId, runId, status }) {
         )}
         {vmeta && (
           <View style={[styles.verdictPill, { borderColor: vmeta.color }]}>
-            <Ionicons name={vmeta.icon} size={12} color={vmeta.color} />
+            <AppIcon name={vmeta.icon} size={12} color={vmeta.color} />
             <Text style={[styles.verdictText, { color: vmeta.color }]}>{vmeta.label}</Text>
           </View>
         )}
@@ -125,7 +125,7 @@ export default function ReviewerThreadsCard({ projectId, runId, status }) {
               style={styles.fileHeader}
               onPress={() => setCollapsed((p) => ({ ...p, [g.file]: !p[g.file] }))}
             >
-              <Ionicons
+              <AppIcon
                 name={isCollapsed ? 'chevron-forward' : 'chevron-down'}
                 size={14}
                 color={colors.gray500}

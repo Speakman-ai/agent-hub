@@ -1,6 +1,6 @@
 import React from 'react';
 import { ActivityIndicator } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { sessionStateMeta } from '../../../shared/utils/sessionState.js';
 import { colors } from '../theme/colors';
 
@@ -32,7 +32,7 @@ export default function SessionStateIcon({ state, size = 14, style, testID = 'se
     return <ActivityIndicator size="small" color={color} style={style} testID={testID} />;
   }
   return (
-    <Ionicons
+    <AppIcon
       name={ICONS[meta.icon] || ICONS.MessageCircleQuestion}
       size={size}
       color={color}

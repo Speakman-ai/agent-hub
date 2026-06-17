@@ -322,7 +322,6 @@ const baseOpts = (overrides: Partial<FixDispatchOptions> = {}): FixDispatchOptio
 });
 
 function makeDeps(args?: {
-  dispatchPush?: ReturnType<typeof vi.fn>;
   schedule?: ReturnType<typeof makeTimerBus>['schedule'];
   spawnFixTurn?: FixDispatchDeps['spawnFixTurn'];
 }): {
@@ -330,19 +329,16 @@ function makeDeps(args?: {
   stmts: FakeStmts;
   broadcast: ReturnType<typeof vi.fn>;
   turnEnd: TurnEndHandle;
-  dispatchPush: ReturnType<typeof vi.fn>;
 } {
   const stmts = makeStmts();
   const broadcast = vi.fn();
   const turnEnd = makeTurnEnd();
-  const dispatchPush = args?.dispatchPush ?? vi.fn().mockResolvedValue(0);
   let counter = 0;
   const deps: FixDispatchDeps = {
     stmts: stmts as unknown as FixDispatchDeps['stmts'],
     broadcast,
     turnEnd: turnEnd.subscriber,
     stallWatchdog: {
-      dispatchPush: dispatchPush as never,
       scheduleTimer: args?.schedule,
       now: () => 1_700_000_000_000,
       newId: () => `stall-msg-${++counter}`,
@@ -352,7 +348,7 @@ function makeDeps(args?: {
     log: vi.fn(),
     spawnFixTurn: args?.spawnFixTurn,
   };
-  return { deps, stmts, broadcast, turnEnd, dispatchPush };
+  return { deps, stmts, broadcast, turnEnd };
 }
 
 beforeEach(() => {

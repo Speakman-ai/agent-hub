@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   prNumberFromUrl,
+  parseNativePrUrl,
+  openPrDashboardStatusBadge,
   relativePrTime,
   diffSummary,
   prStateBadge,
@@ -21,6 +23,10 @@ describe('prNumberFromUrl', () => {
     expect(prNumberFromUrl('https://github.com/owner/repo/pull/123')).toBe('123');
   });
 
+  it('extracts number from an Agent Hub native pulls URL', () => {
+    expect(prNumberFromUrl('https://hub.example.com/projects/p1/pulls/55')).toBe('55');
+  });
+
   it('extracts number with trailing slash', () => {
     expect(prNumberFromUrl('https://github.com/owner/repo/pull/42/files')).toBe('42');
   });
@@ -30,6 +36,44 @@ describe('prNumberFromUrl', () => {
     expect(prNumberFromUrl(null)).toBeNull();
     expect(prNumberFromUrl(undefined)).toBeNull();
     expect(prNumberFromUrl('https://example.com/no-pr')).toBeNull();
+  });
+});
+
+describe('parseNativePrUrl', () => {
+  it('parses relative native PR URLs', () => {
+    expect(parseNativePrUrl('/projects/proj-1/pulls/12')).toEqual({
+      projectId: 'proj-1',
+      number: 12,
+    });
+  });
+
+  it('parses absolute native PR URLs', () => {
+    expect(parseNativePrUrl('https://hub.example.com/projects/proj-2/pulls/3')).toEqual({
+      projectId: 'proj-2',
+      number: 3,
+    });
+  });
+
+  it('returns null for GitHub URLs', () => {
+    expect(parseNativePrUrl('https://github.com/o/r/pull/1')).toBeNull();
+  });
+});
+
+describe('openPrDashboardStatusBadge', () => {
+  it('shows conflicts when mergeable is false', () => {
+    expect(openPrDashboardStatusBadge({ mergeable: false })?.label).toBe('Conflicts');
+  });
+
+  it('shows requested changes from review status', () => {
+    expect(openPrDashboardStatusBadge({ reviewStatus: 'changes_requested' })?.label).toBe(
+      'Requested changes',
+    );
+  });
+
+  it('shows awaiting review as fallback', () => {
+    expect(openPrDashboardStatusBadge({ reviewStatus: 'awaiting_review' })?.label).toBe(
+      'Awaiting review',
+    );
   });
 });
 

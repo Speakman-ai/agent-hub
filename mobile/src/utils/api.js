@@ -1,6 +1,7 @@
 import { getApiBaseUrl, getAuthHeaders } from './config';
 import { buildNotesListUrl, buildNoteUrl } from './notesUrl';
 import { uploadFile as uploadFileImpl } from './uploadFile';
+import { transcribeAudio as transcribeAudioImpl } from './transcribeAudio';
 import { getToken as getJwt, clearToken } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
 
@@ -159,9 +160,101 @@ export const api = {
 
   // Projects
   getProjects: () => fetchJSON('/projects'),
+  getProject: (projectId) => fetchJSON(`/projects/${projectId}`),
+  createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  deleteProject: (projectId) => fetchJSON(`/projects/${projectId}`, { method: 'DELETE' }),
+  deleteProject: (projectId) =>
+    fetch(`${getApiBaseUrl()}/projects/${projectId}`, {
+      method: 'DELETE',
+      headers: { ...getAuthHeaders() },
+    }).then((res) => {
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      return null;
+    }),
+  // Agent Hub-hosted git (gitHost: 'agenthub')
+  getGitHostBranches: (projectId) => fetchJSON(`/projects/${projectId}/git-host/branches`),
+  getGitHostCommits: (projectId, { branch, limit = 50 } = {}) => {
+    const params = new URLSearchParams();
+    if (branch) params.set('branch', branch);
+    params.set('limit', String(limit));
+    return fetchJSON(`/projects/${projectId}/git-host/commits?${params}`);
+  },
+  getGitHostCommitDetail: (projectId, sha) =>
+    fetchJSON(`/projects/${projectId}/git-host/commits/${encodeURIComponent(sha)}`),
+  getGitHostMirror: (projectId) => fetchJSON(`/projects/${projectId}/git-host/mirror`),
+  getProjectAwsProfiles: (projectId) => fetchJSON(`/projects/${projectId}/aws-profiles`),
+  getProjectAwsSsoStatus: (projectId, profile) =>
+    fetchJSON(`/projects/${projectId}/aws-sso/status?profile=${encodeURIComponent(profile)}`),
+  startProjectAwsSsoLogin: (projectId, profile) =>
+    fetchJSON(`/projects/${projectId}/aws-sso/login`, {
+      method: 'POST',
+      body: JSON.stringify({ profile }),
+    }),
+  getRumSetupDraft: (projectId) => fetchJSON(`/projects/${projectId}/rum/setup-draft`),
+  startRumWizard: (projectId, { maskAllText = false } = {}) =>
+    fetchJSON(`/projects/${projectId}/rum/setup-wizard`, {
+      method: 'POST',
+      body: JSON.stringify({ maskAllText: !!maskAllText }),
+    }),
+  getRumClients: (projectId) => fetchJSON(`/projects/${projectId}/rum/clients`),
+  createRumClient: (projectId, name) =>
+    fetchJSON(`/projects/${projectId}/rum/clients`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  getCiRuns: (projectId, { trigger = 'all', limit = 30 } = {}) =>
+    fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
+  getCiRunDetail: (projectId, runId) => fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
+
+  // Hub workflows
+  getProjectWorkflows: (projectId) => fetchJSON(`/projects/${projectId}/workflows`),
+  getProjectWorkflow: (projectId, workflowId) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}`),
+  createProjectWorkflow: (projectId, body) =>
+    fetchJSON(`/projects/${projectId}/workflows`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateProjectWorkflow: (projectId, workflowId, body) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  startWorkflowRun: (projectId, workflowId, runPayload) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs`, {
+      method: 'POST',
+      body: JSON.stringify(runPayload === undefined ? {} : { payload: runPayload }),
+    }),
+  getWorkflowRuns: (projectId, workflowId, { limit } = {}) => {
+    const q = limit != null ? `?limit=${encodeURIComponent(String(limit))}` : '';
+    return fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs${q}`);
+  },
+  getWorkflowRunDetail: (projectId, workflowId, runId) =>
+    fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs/${runId}`),
+
+  // Designs (Claude Design)
+  getDesigns: () => fetchJSON('/designs'),
+  getDesign: (id) => fetchJSON(`/designs/${id}`),
+  createDesign: ({ name, linkedProjectIds = [] } = {}) =>
+    fetchJSON('/designs', {
+      method: 'POST',
+      body: JSON.stringify({ name, linkedProjectIds }),
+    }),
+  updateDesign: (id, data) =>
+    fetchJSON(`/designs/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteDesign: (id) => fetchJSON(`/designs/${id}`, { method: 'DELETE' }),
+  getDesignMessages: (id) => fetchJSON(`/designs/${id}/messages`),
+  getDesignStatus: (id) => fetchJSON(`/designs/${id}/status`),
+
+  // Release notes
+  getReleases: ({ version, refresh } = {}) => {
+    const params = new URLSearchParams();
+    if (version) params.set('version', version);
+    if (refresh) params.set('refresh', '1');
+    const qs = params.toString();
+    return fetchJSON(`/releases${qs ? `?${qs}` : ''}`);
+  },
 
   // Health (server version / git hash for the sidebar footer)
   getHealth: () => fetchJSON('/health'),
@@ -229,6 +322,8 @@ export const api = {
   // Binary upload for videos and arbitrary files (web parity). `fileRef` is
   // `{ uri, name, type }` from expo-image-picker / expo-document-picker.
   uploadFile: (fileRef) => uploadFileImpl(fileRef),
+  // Voice transcription — raw audio bytes to /api/transcribe (web parity).
+  transcribeAudio: (uri, contentType) => transcribeAudioImpl(uri, contentType),
 
   // Slack
   getSlackStatus: () => fetchJSON('/slack/status'),
@@ -525,11 +620,38 @@ export const api = {
     }),
   deleteNote: (projectId, noteId) =>
     fetchJSON(buildNoteUrl(projectId, noteId), { method: 'DELETE' }),
+  processNote: (projectId, date, data) =>
+    fetchJSON(`/projects/${projectId}/notes/${date}/process`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  getToolErrors: (projectId, { since, limit } = {}) => {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (limit) params.set('limit', String(limit));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/tool-errors${qs ? `?${qs}` : ''}`);
+  },
+  getServerLogs: () => fetchJSON('/server-logs'),
+  getUsers: () => fetchJSON('/auth/users'),
+  inviteUser: (data) =>
+    fetchJSON('/auth/invites', { method: 'POST', body: JSON.stringify(data) }),
+  getMcpServers: (agentId) => fetchJSON(`/agents/${agentId}/mcp-servers`),
+  updateMcpServers: (agentId, mcpServers) =>
+    fetchJSON(`/agents/${agentId}/mcp-servers`, {
+      method: 'PUT',
+      body: JSON.stringify({ mcpServers }),
+    }),
 
   // Support tickets — project-scoped queue, ordered by severity (server-side).
   getSupportTickets: (projectId, status) => {
     const qs = status ? `?status=${encodeURIComponent(status)}` : '';
     return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
+  },
+  // Cross-project support overview for the org dashboard.
+  getAllSupportTickets: (status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return fetchJSON(`/support-tickets${qs}`);
   },
   getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
   // Promote a support ticket to a To Do kanban card. Idempotent: re-converting

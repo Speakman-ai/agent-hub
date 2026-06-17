@@ -18,6 +18,20 @@ import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import ThreadsScreen from './src/screens/ThreadsScreen';
 import CustomerSupportScreen from './src/screens/CustomerSupportScreen';
 import SessionChangesScreen from './src/screens/SessionChangesScreen';
+import DesignsListScreen from './src/screens/DesignsListScreen';
+import DesignViewScreen from './src/screens/DesignViewScreen';
+import ReleasesScreen from './src/screens/ReleasesScreen';
+import NewProjectScreen from './src/screens/NewProjectScreen';
+import ProjectSettingsScreen from './src/screens/ProjectSettingsScreen';
+import ProjectAgentsScreen from './src/screens/ProjectAgentsScreen';
+import ProjectCronsScreen from './src/screens/ProjectCronsScreen';
+import ProjectSecretsScreen from './src/screens/ProjectSecretsScreen';
+import RunnersScreen from './src/screens/RunnersScreen';
+import RumSettingsScreen from './src/screens/RumSettingsScreen';
+import AwsProfilesScreen from './src/screens/AwsProfilesScreen';
+import ReviewerScreen from './src/screens/ReviewerScreen';
+import EpicsScreen from './src/screens/EpicsScreen';
+import RepositoryScreen from './src/screens/RepositoryScreen';
 import DrawerContent from './src/components/DrawerContent';
 import SetupWizard from './src/components/SetupWizard';
 import LoginScreen from './src/components/LoginScreen';
@@ -175,6 +189,20 @@ function AppContent() {
             <Stack.Screen name="Threads" component={ThreadsScreen} />
             <Stack.Screen name="CustomerSupport" component={CustomerSupportScreen} />
             <Stack.Screen name="SessionChanges" component={SessionChangesScreen} />
+            <Stack.Screen name="Designs" component={DesignsListScreen} />
+            <Stack.Screen name="DesignView" component={DesignViewScreen} />
+            <Stack.Screen name="Releases" component={ReleasesScreen} />
+            <Stack.Screen name="NewProject" component={NewProjectScreen} />
+            <Stack.Screen name="ProjectSettings" component={ProjectSettingsScreen} />
+            <Stack.Screen name="ProjectAgents" component={ProjectAgentsScreen} />
+            <Stack.Screen name="ProjectCrons" component={ProjectCronsScreen} />
+            <Stack.Screen name="ProjectSecrets" component={ProjectSecretsScreen} />
+            <Stack.Screen name="Runners" component={RunnersScreen} />
+            <Stack.Screen name="RumSettings" component={RumSettingsScreen} />
+            <Stack.Screen name="AwsProfiles" component={AwsProfilesScreen} />
+            <Stack.Screen name="Reviewer" component={ReviewerScreen} />
+            <Stack.Screen name="Epics" component={EpicsScreen} />
+            <Stack.Screen name="Repository" component={RepositoryScreen} />
           </Stack.Navigator>
         </NavigationContainer>
 

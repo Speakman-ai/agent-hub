@@ -8,8 +8,8 @@
  *   - Autonomous trigger (`agent_block`) arms neither timer; the
  *     returned handle reports `armed: false` and `cancel()` is a no-op.
  *   - Live trigger (`ui_button`) arms both timers; the notify timer
- *     fires the push exactly once and the stall timer transitions the
- *     run to `stalled_no_response` exactly once.
+ *     marks `notified` without sending push; the stall timer transitions
+ *     the run to `stalled_no_response` exactly once.
  *   - `cancel()` clears both pending timers — neither push nor terminal
  *     write happens after cancel.
  *   - Window clamping: notify floored to MIN_NOTIFY_AFTER_MS; stall
@@ -19,8 +19,8 @@
  *     `stalled_no_response` status/reason pair; a system message is
  *     inserted into the originating session via `addMessage` with the
  *     expected `kind` metadata; phase event is broadcast as terminal.
- *   - Push dispatch failure does not crash the watchdog — logged and
- *     continues.
+ *   - Push dispatch removed from notification taxonomy — notify timer
+ *     is a no-op aside from setting `notified`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,22 +85,20 @@ function makeStmts(): FakeStmts {
   };
 }
 
-function makeDeps(stmts: FakeStmts, opts?: { dispatchPush?: ReturnType<typeof vi.fn> }) {
+function makeDeps(stmts: FakeStmts) {
   const broadcast = vi.fn();
-  const dispatchPush = opts?.dispatchPush ?? vi.fn().mockResolvedValue(0);
   const { schedule, pending } = makeFakeScheduler();
   const log = vi.fn();
   let counter = 0;
   const deps: StallWatchdogDeps = {
     stmts: stmts as unknown as StallWatchdogDeps['stmts'],
     broadcast,
-    dispatchPush: dispatchPush as never,
     scheduleTimer: schedule,
     now: () => 1_700_000_000_000,
     newId: () => `msg-${++counter}`,
     log,
   };
-  return { deps, broadcast, dispatchPush, pending, log };
+  return { deps, broadcast, pending, log };
 }
 
 const baseOpts = (overrides: Partial<StallWatchdogOptions> = {}): StallWatchdogOptions => ({
@@ -148,38 +146,14 @@ describe('armStallWatchdog — live mode arms both timers', () => {
     expect(pending[1].ms).toBe(DEFAULT_STALL_AFTER_MS);
   });
 
-  it('notify timer fires push exactly once, leaves run waiting', async () => {
+  it('notify timer marks notified without push, leaves run waiting', () => {
     const stmts = makeStmts();
-    const dispatchPush = vi.fn().mockResolvedValue(1);
-    const { deps, pending } = makeDeps(stmts, { dispatchPush });
+    const { deps, pending } = makeDeps(stmts);
     const onStall = vi.fn();
     const handle = armStallWatchdog(deps, baseOpts(), onStall);
 
-    // Trip the notify timer.
     pending[0].fn();
-    // Push is async-fire-and-forget; await a microtask to let it settle.
-    await Promise.resolve();
-    await Promise.resolve();
 
-    expect(dispatchPush).toHaveBeenCalledTimes(1);
-    expect(dispatchPush.mock.calls[0][0]).toBe('finalize_stall_warning');
-    const payload = dispatchPush.mock.calls[0][1] as {
-      data: Record<string, unknown>;
-      body: string;
-    };
-    expect(payload.data.runId).toBe('run-1');
-    expect(payload.data.sessionId).toBe('sess-1');
-    expect(payload.data.cardId).toBe('card-1');
-    expect(payload.data.type).toBe('finalize_stall_warning');
-    expect(payload.body).toContain('Wire reviewer dispatch');
-
-    // Idempotency: the notify lambda is fired exactly once even if the
-    // fake timer is re-triggered.
-    pending[0].fn();
-    await Promise.resolve();
-    expect(dispatchPush).toHaveBeenCalledTimes(1);
-
-    // Stall timer has NOT fired yet — run continues waiting.
     expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
     expect(onStall).not.toHaveBeenCalled();
     expect(handle.state()).toMatchObject({
@@ -188,6 +162,10 @@ describe('armStallWatchdog — live mode arms both timers', () => {
       stalled: false,
       cancelled: false,
     });
+
+    // Idempotency: re-firing the notify lambda does not change state.
+    pending[0].fn();
+    expect(handle.state().notified).toBe(true);
   });
 
   it('stall timer parks the run as stalled_no_response and writes a session message', () => {
@@ -235,10 +213,9 @@ describe('armStallWatchdog — live mode arms both timers', () => {
 });
 
 describe('armStallWatchdog — cancel clears both timers', () => {
-  it('does not push or terminate after cancel', async () => {
+  it('does not terminate after cancel', () => {
     const stmts = makeStmts();
-    const dispatchPush = vi.fn().mockResolvedValue(1);
-    const { deps, pending } = makeDeps(stmts, { dispatchPush });
+    const { deps, pending } = makeDeps(stmts);
     const onStall = vi.fn();
     const handle = armStallWatchdog(deps, baseOpts(), onStall);
 
@@ -246,14 +223,9 @@ describe('armStallWatchdog — cancel clears both timers', () => {
     expect(pending[0].cleared).toBe(true);
     expect(pending[1].cleared).toBe(true);
 
-    // Even if the fake fires the timer fn directly (simulating a race
-    // where the timer fired just before clear), the cancelled flag
-    // suppresses the work.
     pending[0].fn();
     pending[1].fn();
-    await Promise.resolve();
 
-    expect(dispatchPush).not.toHaveBeenCalled();
     expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
     expect(onStall).not.toHaveBeenCalled();
     expect(handle.state().cancelled).toBe(true);
@@ -268,25 +240,6 @@ describe('armStallWatchdog — cancel clears both timers', () => {
       handle.cancel();
       handle.cancel();
     }).not.toThrow();
-  });
-});
-
-describe('armStallWatchdog — push dispatch failure is non-fatal', () => {
-  it('logs and continues when dispatchPush rejects', async () => {
-    const stmts = makeStmts();
-    const dispatchPush = vi.fn().mockRejectedValue(new Error('expo down'));
-    const { deps, pending, log } = makeDeps(stmts, { dispatchPush });
-    armStallWatchdog(deps, baseOpts(), vi.fn());
-
-    pending[0].fn();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(log).toHaveBeenCalled();
-    const logged = log.mock.calls.map((c) => c[0] as string).join('\n');
-    expect(logged).toMatch(/push dispatch failed/i);
-    // Stall timer still armed.
-    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
   });
 });
 

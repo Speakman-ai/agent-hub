@@ -123,7 +123,7 @@ function FileSection({ file, initiallyOpen, comments, onAddComment }) {
           {file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename}
         </Text>
         {comments.length > 0 ? (
-          <Text style={styles.fileCommentCount}>{'\u{1F4AC}'} {comments.length}</Text>
+          <Text style={styles.fileCommentCount}>{comments.length} comments</Text>
         ) : null}
         {file.isBinary ? (
           <Text style={styles.fileBinary}>binary</Text>

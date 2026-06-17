@@ -76,6 +76,7 @@ export default function NotesScreen({ route }) {
   const [creating, setCreating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [processing, setProcessing] = useState(false);
 
   // Edit form state
   const [editTitle, setEditTitle] = useState('');
@@ -188,6 +189,38 @@ export default function NotesScreen({ route }) {
     ]);
   };
 
+  const handleProcess = () => {
+    if (!selectedNote || processing) return;
+    const noteDate = selectedNote.date || selectedNote.id;
+    Alert.alert('Process note', 'Extract insights into wiki, memory, or kanban?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Wiki',
+        onPress: () => runProcess(noteDate, 'wiki'),
+      },
+      {
+        text: 'Memory',
+        onPress: () => runProcess(noteDate, 'memory'),
+      },
+      {
+        text: 'Both',
+        onPress: () => runProcess(noteDate, 'both'),
+      },
+    ]);
+  };
+
+  const runProcess = async (date, mode) => {
+    setProcessing(true);
+    try {
+      await api.processNote(projectId, date, { mode });
+      Alert.alert('Processing started', 'An agent session will extract insights from this note.');
+    } catch (err) {
+      Alert.alert('Error', err.message || 'Failed to process note');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
   const handleCancel = () => {
     setEditing(false);
     setCreating(false);
@@ -292,6 +325,9 @@ export default function NotesScreen({ route }) {
         <View style={{ flex: 1 }} />
         {!editing && !creating && selectedNote && (
           <>
+            <TouchableOpacity onPress={handleProcess} style={styles.headerAction} disabled={processing}>
+              <Text style={styles.headerActionText}>{processing ? '…' : 'Process'}</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={handleEdit} style={styles.headerAction}>
               <Text style={styles.headerActionText}>Edit</Text>
             </TouchableOpacity>

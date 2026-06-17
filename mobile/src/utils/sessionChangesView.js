@@ -175,19 +175,14 @@ export function worktreeStatusLine(worktree) {
 }
 
 /**
- * Resolve the freshest available session row for the Changes screen.
+ * Resolve the freshest available session row when a screen needs live
+ * `ask_mode` / `finalize_automation` instead of a stale navigation snapshot.
  *
- * The screen is reached via React Navigation, whose route params carry only a
- * one-time snapshot of the session. `FinalizeBar` re-syncs its dropdown from
- * the `session` prop, so a stale snapshot reintroduces the wrong-mode bug it
- * fixes (e.g. showing `Build` while the server is in Ask mode). Resolution
- * order, freshest first:
+ * Resolution order, freshest first:
  *
- *   1. The live copy from app context (`sessions` / `cronSessions`), kept
- *      current by WebSocket events — this reflects mode changes made elsewhere.
- *   2. A row fetched directly for this id (covers sessions not in the active
- *      agent's context list, or opened before that list loaded).
- *   3. The route-param snapshot, as a last resort so the bar still renders.
+ *   1. The live copy from app context (`sessions` / `cronSessions`)
+ *   2. A row fetched directly for this id
+ *   3. The route-param snapshot
  *
  * @param {{
  *   sessionId?: string|null,

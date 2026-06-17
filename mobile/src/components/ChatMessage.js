@@ -14,7 +14,7 @@ import {
   Alert,
   Linking,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import Markdown from 'react-native-markdown-display';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
@@ -222,7 +222,7 @@ function MessageAttachments({ attachments }) {
                 accessibilityLabel={`Open video ${att.originalName || att.filename || ''}`}
                 style={[imageStyles.thumb, imageStyles.videoChip]}
               >
-                <Ionicons name="play-circle" size={36} color={colors.gray200} />
+                <AppIcon name="play-circle" size={36} color={colors.gray200} />
                 <Text style={imageStyles.mediaBadge}>VIDEO</Text>
               </TouchableOpacity>
             );
@@ -237,7 +237,7 @@ function MessageAttachments({ attachments }) {
               accessibilityLabel={`Open file ${att.originalName || att.filename || ''}`}
               style={[imageStyles.thumb, imageStyles.fileChip]}
             >
-              <Ionicons name="document-outline" size={26} color={colors.gray200} />
+              <AppIcon name="document-outline" size={26} color={colors.gray200} />
               <Text style={imageStyles.fileName} numberOfLines={2}>
                 {att.originalName || att.filename || 'file'}
               </Text>
@@ -322,7 +322,7 @@ function SystemShipRequestedMessage({ message }) {
     <View style={prStyles.container}>
       <View style={shipStyles.card}>
         <View style={prStyles.headerRow}>
-          <Ionicons name="git-pull-request" size={16} color={colors.purple400} />
+          <AppIcon name="git-pull-request" size={16} color={colors.purple400} />
           <Text style={shipStyles.headerText}>
             {meta.auto ? 'Shipping automatically' : 'Create ticket & PR'}
           </Text>
@@ -388,7 +388,7 @@ function SystemPrCreatedMessage({ message }) {
     <View style={prStyles.container}>
       <View style={prStyles.card}>
         <View style={prStyles.headerRow}>
-          <Ionicons name="git-pull-request" size={16} color={colors.emerald400} />
+          <AppIcon name="git-pull-request" size={16} color={colors.emerald400} />
           <Text style={prStyles.headerText}>Pull request created from these changes</Text>
         </View>
         <View style={prStyles.metaRow}>

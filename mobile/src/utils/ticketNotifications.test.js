@@ -1,69 +1,53 @@
 import { describe, it, expect } from 'vitest';
 import {
-  cardStartedNotification,
-  cardReviewNotification,
+  awaitingFeedbackNotification,
+  readyToPushNotification,
+  pushedNotification,
+  supportTicketCreatedNotification,
+  threadMessageNotification,
+  reviewAssignedNotification,
   prMergedNotification,
-  prReadyNotification,
-  sessionCompleteNotification,
-  threadCreatedNotification,
-  threadEntryNotification,
-  dispatchFailureNotification,
   mapBroadcastToNotification,
 } from './ticketNotifications.js';
 
 describe('ticketNotification formatters', () => {
-  it('formats card started with assignee', () => {
-    expect(cardStartedNotification({ cardTitle: 'X', assignee: 'A' })).toEqual({
-      title: 'Ticket Started',
-      body: '"X" started by A',
+  it('formats awaiting feedback', () => {
+    expect(awaitingFeedbackNotification({ sessionName: 'Ship' })).toEqual({
+      title: 'Awaiting feedback',
+      body: '"Ship" is waiting for your input',
     });
-    expect(cardStartedNotification({ cardTitle: 'X' }).body).toBe('"X" started');
+    expect(awaitingFeedbackNotification({}).body).toBe('A session is waiting for your input');
   });
 
-  it('formats card review, PR merged, prReady variants', () => {
-    expect(cardReviewNotification({ cardTitle: 'X', assignee: 'A' }).body).toBe(
-      '"X" moved to Review (A)',
+  it('formats ready to push and pushed', () => {
+    expect(readyToPushNotification({ sessionName: 'Ship' }).title).toBe('Ready to push');
+    expect(pushedNotification({ sessionName: 'Ship', prNumber: 7 }).body).toBe(
+      '"Ship" was pushed (PR #7)',
     );
-    expect(prMergedNotification({ cardTitle: 'X', prNumber: 7 }).body).toBe(
-      'PR #7 merged: "X"',
-    );
-    expect(prReadyNotification({ agentName: 'H', branch: 'f/x' }).body).toContain(
-      'H has changes on',
-    );
-    expect(prReadyNotification({}).body).toMatch(/An agent has changes/);
   });
 
-  it('formats sessionComplete and truncates long preview', () => {
-    expect(sessionCompleteNotification({ agentName: 'H', sessionName: 'S' }).title).toBe(
-      'H — Done',
+  it('formats support ticket created', () => {
+    expect(supportTicketCreatedNotification({ subject: 'Help', ticketType: 'bug' }).body).toBe(
+      'bug: Help',
     );
-    const long = 'x'.repeat(200);
-    expect(
-      sessionCompleteNotification({ agentName: 'H', preview: long }).body.startsWith('…'),
-    ).toBe(true);
-    expect(sessionCompleteNotification({}).body).toBe('Session completed');
   });
 
-  it('formats thread events and caps entry preview', () => {
-    expect(threadCreatedNotification({ threadName: 'T', threadType: 'heartbeat' }).body).toContain(
-      'Heartbeat',
+  it('formats thread messages and truncates long preview', () => {
+    expect(threadMessageNotification({ threadName: 'T', threadType: 'heartbeat' }).title).toBe(
+      'Heartbeat message',
     );
-    expect(
-      threadEntryNotification({ threadName: 'T', threadType: 'cron', isError: true }).title,
-    ).toBe('Cron Error');
     const long = 'y'.repeat(200);
     expect(
-      threadEntryNotification({ threadName: 'T', threadType: 'cron', preview: long }).body.endsWith(
+      threadMessageNotification({ threadName: 'T', threadType: 'cron', preview: long }).body.endsWith(
         '…',
       ),
     ).toBe(true);
   });
 
-  it('formats dispatch failure and truncates long messages', () => {
-    const long = 'z'.repeat(300);
-    expect(dispatchFailureNotification({ message: long }).body.endsWith('…')).toBe(true);
-    expect(dispatchFailureNotification({ message: '' }).body).toBe(
-      'An autonomous dispatch failed',
+  it('formats review assigned and PR merged', () => {
+    expect(reviewAssignedNotification({ cardTitle: 'X' }).body).toBe('"X" needs your review');
+    expect(prMergedNotification({ cardTitle: 'X', prNumber: 7, mergedBy: 'dev' }).body).toBe(
+      'PR #7 merged by dev: "X"',
     );
   });
 });
@@ -73,116 +57,206 @@ describe('mapBroadcastToNotification', () => {
     expect(mapBroadcastToNotification(null)).toBeNull();
     expect(mapBroadcastToNotification({})).toBeNull();
     expect(mapBroadcastToNotification({ type: 'stream' })).toBeNull();
+    expect(mapBroadcastToNotification({ type: 'done' })).toBeNull();
   });
 
-  it('maps "done" to session_complete with preview', () => {
+  it('maps awaiting_input when waiting=true', () => {
     const r = mapBroadcastToNotification({
-      type: 'done',
-      agentName: 'H',
+      type: 'awaiting_input',
+      waiting: true,
       sessionName: 'S',
-      message: { content: 'All\n\ndone.' },
     });
     expect(r).not.toBeNull();
-    expect(r.event).toBe('session_complete');
-    expect(r.title).toBe('H — Done');
-    expect(r.body).toContain('All done.');
+    expect(r.event).toBe('awaiting_feedback');
+    expect(r.title).toBe('Awaiting feedback');
   });
 
-  it('maps changes_ready and card_moved', () => {
-    expect(
-      mapBroadcastToNotification({ type: 'changes_ready', agentName: 'H', branch: 'f/x' }).event,
-    ).toBe('changes_ready');
+  it('maps finalize_run_completed statuses', () => {
     expect(
       mapBroadcastToNotification({
-        type: 'card_moved',
-        columnName: 'In Progress',
-        cardTitle: 'T',
+        type: 'finalize_run_completed',
+        status: 'ready_to_push',
+        sessionName: 'S',
       }).event,
-    ).toBe('card_started');
+    ).toBe('ready_to_push');
+    expect(
+      mapBroadcastToNotification({
+        type: 'finalize_run_completed',
+        status: 'pushed',
+        sessionName: 'S',
+        prNumber: 3,
+      }).event,
+    ).toBe('pushed');
+    expect(
+      mapBroadcastToNotification({ type: 'finalize_run_completed', status: 'failed' }),
+    ).toBeNull();
+  });
+
+  it('maps card_moved to review_assigned_to_you only for Review', () => {
     expect(
       mapBroadcastToNotification({
         type: 'card_moved',
         columnName: 'Review',
         cardTitle: 'T',
       }).event,
-    ).toBe('card_review');
+    ).toBe('review_assigned_to_you');
     expect(
       mapBroadcastToNotification({ type: 'card_moved', columnName: 'Done', cardTitle: 'T' }),
     ).toBeNull();
   });
 
-  it('maps thread events and flags ERROR entries', () => {
-    expect(
-      mapBroadcastToNotification({
-        type: 'thread_created',
-        thread: { name: 'Nightly', type: 'cron' },
-      }).event,
-    ).toBe('thread_created');
+  it('maps thread_entry_created and flags ERROR entries', () => {
     const entry = mapBroadcastToNotification({
       type: 'thread_entry_created',
       threadName: 'Nightly',
       threadType: 'cron',
       entry: { content: 'ERROR: boom' },
     });
-    expect(entry.event).toBe('thread_entry');
-    expect(entry.title).toBe('Cron Error');
+    expect(entry.event).toBe('thread_message');
+    expect(entry.title).toBe('Thread error');
   });
 
-  it('maps dispatch_failure', () => {
-    const r = mapBroadcastToNotification({ type: 'dispatch_failure', message: 'boom' });
-    expect(r.event).toBe('dispatch_failure');
-    expect(r.title).toBe('Dispatch Failure');
-    expect(r.body).toContain('boom');
+  it('maps support_ticket_created and webhook_pr_merged', () => {
+    expect(
+      mapBroadcastToNotification({
+        type: 'support_ticket_created',
+        ticket: { subject: 'Help', type: 'bug' },
+      }).event,
+    ).toBe('support_ticket_created');
+    expect(
+      mapBroadcastToNotification({
+        type: 'webhook_pr_merged',
+        cardTitle: 'X',
+        prNumber: 5,
+      }).event,
+    ).toBe('pr_merged');
   });
 });
 
 describe('mapBroadcastToNotification — account scoping (ownerUserId)', () => {
-  const doneEvent = (ownerUserId) => ({
-    type: 'done',
+  const awaitingEvent = (ownerUserId) => ({
+    type: 'awaiting_input',
+    waiting: true,
     sessionId: 's1',
-    agentName: 'H',
     sessionName: 'S',
     ownerUserId,
-    message: { content: 'ok' },
   });
 
   it("suppresses another user's session events", () => {
-    expect(mapBroadcastToNotification(doneEvent('kevin'), { currentUserId: 'ryan' })).toBeNull();
+    expect(
+      mapBroadcastToNotification(awaitingEvent('kevin'), { currentUserId: 'ryan' }),
+    ).toBeNull();
     expect(
       mapBroadcastToNotification(
-        { type: 'changes_ready', sessionId: 's1', ownerUserId: 'kevin', branch: 'f/x' },
+        {
+          type: 'finalize_run_completed',
+          status: 'ready_to_push',
+          sessionId: 's1',
+          ownerUserId: 'kevin',
+        },
         { currentUserId: 'ryan' },
       ),
     ).toBeNull();
   });
 
   it("shows the current user's own session events", () => {
-    const r = mapBroadcastToNotification(doneEvent('ryan'), { currentUserId: 'ryan' });
-    expect(r?.event).toBe('session_complete');
+    const r = mapBroadcastToNotification(awaitingEvent('ryan'), { currentUserId: 'ryan' });
+    expect(r?.event).toBe('awaiting_feedback');
   });
 
   it('shows unowned events (cron/system sessions) to everyone', () => {
-    expect(mapBroadcastToNotification(doneEvent(null), { currentUserId: 'ryan' })?.event).toBe(
-      'session_complete',
-    );
-    expect(mapBroadcastToNotification(doneEvent(undefined), { currentUserId: 'ryan' })?.event).toBe(
-      'session_complete',
+    expect(
+      mapBroadcastToNotification(awaitingEvent(null), { currentUserId: 'ryan' })?.event,
+    ).toBe('awaiting_feedback');
+    expect(
+      mapBroadcastToNotification(awaitingEvent(undefined), { currentUserId: 'ryan' })?.event,
+    ).toBe('awaiting_feedback');
+  });
+
+  it("suppresses another user's owned session event for an unattributed client (no local bypass)", () => {
+    // Regression: a session-only broadcast carries `ownerUserId` but no
+    // resolvable project, so the project gate can't catch it. An API-key /
+    // unauthed client (me === null) on a multi-user server must NOT see it.
+    expect(mapBroadcastToNotification(awaitingEvent('kevin'), {})).toBeNull();
+    expect(mapBroadcastToNotification(awaitingEvent('kevin'))).toBeNull();
+  });
+
+  it('shows owned session events to an unknown caller only with an explicit local bypass', () => {
+    // `localBypass` from a real local/bundled single-user signal is the only
+    // case that permits an owned event through without a matching user id.
+    expect(mapBroadcastToNotification(awaitingEvent('kevin'), { localBypass: true })?.event).toBe(
+      'awaiting_feedback',
     );
   });
 
-  it('shows owned events when the caller has no per-user identity (legacy apiKey)', () => {
-    expect(mapBroadcastToNotification(doneEvent('kevin'), {})?.event).toBe('session_complete');
-    expect(mapBroadcastToNotification(doneEvent('kevin'))?.event).toBe('session_complete');
-  });
-
-  it('never scopes non-session events', () => {
+  it('never scopes non-session events without a resolvable project', () => {
     const r = mapBroadcastToNotification(
       { type: 'card_moved', columnName: 'Review', cardTitle: 'T', ownerUserId: 'kevin' },
       { currentUserId: 'ryan' },
     );
-    // card_moved carries no session owner semantics today; if a stray
-    // ownerUserId shows up it is still honored — this documents that the
-    // gate is on the field, not the event type.
     expect(r).toBeNull();
+  });
+});
+
+describe('mapBroadcastToNotification — project scoping (ownerUserId on project)', () => {
+  const projects = [
+    { id: 'mine', ownerUserId: 'ryan' },
+    { id: 'theirs', ownerUserId: 'kevin' },
+  ];
+
+  it("suppresses another user's project events", () => {
+    expect(
+      mapBroadcastToNotification(
+        {
+          type: 'thread_entry_created',
+          projectId: 'theirs',
+          threadName: 'N',
+          threadType: 'cron',
+          entry: { content: 'ok' },
+        },
+        { currentUserId: 'ryan', projects },
+      ),
+    ).toBeNull();
+    expect(
+      mapBroadcastToNotification(
+        { type: 'card_moved', columnName: 'Review', cardTitle: 'T', projectId: 'theirs' },
+        { currentUserId: 'ryan', projects },
+      ),
+    ).toBeNull();
+  });
+
+  it('shows events for projects the current user owns', () => {
+    const r = mapBroadcastToNotification(
+      {
+        type: 'thread_entry_created',
+        projectId: 'mine',
+        threadName: 'Nightly',
+        threadType: 'cron',
+        entry: { content: 'ok' },
+      },
+      { currentUserId: 'ryan', projects },
+    );
+    expect(r?.event).toBe('thread_message');
+  });
+
+  it("suppresses another user's project event for an unattributed client without a real local bypass", () => {
+    // Regression: a missing currentUserId must NOT be treated as a local
+    // bypass. An API-key / unattributed client on a multi-user server has no
+    // local single-user boundary, so an owned project's banner is suppressed.
+    const r = mapBroadcastToNotification(
+      { type: 'card_moved', columnName: 'Review', cardTitle: 'T', projectId: 'theirs' },
+      { projects },
+    );
+    expect(r).toBeNull();
+  });
+
+  it('delivers an owned project event only with an explicit local/bundled bypass', () => {
+    // `localBypass` comes from a real signal (server has no auth configured →
+    // single-user). With it set, the on-device owner scoping is bypassed.
+    const r = mapBroadcastToNotification(
+      { type: 'card_moved', columnName: 'Review', cardTitle: 'T', projectId: 'theirs' },
+      { projects, localBypass: true },
+    );
+    expect(r?.event).toBe('review_assigned_to_you');
   });
 });

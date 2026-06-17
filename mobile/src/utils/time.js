@@ -1,12 +1,23 @@
 /**
+ * Parse a date value into a Date object.
+ * Handles: ISO strings, SQLite datetime strings (no TZ = UTC), epoch ms numbers.
+ */
+export function parseDate(val) {
+  if (val == null || val === '') return null;
+  if (val instanceof Date) return Number.isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'number') return new Date(val);
+  const str = String(val);
+  if (str.includes('T')) return new Date(str);
+  return new Date(`${str}Z`);
+}
+
+/**
  * Format a date string as relative time ("2 min ago", "1h ago", etc.)
  */
 export function relativeTime(dateStr) {
-  if (!dateStr) return '';
+  const d = parseDate(dateStr);
+  if (!d || Number.isNaN(d.getTime())) return '';
   const now = new Date();
-  const date = new Date(dateStr);
-  // Handle SQLite datetime format (no timezone = UTC)
-  const d = dateStr.includes('T') ? date : new Date(dateStr + 'Z');
   const diffMs = now - d;
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
@@ -39,13 +50,8 @@ export function formatElapsed(seconds) {
  * render identical heartbeat / cron next-run badges.
  */
 export function relativeFuture(dateStr) {
-  if (!dateStr) return { label: '', overdue: false };
-  const date = new Date(dateStr);
-  // Handle SQLite datetime format (no timezone = UTC)
-  const d = typeof dateStr === 'string' && !dateStr.includes('T')
-    ? new Date(dateStr + 'Z')
-    : date;
-  if (isNaN(d)) return { label: '', overdue: false };
+  const d = parseDate(dateStr);
+  if (!d || Number.isNaN(d.getTime())) return { label: '', overdue: false };
   const diffMs = d - new Date();
   const overdue = diffMs < 0;
   const absSec = Math.floor(Math.abs(diffMs) / 1000);
@@ -74,11 +80,8 @@ export function relativeFuture(dateStr) {
  * Returns `null` for unparseable input so callers can hide the chip.
  */
 export function daysUntilPurge(deletedAt, retentionDays = 7) {
-  if (!deletedAt) return null;
-  const str = String(deletedAt);
-  const raw = new Date(str);
-  const d = typeof deletedAt === 'string' && !str.includes('T') ? new Date(str + 'Z') : raw;
-  if (!d || isNaN(d)) return null;
+  const d = parseDate(deletedAt);
+  if (!d || Number.isNaN(d.getTime())) return null;
   const msPerDay = 1000 * 60 * 60 * 24;
   const msPerHour = 1000 * 60 * 60;
   const ageMs = Date.now() - d.getTime();

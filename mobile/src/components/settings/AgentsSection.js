@@ -12,6 +12,7 @@ import { api } from '../../utils/api';
 import { colors } from '../../theme/colors';
 import {
   groupAgentsByProject,
+  resolveNewAgentForm,
   validateNewAgentForm,
   buildCreateAgentPayload,
   buildUpdateAgentPayload,
@@ -146,7 +147,7 @@ function BulkEngineModelPickers({ modelConfig, engine, model, onEngine, onModel 
   );
 }
 
-export default function AgentsSection() {
+export default function AgentsSection({ projectId: filterProjectId, hideBulk = false } = {}) {
   const [agents, setAgents] = useState([]);
   const [projects, setProjects] = useState([]);
   const [modelConfig, setModelConfig] = useState(null);
@@ -209,7 +210,16 @@ export default function AgentsSection() {
     loadOverrides();
   }, [load, loadOverrides]);
 
-  const groups = useMemo(() => groupAgentsByProject(agents, projects), [agents, projects]);
+  const groups = useMemo(() => {
+    const all = groupAgentsByProject(agents, projects);
+    if (!filterProjectId) return all;
+    return all
+      .filter((g) => g.projectId === filterProjectId)
+      .map((g) => ({
+        ...g,
+        agents: g.agents.filter((a) => a.role !== 'reviewer'),
+      }));
+  }, [agents, projects, filterProjectId]);
 
   const handleExpand = (agent) => {
     if (expanded === agent.id) {
@@ -341,14 +351,18 @@ export default function AgentsSection() {
   };
 
   const handleCreate = async () => {
-    const error = validateNewAgentForm(newForm);
+    // In project-scoped mode the Project picker is hidden, so force the scoped
+    // project onto the form before validating/submitting — otherwise the agent
+    // would be created from the section's default state under the wrong project.
+    const effectiveForm = resolveNewAgentForm(newForm, filterProjectId);
+    const error = validateNewAgentForm(effectiveForm);
     if (error) {
       Alert.alert('Invalid agent', error);
       return;
     }
     setCreating(true);
     try {
-      await api.createAgent(buildCreateAgentPayload(newForm));
+      await api.createAgent(buildCreateAgentPayload(effectiveForm));
       setShowNew(false);
       setNewForm(EMPTY_NEW_FORM);
       await load();
@@ -407,7 +421,7 @@ export default function AgentsSection() {
         </View>
       )}
 
-      {agents.length > 0 && modelConfig && (
+      {agents.length > 0 && modelConfig && !hideBulk && !filterProjectId && (
         <View style={styles.formCard}>
           <Text style={styles.formTitle}>Switch all agents</Text>
           <Text style={styles.formHint}>
@@ -453,13 +467,17 @@ export default function AgentsSection() {
             placeholderTextColor={colors.gray500}
             style={styles.formInput}
           />
-          <Text style={styles.fieldLabel}>Project</Text>
-          <ChipRow
-            options={projects.map((p) => p.id)}
-            selected={newForm.projectId}
-            onSelect={(projectId) => setNewForm({ ...newForm, projectId })}
-            labelFor={(id) => projects.find((p) => p.id === id)?.name || id}
-          />
+          {!filterProjectId && (
+            <>
+              <Text style={styles.fieldLabel}>Project</Text>
+              <ChipRow
+                options={projects.map((p) => p.id)}
+                selected={newForm.projectId}
+                onSelect={(projectId) => setNewForm({ ...newForm, projectId })}
+                labelFor={(id) => projects.find((p) => p.id === id)?.name || id}
+              />
+            </>
+          )}
           <SharedEnginePicker
             modelConfig={modelConfig}
             engine={newForm.engine}
@@ -488,13 +506,15 @@ export default function AgentsSection() {
 
       {groups.map((group) => (
         <View key={group.projectId || 'other'} style={styles.projectGroup}>
-          <View style={styles.projectHeader}>
-            <View style={[styles.projectDot, { backgroundColor: group.color || colors.gray600 }]} />
-            <Text style={styles.projectName}>{group.projectName}</Text>
-            <Text style={styles.projectCount}>
-              {group.agents.length} agent{group.agents.length === 1 ? '' : 's'}
-            </Text>
-          </View>
+          {!filterProjectId && (
+            <View style={styles.projectHeader}>
+              <View style={[styles.projectDot, { backgroundColor: group.color || colors.gray600 }]} />
+              <Text style={styles.projectName}>{group.projectName}</Text>
+              <Text style={styles.projectCount}>
+                {group.agents.length} agent{group.agents.length === 1 ? '' : 's'}
+              </Text>
+            </View>
+          )}
           {group.agents.length === 0 ? (
             <Text style={styles.emptyText}>No agents in this project</Text>
           ) : (

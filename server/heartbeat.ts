@@ -339,28 +339,6 @@ async function notifySlack(agentName: string, result: string): Promise<void> {
     console.error('Failed to send Slack notification:', (err as Error).message);
   }
 }
-
-/**
- * Notify mobile subscribers when a cron completes. Delegates to the shared
- * `push.ts` module so cron pushes honour per-device preferences and share
- * the Expo delivery/cleanup path with broadcast-driven pushes.
- */
-async function sendPushNotifications(
-  cronName: string,
-  result: string,
-  sessionId: string,
-  cronId: number,
-  projectId: string | null,
-): Promise<void> {
-  const { dispatchPushEvent, cronCompletePush } = await import('./push.js');
-  const { title, body } = cronCompletePush({ cronName, result });
-  await dispatchPushEvent('cron', {
-    title,
-    body,
-    data: { sessionId, cronId: String(cronId), projectId, type: 'cron' },
-  });
-}
-
 interface HeartbeatResult {
   id: number | bigint;
   status: 'success' | 'error';
@@ -745,21 +723,6 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         null,
       );
       stmts.touchSession.run(session!.id);
-
-      // Only push when this cron has explicitly opted in. The thread and
-      // session rows above are still written and broadcast — but those
-      // broadcasts carry `suppressPush: true` when notify_on_run is off, so
-      // mobile devices don't get pinged via the `thread_entry` channel
-      // either. See `handleBroadcastForPush` in `push.ts`.
-      if (cronJob.notify_on_run) {
-        await sendPushNotifications(
-          cronJob.name,
-          result,
-          session!.id,
-          cronJob.id,
-          cronJob.project_id,
-        );
-      }
 
       if (onCronSessionUpdate) {
         onCronSessionUpdate({

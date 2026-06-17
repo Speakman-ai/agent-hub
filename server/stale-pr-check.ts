@@ -3,20 +3,16 @@
  *
  * When an ad-hoc session ends with uncommitted/unpushed work and no open PR,
  * `auto-git.ts` stores a JSON blob in `sessions.changes_ready` and broadcasts
- * a one-shot `changes_ready` event (bridged to push). If the user ignores the
- * banner for a while, the work sits in limbo — there's no reminder.
+ * a one-shot `changes_ready` event. If the user ignores the banner for a while,
+ * the work sits in limbo — there's no reminder push (removed from mobile taxonomy).
  *
- * This module wakes up every `STALE_PR_CHECK_INTERVAL_MS` and dispatches a
- * `pr_creation_stale` push for any session whose `updated_at` is older than
- * `STALE_PR_THRESHOLD_MS` and that hasn't been notified yet (dedup via
- * `sessions.stale_pr_notified_at`, cleared when `changes_ready` is cleared so
- * a future stale period re-fires).
+ * This module still wakes up every `STALE_PR_CHECK_INTERVAL_MS` and emits a
+ * `pr_creation_stale` WebSocket broadcast for desktop clients.
  *
  * Both constants are hardcoded here rather than pulled from `config.json` —
  * easy to promote to runtime config later if the product wants it tunable.
  */
 import type { Stmts } from './types.js';
-import { dispatchPushEvent, prCreationStalePush, type PushDispatchDeps } from './push.js';
 
 // ── Tunables (module-level exports so tests can read the same values) ──
 export const STALE_PR_THRESHOLD_MS = 30 * 60 * 1000;
@@ -36,7 +32,7 @@ export interface StalePrCheckDeps {
   /**
    * Optional WebSocket broadcast hook. When provided, we also emit a
    * `pr_creation_stale` broadcast so web/desktop clients can refresh a
-   * banner. Mobile clients get the push regardless.
+   * banner. Mobile push for this event was removed from the notification taxonomy.
    */
   broadcast?: (data: Record<string, unknown>) => void;
   /**
@@ -46,8 +42,6 @@ export interface StalePrCheckDeps {
   getAgent?: (agentId: string) => { name?: string; projectId?: string | null } | null;
   /** Override current time for deterministic tests. */
   now?: () => number;
-  /** Passed through to `dispatchPushEvent` (injectable fetch + token store). */
-  pushDeps?: PushDispatchDeps;
   /** Override for tests to silence console noise. */
   log?: (msg: string) => void;
 }
@@ -83,9 +77,9 @@ function ageMsFromSqliteTimestamp(updatedAt: string, now: number): number {
 }
 
 /**
- * One pass of the stale-pending-PR sweep. Dispatches a push + optional
- * broadcast for each session whose `updated_at` exceeds the threshold,
- * then marks each as notified so it won't fire again on the next pass.
+ * One pass of the stale-pending-PR sweep. Emits a WebSocket broadcast for
+ * each session whose `updated_at` exceeds the threshold, then marks each
+ * as notified so it won't fire again on the next pass.
  *
  * Returns the number of notifications dispatched (useful for tests).
  * Non-throwing: per-row errors are logged and the sweep continues.
@@ -110,28 +104,6 @@ export async function runStalePrCheck(deps: StalePrCheckDeps): Promise<number> {
       const agentName = agentInfo?.name;
       const projectId = agentInfo?.projectId ?? null;
       const ageMinutes = Math.round(ageMsFromSqliteTimestamp(row.updated_at, now) / 60000);
-      const { title, body } = prCreationStalePush({
-        agentName,
-        sessionName: row.name ?? undefined,
-        branch,
-        ageMinutes,
-      });
-
-      await dispatchPushEvent(
-        'pr_creation_stale',
-        {
-          title,
-          body,
-          data: {
-            type: 'pr_creation_stale',
-            sessionId: row.id,
-            agentId: row.agent_id,
-            projectId,
-            branch,
-          },
-        },
-        deps.pushDeps,
-      );
 
       deps.broadcast?.({
         type: 'pr_creation_stale',
@@ -157,7 +129,7 @@ export async function runStalePrCheck(deps: StalePrCheckDeps): Promise<number> {
 /**
  * Launch the periodic checker. The first run is scheduled one interval
  * ahead — at server start there's nothing stale yet, and we don't want to
- * block startup waiting on the Expo HTTP call.
+ * block startup waiting on network I/O.
  */
 export function startStalePrChecker(
   deps: StalePrCheckDeps,

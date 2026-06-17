@@ -61,7 +61,7 @@ export default function ChangesReadyBox({
     <View style={styles.container}>
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
-          <Text style={styles.icon}>🔀</Text>
+          <Text style={styles.icon}>{'>>'}</Text>
           <Text style={styles.title}>Changes ready</Text>
           {!!changes?.branch && (
             <Text style={styles.branch} numberOfLines={1}>

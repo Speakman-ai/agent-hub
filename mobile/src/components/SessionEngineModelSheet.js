@@ -4,7 +4,7 @@ import { colors } from '../theme/colors';
 import { engineOptionsFromConfig, modelsForEngine } from '../utils/engineOptions';
 
 /**
- * Per-session engine / mode / model picker sheet, anchored under the chat
+ * Per-session engine / model picker sheet, anchored under the chat
  * header. Extracted from TopBar's previously-inline modal so the chat header
  * stays slim and so engine/model failures surface as Alerts instead of
  * unhandled promise rejections (the context handlers persist via
@@ -13,10 +13,9 @@ import { engineOptionsFromConfig, modelsForEngine } from '../utils/engineOptions
  * Props:
  *  - visible / onClose       — modal control
  *  - modelConfig             — GET /config/models payload (engineValidModels)
- *  - engine / model / askMode — current session values
+ *  - engine / model          — current session values
  *  - onSelectEngine(engineId) — async; persists engine (+ default model)
  *  - onSelectModel(modelId)   — async; persists model
- *  - onToggleAskMode(enabled) — async; flips read-only mode
  */
 export default function SessionEngineModelSheet({
   visible,
@@ -24,10 +23,8 @@ export default function SessionEngineModelSheet({
   modelConfig,
   engine,
   model,
-  askMode,
   onSelectEngine,
   onSelectModel,
-  onToggleAskMode,
 }) {
   const engineOptions = engineOptionsFromConfig(modelConfig);
   const engineModels = modelsForEngine(engine, modelConfig);
@@ -64,27 +61,6 @@ export default function SessionEngineModelSheet({
               {eng.id === engine && <Text style={styles.check}>✓</Text>}
             </TouchableOpacity>
           ))}
-
-          <View style={styles.divider} />
-
-          {/* Mode section — Ask (read-only) vs Agent (full access) */}
-          <Text style={styles.sectionLabel}>MODE</Text>
-          <TouchableOpacity
-            style={styles.item}
-            onPress={() => run('Mode', onToggleAskMode, !askMode)}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: !!askMode }}
-            accessibilityLabel={
-              askMode
-                ? 'Ask mode on — toggle to agent (full access)'
-                : 'Ask mode off — toggle to read-only'
-            }
-          >
-            <Text style={[styles.itemLabel, askMode && styles.itemLabelAsk]}>
-              {askMode ? 'Ask (read-only)' : 'Agent (full access)'}
-            </Text>
-            {askMode && <Text style={styles.checkAsk}>✓</Text>}
-          </TouchableOpacity>
 
           <View style={styles.divider} />
 
@@ -165,16 +141,9 @@ const styles = StyleSheet.create({
   itemLabelActive: {
     color: colors.white,
   },
-  itemLabelAsk: {
-    color: colors.blue400,
-  },
   check: {
     fontSize: 12,
     color: colors.emerald400,
-  },
-  checkAsk: {
-    fontSize: 12,
-    color: colors.blue400,
   },
   divider: {
     height: 1,

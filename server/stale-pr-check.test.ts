@@ -8,8 +8,6 @@
  *   - All other tests run against a real in-memory DB so the "only stale
  *     rows come back" / "clearSessionChangesReady nulls the column" checks
  *     exercise the actual SQL rather than a hand-rolled mock.
- *   - `dispatchPushEvent` is stubbed by injecting a `pushDeps.getAllTokens`
- *     + capture fetch so we don't hit the network.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
@@ -83,13 +81,6 @@ function silenceErrors() {
 }
 
 describe('runStalePrCheck', () => {
-  // Use a capture fetch so we don't touch the network even if a token
-  // accidentally ends up in the store.
-  const makeCaptureFetch = () =>
-    vi.fn().mockResolvedValue({
-      json: async () => ({ data: [] }),
-    });
-
   let stmts: ReturnType<typeof createTestDb>['stmts'];
 
   beforeEach(() => {
@@ -106,19 +97,20 @@ describe('runStalePrCheck', () => {
       iso(-5), // 5 min ago
     );
 
-    const fetchFn = makeCaptureFetch();
+    const broadcast = vi.fn();
     const dispatched = await runStalePrCheck({
       stmts: stmts as unknown as Pick<Stmts, 'getStalePendingPrSessions' | 'markStalePrNotified'>,
-      pushDeps: { fetchFn, getAllTokens: () => [] },
+      broadcast,
       log: silenceErrors(),
     });
 
     expect(dispatched).toBe(0);
     const row = stmts.getSession.get('sess-young') as { stale_pr_notified_at: string | null };
     expect(row.stale_pr_notified_at).toBeNull();
+    expect(broadcast).not.toHaveBeenCalled();
   });
 
-  it('notifies once for a stale session and marks it', async () => {
+  it('broadcasts once for a stale session and marks it', async () => {
     stmts.insertSession.run(
       'sess-stale',
       'agent-1',
@@ -128,7 +120,6 @@ describe('runStalePrCheck', () => {
       iso(-45), // 45 min ago
     );
 
-    const fetchFn = makeCaptureFetch();
     const broadcast = vi.fn();
     const getAgent = vi.fn(() => ({ name: 'Hub Backend', projectId: 'agent-hub' }));
 
@@ -136,27 +127,11 @@ describe('runStalePrCheck', () => {
       stmts: stmts as unknown as Pick<Stmts, 'getStalePendingPrSessions' | 'markStalePrNotified'>,
       broadcast,
       getAgent,
-      pushDeps: {
-        fetchFn,
-        // Provide one token so dispatchPushEvent actually builds a payload;
-        // the fake fetch just records the call and returns an empty receipt.
-        getAllTokens: () => [
-          {
-            id: 1,
-            token: 'ExponentPushToken[x]',
-            platform: 'ios',
-            created_at: '2026-04-18 00:00:00',
-            last_used: null,
-            enabled_events: null,
-          },
-        ],
-      },
       log: silenceErrors(),
     });
 
     expect(dispatched).toBe(1);
 
-    // One broadcast and one push request should have fired.
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(broadcast.mock.calls[0][0]).toMatchObject({
       type: 'pr_creation_stale',
@@ -167,29 +142,17 @@ describe('runStalePrCheck', () => {
       branch: 'feat/stale',
     });
 
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    const pushBody = JSON.parse(fetchFn.mock.calls[0][1].body as string);
-    expect(pushBody[0].title).toBe('Still waiting — Create PR?');
-    expect(pushBody[0].data).toMatchObject({
-      type: 'pr_creation_stale',
-      sessionId: 'sess-stale',
-      branch: 'feat/stale',
-    });
-
     const row = stmts.getSession.get('sess-stale') as { stale_pr_notified_at: string | null };
     expect(row.stale_pr_notified_at).not.toBeNull();
 
     // A second run must not re-notify.
-    fetchFn.mockClear();
     broadcast.mockClear();
     const again = await runStalePrCheck({
       stmts: stmts as unknown as Pick<Stmts, 'getStalePendingPrSessions' | 'markStalePrNotified'>,
       broadcast,
-      pushDeps: { fetchFn, getAllTokens: () => [] },
       log: silenceErrors(),
     });
     expect(again).toBe(0);
-    expect(fetchFn).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
   });
 
@@ -217,31 +180,21 @@ describe('runStalePrCheck', () => {
     expect(row.stale_pr_notified_at).toBeNull();
   });
 
-  it('tolerates malformed changes_ready JSON and still dispatches with no branch', async () => {
+  it('tolerates malformed changes_ready JSON and still broadcasts with no branch', async () => {
     stmts.insertSession.run('sess-bad', 'agent-3', 'Bad JSON', '{not json', null, iso(-60));
 
-    const fetchFn = makeCaptureFetch();
+    const broadcast = vi.fn();
     const dispatched = await runStalePrCheck({
       stmts: stmts as unknown as Pick<Stmts, 'getStalePendingPrSessions' | 'markStalePrNotified'>,
-      pushDeps: {
-        fetchFn,
-        getAllTokens: () => [
-          {
-            id: 1,
-            token: 'ExponentPushToken[y]',
-            platform: 'android',
-            created_at: '2026-04-18 00:00:00',
-            last_used: null,
-            enabled_events: null,
-          },
-        ],
-      },
+      broadcast,
       log: silenceErrors(),
     });
     expect(dispatched).toBe(1);
-    const pushBody = JSON.parse(fetchFn.mock.calls[0][1].body as string);
-    // No branch → body omits the ` on \`...\`` segment.
-    expect(pushBody[0].body).not.toContain('`');
+    expect(broadcast.mock.calls[0][0]).toMatchObject({
+      type: 'pr_creation_stale',
+      sessionId: 'sess-bad',
+      branch: undefined,
+    });
   });
 });
 
@@ -276,7 +229,7 @@ describe('startStalePrChecker', () => {
     vi.useFakeTimers();
     try {
       const { stmts } = createTestDb();
-      const fetchFn = vi.fn().mockResolvedValue({ json: async () => ({ data: [] }) });
+      const broadcast = vi.fn();
 
       const stop = startStalePrChecker(
         {
@@ -284,22 +237,20 @@ describe('startStalePrChecker', () => {
             Stmts,
             'getStalePendingPrSessions' | 'markStalePrNotified'
           >,
-          pushDeps: { fetchFn, getAllTokens: () => [] },
+          broadcast,
           log: silenceErrors(),
         },
         1000,
       );
 
-      // No rows → no fetch after ticking.
+      // No rows → no broadcast after ticking.
       await vi.advanceTimersByTimeAsync(1000);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(fetchFn).not.toHaveBeenCalled();
+      expect(broadcast).not.toHaveBeenCalled();
 
       stop();
-      // After stop, further ticks must not schedule runs. We just verify
-      // clearInterval is wired by advancing time and checking no mutation.
       await vi.advanceTimersByTimeAsync(5000);
-      expect(fetchFn).not.toHaveBeenCalled();
+      expect(broadcast).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

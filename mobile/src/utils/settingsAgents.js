@@ -30,6 +30,26 @@ export function groupAgentsByProject(agents, projects) {
 }
 
 /**
+ * Resolve the effective new-agent form for submission.
+ *
+ * When the Agents tab is project-scoped (`filterProjectId` is set), the Project
+ * picker is hidden, so `form.projectId` is never populated from the UI. Force
+ * the scoped project onto the form so the agent is always created under the
+ * project whose Agents screen the user is on — never the section's default
+ * state (which would create it under the wrong / no project).
+ *
+ * Pass-through (returns the same form) when there is no scope.
+ *
+ * @param {object} form
+ * @param {string | null | undefined} filterProjectId
+ * @returns {object}
+ */
+export function resolveNewAgentForm(form, filterProjectId) {
+  if (!filterProjectId) return form;
+  return { ...form, projectId: filterProjectId };
+}
+
+/**
  * Validate the new-agent form. Returns an error string, or null when valid.
  * Mirrors the server's CreateAgentRequestSchema essentials: `id` and
  * `projectId` are required; ids are slug-shaped.

@@ -1,42 +1,93 @@
 import { describe, it, expect } from 'vitest';
-import { projectMenuEntries } from './projectMenu.js';
+import {
+  projectLifecycleEntries,
+  projectSettingsEntries,
+  projectMenuEntries,
+} from './projectMenu.js';
+import { isHubIconName } from './hubIconNames.js';
 
-describe('projectMenuEntries', () => {
-  it('always includes Board, Threads, Support, Wiki and Notes', () => {
-    const keys = projectMenuEntries({}).map((e) => e.key);
-    expect(keys).toEqual(['board', 'threads', 'support', 'wiki', 'notes']);
+describe('projectLifecycleEntries', () => {
+  it('includes core lifecycle destinations', () => {
+    const keys = projectLifecycleEntries({}).map((e) => e.key);
+    expect(keys).toContain('board');
+    expect(keys).toContain('epics');
+    expect(keys).toContain('threads');
+    expect(keys).toContain('support');
+    expect(keys).toContain('wiki');
+    expect(keys).toContain('notes');
+    expect(keys).not.toContain('workflows');
   });
 
-  it('maps each entry to a navigable screen name', () => {
-    const byKey = Object.fromEntries(
-      projectMenuEntries({ githubRepo: 'x/y' }).map((e) => [e.key, e.screen]),
-    );
-    expect(byKey).toMatchObject({
-      board: 'Kanban',
-      threads: 'Threads',
-      support: 'CustomerSupport',
-      pulls: 'PullRequests',
-      wiki: 'Wiki',
-      notes: 'Notes',
-    });
+  it('adds Repository when gitHost is agenthub', () => {
+    const keys = projectLifecycleEntries({ gitHost: 'agenthub' }).map((e) => e.key);
+    expect(keys[0]).toBe('repo');
   });
 
   it('adds Pulls when the project has a GitHub repo and is not a workflow', () => {
-    const keys = projectMenuEntries({ githubRepo: 'owner/repo' }).map((e) => e.key);
+    const keys = projectLifecycleEntries({ githubRepo: 'owner/repo' }).map((e) => e.key);
     expect(keys).toContain('pulls');
-    // Pulls sits between Support and Wiki, mirroring the web ordering.
-    expect(keys).toEqual(['board', 'threads', 'support', 'pulls', 'wiki', 'notes']);
-  });
-
-  it('omits Pulls when there is no GitHub repo', () => {
-    expect(projectMenuEntries({}).map((e) => e.key)).not.toContain('pulls');
-    expect(projectMenuEntries(null).map((e) => e.key)).not.toContain('pulls');
   });
 
   it('omits Pulls for workflow projects even with a repo', () => {
-    const keys = projectMenuEntries({ githubRepo: 'owner/repo', mode: 'workflow' }).map(
+    const keys = projectLifecycleEntries({ githubRepo: 'owner/repo', mode: 'workflow' }).map(
       (e) => e.key,
     );
     expect(keys).not.toContain('pulls');
+  });
+
+  it('does not include preview surfaces', () => {
+    const all = [
+      ...projectLifecycleEntries({ gitHost: 'agenthub', githubRepo: 'x/y' }),
+      ...projectSettingsEntries({ awsEnabled: true }),
+    ].map((e) => e.key);
+    expect(all).not.toContain('preview');
+  });
+
+  it('uses registered Lucide icon names for every entry', () => {
+    const entries = [
+      ...projectLifecycleEntries({ gitHost: 'agenthub', githubRepo: 'x/y' }),
+      ...projectSettingsEntries({ awsEnabled: true }),
+    ];
+    for (const entry of entries) {
+      expect(isHubIconName(entry.icon), `${entry.key} → ${entry.icon}`).toBe(true);
+    }
+  });
+});
+
+describe('projectSettingsEntries', () => {
+  it('includes project configuration and runners', () => {
+    const keys = projectSettingsEntries({}).map((e) => e.key);
+    expect(keys).toContain('project-settings');
+    expect(keys).toContain('project-agents');
+    expect(keys).toContain('runners');
+    expect(keys).toContain('rum');
+    expect(keys).toContain('project-crons');
+  });
+
+  it('exposes project Secrets so they are reachable on mobile', () => {
+    // Regression: the global Secrets tab was removed; project secrets must be
+    // reachable via the per-project Settings submenu (→ ProjectSecrets screen).
+    const entry = projectSettingsEntries({}).find((e) => e.key === 'project-secrets');
+    expect(entry).toBeTruthy();
+    expect(entry.screen).toBe('ProjectSecrets');
+    expect(entry.label).toBe('Secrets');
+  });
+
+  it('adds AWS when enabled', () => {
+    const keys = projectSettingsEntries({ awsEnabled: true }).map((e) => e.key);
+    expect(keys).toContain('aws');
+  });
+
+  it('omits Reviewer from project settings menu', () => {
+    const keys = projectSettingsEntries({}).map((e) => e.key);
+    expect(keys).not.toContain('reviewer');
+  });
+});
+
+describe('projectMenuEntries (legacy alias)', () => {
+  it('delegates to projectLifecycleEntries', () => {
+    expect(projectMenuEntries({}).map((e) => e.key)).toEqual(
+      projectLifecycleEntries({}).map((e) => e.key),
+    );
   });
 });

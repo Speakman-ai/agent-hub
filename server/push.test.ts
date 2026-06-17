@@ -1,15 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  sessionCompletePush,
-  changesReadyPush,
-  prCreationStalePush,
-  cardStartedPush,
-  cardReviewPush,
+  awaitingFeedbackPush,
+  readyToPushPush,
+  pushedPush,
+  supportTicketCreatedPush,
+  threadMessagePush,
+  reviewAssignedPush,
   prMergedPush,
-  threadCreatedPush,
-  threadEntryPush,
-  dispatchFailurePush,
-  cronCompletePush,
   parseEnabledEvents,
   tokenAcceptsEvent,
   buildMessages,
@@ -43,93 +40,48 @@ function token(
 }
 
 describe('push formatters', () => {
-  it('formats session complete with agent, session, preview', () => {
-    expect(
-      sessionCompletePush({ agentName: 'Hub Backend', sessionName: 'Add push', preview: 'Done.' }),
-    ).toEqual({ title: 'Hub Backend — Done', body: '"Add push" — Done.' });
-  });
-
-  it('falls back to "Agent" and a default body when nothing is provided', () => {
-    expect(sessionCompletePush({})).toEqual({
-      title: 'Agent — Done',
-      body: 'Session completed',
+  it('formats awaiting feedback with and without session name', () => {
+    expect(awaitingFeedbackPush({ sessionName: 'Ship it' })).toEqual({
+      title: 'Awaiting feedback',
+      body: '"Ship it" is waiting for your input',
     });
+    expect(awaitingFeedbackPush({}).body).toBe('A session is waiting for your input');
   });
 
-  it('truncates preview longer than 120 chars from the end', () => {
-    const long = 'x'.repeat(200);
-    const { body } = sessionCompletePush({ agentName: 'A', preview: long });
-    expect(body.startsWith('…')).toBe(true);
-    expect(body.length).toBeLessThanOrEqual(200);
+  it('formats ready to push and pushed', () => {
+    expect(readyToPushPush({ sessionName: 'Ship' }).body).toContain('passed review');
+    expect(pushedPush({ sessionName: 'Ship', prNumber: 12 }).body).toBe(
+      '"Ship" was pushed (PR #12)',
+    );
+    expect(pushedPush({ sessionName: 'Ship' }).body).toBe('"Ship" was pushed');
   });
 
-  it('formats changes ready with and without context', () => {
+  it('formats support ticket created', () => {
+    expect(supportTicketCreatedPush({ subject: 'Login broken', ticketType: 'bug' }).body).toBe(
+      'bug: Login broken',
+    );
+    expect(supportTicketCreatedPush({}).body).toBe('New ticket');
+  });
+
+  it('formats thread messages and truncates long previews', () => {
     expect(
-      changesReadyPush({ agentName: 'Hub', sessionName: 'Ship', branch: 'feat/x' }).body,
-    ).toContain('Hub — "Ship"');
-    expect(changesReadyPush({ branch: 'feat/x' }).body).toMatch(
-      /An agent has changes on .*feat\/x.*awaiting/,
-    );
-  });
-
-  it('formats pr_creation_stale with session, branch, and age', () => {
-    const { title, body } = prCreationStalePush({
-      agentName: 'Hub',
-      sessionName: 'Ship it',
-      branch: 'feature/x',
-      ageMinutes: 42,
-    });
-    expect(title).toBe('Still waiting — Create PR?');
-    expect(body).toBe('"Ship it" on `feature/x` has had changes awaiting PR for 42 min');
-  });
-
-  it('formats pr_creation_stale falling back when session/agent absent', () => {
-    const { body } = prCreationStalePush({ branch: 'feat/y', ageMinutes: 31 });
-    expect(body).toBe('A session on `feat/y` has had changes awaiting PR for 31 min');
-  });
-
-  it('formats pr_creation_stale without age suffix when age is missing or non-positive', () => {
-    expect(prCreationStalePush({ sessionName: 'S' }).body).toBe('"S" has had changes awaiting PR');
-    expect(prCreationStalePush({ sessionName: 'S', ageMinutes: 0 }).body).toBe(
-      '"S" has had changes awaiting PR',
-    );
-  });
-
-  it('formats card started / review / pr merged', () => {
-    expect(cardStartedPush({ cardTitle: 'X', assignee: 'A' }).body).toBe('"X" started by A');
-    expect(cardReviewPush({ cardTitle: 'X' }).body).toBe('"X" moved to Review');
-    expect(prMergedPush({ cardTitle: 'X', prNumber: 12, mergedBy: 'dev' }).body).toBe(
-      'PR #12 merged by dev: "X"',
-    );
-  });
-
-  it('formats thread events with heartbeat vs cron labels', () => {
-    expect(threadCreatedPush({ threadName: 'T', threadType: 'heartbeat' }).body).toContain(
-      'Heartbeat',
-    );
-    expect(threadEntryPush({ threadName: 'T', threadType: 'cron', isError: true }).title).toBe(
-      'Cron Error',
-    );
-    const trimmed = threadEntryPush({
-      threadName: 'T',
+      threadMessagePush({ threadName: 'Nightly', threadType: 'cron', isError: true }).title,
+    ).toBe('Thread error');
+    const long = 'y'.repeat(200);
+    const trimmed = threadMessagePush({
+      threadName: 'Nightly',
       threadType: 'cron',
-      preview: 'y'.repeat(200),
+      preview: long,
     }).body;
     expect(trimmed.endsWith('…')).toBe(true);
   });
 
-  it('formats dispatch failure and truncates long messages', () => {
-    const long = 'z'.repeat(300);
-    const { title, body } = dispatchFailurePush({ message: long });
-    expect(title).toBe('Dispatch Failure');
-    expect(body.endsWith('…')).toBe(true);
-  });
-
-  it('formats cron completion and truncates long results', () => {
-    const long = 'q'.repeat(300);
-    const { title, body } = cronCompletePush({ cronName: 'nightly', result: long });
-    expect(title).toBe('Cron: nightly');
-    expect(body.endsWith('...')).toBe(true);
+  it('formats review assigned and PR merged', () => {
+    expect(reviewAssignedPush({ cardTitle: 'X' }).body).toBe('"X" needs your review');
+    expect(reviewAssignedPush({ prNumber: 42 }).body).toBe('PR #42: "Ticket" needs your review');
+    expect(prMergedPush({ cardTitle: 'X', prNumber: 12, mergedBy: 'dev' }).body).toBe(
+      'PR #12 merged by dev: "X"',
+    );
   });
 });
 
@@ -141,10 +93,10 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
   });
 
   it('parses a JSON array into a Set', () => {
-    const s = parseEnabledEvents('["cron","card_review"]');
+    const s = parseEnabledEvents('["thread_message","pr_merged"]');
     expect(s).toBeInstanceOf(Set);
-    expect(s?.has('cron')).toBe(true);
-    expect(s?.has('card_review')).toBe(true);
+    expect(s?.has('thread_message')).toBe(true);
+    expect(s?.has('pr_merged')).toBe(true);
   });
 
   it('treats malformed JSON as legacy default (undefined)', () => {
@@ -153,34 +105,61 @@ describe('parseEnabledEvents / tokenAcceptsEvent', () => {
   });
 
   it('accepts all events when token has no preferences', () => {
-    expect(tokenAcceptsEvent(token('t'), 'session_complete')).toBe(true);
-    expect(tokenAcceptsEvent(token('t'), 'cron')).toBe(true);
+    expect(tokenAcceptsEvent(token('t'), 'awaiting_feedback')).toBe(true);
+    expect(tokenAcceptsEvent(token('t'), 'pr_merged')).toBe(true);
   });
 
   it('only accepts enumerated events when preferences are set', () => {
-    const row = token('t', ['cron']);
-    expect(tokenAcceptsEvent(row, 'cron')).toBe(true);
-    expect(tokenAcceptsEvent(row, 'session_complete')).toBe(false);
+    const row = token('t', ['thread_message']);
+    expect(tokenAcceptsEvent(row, 'thread_message')).toBe(true);
+    expect(tokenAcceptsEvent(row, 'awaiting_feedback')).toBe(false);
   });
 
   it('PUSH_EVENT_TYPES includes every dispatched event', () => {
     const required: (typeof PUSH_EVENT_TYPES)[number][] = [
-      'session_complete',
-      'changes_ready',
-      'pr_creation_stale',
-      'card_started',
-      'card_review',
+      'awaiting_feedback',
+      'ready_to_push',
+      'pushed',
+      'support_ticket_created',
+      'thread_message',
+      'review_assigned_to_you',
       'pr_merged',
-      'thread_created',
-      'thread_entry',
-      'dispatch_failure',
-      'cron',
-      // Finalize fix-dispatch stall watchdog reminder (live mode). See
-      // `server/finalize/stall-watchdog.ts` + wiki §7
-      // "Human-walked-away behavior".
-      'finalize_stall_warning',
     ];
     for (const e of required) expect(PUSH_EVENT_TYPES).toContain(e);
+  });
+
+  // Back-compat: device rows persisted under the OLD taxonomy must keep
+  // receiving the renamed events instead of silently going dark.
+  it('aliases retired preference keys to their renamed events', () => {
+    const s = parseEnabledEvents('["session_complete","changes_ready","card_review"]');
+    // Renamed equivalents now present...
+    expect(s?.has('awaiting_feedback')).toBe(true);
+    expect(s?.has('ready_to_push')).toBe(true);
+    expect(s?.has('review_assigned_to_you')).toBe(true);
+    // ...and the original legacy keys are preserved (non-destructive).
+    expect(s?.has('session_complete')).toBe(true);
+  });
+
+  it('maps both legacy thread keys onto thread_message', () => {
+    expect(parseEnabledEvents('["thread_entry"]')?.has('thread_message')).toBe(true);
+    expect(parseEnabledEvents('["thread_created"]')?.has('thread_message')).toBe(true);
+  });
+
+  it('tokenAcceptsEvent honors a legacy-only preference for the renamed event', () => {
+    const legacyRow = token('t', ['session_complete', 'changes_ready']);
+    expect(tokenAcceptsEvent(legacyRow, 'awaiting_feedback')).toBe(true);
+    expect(tokenAcceptsEvent(legacyRow, 'ready_to_push')).toBe(true);
+    // An event the user never opted into (new or unrelated) still filtered out.
+    expect(tokenAcceptsEvent(legacyRow, 'pushed')).toBe(false);
+    expect(tokenAcceptsEvent(legacyRow, 'support_ticket_created')).toBe(false);
+  });
+
+  it('does not invent aliases for retired events with no current equivalent', () => {
+    const s = parseEnabledEvents('["pr_creation_stale","cron"]');
+    expect(s?.has('pr_creation_stale')).toBe(true);
+    expect(s?.has('cron')).toBe(true);
+    // No spurious current-taxonomy membership leaked in.
+    for (const e of PUSH_EVENT_TYPES) expect(s?.has(e)).toBe(false);
   });
 });
 
@@ -266,7 +245,7 @@ describe('sendExpoPush', () => {
 
 describe('dispatchPushEvent', () => {
   it('filters by token preferences before dispatch', async () => {
-    const tokens = [token('all'), token('cronOnly', ['cron'])];
+    const tokens = [token('all'), token('threadOnly', ['thread_message'])];
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
       return {
@@ -275,7 +254,7 @@ describe('dispatchPushEvent', () => {
     }) as unknown as typeof fetch;
 
     const sent = await dispatchPushEvent(
-      'session_complete',
+      'awaiting_feedback',
       { title: 'T', body: 'B' },
       { fetchFn, getAllTokens: () => tokens, removeToken: () => {} },
     );
@@ -289,7 +268,7 @@ describe('dispatchPushEvent', () => {
   it('returns 0 when no tokens match', async () => {
     const fetchFn = vi.fn() as unknown as typeof fetch;
     const sent = await dispatchPushEvent(
-      'cron',
+      'thread_message',
       { title: 'T', body: 'B' },
       { fetchFn, getAllTokens: () => [], removeToken: () => {} },
     );
@@ -307,7 +286,7 @@ describe('dispatchPushEvent', () => {
     }) as unknown as typeof fetch;
 
     const sent = await dispatchPushEvent(
-      'pr_creation_stale',
+      'awaiting_feedback',
       { title: 'T', body: 'B', data: { projectId: 'proj-private' } },
       {
         fetchFn,
@@ -330,47 +309,65 @@ describe('mapBroadcastToPush', () => {
   it('returns null for unknown types', () => {
     expect(mapBroadcastToPush({ type: 'room_message' })).toBeNull();
     expect(mapBroadcastToPush({})).toBeNull();
+    expect(mapBroadcastToPush({ type: 'done' })).toBeNull();
   });
 
-  it('maps done → session_complete and strips newlines from preview', () => {
+  it('maps awaiting_input when waiting=true', () => {
     const r = mapBroadcastToPush({
-      type: 'done',
+      type: 'awaiting_input',
+      waiting: true,
       sessionId: 's1',
       agentId: 'a1',
-      agentName: 'Hub Backend',
       sessionName: 'My session',
-      message: { content: 'All\n\ndone.' },
     });
-    expect(r?.event).toBe('session_complete');
-    expect(r?.payload.title).toBe('Hub Backend — Done');
-    expect(r?.payload.body).toContain('All done.');
+    expect(r?.event).toBe('awaiting_feedback');
+    expect(r?.payload.title).toBe('Awaiting feedback');
     expect(r?.payload.data?.sessionId).toBe('s1');
-    // agentId is forwarded so mobile notification taps can route to the
-    // right agent without a second round-trip.
     expect(r?.payload.data?.agentId).toBe('a1');
   });
 
-  it('maps changes_ready with branch + ids in data', () => {
-    const r = mapBroadcastToPush({
-      type: 'changes_ready',
-      sessionId: 's1',
-      agentId: 'a1',
-      agentName: 'Hub Backend',
-      branch: 'feat/x',
-    });
-    expect(r?.event).toBe('changes_ready');
-    expect(r?.payload.data?.branch).toBe('feat/x');
+  it('ignores awaiting_input when waiting is not true', () => {
+    expect(mapBroadcastToPush({ type: 'awaiting_input', waiting: false })).toBeNull();
   });
 
-  it('maps card_moved to started/review by column name and ignores others', () => {
-    expect(
-      mapBroadcastToPush({
-        type: 'card_moved',
-        cardId: 'c',
-        cardTitle: 'T',
-        columnName: 'In Progress',
-      })?.event,
-    ).toBe('card_started');
+  it('maps finalize_run_completed to ready_to_push and pushed, forwarding agentId', () => {
+    const ready = mapBroadcastToPush({
+      type: 'finalize_run_completed',
+      status: 'ready_to_push',
+      session_id: 's1',
+      agentId: 'a1',
+      sessionName: 'Ship',
+      run_id: 'r1',
+    });
+    expect(ready?.event).toBe('ready_to_push');
+    expect(ready?.payload.data?.sessionId).toBe('s1');
+    // agentId forwarded so a cold-start tap can open the right chat.
+    expect(ready?.payload.data?.agentId).toBe('a1');
+
+    const pushed = mapBroadcastToPush({
+      type: 'finalize_run_completed',
+      status: 'pushed',
+      sessionId: 's2',
+      agentId: 'a2',
+      prNumber: 42,
+      run_id: 'r2',
+    });
+    expect(pushed?.event).toBe('pushed');
+    expect(pushed?.payload.data?.prNumber).toBe(42);
+    expect(pushed?.payload.data?.agentId).toBe('a2');
+  });
+
+  it('maps support_ticket_created', () => {
+    const r = mapBroadcastToPush({
+      type: 'support_ticket_created',
+      projectId: 'p1',
+      ticket: { id: 't1', subject: 'Help', type: 'bug' },
+    });
+    expect(r?.event).toBe('support_ticket_created');
+    expect(r?.payload.data?.ticketId).toBe('t1');
+  });
+
+  it('maps card_moved to review_assigned_to_you only for Review column', () => {
     expect(
       mapBroadcastToPush({
         type: 'card_moved',
@@ -378,32 +375,27 @@ describe('mapBroadcastToPush', () => {
         cardTitle: 'T',
         columnName: 'Review',
       })?.event,
-    ).toBe('card_review');
+    ).toBe('review_assigned_to_you');
     expect(
       mapBroadcastToPush({
         type: 'card_moved',
         cardId: 'c',
         cardTitle: 'T',
-        columnName: 'Done',
+        columnName: 'In Progress',
       }),
     ).toBeNull();
   });
 
-  it('maps webhook_pr_merged, thread_created, thread_entry_created, dispatch_failure', () => {
+  it('maps native_pr_update review_requested, thread_entry_created, webhook_pr_merged', () => {
     expect(
       mapBroadcastToPush({
-        type: 'webhook_pr_merged',
-        prNumber: 42,
-        cardTitle: 'X',
+        type: 'native_pr_update',
+        action: 'review_requested',
+        prNumber: 7,
+        projectId: 'p1',
       })?.event,
-    ).toBe('pr_merged');
-    expect(
-      mapBroadcastToPush({
-        type: 'thread_created',
-        projectId: 'p',
-        thread: { id: 't', name: 'Nightly', type: 'cron' },
-      })?.event,
-    ).toBe('thread_created');
+    ).toBe('review_assigned_to_you');
+
     const entry = mapBroadcastToPush({
       type: 'thread_entry_created',
       projectId: 'p',
@@ -412,11 +404,16 @@ describe('mapBroadcastToPush', () => {
       threadType: 'cron',
       entry: { id: 'e', content: 'ERROR: boom' },
     });
-    expect(entry?.event).toBe('thread_entry');
-    expect(entry?.payload.title).toBe('Cron Error');
-    expect(mapBroadcastToPush({ type: 'dispatch_failure', message: 'failed' })?.event).toBe(
-      'dispatch_failure',
-    );
+    expect(entry?.event).toBe('thread_message');
+    expect(entry?.payload.title).toBe('Thread error');
+
+    expect(
+      mapBroadcastToPush({
+        type: 'webhook_pr_merged',
+        prNumber: 42,
+        cardTitle: 'X',
+      })?.event,
+    ).toBe('pr_merged');
   });
 });
 
@@ -430,11 +427,10 @@ describe('handleBroadcastForPush', () => {
     }) as unknown as typeof fetch;
     const sent = await handleBroadcastForPush(
       {
-        type: 'done',
+        type: 'awaiting_input',
+        waiting: true,
         sessionId: 's1',
-        agentName: 'Hub',
         sessionName: 'N',
-        message: { content: 'ok' },
       },
       {
         fetchFn,
@@ -443,6 +439,55 @@ describe('handleBroadcastForPush', () => {
       },
     );
     expect(sent).toBe(1);
+  });
+
+  it('resolves agentId from the session for finalize pushes that lack it', async () => {
+    // Regression: finalize_run_completed broadcasts carry no agentId, so a
+    // cold-start tap couldn't open the right chat. handleBroadcastForPush must
+    // resolve it from the session id before dispatch.
+    let capturedData: Record<string, unknown> | undefined;
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      capturedData = body[0]?.data as Record<string, unknown>;
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const getSessionAgentIdById = vi.fn((sessionId: string) =>
+      sessionId === 's9' ? 'agent-9' : null,
+    );
+    const sent = await handleBroadcastForPush(
+      { type: 'finalize_run_completed', status: 'ready_to_push', session_id: 's9', run_id: 'r1' },
+      {
+        fetchFn,
+        getAllTokens: () => [token('a', null, 'u1')],
+        removeToken: () => {},
+        getSessionAgentIdById,
+      },
+    );
+    expect(sent).toBe(1);
+    expect(getSessionAgentIdById).toHaveBeenCalledWith('s9');
+    expect(capturedData?.agentId).toBe('agent-9');
+  });
+
+  it('keeps the broadcast agentId without a session lookup when present', async () => {
+    const getSessionAgentIdById = vi.fn(() => 'should-not-be-used');
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
+      return {
+        json: async () => ({ data: body.map(() => ({ status: 'ok' })) }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    await handleBroadcastForPush(
+      { type: 'awaiting_input', waiting: true, sessionId: 's1', agentId: 'a1' },
+      {
+        fetchFn,
+        getAllTokens: () => [token('a', null, 'u1')],
+        removeToken: () => {},
+        getSessionAgentIdById,
+      },
+    );
+    expect(getSessionAgentIdById).not.toHaveBeenCalled();
   });
 
   it('short-circuits for ignored types', async () => {
@@ -459,9 +504,6 @@ describe('handleBroadcastForPush', () => {
     const fetchFn = vi.fn() as unknown as typeof fetch;
     const sent = await handleBroadcastForPush(
       {
-        // A thread_entry_created for a cron with notify_on_run=0 — the
-        // runner marks the broadcast with suppressPush so mobile devices
-        // don't get a "Cron Update" push.
         type: 'thread_entry_created',
         threadId: 't1',
         projectId: 'p1',
@@ -508,11 +550,10 @@ describe('handleBroadcastForPush', () => {
 
     const sent = await handleBroadcastForPush(
       {
-        type: 'done',
+        type: 'awaiting_input',
+        waiting: true,
         sessionId: 's-private',
-        agentName: 'Hub',
         sessionName: 'N',
-        message: { content: 'ok' },
       },
       {
         fetchFn,
@@ -536,22 +577,22 @@ describe('handleBroadcastForPush', () => {
 });
 
 describe('filterTokensForBroadcastVisibility', () => {
-  it('keeps all tokens for shared projects', () => {
+  it('keeps only the owner token for shared projects with an owner', () => {
     const out = filterTokensForBroadcastVisibility(
-      [token('a', null, 'u1'), token('b', null, 'u2')],
-      { type: 'done', sessionId: 's1' },
+      [token('owner', null, 'u1'), token('other', null, 'u2')],
+      { type: 'awaiting_input', sessionId: 's1' },
       {
         resolveProjectId: () => 'p1',
         findProjectById: () => ({ id: 'p1', visibility: 'shared', ownerUserId: 'u1' }) as any,
       },
     );
-    expect(out.map((t) => t.token)).toEqual(['a', 'b']);
+    expect(out.map((t) => t.token)).toEqual(['owner']);
   });
 
   it('keeps only the owner token for private projects', () => {
     const out = filterTokensForBroadcastVisibility(
       [token('owner', null, 'u1'), token('other', null, 'u2')],
-      { type: 'done', sessionId: 's1' },
+      { type: 'awaiting_input', sessionId: 's1' },
       {
         resolveProjectId: () => 'p1',
         findProjectById: () => ({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }) as any,
@@ -563,13 +604,27 @@ describe('filterTokensForBroadcastVisibility', () => {
   it('keeps all tokens when private project has no owner (legacy rows)', () => {
     const out = filterTokensForBroadcastVisibility(
       [token('a', null, 'u1'), token('b', null, 'u2')],
-      { type: 'done', sessionId: 's1' },
+      { type: 'awaiting_input', sessionId: 's1' },
       {
         resolveProjectId: () => 'p1',
         findProjectById: () => ({ id: 'p1', visibility: 'private', ownerUserId: null }) as any,
       },
     );
     expect(out.map((t) => t.token)).toEqual(['a', 'b']);
+  });
+
+  it('excludes an unattributed device token from an owned project (security regression)', () => {
+    // A legacy device with no user_id must NOT receive notifications for a
+    // project that has an owner — only the owner's tokens should.
+    const out = filterTokensForBroadcastVisibility(
+      [token('owner', null, 'u1'), token('legacy', null, null)],
+      { type: 'awaiting_input', sessionId: 's1' },
+      {
+        resolveProjectId: () => 'p1',
+        findProjectById: () => ({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }) as any,
+      },
+    );
+    expect(out.map((t) => t.token)).toEqual(['owner']);
   });
 });
 
@@ -583,7 +638,7 @@ describe('filterTokensForSessionOwner', () => {
   it('keeps only the owner devices for an owned session', () => {
     const out = filterTokensForSessionOwner(
       tokens(),
-      { type: 'done', sessionId: 's1' },
+      { type: 'awaiting_input', sessionId: 's1' },
       { getSessionOwnerById: () => 'ryan' },
     );
     expect(out.map((t) => t.token)).toEqual(['ryan-phone']);
@@ -592,7 +647,7 @@ describe('filterTokensForSessionOwner', () => {
   it('keeps all tokens for an unowned session (cron/system/legacy)', () => {
     const out = filterTokensForSessionOwner(
       tokens(),
-      { type: 'done', sessionId: 's1' },
+      { type: 'awaiting_input', sessionId: 's1' },
       { getSessionOwnerById: () => null },
     );
     expect(out.map((t) => t.token)).toEqual(['ryan-phone', 'kevin-phone', 'legacy-device']);
@@ -612,13 +667,13 @@ describe('filterTokensForSessionOwner', () => {
   it('excludes unattributed (NULL user) tokens for owned sessions', () => {
     const out = filterTokensForSessionOwner(
       [token('legacy-device', null, null)],
-      { type: 'done', sessionId: 's1' },
+      { type: 'awaiting_input', sessionId: 's1' },
       { getSessionOwnerById: () => 'ryan' },
     );
     expect(out).toHaveLength(0);
   });
 
-  it('handleBroadcastForPush only pushes session_complete to the owner device', async () => {
+  it('handleBroadcastForPush only pushes awaiting_feedback to the owner device', async () => {
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
       return {
@@ -628,11 +683,10 @@ describe('filterTokensForSessionOwner', () => {
 
     const sent = await handleBroadcastForPush(
       {
-        type: 'done',
+        type: 'awaiting_input',
+        waiting: true,
         sessionId: 'kevins-session',
-        agentName: 'Hub',
         sessionName: 'N',
-        message: { content: 'ok' },
       },
       {
         fetchFn,
@@ -649,7 +703,7 @@ describe('filterTokensForSessionOwner', () => {
     expect(payload[0].to).toBe('kevin-phone');
   });
 
-  it('dispatchPushEvent scopes pr_creation_stale to the session owner', async () => {
+  it('dispatchPushEvent scopes session events to the session owner', async () => {
     const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as ExpoPushMessage[];
       return {
@@ -658,8 +712,8 @@ describe('filterTokensForSessionOwner', () => {
     }) as unknown as typeof fetch;
 
     const sent = await dispatchPushEvent(
-      'pr_creation_stale',
-      { title: 'T', body: 'B', data: { sessionId: 's1', type: 'pr_creation_stale' } },
+      'ready_to_push',
+      { title: 'T', body: 'B', data: { sessionId: 's1', type: 'ready_to_push' } },
       {
         fetchFn,
         getAllTokens: tokens,

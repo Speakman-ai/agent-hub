@@ -7,7 +7,7 @@ import {
   StyleSheet,
   ScrollView,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 
 const OTHER_SENTINEL = '__other__';
@@ -144,7 +144,7 @@ function AskUserQuestion({ askId, questions, onSubmit, submitted }) {
   return (
     <View style={styles.container} testID={`ask-${askId}`}>
       <View style={styles.headerBar}>
-        <Ionicons name="help-circle-outline" size={14} color={colors.indigo400} />
+        <AppIcon name="help-circle-outline" size={14} color={colors.indigo400} />
         <Text style={styles.headerText}>
           {submitted
             ? 'Answers submitted'
@@ -171,7 +171,7 @@ function AskUserQuestion({ askId, questions, onSubmit, submitted }) {
 
         {error && (
           <View style={styles.errorBanner}>
-            <Ionicons name="alert-circle-outline" size={14} color={colors.rose400} />
+            <AppIcon name="alert-circle-outline" size={14} color={colors.rose400} />
             <Text style={styles.errorText}>
               Question {error.questionIdx + 1}: {error.reason}
             </Text>
@@ -294,7 +294,7 @@ function OptionRow({ option, multi, checked, focused, disabled, onPress }) {
       <View style={[styles.indicator, multi ? styles.indicatorSquare : styles.indicatorRound]}>
         {checked && (
           multi ? (
-            <Ionicons name="checkmark" size={12} color={colors.white} />
+            <AppIcon name="checkmark" size={12} color={colors.white} />
           ) : (
             <View style={styles.radioDot} />
           )
@@ -324,7 +324,7 @@ function OtherRow({ multi, checked, disabled, otherText, onSelect, onTextChange 
       >
         {checked && (
           multi ? (
-            <Ionicons name="checkmark" size={12} color={colors.white} />
+            <AppIcon name="checkmark" size={12} color={colors.white} />
           ) : (
             <View style={styles.radioDot} />
           )

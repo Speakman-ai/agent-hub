@@ -7,6 +7,9 @@
  * environment.
  */
 
+import { parseNativePrUrl } from './prFormatting.js';
+import { colors } from '../theme/colors.js';
+
 export const HEADLINE_TILES = [
   { key: 'projects', label: 'Projects' },
   { key: 'agents', label: 'Agents' },
@@ -122,4 +125,83 @@ export function countByType(items) {
     counts[t] = (counts[t] || 0) + 1;
   }
   return counts;
+}
+
+export const PR_PRIORITY_DOT = {
+  urgent: colors.rose400,
+  high: '#FB923C',
+  medium: colors.amber400,
+  low: colors.emerald400,
+};
+
+const SUPPORT_SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+export const SUPPORT_SEVERITY_DOT = {
+  critical: colors.red500,
+  high: '#FB923C',
+  medium: colors.amber400,
+  low: colors.gray500,
+};
+
+export const SUPPORT_STATUS_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'new', label: 'New' },
+  { key: 'investigating', label: 'Investigating' },
+];
+
+/** Severity-first, newest-within-severity. Mirrors web `DashboardView`. */
+export function sortSupportBySeverity(list) {
+  return [...list].sort((a, b) => {
+    const sa = SUPPORT_SEVERITY_RANK[a.severity] ?? 4;
+    const sb = SUPPORT_SEVERITY_RANK[b.severity] ?? 4;
+    if (sa !== sb) return sa - sb;
+    return (b.created_at || '').localeCompare(a.created_at || '');
+  });
+}
+
+/**
+ * Resolve where a recent-activity row should navigate.
+ * Returns null when the row is not actionable (mirrors web `rowIsActionable`).
+ */
+export function resolveActivityTarget(item) {
+  if (!item) return null;
+  const meta = item.meta || {};
+
+  if (item.type === 'session_created' && meta.agentId) {
+    return { kind: 'session', agentId: String(meta.agentId), sessionId: String(item.id) };
+  }
+
+  if (item.type === 'card_created' || item.type === 'card_updated') {
+    const prUrl = meta.prUrl != null ? String(meta.prUrl) : '';
+    const native = parseNativePrUrl(prUrl);
+    if (native) return { kind: 'pulls', projectId: native.projectId, prNumber: native.number };
+    if (prUrl) return { kind: 'external', url: prUrl };
+    if (meta.projectId) return { kind: 'pulls', projectId: String(meta.projectId) };
+  }
+
+  if (item.type === 'escalation' && meta.projectId) {
+    return { kind: 'kanban', projectId: String(meta.projectId) };
+  }
+
+  return null;
+}
+
+export function activityIsActionable(item) {
+  return resolveActivityTarget(item) != null;
+}
+
+/** Resolve navigation for an open-PR dashboard row. */
+export function resolveOpenPrTarget(pr) {
+  const prUrl = pr?.prUrl != null ? String(pr.prUrl) : '';
+  const native = parseNativePrUrl(prUrl);
+  // Carry the parsed PR number so the Pull Requests screen opens that PR's
+  // detail directly instead of dropping the user on the list.
+  if (native) return { kind: 'pulls', projectId: native.projectId, prNumber: native.number };
+  if (prUrl) return { kind: 'external', url: prUrl };
+  if (pr?.projectId) return { kind: 'pulls', projectId: String(pr.projectId) };
+  return null;
+}
+
+export function openPrIsActionable(pr) {
+  return resolveOpenPrTarget(pr) != null;
 }

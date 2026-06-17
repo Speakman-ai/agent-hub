@@ -106,7 +106,7 @@ export default function LoginScreen({ onAuthenticated }) {
               {mode === 'loading' ? (
                 <ActivityIndicator size="small" color={colors.emerald400} />
               ) : (
-                <Text style={styles.iconEmoji}>{isSetup ? '👤' : '🔑'}</Text>
+                <Text style={styles.iconEmoji}>{isSetup ? 'U' : 'K'}</Text>
               )}
             </View>
             <Text style={styles.title}>{title}</Text>

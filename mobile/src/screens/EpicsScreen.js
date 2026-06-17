@@ -1,0 +1,292 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  ActivityIndicator,
+  Switch,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { api } from '../utils/api';
+import { colors } from '../theme/colors';
+import {
+  EPIC_COLORS,
+  DEFAULT_EPIC_FORM,
+  epicFormFromRow,
+  epicFormToUpdateBody,
+  epicFormToCreateBody,
+  countOpenCardsForEpic,
+  epicDropdownLabel,
+} from '../utils/epics';
+import ProjectScreenHeader from '../components/ProjectScreenHeader';
+
+export default function EpicsScreen({ route, navigation }) {
+  const { projectId, project: routeProject } = route.params || {};
+  const project = routeProject;
+
+  const [board, setBoard] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [editingEpic, setEditingEpic] = useState(null);
+  const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const loadBoard = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.getProjectBoard(projectId);
+      setBoard(data);
+    } catch (err) {
+      Alert.alert('Error', err?.message || 'Failed to load epics');
+      setBoard(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    loadBoard();
+  }, [loadBoard]);
+
+  const epics = board?.epics || [];
+  const cards = board?.cards || [];
+  const doneColumnIds = new Set(
+    (board?.columns || []).filter((c) => /done/i.test(c.name || '')).map((c) => c.id),
+  );
+
+  const openCreate = () => {
+    setEditingEpic(null);
+    setEpicForm(DEFAULT_EPIC_FORM);
+    setShowForm(true);
+  };
+
+  const openEdit = (epic) => {
+    setEditingEpic(epic);
+    setEpicForm(epicFormFromRow(epic));
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!epicForm.name.trim()) {
+      Alert.alert('Error', 'Epic name is required');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (editingEpic) {
+        await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
+      } else {
+        const created = await api.createEpic(projectId, epicFormToCreateBody(epicForm));
+        if (created?.id && epicForm.autonomous) {
+          await api.updateEpic(projectId, created.id, epicFormToUpdateBody(epicForm));
+        }
+      }
+      setShowForm(false);
+      setEditingEpic(null);
+      setEpicForm(DEFAULT_EPIC_FORM);
+      await loadBoard();
+    } catch {
+      Alert.alert('Error', 'Failed to save epic');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = () => {
+    if (!editingEpic) return;
+    Alert.alert(
+      'Delete Epic',
+      `Delete "${editingEpic.name}"? Linked cards will be unlinked.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.deleteEpic(projectId, editingEpic.id);
+              setShowForm(false);
+              setEditingEpic(null);
+              await loadBoard();
+            } catch {
+              Alert.alert('Error', 'Failed to delete epic');
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const cardCountFor = (epicId) => {
+    const open = countOpenCardsForEpic(cards, epicId, doneColumnIds);
+    const total = cards.filter((c) => c.epic_id === epicId).length;
+    return { open, total };
+  };
+
+  return (
+    <SafeAreaView style={styles.screen} edges={['top']}>
+      <ProjectScreenHeader title="Epics" project={project} onBack={() => navigation.goBack()} />
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.headerRow}>
+          <Text style={styles.desc}>Group kanban cards into epics for this project.</Text>
+          <TouchableOpacity onPress={() => (showForm ? setShowForm(false) : openCreate())}>
+            <Text style={styles.link}>{showForm ? 'Cancel' : '+ New'}</Text>
+          </TouchableOpacity>
+        </View>
+
+        {showForm && (
+          <View style={styles.formCard}>
+            <Text style={styles.label}>Name</Text>
+            <TextInput
+              style={styles.input}
+              value={epicForm.name}
+              onChangeText={(v) => setEpicForm({ ...epicForm, name: v })}
+              placeholderTextColor={colors.gray600}
+            />
+            <Text style={styles.label}>Description</Text>
+            <TextInput
+              style={[styles.input, { minHeight: 60 }]}
+              value={epicForm.description}
+              onChangeText={(v) => setEpicForm({ ...epicForm, description: v })}
+              multiline
+              placeholderTextColor={colors.gray600}
+            />
+            <Text style={styles.label}>Color</Text>
+            <View style={styles.colorRow}>
+              {EPIC_COLORS.map((c) => (
+                <TouchableOpacity
+                  key={c}
+                  style={[
+                    styles.colorBtn,
+                    { backgroundColor: c },
+                    epicForm.color === c && styles.colorBtnActive,
+                  ]}
+                  onPress={() => setEpicForm({ ...epicForm, color: c })}
+                />
+              ))}
+            </View>
+            <View style={styles.switchRow}>
+              <Text style={styles.label}>Autonomous</Text>
+              <Switch
+                value={!!epicForm.autonomous}
+                onValueChange={(v) => setEpicForm({ ...epicForm, autonomous: v ? 1 : 0 })}
+                trackColor={{ false: colors.gray700, true: colors.emerald800_50 }}
+                thumbColor={epicForm.autonomous ? colors.emerald400 : colors.gray500}
+              />
+            </View>
+            <TouchableOpacity
+              style={[styles.primaryBtn, saving && { opacity: 0.5 }]}
+              onPress={handleSave}
+              disabled={saving}
+            >
+              <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : editingEpic ? 'Update' : 'Create'}</Text>
+            </TouchableOpacity>
+            {editingEpic && (
+              <TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
+                <Text style={styles.deleteBtnText}>Delete epic</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {loading ? (
+          <ActivityIndicator color={colors.gray400} style={{ marginTop: 24 }} />
+        ) : epics.length === 0 ? (
+          <Text style={styles.empty}>No epics yet.</Text>
+        ) : (
+          epics.map((epic) => {
+            const { open, total } = cardCountFor(epic.id);
+            return (
+              <TouchableOpacity key={epic.id} style={styles.epicCard} onPress={() => openEdit(epic)}>
+                <View style={[styles.epicDot, { backgroundColor: epic.color || colors.indigo500 }]} />
+                <View style={styles.epicInfo}>
+                  <Text style={styles.epicName}>{epicDropdownLabel(epic)}</Text>
+                  {epic.description ? (
+                    <Text style={styles.epicDesc} numberOfLines={2}>{epic.description}</Text>
+                  ) : null}
+                  <Text style={styles.epicCount}>
+                    {open} open · {total} total card{total === 1 ? '' : 's'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.boardLink}
+                  onPress={() => navigation.navigate('Kanban', { projectId, project, epicId: epic.id })}
+                >
+                  <Text style={styles.boardLinkText}>Board</Text>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            );
+          })
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.gray950 },
+  content: { padding: 16, paddingBottom: 32 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+  desc: { fontSize: 13, color: colors.gray500, flex: 1 },
+  link: { fontSize: 13, color: colors.blue400 },
+  empty: { fontSize: 14, color: colors.gray500, marginTop: 16 },
+  formCard: {
+    backgroundColor: colors.gray900,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+  },
+  label: { fontSize: 12, color: colors.gray400, marginBottom: 4, marginTop: 8 },
+  input: {
+    backgroundColor: colors.gray950,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    padding: 10,
+    color: colors.white,
+    fontSize: 14,
+  },
+  colorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
+  colorBtn: { width: 28, height: 28, borderRadius: 6 },
+  colorBtnActive: { borderWidth: 2, borderColor: colors.white },
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  primaryBtn: {
+    marginTop: 12,
+    backgroundColor: colors.emerald800_50,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  primaryBtnText: { color: colors.emerald400, fontWeight: '600' },
+  deleteBtn: { marginTop: 8, alignItems: 'center', paddingVertical: 8 },
+  deleteBtnText: { color: colors.red400, fontSize: 13 },
+  epicCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.gray900,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    gap: 10,
+  },
+  epicDot: { width: 10, height: 10, borderRadius: 3 },
+  epicInfo: { flex: 1 },
+  epicName: { fontSize: 15, fontWeight: '600', color: colors.white },
+  epicDesc: { fontSize: 12, color: colors.gray500, marginTop: 2 },
+  epicCount: { fontSize: 11, color: colors.gray500, marginTop: 4 },
+  boardLink: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.gray800,
+  },
+  boardLinkText: { fontSize: 12, color: colors.blue400 },
+});

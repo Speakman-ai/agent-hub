@@ -1,38 +1,79 @@
 /**
  * Per-project sidebar menu entries.
  *
- * Mirrors the web sidebar's collapsible "<project> Settings" menu
- * (`client/src/components/Sidebar.jsx`), limited to the project-scoped
- * destinations the mobile app actually has screens for. Each entry maps to a
- * React Navigation screen name. Pure + data-only so it can be unit-tested
- * without rendering the drawer.
+ * Mirrors the web sidebar (`client/src/components/Sidebar.jsx`):
+ *  - `lifecycleEntries` — always visible when the project is expanded
+ *  - `settingsEntries` — collapsed under "<project> Settings"
+ *
+ * Previews are intentionally excluded (no mobile preview surfaces).
+ * `icon` values are Lucide icon names (rendered via `HubIcon`).
  */
 
 import { isWorkflowProject } from './project-mode';
 
 /**
- * Build the ordered list of menu entries for a project.
- *
- * - `Pulls` is only shown when the project has a GitHub repo and is not a
- *   workflow project (matches the web sidebar's `project.mode !== 'workflow'`
- *   + repo gate, and the existing mobile inline-button condition).
- *
- * @param {{ githubRepo?: string, mode?: string }|null|undefined} project
- * @returns {Array<{ key: string, label: string, icon: string, screen: string }>}
+ * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
  */
-export function projectMenuEntries(project) {
-  const entries = [
-    { key: 'board', label: 'Board', icon: '▦', screen: 'Kanban' },
-    { key: 'threads', label: 'Threads', icon: '☰', screen: 'Threads' },
-    { key: 'support', label: 'Support', icon: '⛑', screen: 'CustomerSupport' },
-  ];
 
-  if (project?.githubRepo && !isWorkflowProject(project)) {
-    entries.push({ key: 'pulls', label: 'Pulls', icon: '⎇', screen: 'PullRequests' });
+/**
+ * Top-level lifecycle destinations (Board, Epics, Notes, etc.)
+ *
+ * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean }|null|undefined} project
+ * @returns {MenuEntry[]}
+ */
+export function projectLifecycleEntries(project) {
+  const entries = [];
+
+  if (project?.gitHost === 'agenthub') {
+    entries.push({ key: 'repo', label: 'Repository', icon: 'GitBranch', screen: 'Repository' });
   }
 
-  entries.push({ key: 'wiki', label: 'Wiki', icon: '\u{1F4D6}', screen: 'Wiki' });
-  entries.push({ key: 'notes', label: 'Notes', icon: '\u{1F4DD}', screen: 'Notes' });
+  if (project?.githubRepo && !isWorkflowProject(project)) {
+    entries.push({ key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' });
+  }
+
+  entries.push(
+    { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' },
+    { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' },
+    { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },
+    { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' },
+    { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' },
+    { key: 'wiki', label: 'Wiki', icon: 'BookOpen', screen: 'Wiki' },
+  );
 
   return entries;
+}
+
+/**
+ * Configuration submenu under "<project> Settings".
+ *
+ * @param {{ awsEnabled?: boolean }|null|undefined} project
+ * @returns {MenuEntry[]}
+ */
+export function projectSettingsEntries(project) {
+  const entries = [
+    {
+      key: 'project-settings',
+      label: 'Project Configuration',
+      icon: 'Settings',
+      screen: 'ProjectSettings',
+    },
+    { key: 'project-secrets', label: 'Secrets', icon: 'KeyRound', screen: 'ProjectSecrets' },
+    { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
+    { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
+    { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
+  ];
+
+  if (project?.awsEnabled) {
+    entries.push({ key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' });
+  }
+
+  entries.push({ key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' });
+
+  return entries;
+}
+
+/** @deprecated Use projectLifecycleEntries — kept for tests migrating gradually */
+export function projectMenuEntries(project) {
+  return projectLifecycleEntries(project);
 }

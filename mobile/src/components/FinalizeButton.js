@@ -2,7 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
-import { isTerminalStatus, isFinalizeBlocked, describeRunPhase } from '../utils/finalizeRun';
+import {
+  isTerminalStatus,
+  isFinalizeBlocked,
+  describeRunPhase,
+  shouldPollFinalizeFallback,
+} from '../utils/finalizeRun';
 import { hasCommittableChangesFromReady } from '../utils/changesReady';
 import { colors } from '../theme/colors';
 
@@ -42,7 +47,13 @@ export default function FinalizeButton({
   onError,
   variant = 'default',
 }) {
-  const { startFinalizeRun, startFinalizeRunForSession, cancelFinalizeRun } = useApp();
+  const {
+    startFinalizeRun,
+    startFinalizeRunForSession,
+    cancelFinalizeRun,
+    lastFinalizeRunEvent,
+    connected,
+  } = useApp();
 
   // `prefetchedRun === undefined` → fetch on mount.
   // `prefetchedRun === null`      → "no run yet" (skip fetch, idle button).
@@ -95,6 +106,19 @@ export default function FinalizeButton({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // Live WS updates — drop the poll loop when events arrive for this session.
+  useEffect(() => {
+    if (!lastFinalizeRunEvent || !sessionId) return;
+    if (lastFinalizeRunEvent.sessionId !== sessionId) return;
+    setRun((prev) => ({
+      ...(prev || {}),
+      id: lastFinalizeRunEvent.runId || prev?.id,
+      status: lastFinalizeRunEvent.status || prev?.status,
+      phase: lastFinalizeRunEvent.phase ?? prev?.phase ?? null,
+    }));
+    setLoadedOnce(true);
+  }, [lastFinalizeRunEvent, sessionId]);
+
   useEffect(() => {
     if (!sessionId) {
       setWorktreeCommittable(false);
@@ -128,13 +152,28 @@ export default function FinalizeButton({
     worktreeCommittable || hasCommittableChangesFromReady(pendingChanges);
   const canShip = hasCommittableChanges || readyToPush;
 
-  // Polling fallback: while a run is non-terminal, refetch every 2s so the
-  // UI tracks phase transitions and terminal flips without WS events.
+  // Polling fallback for when the live WS stream isn't delivering finalize
+  // events. The freshness/connection gate is re-evaluated on every tick (not
+  // once when the effect runs) so a dropped/reconnected socket or a stream
+  // that went silent after we missed a frame resumes polling — the button
+  // can't get stuck in a non-terminal state. We only SKIP the fetch while the
+  // stream is demonstrably healthy (connected + a recent event for this
+  // session); see `shouldPollFinalizeFallback`.
   useEffect(() => {
     if (!sessionId) return undefined;
     if (!run || terminal) return undefined;
     let cancelled = false;
     const tick = () => {
+      if (
+        !shouldPollFinalizeFallback({
+          connected,
+          lastEvent: lastFinalizeRunEvent,
+          sessionId,
+          now: Date.now(),
+        })
+      ) {
+        return;
+      }
       api
         .getLatestFinalizeRunForSession(sessionId)
         .then((data) => {
@@ -151,7 +190,7 @@ export default function FinalizeButton({
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId, run?.id, terminal]);
+  }, [sessionId, run?.id, terminal, connected, lastFinalizeRunEvent]);
 
   const handleStart = useCallback(async () => {
     if (!projectId || !sessionId) return;
@@ -317,7 +356,7 @@ export default function FinalizeButton({
       </TouchableOpacity>
       {!compact && (
         <Text style={styles.v0Caveat}>
-          UI updates poll every 2s on mobile.
+          Live updates via WebSocket when connected.
         </Text>
       )}
     </View>

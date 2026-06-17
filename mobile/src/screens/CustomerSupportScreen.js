@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   FlatList,
+  ScrollView,
   StyleSheet,
   ActivityIndicator,
   Image,
@@ -172,7 +173,7 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress }) {
           disabled={deleting}
           style={[styles.deleteButton, deleting && styles.convertButtonDisabled]}
         >
-          <Text style={styles.deleteButtonText}>{deleting ? 'Deleting…' : '🗑 Delete'}</Text>
+          <Text style={styles.deleteButtonText}>{deleting ? 'Deleting…' : 'Delete'}</Text>
         </TouchableOpacity>
         {convertError ? <Text style={styles.convertErrorText}>{convertError}</Text> : null}
         {deleteError ? <Text style={styles.convertErrorText}>{deleteError}</Text> : null}
@@ -197,6 +198,7 @@ export default function CustomerSupportScreen({ route }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedTicket, setSelectedTicket] = useState(null);
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -284,15 +286,79 @@ export default function CustomerSupportScreen({ route }) {
     setTickets((prev) => prev.filter((t) => t.id !== ticketId));
   }, []);
 
+  const handleTicketPress = useCallback(
+    (ticket) => {
+      markRead(ticket);
+      setSelectedTicket(ticket);
+    },
+    [markRead],
+  );
+
+  // Deep-link: a `support_ticket_created` notification tap routes here with the
+  // triggering ticket id (see `notificationRouteToNavigation`). Open that
+  // ticket once it's present in the loaded list instead of leaving the user on
+  // the list. The ref guard makes it fire once per distinct target so backing
+  // out (or a WebSocket list refresh) doesn't force the detail back open.
+  const deepLinkedTicketId = route?.params?.ticketId;
+  const deepLinkAppliedRef = useRef(null);
+  useEffect(() => {
+    if (!deepLinkedTicketId) return;
+    if (deepLinkAppliedRef.current === deepLinkedTicketId) return;
+    const match = tickets.find((t) => t.id === deepLinkedTicketId);
+    if (!match) return;
+    deepLinkAppliedRef.current = deepLinkedTicketId;
+    handleTicketPress(match);
+  }, [deepLinkedTicketId, tickets, handleTicketPress]);
+
   const renderItem = ({ item }) => (
     <TicketCard
       item={item}
       projectId={projectId}
       onOpenReplay={openReplay}
       onDeleted={removeTicket}
-      onPress={markRead}
+      onPress={handleTicketPress}
     />
   );
+
+  if (selectedTicket) {
+    const title =
+      selectedTicket.subject?.trim() || selectedTicket.body?.trim() || '(no subject)';
+    const screenshotUrl = resolveUploadUrl(selectedTicket.screenshot_ref);
+    return (
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={() => setSelectedTicket(null)} style={styles.menuButton}>
+            <Text style={styles.backIcon}>{'\u2190'}</Text>
+          </TouchableOpacity>
+          <Text style={styles.title} numberOfLines={1}>
+            Support ticket
+          </Text>
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 16 }}>
+          <Text style={styles.detailTitle}>{title}</Text>
+          <Text style={styles.detailMeta}>
+            {TYPE_LABEL[selectedTicket.type] || 'Other'} · {selectedTicket.severity} ·{' '}
+            {selectedTicket.status}
+          </Text>
+          {selectedTicket.body ? (
+            <Text style={styles.detailBody}>{selectedTicket.body}</Text>
+          ) : null}
+          {selectedTicket.reporter ? (
+            <Text style={styles.reporter}>Reported by {selectedTicket.reporter}</Text>
+          ) : null}
+          {selectedTicket.ai_summary ? (
+            <View style={styles.aiBox}>
+              <Text style={styles.aiLabel}>AI investigation</Text>
+              <Text style={styles.aiText}>{selectedTicket.ai_summary}</Text>
+            </View>
+          ) : null}
+          {screenshotUrl ? (
+            <Image source={{ uri: screenshotUrl }} style={styles.detailScreenshot} resizeMode="contain" />
+          ) : null}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -487,4 +553,17 @@ const styles = StyleSheet.create({
     borderColor: colors.gray700,
   },
   deleteButtonText: { fontSize: 12, color: colors.red400, fontWeight: '600' },
+  backIcon: { fontSize: 22, color: colors.gray400 },
+  detailTitle: { fontSize: 18, fontWeight: '700', color: colors.white, marginBottom: 8 },
+  detailMeta: { fontSize: 12, color: colors.gray500, marginBottom: 12 },
+  detailBody: { fontSize: 14, color: colors.gray300, lineHeight: 20 },
+  detailScreenshot: {
+    marginTop: 12,
+    width: '100%',
+    height: 220,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray900,
+  },
 });

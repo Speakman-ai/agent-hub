@@ -4,56 +4,36 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Pressable,
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
-import { getApiBaseUrl, getWsUrl } from '../utils/config';
-import { getActiveOrg } from '../utils/orgs';
-// Worktree toggle + detection-badge imports were removed when Agent Hub
-// locked to worktree-only sessions. `isWorkflowProject` no longer
-// influences this component.
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/clipboard';
 import { engineOptionsFromConfig, modelsForEngine, modelDisplay } from '../utils/engineOptions';
-import BugReportButton from './BugReportButton';
 import ForwardSessionModal, { filterForwardTargets } from './ForwardSessionModal';
 import SessionStateIcon from './SessionStateIcon';
 import SessionEngineModelSheet from './SessionEngineModelSheet';
+import { truncateSessionId } from '../utils/sessionId';
 
-export default function TopBar({ projectId, agentId } = {}) {
+export default function TopBar() {
   const {
     activeAgent,
-    activeAgentId,
-    projects,
-    connected,
-    reconnecting,
     sessionEngine,
     sessionModel,
     modelConfig,
     sessionAskMode,
-    handleAskModeChange,
     handleEngineChange,
     handleModelChange,
-    handleNewSession,
     activeSessionId,
     activeSessionState,
     agents,
     handleOpenHandoffSession,
   } = useApp();
   const { openSidebar } = useContext(SidebarContext);
-
-  // Prefer explicit props, fall back to the active agent from context.
-  const effectiveAgentId = agentId || activeAgentId || activeAgent?.id || '';
-  const effectiveProjectId = projectId || activeAgent?.projectId || '';
-  const activeProject = projects?.find((p) => p.id === effectiveProjectId);
-  // `workflowProject` was used to hide the worktree toggle when the
-  // project was in workflow mode; the toggle itself was removed when
-  // Agent Hub locked to worktree-only sessions.
 
   const [showPicker, setShowPicker] = useState(false);
   const [showForward, setShowForward] = useState(false);
@@ -101,13 +81,8 @@ export default function TopBar({ projectId, agentId } = {}) {
           style={styles.menuButton}
           onPress={openSidebar}
         >
-          <Ionicons name="menu" size={24} color={colors.gray400} />
+          <AppIcon name="menu" size={24} color={colors.gray400} />
         </TouchableOpacity>
-        <BugReportButton
-          projectId={effectiveProjectId}
-          agentId={effectiveAgentId}
-          sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''}
-        />
         {activeAgent && (
           <View style={styles.agentInfo}>
             <View style={[styles.agentDot, { backgroundColor: activeAgent.color }]} />
@@ -133,7 +108,7 @@ export default function TopBar({ projectId, agentId } = {}) {
                     Session
                   </Text>
                   <Text style={styles.sessionIdText} numberOfLines={1}>
-                    {activeSessionId}
+                    {truncateSessionId(activeSessionId)}
                   </Text>
                 </TouchableOpacity>
               ) : null}
@@ -163,48 +138,9 @@ export default function TopBar({ projectId, agentId } = {}) {
           >
             <View style={[styles.engineDotSmall, { backgroundColor: currentEngine.color }]} />
             <Text style={styles.engineLabel}>{currentModel.short}</Text>
-            <Ionicons name="chevron-down" size={12} color={colors.gray500} />
+            <AppIcon name="chevron-down" size={12} color={colors.gray500} />
           </TouchableOpacity>
         )}
-
-        {/* Connection status — long-press for diagnostics */}
-        <Pressable
-          onLongPress={() => {
-            const org = getActiveOrg();
-            const apiUrl = getApiBaseUrl();
-            const wsUrl = getWsUrl();
-            Alert.alert(
-              'Connection Info',
-              `Org: ${org?.name || '(none)'}\n` +
-              `URL: ${org?.remoteUrl || '(not set)'}\n` +
-              `API: ${apiUrl || '(empty)'}\n` +
-              `WS: ${wsUrl ? wsUrl.replace(/apiKey=[^&]+/, 'apiKey=***') : '(empty)'}\n` +
-              `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 5)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
-              `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`,
-            );
-          }}
-          style={[
-            styles.statusBadge,
-            connected
-              ? styles.statusConnected
-              : reconnecting
-              ? styles.statusReconnecting
-              : styles.statusDisconnected,
-          ]}
-        >
-          <Text
-            style={[
-              styles.statusDot,
-              connected
-                ? styles.statusDotConnected
-                : reconnecting
-                ? styles.statusDotReconnecting
-                : styles.statusDotDisconnected,
-            ]}
-          >
-            ●
-          </Text>
-        </Pressable>
 
         {/* Forward session to another agent in the same project */}
         {activeAgent && activeSessionId && (
@@ -215,7 +151,7 @@ export default function TopBar({ projectId, agentId } = {}) {
             accessibilityRole="button"
             accessibilityLabel="Forward session to another agent"
           >
-            <Ionicons
+            <AppIcon
               name="arrow-redo-outline"
               size={18}
               color={canForward ? colors.white : colors.gray500}
@@ -235,7 +171,7 @@ export default function TopBar({ projectId, agentId } = {}) {
             {summarizing ? (
               <ActivityIndicator size="small" color={colors.white} />
             ) : (
-              <Ionicons
+              <AppIcon
                 name="document-text-outline"
                 size={18}
                 color={activeSessionId ? colors.white : colors.gray500}
@@ -244,14 +180,6 @@ export default function TopBar({ projectId, agentId } = {}) {
           </TouchableOpacity>
         )}
 
-        {/* New session */}
-        <TouchableOpacity
-          style={styles.newButton}
-          onPress={handleNewSession}
-          disabled={!activeAgent}
-        >
-          <Ionicons name="add" size={20} color={colors.white} />
-        </TouchableOpacity>
       </View>
 
       {/* Forward Session Modal */}
@@ -288,10 +216,8 @@ export default function TopBar({ projectId, agentId } = {}) {
         modelConfig={modelConfig}
         engine={sessionEngine}
         model={sessionModel}
-        askMode={sessionAskMode}
         onSelectEngine={handleEngineChange}
         onSelectModel={handleModelChange}
-        onToggleAskMode={handleAskModeChange}
       />
     </View>
   );
@@ -389,32 +315,6 @@ const styles = StyleSheet.create({
   engineLabel: {
     fontSize: 12,
     color: colors.gray300,
-  },
-  statusBadge: {
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  statusConnected: {
-    backgroundColor: colors.emerald900_50,
-  },
-  statusReconnecting: {
-    backgroundColor: colors.yellow900_50,
-  },
-  statusDisconnected: {
-    backgroundColor: colors.red900_50,
-  },
-  statusDot: {
-    fontSize: 10,
-  },
-  statusDotConnected: {
-    color: colors.emerald400,
-  },
-  statusDotReconnecting: {
-    color: colors.yellow400,
-  },
-  statusDotDisconnected: {
-    color: colors.red400,
   },
   newButton: {
     backgroundColor: colors.gray800,

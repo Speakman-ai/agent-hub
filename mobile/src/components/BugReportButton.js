@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { TouchableOpacity, StyleSheet, Alert } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { captureScreenshot } from '../utils/bugReport';
 import BugReportModal from './BugReportModal';
@@ -10,7 +10,7 @@ import BugReportModal from './BugReportModal';
  * Uses Ionicons (@expo/vector-icons) since the mobile app does not depend
  * on lucide-react-native — matches existing TopBar icons.
  */
-export default function BugReportButton({ projectId, agentId, sourceUrl }) {
+export default function BugReportButton({ projectId, agentId, sourceUrl, buttonStyle }) {
   const [visible, setVisible] = useState(false);
   const [screenshotUri, setScreenshotUri] = useState(null);
   const [capturing, setCapturing] = useState(false);
@@ -53,12 +53,12 @@ export default function BugReportButton({ projectId, agentId, sourceUrl }) {
   return (
     <>
       <TouchableOpacity
-        style={styles.button}
+        style={[styles.button, buttonStyle]}
         onPress={openWithScreenshot}
         disabled={capturing}
         accessibilityLabel="Report a bug"
       >
-        <Ionicons name="bug-outline" size={20} color={colors.gray400} />
+        <AppIcon name="bug-outline" size={20} color={colors.gray400} />
       </TouchableOpacity>
       <BugReportModal
         visible={visible}

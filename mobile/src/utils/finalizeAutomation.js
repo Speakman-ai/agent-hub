@@ -1,7 +1,7 @@
 /**
  * Mobile mirror of `client/src/utils/finalizeAutomation.js`.
  *
- * The "build dropdown" on the Changes screen lets the user pick how far the
+ * The "build dropdown" on the chat TopBar lets the user pick how far the
  * Runner takes a session: Build → Build and Review → Build and Push → Auto
  * Merge (plus a read-only Ask planning mode handled via the session ask-mode
  * flag). Keep the option set in lock-step with the web copy.

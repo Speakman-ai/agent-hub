@@ -11,7 +11,7 @@ import {
   ScrollView,
   Switch,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { filterForwardTargets } from '../utils/forwardTargets';
 
@@ -87,7 +87,7 @@ export default function ForwardSessionModal({
         <Pressable style={styles.sheet} onPress={() => {}}>
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <Ionicons name="arrow-redo-outline" size={16} color={colors.gray400} />
+              <AppIcon name="arrow-redo-outline" size={16} color={colors.gray400} />
               <Text style={styles.headerTitle}>Forward session</Text>
               {sourceAgent?.name ? (
                 <Text style={styles.headerSubtitle} numberOfLines={1}>
@@ -96,7 +96,7 @@ export default function ForwardSessionModal({
               ) : null}
             </View>
             <TouchableOpacity onPress={handleClose} disabled={submitting}>
-              <Ionicons name="close" size={20} color={colors.gray400} />
+              <AppIcon name="close" size={20} color={colors.gray400} />
             </TouchableOpacity>
           </View>
 
@@ -187,7 +187,7 @@ export default function ForwardSessionModal({
               {submitting ? (
                 <ActivityIndicator size="small" color={colors.white} />
               ) : (
-                <Ionicons name="send" size={14} color={colors.white} />
+                <AppIcon name="send" size={14} color={colors.white} />
               )}
               <Text style={styles.submitText}>
                 {submitting ? 'Forwarding...' : 'Forward'}

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,13 @@ import {
   ScrollView,
   Alert,
   ActionSheetIOS,
+  ActivityIndicator,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../theme/colors';
-import { pasteFromClipboard } from '../utils/clipboard';
+import { useVoiceTranscription } from '../hooks/useVoiceTranscription';
 
 // Map a picked asset / document → attachment shape used by handleSend
 // and ChatMessage. Keeps the kind ('image' | 'video' | 'file') explicit
@@ -39,7 +40,17 @@ function guessMimeFromName(name, fallback) {
   return map[ext] || fallback;
 }
 
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode, readOnly }) {
+export default function MessageInput({
+  onSend,
+  onCancel,
+  disabled,
+  isProcessing,
+  agentColor,
+  skills,
+  queueLength,
+  askMode,
+  readOnly,
+}) {
   const [value, setValue] = useState('');
   // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
   // kind ∈ 'image' | 'video' | 'file'
@@ -77,6 +88,19 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
   const handleSelectionChange = useCallback((e) => {
     cursorRef.current = e.nativeEvent.selection.start;
   }, []);
+
+  const reportTranscribeError = useCallback((msg) => {
+    Alert.alert('Voice input', msg);
+  }, []);
+
+  const { isRecording, isTranscribing, micDisabled, handleMicClick } = useVoiceTranscription({
+    value,
+    setValue,
+    cursorRef,
+    disabled,
+    isProcessing,
+    onError: reportTranscribeError,
+  });
 
   const handleChangeText = useCallback((val) => {
     setValue(val);
@@ -219,25 +243,6 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     closeSlash();
   };
 
-  // Quick-paste: inserts clipboard content at the cursor (or appends when the
-  // cursor position is unknown). Surfaces an alert when the clipboard is empty
-  // so the user isn't left wondering why nothing happened.
-  const handlePaste = useCallback(async () => {
-    const clip = await pasteFromClipboard();
-    if (!clip) {
-      Alert.alert('Clipboard is empty');
-      return;
-    }
-    setValue((prev) => {
-      const cursor = Math.min(cursorRef.current ?? prev.length, prev.length);
-      const before = prev.slice(0, cursor);
-      const after = prev.slice(cursor);
-      return `${before}${clip}${after}`;
-    });
-    // Keep the slash-popup state consistent if the user pastes mid-slash.
-    closeSlash();
-  }, [closeSlash]);
-
   // Read-only sessions (reviewer threads) — render only a banner. The
   // composer, send button, and keyboard handling are all suppressed
   // because the thread is a shared artifact and only the server-side
@@ -246,7 +251,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     return (
       <View style={styles.container}>
         <View style={styles.askModeBanner}>
-          <Ionicons
+          <AppIcon
             name="information-circle"
             size={14}
             color={colors.blue400}
@@ -266,7 +271,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           has an unmissable cue that the session is read-only. */}
       {askMode && (
         <View style={styles.askModeBanner}>
-          <Ionicons
+          <AppIcon
             name="information-circle"
             size={14}
             color={colors.blue400}
@@ -282,7 +287,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
       {slashQuery !== null && filteredSkills.length > 0 && (
         <View style={styles.slashPopup}>
           <View style={styles.slashHeader}>
-            <Ionicons name="flash" size={12} color={colors.gray500} />
+            <AppIcon name="flash" size={12} color={colors.gray500} />
             <Text style={styles.slashHeaderText}>Skills</Text>
           </View>
           <ScrollView style={styles.slashList} keyboardShouldPersistTaps="always">
@@ -322,12 +327,12 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
                 <Image source={{ uri: item.uri }} style={styles.imagePreview} />
               ) : item.kind === 'video' ? (
                 <View style={[styles.imagePreview, styles.videoPreview]}>
-                  <Ionicons name="videocam" size={22} color={colors.gray300} />
+                  <AppIcon name="videocam" size={22} color={colors.gray300} />
                   <Text style={styles.mediaBadge}>VIDEO</Text>
                 </View>
               ) : (
                 <View style={[styles.imagePreview, styles.filePreview]}>
-                  <Ionicons name="document-outline" size={20} color={colors.gray300} />
+                  <AppIcon name="document-outline" size={20} color={colors.gray300} />
                   <Text style={styles.fileName} numberOfLines={1}>
                     {item.name}
                   </Text>
@@ -339,7 +344,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
                 accessibilityLabel="Remove attachment"
                 accessibilityRole="button"
               >
-                <Ionicons name="close-circle" size={18} color={colors.red600} />
+                <AppIcon name="close-circle" size={18} color={colors.red600} />
               </TouchableOpacity>
             </View>
           ))}
@@ -356,32 +361,48 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
           accessibilityLabel="Add attachment"
           accessibilityRole="button"
         >
-          <Ionicons
+          <AppIcon
             name="attach"
             size={22}
             color={disabled && !isProcessing ? colors.gray600 : colors.gray400}
           />
         </TouchableOpacity>
 
-        {/* Paste button — only shown when the composer is empty so it does
-            not crowd the send-button area during normal typing. Native paste
-            via long-press menu still works at all times. */}
-        {value.length === 0 && images.length === 0 && (
-          <TouchableOpacity
-            style={styles.pasteButton}
-            onPress={handlePaste}
-            disabled={disabled && !isProcessing}
-            activeOpacity={0.7}
-            accessibilityLabel="Paste from clipboard"
-            accessibilityRole="button"
-          >
-            <Ionicons
-              name="clipboard-outline"
-              size={20}
-              color={disabled && !isProcessing ? colors.gray600 : colors.gray400}
+        {/* Voice input — mirrors web MessageInput mic (attach | mic | composer | send). */}
+        <TouchableOpacity
+          style={styles.micButton}
+          onPress={handleMicClick}
+          disabled={micDisabled}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={
+            isTranscribing
+              ? 'Transcribing voice input'
+              : isRecording
+                ? 'Stop recording'
+                : 'Voice input'
+          }
+          accessibilityState={{
+            disabled: !!micDisabled,
+            selected: !!isRecording,
+          }}
+        >
+          {isTranscribing ? (
+            <ActivityIndicator size={20} color={colors.gray500} />
+          ) : (
+            <AppIcon
+              name={isRecording ? 'stop' : 'mic-outline'}
+              size={22}
+              color={
+                micDisabled
+                  ? colors.gray600
+                  : isRecording
+                    ? colors.red400
+                    : colors.gray400
+              }
             />
-          </TouchableOpacity>
-        )}
+          )}
+        </TouchableOpacity>
 
         <TextInput
           ref={inputRef}
@@ -410,7 +431,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             onPress={onCancel}
             activeOpacity={0.7}
           >
-            <Ionicons name="close-circle" size={22} color={colors.white} />
+            <AppIcon name="close-circle" size={22} color={colors.white} />
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
@@ -427,7 +448,7 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
             disabled={disabled || (!value.trim() && images.length === 0)}
             activeOpacity={0.7}
           >
-            <Ionicons name="send" size={18} color={colors.white} />
+            <AppIcon name="send" size={18} color={colors.white} />
             {isProcessing && queueLength > 0 && (
               <View style={styles.queueBadge}>
                 <Text style={styles.queueBadgeText}>{queueLength}</Text>
@@ -576,8 +597,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  pasteButton: {
-    width: 32,
+  micButton: {
+    width: 36,
     height: 44,
     alignItems: 'center',
     justifyContent: 'center',

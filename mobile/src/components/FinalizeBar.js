@@ -1,11 +1,8 @@
 /**
- * FinalizeBar — header controls for the Changes screen.
+ * FinalizeBar — single chat action row (Summary, View changes, Build, Finalize, Push).
  *
- * Ports the web finalize toolbar (build dropdown + Finalize + Push to Agent
- * Hub) to React Native. Sits at the top of `SessionChangesScreen`, above the
- * file list. Run state (status/phases/run) is owned by the screen's
- * `useFinalizeRunPoll` and passed in, so this bar and the CI/review cards share
- * one poll.
+ * Mirrors the web/mobile reference layout: one horizontal strip directly under
+ * TopBar. Voice input lives in MessageInput, not here.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -20,9 +17,10 @@ import {
   Pressable,
   ScrollView,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
+import SessionSummarySheet from './SessionSummarySheet';
 import {
   FINALIZE_AUTOMATION_OPTIONS,
   finalizeAutomationLabel,
@@ -38,8 +36,12 @@ export default function FinalizeBar({
   sessionId,
   cardId,
   session,
+  sessionAgents = [],
   hosted = false,
   hasChanges = true,
+  showViewChanges = true,
+  onViewChanges,
+  showFinalize = true,
   status,
   phase,
   phases,
@@ -47,6 +49,7 @@ export default function FinalizeBar({
   onChanged,
   onError,
 }) {
+  const [showSummary, setShowSummary] = useState(false);
   const [automation, setAutomation] = useState(() => deriveSessionFinalizeMode(session).automation);
   const [askMode, setAskMode] = useState(() => deriveSessionFinalizeMode(session).askMode);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -72,7 +75,7 @@ export default function FinalizeBar({
   const fullyValidated = isFullyValidated(phases);
   const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
   const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
-  const pushLabel = hosted ? 'Push to Agent Hub' : 'Push to GitHub';
+  const pushLabel = 'Push';
 
   const dropdownLabel = askMode ? 'Ask' : finalizeAutomationLabel(automation);
 
@@ -162,69 +165,109 @@ export default function FinalizeBar({
 
   return (
     <View style={styles.bar}>
-      <View style={styles.row}>
-        {/* Build dropdown */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.row}
+        keyboardShouldPersistTaps="handled"
+      >
         <TouchableOpacity
-          style={styles.dropdown}
-          onPress={() => setMenuOpen(true)}
-          disabled={!sessionId}
-          testID="finalize-automation-select"
+          style={styles.outlineBtn}
+          onPress={() => setShowSummary(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Open session summary"
         >
-          <Text style={styles.dropdownText} numberOfLines={1}>
-            {dropdownLabel}
-          </Text>
-          <Ionicons name="chevron-down" size={14} color={colors.gray400} />
+          <AppIcon name="information-circle-outline" size={12} color={colors.gray400} />
+          <Text style={styles.outlineBtnText}>Summary</Text>
         </TouchableOpacity>
 
-        {/* Finalize / Stop */}
-        <TouchableOpacity
-          style={[
-            styles.finalizeBtn,
-            btn.tone === 'busy' && styles.finalizeBtnBusy,
-            btn.tone === 'done' && styles.finalizeBtnDone,
-            btn.disabled && !btn.inFlight && styles.btnDisabled,
-          ]}
-          onPress={handleFinalize}
-          disabled={btn.disabled && !btn.inFlight}
-          testID="finalize-code-changes-button"
-        >
-          {busy || btn.inFlight ? (
-            <ActivityIndicator size="small" color={colors.white} />
-          ) : (
-            <Ionicons
-              name={btn.tone === 'done' ? 'checkmark-circle' : 'flask'}
-              size={14}
-              color={colors.white}
-            />
-          )}
-          <Text style={styles.finalizeText}>{busy && !btn.inFlight ? 'Starting' : btn.label}</Text>
-        </TouchableOpacity>
+        {showViewChanges && typeof onViewChanges === 'function' && (
+          <TouchableOpacity
+            style={styles.outlineBtn}
+            onPress={onViewChanges}
+            accessibilityRole="button"
+            accessibilityLabel="View code changes for this session"
+          >
+            <AppIcon name="git-compare-outline" size={12} color={colors.gray400} />
+            <Text style={styles.outlineBtnText}>Changes</Text>
+          </TouchableOpacity>
+        )}
 
-        {/* Push to Agent Hub */}
-        <TouchableOpacity
-          style={[styles.pushBtn, (!pushEnabled || pushing) && styles.btnDisabled]}
-          onPress={handlePush}
-          disabled={!pushEnabled || pushing}
-          testID="finalize-push-button"
-        >
-          {pushing ? (
-            <ActivityIndicator size="small" color={colors.emerald300} />
-          ) : (
-            <Ionicons name="cloud-upload-outline" size={14} color={colors.emerald300} />
-          )}
-          <Text style={styles.pushText} numberOfLines={1}>
-            {pushLabel}
-          </Text>
-        </TouchableOpacity>
-      </View>
+        {showFinalize && projectId ? (
+          <>
+            {/* Build dropdown */}
+            <TouchableOpacity
+              style={styles.dropdown}
+              onPress={() => setMenuOpen(true)}
+              disabled={!sessionId}
+              testID="finalize-automation-select"
+            >
+              <Text style={styles.dropdownText} numberOfLines={1}>
+                {dropdownLabel}
+              </Text>
+              <AppIcon name="chevron-down" size={12} color={colors.gray400} />
+            </TouchableOpacity>
+
+            {/* Finalize / Stop */}
+            <TouchableOpacity
+              style={[
+                styles.finalizeBtn,
+                btn.tone === 'busy' && styles.finalizeBtnBusy,
+                btn.tone === 'done' && styles.finalizeBtnDone,
+                btn.disabled && !btn.inFlight && styles.btnDisabled,
+              ]}
+              onPress={handleFinalize}
+              disabled={btn.disabled && !btn.inFlight}
+              testID="finalize-code-changes-button"
+            >
+              {busy || btn.inFlight ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <AppIcon
+                  name={btn.tone === 'done' ? 'checkmark-circle' : 'flask-outline'}
+                  size={12}
+                  color={colors.white}
+                />
+              )}
+              <Text style={styles.finalizeText}>{busy && !btn.inFlight ? 'Starting' : btn.label}</Text>
+            </TouchableOpacity>
+
+            {/* Push */}
+            <TouchableOpacity
+              style={[styles.pushBtn, (!pushEnabled || pushing) && styles.btnDisabled]}
+              onPress={handlePush}
+              disabled={!pushEnabled || pushing}
+              testID="finalize-push-button"
+              accessibilityLabel={hosted ? 'Push to Agent Hub' : 'Push to GitHub'}
+            >
+              {pushing ? (
+                <ActivityIndicator size="small" color={colors.emerald300} />
+              ) : (
+                <AppIcon name="cloud-upload-outline" size={12} color={colors.emerald300} />
+              )}
+              <Text style={styles.pushText} numberOfLines={1}>
+                {pushLabel}
+              </Text>
+            </TouchableOpacity>
+          </>
+        ) : null}
+      </ScrollView>
 
       {/* Live status line while a run is active */}
-      {btn.inFlight && (
+      {showFinalize && btn.inFlight && (
         <Text style={styles.statusLine}>{describeRunPhase(status, phase)}…</Text>
       )}
 
+      <SessionSummarySheet
+        visible={showSummary}
+        onClose={() => setShowSummary(false)}
+        sessionId={sessionId}
+        sessionAgents={sessionAgents}
+      />
+
       {/* Build dropdown menu */}
-      <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
+      {showFinalize && projectId ? (
+        <Modal visible={menuOpen} transparent animationType="fade" onRequestClose={() => setMenuOpen(false)}>
         <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
           <View style={styles.menu}>
             <ScrollView>
@@ -249,14 +292,15 @@ export default function FinalizeBar({
           </View>
         </Pressable>
       </Modal>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   bar: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderBottomWidth: 1,
     borderBottomColor: colors.gray800,
     backgroundColor: colors.gray950,
@@ -264,34 +308,51 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 5,
+    paddingRight: 4,
+  },
+  outlineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray900,
+  },
+  outlineBtnText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.gray200,
   },
   dropdown: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 6,
     borderWidth: 1,
     borderColor: colors.gray700,
     backgroundColor: colors.gray900,
   },
   dropdownText: {
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '600',
     color: colors.gray200,
-    maxWidth: 110,
+    maxWidth: 64,
   },
   finalizeBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
     backgroundColor: PURPLE,
-    minHeight: 36,
+    minHeight: 28,
   },
   finalizeBtnBusy: {
     backgroundColor: colors.red500 || '#ef4444',
@@ -301,25 +362,27 @@ const styles = StyleSheet.create({
   },
   finalizeText: {
     color: colors.white,
-    fontSize: 13,
+    fontSize: 10,
     fontWeight: '600',
   },
   pushBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 6,
     borderWidth: 1,
     borderColor: colors.emerald700 || 'rgba(4,120,87,0.6)',
     backgroundColor: 'rgba(6,78,59,0.4)',
     flexShrink: 1,
+    maxWidth: 118,
   },
   pushText: {
     color: colors.emerald300 || '#6ee7b7',
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '600',
+    flexShrink: 1,
   },
   btnDisabled: {
     opacity: 0.45,

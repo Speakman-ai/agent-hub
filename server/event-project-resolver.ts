@@ -132,9 +132,8 @@ export function resolveProjectIdFromEvent(
   const getBoardProjectId = deps?.getBoardProjectId ?? defaultGetBoardProjectId;
   const getAgentProjectId = deps?.getAgentProjectId ?? defaultGetAgentProjectId;
 
-  // 2. sessionId -> agent -> project. Most chat-stream events
-  //    (`message`, `done`, `tool_use`, `changes_ready`) carry sessionId.
-  const sessionId = safeString(data.sessionId);
+  // 2. sessionId / session_id -> agent -> project.
+  const sessionId = safeString(data.sessionId) ?? safeString(data.session_id);
   if (sessionId) {
     const agentId = getSessionAgentId(sessionId);
     if (agentId) {

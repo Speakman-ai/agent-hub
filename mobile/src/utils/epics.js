@@ -122,11 +122,10 @@ export function findEpic(epics, epicId) {
 }
 
 /**
- * The web board auto-prepends a "⚡" glyph to the currently-autonomous epic
- * in its dropdown. Replicate the same label here for parity.
+ * Autonomous epics are prefixed with "Auto:" in dropdown labels.
  */
 export function epicDropdownLabel(epic) {
   if (!epic) return '';
-  const zap = epic.autonomous ? '\u26A1 ' : '';
-  return `${zap}${epic.name}`;
+  const prefix = epic.autonomous ? 'Auto: ' : '';
+  return `${prefix}${epic.name}`;
 }

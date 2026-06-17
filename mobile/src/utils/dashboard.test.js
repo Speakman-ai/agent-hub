@@ -9,6 +9,11 @@ import {
   ACTIVITY_TYPE_KEYS,
   HEADLINE_TILES,
   PRIORITY_KEYS,
+  sortSupportBySeverity,
+  resolveActivityTarget,
+  activityIsActionable,
+  resolveOpenPrTarget,
+  openPrIsActionable,
 } from './dashboard.js';
 
 describe('formatHeadlineTiles', () => {
@@ -179,5 +184,116 @@ describe('ACTIVITY_TYPE_KEYS', () => {
       'escalation',
       'pr_created',
     ]);
+  });
+});
+
+describe('sortSupportBySeverity', () => {
+  it('orders critical before high before medium before low', () => {
+    const sorted = sortSupportBySeverity([
+      { id: '1', severity: 'low', created_at: '2026-01-03T00:00:00Z' },
+      { id: '2', severity: 'critical', created_at: '2026-01-01T00:00:00Z' },
+      { id: '3', severity: 'high', created_at: '2026-01-02T00:00:00Z' },
+    ]);
+    expect(sorted.map((t) => t.id)).toEqual(['2', '3', '1']);
+  });
+
+  it('sorts newest-first within the same severity', () => {
+    const sorted = sortSupportBySeverity([
+      { id: 'a', severity: 'high', created_at: '2026-01-01T00:00:00Z' },
+      { id: 'b', severity: 'high', created_at: '2026-01-03T00:00:00Z' },
+    ]);
+    expect(sorted.map((t) => t.id)).toEqual(['b', 'a']);
+  });
+
+  it('does not mutate the input array', () => {
+    const input = [{ id: 'x', severity: 'low', created_at: '2026-01-01T00:00:00Z' }];
+    sortSupportBySeverity(input);
+    expect(input).toHaveLength(1);
+  });
+});
+
+describe('resolveActivityTarget', () => {
+  it('routes session_created via meta.agentId', () => {
+    expect(
+      resolveActivityTarget({
+        type: 'session_created',
+        id: 'sess-1',
+        meta: { agentId: 'agent-a' },
+      }),
+    ).toEqual({ kind: 'session', agentId: 'agent-a', sessionId: 'sess-1' });
+  });
+
+  it('routes card rows with native PR URLs to pulls, carrying the PR number', () => {
+    expect(
+      resolveActivityTarget({
+        type: 'card_updated',
+        id: 'c1',
+        meta: {
+          projectId: 'proj-1',
+          prUrl: '/projects/proj-1/pulls/42',
+        },
+      }),
+    ).toEqual({ kind: 'pulls', projectId: 'proj-1', prNumber: 42 });
+  });
+
+  it('routes card rows with external PR URLs externally', () => {
+    expect(
+      resolveActivityTarget({
+        type: 'card_created',
+        id: 'c1',
+        meta: {
+          projectId: 'proj-1',
+          prUrl: 'https://github.com/o/r/pull/9',
+        },
+      }),
+    ).toEqual({ kind: 'external', url: 'https://github.com/o/r/pull/9' });
+  });
+
+  it('routes escalation rows to kanban', () => {
+    expect(
+      resolveActivityTarget({
+        type: 'escalation',
+        id: 'e1',
+        meta: { projectId: 'proj-2' },
+      }),
+    ).toEqual({ kind: 'kanban', projectId: 'proj-2' });
+  });
+
+  it('returns null for pr_created (not actionable on web)', () => {
+    expect(
+      resolveActivityTarget({
+        type: 'pr_created',
+        id: 'p1',
+        meta: { projectId: 'proj-1' },
+      }),
+    ).toBeNull();
+    expect(
+      activityIsActionable({
+        type: 'pr_created',
+        id: 'p1',
+        meta: { projectId: 'proj-1' },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('resolveOpenPrTarget', () => {
+  it('prefers native PR URLs and carries the parsed PR number', () => {
+    // Regression: the parsed PR number used to be discarded, so the row opened
+    // the Pull Requests list instead of the specific PR's detail.
+    expect(
+      resolveOpenPrTarget({
+        projectId: 'proj-1',
+        prUrl: 'https://hub.example.com/projects/proj-1/pulls/7',
+      }),
+    ).toEqual({ kind: 'pulls', projectId: 'proj-1', prNumber: 7 });
+  });
+
+  it('falls back to project pulls (no number) when only projectId is present', () => {
+    expect(resolveOpenPrTarget({ projectId: 'proj-9' })).toEqual({
+      kind: 'pulls',
+      projectId: 'proj-9',
+    });
+    expect(openPrIsActionable({ projectId: 'proj-9' })).toBe(true);
   });
 });

@@ -21,8 +21,8 @@ describe('device token preference routes', () => {
     expect(res.body.platform).toBe('ios');
     expect(res.body.enabledEvents).toBeNull();
     expect(Array.isArray(res.body.supportedEvents)).toBe(true);
-    expect(res.body.supportedEvents).toContain('session_complete');
-    expect(res.body.supportedEvents).toContain('cron');
+    expect(res.body.supportedEvents).toContain('awaiting_feedback');
+    expect(res.body.supportedEvents).toContain('pr_merged');
   });
 
   it('updates preferences to a specific subset and strips unknown events', async () => {
@@ -32,12 +32,12 @@ describe('device token preference routes', () => {
 
     const put = await request
       .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: ['cron', 'pr_merged', 'definitely-bogus'] })
+      .send({ enabledEvents: ['thread_message', 'pr_merged', 'definitely-bogus'] })
       .expect(200);
-    expect(put.body.enabledEvents).toEqual(['cron', 'pr_merged']);
+    expect(put.body.enabledEvents).toEqual(['thread_message', 'pr_merged']);
 
     const get = await request.get(`/api/devices/${encodeURIComponent(token)}`).expect(200);
-    expect(get.body.enabledEvents).toEqual(['cron', 'pr_merged']);
+    expect(get.body.enabledEvents).toEqual(['thread_message', 'pr_merged']);
   });
 
   it('clears preferences when null is passed (back to all events)', async () => {
@@ -47,7 +47,7 @@ describe('device token preference routes', () => {
 
     await request
       .put(`/api/devices/${encodeURIComponent(token)}/preferences`)
-      .send({ enabledEvents: ['cron'] })
+      .send({ enabledEvents: ['thread_message'] })
       .expect(200);
 
     const cleared = await request

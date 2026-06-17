@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { View, Text, StyleSheet, ActivityIndicator, Platform } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { summarizeChecks } from '../utils/finalizeView';
 
@@ -26,7 +26,7 @@ function StepIcon({ state }) {
     return <ActivityIndicator size="small" color={colors.amber400} />;
   }
   const meta = STATE_ICON[state] || { name: 'ellipse-outline', color: colors.gray500 };
-  return <Ionicons name={meta.name} size={16} color={meta.color} />;
+  return <AppIcon name={meta.name} size={16} color={meta.color} />;
 }
 
 export default function FinalizeChecksCard({ steps, round }) {
@@ -39,7 +39,7 @@ export default function FinalizeChecksCard({ steps, round }) {
   return (
     <View style={styles.card} testID="finalize-checks-card">
       <View style={styles.header}>
-        <Ionicons name="construct-outline" size={14} color={colors.gray300} />
+        <AppIcon name="construct-outline" size={14} color={colors.gray300} />
         <Text style={styles.title}>
           Checks{typeof round === 'number' && round > 0 ? ` · round ${round}` : ''}
         </Text>

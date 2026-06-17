@@ -1,139 +1,80 @@
 /**
  * In-app notification message formatters.
  *
- * Mirror of `client/src/utils/ticketNotifications.js` and the server-side
- * `server/push.ts` formatters — kept in sync so mobile in-app banners use
- * the same wording as desktop notifications and Expo push payloads.
- *
- * Pure functions: no React / Expo imports so the file can be unit-tested
- * under Vitest without native mocks.
+ * Mirror of `server/push.ts` formatters — kept in sync so mobile in-app
+ * banners use the same wording as Expo push payloads.
  */
+
+import {
+  shouldDeliverProjectNotification,
+  shouldNotifyUserForProject,
+} from '../../../shared/utils/notificationProjectScope.js';
 
 /** @typedef {{ title: string, body: string }} NotificationContent */
 
-/**
- * Build content for a card moved to "In Progress".
- * @param {{ cardTitle: string, assignee?: string }} data
- * @returns {NotificationContent}
- */
-export function cardStartedNotification({ cardTitle, assignee }) {
+export function awaitingFeedbackNotification({ sessionName }) {
+  const subject = sessionName ? `"${sessionName}"` : 'A session';
+  return { title: 'Awaiting feedback', body: `${subject} is waiting for your input` };
+}
+
+export function readyToPushNotification({ sessionName }) {
+  const subject = sessionName ? `"${sessionName}"` : 'A session';
   return {
-    title: 'Ticket Started',
-    body: `"${cardTitle}" started${assignee ? ` by ${assignee}` : ''}`,
+    title: 'Ready to push',
+    body: `${subject} passed review and checks — ready to push`,
   };
 }
 
-/**
- * Build content for a card moved to "Review".
- * @param {{ cardTitle: string, assignee?: string }} data
- * @returns {NotificationContent}
- */
-export function cardReviewNotification({ cardTitle, assignee }) {
+export function pushedNotification({ sessionName, prNumber }) {
+  const subject = sessionName ? `"${sessionName}"` : 'A session';
+  const pr = typeof prNumber === 'number' && prNumber > 0 ? ` (PR #${prNumber})` : '';
+  return { title: 'Pushed', body: `${subject} was pushed${pr}` };
+}
+
+export function supportTicketCreatedNotification({ subject, ticketType }) {
+  const label = ticketType ? `${ticketType}: ` : '';
   return {
-    title: 'PR Ready for Review',
-    body: `"${cardTitle}" moved to Review${assignee ? ` (${assignee})` : ''}`,
+    title: 'Support ticket created',
+    body: `${label}${subject || 'New ticket'}`,
   };
 }
 
-/**
- * Build content for a merged PR.
- * @param {{ cardTitle: string, prNumber: number, mergedBy?: string }} data
- * @returns {NotificationContent}
- */
+export function threadMessageNotification({ threadName, threadType, preview, isError }) {
+  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Thread';
+  const title = isError ? `${label} error` : `${label} message`;
+  const trimmed = preview && preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
+  const body = trimmed ? `${threadName}: ${trimmed}` : `New message in "${threadName}"`;
+  return { title, body };
+}
+
+export function reviewAssignedNotification({ cardTitle, prNumber }) {
+  const title = cardTitle || 'Ticket';
+  const pr = typeof prNumber === 'number' && prNumber > 0 ? `PR #${prNumber}: ` : '';
+  return {
+    title: 'Review assigned to you',
+    body: `${pr}"${title}" needs your review`,
+  };
+}
+
 export function prMergedNotification({ cardTitle, prNumber, mergedBy }) {
   return {
-    title: 'PR Merged',
+    title: 'PR merged',
     body: `PR #${prNumber} merged${mergedBy ? ` by ${mergedBy}` : ''}: "${cardTitle}"`,
   };
 }
 
 /**
- * Build content for a session with uncommitted changes awaiting PR.
- * @param {{ agentName?: string, sessionName?: string, branch?: string }} data
- * @returns {NotificationContent}
- */
-export function prReadyNotification({ agentName, sessionName, branch }) {
-  const parts = [];
-  if (agentName) parts.push(agentName);
-  if (sessionName) parts.push(`"${sessionName}"`);
-  const who = parts.join(' — ');
-  const where = branch ? ` on \`${branch}\`` : '';
-  const body = who
-    ? `${who} has changes${where} awaiting PR creation`
-    : `An agent has changes${where} awaiting PR creation`;
-  return { title: 'Changes Ready — Create PR?', body };
-}
-
-/**
- * Build content for a completed agent session.
- * @param {{ agentName?: string, sessionName?: string, preview?: string }} data
- * @returns {NotificationContent}
- */
-export function sessionCompleteNotification({ agentName, sessionName, preview }) {
-  const title = `${agentName || 'Agent'} — Done`;
-  const parts = [];
-  if (sessionName) parts.push(`"${sessionName}"`);
-  if (preview) {
-    const trimmed = preview.length > 120 ? '…' + preview.slice(-120) : preview;
-    parts.push(trimmed);
-  }
-  return { title, body: parts.join(' — ') || 'Session completed' };
-}
-
-/**
- * Build content for a new thread being created.
- * @param {{ threadName: string, threadType: string }} data
- * @returns {NotificationContent}
- */
-export function threadCreatedNotification({ threadName, threadType }) {
-  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
-  return { title: 'Thread Created', body: `New ${label} thread: "${threadName}"` };
-}
-
-/**
- * Build content for a new thread entry.
- * @param {{ threadName: string, threadType: string, preview?: string, isError?: boolean }} data
- * @returns {NotificationContent}
- */
-export function threadEntryNotification({ threadName, threadType, preview, isError }) {
-  const label = threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
-  const title = isError ? `${label} Error` : `${label} Update`;
-  const trimmed = preview && preview.length > 120 ? preview.substring(0, 120) + '…' : preview;
-  const body = trimmed ? `${threadName}: ${trimmed}` : `New entry in "${threadName}"`;
-  return { title, body };
-}
-
-/**
- * Build content for a dispatch failure.
- * @param {{ message: string }} data
- * @returns {NotificationContent}
- */
-export function dispatchFailureNotification({ message }) {
-  const trimmed = message && message.length > 160 ? message.slice(0, 160) + '…' : message;
-  return {
-    title: 'Dispatch Failure',
-    body: trimmed || 'An autonomous dispatch failed',
-  };
-}
-
-/**
- * Pure mapping from a WebSocket broadcast payload → formatted notification
- * content, or `null` when this payload does not warrant a foreground banner.
- *
- * Keep this aligned with `server/push.ts#mapBroadcastToPush` — both maps
- * use the same event taxonomy so server push + mobile in-app banners fire
- * on the same triggers.
- *
- * Account scoping: session-scoped broadcasts carry `ownerUserId` (the
- * session's owner, stamped server-side). When `currentUserId` is provided
- * and the event is owned by a *different* user, no banner is shown —
- * mirroring `server/push.ts#filterTokensForSessionOwner` so the foreground
- * (WS → local notification) path matches the background (Expo push) path.
- * Unowned events and callers without a per-user identity (legacy apiKey)
- * keep the shared behavior.
- *
  * @param {object} data
- * @param {{ currentUserId?: string | null }} [opts]
+ * @param {{
+ *   currentUserId?: string | null,
+ *   projects?: Array<{ id: string, ownerUserId?: string | null }>,
+ *   agents?: Array<{ id: string, projectId?: string }>,
+ *   localBypass?: boolean,
+ * }} [opts] `localBypass` MUST come from an actual local/bundled-server
+ *   signal (the server has no auth configured → single-user, mirrors the
+ *   server's `isLocalBundledServer()`). It is NOT inferred from a missing
+ *   `currentUserId`: an API-key / unattributed client on a multi-user server
+ *   has no local bypass and must be subject to the strict owner check.
  * @returns {({ event: string } & NotificationContent) | null}
  */
 export function mapBroadcastToNotification(data, opts = {}) {
@@ -141,66 +82,80 @@ export function mapBroadcastToNotification(data, opts = {}) {
 
   const owner = typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
   const me = typeof opts.currentUserId === 'string' && opts.currentUserId ? opts.currentUserId : null;
-  if (owner && me && owner !== me) return null;
+  const localBypass = Boolean(opts.localBypass);
+
+  // Session-scoped owner gate. A broadcast can carry `ownerUserId` with no
+  // resolvable project (session-only events), which the project gate below
+  // can't catch. Such an event belongs to that user only: suppress for anyone
+  // else — INCLUDING an unattributed / API-key client (`me === null`) on a
+  // multi-user server — unless a real local/bundled single-user `localBypass`
+  // is set. Same strict semantics as the project gate.
+  if (!shouldNotifyUserForProject(owner, me, { localBypass })) return null;
+
+  if (!shouldDeliverProjectNotification(data, me, opts.projects || [], opts.agents || [], { localBypass })) {
+    return null;
+  }
 
   switch (data.type) {
-    case 'done': {
-      const preview =
-        typeof data.message?.content === 'string'
-          ? data.message.content.replace(/\n+/g, ' ').trim()
-          : undefined;
-      const { title, body } = sessionCompleteNotification({
-        agentName: data.agentName,
+    case 'awaiting_input': {
+      if (data.waiting !== true) return null;
+      const { title, body } = awaitingFeedbackNotification({
         sessionName: data.sessionName,
-        preview,
       });
-      return { event: 'session_complete', title, body };
+      return { event: 'awaiting_feedback', title, body };
     }
-    case 'changes_ready': {
-      const { title, body } = prReadyNotification({
-        agentName: data.agentName,
-        sessionName: data.sessionName,
-        branch: data.branch,
-      });
-      return { event: 'changes_ready', title, body };
-    }
-    case 'card_moved': {
-      const col = (data.columnName || '').toLowerCase();
-      if (col === 'in progress') {
-        const { title, body } = cardStartedNotification(data);
-        return { event: 'card_started', title, body };
+    case 'finalize_run_completed': {
+      if (data.status === 'ready_to_push') {
+        const { title, body } = readyToPushNotification({ sessionName: data.sessionName });
+        return { event: 'ready_to_push', title, body };
       }
-      if (col === 'review') {
-        const { title, body } = cardReviewNotification(data);
-        return { event: 'card_review', title, body };
+      if (data.status === 'pushed') {
+        const { title, body } = pushedNotification({
+          sessionName: data.sessionName,
+          prNumber: data.prNumber,
+        });
+        return { event: 'pushed', title, body };
       }
       return null;
     }
-    case 'thread_created': {
-      if (!data.thread) return null;
-      const { title, body } = threadCreatedNotification({
-        threadName: data.thread.name,
-        threadType: data.thread.type,
+    case 'support_ticket_created': {
+      const ticket = data.ticket || {};
+      const { title, body } = supportTicketCreatedNotification({
+        subject: ticket.subject,
+        ticketType: ticket.type,
       });
-      return { event: 'thread_created', title, body };
+      return { event: 'support_ticket_created', title, body };
     }
     case 'thread_entry_created': {
       const content = data.entry?.content || '';
       const isError = content.startsWith('ERROR:');
       const preview = content.replace(/\n+/g, ' ').trim();
-      const { title, body } = threadEntryNotification({
+      const { title, body } = threadMessageNotification({
         threadName: data.threadName || 'Thread',
         threadType: data.threadType || 'cron',
         preview,
         isError,
       });
-      return { event: 'thread_entry', title, body };
+      return { event: 'thread_message', title, body };
     }
-    case 'dispatch_failure': {
-      const { title, body } = dispatchFailureNotification({
-        message: data.message || data.error || '',
+    case 'card_moved': {
+      const col = (data.columnName || '').toLowerCase();
+      if (col !== 'review') return null;
+      const { title, body } = reviewAssignedNotification({ cardTitle: data.cardTitle });
+      return { event: 'review_assigned_to_you', title, body };
+    }
+    case 'native_pr_update': {
+      if (data.action !== 'review_requested') return null;
+      const { title, body } = reviewAssignedNotification({ prNumber: data.prNumber });
+      return { event: 'review_assigned_to_you', title, body };
+    }
+    case 'webhook_pr_merged': {
+      const { title, body } = prMergedNotification({
+        cardTitle: data.cardTitle || 'PR',
+        prNumber: data.prNumber || 0,
+        mergedBy: data.mergedBy,
       });
-      return { event: 'dispatch_failure', title, body };
+      return { event: 'pr_merged', title, body };
     }
     default:
       return null;

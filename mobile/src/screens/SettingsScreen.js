@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useContext } from 'react';
 import {
   View,
   Text,
@@ -10,12 +10,17 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { SidebarContext } from '../context/SidebarContext';
+import HubIcon from '../components/HubIcon';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime, relativeFuture } from '../utils/time';
+import { normalizeSettingsTab } from '../utils/settingsTabs';
 import humanCron from '../utils/humanCron';
 import {
   cronEngineChoices,
@@ -28,11 +33,13 @@ import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection,
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
-import FinalizeSection from '../components/FinalizeSection';
-import AgentsSection from '../components/settings/AgentsSection';
 import SlackBotsSection from '../components/settings/SlackBotsSection';
-import ProjectSecretsSection from '../components/settings/ProjectSecretsSection';
 import MyCliKeysSection from '../components/settings/MyCliKeysSection';
+import PushNotificationsSection from '../components/settings/PushNotificationsSection';
+import GeneralSettingsSection from '../components/settings/GeneralSettingsSection';
+import GitHubSettingsSection from '../components/settings/GitHubSettingsSection';
+import ToolErrorsSection from '../components/settings/ToolErrorsSection';
+import ServerLogsSection from '../components/settings/ServerLogsSection';
 
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
@@ -430,24 +437,31 @@ function PluginApiKeyField({ item }) {
   );
 }
 
+function GlobalApiKeysSection() {
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Global API Keys</Text>
+      <Text style={styles.sectionDesc}>
+        Host-wide keys used by Agent Hub services (wiki embeddings, transcription, etc.).
+      </Text>
+
+      <View style={styles.accountCard}>
+        {PLUGIN_API_KEYS.map((item) => (
+          <PluginApiKeyField key={item.id} item={item} />
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function AccountSection() {
   return (
     <View>
       <Text style={styles.sectionTitle}>Account</Text>
       <Text style={styles.sectionDesc}>
-        Configure host account settings used by Agent Hub services.
+        Your personal CLI credentials and engine overrides for agents you run.
       </Text>
-
-      <View style={styles.accountCard}>
-        <Text style={styles.accountCardTitle}>Plugin API keys</Text>
-        <Text style={styles.sectionDesc}>
-          Host keys used by plugin features that call provider APIs directly.
-        </Text>
-
-        {PLUGIN_API_KEYS.map((item) => (
-          <PluginApiKeyField key={item.id} item={item} />
-        ))}
-      </View>
+      <MyCliKeysSection />
     </View>
   );
 }
@@ -1539,7 +1553,7 @@ function CronSection() {
                     : ''}
                   {cronJob.engine ? ` · Engine: ${cronJob.engine}` : ''}
                   {cronJob.model ? ` · Model: ${cronJob.model}` : ''}
-                  {cronJob.notify_on_run ? ' · 🔔 Notifies on run' : ''}
+                  {cronJob.notify_on_run ? ' · Notifies on run' : ''}
                   {cronJob.last_run && ` · Last: ${relativeTime(cronJob.last_run)}`}
                 </Text>
                 {/* Recent runs — clickable status dots */}
@@ -2362,26 +2376,118 @@ function ProjectsSection() {
 }
 
 // ─── Main Settings Screen ───────────────────────────────────
-export default function SettingsScreen({ navigation }) {
-  const [tab, setTab] = useState('orgs');
+// Tab list mirrors the web Settings page (`SettingsPage.jsx` SETTINGS_TABS).
+// Per-project items (agents, crons, heartbeats, runners, secrets) live under
+// each project's Settings submenu in the drawer — not here.
+// Mobile adds Notifications (native push) and Servers (org bookmarks).
+const SETTINGS_TABS = [
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'general', label: 'General' },
+  { id: 'servers', label: 'Servers' },
+  { id: 'account', label: 'Account' },
+  { id: 'global-api-keys', label: 'Global API Keys' },
+  { id: 'github', label: 'GitHub' },
+  { id: 'slack', label: 'Slack' },
+  { id: 'usage', label: 'Usage' },
+  { id: 'tool-errors', label: 'Tool Errors' },
+  { id: 'backup', label: 'Backup' },
+  { id: 'logs', label: 'Logs' },
+];
 
-  const tabs = [
-    { id: 'orgs', label: 'Servers' },
-    { id: 'account', label: 'Account' },
-    { id: 'usage', label: 'Usage' },
-    { id: 'heartbeats', label: 'Heartbeats' },
-    { id: 'crons', label: 'Crons' },
-    { id: 'projects', label: 'Projects' },
-    { id: 'secrets', label: 'Secrets' },
-    { id: 'slack', label: 'Slack' },
-    { id: 'agents', label: 'Agents' },
-    { id: 'mykeys', label: 'My Keys' },
-    { id: 'finalize', label: 'Runner' },
-    { id: 'config', label: 'Backup' },
-  ];
+/** Legacy tab ids that moved to per-project settings — fall back to General. */
+const LEGACY_TAB_IDS = new Set([
+  'orgs',
+  'heartbeats',
+  'crons',
+  'projects',
+  'secrets',
+  'agents',
+  'mykeys',
+  'finalize',
+  'config',
+  'preview',
+]);
+
+const SETTINGS_TAB_IDS = SETTINGS_TABS.map((t) => t.id);
+
+export default function SettingsScreen({ route }) {
+  const { openSidebar } = useContext(SidebarContext);
+  const routeTab = route?.params?.tab;
+  const [tab, setTab] = useState(() =>
+    normalizeSettingsTab(routeTab, SETTINGS_TAB_IDS, LEGACY_TAB_IDS),
+  );
+  const [tabMenuOpen, setTabMenuOpen] = useState(false);
+
+  // React Navigation keeps SettingsScreen mounted, so the `useState`
+  // initializer above only runs once. When the screen is re-navigated with a
+  // new `tab` param while already open (e.g. the dashboard "Account"
+  // shortcut), apply the same normalization so the tab actually switches.
+  useEffect(() => {
+    if (!routeTab) return;
+    setTab(normalizeSettingsTab(routeTab, SETTINGS_TAB_IDS, LEGACY_TAB_IDS));
+  }, [routeTab]);
+
+  const activeTab = useMemo(
+    () => SETTINGS_TABS.find((t) => t.id === tab) ?? SETTINGS_TABS[1],
+    [tab],
+  );
+
+  const selectTab = (tabId) => {
+    setTab(tabId);
+    setTabMenuOpen(false);
+  };
 
   return (
-    <SafeAreaView style={styles.screen} edges={['top']}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
+      <View style={styles.topBar}>
+        <TouchableOpacity onPress={openSidebar} style={styles.menuButton} accessibilityLabel="Open menu">
+          <Text style={styles.menuIcon}>{'\u2630'}</Text>
+        </TouchableOpacity>
+        <Text style={styles.topBarTitle}>Settings</Text>
+        <TouchableOpacity
+          style={styles.tabDropdown}
+          onPress={() => setTabMenuOpen(true)}
+          accessibilityLabel="Select settings section"
+          accessibilityHint="Opens a menu of settings sections"
+          testID="settings-tab-dropdown"
+        >
+          <Text style={styles.tabDropdownText} numberOfLines={1}>
+            {activeTab.label}
+          </Text>
+          <HubIcon name="ChevronDown" size={14} color={colors.gray400} />
+        </TouchableOpacity>
+      </View>
+
+      <Modal
+        visible={tabMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setTabMenuOpen(false)}
+      >
+        <Pressable style={styles.tabMenuBackdrop} onPress={() => setTabMenuOpen(false)}>
+          <View style={styles.tabMenu}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {SETTINGS_TABS.map((t) => {
+                const active = tab === t.id;
+                return (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={[styles.tabMenuItem, active && styles.tabMenuItemActive]}
+                    onPress={() => selectTab(t.id)}
+                    testID={`settings-tab-${t.id}`}
+                  >
+                    <Text style={[styles.tabMenuItemText, active && styles.tabMenuItemTextActive]}>
+                      {t.label}
+                    </Text>
+                    {active ? <Text style={styles.tabMenuCheck}>{'\u2713'}</Text> : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -2392,45 +2498,22 @@ export default function SettingsScreen({ navigation }) {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.pageTitle}>Settings</Text>
-
-          {/* Tab bar */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.tabBar}
-            contentContainerStyle={styles.tabBarContent}
-          >
-            {tabs.map((t) => (
-              <TouchableOpacity
-                key={t.id}
-                style={[styles.tabItem, tab === t.id && styles.tabItemActive]}
-                onPress={() => setTab(t.id)}
-              >
-                <Text style={[styles.tabItemText, tab === t.id && styles.tabItemTextActive]}>
-                  {t.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          {tab === 'orgs' && <OrganizationsSection />}
+          {tab === 'notifications' && <PushNotificationsSection />}
+          {tab === 'general' && <GeneralSettingsSection />}
+          {tab === 'servers' && <OrganizationsSection />}
           {tab === 'account' && <AccountSection />}
+          {tab === 'global-api-keys' && <GlobalApiKeysSection />}
+          {tab === 'github' && <GitHubSettingsSection />}
           {tab === 'usage' && <UsageSection />}
-          {tab === 'heartbeats' && <HeartbeatSection />}
-          {tab === 'crons' && <CronSection />}
-          {tab === 'projects' && <ProjectsSection />}
-          {tab === 'secrets' && <ProjectSecretsSection />}
           {tab === 'slack' && (
             <>
               <SlackBotsSection />
               <SlackSection />
             </>
           )}
-          {tab === 'agents' && <AgentsSection />}
-          {tab === 'mykeys' && <MyCliKeysSection />}
-          {tab === 'finalize' && <FinalizeSection navigation={navigation} />}
-          {tab === 'config' && <ConfigBackupSection />}
+          {tab === 'tool-errors' && <ToolErrorsSection />}
+          {tab === 'backup' && <ConfigBackupSection />}
+          {tab === 'logs' && <ServerLogsSection />}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -2441,6 +2524,88 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.gray950,
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+    gap: 8,
+  },
+  menuButton: {
+    padding: 4,
+  },
+  menuIcon: {
+    fontSize: 22,
+    color: colors.gray400,
+  },
+  topBarTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: colors.white,
+    flex: 1,
+  },
+  tabDropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: '52%',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    backgroundColor: colors.gray900,
+  },
+  tabDropdownText: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.gray200,
+    fontWeight: '500',
+  },
+  tabMenuBackdrop: {
+    flex: 1,
+    backgroundColor: colors.black50,
+    paddingTop: 56,
+    paddingHorizontal: 12,
+    alignItems: 'flex-end',
+  },
+  tabMenu: {
+    width: '100%',
+    maxWidth: 320,
+    maxHeight: '80%',
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  tabMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.gray800,
+  },
+  tabMenuItemActive: {
+    backgroundColor: colors.gray800,
+  },
+  tabMenuItemText: {
+    fontSize: 15,
+    color: colors.gray300,
+  },
+  tabMenuItemTextActive: {
+    color: colors.white,
+    fontWeight: '600',
+  },
+  tabMenuCheck: {
+    color: colors.blue400,
+    fontSize: 14,
+    fontWeight: '700',
   },
   scrollView: {
     flex: 1,
@@ -2454,32 +2619,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: colors.white,
     marginBottom: 20,
-  },
-  tabBar: {
-    marginBottom: 20,
-    marginHorizontal: -4,
-  },
-  tabBarContent: {
-    gap: 6,
-    paddingHorizontal: 4,
-  },
-  tabItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 8,
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  tabItemActive: {
-    backgroundColor: colors.gray800,
-  },
-  tabItemText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.gray400,
-  },
-  tabItemTextActive: {
-    color: colors.white,
   },
   sectionTitle: {
     fontSize: 18,

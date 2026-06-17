@@ -17,10 +17,10 @@
  *
  * The watchdog fires two timers:
  *
- *   1. **notify timer** (`notifyAfterMs`, default 60 min): pushes a
- *      `finalize_stall_warning` notification to the triggering user.
- *      The notification is a reminder; the run keeps waiting. Exactly
- *      one push per arming.
+ *   1. **notify timer** (`notifyAfterMs`, default 60 min): reserved for a
+ *      future reminder channel. Mobile push for stall warnings was removed
+ *      from the notification taxonomy — the timer still arms so the stall
+ *      path can distinguish "notify window elapsed" in tests.
  *   2. **stall timer** (`stallAfterMs`, default 24 hr): transitions the
  *      run to `status = 'stalled_no_response'` (terminal) and posts a
  *      session message + card comment so the human picking the
@@ -44,7 +44,6 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, MessageRow, Stmts } from '../types.js';
-import { finalizeStallWarningPush, dispatchPushEvent } from '../push.js';
 
 /** Wall-clock ms after which the notify push fires. Live-mode only. */
 export const DEFAULT_NOTIFY_AFTER_MS = 60 * 60 * 1_000; // 60 min
@@ -96,14 +95,6 @@ export interface StallWatchdogDeps {
     'failFinalizeRun' | 'addMessage' | 'touchSession' | 'getMessageById' | 'updateFinalizeRunPhase'
   >;
   broadcast: BroadcastFn;
-  /**
-   * Push dispatcher injected by the orchestrator. Production wires
-   * {@link dispatchPushEvent} from `server/push.ts`; tests inject a
-   * fake that records calls. Optional so a deployment without Expo
-   * push configured (e.g. unit tests, headless CI) does not crash the
-   * watchdog — a missing dispatcher logs and continues.
-   */
-  dispatchPush?: typeof dispatchPushEvent;
   scheduleTimer?: ScheduleTimer;
   now?: () => number;
   /** Idempotent id minter for the stall-terminal session message. */
@@ -198,7 +189,6 @@ export function armStallWatchdog(
   const now = deps.now ?? Date.now;
   const newId = deps.newId ?? uuidv4;
   const log = deps.log ?? ((msg: string) => console.warn(msg));
-  const dispatchPush = deps.dispatchPush ?? dispatchPushEvent;
 
   const { notifyAfterMs, stallAfterMs } = resolveWindows({
     notifyAfterMs: opts.notifyAfterMs,
@@ -237,7 +227,7 @@ export function armStallWatchdog(
   const notifyHandle = scheduleTimer(() => {
     if (cancelled || notified) return;
     notified = true;
-    void firePushNotification(deps, opts, armedAtMs, dispatchPush, log);
+    // Mobile push for finalize stall removed from notification taxonomy.
   }, notifyAfterMs);
 
   const stallHandle = scheduleTimer(() => {
@@ -337,40 +327,6 @@ function clamp(v: number, min: number, max: number): number {
   if (v < min) return min;
   if (v > max) return max;
   return v;
-}
-
-async function firePushNotification(
-  deps: StallWatchdogDeps,
-  opts: StallWatchdogOptions,
-  armedAtMs: number,
-  dispatchPush: typeof dispatchPushEvent,
-  log: (msg: string) => void,
-): Promise<void> {
-  const now = deps.now ?? Date.now;
-  const ageMinutes = Math.max(1, Math.round((now() - armedAtMs) / 60_000));
-  const { title, body } = finalizeStallWarningPush({
-    cardTitle: opts.cardTitle,
-    ageMinutes,
-  });
-  try {
-    await dispatchPush('finalize_stall_warning', {
-      title,
-      body,
-      data: {
-        type: 'finalize_stall_warning',
-        runId: opts.runId,
-        sessionId: opts.sessionId,
-        cardId: opts.cardId,
-        projectId: opts.projectId,
-      },
-    });
-  } catch (err) {
-    log(
-      `[finalize-stall-watchdog] push dispatch failed for run=${opts.runId}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
 }
 
 /**

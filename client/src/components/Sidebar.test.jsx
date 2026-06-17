@@ -871,6 +871,7 @@ describe('Sidebar — per-project settings menu', () => {
     expect(screen.getByRole('button', { name: 'Epics' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Pulls' })).toBeInTheDocument();
 
     // Configuration items stay hidden until the Settings menu is expanded.
@@ -892,6 +893,9 @@ describe('Sidebar — per-project settings menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Threads' }));
     expect(onNavigate).toHaveBeenCalledWith('threads', PROJECT_ID);
 
+    fireEvent.click(screen.getByRole('button', { name: 'Wiki' }));
+    expect(onNavigate).toHaveBeenCalledWith('wiki', PROJECT_ID);
+
     fireEvent.click(screen.getByRole('button', { name: 'Pulls' }));
     expect(onNavigate).toHaveBeenCalledWith('pulls', PROJECT_ID);
 
@@ -908,6 +912,26 @@ describe('Sidebar — per-project settings menu', () => {
     expect(notes).toBeInTheDocument();
     fireEvent.click(notes);
     expect(onNavigate).toHaveBeenCalledWith('notes', PROJECT_ID);
+  });
+
+  it('renders a top-level Wiki link that navigates to the wiki view', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+
+    const wiki = screen.getByRole('button', { name: 'Wiki' });
+    expect(wiki).toBeInTheDocument();
+    fireEvent.click(wiki);
+    expect(onNavigate).toHaveBeenCalledWith('wiki', PROJECT_ID);
+  });
+
+  it('highlights the Wiki link only on the matching project wiki view', () => {
+    const { rerender } = render(
+      <Sidebar {...buildProps({ currentView: 'wiki', wikiProjectId: PROJECT_ID })} />,
+    );
+    expect(screen.getByRole('button', { name: 'Wiki' }).className).toContain('text-white');
+
+    rerender(<Sidebar {...buildProps({ currentView: 'wiki', wikiProjectId: 'other-project' })} />);
+    expect(screen.getByRole('button', { name: 'Wiki' }).className).not.toContain('text-white');
   });
 
   // Regression: the Notes active highlight depends on the `notesProjectId` prop

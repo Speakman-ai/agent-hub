@@ -20,9 +20,40 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "UIAppFonts": [
+          "Ionicons.ttf",
+          "Feather.ttf",
+          "MaterialCommunityIcons.ttf",
+          "MaterialIcons.ttf"
+        ]
       }
     },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#2563EB",
+          "androidMode": "default",
+          "androidCollapsedTitle": "Agent Hub"
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow Agent Hub to record voice messages for transcription."
+        }
+      ],
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf"
+          ]
+        }
+      ]
+    ],
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

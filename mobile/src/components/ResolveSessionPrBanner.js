@@ -24,7 +24,7 @@ export default function ResolveSessionPrBanner({
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
           <Text style={styles.icon} accessible={false}>
-            🔗
+            PR
           </Text>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={styles.title}>

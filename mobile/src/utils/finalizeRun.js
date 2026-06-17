@@ -86,6 +86,55 @@ export function describeRunPhase(status, phase) {
   }
 }
 
+/**
+ * Freshness window (ms) for the live finalize WS stream. If no
+ * `finalize_run_*` event for the active session has arrived within this
+ * window, the polling fallback resumes even while the socket reports
+ * connected — covering the "connected but silent / reconnected after missing
+ * a frame" case. Kept well above the 2s poll cadence so a normally-flowing
+ * stream doesn't thrash polling on and off between phase events.
+ */
+export const FINALIZE_LIVE_FRESH_MS = 15_000;
+
+/**
+ * Decide whether the FinalizeButton polling fallback should issue a network
+ * fetch on a given tick.
+ *
+ * Polling is the safety net for when the live WebSocket stream isn't
+ * delivering finalize events. We SKIP the fetch only while the stream is
+ * demonstrably healthy: the socket is connected AND a finalize event for THIS
+ * session arrived within `freshMs`. Any of these resumes polling so the button
+ * can never get stuck in a non-terminal state:
+ *   - socket disconnected (`connected === false`);
+ *   - the last event belongs to a different session (or none seen yet);
+ *   - the last event is stale — older than `freshMs` (covers a reconnect that
+ *     missed the terminal frame, or a server that went silent).
+ *
+ * Pure / synchronous; `now` and `freshMs` are injected so it's unit-testable.
+ *
+ * @param {{
+ *   connected: boolean,
+ *   lastEvent: { sessionId?: string, bump?: number } | null | undefined,
+ *   sessionId: string | null | undefined,
+ *   now: number,
+ *   freshMs?: number,
+ * }} args
+ * @returns {boolean} true → poll (fetch); false → skip this tick.
+ */
+export function shouldPollFinalizeFallback({
+  connected,
+  lastEvent,
+  sessionId,
+  now,
+  freshMs = FINALIZE_LIVE_FRESH_MS,
+}) {
+  if (!sessionId) return false;
+  if (!connected) return true;
+  if (!lastEvent || lastEvent.sessionId !== sessionId) return true;
+  if (typeof lastEvent.bump !== 'number') return true;
+  return now - lastEvent.bump >= freshMs;
+}
+
 // Exported for tests so the membership predicates can be asserted
 // against the canonical sets rather than re-derived in the spec.
 export const __test = { TERMINAL_STATUSES, FINALIZE_BLOCKED_STATUSES };

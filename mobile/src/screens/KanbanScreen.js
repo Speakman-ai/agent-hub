@@ -64,7 +64,7 @@ function getPriorityLabel(priority) {
 }
 
 export default function KanbanScreen({ route, navigation }) {
-  const { projectId, project } = route.params || {};
+  const { projectId, project, cardId: deepLinkCardId } = route.params || {};
   const { agents, kanbanRefreshKey, setActiveAgentId, setActiveSessionId } = useApp();
   const { openSidebar } = useContext(SidebarContext);
 
@@ -149,6 +149,24 @@ export default function KanbanScreen({ route, navigation }) {
   useEffect(() => {
     loadBoard();
   }, [loadBoard, kanbanRefreshKey]);
+
+  // Notification deep-link: open the target card once the board loads.
+  const deepLinkHandledRef = useRef(null);
+  useEffect(() => {
+    if (!deepLinkCardId || !board?.cards) return;
+    if (deepLinkHandledRef.current === deepLinkCardId) return;
+    const card = board.cards.find((c) => c.id === deepLinkCardId);
+    if (!card) return;
+    deepLinkHandledRef.current = deepLinkCardId;
+    setActiveColumn(card.column_id);
+    setSelectedCard(card);
+    setEditDescription(card.description || '');
+    setEditPriority(card.priority || '');
+    setEditAssignee(card.assignee || '');
+    setEditLabels((card.labels || []).join(', '));
+    setEditGithubUrl(card.github_url || '');
+    setEditEpicId(card.epic_id || '');
+  }, [deepLinkCardId, board]);
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;
@@ -1154,7 +1172,7 @@ export default function KanbanScreen({ route, navigation }) {
               {hasUnresolvedBlockers(card) && (
                 <View style={styles.blockerBadge} testID="card-blocker-badge">
                   <Text style={styles.blockerBadgeText}>
-                    {'\uD83D\uDD12 '}{card.blockers.filter((b) => !b.done).length}
+                    {'Lock '}{card.blockers.filter((b) => !b.done).length}
                   </Text>
                 </View>
               )}

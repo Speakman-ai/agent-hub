@@ -26,7 +26,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { pickInitialProjectId, shouldRefreshOnWizardComplete } from '../utils/finalizeWizard';
 
-export default function FinalizeSection({ navigation }) {
+export default function FinalizeSection({ navigation, fixedProjectId }) {
   const {
     projects,
     refreshProjects,
@@ -35,7 +35,9 @@ export default function FinalizeSection({ navigation }) {
     lastFinalizeWizardEvent,
   } = useApp();
 
-  const [projectId, setProjectId] = useState(() => pickInitialProjectId(projects, ''));
+  const [projectId, setProjectId] = useState(
+    () => fixedProjectId || pickInitialProjectId(projects, ''),
+  );
   const [wizardStarting, setWizardStarting] = useState(false);
   const [wizardError, setWizardError] = useState(null);
   const [lastSessionId, setLastSessionId] = useState(null);
@@ -43,9 +45,13 @@ export default function FinalizeSection({ navigation }) {
   // Keep the picker in sync when the project list mutates underneath us
   // (e.g. a new project is created elsewhere).
   useEffect(() => {
+    if (fixedProjectId) {
+      if (projectId !== fixedProjectId) setProjectId(fixedProjectId);
+      return;
+    }
     const next = pickInitialProjectId(projects, projectId);
     if (next !== projectId) setProjectId(next);
-  }, [projects, projectId]);
+  }, [projects, projectId, fixedProjectId]);
 
   // Refresh projects on `finalize_wizard_complete` for the focused
   // project (mirrors the web component's window.addEventListener path).
@@ -107,35 +113,39 @@ export default function FinalizeSection({ navigation }) {
         pushes and opens a PR for review.
       </Text>
 
-      <Text style={styles.fieldLabel}>Project</Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.chipRow}
-        testID="finalize-project-picker"
-      >
-        {projects.map((p) => {
-          const active = p.id === projectId;
-          return (
-            <TouchableOpacity
-              key={p.id}
-              onPress={() => setProjectId(p.id)}
-              style={[styles.chip, active && styles.chipActive]}
-              testID={`finalize-project-${p.id}`}
-            >
-              <View
-                style={[
-                  styles.chipDot,
-                  { backgroundColor: p.color || colors.indigo500 },
-                ]}
-              />
-              <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                {p.name || p.id}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+      {!fixedProjectId && (
+        <>
+          <Text style={styles.fieldLabel}>Project</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chipRow}
+            testID="finalize-project-picker"
+          >
+            {projects.map((p) => {
+              const active = p.id === projectId;
+              return (
+                <TouchableOpacity
+                  key={p.id}
+                  onPress={() => setProjectId(p.id)}
+                  style={[styles.chip, active && styles.chipActive]}
+                  testID={`finalize-project-${p.id}`}
+                >
+                  <View
+                    style={[
+                      styles.chipDot,
+                      { backgroundColor: p.color || colors.indigo500 },
+                    ]}
+                  />
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                    {p.name || p.id}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </>
+      )}
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Guided setup walkthrough</Text>

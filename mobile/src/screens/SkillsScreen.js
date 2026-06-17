@@ -118,7 +118,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
               style={styles.iconButton}
               hitSlop={8}
             >
-              <Text style={styles.trashText}>🗑</Text>
+              <Text style={styles.trashText}>Del</Text>
             </TouchableOpacity>
           )}
           <Text style={styles.expandIcon}>{expanded ? '▲' : '▼'}</Text>
@@ -170,7 +170,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
         style={styles.contextHeader}
         onPress={() => setExpanded(!expanded)}
       >
-        <Text style={styles.contextFilename}>📄 {filename}</Text>
+        <Text style={styles.contextFilename}>{filename}</Text>
         <Text style={styles.expandIcon}>{expanded ? '▲' : '▼'}</Text>
       </TouchableOpacity>
       {expanded && (
@@ -302,7 +302,7 @@ export default function SkillsScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.pageTitle}>📚 Skills & Context</Text>
+        <Text style={styles.pageTitle}>Skills & Context</Text>
 
         {/* Agent tabs */}
         <ScrollView
@@ -335,7 +335,7 @@ export default function SkillsScreen() {
                 {/* Skills section */}
                 <View style={styles.section}>
                   <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>🧩 Skills</Text>
+                    <Text style={styles.sectionTitle}>Skills</Text>
                     <Text style={styles.sectionCount}>({skills.length} total)</Text>
                   </View>
                   {loadingSkills ? (

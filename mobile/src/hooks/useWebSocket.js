@@ -102,6 +102,18 @@ export function useWebSocket(onMessage) {
     };
   }, []);
 
+  /**
+   * Send a JSON frame over the socket.
+   *
+   * Explicit boolean contract (relied on by callers like DesignViewScreen to
+   * decide whether to commit optimistic UI): returns `true` only when the
+   * socket is OPEN and the frame was written; returns `false` when the socket
+   * is connecting/closed so the caller can avoid clearing the composer or
+   * flipping `processing` for a message that never left the device.
+   *
+   * @param {unknown} data
+   * @returns {boolean} whether the frame was actually written
+   */
   const send = useCallback((data) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(data));

@@ -1,5 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge } from './time.js';
+import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge, parseDate } from './time.js';
+
+describe('parseDate', () => {
+  it('returns null for falsy input', () => {
+    expect(parseDate(null)).toBeNull();
+    expect(parseDate(undefined)).toBeNull();
+    expect(parseDate('')).toBeNull();
+  });
+
+  it('parses epoch milliseconds', () => {
+    const ms = new Date('2026-04-18T12:00:00Z').getTime();
+    expect(parseDate(ms)?.toISOString()).toBe('2026-04-18T12:00:00.000Z');
+  });
+});
 
 describe('relativeTime', () => {
   beforeEach(() => {
@@ -33,6 +46,12 @@ describe('relativeTime', () => {
   it('returns empty string for falsy input', () => {
     expect(relativeTime(null)).toBe('');
     expect(relativeTime('')).toBe('');
+    expect(relativeTime(undefined)).toBe('');
+  });
+
+  it('handles numeric epoch milliseconds', () => {
+    const ms = new Date('2026-04-18T11:55:00Z').getTime();
+    expect(relativeTime(ms)).toBe('5m ago');
   });
 });
 

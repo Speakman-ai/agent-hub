@@ -19,17 +19,28 @@ import {
 
 const EMPTY_FORM = { key: '', value: '', kind: 'secret' };
 
-export default function ProjectSecretsSection() {
+/**
+ * @param {{ projectId?: string | null }} [props] When `projectId` is provided
+ *   (per-project Settings submenu) the section locks to that project and hides
+ *   the project picker. Without it (global Settings) it lists projects and
+ *   shows the picker.
+ */
+export default function ProjectSecretsSection({ projectId: lockedProjectId = null } = {}) {
   const [projects, setProjects] = useState([]);
-  const [projectId, setProjectId] = useState(null);
+  const [projectId, setProjectId] = useState(lockedProjectId);
   const [secrets, setSecrets] = useState([]);
-  const [loadingProjects, setLoadingProjects] = useState(true);
+  const [loadingProjects, setLoadingProjects] = useState(!lockedProjectId);
   const [loadingSecrets, setLoadingSecrets] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    // Locked to a single project (per-project submenu) — no picker, no list.
+    if (lockedProjectId) {
+      setProjectId(lockedProjectId);
+      return;
+    }
     api
       .getProjects()
       .then((list) => {
@@ -39,7 +50,7 @@ export default function ProjectSecretsSection() {
       })
       .catch((err) => setLoadError(err?.message || 'Failed to load projects.'))
       .finally(() => setLoadingProjects(false));
-  }, []);
+  }, [lockedProjectId]);
 
   const loadSecrets = useCallback(async (pid) => {
     if (!pid) return;
@@ -133,26 +144,31 @@ export default function ProjectSecretsSection() {
         </Text>
       </View>
 
-      {projects.length === 0 ? (
-        <Text style={styles.emptyText}>No projects configured.</Text>
-      ) : (
-        <View style={styles.chipRow}>
-          {projects.map((p) => {
-            const active = projectId === p.id;
-            return (
-              <TouchableOpacity
-                key={p.id}
-                style={[styles.chip, active && styles.chipActive]}
-                onPress={() => setProjectId(p.id)}
-              >
-                <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
-                  {p.name || p.id}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      )}
+      {/* Project picker only in the global (unlocked) Settings context. */}
+      {!lockedProjectId &&
+        (projects.length === 0 ? (
+          <Text style={styles.emptyText}>No projects configured.</Text>
+        ) : (
+          <View style={styles.chipRow}>
+            {projects.map((p) => {
+              const active = projectId === p.id;
+              return (
+                <TouchableOpacity
+                  key={p.id}
+                  style={[styles.chip, active && styles.chipActive]}
+                  onPress={() => setProjectId(p.id)}
+                >
+                  <Text
+                    style={[styles.chipText, active && styles.chipTextActive]}
+                    numberOfLines={1}
+                  >
+                    {p.name || p.id}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ))}
 
       {loadingSecrets && (
         <ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 20 }} />

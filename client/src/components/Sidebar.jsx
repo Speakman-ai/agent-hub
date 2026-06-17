@@ -87,6 +87,7 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   supportProjectId,
+  wikiProjectId,
   pullsProjectId,
   notesProjectId,
   workflowBadgeByProject = {},
@@ -197,8 +198,8 @@ export default function Sidebar({
   };
 
   // Routes that live inside the collapsible "<project> Settings" group. The
-  // lifecycle links (Repository, Pulls, Board, Epics, Notes, Threads) are now
-  // top-level and intentionally excluded so the Settings toggle only lights up
+  // lifecycle links (Repository, Pulls, Board, Epics, Notes, Threads, Support,
+  // Wiki) are now top-level and intentionally excluded so the Settings toggle
   // for configuration sub-routes.
   const isProjectMenuRoute = (view, pid) =>
     view === `project-settings:${pid}` ||
@@ -1077,6 +1078,17 @@ export default function Sidebar({
                                   : unreadTicketCounts[project.id]}
                               </span>
                             )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('wiki', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView === 'wiki' && wikiProjectId === project.id,
+                            )}
+                          >
+                            <BookOpen size={14} className="flex-shrink-0" />
+                            <span className="truncate">Wiki</span>
                           </button>
 
                           {/* Configuration — collapsed under "<project> Settings". */}

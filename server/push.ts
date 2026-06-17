@@ -22,34 +22,19 @@ import { stmts } from './db.js';
 import type { DeviceTokenRow } from './types.js';
 import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { findProject } from './project-model.js';
-import { canViewProject } from './project-visibility.js';
 import { isLocalBundledServer } from './auth.js';
-import { getSessionOwner } from './session-ownership.js';
+import { getSessionOwner, getSessionAgentId } from './session-ownership.js';
+import { shouldNotifyUserForProject } from '../shared/utils/notificationProjectScope.js';
 
 // ── Event types that can trigger a push ────────────────────────────────
 export const PUSH_EVENT_TYPES = [
-  'session_complete',
-  'changes_ready',
-  'pr_creation_stale',
-  'card_started',
-  'card_review',
+  'awaiting_feedback',
+  'ready_to_push',
+  'pushed',
+  'support_ticket_created',
+  'thread_message',
+  'review_assigned_to_you',
   'pr_merged',
-  'thread_created',
-  'thread_entry',
-  'dispatch_failure',
-  'cron',
-  /**
-   * Fired by the Finalize fix-dispatch stall watchdog
-   * (`server/finalize/stall-watchdog.ts`) when a live-mode dispatch sits
-   * in the session for longer than the configured notify window without
-   * the agent producing a turn-end. The triggering user gets one push
-   * with a deep-link back to the session so they can re-engage. The run
-   * keeps waiting; this is a reminder, not a cancel. The longer stall
-   * window (after which the run terminates as `stalled_no_response`)
-   * does not produce a push — the user already got one, and a terminal
-   * state will surface via the existing card / session UI.
-   */
-  'finalize_stall_warning',
 ] as const;
 
 export type PushEventType = (typeof PUSH_EVENT_TYPES)[number];
@@ -76,87 +61,75 @@ interface ExpoPushResponse {
 export type DeviceTokenRowWithPrefs = DeviceTokenRow;
 
 // ── Pure formatters (title + body) ─────────────────────────────────────
-// Keep these aligned with client/src/utils/ticketNotifications.js so
-// desktop and mobile banners use the same wording.
+// Keep these aligned with mobile/src/utils/ticketNotifications.js so
+// foreground banners and Expo push use the same wording.
 
-export function sessionCompletePush(args: {
-  agentName?: string;
-  sessionName?: string;
+export function awaitingFeedbackPush(args: { sessionName?: string }): {
+  title: string;
+  body: string;
+} {
+  const subject = args.sessionName ? `"${args.sessionName}"` : 'A session';
+  return {
+    title: 'Awaiting feedback',
+    body: `${subject} is waiting for your input`,
+  };
+}
+
+export function readyToPushPush(args: { sessionName?: string }): { title: string; body: string } {
+  const subject = args.sessionName ? `"${args.sessionName}"` : 'A session';
+  return {
+    title: 'Ready to push',
+    body: `${subject} passed review and checks — ready to push`,
+  };
+}
+
+export function pushedPush(args: { sessionName?: string; prNumber?: number }): {
+  title: string;
+  body: string;
+} {
+  const subject = args.sessionName ? `"${args.sessionName}"` : 'A session';
+  const pr =
+    typeof args.prNumber === 'number' && args.prNumber > 0 ? ` (PR #${args.prNumber})` : '';
+  return {
+    title: 'Pushed',
+    body: `${subject} was pushed${pr}`,
+  };
+}
+
+export function supportTicketCreatedPush(args: { subject?: string; ticketType?: string }): {
+  title: string;
+  body: string;
+} {
+  const label = args.ticketType ? `${args.ticketType}: ` : '';
+  return {
+    title: 'Support ticket created',
+    body: `${label}${args.subject || 'New ticket'}`,
+  };
+}
+
+export function threadMessagePush(args: {
+  threadName: string;
+  threadType: string;
   preview?: string;
+  isError?: boolean;
 }): { title: string; body: string } {
-  const agent = args.agentName || 'Agent';
-  const title = `${agent} — Done`;
-  const parts: string[] = [];
-  if (args.sessionName) parts.push(`"${args.sessionName}"`);
-  if (args.preview) {
-    const trimmed = args.preview.length > 120 ? '…' + args.preview.slice(-120) : args.preview;
-    parts.push(trimmed);
-  }
-  return { title, body: parts.join(' — ') || 'Session completed' };
+  const label = args.threadType === 'heartbeat' ? 'Heartbeat' : 'Thread';
+  const title = args.isError ? `${label} error` : `${label} message`;
+  const trimmed =
+    args.preview && args.preview.length > 120 ? args.preview.slice(0, 120) + '…' : args.preview;
+  const body = trimmed ? `${args.threadName}: ${trimmed}` : `New message in "${args.threadName}"`;
+  return { title, body };
 }
 
-export function changesReadyPush(args: {
-  agentName?: string;
-  sessionName?: string;
-  branch?: string;
-}): { title: string; body: string } {
-  const parts: string[] = [];
-  if (args.agentName) parts.push(args.agentName);
-  if (args.sessionName) parts.push(`"${args.sessionName}"`);
-  const who = parts.join(' — ');
-  const where = args.branch ? ` on \`${args.branch}\`` : '';
-  const body = who
-    ? `${who} has changes${where} awaiting PR creation`
-    : `An agent has changes${where} awaiting PR creation`;
-  return { title: 'Changes Ready — Create PR?', body };
-}
-
-/**
- * Formatter for `pr_creation_stale` — emitted by the periodic
- * `runStalePrCheck` when a session has had `changes_ready` metadata for
- * longer than the stale threshold (default 30 min) without the user having
- * created a PR. Separate from `changes_ready` so push-preference filters
- * can opt out of the reminder independently from the initial "changes ready"
- * push.
- */
-export function prCreationStalePush(args: {
-  agentName?: string;
-  sessionName?: string;
-  branch?: string;
-  ageMinutes?: number;
-}): { title: string; body: string } {
-  const parts: string[] = [];
-  if (args.sessionName) parts.push(`"${args.sessionName}"`);
-  else if (args.agentName) parts.push(args.agentName);
-  const where = args.branch ? ` on \`${args.branch}\`` : '';
-  const age =
-    typeof args.ageMinutes === 'number' && Number.isFinite(args.ageMinutes) && args.ageMinutes > 0
-      ? ` for ${Math.round(args.ageMinutes)} min`
-      : '';
-  const subject = parts.join(' — ') || 'A session';
-  return {
-    title: 'Still waiting — Create PR?',
-    body: `${subject}${where} has had changes awaiting PR${age}`,
-  };
-}
-
-export function cardStartedPush(args: { cardTitle: string; assignee?: string }): {
+export function reviewAssignedPush(args: { cardTitle?: string; prNumber?: number }): {
   title: string;
   body: string;
 } {
+  const title = args.cardTitle || 'Ticket';
+  const pr = typeof args.prNumber === 'number' && args.prNumber > 0 ? `PR #${args.prNumber}: ` : '';
   return {
-    title: 'Ticket Started',
-    body: `"${args.cardTitle}" started${args.assignee ? ` by ${args.assignee}` : ''}`,
-  };
-}
-
-export function cardReviewPush(args: { cardTitle: string; assignee?: string }): {
-  title: string;
-  body: string;
-} {
-  return {
-    title: 'PR Ready for Review',
-    body: `"${args.cardTitle}" moved to Review${args.assignee ? ` (${args.assignee})` : ''}`,
+    title: 'Review assigned to you',
+    body: `${pr}"${title}" needs your review`,
   };
 }
 
@@ -165,75 +138,33 @@ export function prMergedPush(args: { cardTitle: string; prNumber: number; merged
   body: string;
 } {
   return {
-    title: 'PR Merged',
+    title: 'PR merged',
     body: `PR #${args.prNumber} merged${args.mergedBy ? ` by ${args.mergedBy}` : ''}: "${args.cardTitle}"`,
   };
 }
 
-export function threadCreatedPush(args: { threadName: string; threadType: string }): {
-  title: string;
-  body: string;
-} {
-  const label = args.threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
-  return { title: 'Thread Created', body: `New ${label} thread: "${args.threadName}"` };
-}
-
-export function threadEntryPush(args: {
-  threadName: string;
-  threadType: string;
-  preview?: string;
-  isError?: boolean;
-}): { title: string; body: string } {
-  const label = args.threadType === 'heartbeat' ? 'Heartbeat' : 'Cron';
-  const title = args.isError ? `${label} Error` : `${label} Update`;
-  const trimmed =
-    args.preview && args.preview.length > 120 ? args.preview.slice(0, 120) + '…' : args.preview;
-  const body = trimmed ? `${args.threadName}: ${trimmed}` : `New entry in "${args.threadName}"`;
-  return { title, body };
-}
-
-export function dispatchFailurePush(args: { message: string }): {
-  title: string;
-  body: string;
-} {
-  const trimmed = args.message.length > 160 ? args.message.slice(0, 160) + '…' : args.message;
-  return { title: 'Dispatch Failure', body: trimmed || 'An autonomous dispatch failed' };
-}
-
-export function cronCompletePush(args: { cronName: string; result: string }): {
-  title: string;
-  body: string;
-} {
-  const body = args.result.length > 200 ? args.result.slice(0, 200) + '...' : args.result;
-  return { title: `Cron: ${args.cronName}`, body };
-}
+// ── Preference filtering ────────────────────────────────────────────────
 
 /**
- * Formatter for `finalize_stall_warning` — emitted by the Finalize
- * fix-dispatch stall watchdog when the notify window elapses without a
- * turn-end on the originating session. The body names the card so the
- * recipient can route back to it on mobile. The push `data` payload
- * carries `runId` + `sessionId` + `cardId` + `type:
- * 'finalize_stall_warning'`; the deep-link is built client-side from
- * those fields (mirroring the convention used by `card_review` /
- * `session_complete`).
+ * Back-compat map from retired `enabled_events` preference keys to their
+ * renamed equivalents in the current {@link PUSH_EVENT_TYPES} taxonomy.
+ *
+ * The push event taxonomy was renamed (see git history of this file). A device
+ * row persisted under the old names still has e.g. `["session_complete",
+ * "changes_ready"]` in `enabled_events`; without aliasing, `tokenAcceptsEvent`
+ * would never match the new `awaiting_feedback` / `ready_to_push` events and
+ * the user would silently go dark until they re-saved preferences. Keys with
+ * no current equivalent (e.g. `pr_creation_stale`, `cron`) are intentionally
+ * absent — those events no longer fire. `pr_merged` kept its name, so it needs
+ * no alias.
  */
-export function finalizeStallWarningPush(args: { cardTitle?: string; ageMinutes?: number }): {
-  title: string;
-  body: string;
-} {
-  const subject = args.cardTitle ? `"${args.cardTitle}"` : 'A Finalize run';
-  const age =
-    typeof args.ageMinutes === 'number' && Number.isFinite(args.ageMinutes) && args.ageMinutes > 0
-      ? ` for ${Math.round(args.ageMinutes)} min`
-      : '';
-  return {
-    title: 'Finalize — Still waiting for fix',
-    body: `${subject} is waiting on a fix${age}. Tap to continue.`,
-  };
-}
-
-// ── Preference filtering ────────────────────────────────────────────────
+const LEGACY_EVENT_ALIASES: Record<string, PushEventType> = {
+  session_complete: 'awaiting_feedback',
+  changes_ready: 'ready_to_push',
+  card_review: 'review_assigned_to_you',
+  thread_entry: 'thread_message',
+  thread_created: 'thread_message',
+};
 
 /**
  * Parse the `enabled_events` column value into a set.
@@ -241,7 +172,9 @@ export function finalizeStallWarningPush(args: { cardTitle?: string; ageMinutes?
  * - `null`/`undefined`/empty → undefined (= all events enabled, legacy default)
  * - invalid JSON → undefined (treat as legacy default rather than silently
  *   dropping)
- * - array of strings → a Set
+ * - array of strings → a Set (with retired keys also mapped to their current
+ *   names via {@link LEGACY_EVENT_ALIASES} so existing preferences keep
+ *   matching the renamed events; the original key is preserved too)
  * - anything else → undefined
  */
 export function parseEnabledEvents(raw: string | null | undefined): Set<string> | undefined {
@@ -249,8 +182,14 @@ export function parseEnabledEvents(raw: string | null | undefined): Set<string> 
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      const filtered = parsed.filter((x): x is string => typeof x === 'string');
-      return new Set(filtered);
+      const out = new Set<string>();
+      for (const x of parsed) {
+        if (typeof x !== 'string') continue;
+        out.add(x);
+        const alias = LEGACY_EVENT_ALIASES[x];
+        if (alias) out.add(alias);
+      }
+      return out;
     }
     return undefined;
   } catch {
@@ -286,6 +225,8 @@ export interface PushDispatchDeps {
   findProjectById?: (projectId: string) => ReturnType<typeof findProject>;
   /** Injectable session-owner lookup for tests; defaults to `getSessionOwner`. */
   getSessionOwnerById?: (sessionId: string) => string | null;
+  /** Injectable session→agent lookup for tests; defaults to `getSessionAgentId`. */
+  getSessionAgentIdById?: (sessionId: string) => string | null;
 }
 
 function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
@@ -308,6 +249,8 @@ function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
     findProjectById: deps?.findProjectById ?? ((projectId: string) => findProject(projectId)),
     getSessionOwnerById:
       deps?.getSessionOwnerById ?? ((sessionId: string) => getSessionOwner(sessionId)),
+    getSessionAgentIdById:
+      deps?.getSessionAgentIdById ?? ((sessionId: string) => getSessionAgentId(sessionId)),
   };
 }
 
@@ -323,9 +266,10 @@ export function filterTokensForBroadcastVisibility(
   if (!projectId) return tokens;
   const project = findProjectById(projectId);
   if (!project) return tokens;
-  if (!project.ownerUserId) return tokens;
   const localBypass = isLocalBundledServer();
-  return tokens.filter((t) => canViewProject(project, { userId: t.user_id ?? null, localBypass }));
+  return tokens.filter((t) =>
+    shouldNotifyUserForProject(project.ownerUserId ?? null, t.user_id ?? null, { localBypass }),
+  );
 }
 
 /**
@@ -335,9 +279,8 @@ export function filterTokensForBroadcastVisibility(
  * `session-ownership.ts`), so a push about a specific session should only
  * land on the owner's devices — Kevin's `session_complete` must not buzz
  * Ryan's phone. Applies to any event whose payload carries a `sessionId`
- * (`session_complete`, `changes_ready`, `pr_creation_stale`,
- * `finalize_stall_warning`, …); board/thread/cron events without a
- * `sessionId` keep the shared fan-out.
+ * (`awaiting_feedback`, `ready_to_push`, `pushed`, …); board/thread/support
+ * events without a `sessionId` keep the shared fan-out.
  *
  * Fallbacks (deliberately permissive so nothing silently goes dark):
  *  - Unowned sessions (cron / heartbeat / autonomous spawns, pre-migration
@@ -349,12 +292,17 @@ export function filterTokensForBroadcastVisibility(
  * be attributed to the owner, and re-registering on next app launch stamps
  * the user id.
  */
+export function broadcastSessionId(data: BroadcastData): string | null {
+  const sid = data.sessionId ?? data.session_id;
+  return typeof sid === 'string' && sid.length > 0 ? sid : null;
+}
+
 export function filterTokensForSessionOwner(
   tokens: DeviceTokenRowWithPrefs[],
   data: BroadcastData,
   deps?: Pick<PushDispatchDeps, 'getSessionOwnerById'>,
 ): DeviceTokenRowWithPrefs[] {
-  const sessionId = typeof data.sessionId === 'string' ? data.sessionId : null;
+  const sessionId = broadcastSessionId(data);
   if (!sessionId) return tokens;
   if (isLocalBundledServer()) return tokens;
   const getOwner = deps?.getSessionOwnerById ?? getSessionOwner;
@@ -481,6 +429,18 @@ export async function handleBroadcastForPush(
   const mapped = mapBroadcastToPush(data);
   if (!mapped) return 0;
   const d = resolveDeps(deps);
+  // Forward `agentId` so a cold-start tap (or a tap before the sessions list
+  // loads) can open the right chat. `awaiting_input` carries it on the
+  // broadcast; finalize (`ready_to_push`/`pushed`) broadcasts don't, so
+  // resolve it from the session id. Only a single lookup, and only when the
+  // payload exposes an unresolved `agentId` slot.
+  if (mapped.payload.data && mapped.payload.data.agentId == null) {
+    const sessionId = broadcastSessionId(data);
+    if (sessionId) {
+      const agentId = d.getSessionAgentIdById(sessionId);
+      if (agentId) mapped.payload.data.agentId = agentId;
+    }
+  }
   const tokens = filterTokensForSessionOwner(
     filterTokensForBroadcastVisibility(d.getAllTokens(), data, d),
     data,
@@ -502,44 +462,105 @@ export function mapBroadcastToPush(data: BroadcastData): {
   if (!data || typeof data.type !== 'string') return null;
 
   switch (data.type) {
-    case 'done': {
-      // Session complete. Enrich via data properties populated by chat.ts.
+    case 'awaiting_input': {
+      if (data.waiting !== true) return null;
       const sessionName = typeof data.sessionName === 'string' ? data.sessionName : undefined;
-      const agentName = typeof data.agentName === 'string' ? data.agentName : undefined;
-      const msg = (data as { message?: { content?: string } }).message;
-      const previewRaw = typeof msg?.content === 'string' ? msg.content : undefined;
-      const preview = previewRaw ? previewRaw.replace(/\n+/g, ' ').trim() : undefined;
-      const { title, body } = sessionCompletePush({ agentName, sessionName, preview });
+      const { title, body } = awaitingFeedbackPush({ sessionName });
+      const sessionId = broadcastSessionId(data);
       return {
-        event: 'session_complete',
+        event: 'awaiting_feedback',
         payload: {
           title,
           body,
           data: {
-            sessionId: data.sessionId,
+            sessionId,
             agentId: data.agentId,
-            type: 'session_complete',
+            type: 'awaiting_feedback',
           },
         },
       };
     }
 
-    case 'changes_ready': {
-      const { title, body } = changesReadyPush({
-        agentName: typeof data.agentName === 'string' ? data.agentName : undefined,
-        sessionName: typeof data.sessionName === 'string' ? data.sessionName : undefined,
-        branch: typeof data.branch === 'string' ? data.branch : undefined,
-      });
+    case 'finalize_run_completed': {
+      const status = typeof data.status === 'string' ? data.status : null;
+      if (status !== 'ready_to_push' && status !== 'pushed') return null;
+      const sessionId = broadcastSessionId(data);
+      const sessionName = typeof data.sessionName === 'string' ? data.sessionName : undefined;
+      if (status === 'ready_to_push') {
+        const { title, body } = readyToPushPush({ sessionName });
+        return {
+          event: 'ready_to_push',
+          payload: {
+            title,
+            body,
+            data: {
+              sessionId,
+              agentId: data.agentId,
+              runId: data.run_id,
+              type: 'ready_to_push',
+            },
+          },
+        };
+      }
+      const prNumber = typeof data.prNumber === 'number' ? data.prNumber : undefined;
+      const { title, body } = pushedPush({ sessionName, prNumber });
       return {
-        event: 'changes_ready',
+        event: 'pushed',
         payload: {
           title,
           body,
           data: {
-            sessionId: data.sessionId,
+            sessionId,
             agentId: data.agentId,
-            branch: data.branch,
-            type: 'changes_ready',
+            runId: data.run_id,
+            prNumber,
+            type: 'pushed',
+          },
+        },
+      };
+    }
+
+    case 'support_ticket_created': {
+      const ticket = (data as { ticket?: { subject?: string; type?: string } }).ticket;
+      const { title, body } = supportTicketCreatedPush({
+        subject: ticket?.subject,
+        ticketType: ticket?.type,
+      });
+      return {
+        event: 'support_ticket_created',
+        payload: {
+          title,
+          body,
+          data: {
+            projectId: data.projectId,
+            ticketId: ticket && 'id' in ticket ? (ticket as { id?: string }).id : undefined,
+            type: 'support_ticket_created',
+          },
+        },
+      };
+    }
+
+    case 'thread_entry_created': {
+      const entry = (data as { entry?: { content?: string; id?: string } }).entry;
+      const preview =
+        typeof entry?.content === 'string' ? entry.content.replace(/\n+/g, ' ').trim() : undefined;
+      const isError = typeof entry?.content === 'string' && entry.content.startsWith('ERROR:');
+      const { title, body } = threadMessagePush({
+        threadName: typeof data.threadName === 'string' ? data.threadName : 'Thread',
+        threadType: typeof data.threadType === 'string' ? data.threadType : 'cron',
+        preview,
+        isError,
+      });
+      return {
+        event: 'thread_message',
+        payload: {
+          title,
+          body,
+          data: {
+            projectId: data.projectId,
+            threadId: data.threadId,
+            entryId: entry?.id,
+            type: 'thread_message',
           },
         },
       };
@@ -547,31 +568,39 @@ export function mapBroadcastToPush(data: BroadcastData): {
 
     case 'card_moved': {
       const col = typeof data.columnName === 'string' ? data.columnName.toLowerCase() : '';
+      if (col !== 'review') return null;
       const cardTitle = typeof data.cardTitle === 'string' ? data.cardTitle : 'Card';
-      const assignee = typeof data.assignee === 'string' ? data.assignee : undefined;
-      if (col === 'in progress') {
-        const { title, body } = cardStartedPush({ cardTitle, assignee });
-        return {
-          event: 'card_started',
-          payload: {
-            title,
-            body,
-            data: { cardId: data.cardId, type: 'card_started' },
+      const { title, body } = reviewAssignedPush({ cardTitle });
+      return {
+        event: 'review_assigned_to_you',
+        payload: {
+          title,
+          body,
+          data: {
+            projectId: data.projectId,
+            cardId: data.cardId,
+            type: 'review_assigned_to_you',
           },
-        };
-      }
-      if (col === 'review') {
-        const { title, body } = cardReviewPush({ cardTitle, assignee });
-        return {
-          event: 'card_review',
-          payload: {
-            title,
-            body,
-            data: { cardId: data.cardId, type: 'card_review' },
+        },
+      };
+    }
+
+    case 'native_pr_update': {
+      if (data.action !== 'review_requested') return null;
+      const prNumber = typeof data.prNumber === 'number' ? data.prNumber : undefined;
+      const { title, body } = reviewAssignedPush({ prNumber });
+      return {
+        event: 'review_assigned_to_you',
+        payload: {
+          title,
+          body,
+          data: {
+            projectId: data.projectId,
+            prNumber,
+            type: 'review_assigned_to_you',
           },
-        };
-      }
-      return null;
+        },
+      };
     }
 
     case 'webhook_pr_merged': {
@@ -586,77 +615,10 @@ export function mapBroadcastToPush(data: BroadcastData): {
           title,
           body,
           data: {
+            projectId: data.projectId,
             prNumber: data.prNumber,
             cardId: data.cardId,
             type: 'pr_merged',
-          },
-        },
-      };
-    }
-
-    case 'thread_created': {
-      const thread = (data as { thread?: { name?: string; type?: string; id?: string } }).thread;
-      if (!thread) return null;
-      const { title, body } = threadCreatedPush({
-        threadName: thread.name || 'Thread',
-        threadType: thread.type || 'cron',
-      });
-      return {
-        event: 'thread_created',
-        payload: {
-          title,
-          body,
-          data: {
-            projectId: data.projectId,
-            threadId: thread.id,
-            type: 'thread_created',
-          },
-        },
-      };
-    }
-
-    case 'thread_entry_created': {
-      const entry = (data as { entry?: { content?: string; id?: string } }).entry;
-      const preview =
-        typeof entry?.content === 'string' ? entry.content.replace(/\n+/g, ' ').trim() : undefined;
-      const isError = typeof entry?.content === 'string' && entry.content.startsWith('ERROR:');
-      const { title, body } = threadEntryPush({
-        threadName: typeof data.threadName === 'string' ? data.threadName : 'Thread',
-        threadType: typeof data.threadType === 'string' ? data.threadType : 'cron',
-        preview,
-        isError,
-      });
-      return {
-        event: 'thread_entry',
-        payload: {
-          title,
-          body,
-          data: {
-            projectId: data.projectId,
-            threadId: data.threadId,
-            entryId: entry?.id,
-            type: 'thread_entry',
-          },
-        },
-      };
-    }
-
-    case 'dispatch_failure': {
-      const message =
-        typeof data.message === 'string'
-          ? data.message
-          : typeof data.error === 'string'
-            ? data.error
-            : 'An autonomous dispatch failed';
-      const { title, body } = dispatchFailurePush({ message });
-      return {
-        event: 'dispatch_failure',
-        payload: {
-          title,
-          body,
-          data: {
-            cardId: data.cardId,
-            type: 'dispatch_failure',
           },
         },
       };

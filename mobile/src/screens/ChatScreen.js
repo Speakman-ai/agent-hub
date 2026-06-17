@@ -19,10 +19,12 @@ import MessageInput from '../components/MessageInput';
 import AgentSwitcher from '../components/AgentSwitcher';
 import DelegationPanel from '../components/DelegationPanel';
 import SessionTail from '../components/SessionTail';
-// Finalize Code Changes moved to the Changes screen (FinalizeBar). The chat
-// surface no longer renders the Runner banner inline.
+// FinalizeBar — single action row (Summary, View changes, Build, Finalize, Push).
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
-import SessionExtrasBar from '../components/SessionExtrasBar';
+import ChangesReadyBox from '../components/ChangesReadyBox';
+import FinalizeBar from '../components/FinalizeBar';
+import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
+import { useSessionCommittable } from '../hooks/useSessionCommittable';
 import { isWorkflowProject } from '../utils/project-mode';
 import { shouldShowViewChanges } from '../utils/sessionExtras';
 import {
@@ -61,6 +63,8 @@ export default function ChatScreen() {
     activeSessionId,
     changesReady,
     dismissChangesReady,
+    triggerCreateTicketAndPr,
+    shipFailureAt,
     projects,
     sessionHandoffs,
     handleOpenHandoffSession,
@@ -122,6 +126,10 @@ export default function ChatScreen() {
     };
   }, [activeSession, activeProject]);
 
+  const showFinalizeBar = Boolean(activeSessionId && activeProject?.id);
+  const finalize = useFinalizeRunPoll(activeSessionId, { enabled: showFinalizeBar });
+  const hasCommittableChanges = useSessionCommittable(activeSessionId, { pendingChanges });
+
   // Build list data: messages + thinking + streaming indicators
   const listData = [
     ...messages.map((msg) => ({ type: 'message', key: msg.id, data: msg })),
@@ -141,9 +149,7 @@ export default function ChatScreen() {
     activeResolvePrBannerInfo
       ? [{ type: 'resolve-pr-banner', key: 'resolve-pr-banner', data: activeResolvePrBannerInfo }]
       : []),
-    // Finalize Code Changes lives on the Changes screen now (build dropdown +
-    // Finalize + Push), reached via the "View changes" button — no in-chat
-    // Runner banner.
+    // Finalize controls live in FinalizeBar below TopBar (not inline in the feed).
   ];
 
   const renderItem = ({ item }) => {
@@ -263,18 +269,14 @@ export default function ChatScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <TopBar />
       {activeSessionId ? (
-        <SessionAgentsPanel
+        <FinalizeBar
+          projectId={activeProject?.id}
           sessionId={activeSessionId}
+          cardId={activeSession?.card_id ?? null}
+          session={activeSession}
           sessionAgents={sessionAgents}
-          maxTurns={activeSession?.max_turns}
-          agents={agents}
-          onUpdated={handleSessionAgentsUpdated}
-        />
-      ) : null}
-      {activeSessionId ? (
-        <SessionExtrasBar
-          sessionId={activeSessionId}
-          sessionAgents={sessionAgents}
+          hosted={activeProject?.gitHost === 'agenthub'}
+          hasChanges={hasCommittableChanges}
           showViewChanges={shouldShowViewChanges(activeSession)}
           onViewChanges={() =>
             navigation.navigate('SessionChanges', {
@@ -286,6 +288,31 @@ export default function ChatScreen() {
               session: activeSession || null,
             })
           }
+          showFinalize={showFinalizeBar}
+          status={finalize.status}
+          phase={finalize.phase}
+          phases={finalize.phases}
+          run={finalize.run}
+          onChanged={finalize.refetch}
+        />
+      ) : null}
+      {activeSessionId ? (
+        <SessionAgentsPanel
+          sessionId={activeSessionId}
+          sessionAgents={sessionAgents}
+          maxTurns={activeSession?.max_turns}
+          agents={agents}
+          onUpdated={handleSessionAgentsUpdated}
+        />
+      ) : null}
+      {pendingChanges && !workflowProject ? (
+        <ChangesReadyBox
+          sessionId={activeSessionId}
+          changes={pendingChanges}
+          onTrigger={triggerCreateTicketAndPr}
+          onDismiss={dismissChangesReady}
+          isSessionProcessing={isProcessing}
+          shipFailureAt={shipFailureAt}
         />
       ) : null}
       {sessionRoundProcessing ? (

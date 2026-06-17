@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   groupAgentsByProject,
+  resolveNewAgentForm,
   validateNewAgentForm,
   buildCreateAgentPayload,
   buildUpdateAgentPayload,
@@ -49,6 +50,27 @@ describe('groupAgentsByProject', () => {
     const groups = groupAgentsByProject([], [{ id: 'p9' }]);
     expect(groups[0].projectName).toBe('p9');
     expect(groups[0].color).toBeNull();
+  });
+});
+
+describe('resolveNewAgentForm', () => {
+  it('forces the scoped project onto the form when filterProjectId is set', () => {
+    // Project-scoped mode hides the picker, so form.projectId is empty; the
+    // scoped project must win so the agent lands under the right project.
+    const form = { id: 'a1', projectId: '', name: 'A1' };
+    expect(resolveNewAgentForm(form, 'p2')).toEqual({ id: 'a1', projectId: 'p2', name: 'A1' });
+  });
+
+  it('overrides a stale default projectId with the scoped project', () => {
+    const form = { id: 'a1', projectId: 'p1' };
+    expect(resolveNewAgentForm(form, 'p2').projectId).toBe('p2');
+  });
+
+  it('returns the form unchanged when there is no scope', () => {
+    const form = { id: 'a1', projectId: 'p1' };
+    expect(resolveNewAgentForm(form, null)).toBe(form);
+    expect(resolveNewAgentForm(form, undefined)).toBe(form);
+    expect(resolveNewAgentForm(form, '')).toBe(form);
   });
 });
 

@@ -10,8 +10,25 @@ import { colors } from '../theme/colors';
  */
 export function prNumberFromUrl(prUrl) {
   if (!prUrl || typeof prUrl !== 'string') return null;
-  const m = prUrl.match(/\/pull\/(\d+)(?:$|[?#/])/);
+  const m = prUrl.match(/\/pulls?\/(\d+)(?:$|[?#/])/);
   return m ? m[1] : null;
+}
+
+/**
+ * Parse an Agent Hub-native PR URL (`/projects/<id>/pulls/<n>`, with or
+ * without an http(s) origin).
+ * @param {string|null|undefined} prUrl
+ * @returns {{projectId: string, number: number}|null}
+ */
+export function parseNativePrUrl(prUrl) {
+  if (!prUrl || typeof prUrl !== 'string') return null;
+  const m = prUrl
+    .trim()
+    .match(/^(?:https?:\/\/[^/]+)?\/projects\/([^/\s]+)\/pulls\/(\d+)(?:[?#].*)?$/);
+  if (!m) return null;
+  const number = Number.parseInt(m[2], 10);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return { projectId: m[1], number };
 }
 
 /**
@@ -67,6 +84,48 @@ export function prStateBadge(pr) {
   if (s === 'open') return { label: 'open', color: colors.emerald400, bg: colors.emerald900_40 };
   if (s === 'closed') return { label: 'closed', color: colors.red400, bg: colors.red900_50 };
   return { label: s || 'unknown', color: colors.gray500, bg: colors.gray700_40 };
+}
+
+/**
+ * Single status pill for an open PR on the org dashboard.
+ * @param {{ mergeable?: boolean|null, reviewDecision?: string|null, reviewStatus?: string|null }} pr
+ * @returns {{ key: string, label: string, color: string, bg: string }|null}
+ */
+export function openPrDashboardStatusBadge(pr) {
+  if (!pr) return null;
+  if (pr.mergeable === false) {
+    return { key: 'conflicts', label: 'Conflicts', color: colors.red400, bg: colors.red900_50 };
+  }
+
+  const card = (pr.reviewStatus || '').toLowerCase();
+  const decision = (pr.reviewDecision || '').toUpperCase();
+
+  if (card === 'changes_requested' || decision === 'CHANGES_REQUESTED') {
+    return {
+      key: 'requested_changes',
+      label: 'Requested changes',
+      color: colors.red400,
+      bg: colors.red900_50,
+    };
+  }
+  if (decision === 'APPROVED' || card === 'approved') {
+    return {
+      key: 'approved',
+      label: 'Approved',
+      color: colors.emerald400,
+      bg: colors.emerald900_40,
+    };
+  }
+  if (card === 'awaiting_review' || card === 'reviewing' || decision === 'REVIEW_REQUIRED') {
+    return {
+      key: 'awaiting_review',
+      label: 'Awaiting review',
+      color: colors.yellow400,
+      bg: colors.yellow900_50,
+    };
+  }
+
+  return null;
 }
 
 /**

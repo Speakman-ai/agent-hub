@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import {
   View,
   Text,
@@ -7,14 +7,18 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { SidebarContext } from '../context/SidebarContext';
+import { useApp } from '../context/AppContext';
 import { getApiBaseUrl, getAuthHeaders } from '../utils/config';
 import { getActiveOrg } from '../utils/orgs';
 import { relativeTime } from '../utils/time';
 import { colors } from '../theme/colors';
 import SessionStateIcon from '../components/SessionStateIcon';
+import HubIcon from '../components/HubIcon';
 import { groupSessionsByState } from '../../../shared/utils/sessionState.js';
 import {
   ALL_OWNERS,
@@ -24,12 +28,21 @@ import {
   filterSessionsByOwner,
 } from '../../../shared/utils/sessionOwnerFilter.js';
 import { getAuthRecord } from '../utils/auth';
+import { api } from '../utils/api';
+import { openPrDashboardStatusBadge } from '../utils/prFormatting';
 import {
-  formatHeadlineTiles,
   activityLabel,
   filterActivity,
   countByType,
   ACTIVITY_TYPE_KEYS,
+  sortSupportBySeverity,
+  SUPPORT_STATUS_FILTERS,
+  SUPPORT_SEVERITY_DOT,
+  PR_PRIORITY_DOT,
+  resolveActivityTarget,
+  activityIsActionable,
+  resolveOpenPrTarget,
+  openPrIsActionable,
 } from '../utils/dashboard';
 
 const ACTIVITY_DOT = {
@@ -42,18 +55,19 @@ const ACTIVITY_DOT = {
 
 export default function DashboardScreen() {
   const { openSidebar } = useContext(SidebarContext);
+  const navigation = useNavigation();
+  const { setActiveAgentId, setActiveSessionId, projects } = useApp();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  // Empty set means "All" (no narrowing). Local-only state — survives
-  // pull-to-refresh because the screen stays mounted, but resets when
-  // the user navigates away and back. The dashboard contract treats
-  // cross-reload persistence as nice-to-have, not required.
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [supportLoading, setSupportLoading] = useState(true);
+  const [supportError, setSupportError] = useState(null);
+  const [supportStatusFilter, setSupportStatusFilter] = useState('all');
   const [activeTypes, setActiveTypes] = useState(() => new Set());
-  // Active-sessions owner filter. Defaults to *your* sessions; "All users"
-  // reveals the rest. Local-only state, same lifetime contract as activeTypes.
   const currentUser = getAuthRecord()?.user || null;
+  const accountName = currentUser?.username || 'Account';
   const currentUserKey = ownerKeyForUser(currentUser);
   const currentUserName = (currentUser && currentUser.username) || null;
   const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
@@ -71,6 +85,97 @@ export default function DashboardScreen() {
     setActiveTypes(new Set());
   }, []);
 
+  const findProject = useCallback(
+    (projectId) => projects?.find((p) => p.id === projectId),
+    [projects],
+  );
+
+  const openSession = useCallback(
+    (agentId, sessionId) => {
+      if (!sessionId) return;
+      if (agentId) setActiveAgentId(agentId);
+      setActiveSessionId(sessionId);
+      navigation.navigate('Chat');
+    },
+    [navigation, setActiveAgentId, setActiveSessionId],
+  );
+
+  const openProjectPulls = useCallback(
+    (projectId, prNumber) => {
+      if (!projectId) return;
+      navigation.navigate('PullRequests', {
+        projectId,
+        project: findProject(projectId),
+        // When the row resolved to a specific native PR, open its detail
+        // directly; PullRequestsScreen consumes `route.params.prNumber`.
+        prNumber: prNumber ?? undefined,
+      });
+    },
+    [findProject, navigation],
+  );
+
+  const openProjectKanban = useCallback(
+    (projectId, cardId) => {
+      if (!projectId) return;
+      navigation.navigate('Kanban', {
+        projectId,
+        project: findProject(projectId),
+        cardId: cardId || undefined,
+      });
+    },
+    [findProject, navigation],
+  );
+
+  const openProjectSupport = useCallback(
+    (projectId, ticketId) => {
+      if (!projectId) return;
+      navigation.navigate('CustomerSupport', {
+        projectId,
+        project: findProject(projectId),
+        // Support rows are ticket-specific; CustomerSupportScreen consumes
+        // `route.params.ticketId` to open that ticket's detail directly.
+        ticketId: ticketId || undefined,
+      });
+    },
+    [findProject, navigation],
+  );
+
+  const followTarget = useCallback(
+    (target) => {
+      if (!target) return;
+      if (target.kind === 'session') {
+        openSession(target.agentId, target.sessionId);
+        return;
+      }
+      if (target.kind === 'pulls') {
+        openProjectPulls(target.projectId, target.prNumber);
+        return;
+      }
+      if (target.kind === 'kanban') {
+        openProjectKanban(target.projectId);
+        return;
+      }
+      if (target.kind === 'external' && target.url) {
+        Linking.openURL(target.url).catch(() => {});
+      }
+    },
+    [openProjectKanban, openProjectPulls, openSession],
+  );
+
+  const openActivity = useCallback(
+    (item) => {
+      followTarget(resolveActivityTarget(item));
+    },
+    [followTarget],
+  );
+
+  const openPr = useCallback(
+    (pr) => {
+      followTarget(resolveOpenPrTarget(pr));
+    },
+    [followTarget],
+  );
+
   const load = useCallback(async ({ asRefresh } = {}) => {
     const org = getActiveOrg();
     if (!org) {
@@ -82,10 +187,6 @@ export default function DashboardScreen() {
     setError(null);
     try {
       const base = getApiBaseUrl();
-      // Mobile orgs are always remote bookmarks with browser-generated
-      // ids that don't exist on the remote server — send the `active`
-      // alias and let the server resolve it to its own active-org id.
-      // See `server/routes/dashboard.ts` for the alias contract.
       const res = await fetch(`${base}/orgs/active/dashboard`, {
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       });
@@ -109,14 +210,35 @@ export default function DashboardScreen() {
     }
   }, []);
 
+  const loadSupport = useCallback(async () => {
+    setSupportLoading(true);
+    setSupportError(null);
+    try {
+      const payload = await api.getAllSupportTickets(
+        supportStatusFilter === 'all' ? undefined : supportStatusFilter,
+      );
+      setSupportTickets(Array.isArray(payload?.tickets) ? payload.tickets : []);
+    } catch (err) {
+      setSupportError(err.message || String(err));
+      setSupportTickets([]);
+    } finally {
+      setSupportLoading(false);
+    }
+  }, [supportStatusFilter]);
+
   useEffect(() => {
     load();
   }, [load]);
 
-  const tiles = data ? formatHeadlineTiles(data.headline) : [];
+  useEffect(() => {
+    loadSupport();
+  }, [loadSupport]);
+
+  const sortedSupport = useMemo(() => sortSupportBySeverity(supportTickets), [supportTickets]);
   const allActivity = data?.recentActivity || [];
   const activity = filterActivity(allActivity, activeTypes);
   const activityCounts = countByType(allActivity);
+  const openPrs = data?.openPRs || [];
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -125,12 +247,21 @@ export default function DashboardScreen() {
           <Text style={styles.menuIcon}>{'\u2630'}</Text>
         </TouchableOpacity>
         <Text style={styles.title}>Dashboard</Text>
-        {data?.orgName && (
-          <Text style={styles.orgLabel} numberOfLines={1}>
-            {data.orgName}
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Settings', { tab: 'account' })}
+          style={styles.accountButton}
+          accessibilityLabel="Account settings"
+        >
+          <Text style={styles.accountLabel} numberOfLines={1}>
+            {accountName}
           </Text>
-        )}
+        </TouchableOpacity>
       </View>
+      {data?.orgName ? (
+        <Text style={styles.orgSubtitle} numberOfLines={1}>
+          {data.orgName}
+        </Text>
+      ) : null}
 
       <ScrollView
         style={styles.scroll}
@@ -138,7 +269,10 @@ export default function DashboardScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => load({ asRefresh: true })}
+            onRefresh={() => {
+              load({ asRefresh: true });
+              loadSupport();
+            }}
             tintColor={colors.gray400}
           />
         }
@@ -157,18 +291,6 @@ export default function DashboardScreen() {
 
         {data ? (
           <>
-            {/* Headline tiles */}
-            <View style={styles.headlineGrid} testID="headline-grid">
-              {tiles.map((tile) => (
-                <View key={tile.key} style={styles.headlineTile} testID={`headline-${tile.key}`}>
-                  <Text style={styles.headlineLabel}>{tile.label}</Text>
-                  <Text style={styles.headlineValue}>{tile.value}</Text>
-                </View>
-              ))}
-            </View>
-
-            {/* Active sessions — every in-flight (non-merged) session, not
-                just the ones whose CLI is currently streaming. */}
             {(() => {
               const allSessions = data.activeSessions || [];
               const ownerOptions = buildOwnerOptions(allSessions, {
@@ -225,48 +347,56 @@ export default function DashboardScreen() {
                   ) : (
                     <View testID="active-sessions">
                       {groupSessionsByState(sessions).map((group) => (
-                  <View key={group.state} testID={`active-sessions-group-${group.state}`}>
-                    <View style={styles.sessionGroupHeader}>
-                      <Text style={styles.sessionGroupLabel}>{group.meta.label}</Text>
-                      <Text style={styles.sessionGroupCount}>{group.sessions.length}</Text>
-                    </View>
-                    <View style={styles.card}>
-                      {group.sessions.map((s) => (
-                        <View key={s.sessionId} style={styles.activityRow}>
-                          <SessionStateIcon
-                            state={s.state}
-                            size={16}
-                            style={styles.activitySessionIcon}
-                          />
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text style={styles.activityTitle} numberOfLines={1}>
-                              {s.sessionName || 'Untitled session'}
-                            </Text>
-                            <Text style={styles.activityMeta} numberOfLines={1}>
-                              {[
-                                s.agentName || s.agentId,
-                                s.ownerName ? `👤 ${s.ownerName}` : null,
-                                s.engine,
-                                s.model,
-                                s.prompt,
-                              ]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </Text>
+                        <View key={group.state} testID={`active-sessions-group-${group.state}`}>
+                          <View style={styles.sessionGroupHeader}>
+                            <Text style={styles.sessionGroupLabel}>{group.meta.label}</Text>
+                            <Text style={styles.sessionGroupCount}>{group.sessions.length}</Text>
                           </View>
-                          {/* The status is carried by the group header now; the
-                              row only shows its relative timestamp. */}
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <Text style={styles.activityTime}>
-                              {s.startedAt || s.lastActivityAt
-                                ? relativeTime(s.startedAt || s.lastActivityAt)
-                                : ''}
-                            </Text>
+                          <View style={styles.card}>
+                            {group.sessions.map((s) => {
+                              const actionable = Boolean(s.agentId && s.sessionId);
+                              const Row = actionable ? TouchableOpacity : View;
+                              return (
+                                <Row
+                                  key={s.sessionId}
+                                  style={styles.activityRow}
+                                  {...(actionable
+                                    ? { onPress: () => openSession(s.agentId, s.sessionId) }
+                                    : {})}
+                                >
+                                  <SessionStateIcon
+                                    state={s.state}
+                                    size={16}
+                                    style={styles.activitySessionIcon}
+                                  />
+                                  <View style={{ flex: 1, minWidth: 0 }}>
+                                    <Text style={styles.activityTitle} numberOfLines={1}>
+                                      {s.sessionName || 'Untitled session'}
+                                    </Text>
+                                    <Text style={styles.activityMeta} numberOfLines={1}>
+                                      {[
+                                        s.agentName || s.agentId,
+                                        s.ownerName ? s.ownerName : null,
+                                        s.engine,
+                                        s.model,
+                                        s.prompt,
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' · ')}
+                                    </Text>
+                                  </View>
+                                  <View style={{ alignItems: 'flex-end' }}>
+                                    <Text style={styles.activityTime}>
+                                      {s.startedAt || s.lastActivityAt
+                                        ? relativeTime(s.startedAt || s.lastActivityAt)
+                                        : ''}
+                                    </Text>
+                                  </View>
+                                </Row>
+                              );
+                            })}
                           </View>
                         </View>
-                      ))}
-                    </View>
-                  </View>
                       ))}
                     </View>
                   )}
@@ -274,7 +404,139 @@ export default function DashboardScreen() {
               );
             })()}
 
-            {/* Recent activity */}
+            <SectionHeader
+              title="Open PRs"
+              subtitle={`${openPrs.length} open PR${openPrs.length === 1 ? '' : 's'}`}
+            />
+            <View style={styles.card} testID="open-prs">
+              {openPrs.length === 0 ? (
+                <Text style={styles.muted}>No open pull requests.</Text>
+              ) : (
+                openPrs.map((pr) => {
+                  const actionable = openPrIsActionable(pr);
+                  const statusBadge = openPrDashboardStatusBadge(pr);
+                  const Row = actionable ? TouchableOpacity : View;
+                  return (
+                    <Row
+                      key={pr.key || pr.cardId || pr.prUrl}
+                      style={styles.activityRow}
+                      {...(actionable ? { onPress: () => openPr(pr) } : {})}
+                    >
+                      <HubIcon
+                        name="GitPullRequest"
+                        size={16}
+                        color={colors.purple400}
+                        style={styles.prIcon}
+                      />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <View style={styles.prTitleRow}>
+                          {statusBadge ? (
+                            <View
+                              style={[styles.statusBadge, { backgroundColor: statusBadge.bg }]}
+                              testID="open-pr-status-badge"
+                            >
+                              <Text style={[styles.statusBadgeText, { color: statusBadge.color }]}>
+                                {statusBadge.label}
+                              </Text>
+                            </View>
+                          ) : null}
+                          <Text style={styles.activityTitle} numberOfLines={1}>
+                            {pr.title || pr.cardTitle}
+                          </Text>
+                        </View>
+                        <Text style={styles.activityMeta} numberOfLines={1}>
+                          {pr.projectName || pr.projectId}
+                          {pr.authorAgent ? ` · ${pr.authorAgent}` : ''}
+                        </Text>
+                      </View>
+                      {pr.priority && PR_PRIORITY_DOT[pr.priority] ? (
+                        <View
+                          style={[
+                            styles.priorityDot,
+                            { backgroundColor: PR_PRIORITY_DOT[pr.priority] },
+                          ]}
+                        />
+                      ) : null}
+                      <Text style={styles.activityTime}>
+                        {pr.updatedAt ? relativeTime(pr.updatedAt) : ''}
+                      </Text>
+                    </Row>
+                  );
+                })
+              )}
+            </View>
+
+            <SectionHeader title="Support issues" />
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.filterRow}
+              testID="support-issues-filter"
+            >
+              {SUPPORT_STATUS_FILTERS.map((f) => {
+                const active = supportStatusFilter === f.key;
+                return (
+                  <TouchableOpacity
+                    key={f.key}
+                    onPress={() => setSupportStatusFilter(f.key)}
+                    style={[styles.filterChip, active && styles.filterChipActive]}
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
+                      {f.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <View style={styles.card} testID="support-issues">
+              {supportError ? (
+                <Text style={styles.errorInline}>
+                  Failed to load support issues: {supportError}
+                </Text>
+              ) : supportLoading ? (
+                <Text style={styles.muted}>Loading support issues…</Text>
+              ) : sortedSupport.length === 0 ? (
+                <Text style={styles.muted}>No support issues. Everything is triaged.</Text>
+              ) : (
+                sortedSupport.map((ticket) => {
+                  const actionable = Boolean(ticket.project_id);
+                  const title =
+                    ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
+                  const dot =
+                    SUPPORT_SEVERITY_DOT[ticket.severity] || SUPPORT_SEVERITY_DOT.low;
+                  const Row = actionable ? TouchableOpacity : View;
+                  return (
+                    <Row
+                      key={ticket.id}
+                      style={styles.activityRow}
+                      testID="support-issue-row"
+                      {...(actionable
+                        ? {
+                            onPress: () =>
+                              openProjectSupport(String(ticket.project_id), ticket.id),
+                          }
+                        : {})}
+                    >
+                      <View style={[styles.priorityDot, { backgroundColor: dot }]} />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.activityTitle} numberOfLines={1}>
+                          {title}
+                        </Text>
+                        <Text style={styles.activityMeta} numberOfLines={1}>
+                          {ticket.project_name || ticket.project_id}
+                          {ticket.status ? ` · ${ticket.status}` : ''}
+                        </Text>
+                      </View>
+                      <Text style={styles.activityTime}>
+                        {ticket.created_at ? relativeTime(ticket.created_at) : ''}
+                      </Text>
+                    </Row>
+                  );
+                })
+              )}
+            </View>
+
             <SectionHeader title="Recent activity" />
             <ScrollView
               horizontal
@@ -334,23 +596,31 @@ export default function DashboardScreen() {
                     : 'No activity matches the selected filters.'}
                 </Text>
               ) : (
-                activity.map((item) => (
-                  <View key={`${item.type}-${item.id}`} style={styles.activityRow}>
-                    <View
-                      style={[
-                        styles.activityDot,
-                        { backgroundColor: ACTIVITY_DOT[item.type] || colors.gray500 },
-                      ]}
-                    />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={styles.activityTitle} numberOfLines={1}>
-                        {item.title || '(untitled)'}
-                      </Text>
-                      <Text style={styles.activityMeta}>{activityLabel(item.type)}</Text>
-                    </View>
-                    <Text style={styles.activityTime}>{relativeTime(item.timestamp)}</Text>
-                  </View>
-                ))
+                activity.map((item) => {
+                  const actionable = activityIsActionable(item);
+                  const Row = actionable ? TouchableOpacity : View;
+                  return (
+                    <Row
+                      key={`${item.type}-${item.id}`}
+                      style={styles.activityRow}
+                      {...(actionable ? { onPress: () => openActivity(item) } : {})}
+                    >
+                      <View
+                        style={[
+                          styles.activityDot,
+                          { backgroundColor: ACTIVITY_DOT[item.type] || colors.gray500 },
+                        ]}
+                      />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.activityTitle} numberOfLines={1}>
+                          {item.title || '(untitled)'}
+                        </Text>
+                        <Text style={styles.activityMeta}>{activityLabel(item.type)}</Text>
+                      </View>
+                      <Text style={styles.activityTime}>{relativeTime(item.timestamp)}</Text>
+                    </Row>
+                  );
+                })
               )}
             </View>
           </>
@@ -394,12 +664,28 @@ const styles = StyleSheet.create({
     color: colors.white,
     fontSize: 18,
     fontWeight: '600',
-  },
-  orgLabel: {
     flex: 1,
+  },
+  accountButton: {
+    maxWidth: 140,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.gray900,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+  },
+  accountLabel: {
+    color: colors.gray300,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  orgSubtitle: {
     color: colors.gray500,
     fontSize: 12,
-    textAlign: 'right',
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 2,
   },
   scroll: {
     flex: 1,
@@ -424,31 +710,9 @@ const styles = StyleSheet.create({
     color: colors.red400,
     fontSize: 13,
   },
-  headlineGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  headlineTile: {
-    width: '48%',
-    backgroundColor: colors.gray900,
-    borderColor: colors.gray800,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-  },
-  headlineLabel: {
-    color: colors.gray400,
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  headlineValue: {
-    color: colors.white,
-    fontSize: 22,
-    fontWeight: '600',
+  errorInline: {
+    color: colors.red400,
+    fontSize: 12,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -476,45 +740,8 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 12,
   },
-  cardLabel: {
-    color: colors.gray400,
-    fontSize: 11,
-    fontWeight: '500',
-    marginBottom: 8,
-  },
   muted: {
     color: colors.gray600,
-    fontSize: 12,
-  },
-  barRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 4,
-  },
-  barLabel: {
-    width: 96,
-    color: colors.gray300,
-    fontSize: 12,
-  },
-  capitalize: {
-    textTransform: 'capitalize',
-  },
-  barTrack: {
-    flex: 1,
-    height: 6,
-    backgroundColor: colors.gray800,
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
-  barFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  barCount: {
-    width: 32,
-    textAlign: 'right',
-    color: colors.gray400,
     fontSize: 12,
   },
   filterRow: {
@@ -558,6 +785,11 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.gray800,
   },
   activityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  priorityDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
@@ -615,6 +847,7 @@ const styles = StyleSheet.create({
   activityTitle: {
     color: colors.white,
     fontSize: 13,
+    flexShrink: 1,
   },
   activityMeta: {
     color: colors.gray500,
@@ -623,5 +856,24 @@ const styles = StyleSheet.create({
   activityTime: {
     color: colors.gray500,
     fontSize: 10,
+  },
+  prIcon: {
+    width: 20,
+    flexShrink: 0,
+  },
+  prTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
+  statusBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  statusBadgeText: {
+    fontSize: 9,
+    fontWeight: '600',
   },
 });

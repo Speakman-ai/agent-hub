@@ -7,18 +7,22 @@ import {
   StyleSheet,
   Alert,
   Platform,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { getOrgs, getActiveOrg } from '../utils/orgs';
+import { getApiBaseUrl, getWsUrl } from '../utils/config';
 import { colors } from '../theme/colors';
-import { relativeTime, daysUntilPurge } from '../utils/time';
+import { relativeTime, daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '../utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
-import { projectMenuEntries } from '../utils/projectMenu';
+import { projectLifecycleEntries, projectSettingsEntries } from '../utils/projectMenu';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
+import HubIcon from './HubIcon';
+import BugReportButton from './BugReportButton';
 
 export default function DrawerContent({ navigation }) {
   const {
@@ -43,7 +47,12 @@ export default function DrawerContent({ navigation }) {
     unreadThreadCounts,
     unreadTicketCounts,
     reloadMessages,
+    connected,
+    reconnecting,
   } = useApp();
+
+  const activeAgent = agents.find((a) => a.id === activeAgentId) || null;
+  const bugReportProjectId = activeAgent?.projectId || '';
 
   const [collapsedAgents, setCollapsedAgents] = useState({});
   const [collapsedProjects, setCollapsedProjects] = useState({});
@@ -79,8 +88,8 @@ export default function DrawerContent({ navigation }) {
   };
 
   const isRecent = (dateStr) => {
-    if (!dateStr) return false;
-    const d = dateStr.includes('T') ? new Date(dateStr) : new Date(dateStr + 'Z');
+    const d = parseDate(dateStr);
+    if (!d || Number.isNaN(d.getTime())) return false;
     return Date.now() - d.getTime() < 30 * 60 * 1000;
   };
 
@@ -88,6 +97,21 @@ export default function DrawerContent({ navigation }) {
     setActiveAgentId(agentId);
     navigation.navigate('Chat');
     navigation.closeDrawer();
+  };
+
+  const showConnectionInfo = () => {
+    const org = getActiveOrg();
+    const apiUrl = getApiBaseUrl();
+    const wsUrl = getWsUrl();
+    Alert.alert(
+      'Connection Info',
+      `Org: ${org?.name || '(none)'}\n` +
+        `URL: ${org?.remoteUrl || '(not set)'}\n` +
+        `API: ${apiUrl || '(empty)'}\n` +
+        `WS: ${wsUrl ? wsUrl.replace(/apiKey=[^&]+/, 'apiKey=***') : '(empty)'}\n` +
+        `Key: ${org?.apiKey ? `${org.apiKey.slice(0, 5)}...${org.apiKey.slice(-4)}` : '(none)'}\n` +
+        `Status: ${connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'}`,
+    );
   };
 
   const handleSessionSelect = (sessionId) => {
@@ -305,14 +329,51 @@ export default function DrawerContent({ navigation }) {
     </View>
   );
 
-  // Collapsible "<project> Settings" submenu — the web sidebar groups every
-  // project-scoped destination (Board, Threads, Pulls, …) under this menu
-  // instead of crowding the project header with inline buttons.
+  const renderMenuItem = (project, entry) => (
+    <TouchableOpacity
+      key={entry.key}
+      style={styles.projectMenuItem}
+      onPress={() => {
+        navigation.navigate(entry.screen, {
+          projectId: project.id,
+          project,
+        });
+        navigation.closeDrawer();
+      }}
+    >
+      <HubIcon name={entry.icon} size={14} color={colors.gray500} style={styles.projectMenuItemIcon} />
+      <Text style={styles.projectMenuItemText} numberOfLines={1}>
+        {entry.label}
+      </Text>
+      {entry.key === 'threads' && unreadThreadCounts?.[project.id] > 0 && (
+        <View style={styles.unreadBadge}>
+          <Text style={styles.unreadBadgeText}>
+            {unreadThreadCounts[project.id] > 99 ? '99+' : unreadThreadCounts[project.id]}
+          </Text>
+        </View>
+      )}
+      {entry.key === 'support' && unreadTicketCounts?.[project.id] > 0 && (
+        <View style={styles.unreadBadge}>
+          <Text style={styles.unreadBadgeText}>
+            {unreadTicketCounts[project.id] > 99 ? '99+' : unreadTicketCounts[project.id]}
+          </Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+
+  // Lifecycle nav (always visible) + collapsed "<project> Settings" submenu.
   const renderProjectMenu = (project) => {
     const isMenuCollapsed = collapsedProjectMenus[project.id] ?? true;
-    const entries = projectMenuEntries(project);
+    const lifecycle = projectLifecycleEntries(project);
+    const settings = projectSettingsEntries(project);
+
     return (
       <View style={styles.projectMenu}>
+        <View style={styles.projectMenuItems}>
+          {lifecycle.map((entry) => renderMenuItem(project, entry))}
+        </View>
+
         <TouchableOpacity
           style={styles.projectMenuToggle}
           onPress={() =>
@@ -322,10 +383,13 @@ export default function DrawerContent({ navigation }) {
             }))
           }
         >
-          <Text style={styles.projectMenuChevron}>
-            {isMenuCollapsed ? '▸' : '▾'}
-          </Text>
-          <Text style={styles.projectMenuGear}>{'⚙'}</Text>
+          <HubIcon
+            name={isMenuCollapsed ? 'ChevronRight' : 'ChevronDown'}
+            size={14}
+            color={colors.gray500}
+            style={styles.projectMenuChevron}
+          />
+          <HubIcon name="Settings" size={14} color={colors.gray500} style={styles.projectMenuGear} />
           <Text style={styles.projectMenuToggleText} numberOfLines={1}>
             {project.name} Settings
           </Text>
@@ -333,44 +397,7 @@ export default function DrawerContent({ navigation }) {
 
         {!isMenuCollapsed && (
           <View style={styles.projectMenuItems}>
-            {entries.map((entry) => (
-              <TouchableOpacity
-                key={entry.key}
-                style={styles.projectMenuItem}
-                onPress={() => {
-                  navigation.navigate(entry.screen, {
-                    projectId: project.id,
-                    project,
-                  });
-                  navigation.closeDrawer();
-                }}
-              >
-                <Text style={styles.projectMenuItemIcon}>{entry.icon}</Text>
-                <Text style={styles.projectMenuItemText} numberOfLines={1}>
-                  {entry.label}
-                </Text>
-                {entry.key === 'threads' &&
-                  unreadThreadCounts?.[project.id] > 0 && (
-                    <View style={styles.unreadBadge}>
-                      <Text style={styles.unreadBadgeText}>
-                        {unreadThreadCounts[project.id] > 99
-                          ? '99+'
-                          : unreadThreadCounts[project.id]}
-                      </Text>
-                    </View>
-                  )}
-                {entry.key === 'support' &&
-                  unreadTicketCounts?.[project.id] > 0 && (
-                    <View style={styles.unreadBadge}>
-                      <Text style={styles.unreadBadgeText}>
-                        {unreadTicketCounts[project.id] > 99
-                          ? '99+'
-                          : unreadTicketCounts[project.id]}
-                      </Text>
-                    </View>
-                  )}
-              </TouchableOpacity>
-            ))}
+            {settings.map((entry) => renderMenuItem(project, entry))}
           </View>
         )}
       </View>
@@ -425,6 +452,45 @@ export default function DrawerContent({ navigation }) {
 
       {/* Agents grouped by Project */}
       <ScrollView style={styles.agentList}>
+        <View style={styles.connectionRow}>
+          <Pressable
+            onLongPress={showConnectionInfo}
+            style={[
+              styles.connectionBadge,
+              connected
+                ? styles.connectionBadgeConnected
+                : reconnecting
+                  ? styles.connectionBadgeReconnecting
+                  : styles.connectionBadgeDisconnected,
+            ]}
+            accessibilityRole="text"
+            accessibilityLabel={
+              connected ? 'Connected' : reconnecting ? 'Reconnecting' : 'Disconnected'
+            }
+            testID="sidebar-connection-status"
+          >
+            <Text
+              style={[
+                styles.connectionText,
+                connected
+                  ? styles.connectionTextConnected
+                  : reconnecting
+                    ? styles.connectionTextReconnecting
+                    : styles.connectionTextDisconnected,
+              ]}
+              numberOfLines={1}
+            >
+              {connected ? '● Connected' : reconnecting ? '● Reconnecting…' : '● Disconnected'}
+            </Text>
+          </Pressable>
+          <BugReportButton
+            projectId={bugReportProjectId}
+            agentId={activeAgentId || ''}
+            sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''}
+            buttonStyle={styles.bugReportButton}
+          />
+        </View>
+
         {/* Org-scoped Dashboard — sits above the project list. */}
         <TouchableOpacity
           style={styles.dashboardItem}
@@ -433,13 +499,16 @@ export default function DrawerContent({ navigation }) {
             navigation.closeDrawer();
           }}
         >
-          <Text style={styles.dashboardIcon}>{'\u25B0'}</Text>
+          <HubIcon name="BarChart3" size={14} color={colors.blue400} style={styles.dashboardIcon} />
           <Text style={styles.dashboardText}>Dashboard</Text>
         </TouchableOpacity>
 
         {cronSessions.length > 0 && (
           <View style={{ marginBottom: 16 }}>
-            <Text style={styles.sectionLabel}>SCHEDULED TASKS</Text>
+            <View style={styles.sectionLabelRow}>
+              <HubIcon name="Clock" size={12} color={colors.gray500} />
+              <Text style={[styles.sectionLabel, styles.sectionLabelInline]}>SCHEDULED TASKS</Text>
+            </View>
             {cronSessions.map((cs) => (
               <TouchableOpacity
                 key={cs.id}
@@ -566,12 +635,42 @@ export default function DrawerContent({ navigation }) {
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => {
+            navigation.navigate('Designs');
+            navigation.closeDrawer();
+          }}
+        >
+          <HubIcon name="Palette" size={16} color={colors.purple400} style={styles.navButtonIcon} />
+          <Text style={styles.navButtonText}>Designs</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
             navigation.navigate('Skills');
             navigation.closeDrawer();
           }}
         >
-          <Text style={styles.navButtonIcon}>{'\u{1F4D6}'}</Text>
+          <HubIcon name="BookOpen" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Skills</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
+            navigation.navigate('Releases');
+            navigation.closeDrawer();
+          }}
+        >
+          <HubIcon name="Sparkles" size={16} style={styles.navButtonIcon} />
+          <Text style={styles.navButtonText}>What's new</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.navButton}
+          onPress={() => {
+            navigation.navigate('NewProject');
+            navigation.closeDrawer();
+          }}
+        >
+          <HubIcon name="Plus" size={18} strokeWidth={2.5} style={styles.navButtonIcon} />
+          <Text style={styles.navButtonText}>New Project</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.navButton}
@@ -580,7 +679,7 @@ export default function DrawerContent({ navigation }) {
             navigation.closeDrawer();
           }}
         >
-          <Text style={styles.navButtonIcon}>{'⚙'}</Text>
+          <HubIcon name="Settings" size={16} style={styles.navButtonIcon} />
           <Text style={styles.navButtonText}>Settings</Text>
         </TouchableOpacity>
         {health?.version && (
@@ -673,6 +772,46 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 12,
   },
+  connectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  connectionBadge: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  connectionBadgeConnected: {
+    backgroundColor: colors.emerald900_50,
+  },
+  connectionBadgeReconnecting: {
+    backgroundColor: colors.yellow900_50,
+  },
+  connectionBadgeDisconnected: {
+    backgroundColor: colors.red900_50,
+  },
+  connectionText: {
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  connectionTextConnected: {
+    color: colors.emerald400,
+  },
+  connectionTextReconnecting: {
+    color: colors.yellow400,
+  },
+  connectionTextDisconnected: {
+    color: colors.red400,
+  },
+  bugReportButton: {
+    padding: 8,
+    marginRight: 0,
+  },
   sectionLabel: {
     fontSize: 10,
     fontWeight: '600',
@@ -680,6 +819,17 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 8,
     paddingHorizontal: 8,
+  },
+  sectionLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+    paddingHorizontal: 8,
+  },
+  sectionLabelInline: {
+    marginBottom: 0,
+    paddingHorizontal: 0,
   },
   dashboardItem: {
     flexDirection: 'row',
@@ -692,8 +842,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray800,
   },
   dashboardIcon: {
-    color: colors.blue400,
-    fontSize: 14,
+    flexShrink: 0,
   },
   dashboardText: {
     color: colors.gray200,
@@ -914,10 +1063,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   navButtonIcon: {
-    fontSize: 14,
-    color: colors.gray400,
-    width: 18,
-    textAlign: 'center',
+    flexShrink: 0,
   },
   navButtonText: {
     fontSize: 14,
@@ -951,13 +1097,10 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   projectMenuChevron: {
-    color: colors.gray500,
-    fontSize: 11,
-    width: 12,
+    flexShrink: 0,
   },
   projectMenuGear: {
-    color: colors.gray500,
-    fontSize: 12,
+    flexShrink: 0,
   },
   projectMenuToggleText: {
     flex: 1,
@@ -979,10 +1122,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   projectMenuItemIcon: {
-    fontSize: 12,
-    color: colors.gray500,
-    width: 16,
-    textAlign: 'center',
+    flexShrink: 0,
   },
   projectMenuItemText: {
     flex: 1,

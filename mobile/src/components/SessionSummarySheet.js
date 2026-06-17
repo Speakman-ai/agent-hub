@@ -11,7 +11,7 @@ import {
   Linking,
   Alert,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
 import {
@@ -90,11 +90,11 @@ export default function SessionSummarySheet({
           {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerLeft}>
-              <Ionicons name="information-circle-outline" size={16} color={colors.gray400} />
+              <AppIcon name="information-circle-outline" size={16} color={colors.gray400} />
               <Text style={styles.headerTitle}>Session summary</Text>
             </View>
             <TouchableOpacity onPress={onClose} accessibilityRole="button" accessibilityLabel="Close session summary">
-              <Ionicons name="close" size={20} color={colors.gray400} />
+              <AppIcon name="close" size={20} color={colors.gray400} />
             </TouchableOpacity>
           </View>
 
@@ -138,7 +138,7 @@ export default function SessionSummarySheet({
                     accessibilityLabel={`Open pull request ${summary.prNumber ? `#${summary.prNumber}` : ''}`}
                   >
                     <View style={styles.prTitleRow}>
-                      <Ionicons name="git-pull-request-outline" size={14} color={colors.gray400} />
+                      <AppIcon name="git-pull-request-outline" size={14} color={colors.gray400} />
                       <Text style={styles.prTitle} numberOfLines={2}>
                         {summary.prNumber ? `PR #${summary.prNumber}` : 'Pull request'}
                         {summary.linkedCardTitle ? ` — ${summary.linkedCardTitle}` : ''}

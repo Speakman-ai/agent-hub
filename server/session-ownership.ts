@@ -169,6 +169,22 @@ export function getSessionOwner(sessionId: string): string | null {
 }
 
 /**
+ * Reads the agent id a session belongs to, or `null` if the row is missing.
+ * Used to forward `agentId` on push payloads so a cold-start notification tap
+ * can open the right chat before the sessions list has loaded.
+ */
+export function getSessionAgentId(sessionId: string): string | null {
+  try {
+    const row = getDb().prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId) as
+      | { agent_id: string | null }
+      | undefined;
+    return row?.agent_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Copy the owner from `sourceSessionId` onto `targetSessionId`. Used
  * by handoff and forward to keep child sessions strictly inheriting.
  * Inherits only the source's recorded owner — when the source has no

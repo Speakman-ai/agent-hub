@@ -150,7 +150,7 @@ function PrListItem({
             {resolvingThisRow ? (
               <ActivityIndicator size="small" color={colors.gray300} />
             ) : (
-              <Text style={styles.listRowResolveButtonText}>{'\u{1F527}'}</Text>
+              <Text style={styles.listRowResolveButtonText}>{'Fix'}</Text>
             )}
             <Text
               style={[
@@ -179,15 +179,15 @@ function PrActivityBlock({ pr, detail, styles }) {
         <View key={item.id} style={styles.activityItem}>
           <Text style={styles.activityGlyph} accessibilityLabel={item.kind}>
             {item.kind === 'opened'
-              ? '\u{1F504}'
+              ? 'O'
               : item.kind === 'merged'
-                ? '\u{1F500}'
+                ? 'M'
                 : item.kind === 'closed'
                   ? '\u2715'
                   : item.kind === 'review'
-                    ? '\u{1F441}'
+                    ? 'R'
                     : item.kind === 'comment'
-                      ? '\u{1F4AC}'
+                      ? 'C'
                       : item.kind === 'check'
                         ? '\u2713'
                         : '\u2022'}
@@ -406,7 +406,7 @@ function PrDetail({
                   resolveDisabled && styles.resolveButtonTextDisabled,
                 ]}
               >
-                {'\u{1F527}'} Resolve PR
+                Resolve PR
               </Text>
             )}
           </TouchableOpacity>
@@ -694,6 +694,20 @@ export default function PullRequestsScreen({ route, navigation }) {
     },
     [projectId],
   );
+
+  // Deep-link: a PR review notification tap routes here with a target
+  // `prNumber` (see AppContext `applyNotificationRoute`). Open that PR's
+  // detail view directly instead of leaving the user on the list. Keyed on
+  // the param so re-renders without a new target don't reopen after the user
+  // backs out, but a fresh notification for a different PR still routes.
+  const deepLinkedNumber = route?.params?.prNumber;
+  useEffect(() => {
+    if (deepLinkedNumber == null || !projectId) return;
+    setSelectedNumber(deepLinkedNumber);
+    setDetail(null);
+    setDetailError(null);
+    loadDetail(deepLinkedNumber);
+  }, [deepLinkedNumber, projectId, loadDetail]);
 
   const handleSelect = (pr) => {
     setSelectedNumber(pr.number);

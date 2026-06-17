@@ -19,7 +19,10 @@ import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
 import { mapBroadcastToNotification } from '../utils/ticketNotifications';
-import { routeNotificationTap } from '../utils/notificationRouting';
+import {
+  routeNotificationTap,
+  notificationRouteToNavigation,
+} from '../utils/notificationRouting';
 import { uploadAttachments } from '../utils/uploadAttachments';
 import { coalescePromiseByKey } from '../utils/coalesceInFlight';
 import { createReloadMessages } from '../utils/sessionReload';
@@ -93,6 +96,7 @@ export function AppProvider({ children }) {
   // live updates react to this ref bump via a counter. Shape:
   //   { type, projectId, thread?, threadId?, entry?, bump }
   const [lastThreadEvent, setLastThreadEvent] = useState(null);
+  const [lastDesignEvent, setLastDesignEvent] = useState(null);
   // Last `support_ticket_*` WS event for the Customer Support screen.
   //   { type, projectId, ticket?, ticketId?, bump }
   const [lastSupportTicketEvent, setLastSupportTicketEvent] = useState(null);
@@ -107,6 +111,8 @@ export function AppProvider({ children }) {
   //   { type: 'finalize_wizard_started'|'finalize_wizard_complete',
   //     projectId, sessionId?, agentId?, bump }
   const [lastFinalizeWizardEvent, setLastFinalizeWizardEvent] = useState(null);
+  // Last `finalize_run_*` WS event — drives live FinalizeButton updates without polling.
+  const [lastFinalizeRunEvent, setLastFinalizeRunEvent] = useState(null);
   // Tracks the project currently being viewed in ThreadsScreen so we can
   // suppress unread-badge increments (counts are only incremented when the
   // user isn't already looking at that project's threads list).
@@ -191,6 +197,13 @@ export function AppProvider({ children }) {
   const sessionsRef = useRef([]);
   const agentsRef = useRef([]);
   const projectsRef = useRef([]);
+  // Whether the connected server has auth configured (multi-user). Mirrors the
+  // server's `isLocalBundledServer()` inverse: when false, the server is a
+  // local/bundled single-user install with no per-user boundary, so foreground
+  // notification scoping bypasses the strict owner check. Secure default:
+  // assume auth IS configured (strict) until the `/auth/status` probe says
+  // otherwise, so we never leak owner-only banners before the probe resolves.
+  const serverAuthConfiguredRef = useRef(true);
 
   // Show an in-app (foreground) notification for the subset of broadcast
   // events that map to the desktop/Expo push taxonomy. Remote pushes are
@@ -203,7 +216,14 @@ export function AppProvider({ children }) {
     // on the broadcast (`ownerUserId`); our identity comes from the stored
     // JWT login record.
     const currentUserId = getAuthRecord()?.user?.id ?? null;
-    const mapped = mapBroadcastToNotification(data, { currentUserId });
+    const mapped = mapBroadcastToNotification(data, {
+      currentUserId,
+      projects: projectsRef.current,
+      agents: agentsRef.current,
+      // Only bypass owner-scoping on a genuine local/bundled single-user
+      // server (no auth configured) — NOT merely because we lack a user id.
+      localBypass: !serverAuthConfiguredRef.current,
+    });
     if (!mapped) return;
     try {
       const Notifications = require('expo-notifications');
@@ -672,6 +692,15 @@ export function AppProvider({ children }) {
 
       case 'finalize_run_phase_changed':
       case 'finalize_run_completed':
+        if (data.session_id) {
+          setLastFinalizeRunEvent({
+            sessionId: data.session_id,
+            runId: data.run_id,
+            status: data.status,
+            phase: data.phase ?? null,
+            bump: Date.now(),
+          });
+        }
         if (data.session_id && typeof data.status === 'string') {
           setFinalizeStatusBySession((prev) => {
             const incoming =
@@ -752,6 +781,14 @@ export function AppProvider({ children }) {
           projectId: data.projectId,
           bump: Date.now(),
         });
+        break;
+
+      case 'design_message_added':
+      case 'design_stream':
+      case 'design_thinking':
+      case 'design_updated':
+      case 'design_cancelled':
+        setLastDesignEvent({ ...data, bump: Date.now() });
         break;
 
       // ── Finalize setup wizard (Settings → Finalize) ─────────
@@ -854,18 +891,14 @@ export function AppProvider({ children }) {
         setActiveSessionId(route.sessionId);
         break;
       }
-      case 'kanban': {
-        navigatorRef.current?.('Kanban', {
-          projectId: route.projectId || undefined,
-          cardId: route.cardId || undefined,
-        });
-        break;
-      }
-      case 'threads': {
-        navigatorRef.current?.('Threads', {
-          projectId: route.projectId,
-          threadId: route.threadId || undefined,
-        });
+      case 'kanban':
+      case 'threads':
+      case 'support':
+      case 'pulls': {
+        // Navigator-driven kinds share one pure param mapper so the screen +
+        // params (including the `pulls` PR number) stay unit-testable.
+        const nav = notificationRouteToNavigation(route);
+        if (nav) navigatorRef.current?.(nav.screen, nav.params);
         break;
       }
       default:
@@ -960,6 +993,9 @@ export function AppProvider({ children }) {
       if (baseUrl) {
         try {
           const status = await getAuthStatus(baseUrl);
+          // Record whether the server enforces auth — drives notification
+          // owner-scoping's local-bypass (see `serverAuthConfiguredRef`).
+          serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
           if (status?.authConfigured && !isAuthenticated()) {
             setNeedsAuth(true);
           }
@@ -1264,6 +1300,21 @@ export function AppProvider({ children }) {
     setSessionAskMode(false);
     // Reconnect WebSocket to new org
     reconnect();
+    // Re-probe the new server's auth mode so notification owner-scoping uses
+    // the right local-bypass. Reset to the secure default (strict) first so a
+    // stale value from the previous server can never leak owner-only banners
+    // if the probe fails.
+    serverAuthConfiguredRef.current = true;
+    (async () => {
+      const probeUrl = getApiBaseUrl();
+      if (!probeUrl) return;
+      try {
+        const status = await getAuthStatus(probeUrl);
+        serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
+      } catch {
+        /* unreachable — keep the strict default */
+      }
+    })();
     // Reload data
     try {
       const [agentData, projectData, cronSessionData] = await Promise.all([
@@ -1829,9 +1880,12 @@ export function AppProvider({ children }) {
     handleAskSubmit,
     // Finalize setup wizard (Settings → Finalize)
     lastFinalizeWizardEvent,
+    lastFinalizeRunEvent,
     // Threads
     unreadThreadCounts,
     lastThreadEvent,
+    lastDesignEvent,
+    wsSend: send,
     lastSupportTicketEvent,
     unreadTicketCounts,
     refreshSupportUnreadCount,

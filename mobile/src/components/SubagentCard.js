@@ -1,6 +1,6 @@
 import React, { memo, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
 
 /**
@@ -35,7 +35,7 @@ function SubagentCard({ use, result }) {
   return (
     <View style={[styles.container, errored && styles.errored]}>
       <TouchableOpacity style={styles.header} onPress={() => setOpen((v) => !v)}>
-        <Ionicons name="git-branch-outline" size={14} color={colors.indigo400} />
+        <AppIcon name="git-branch-outline" size={14} color={colors.indigo400} />
         <Text style={styles.title}>Subagent</Text>
         <View style={[styles.pill, { borderColor: typeInfo.color }]}>
           <Text style={[styles.pillText, { color: typeInfo.color }]}>{typeInfo.label}</Text>
