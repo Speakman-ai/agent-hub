@@ -62,7 +62,6 @@ import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import CustomerSupportPage from './components/CustomerSupportPage.jsx';
-import SupportIssuesOverview from './components/SupportIssuesOverview.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import RepositoryPage from './components/RepositoryPage.jsx';
@@ -4548,14 +4547,6 @@ export default function App({ initialView } = {}) {
                     }}
                   />
                 )
-              ) : currentView === 'support-overview' ? (
-                <SupportIssuesOverview
-                  onOpenProjectSupport={(projectId) => {
-                    setSupportProjectId(projectId);
-                    setCurrentView('support');
-                    setSidebarOpen(false);
-                  }}
-                />
               ) : currentView === 'support' && supportProjectId ? (
                 <CustomerSupportPage
                   ref={supportListRef}
@@ -4602,6 +4593,11 @@ export default function App({ initialView } = {}) {
                   }}
                   onOpenExternalUrl={(url) => {
                     window.open(url, '_blank', 'noopener,noreferrer');
+                  }}
+                  onOpenProjectSupport={(projectId) => {
+                    setSupportProjectId(projectId);
+                    setCurrentView('support');
+                    setSidebarOpen(false);
                   }}
                 />
               ) : currentView === 'skills' || currentView.startsWith('skills:') ? (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   BarChart3,
   GitPullRequest,
@@ -8,7 +8,10 @@ import {
   Sparkles,
   RefreshCw,
   UserCircle,
+  LifeBuoy,
+  Folder,
 } from 'lucide-react';
+import { api } from '../utils/api.js';
 import { getApiBase, getAuthHeaders } from '../utils/connection.js';
 import { getAuthRecord } from '../utils/auth.js';
 import { relativeTime } from '../utils/time.js';
@@ -39,6 +42,7 @@ import {
  * @param {(projectId: string) => void} [onOpenKanban] — open project board
  * @param {(projectId: string) => void} [onOpenPulls] — open project PR list
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
+ * @param {(projectId: string) => void} [onOpenProjectSupport] — open a project's support queue
  */
 export default function DashboardView({
   orgId,
@@ -47,6 +51,7 @@ export default function DashboardView({
   onOpenKanban,
   onOpenPulls,
   onOpenExternalUrl,
+  onOpenProjectSupport,
 }) {
   const currentUser = getAuthRecord()?.user || null;
   const accountName = currentUser?.username || 'Account';
@@ -157,6 +162,7 @@ export default function DashboardView({
               onOpenPulls={onOpenPulls}
               onOpenExternalUrl={onOpenExternalUrl}
             />
+            <SupportIssuesPanel onOpenProjectSupport={onOpenProjectSupport} />
             <KanbanBreakdown kanban={data.kanban} />
             <RecentActivity
               items={data.recentActivity}
@@ -411,6 +417,171 @@ function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null 
         </div>
       )}
     </section>
+  );
+}
+
+// Support ticket severity → sort rank (most urgent first) and dot color.
+// Mirrors the server's ORDER BY so a client-side re-sort keeps the same order.
+const SUPPORT_SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+const SUPPORT_SEVERITY_DOT = {
+  critical: 'bg-red-500',
+  high: 'bg-orange-400',
+  medium: 'bg-amber-400',
+  low: 'bg-gray-500',
+};
+
+const SUPPORT_STATUS_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'new', label: 'New' },
+  { key: 'investigating', label: 'Investigating' },
+  { key: 'converted', label: 'Converted' },
+  { key: 'closed', label: 'Closed' },
+];
+
+// Severity-first, newest-within-severity. Exported for unit testing.
+function sortSupportBySeverity(list) {
+  return [...list].sort((a, b) => {
+    const sa = SUPPORT_SEVERITY_RANK[a.severity] ?? 4;
+    const sb = SUPPORT_SEVERITY_RANK[b.severity] ?? 4;
+    if (sa !== sb) return sa - sb;
+    return (b.created_at || '').localeCompare(a.created_at || '');
+  });
+}
+
+/**
+ * Org-wide support issues, consolidated on the dashboard. Aggregates every
+ * project's support tickets into one severity-ordered list (critical → low)
+ * via `GET /support-tickets`, with a status filter. Each row deep-links into
+ * that project's support queue through `onOpenProjectSupport`.
+ *
+ * This is the single consolidated support surface — it replaces the former
+ * top-level "Support Issues" sidebar entry. Per-project Support links (with
+ * unread badges) stay in the sidebar for drill-in.
+ *
+ * @param {(projectId: string) => void} [onOpenProjectSupport]
+ */
+function SupportIssuesPanel({ onOpenProjectSupport }) {
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .getAllSupportTickets(statusFilter === 'all' ? undefined : statusFilter)
+      .then((data) => {
+        if (cancelled) return;
+        setTickets(Array.isArray(data?.tickets) ? data.tickets : []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [statusFilter]);
+
+  const sorted = useMemo(() => sortSupportBySeverity(tickets), [tickets]);
+
+  return (
+    <section aria-label="Support issues" className="mb-8">
+      <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+          <LifeBuoy size={14} className="text-blue-400" />
+          Support issues
+        </h2>
+        <div className="flex items-center gap-1 flex-wrap justify-end">
+          {SUPPORT_STATUS_FILTERS.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setStatusFilter(f.key)}
+              aria-pressed={statusFilter === f.key}
+              className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                statusFilter === f.key
+                  ? 'bg-blue-500/20 border-blue-500/60 text-blue-200'
+                  : 'bg-gray-900 border-gray-800 text-gray-400 hover:bg-gray-800 hover:text-gray-200'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div
+        data-testid="support-issues"
+        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
+      >
+        {error ? (
+          <div className="px-4 py-6 text-center text-xs text-red-400">
+            Failed to load support issues: {error}
+          </div>
+        ) : loading ? (
+          <div className="px-4 py-6 text-center text-xs text-gray-600">Loading support issues…</div>
+        ) : sorted.length === 0 ? (
+          <div className="px-4 py-6 text-center text-xs text-gray-600">
+            No support issues. Everything is triaged.
+          </div>
+        ) : (
+          sorted.map((t) => (
+            <SupportIssueRow key={t.id} ticket={t} onOpenProjectSupport={onOpenProjectSupport} />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function SupportIssueRow({ ticket, onOpenProjectSupport }) {
+  const actionable = Boolean(ticket.project_id && onOpenProjectSupport);
+  const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
+  const dot = SUPPORT_SEVERITY_DOT[ticket.severity] || SUPPORT_SEVERITY_DOT.low;
+  const rowClass = actionable
+    ? 'w-full text-left px-4 py-3 flex items-center gap-3 transition-colors hover:bg-gray-800/50 cursor-pointer group'
+    : 'px-4 py-3 flex items-center gap-3';
+  const inner = (
+    <>
+      <span
+        className={`h-2 w-2 rounded-full flex-shrink-0 ${dot}`}
+        title={`${ticket.severity} severity`}
+        aria-hidden
+      />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-white truncate">{title}</div>
+        <div className="text-[11px] text-gray-500 truncate flex items-center gap-1">
+          <Folder size={10} className="flex-shrink-0" />
+          {ticket.project_name || ticket.project_id}
+          {ticket.status ? ` · ${ticket.status}` : ''}
+        </div>
+      </div>
+      <div className="text-[11px] text-gray-500 flex-shrink-0">
+        {ticket.created_at ? relativeTime(ticket.created_at) : ''}
+      </div>
+    </>
+  );
+  if (actionable) {
+    return (
+      <button
+        type="button"
+        data-testid="support-issue-row"
+        className={rowClass}
+        onClick={() => onOpenProjectSupport(String(ticket.project_id))}
+      >
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div data-testid="support-issue-row" className={rowClass}>
+      {inner}
+    </div>
   );
 }
 
@@ -737,3 +908,5 @@ function RecentActivity({
     </section>
   );
 }
+
+export { sortSupportBySeverity };

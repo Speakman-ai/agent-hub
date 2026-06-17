@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import DashboardView from './DashboardView.jsx';
+import DashboardView, { sortSupportBySeverity } from './DashboardView.jsx';
 
 const SAMPLE = {
   orgId: 'org-1',
@@ -119,17 +119,58 @@ const SAMPLE = {
   ],
 };
 
+// Cross-project support tickets returned by `GET /support-tickets`, which the
+// dashboard's Support issues panel fetches. Deliberately out of severity order
+// so the panel's client-side sort is exercised.
+const SUPPORT_SAMPLE = {
+  tickets: [
+    {
+      id: 'tkt-low',
+      severity: 'low',
+      status: 'new',
+      subject: 'Typo in footer',
+      project_id: 'proj-other',
+      project_name: 'Hub Server',
+      created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+    },
+    {
+      id: 'tkt-critical',
+      severity: 'critical',
+      status: 'investigating',
+      subject: 'Login is down for everyone',
+      project_id: 'proj-dash',
+      project_name: 'Hub Web',
+      created_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    },
+    {
+      id: 'tkt-high',
+      severity: 'high',
+      status: 'new',
+      subject: 'Checkout throws 500',
+      project_id: 'proj-dash',
+      project_name: 'Hub Web',
+      created_at: new Date(Date.now() - 10 * 60_000).toISOString(),
+    },
+  ],
+  projects: [
+    { id: 'proj-dash', name: 'Hub Web', count: 2 },
+    { id: 'proj-other', name: 'Hub Server', count: 1 },
+  ],
+};
+
+// A fetch stub that routes by URL: the support panel hits `/support-tickets`,
+// everything else is the org dashboard payload.
+function routedFetch(dashboardPayload = SAMPLE, supportPayload = SUPPORT_SAMPLE) {
+  return vi.fn((url) => {
+    const u = String(url);
+    const body = u.includes('/support-tickets') ? supportPayload : dashboardPayload;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  });
+}
+
 describe('DashboardView', () => {
   beforeEach(() => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve(SAMPLE),
-        }),
-      ),
-    );
+    vi.stubGlobal('fetch', routedFetch());
     try {
       if (typeof localStorage !== 'undefined') localStorage.clear();
     } catch {
@@ -149,8 +190,12 @@ describe('DashboardView', () => {
       expect(screen.getByText('Acme')).toBeInTheDocument();
     });
 
-    // fetch called against /orgs/:id/dashboard
-    expect(fetch).toHaveBeenCalledTimes(1);
+    // The org dashboard payload is fetched exactly once (the support panel
+    // makes its own separate call to /support-tickets).
+    const dashCalls = fetch.mock.calls.filter((c) =>
+      /\/orgs\/org-1\/dashboard$/.test(String(c[0])),
+    );
+    expect(dashCalls).toHaveLength(1);
     expect(fetch.mock.calls[0][0]).toMatch(/\/orgs\/org-1\/dashboard$/);
   });
 
@@ -671,5 +716,98 @@ describe('DashboardView — account profile chip', () => {
     render(<DashboardView orgId="org-1" onNavigate={onNavigate} />);
     fireEvent.click(screen.getByTitle('Account settings'));
     expect(onNavigate).toHaveBeenCalledWith('settings:account');
+  });
+});
+
+describe('sortSupportBySeverity', () => {
+  it('orders critical → high → medium → low, newest within a severity', () => {
+    const sorted = sortSupportBySeverity([
+      { id: 'a', severity: 'low', created_at: '2026-06-17T00:00:00Z' },
+      { id: 'b', severity: 'critical', created_at: '2026-06-17T00:00:00Z' },
+      { id: 'c', severity: 'high', created_at: '2026-06-17T00:00:00Z' },
+      { id: 'd', severity: 'critical', created_at: '2026-06-17T01:00:00Z' },
+    ]);
+    expect(sorted.map((t) => t.id)).toEqual(['d', 'b', 'c', 'a']);
+  });
+
+  it('does not mutate the input array', () => {
+    const input = [
+      { id: 'a', severity: 'low' },
+      { id: 'b', severity: 'critical' },
+    ];
+    sortSupportBySeverity(input);
+    expect(input.map((t) => t.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('DashboardView — Support issues panel', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', routedFetch());
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('renders aggregated tickets severity-first under the dashboard', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    let rows;
+    await waitFor(() => {
+      rows = screen.getAllByTestId('support-issue-row');
+      expect(rows).toHaveLength(3);
+    });
+
+    // Critical first, then high, then low — independent of payload order.
+    expect(rows[0]).toHaveTextContent('Login is down for everyone');
+    expect(rows[1]).toHaveTextContent('Checkout throws 500');
+    expect(rows[2]).toHaveTextContent('Typo in footer');
+    // Project name + status surface on each row.
+    expect(rows[0]).toHaveTextContent('Hub Web');
+    expect(rows[0]).toHaveTextContent('investigating');
+  });
+
+  it('deep-links a row into that project support queue', async () => {
+    const onOpenProjectSupport = vi.fn();
+    render(<DashboardView orgId="org-1" onOpenProjectSupport={onOpenProjectSupport} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('support-issue-row')).toHaveLength(3);
+    });
+
+    fireEvent.click(screen.getAllByTestId('support-issue-row')[0]);
+    expect(onOpenProjectSupport).toHaveBeenCalledWith('proj-dash');
+  });
+
+  it('refetches /support-tickets with the chosen status filter', async () => {
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('support-issue-row')).toHaveLength(3);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Investigating' }));
+
+    await waitFor(() => {
+      const statusCall = fetch.mock.calls.find((c) =>
+        /\/support-tickets\?status=investigating$/.test(String(c[0])),
+      );
+      expect(statusCall).toBeTruthy();
+    });
+  });
+
+  it('shows an empty state when there are no tickets', async () => {
+    vi.stubGlobal('fetch', routedFetch(SAMPLE, { tickets: [], projects: [] }));
+    render(<DashboardView orgId="org-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No support issues/i)).toBeInTheDocument();
+    });
+    expect(screen.queryAllByTestId('support-issue-row')).toHaveLength(0);
   });
 });
