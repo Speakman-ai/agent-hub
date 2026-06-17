@@ -10,7 +10,7 @@
  * is in-component navigation (selected sha in state) — consistent with
  * how PullRequestsPage handles its detail view.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   GitBranch,
   GitCommitHorizontal,
@@ -20,6 +20,7 @@ import {
   ChevronRight,
   Copy,
   Check,
+  FileText,
   Loader2,
   RefreshCw,
   Star,
@@ -29,6 +30,7 @@ import { api } from '../utils/api.js';
 import { relativePrTime } from '../utils/prFormatting.js';
 import { splitUnifiedDiff } from '../utils/commitDiff.js';
 import { FileDiffSection } from './FileDiffView.jsx';
+import { MarkdownContent } from './MarkdownRenderer.jsx';
 import GitHostMirrorStatusBanner from './GitHostMirrorStatusBanner.jsx';
 
 function shortSha(sha) {
@@ -185,11 +187,58 @@ function CommitRow({ commit, onOpen }) {
   );
 }
 
+/**
+ * Collapsible README card rendered above the commit list. `readme` is the
+ * `{ path, content, truncated }` payload from the git-host readme endpoint,
+ * or null when the branch has no root README (the card hides itself).
+ */
+function ReadmeCard({ readme }) {
+  const [open, setOpen] = useState(true);
+  if (!readme) return null;
+  return (
+    <div
+      className="border border-gray-700/60 rounded-lg bg-gray-900/40 overflow-hidden"
+      data-testid="repo-readme"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-900/70 transition-colors"
+        data-testid="repo-readme-toggle"
+      >
+        {open ? (
+          <ChevronDown size={14} className="text-gray-500 flex-shrink-0" />
+        ) : (
+          <ChevronRight size={14} className="text-gray-500 flex-shrink-0" />
+        )}
+        <FileText size={14} className="text-gray-500 flex-shrink-0" />
+        <span className="text-sm text-gray-200 font-mono">{readme.path}</span>
+      </button>
+      {open && (
+        <div className="border-t border-gray-700/60 px-4 py-3">
+          <div
+            className="prose prose-invert prose-sm max-w-none text-gray-300"
+            data-testid="repo-readme-content"
+          >
+            <MarkdownContent content={readme.content || ''} />
+          </div>
+          {readme.truncated && (
+            <p className="text-[11px] text-amber-400 mt-2">
+              README truncated — clone the repo to read the rest.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RepositoryPage({ projectId, project, onOpenPulls, onToast }) {
   const [tab, setTab] = useState('commits');
   const [branchData, setBranchData] = useState(null);
   const [selectedBranch, setSelectedBranch] = useState('');
   const [commits, setCommits] = useState(null);
+  const [readme, setReadme] = useState(null);
   const [openPrCount, setOpenPrCount] = useState(null);
   const [commitSha, setCommitSha] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -233,6 +282,26 @@ export default function RepositoryPage({ projectId, project, onOpenPulls, onToas
     [projectId],
   );
 
+  // README is a nice-to-have — never block the page (or surface a toast) on it.
+  // A monotonic request id guards against a slow earlier fetch (older branch)
+  // resolving after a newer branch was selected and overwriting its README.
+  const readmeReqRef = useRef(0);
+  const loadReadme = useCallback(
+    async (branch) => {
+      const reqId = ++readmeReqRef.current;
+      setReadme(null);
+      try {
+        const data = await api.getGitHostReadme(projectId, { branch: branch || undefined });
+        if (readmeReqRef.current !== reqId) return; // superseded by a later request
+        setReadme(data?.readme || null);
+      } catch {
+        if (readmeReqRef.current !== reqId) return;
+        setReadme(null);
+      }
+    },
+    [projectId],
+  );
+
   const refresh = useCallback(
     async (branch) => {
       setLoading(true);
@@ -242,18 +311,20 @@ export default function RepositoryPage({ projectId, project, onOpenPulls, onToas
         const target = branch || branches.defaultBranch || '';
         setSelectedBranch(target);
         await loadCommits(target);
+        loadReadme(target);
       } catch (err) {
         setError(String(err?.message || err || 'Failed to load repository'));
       } finally {
         setLoading(false);
       }
     },
-    [loadBranches, loadCommits],
+    [loadBranches, loadCommits, loadReadme],
   );
 
   useEffect(() => {
     setBranchData(null);
     setCommits(null);
+    setReadme(null);
     setCommitSha(null);
     refresh();
     // Open-PR count is a nice-to-have — never block the page on it.
@@ -266,6 +337,7 @@ export default function RepositoryPage({ projectId, project, onOpenPulls, onToas
   const handleBranchChange = async (branch) => {
     setSelectedBranch(branch);
     setCommitSha(null);
+    loadReadme(branch);
     try {
       await loadCommits(branch);
     } catch (err) {
@@ -372,6 +444,7 @@ export default function RepositoryPage({ projectId, project, onOpenPulls, onToas
                     ))}
                   </select>
                 )}
+                <ReadmeCard readme={readme} />
                 <div className="space-y-1.5" data-testid="repo-commit-list">
                   {(commits || []).map((c) => (
                     <CommitRow key={c.sha} commit={c} onOpen={() => setCommitSha(c.sha)} />

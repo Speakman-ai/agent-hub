@@ -118,6 +118,12 @@ export const api = {
   },
   getGitHostCommitDetail: (projectId, sha) =>
     fetchJSON(`/projects/${projectId}/git-host/commits/${encodeURIComponent(sha)}`),
+  getGitHostReadme: (projectId, { branch } = {}) => {
+    const params = new URLSearchParams();
+    if (branch) params.set('branch', branch);
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/git-host/readme${qs ? `?${qs}` : ''}`);
+  },
   // GitHub mirror sync status + on-demand reconcile (two-way sync).
   getGitHostMirror: (projectId) => fetchJSON(`/projects/${projectId}/git-host/mirror`),
   reconcileGitHostMirror: (projectId) =>

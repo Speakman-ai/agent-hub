@@ -13680,6 +13680,74 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/git-host/readme:
+    get:
+      tags:
+        - Projects
+      summary: Root README of an Agent Hub-hosted repo branch
+      description: "Returns the root-level README (path + raw markdown content) of the given branch, defaulting to the default branch. `readme` is null when the repo has no root README. Repository-page surface; 404 unless gitHost: agenthub. Content is capped at 512 KiB."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Defaults to the default branch.
+          required: false
+          description: Defaults to the default branch.
+          name: branch
+          in: query
+      responses:
+        "200":
+          description: "README content, or { readme: null } when absent."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  readme:
+                    type: object
+                    nullable: true
+                    properties:
+                      branch:
+                        type: string
+                      path:
+                        type: string
+                      content:
+                        type: string
+                      truncated:
+                        type: boolean
+                    required:
+                      - branch
+                      - path
+                      - content
+                      - truncated
+                required:
+                  - readme
+        "400":
+          description: Invalid branch name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or not Hub-hosted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/git-host/commits:
     get:
       tags:

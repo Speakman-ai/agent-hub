@@ -246,4 +246,102 @@ describe('git-host repository browsing routes', () => {
     await request.get(`/api/projects/${id}/git-host/commits/${'0'.repeat(40)}`).expect(404);
     await request.get(`/api/projects/${id}/git-host/commits/not-a-sha`).expect(404);
   });
+
+  /** Hosted project whose main has a README.md and a branch with a plain README. */
+  async function hostedProjectWithReadme(): Promise<string> {
+    const id = await freshProject();
+    await request
+      .post(`/api/projects/${id}/git-host/enable`)
+      .send({ importFrom: 'empty' })
+      .expect(202);
+    await waitForReady(id);
+
+    const bare = gitHostRepoPath(id);
+    const work = path.join(os.tmpdir(), `git-host-readme-${uuidv4().slice(0, 8)}`);
+    mkdirSync(work, { recursive: true });
+    execSync('git init --initial-branch=main', { cwd: work, stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "Tester"');
+    writeFileSync(path.join(work, 'README.md'), '# Hello Repo\n\nRendered overview.\n');
+    writeFileSync(path.join(work, 'noise.txt'), 'noise\n');
+    git(work, 'add -A');
+    git(work, 'commit -m "add readme"');
+    git(work, `remote add origin "${bare}"`);
+    git(work, 'push -u origin main');
+
+    git(work, 'checkout -b docs/plain');
+    writeFileSync(path.join(work, 'README'), 'plain text readme\n');
+    git(work, 'rm --quiet README.md');
+    git(work, 'add -A');
+    git(work, 'commit -m "plain readme"');
+    git(work, 'push -u origin docs/plain');
+    return id;
+  }
+
+  it('returns the default-branch README content and path', async () => {
+    const id = await hostedProjectWithReadme();
+    const res = await request.get(`/api/projects/${id}/git-host/readme`).expect(200);
+    expect(res.body.readme).toMatchObject({
+      branch: 'main',
+      path: 'README.md',
+      truncated: false,
+    });
+    expect(res.body.readme.content).toContain('# Hello Repo');
+  });
+
+  it('reads the README of an explicit branch and validates the branch name', async () => {
+    const id = await hostedProjectWithReadme();
+    const res = await request
+      .get(`/api/projects/${id}/git-host/readme`)
+      .query({ branch: 'docs/plain' })
+      .expect(200);
+    expect(res.body.readme).toMatchObject({ branch: 'docs/plain', path: 'README' });
+    expect(res.body.readme.content).toContain('plain text readme');
+
+    await request
+      .get(`/api/projects/${id}/git-host/readme`)
+      .query({ branch: '--upload-pack=evil' })
+      .expect(400);
+  });
+
+  it('returns { readme: null } when the branch has no root README', async () => {
+    const { id } = await hostedProjectWithHistory();
+    const res = await request.get(`/api/projects/${id}/git-host/readme`).expect(200);
+    expect(res.body).toEqual({ readme: null });
+  });
+
+  it('404s the readme endpoint for non-hosted projects', async () => {
+    const id = await freshProject();
+    await request.get(`/api/projects/${id}/git-host/readme`).expect(404);
+  });
+
+  it('truncates an oversized README by bytes and flags truncated', async () => {
+    const id = await freshProject();
+    await request
+      .post(`/api/projects/${id}/git-host/enable`)
+      .send({ importFrom: 'empty' })
+      .expect(202);
+    await waitForReady(id);
+
+    const bare = gitHostRepoPath(id);
+    const work = path.join(os.tmpdir(), `git-host-bigreadme-${uuidv4().slice(0, 8)}`);
+    mkdirSync(work, { recursive: true });
+    execSync('git init --initial-branch=main', { cwd: work, stdio: 'pipe' });
+    git(work, 'config user.email "t@example.com"');
+    git(work, 'config user.name "Tester"');
+    // Comfortably larger than the 512 KiB server cap.
+    writeFileSync(path.join(work, 'README.md'), '# Big\n'.concat('x'.repeat(700 * 1024)));
+    git(work, 'add README.md');
+    git(work, 'commit -m "big readme"');
+    git(work, `remote add origin "${bare}"`);
+    git(work, 'push -u origin main');
+
+    const res = await request.get(`/api/projects/${id}/git-host/readme`).expect(200);
+    expect(res.body.readme.truncated).toBe(true);
+    expect(res.body.readme.path).toBe('README.md');
+    expect(res.body.readme.content).toContain('# Big');
+    expect(res.body.readme.content).toContain('README truncated');
+    // Capped near 512 KiB (+ the short marker), nowhere near the 700 KiB source.
+    expect(Buffer.byteLength(res.body.readme.content, 'utf8')).toBeLessThan(520 * 1024);
+  });
 });

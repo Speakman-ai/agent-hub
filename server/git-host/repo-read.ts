@@ -8,9 +8,12 @@
  * runner from native-pr/git-read.ts.
  */
 
+import { spawn } from 'child_process';
 import { git } from '../native-pr/git-read.js';
 import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './repo-store.js';
 import config from '../config.js';
+
+const GIT_BLOB_TIMEOUT_MS = 60_000;
 
 const MAX_BRANCHES = 200;
 const MAX_COMMITS = 200;
@@ -177,6 +180,141 @@ export async function getRepoCommitDetail(
     patch,
     patchTruncated,
   };
+}
+
+/** README blob content cap — the UI renders it as markdown, so keep it sane. */
+const MAX_README_BYTES = 512 * 1024;
+
+/**
+ * Root-level README extensions, most-renderable first. An extensionless
+ * `README` is preferred over `.rst`/`.txt` (markdown renderer treats it as
+ * plain text, which is fine), but below the markdown variants.
+ */
+const README_EXT_PRIORITY = ['.md', '.markdown', '.mdown', '.mkd', '', '.rst', '.txt'];
+
+function readmeExt(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot <= 0 ? '' : name.slice(dot).toLowerCase();
+}
+
+export interface RepoReadme {
+  /** Branch the README was read from. */
+  branch: string;
+  /** Root-relative path of the chosen README file (e.g. `README.md`). */
+  path: string;
+  /** Raw file content; truncated to {@link MAX_README_BYTES} with a marker. */
+  content: string;
+  truncated: boolean;
+}
+
+interface BoundedBlob {
+  /** Up to {@link maxBytes} bytes of the blob, byte-accurately truncated. */
+  buffer: Buffer;
+  truncated: boolean;
+}
+
+/**
+ * Read a git blob (`git show <ref>`) but stop after `maxBytes` so a huge
+ * file never has to be fully buffered into memory (nor blow the generic
+ * git helper's stdout cap and come back as null). Kills the git process as
+ * soon as enough bytes have arrived. Resolves null when the ref/blob is
+ * missing (git exits non-zero with no usable output) or on timeout/error.
+ */
+function readGitBlobBounded(
+  repoPath: string,
+  ref: string,
+  maxBytes: number,
+): Promise<BoundedBlob | null> {
+  return new Promise((resolve) => {
+    const child = spawn('git', ['-C', repoPath, 'show', ref], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let truncated = false;
+    let settled = false;
+
+    const finish = (value: BoundedBlob | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!child.killed) child.kill('SIGKILL');
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => finish(null), GIT_BLOB_TIMEOUT_MS);
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      chunks.push(chunk);
+      total += chunk.length;
+      if (total > maxBytes) {
+        // Enough bytes to satisfy the cap and prove there's more — stop now
+        // rather than buffering the rest of a multi-MB file.
+        truncated = true;
+        finish({ buffer: Buffer.concat(chunks).subarray(0, maxBytes), truncated: true });
+      }
+    });
+    child.on('error', () => finish(null));
+    child.on('close', (code) => {
+      if (settled) return;
+      // Killed-by-signal (code === null) only happens after we already
+      // settled above, so a non-zero/!0 here means a real git failure.
+      if (code !== 0) return finish(null);
+      finish({ buffer: Buffer.concat(chunks), truncated });
+    });
+  });
+}
+
+/**
+ * Read the root-level README of a Hub-hosted repo's branch (defaulting to
+ * the repo default branch). Returns null when the repo, branch, or a
+ * README file is absent — never throws for "nothing to show".
+ */
+export async function readRepoReadme(
+  projectId: string,
+  branch?: string,
+  dataDir: string = config.dataDir,
+): Promise<RepoReadme | null> {
+  if (!hostedRepoExists(projectId, dataDir)) return null;
+  const repoPath = gitHostRepoPath(projectId, dataDir);
+  const targetBranch = branch || (await hostedRepoDefaultBranch(projectId, dataDir));
+  if (!targetBranch || !isSafeBranchName(targetBranch)) return null;
+
+  let names: string[];
+  try {
+    // Root entries only (no -r). Refuses unknown refs with a non-zero exit.
+    const out = await git(repoPath, ['ls-tree', '--name-only', `refs/heads/${targetBranch}`]);
+    names = out
+      .split('\n')
+      .map((n) => n.trim())
+      .filter(Boolean);
+  } catch {
+    return null; // unknown branch / empty repo
+  }
+
+  const candidates = names.filter((n) => /^readme(\.[^.]+)?$/i.test(n));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => {
+    const ai = README_EXT_PRIORITY.indexOf(readmeExt(a));
+    const bi = README_EXT_PRIORITY.indexOf(readmeExt(b));
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  const chosen = candidates[0];
+
+  const blob = await readGitBlobBounded(
+    repoPath,
+    `refs/heads/${targetBranch}:${chosen}`,
+    MAX_README_BYTES,
+  );
+  if (!blob) return null;
+  // Byte-accurate truncation already happened in readGitBlobBounded; decoding
+  // a buffer cut mid-codepoint yields a single U+FFFD, which is harmless here.
+  const decoded = blob.buffer.toString('utf8');
+  const content = blob.truncated
+    ? `${decoded}\n\n… (README truncated — clone the repo to read the rest.)`
+    : decoded;
+  return { branch: targetBranch, path: chosen, content, truncated: blob.truncated };
 }
 
 /** Branch names come from URLs — refuse anything ref-unsafe. */

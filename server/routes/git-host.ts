@@ -20,6 +20,7 @@ import {
   isSafeBranchName,
   listRepoBranches,
   listRepoCommits,
+  readRepoReadme,
 } from '../git-host/repo-read.js';
 import {
   gitHostRepoPath,
@@ -291,6 +292,38 @@ registerPath({
   },
 });
 
+const RepoReadmeSchema = z
+  .object({
+    branch: z.string(),
+    path: z.string(),
+    content: z.string(),
+    truncated: z.boolean(),
+  })
+  .nullable();
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/git-host/readme',
+  tags: ['Projects'],
+  summary: 'Root README of an Agent Hub-hosted repo branch',
+  description:
+    'Returns the root-level README (path + raw markdown content) of the given branch, defaulting to the default branch. `readme` is null when the repo has no root README. Repository-page surface; 404 unless gitHost: agenthub. Content is capped at 512 KiB.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    query: z.object({
+      branch: z.string().optional().openapi({ description: 'Defaults to the default branch.' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'README content, or { readme: null } when absent.',
+      content: jsonContent(z.object({ readme: RepoReadmeSchema })),
+    },
+    400: { description: 'Invalid branch name.', content: jsonContent(ErrorResponse) },
+    404: { description: 'Unknown project or not Hub-hosted.', content: jsonContent(ErrorResponse) },
+  },
+});
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/git-host/commits',
@@ -416,6 +449,22 @@ export default function createGitHostRoutes(deps: RouteDeps): Router {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: `Failed to list branches: ${msg.split('\n')[0]}` });
+    }
+  });
+
+  router.get('/api/projects/:projectId/git-host/readme', async (req: Request, res: Response) => {
+    const project = findHostedProjectOr404(req, res);
+    if (!project) return;
+    const branchParam = typeof req.query.branch === 'string' ? req.query.branch : '';
+    if (branchParam && !isSafeBranchName(branchParam)) {
+      return res.status(400).json({ error: 'Invalid branch name' });
+    }
+    try {
+      const readme = await readRepoReadme(project.id, branchParam || undefined);
+      res.json({ readme });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to read README: ${msg.split('\n')[0]}` });
     }
   });
 
