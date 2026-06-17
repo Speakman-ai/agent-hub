@@ -1,13 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { FinalizeRunRow, KanbanCardRow, RouteDeps, SessionRow } from '../types.js';
 
-// Regression: interactive (human-driven) sessions must NOT auto-start Finalize
-// or auto-push/auto-merge, even when the per-session automation dropdown is set
-// to "Build and Review" / "Build and Push" / "Auto Merge". Only autonomous /
-// kanban-assigned sessions (auto_ship_on_complete=1 or the linked card's
-// dispatched_by_autonomous=1) auto-fire. This pins the seam that turns off the
-// trigger "when you click auto merge or build and push" for interactive
-// sessions while keeping autonomous auto-merge intact.
+// Regression: the per-session automation level alone drives end-of-turn
+// auto-fire. Setting the dropdown to "Build and Review" / "Build and Push" /
+// "Auto Merge" is an explicit per-session opt-in that is honored at the end of
+// the turn for INTERACTIVE (human-driven) sessions just as it is for
+// autonomous / kanban-assigned ones. There is no interactive-vs-autonomous
+// gate: a session a human is driving and switches to Automerge mid-session must
+// auto-start (and auto-push/auto-merge) when its turn ends.
+//
+// Pairs with automation-runner-turn-error.test.ts (errored turns still block)
+// and routes/sessions-finalize-automation-patch.test.ts (changing the dropdown
+// does NOT itself start a run).
 
 const startFinalizeRunBackground = vi.fn(async () => ({ ok: true }));
 vi.mock('./trigger-run.js', () => ({
@@ -16,15 +20,13 @@ vi.mock('./trigger-run.js', () => ({
 const runFinalizePush = vi.fn(async () => ({ ok: true, prUrl: 'https://pr' }));
 vi.mock('./push-run.js', () => ({ runFinalizePush: () => runFinalizePush() }));
 
-// The card surfaced for the session — controls the dispatched_by_autonomous arm
-// of shouldAutoShipSessionAtEnd. Mutated per test.
 let mockCard: Partial<KanbanCardRow> = { id: 'c1' };
 vi.mock('./ensure-kanban-card.js', () => ({
   ensureKanbanCardForSession: () => ({ card: mockCard }),
 }));
 
-// Force levels that WOULD auto-fire if the session were allowed to — so the
-// only thing under test is the interactive-vs-autonomous gate.
+// Level resolves to "merge" so auto-start AND auto-push fire when allowed —
+// the only thing under test is that nothing gates them on interactive-ness.
 vi.mock('./automation.js', () => ({
   resolveSessionFinalizeAutomation: () => 'merge',
   shouldAutoStartFinalize: () => true,
@@ -68,23 +70,23 @@ function wireRouteDeps(session: SessionRow): void {
   } as unknown as RouteDeps);
 }
 
-describe('finalize automation — interactive-session gate', () => {
+describe('finalize automation — level drives end-of-turn auto-fire', () => {
   beforeEach(() => {
     startFinalizeRunBackground.mockClear();
     runFinalizePush.mockClear();
     mockCard = { id: 'c1' };
   });
 
-  it('does NOT auto-start Finalize for an interactive session', async () => {
+  it('auto-starts Finalize for an interactive session when the level allows it', async () => {
     wireRouteDeps(makeSession({ auto_ship_on_complete: 0 }));
     await maybeAutoStartFinalizeForSession('s1');
-    expect(startFinalizeRunBackground).not.toHaveBeenCalled();
+    expect(startFinalizeRunBackground).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT auto-push a ready_to_push run for an interactive session', async () => {
+  it('auto-pushes a ready_to_push run for an interactive session when the level allows it', async () => {
     wireRouteDeps(makeSession({ auto_ship_on_complete: 0 }));
     await maybeAutoPushReadyFinalizeRun({ sessionId: 's1', runId: 'run1' });
-    expect(runFinalizePush).not.toHaveBeenCalled();
+    expect(runFinalizePush).toHaveBeenCalledTimes(1);
   });
 
   it('auto-starts for an autonomous-assigned session (auto_ship_on_complete=1)', async () => {

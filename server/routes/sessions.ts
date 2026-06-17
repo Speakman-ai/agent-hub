@@ -95,8 +95,6 @@ import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
 } from '../session-checkpoint-rewind.js';
-import { maybeAutoStartFinalizeForSession } from '../finalize/automation-runner.js';
-import { shouldAutoStartFinalize } from '../finalize/automation.js';
 import { computeSessionState } from '../session-state.js';
 import { enrichSessionWithAgents } from '../session-agents.js';
 import { getDesign } from '../designs-store.js';
@@ -136,14 +134,6 @@ function parseBody<T extends z.ZodTypeAny>(
     return undefined;
   }
   return result.data;
-}
-
-function isSessionWaitingForUserInput(stmts: RouteDeps['stmts'], session: SessionRow): boolean {
-  try {
-    return computeSessionState(stmts, session.id) === 'waiting_for_user_input';
-  } catch {
-    return session.state === 'waiting_for_user_input';
-  }
 }
 
 function closeBrowserBestEffort(sessionId: string): void {
@@ -1072,21 +1062,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       stmts.updateSessionMaxTurns.run(parsed.max_turns, sessionId);
     }
     if (parsed.finalize_automation !== undefined) {
+      // Persist the chosen level only. Changing the dropdown must NOT start a
+      // Finalize run on its own — the level is honored at the next end-of-turn
+      // auto-commit (see maybeAutoStartFinalizeForSession via auto-git.ts).
       stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
-      const updatedSession = stmts.getSession.get(sessionId) as SessionRow | undefined;
-      if (
-        updatedSession &&
-        shouldAutoStartFinalize(parsed.finalize_automation) &&
-        isSessionWaitingForUserInput(stmts, updatedSession)
-      ) {
-        void maybeAutoStartFinalizeForSession(sessionId).catch((err: unknown) => {
-          console.warn(
-            `[sessions] finalize automation trigger failed for session=${sessionId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-      }
     }
     const session = stmts.getSession.get(sessionId) as SessionRow;
     const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent);

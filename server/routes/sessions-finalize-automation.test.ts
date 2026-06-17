@@ -87,10 +87,14 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
     mocks.maybeAutoStartFinalizeForSession.mockResolvedValue(undefined);
   });
 
+  // Regression: changing the Build / Build&Push / Automerge dropdown must
+  // persist the chosen level but NEVER start a Finalize run on its own. The
+  // level is honored at the next end-of-turn auto-commit (auto-git.ts →
+  // maybeAutoStartFinalizeForSession), not the moment the operator picks it.
   it.each(['review', 'push', 'merge'] as const)(
-    'starts Finalize automation when selecting %s on a session waiting for user input',
+    'persists %s without starting Finalize on a session waiting for user input',
     async (level) => {
-      const { app } = makeApp();
+      const { app, stmts } = makeApp();
 
       const res = await request(app)
         .patch('/api/sessions/sess-1')
@@ -98,11 +102,12 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
         .expect(200);
 
       expect(res.body.finalize_automation).toBe(level);
-      expect(mocks.maybeAutoStartFinalizeForSession).toHaveBeenCalledWith('sess-1');
+      expect(stmts.updateSessionFinalizeAutomation.run).toHaveBeenCalledWith(level, 'sess-1');
+      expect(mocks.maybeAutoStartFinalizeForSession).not.toHaveBeenCalled();
     },
   );
 
-  it('does not start Finalize automation when selecting Auto Merge during an active turn', async () => {
+  it('does not start Finalize when selecting Auto Merge during an active turn', async () => {
     const { app } = makeApp({
       session: { state: 'working' },
       activeTaskStatus: 'running',
@@ -117,7 +122,7 @@ describe('PATCH /api/sessions/:sessionId finalize_automation', () => {
     expect(mocks.maybeAutoStartFinalizeForSession).not.toHaveBeenCalled();
   });
 
-  it('does not start Finalize automation when selecting manual Build mode', async () => {
+  it('does not start Finalize when selecting manual Build mode', async () => {
     const { app } = makeApp();
 
     const res = await request(app)
