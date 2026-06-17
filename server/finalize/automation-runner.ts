@@ -8,6 +8,7 @@ import type { FinalizeRunRow, KanbanCardRow, Project, RouteDeps, SessionRow } fr
 import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
 import { autoMergeReadyPr } from './auto-merge-ready-pr.js';
+import { shouldAutoShipSessionAtEnd } from '../session-ship.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
@@ -86,6 +87,37 @@ function sessionTurnErrorBlocksAutomation(
   return true;
 }
 
+/**
+ * Fire-and-forget Finalize automation runs ONLY for autonomous-dispatch /
+ * kanban-assigned sessions — the ones flagged to auto-ship at session end
+ * (`sessions.auto_ship_on_complete = 1`) or whose linked card was dispatched
+ * by the autonomous loop (`kanban_cards.dispatched_by_autonomous = 1`).
+ *
+ * Interactive (human-driven) sessions never auto-start, auto-push, or
+ * auto-merge — even when the per-session automation dropdown is set to
+ * "Build and Review" / "Build and Push" / "Auto Merge". Those sessions go
+ * through the single manual Finalize button instead. This is the seam that
+ * "turns off the trigger when you click auto merge or build and push" for
+ * interactive sessions while keeping autonomous auto-merge intact.
+ *
+ * Returns true when the session may auto-fire; logs and returns false for
+ * interactive sessions.
+ */
+function sessionAllowsFinalizeAutoFire(
+  session: SessionRow,
+  card: KanbanCardRow,
+  sessionId: string,
+  action: 'auto-start' | 'auto-push',
+): boolean {
+  if (shouldAutoShipSessionAtEnd(session, card)) return true;
+  console.log(
+    `[finalize-automation] Skipping ${action} session=${sessionId}: interactive session ` +
+      `(not autonomous/assigned). Auto-fire is disabled for interactive sessions — ` +
+      `use the manual Finalize button.`,
+  );
+  return false;
+}
+
 async function loadSessionContext(sessionId: string): Promise<{
   session: SessionRow;
   project: Project;
@@ -122,6 +154,10 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   // Never auto-start Finalize on it — wait for a clean turn (the transient
   // auto-retry in chat.ts usually provides one) or an explicit manual run.
   if (sessionTurnErrorBlocksAutomation(ctx.session, sessionId, 'auto-start')) return;
+
+  // Interactive sessions never auto-fire — the operator drives them through the
+  // single manual Finalize button. Only autonomous/assigned sessions auto-start.
+  if (!sessionAllowsFinalizeAutoFire(ctx.session, ctx.card, sessionId, 'auto-start')) return;
 
   const level = resolveSessionFinalizeAutomation(ctx.session);
   if (!shouldAutoStartFinalize(level)) return;
@@ -164,6 +200,10 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   // Same fail-closed gate as auto-start: a ready_to_push run parked before
   // the errored turn must not auto-push/auto-merge over it.
   if (sessionTurnErrorBlocksAutomation(ctx.session, args.sessionId, 'auto-push')) return;
+
+  // Interactive sessions never auto-push/auto-merge — even a manually-started
+  // run that parks at ready_to_push waits for the operator's explicit push.
+  if (!sessionAllowsFinalizeAutoFire(ctx.session, ctx.card, args.sessionId, 'auto-push')) return;
 
   const level = resolveSessionFinalizeAutomation(ctx.session);
   if (!shouldAutoPushAfterReady(level)) return;

@@ -40,6 +40,8 @@ function makeSession(overrides: Partial<SessionRow>): SessionRow {
     agent_id: 'a1',
     worktree_path: '/wt',
     last_turn_error: null,
+    // Autonomous/assigned session — only these auto-fire Finalize.
+    auto_ship_on_complete: 1,
     ...overrides,
   } as unknown as SessionRow;
 }
