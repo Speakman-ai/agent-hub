@@ -99,6 +99,73 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Slack Bot Framework**: `@slack/bolt` for multi-agent Slack integration
 - **Cron Scheduling**: `node-cron` for automated task execution
 
+## Working Inside the Agent Hub App (Runtime Integration)
+
+When a Claude Code (or Cursor / Codex / Gemini) session runs **inside** Agent
+Hub, the app drives it through a small protocol layered on top of the normal
+CLI. None of this applies to a plain `claude` invocation in a terminal — it
+only matters for sessions the Hub spawns. Most of it is also injected into the
+runtime system prompt; this section documents it so the contract lives in the
+repo too.
+
+### Env contract (server-injected)
+The server injects these into every spawned session; scripts and API calls
+read them. Never hardcode ports or keys.
+
+| Variable | Purpose |
+| --- | --- |
+| `AGENT_HUB_URL` | REST/WS base (defaults to loopback `http://127.0.0.1:<port>`; remote workers use `AGENT_HUB_AGENT_URL` / `AGENT_HUB_PUBLIC_URL`) |
+| `AGENT_HUB_API_KEY` | Sent as `x-api-key`; break-glass key treated as Owner for every org |
+| `AGENT_HUB_SESSION_ID` | This session's id — pass when creating cards to auto-link them to the session |
+| `PROJECT_ID` | Project slug, e.g. `agent-hub` |
+
+### Control blocks — naked tags vs fenced
+The app parses two **different** shapes out of your message text. Getting the
+wrapping wrong means the block renders as inert text instead of being executed:
+
+- **Naked XML tags** (must NOT be inside a code fence):
+  - `<agenthub:skill>{"name":"agent-hub-kanban","reason":"…"}</agenthub:skill>` — load a registered skill into the next turn.
+  - `<agenthub:react>{"actions":[…]}</agenthub:react>` — run a host-mediated ReAct action mid-turn (see tools below).
+  - `<agenthub:close-card>{"reason":"duplicate|already-done","note":"…"}</agenthub:close-card>` — auto-move the session's linked card to Done with an explanatory comment.
+- **Fenced code block** tagged ```` ```agenthub:ask ````: render a rich multi-choice picker (1–4 questions, 2–4 options each). The user's reply comes back as a matching `agenthub:ask:answer` fenced block. Do **not** use an XML tag for this one.
+
+### ReAct tools (`<agenthub:react>` actions)
+The host executes each action, appends a compact observation, and may
+auto-continue the same turn:
+
+- `wiki` (`query`) — hybrid retrieval over the per-project wiki (FTS5).
+- `skill` (`name`) — load a registered skill.
+- `web` (`query`) — live web search (requires `SERPER_API_KEY` / `WEB_SEARCH_API_KEY` on the server).
+- `browser` (`op` + operands) — host Chromium via Stagehand (`navigate`, `click`, `type`, `extract`, `screenshot`, `read_page`, …). Egress policy blocks private/loopback/metadata targets on explicit `navigate` and `back`/`forward`, but not on every act-driven transition — plan isolation accordingly.
+- `preview` (`op` + operands) — observe and drive **this session's dev preview** after a human clicks **Start preview** (`state`, `logs`, `screenshot`, `navigate` by route, …). Agents cannot start or stop the preview.
+
+### Talking to the Hub API — use the bundled wrappers, not raw curl
+The kanban / wiki / sessions / board helper scripts (`server.sh`, `board.sh`,
+`kanban-create-card.sh`, `kanban-move-card.sh`, `wiki-search.sh`,
+`log-tool-error.sh`, `artifacts.sh`, …) ship with the **bundled `agent-hub`
+skill**, not in this repo's `scripts/`. The Hub injects them into the session
+workspace. They handle base URL + auth for you. **Do not hand-roll `curl`
+against the board/wiki API** — JWT-enabled deployments return `401` without the
+`x-api-key` header. If you need a script that isn't loaded, load the skill via
+`<agenthub:skill>{"name":"agent-hub"}</agenthub:skill>`. The full request/
+response shapes are published at the OpenAPI page generated from the Zod
+registry.
+
+### Session worktree vs project checkout
+Each session with a worktree is a dedicated checkout under
+`~/.agent-hub/workspaces/<project>/session-<id>`, on the branch
+`agent-hub/<agentId>/session-<id>`. **All commits that should ship must happen
+in this session worktree.** The shared project checkout under
+`~/projects/<project>` (or `/app`) is a *different* working copy — commits
+there do not enable Finalize on the session. Never `cd` out of the worktree to
+commit. See "Git Workflow — One Session, One Branch" below.
+
+### Self-reporting
+Create a kanban card when picking up significant work (pass
+`session_id: $AGENT_HUB_SESSION_ID`), move it as state changes, and search /
+update the project wiki rather than duplicating pages. When a tool failure
+blocks you, append a one-line record with `log-tool-error.sh`.
+
 ## Git Workflow — One Session, One Branch
 
 **The platform already created your branch. Do not create another one.**
