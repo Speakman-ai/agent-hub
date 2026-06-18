@@ -538,6 +538,13 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
+  // Clear a card's assignee and detach any linked session. Mirrors the web
+  // client's `api.unassignCard`.
+  unassignCard: (projectId, cardId) =>
+    fetchJSON(`/projects/${projectId}/board/cards/${cardId}/unassign`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
   getCardComments: (projectId, cardId) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/comments`),
   addCardComment: (projectId, cardId, data) =>

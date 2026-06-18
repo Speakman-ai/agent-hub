@@ -26,6 +26,22 @@ export function hasActiveSession(card) {
 }
 
 /**
+ * Extract the new session id from a `POST /board/cards/:id/assign` response,
+ * normalising across response shapes. The server today returns
+ * `{ sessionId, card }`, but the embedded card row uses `session_id`; tolerate
+ * both (and a future top-level `session_id`) so the caller can reliably set the
+ * active session and navigate to Chat. Returns null when no session id is
+ * present.
+ *
+ * @param {{ sessionId?: string, session_id?: string, card?: { session_id?: string } } | null | undefined} result
+ * @returns {string | null}
+ */
+export function assignedSessionId(result) {
+  if (!result || typeof result !== 'object') return null;
+  return result.sessionId || result.session_id || result.card?.session_id || null;
+}
+
+/**
  * Scope an app-wide agent list to a single project. Agents are loaded
  * globally (every project the user can view) and carry a `projectId`; the
  * assignee picker should only offer agents that belong to the card's own

@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge, parseDate } from './time.js';
+import {
+  relativeTime,
+  formatElapsed,
+  relativeFuture,
+  daysUntilPurge,
+  parseDate,
+  shortDate,
+} from './time.js';
 
 describe('parseDate', () => {
   it('returns null for falsy input', () => {
@@ -66,6 +73,32 @@ describe('formatElapsed', () => {
 
   it('handles exact minutes', () => {
     expect(formatElapsed(180)).toBe('3m 0s');
+  });
+});
+
+describe('shortDate', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-18T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('omits the year for a same-year date', () => {
+    const out = shortDate('2026-06-18');
+    expect(out).not.toMatch(/2026/);
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('includes the year for a prior-year date', () => {
+    expect(shortDate('2024-01-02')).toMatch(/2024/);
+  });
+
+  it('returns empty string for blank/unparseable input', () => {
+    expect(shortDate('')).toBe('');
+    expect(shortDate(null)).toBe('');
+    expect(shortDate('not-a-date')).toBe('');
   });
 });
 

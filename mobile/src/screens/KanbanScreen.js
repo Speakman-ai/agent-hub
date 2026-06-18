@@ -38,8 +38,14 @@ import {
   filterAgentsByProject,
   validModelsForAgent,
   engineEntriesWithModels,
+  assignedSessionId,
 } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
+import { cardMetaModel, priorityMeta, cardShareUrl, toggleLabelCsv } from '../utils/kanbanCard';
+import { getServerBaseUrl } from '../utils/config';
+import { buildCardActions } from '../utils/kanbanCardActions';
+import { shortDate } from '../utils/time';
+import { copyToClipboard } from '../utils/clipboard';
 import {
   KANBAN_PAGE_SIZE,
   appendCardPage,
@@ -62,14 +68,52 @@ const PRIORITY_OPTIONS = [
   { value: 'low', label: 'Low', color: '#6B7280' },
 ];
 
-function getPriorityColor(priority) {
-  const opt = PRIORITY_OPTIONS.find((p) => p.value === priority);
-  return opt ? opt.color : colors.gray500;
+/**
+ * Linear-style priority glyph (mirrors the web PriorityIcon). Urgent renders a
+ * filled square; the other levels render an ascending three-bar signal with
+ * `filled` bars lit.
+ */
+function PriorityGlyph({ priority }) {
+  const meta = priorityMeta(priority);
+  if (meta.value === 'urgent') {
+    return (
+      <View
+        style={[styles.priUrgent, { backgroundColor: meta.color }]}
+        testID="card-priority-icon"
+      />
+    );
+  }
+  const filled = meta.value === 'high' ? 3 : meta.value === 'low' ? 1 : 2;
+  return (
+    <View style={styles.priBars} testID="card-priority-icon">
+      {[0, 1, 2].map((i) => (
+        <View
+          key={i}
+          style={[
+            styles.priBar,
+            { height: 4 + i * 3, backgroundColor: i < filled ? meta.color : colors.gray700 },
+          ]}
+        />
+      ))}
+    </View>
+  );
 }
 
-function getPriorityLabel(priority) {
-  const opt = PRIORITY_OPTIONS.find((p) => p.value === priority);
-  return opt ? opt.label : priority || 'None';
+/**
+ * Assignee avatar: initials over a stable hashed colour. A small dot + ring
+ * marks an active linked session (mirrors the web CardAvatar).
+ */
+function CardAvatar({ initials, avatar, active }) {
+  if (!initials) return null;
+  return (
+    <View
+      style={[styles.avatar, { backgroundColor: avatar.bg }, active && styles.avatarActive]}
+      testID="card-assignee-avatar"
+    >
+      <Text style={[styles.avatarText, { color: avatar.text }]}>{initials}</Text>
+      {active && <View style={styles.avatarDot} />}
+    </View>
+  );
 }
 
 export default function KanbanScreen({ route, navigation }) {
@@ -97,8 +141,11 @@ export default function KanbanScreen({ route, navigation }) {
   const [newCardTitle, setNewCardTitle] = useState('');
   const [newCardPriority, setNewCardPriority] = useState('medium');
   const [selectedCard, setSelectedCard] = useState(null);
-  const [showMoveModal, setShowMoveModal] = useState(false);
-  const [moveCardTarget, setMoveCardTarget] = useState(null);
+  // Long-press card action sheet. `actionCard` is the long-pressed card;
+  // `actionSubmenu` is the selected top-level action whose options are shown in
+  // the second sheet (null = showing the top-level action list).
+  const [actionCard, setActionCard] = useState(null);
+  const [actionSubmenu, setActionSubmenu] = useState(null);
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState('');
   const [saving, setSaving] = useState(false);
@@ -663,33 +710,152 @@ export default function KanbanScreen({ route, navigation }) {
     }
   };
 
-  // Stable across renders (only state setters) — see handleOpenDetail.
+  // Long-press opens the card action sheet (mobile equivalent of the web
+  // right-click CardContextMenu). Stable across renders (only state setters).
   const handleLongPressCard = useCallback((card) => {
-    setMoveCardTarget(card);
-    setShowMoveModal(true);
+    setActionCard(card);
+    setActionSubmenu(null);
   }, []);
+
+  const closeActionSheet = useCallback(() => {
+    setActionCard(null);
+    setActionSubmenu(null);
+  }, []);
+
+  // Keep the open action sheet bound to the latest board state so option
+  // `checked` flags (notably the Labels submenu, which stays open for repeated
+  // toggles) reflect optimistic/reconciled updates instead of the stale
+  // long-pressed snapshot.
+  useEffect(() => {
+    if (!actionCard) return;
+    const latest = cards.find((c) => c.id === actionCard.id);
+    if (latest && latest !== actionCard) setActionCard(latest);
+  }, [cards, actionCard]);
+
+  // --- Long-press quick actions (no detail panel) ---
+  // Each handler operates on the long-pressed card, applies an optimistic
+  // update where cheap, persists, then reconciles against the eventual
+  // `kanban_update` broadcast. Failures fall back to a reconcile.
+  const quickPatchCard = useCallback(
+    async (card, patch) => {
+      setCards((prev) => prev.map((c) => (c.id === card.id ? { ...c, ...patch } : c)));
+      try {
+        await api.updateKanbanCard(projectId, card.id, patch);
+        reconcileBoard();
+      } catch {
+        reconcileBoard();
+      }
+    },
+    [projectId, reconcileBoard],
+  );
+
+  const quickToggleLabel = useCallback(
+    (card, label) => {
+      // The Labels submenu stays open for repeated toggles, but `card` is the
+      // original long-pressed object whose `labels` go stale after the first
+      // toggle. Read the latest persisted labels from current state so a second
+      // toggle accumulates instead of overwriting the first.
+      const latest = cardsRef.current.find((c) => c.id === card.id) || card;
+      quickPatchCard(card, { labels: toggleLabelCsv(latest.labels, label) });
+    },
+    [quickPatchCard],
+  );
+
+  const quickAssign = useCallback(
+    async (card, agentId, agentName) => {
+      try {
+        const result = await api.assignCard(projectId, card.id, agentId);
+        await loadBoard();
+        const newSessionId = assignedSessionId(result);
+        if (newSessionId && navigation) {
+          setActiveAgentId(agentId);
+          setActiveSessionId(newSessionId);
+          navigation.navigate('Chat');
+        }
+      } catch {
+        Alert.alert('Error', `Failed to assign to ${agentName || 'agent'}`);
+      }
+    },
+    [projectId, loadBoard, navigation, setActiveAgentId, setActiveSessionId],
+  );
+
+  const quickUnassign = useCallback(
+    async (card) => {
+      try {
+        await api.unassignCard(projectId, card.id);
+        reconcileBoard();
+      } catch {
+        Alert.alert('Error', 'Failed to unassign');
+      }
+    },
+    [projectId, reconcileBoard],
+  );
+
+  const quickLinkEpic = useCallback(
+    async (card, epicId) => {
+      setCards((prev) =>
+        prev.map((c) => (c.id === card.id ? { ...c, epic_id: epicId || null } : c)),
+      );
+      try {
+        await api.linkCardToEpic(projectId, card.id, epicId || null);
+        reconcileBoard();
+      } catch {
+        reconcileBoard();
+      }
+    },
+    [projectId, reconcileBoard],
+  );
+
+  const quickDelete = useCallback(
+    (card) => {
+      Alert.alert('Delete Card', `Delete "${card.title}"?`, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            // Optimistically remove, snapshotting the prior list so a failed
+            // delete restores the card instead of leaving it silently gone.
+            let prevCards = null;
+            setCards((prev) => {
+              prevCards = prev;
+              return prev.filter((c) => c.id !== card.id);
+            });
+            try {
+              await api.deleteKanbanCard(projectId, card.id);
+              reconcileBoard();
+            } catch {
+              if (prevCards) setCards(prevCards);
+              Alert.alert('Error', 'Failed to delete card');
+            }
+          },
+        },
+      ]);
+    },
+    [projectId, reconcileBoard],
+  );
+
 
   const commitMoveCard = async (cardId, targetColumnId) => {
     try {
       await api.moveKanbanCard(projectId, cardId, { columnId: targetColumnId });
-      setShowMoveModal(false);
-      setMoveCardTarget(null);
       await loadBoard();
     } catch {
       Alert.alert('Error', 'Failed to move card');
     }
   };
 
-  const handleMoveCard = async (targetColumnId) => {
-    if (!moveCardTarget) return;
+  // Move a specific card into a column, with a soft blocker-confirm gate. The
+  // API allows the move either way; the alert only warns. Used by the action
+  // sheet's Status submenu.
+  const handleMoveCardFor = (card, targetColumnId) => {
+    if (!card || card.column_id === targetColumnId) return;
     const targetColumn = columns.find((c) => c.id === targetColumnId);
-    // Soft-warn when moving a blocked card into a sensitive column. The API
-    // will still allow the move either way.
-    if (shouldConfirmMove(moveCardTarget, moveCardTarget.column_id, targetColumn)) {
-      const unresolved = moveCardTarget.blockers.filter((b) => !b.done);
+    if (shouldConfirmMove(card, card.column_id, targetColumn)) {
+      const unresolved = card.blockers.filter((b) => !b.done);
       Alert.alert(
         'Card is still blocked',
-        `"${moveCardTarget.title}" is blocked by ${unresolved.length} unresolved card(s):\n\n` +
+        `"${card.title}" is blocked by ${unresolved.length} unresolved card(s):\n\n` +
           unresolved.map((b) => `• ${b.title}`).join('\n') +
           `\n\nMove into ${targetColumn?.name || 'column'} anyway?`,
         [
@@ -697,14 +863,82 @@ export default function KanbanScreen({ route, navigation }) {
           {
             text: 'Move anyway',
             style: 'destructive',
-            onPress: () => commitMoveCard(moveCardTarget.id, targetColumnId),
+            onPress: () => commitMoveCard(card.id, targetColumnId),
           },
         ],
       );
       return;
     }
-    await commitMoveCard(moveCardTarget.id, targetColumnId);
+    commitMoveCard(card.id, targetColumnId);
   };
+
+  // Single dispatcher for an action-sheet option's `action` descriptor. Plain
+  // function (re-created each render) — only used by the action-sheet JSX, not
+  // passed to a memoised child, so stability doesn't matter.
+  const runCardAction = (card, action) => {
+    if (!card || !action) return;
+    switch (action.type) {
+      case 'move':
+        closeActionSheet();
+        handleMoveCardFor(card, action.columnId);
+        break;
+      case 'setPriority':
+        closeActionSheet();
+        quickPatchCard(card, { priority: action.priority });
+        break;
+      case 'assign':
+        closeActionSheet();
+        quickAssign(card, action.agentId, action.name);
+        break;
+      case 'unassign':
+        closeActionSheet();
+        quickUnassign(card);
+        break;
+      case 'toggleLabel':
+        // Keep the sheet open so several labels can be toggled in a row.
+        quickToggleLabel(card, action.label);
+        break;
+      case 'linkEpic':
+        closeActionSheet();
+        quickLinkEpic(card, action.epicId);
+        break;
+      case 'copyId': {
+        closeActionSheet();
+        const meta = cardMetaModel(card, { board, epics });
+        copyToClipboard(meta.shortLabel || String(card.id));
+        break;
+      }
+      case 'copyLink': {
+        closeActionSheet();
+        // Canonical shareable deep-link (same format as the web card menu).
+        // Falls back to the card id when no server URL is configured yet, so
+        // we never copy a non-pasteable relative path.
+        const link = cardShareUrl(getServerBaseUrl(), projectId, card.id);
+        copyToClipboard(link || String(card.id));
+        break;
+      }
+      case 'delete':
+        closeActionSheet();
+        quickDelete(card);
+        break;
+      default:
+        closeActionSheet();
+    }
+  };
+
+  // Distinct labels across all loaded cards — drives the Labels action submenu.
+  const allLabels = useMemo(() => {
+    const set = new Set();
+    for (const c of cards) {
+      if (!c.labels) continue;
+      const arr = typeof c.labels === 'string' ? c.labels.split(',') : c.labels;
+      for (const l of arr) {
+        const t = String(l).trim();
+        if (t) set.add(t);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [cards]);
 
   const refreshBoardAndSelected = async () => {
     const preserve = loadedCountsByColumn(cardsRef.current);
@@ -771,57 +1005,97 @@ export default function KanbanScreen({ route, navigation }) {
   }, [activeColumn, paginationActive, loadMoreColumn]);
 
   const renderCard = useCallback(
-    ({ item: card }) => (
-      <TouchableOpacity
-        style={styles.card}
-        onPress={() => handleOpenDetail(card)}
-        onLongPress={() => handleLongPressCard(card)}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.cardTitle}>{card.title}</Text>
-        <View style={styles.cardMeta}>
-          <View style={[styles.priorityDotSmall, { backgroundColor: getPriorityColor(card.priority) }]} />
-          <Text style={[styles.cardPriorityText, { color: getPriorityColor(card.priority) }]}>
-            {getPriorityLabel(card.priority)}
-          </Text>
-          {hasUnresolvedBlockers(card) && (
-            <View style={styles.blockerBadge} testID="card-blocker-badge">
-              <Text style={styles.blockerBadgeText}>
-                {'Lock '}{card.blockers.filter((b) => !b.done).length}
+    ({ item: card }) => {
+      const meta = cardMetaModel(card, { board, epics });
+      const dateLabel = shortDate(card.created_at);
+      const hasFooter = meta.epic || meta.labels.length > 0 || dateLabel || meta.initials;
+      return (
+        <TouchableOpacity
+          style={[styles.card, { borderLeftWidth: 3, borderLeftColor: meta.priority.color }]}
+          onPress={() => handleOpenDetail(card)}
+          onLongPress={() => handleLongPressCard(card)}
+          activeOpacity={0.7}
+        >
+          {/* Header: priority glyph + short id (left) · status glyphs (right). */}
+          <View style={styles.cardHeader}>
+            <PriorityGlyph priority={meta.priority.value} />
+            {meta.shortLabel && (
+              <Text style={styles.cardShortId} testID="card-short-id">
+                {meta.shortLabel}
               </Text>
-            </View>
-          )}
-          {card.assignee ? (
-            <Text style={styles.cardAssignee} numberOfLines={1}>{card.assignee}</Text>
-          ) : null}
-        </View>
-        {card.epic_id && (() => {
-          const cardEpic = findEpic(epics, card.epic_id);
-          if (!cardEpic) return null;
-          return (
-            <View style={styles.cardEpicRow}>
-              <View style={[styles.epicDot, { backgroundColor: cardEpic.color || DEFAULT_EPIC_COLOR }]} />
+            )}
+            <View style={{ flex: 1 }} />
+            {meta.blockerCount > 0 && (
+              <View style={styles.blockerBadge} testID="card-blocker-badge">
+                <Text style={styles.blockerBadgeText}>
+                  {'🔒'} {meta.blockerCount}
+                </Text>
+              </View>
+            )}
+            {meta.prNumber && (
+              <Text style={styles.prChip} numberOfLines={1}>
+                PR {meta.prNumber}
+              </Text>
+            )}
+            {meta.review && (
               <Text
-                style={[styles.cardEpicText, { color: cardEpic.color || DEFAULT_EPIC_COLOR }]}
+                style={[styles.reviewGlyph, { color: meta.review.color }]}
+                testID="card-review-glyph"
                 numberOfLines={1}
               >
-                {epicDropdownLabel(cardEpic)}
+                {meta.review.label}
               </Text>
-            </View>
-          );
-        })()}
-        {card.labels && (typeof card.labels === 'string' ? card.labels : '').length > 0 && (
-          <View style={styles.labelsRow}>
-            {(typeof card.labels === 'string' ? card.labels.split(',').map((l) => l.trim()).filter(Boolean) : card.labels).map((label, i) => (
-              <View key={i} style={styles.labelChip}>
-                <Text style={styles.labelChipText}>{label}</Text>
-              </View>
-            ))}
+            )}
           </View>
-        )}
-      </TouchableOpacity>
-    ),
-    [epics, handleOpenDetail, handleLongPressCard],
+
+          {/* Title */}
+          <Text style={styles.cardTitle} testID="card-title">
+            {card.title}
+          </Text>
+
+          {/* Footer: epic + labels (left) · created date + avatar (right). */}
+          {hasFooter && (
+            <View style={styles.cardFooter}>
+              <View style={styles.cardFooterLeft}>
+                {meta.epic && (
+                  <View style={styles.cardEpicRow}>
+                    <View
+                      style={[
+                        styles.epicDot,
+                        { backgroundColor: meta.epic.color || DEFAULT_EPIC_COLOR },
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.cardEpicText,
+                        { color: meta.epic.color || DEFAULT_EPIC_COLOR },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {epicDropdownLabel(meta.epic)}
+                    </Text>
+                  </View>
+                )}
+                {meta.labels.map((label, i) => (
+                  <View key={i} style={styles.labelChip}>
+                    <Text style={styles.labelChipText}>{label}</Text>
+                  </View>
+                ))}
+              </View>
+              <View style={styles.cardFooterRight}>
+                {dateLabel ? (
+                  <Text style={styles.cardDate} testID="card-created-date">
+                    {dateLabel}
+                  </Text>
+                ) : null}
+                <CardAvatar initials={meta.initials} avatar={meta.avatar} active={meta.active} />
+              </View>
+            </View>
+          )}
+        </TouchableOpacity>
+      );
+    },
+    [board, epics, handleOpenDetail, handleLongPressCard],
   );
 
   if (loading) {
@@ -1529,23 +1803,109 @@ export default function KanbanScreen({ route, navigation }) {
         </KeyboardAvoidingView>
       )}
 
-      {/* Move Card Modal */}
-      <Modal visible={showMoveModal} transparent animationType="fade" onRequestClose={() => setShowMoveModal(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowMoveModal(false)}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Move to column</Text>
-            {columns
-              .filter((c) => c.id !== moveCardTarget?.column_id)
-              .map((col) => (
-                <TouchableOpacity key={col.id} style={styles.modalOption} onPress={() => handleMoveCard(col.id)}>
-                  <View style={[styles.modalOptionDot, { backgroundColor: col.color }]} />
-                  <Text style={styles.modalOptionText}>{col.name}</Text>
-                </TouchableOpacity>
-              ))}
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setShowMoveModal(false)}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
+      {/* Card Action Sheet (long-press) — mobile equivalent of the web
+          right-click CardContextMenu. Top level lists the action groups; tapping
+          one with options pushes a second sheet of choices. */}
+      <Modal
+        visible={!!actionCard}
+        transparent
+        animationType="fade"
+        onRequestClose={closeActionSheet}
+      >
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeActionSheet}>
+          <TouchableOpacity activeOpacity={1} style={styles.actionSheet}>
+            {actionCard &&
+              (() => {
+                const actions = buildCardActions(actionCard, {
+                  columns,
+                  epics,
+                  agents: projectAgents,
+                  labels: allLabels,
+                });
+                if (actionSubmenu) {
+                  const group = actions.find((a) => a.key === actionSubmenu) || null;
+                  const options = group?.options || [];
+                  return (
+                    <>
+                      <View style={styles.actionSheetHeader}>
+                        <TouchableOpacity
+                          onPress={() => setActionSubmenu(null)}
+                          style={styles.actionSheetBack}
+                        >
+                          <Text style={styles.actionSheetBackText}>{'←'}</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.actionSheetTitle} numberOfLines={1}>
+                          {group?.title || group?.label}
+                        </Text>
+                      </View>
+                      <ScrollView style={{ maxHeight: 360 }}>
+                        {options.map((opt) => (
+                          <TouchableOpacity
+                            key={opt.key}
+                            style={styles.actionRow}
+                            disabled={opt.disabled}
+                            onPress={() => !opt.disabled && runCardAction(actionCard, opt.action)}
+                          >
+                            {opt.color != null && (
+                              <View
+                                style={[styles.actionDot, { backgroundColor: opt.color }]}
+                              />
+                            )}
+                            <Text
+                              style={[
+                                styles.actionRowText,
+                                opt.disabled && styles.actionRowTextDisabled,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {opt.label}
+                            </Text>
+                            {opt.checked && <Text style={styles.actionCheck}>{'✓'}</Text>}
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                      <TouchableOpacity style={styles.modalCancel} onPress={closeActionSheet}>
+                        <Text style={styles.modalCancelText}>Cancel</Text>
+                      </TouchableOpacity>
+                    </>
+                  );
+                }
+                return (
+                  <>
+                    <Text style={styles.actionSheetTitle} numberOfLines={1}>
+                      {actionCard.title}
+                    </Text>
+                    <ScrollView style={{ maxHeight: 420 }}>
+                      {actions.map((group) => (
+                        <TouchableOpacity
+                          key={group.key}
+                          style={styles.actionRow}
+                          testID={`card-action-${group.key}`}
+                          onPress={() =>
+                            group.leaf
+                              ? runCardAction(actionCard, group.action)
+                              : setActionSubmenu(group.key)
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.actionRowText,
+                              group.danger && styles.actionRowTextDanger,
+                            ]}
+                          >
+                            {group.label}
+                          </Text>
+                          {!group.leaf && <Text style={styles.actionChevron}>{'›'}</Text>}
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                    <TouchableOpacity style={styles.modalCancel} onPress={closeActionSheet}>
+                      <Text style={styles.modalCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </>
+                );
+              })()}
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 
@@ -1871,22 +2231,40 @@ const styles = StyleSheet.create({
   emptyCol: { paddingVertical: 40, alignItems: 'center' },
   emptyColText: { fontSize: 14, color: colors.gray600 },
 
-  // Card item
+  // Card item (dense Linear-style layout)
   card: {
     backgroundColor: colors.gray800, borderRadius: 10, borderWidth: 1, borderColor: colors.gray700,
-    padding: 12, marginBottom: 10,
+    padding: 11, marginBottom: 8,
   },
-  cardTitle: { fontSize: 15, fontWeight: '600', color: colors.white, marginBottom: 6 },
-  cardMeta: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  cardShortId: { fontSize: 11, color: colors.gray500, fontVariant: ['tabular-nums'] },
+  cardTitle: { fontSize: 14, fontWeight: '500', color: colors.gray100, marginTop: 5, lineHeight: 19 },
   priorityDotSmall: { width: 8, height: 8, borderRadius: 4 },
-  cardPriorityText: { fontSize: 12, fontWeight: '500' },
-  cardAssignee: { fontSize: 12, color: colors.gray400, marginLeft: 'auto' },
-  labelsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
-  labelChip: {
-    backgroundColor: colors.gray700, borderRadius: 10,
-    paddingHorizontal: 8, paddingVertical: 2,
+  // Priority glyph
+  priUrgent: { width: 13, height: 13, borderRadius: 3 },
+  priBars: { flexDirection: 'row', alignItems: 'flex-end', gap: 2, height: 13 },
+  priBar: { width: 3, borderRadius: 1 },
+  // Status glyphs (right of header)
+  prChip: { fontSize: 11, color: colors.gray500 },
+  reviewGlyph: { fontSize: 11, fontWeight: '500' },
+  // Footer
+  cardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 9 },
+  cardFooterLeft: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4, flexShrink: 1 },
+  cardFooterRight: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  cardDate: { fontSize: 10, color: colors.gray500, fontVariant: ['tabular-nums'] },
+  // Assignee avatar
+  avatar: { width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  avatarActive: { borderWidth: 1.5, borderColor: 'rgba(129,140,248,0.7)' },
+  avatarText: { fontSize: 9, fontWeight: '700' },
+  avatarDot: {
+    position: 'absolute', bottom: -1, right: -1, width: 7, height: 7, borderRadius: 4,
+    backgroundColor: colors.indigo400, borderWidth: 1.5, borderColor: colors.gray800,
   },
-  labelChipText: { fontSize: 11, color: colors.gray300 },
+  labelChip: {
+    backgroundColor: colors.gray700, borderRadius: 6,
+    paddingHorizontal: 7, paddingVertical: 2,
+  },
+  labelChipText: { fontSize: 10, color: colors.gray400, fontWeight: '500' },
 
   // FAB
   fab: {
@@ -1978,6 +2356,26 @@ const styles = StyleSheet.create({
   modalOptionText: { fontSize: 14, color: colors.gray200 },
   modalCancel: { paddingVertical: 12, alignItems: 'center', marginTop: 4 },
   modalCancelText: { fontSize: 14, color: colors.gray500 },
+
+  // Card action sheet (long-press)
+  actionSheet: {
+    backgroundColor: colors.gray800, borderRadius: 12, padding: 12, width: 300,
+    borderWidth: 1, borderColor: colors.gray700,
+  },
+  actionSheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  actionSheetBack: { paddingHorizontal: 4, paddingVertical: 2 },
+  actionSheetBackText: { fontSize: 20, color: colors.gray400 },
+  actionSheetTitle: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.white, marginBottom: 8 },
+  actionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.gray700,
+  },
+  actionDot: { width: 10, height: 10, borderRadius: 5 },
+  actionRowText: { flex: 1, fontSize: 14, color: colors.gray200 },
+  actionRowTextDisabled: { color: colors.gray600 },
+  actionRowTextDanger: { color: colors.red400 },
+  actionCheck: { fontSize: 14, color: colors.indigo400 },
+  actionChevron: { fontSize: 18, color: colors.gray600 },
 
   // Epic filter bar
   epicBar: {

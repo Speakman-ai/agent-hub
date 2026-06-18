@@ -412,6 +412,16 @@ describe('api.assignCard — engine/model opts parity with web client', () => {
   });
 });
 
+describe('api.unassignCard — parity with web client', () => {
+  it('POSTs /board/cards/:id/unassign with an empty body', async () => {
+    await api.unassignCard('p1', 'card-1');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/p1/board/cards/card-1/unassign');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({});
+  });
+});
+
 describe('api.startFinalizeWizard — Finalize setup parity with web client', () => {
   it('POSTs /projects/:projectId/finalize/setup-wizard with empty body', async () => {
     await api.startFinalizeWizard('agent-hub');

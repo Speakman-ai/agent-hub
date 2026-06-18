@@ -33,6 +33,23 @@ export function relativeTime(dateStr) {
 }
 
 /**
+ * Compact absolute date ("Jun 18", or "Jun 18, 2025" for a prior year).
+ * Mirrors `client/src/utils/time.js#shortDate` so the redesigned kanban card
+ * shows the same created-date label on web and mobile. Returns '' for empty /
+ * unparseable input.
+ */
+export function shortDate(dateStr) {
+  const d = parseDate(dateStr);
+  if (!d || Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const opts =
+    d.getFullYear() === now.getFullYear()
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: 'numeric' };
+  return d.toLocaleDateString(undefined, opts);
+}
+
+/**
  * Format elapsed seconds as "Xm Ys"
  */
 export function formatElapsed(seconds) {

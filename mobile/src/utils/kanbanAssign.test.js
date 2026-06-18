@@ -7,7 +7,33 @@ import {
   validModelsForAgent,
   engineEntriesWithModels,
   effectiveAssignEngine,
+  assignedSessionId,
 } from './kanbanAssign.js';
+
+describe('assignedSessionId', () => {
+  it('reads the top-level camelCase sessionId (current server shape)', () => {
+    expect(assignedSessionId({ sessionId: 's1', card: { id: 'c1' } })).toBe('s1');
+  });
+
+  it('falls back to a top-level snake_case session_id', () => {
+    expect(assignedSessionId({ session_id: 's2' })).toBe('s2');
+  });
+
+  it('falls back to the embedded card.session_id', () => {
+    expect(assignedSessionId({ card: { session_id: 's3' } })).toBe('s3');
+  });
+
+  it('prefers sessionId over the embedded card row when both exist', () => {
+    expect(assignedSessionId({ sessionId: 's1', card: { session_id: 's3' } })).toBe('s1');
+  });
+
+  it('returns null when no session id is present', () => {
+    expect(assignedSessionId({ card: { id: 'c1' } })).toBeNull();
+    expect(assignedSessionId({})).toBeNull();
+    expect(assignedSessionId(null)).toBeNull();
+    expect(assignedSessionId(undefined)).toBeNull();
+  });
+});
 
 describe('filterAgentsByProject', () => {
   const agents = [
