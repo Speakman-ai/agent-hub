@@ -569,6 +569,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  /** Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh). */
+  setSessionReasoningEffort: (sessionId, effort) =>
+    fetchJSON(`/sessions/${sessionId}/reasoning-effort`, {
+      method: 'PUT',
+      body: JSON.stringify({ effort }),
+    }),
   /** Outer PAV — partial updates: pass only keys you want to change; null clears. */
   setSessionOrchestration: (sessionId, body) =>
     fetchJSON(`/sessions/${sessionId}/orchestration`, {

@@ -113,6 +113,13 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  // Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh).
+  // Returns the updated session row so callers can hydrate `reasoning_effort`.
+  setSessionReasoningEffort: (sessionId, effort) =>
+    fetchJSON(`/sessions/${sessionId}/reasoning-effort`, {
+      method: 'PUT',
+      body: JSON.stringify({ effort }),
+    }),
   setSessionOrchestration: (sessionId, body) =>
     fetchJSON(`/sessions/${sessionId}/orchestration`, {
       method: 'PUT',

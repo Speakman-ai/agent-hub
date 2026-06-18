@@ -1606,6 +1606,14 @@ components:
         react_loop_enabled:
           type: integer
           nullable: true
+        reasoning_effort:
+          type: string
+          nullable: true
+          enum:
+            - high
+            - pro
+            - null
+          description: 'Codex reasoning ("thinking") preset: `high` (default) or `pro` (→ xhigh). NULL/absent on legacy rows and non-Codex sessions; treated as `high`.'
         worktree_path:
           type: string
           nullable: true
@@ -10383,6 +10391,52 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400":
           description: Validation failed or model not valid for the current engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/reasoning-effort:
+    put:
+      tags:
+        - Sessions
+      summary: Set the Codex reasoning ("thinking") level for a session
+      description: Codex (`codex-cli`) sessions only. `high` (default) runs at `model_reasoning_effort=high`; `pro` runs at `xhigh` (max thinking, same model). Ignored for non-Codex engines.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                effort:
+                  type: string
+                  enum:
+                    - high
+                    - pro
+              required:
+                - effort
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
           content:
             application/json:
               schema:

@@ -90,6 +90,7 @@ import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-e
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import { writeProjectAwsConfigFile } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { codexReasoningArgs } from './codex-reasoning.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
   writeSystemPromptFile,
@@ -2934,6 +2935,14 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (codexProfileVal) {
           args.push('--profile', codexProfileVal);
         }
+        // Reasoning effort ("thinking" level). Codex has no dedicated flag, so
+        // we set it via `-c model_reasoning_effort=<level>`. The session's
+        // `reasoning_effort` preset (`high` default, `pro` → xhigh) resolves to
+        // the native effort; an unset/legacy column falls back to `high`. This
+        // makes the effort explicit on every Codex turn rather than depending
+        // on Codex's built-in default. Placed after `--profile` so an operator
+        // profile can still override it if they intentionally pin a value.
+        args.push(...codexReasoningArgs(session!.reasoning_effort));
         // Pass the prompt via stdin using the documented `-` sentinel.
         // Per `codex exec` docs: "If you omit the prompt argument, Codex
         // reads the prompt from stdin. Use `codex exec -` when you want

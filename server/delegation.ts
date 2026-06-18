@@ -4,6 +4,7 @@ import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { codexReasoningArgs } from './codex-reasoning.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import {
   mergeProjectAwsSpawnEnv,
@@ -234,6 +235,9 @@ function buildDelegateCliSpec(
       if (codexProfile) {
         args.push('--profile', codexProfile);
       }
+      // Sub-agent runs have no per-session reasoning preset; use the default
+      // (`high`) so delegation Codex spawns match the new interactive default.
+      args.push(...codexReasoningArgs(null));
       args.push(combined);
       return { bin: bins.codex, args, engine, parseStream: true };
     }
@@ -966,6 +970,10 @@ export async function synthesizeResults(
       ownerUserId: synthOwnerId,
     });
 
+  // Synthesis runs as the lead session's engine; honor its reasoning preset
+  // (Codex only — the value is ignored for non-Codex engines).
+  const synthReasoningEffort = sessRow?.reasoning_effort ?? null;
+
   const synthesisPrompt = buildDelegationSynthesisPrompt(results, originalUserMessage);
 
   broadcast({
@@ -1084,6 +1092,7 @@ export async function synthesizeResults(
         if (synthCodexProfile) {
           args.push('--profile', synthCodexProfile);
         }
+        args.push(...codexReasoningArgs(synthReasoningEffort));
         args.push(engineSessionId ? synthesisPrompt : `${enriched}\n\n${synthesisPrompt}`);
       } else {
         args = [

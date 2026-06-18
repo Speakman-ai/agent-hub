@@ -200,6 +200,9 @@ export default function App({ initialView } = {}) {
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-8');
+  // Codex reasoning ("thinking") preset for the active session: 'high' (default)
+  // or 'pro' (→ xhigh). Only meaningful for the codex-cli engine.
+  const [sessionReasoningEffort, setSessionReasoningEffort] = useState('high');
   const [modelConfig, setModelConfig] = useState(null);
   // Worktree state was removed when Agent Hub locked to worktree-only sessions.
   // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
@@ -2800,6 +2803,8 @@ export default function App({ initialView } = {}) {
     if (session?.model) {
       setSessionModel(session.model);
     }
+    // NULL/legacy/non-Codex rows default to 'high' (matches the server resolver).
+    setSessionReasoningEffort(session?.reasoning_effort === 'pro' ? 'pro' : 'high');
     setSessionAskMode(isSessionAskModeEnabled(session));
   }, [activeSessionId, sessions]);
 
@@ -3443,6 +3448,18 @@ export default function App({ initialView } = {}) {
       const updated = await api.setSessionModel(activeSessionId, model);
       setSessions((prev) =>
         prev.map((s) => (s.id === updated.id ? { ...s, model: updated.model } : s)),
+      );
+    }
+  };
+
+  const handleReasoningEffortChange = async (effort) => {
+    setSessionReasoningEffort(effort);
+    if (activeSessionId) {
+      const updated = await api.setSessionReasoningEffort(activeSessionId, effort);
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === updated.id ? { ...s, reasoning_effort: updated.reasoning_effort } : s,
+        ),
       );
     }
   };
@@ -4303,6 +4320,8 @@ export default function App({ initialView } = {}) {
                     onEngineChange={handleEngineChange}
                     sessionModel={sessionModel}
                     onModelChange={handleModelChange}
+                    sessionReasoningEffort={sessionReasoningEffort}
+                    onReasoningEffortChange={handleReasoningEffortChange}
                     modelConfig={modelConfig}
                     messages={messages}
                     activeSessionId={activeSessionId}

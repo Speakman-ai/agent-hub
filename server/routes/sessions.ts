@@ -10,6 +10,7 @@ import {
   ToggleEnabledRequestSchema,
   PutSessionEngineRequestSchema,
   PutSessionModelRequestSchema,
+  PutSessionReasoningEffortRequestSchema,
   PutSessionLinkedDesignRequestSchema,
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
@@ -1228,6 +1229,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     stmts.updateSessionReactLoop.run(enabled ? 1 : 0, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    res.json(enrichSessionForClient(updated, stmts));
+  });
+
+  // Codex reasoning ("thinking") level. `high` (default) → model_reasoning_effort=high,
+  // `pro` → xhigh. Stored as the preset string; the spawn path resolves it to the
+  // native effort (see server/codex-reasoning.ts). Accepted on any session but only
+  // affects Codex (`codex-cli`) spawns.
+  router.put('/api/sessions/:sessionId/reasoning-effort', (req: Request, res: Response) => {
+    const parsed = parseBody(PutSessionReasoningEffortRequestSchema, req, res);
+    if (!parsed) return;
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    stmts.updateSessionReasoningEffort.run(parsed.effort, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(enrichSessionForClient(updated, stmts));
   });

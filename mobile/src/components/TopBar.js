@@ -24,6 +24,8 @@ export default function TopBar() {
     activeAgent,
     sessionEngine,
     sessionModel,
+    sessionReasoningEffort,
+    handleReasoningEffortChange,
     modelConfig,
     sessionAskMode,
     handleEngineChange,
@@ -216,8 +218,10 @@ export default function TopBar() {
         modelConfig={modelConfig}
         engine={sessionEngine}
         model={sessionModel}
+        reasoningEffort={sessionReasoningEffort}
         onSelectEngine={handleEngineChange}
         onSelectModel={handleModelChange}
+        onSelectReasoningEffort={handleReasoningEffortChange}
       />
     </View>
   );

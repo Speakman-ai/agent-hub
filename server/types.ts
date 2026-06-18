@@ -34,6 +34,13 @@ export interface SessionRow {
   ask_mode: number;
   react_loop_enabled?: number;
   /**
+   * Codex reasoning-effort preset for this session: `'high'` (default) or
+   * `'pro'` (→ native `model_reasoning_effort=xhigh`). NULL/absent on legacy
+   * rows and non-Codex sessions → treated as `'high'`. See
+   * `server/codex-reasoning.ts`.
+   */
+  reasoning_effort?: string | null;
+  /**
    * Number of hybrid wiki RAG retrieval calls consumed in this session.
    * Used as a hard budget counter to cap embedding/query cost per session.
    */
@@ -1304,6 +1311,7 @@ export interface Stmts {
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;
+  updateSessionReasoningEffort: Stmt;
   updateSessionChangesReady: Stmt;
   updateSessionCodeChangedAt: Stmt;
   updateSessionWikiHybridRagConsumed: Stmt;

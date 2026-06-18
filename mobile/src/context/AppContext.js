@@ -59,6 +59,9 @@ export function AppProvider({ children }) {
   const [streamingEngine, setStreamingEngine] = useState(null);
   const [sessionEngine, setSessionEngine] = useState('claude-code');
   const [sessionModel, setSessionModel] = useState('claude-opus-4-8');
+  // Codex reasoning ("thinking") preset for the active session: 'high' (default)
+  // or 'pro' (→ xhigh). Only meaningful for the codex-cli engine.
+  const [sessionReasoningEffort, setSessionReasoningEffort] = useState('high');
   const [modelConfig, setModelConfig] = useState(null);
   // The legacy worktree toggle (`sessionWorktree`) and CLI-detection
   // signal (`gitWorktreeDetected`) were removed when Agent Hub locked to
@@ -1100,6 +1103,7 @@ export function AppProvider({ children }) {
         setSessionEngine(target.engine || agent?.engine || 'claude-code');
         setSessionModel(target.model || defaultModelForEngine(target.engine || agent?.engine || 'claude-code'));
         setSessionAskMode(target.ask_mode !== 0 && !!target.ask_mode);
+        setSessionReasoningEffort(target.reasoning_effort === 'pro' ? 'pro' : 'high');
       } else {
         setActiveSessionId(null);
         setMessages([]);
@@ -1107,6 +1111,7 @@ export function AppProvider({ children }) {
         setSessionEngine(agent?.engine || 'claude-code');
         setSessionModel(defaultModelForEngine(agent?.engine || 'claude-code'));
         setSessionAskMode(false);
+        setSessionReasoningEffort('high');
       }
     }).catch((err) => console.error('Failed to load sessions:', err));
   }, [configReady, activeAgentId, modelConfig]);
@@ -1146,6 +1151,7 @@ export function AppProvider({ children }) {
     if (session?.model) setSessionModel(session.model);
     if (session) {
       setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
+      setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
     }
   }, [activeSessionId, sessions]);
 
@@ -1347,6 +1353,7 @@ export function AppProvider({ children }) {
     setSessionEngine(session.engine || agent?.engine || 'claude-code');
     setSessionModel(session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'));
     setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
+    setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
     setMessages([]);
   }, [activeAgentId, agents, sessionAskMode]);
 
@@ -1403,6 +1410,30 @@ export function AppProvider({ children }) {
       setSessions((prev) =>
         prev.map((s) => (s.id === updated.id ? { ...s, model: updated.model } : s))
       );
+    }
+  }, []);
+
+  // Optimistically persist the Codex reasoning preset ('high' | 'pro'); reverts
+  // on server error. Mirrors handleAskModeChange.
+  const handleReasoningEffortChange = useCallback(async (effort) => {
+    let prev = 'high';
+    setSessionReasoningEffort((cur) => {
+      prev = cur;
+      return effort;
+    });
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    try {
+      const updated = await api.setSessionReasoningEffort(sid, effort);
+      setSessions((list) =>
+        list.map((s) =>
+          s.id === updated.id ? { ...s, reasoning_effort: updated.reasoning_effort } : s
+        )
+      );
+    } catch (err) {
+      console.warn('setSessionReasoningEffort failed; reverting:', err);
+      setSessionReasoningEffort(prev);
+      throw err;
     }
   }, []);
 
@@ -1829,6 +1860,8 @@ export function AppProvider({ children }) {
     streamingEngine,
     sessionEngine,
     sessionModel,
+    sessionReasoningEffort,
+    handleReasoningEffortChange,
     modelConfig,
     sessionAskMode,
     handleAskModeChange,

@@ -1435,6 +1435,14 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // Codex reasoning-effort preset: 'high' (default) | 'pro' (→ xhigh).
+  // NULL on legacy rows / non-Codex sessions; resolver treats NULL as 'high'.
+  try {
+    db.prepare('SELECT reasoning_effort FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT pending_skill_context FROM sessions LIMIT 1').get();
   } catch {
@@ -2697,6 +2705,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionReactLoop: db.prepare(
       "UPDATE sessions SET react_loop_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionReasoningEffort: db.prepare(
+      "UPDATE sessions SET reasoning_effort = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionChangesReady: db.prepare(
       "UPDATE sessions SET changes_ready = ?, updated_at = datetime('now') WHERE id = ?",

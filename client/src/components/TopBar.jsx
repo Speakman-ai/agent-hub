@@ -72,6 +72,8 @@ export default function TopBar({
   onEngineChange,
   sessionModel,
   onModelChange,
+  sessionReasoningEffort,
+  onReasoningEffortChange,
   modelConfig,
   messages,
   activeSessionId,
@@ -86,12 +88,22 @@ export default function TopBar({
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportState, setExportState] = useState(null); // null | 'summarizing' | 'copied' | 'saving' | 'saved'
   const modelRef = useRef(null);
   const engineRef = useRef(null);
+  const reasoningRef = useRef(null);
   const exportRef = useRef(null);
+  // Codex "thinking" level control. High (default) → model_reasoning_effort=high;
+  // Pro → xhigh. Only shown for the codex-cli engine.
+  const isCodex = sessionEngine === 'codex-cli';
+  const reasoningPreset = sessionReasoningEffort === 'pro' ? 'pro' : 'high';
+  const REASONING_OPTIONS = [
+    { id: 'high', label: 'High', desc: 'Default reasoning effort' },
+    { id: 'pro', label: 'Pro', desc: 'Maximum reasoning (xhigh)' },
+  ];
   const filteredEngineOptions = modelConfig?.engineValidModels
     ? ENGINE_OPTIONS.filter((e) => (modelConfig.engineValidModels[e.id]?.length ?? 0) > 0)
     : ENGINE_OPTIONS;
@@ -122,6 +134,9 @@ export default function TopBar({
       }
       if (engineRef.current && !engineRef.current.contains(e.target)) {
         setEngineOpen(false);
+      }
+      if (reasoningRef.current && !reasoningRef.current.contains(e.target)) {
+        setReasoningOpen(false);
       }
       if (exportRef.current && !exportRef.current.contains(e.target)) {
         setExportOpen(false);
@@ -302,6 +317,59 @@ export default function TopBar({
           </div>
         )}
 
+        {/* Desktop: Codex reasoning ("thinking") level — High (default) / Pro (xhigh) */}
+        {agent && isCodex && onReasoningEffortChange && (
+          <div className="hidden sm:flex items-center gap-1.5" ref={reasoningRef}>
+            <div className="relative">
+              <button
+                onClick={() => setReasoningOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 transition-colors border border-gray-700"
+                title={`Reasoning effort: ${reasoningPreset === 'pro' ? 'Pro (xhigh)' : 'High'}`}
+                aria-label="Select reasoning effort"
+              >
+                <span className="text-gray-500">Think</span>
+                <span className="text-gray-300">{reasoningPreset === 'pro' ? 'Pro' : 'High'}</span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className={`h-3 w-3 text-gray-500 transition-transform ${reasoningOpen ? 'rotate-180' : ''}`}
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.293 7.293a1 1 0 011.414 0L10 11.586l4.293-4.293a1 1 0 111.414 1.414l-5 5a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+              {reasoningOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 min-w-[200px] py-1">
+                  {REASONING_OPTIONS.map((o) => (
+                    <button
+                      key={o.id}
+                      onClick={() => {
+                        onReasoningEffortChange(o.id);
+                        setReasoningOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
+                        o.id === reasoningPreset ? 'text-white' : 'text-gray-400'
+                      }`}
+                    >
+                      <span className="flex flex-col">
+                        <span>{o.label}</span>
+                        <span className="text-[11px] text-gray-500">{o.desc}</span>
+                      </span>
+                      {o.id === reasoningPreset && (
+                        <span className="text-emerald-400 text-xs">✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Mobile: combined engine+model button */}
         {agent && (
           <div className="sm:hidden relative">
@@ -376,6 +444,34 @@ export default function TopBar({
                       {m.id === sessionModel && <span className="text-emerald-400 text-xs">✓</span>}
                     </button>
                   ))}
+                  {isCodex && onReasoningEffortChange && (
+                    <>
+                      <div className="border-t border-gray-700 my-1" />
+                      <div className="px-3 py-1.5 text-xs text-gray-500 font-semibold uppercase">
+                        Reasoning
+                      </div>
+                      {REASONING_OPTIONS.map((o) => (
+                        <button
+                          key={o.id}
+                          onClick={() => {
+                            onReasoningEffortChange(o.id);
+                            setMobileMenuOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-700 transition-colors flex items-center justify-between min-h-[44px] ${
+                            o.id === reasoningPreset ? 'text-white' : 'text-gray-400'
+                          }`}
+                        >
+                          <span className="flex flex-col">
+                            <span>{o.label}</span>
+                            <span className="text-[11px] text-gray-500">{o.desc}</span>
+                          </span>
+                          {o.id === reasoningPreset && (
+                            <span className="text-emerald-400 text-xs">✓</span>
+                          )}
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               </>
             )}

@@ -54,6 +54,10 @@ export const SessionComponent = registerComponent(
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
       react_loop_enabled: z.number().int().nullable().optional(),
+      reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
+        description:
+          'Codex reasoning ("thinking") preset: `high` (default) or `pro` (→ xhigh). NULL/absent on legacy rows and non-Codex sessions; treated as `high`.',
+      }),
       worktree_path: z.string().nullable().optional(),
       worktree_branch: z.string().nullable().optional(),
       engine_session_id: z.string().nullable().optional(),
@@ -247,6 +251,17 @@ export const PutSessionEngineRequestSchema = z.object({
 
 export const PutSessionModelRequestSchema = z.object({
   model: z.string({ error: 'Invalid model' }).min(1, 'Invalid model'),
+});
+
+/**
+ * PUT /api/sessions/:sessionId/reasoning-effort — Codex "thinking" level.
+ * `high` (default) maps to `model_reasoning_effort=high`; `pro` maps to
+ * `xhigh`. Applies only to Codex (`codex-cli`) sessions.
+ */
+export const PutSessionReasoningEffortRequestSchema = z.object({
+  effort: z.enum(['high', 'pro'], {
+    error: 'Invalid reasoning effort. Must be "high" or "pro".',
+  }),
 });
 
 /**
@@ -581,6 +596,25 @@ registerPath({
 
 // NOTE: `PUT /api/sessions/{sessionId}/worktree` was removed when Agent
 // Hub locked to worktree-only sessions.
+
+// PUT /api/sessions/:sessionId/reasoning-effort
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/reasoning-effort',
+  tags: ['Sessions'],
+  summary: 'Set the Codex reasoning ("thinking") level for a session',
+  description:
+    'Codex (`codex-cli`) sessions only. `high` (default) runs at `model_reasoning_effort=high`; `pro` runs at `xhigh` (max thinking, same model). Ignored for non-Codex engines.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(PutSessionReasoningEffortRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Session not found.'),
+  },
+});
 
 // PUT /api/sessions/:sessionId/ask-mode
 registerPath({

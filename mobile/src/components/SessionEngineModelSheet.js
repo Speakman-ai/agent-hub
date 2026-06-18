@@ -17,17 +17,26 @@ import { engineOptionsFromConfig, modelsForEngine } from '../utils/engineOptions
  *  - onSelectEngine(engineId) — async; persists engine (+ default model)
  *  - onSelectModel(modelId)   — async; persists model
  */
+const REASONING_OPTIONS = [
+  { id: 'high', label: 'High', desc: 'Default reasoning effort' },
+  { id: 'pro', label: 'Pro', desc: 'Maximum reasoning (xhigh)' },
+];
+
 export default function SessionEngineModelSheet({
   visible,
   onClose,
   modelConfig,
   engine,
   model,
+  reasoningEffort,
   onSelectEngine,
   onSelectModel,
+  onSelectReasoningEffort,
 }) {
   const engineOptions = engineOptionsFromConfig(modelConfig);
   const engineModels = modelsForEngine(engine, modelConfig);
+  const isCodex = engine === 'codex-cli';
+  const reasoningPreset = reasoningEffort === 'pro' ? 'pro' : 'high';
 
   // Close immediately (handlers already update local state optimistically in
   // AppContext), then surface any persistence failure via Alert.
@@ -80,6 +89,31 @@ export default function SessionEngineModelSheet({
               {m.id === model && <Text style={styles.check}>✓</Text>}
             </TouchableOpacity>
           ))}
+
+          {/* Reasoning section — Codex only */}
+          {isCodex && onSelectReasoningEffort && (
+            <>
+              <View style={styles.divider} />
+              <Text style={styles.sectionLabel}>REASONING</Text>
+              {REASONING_OPTIONS.map((o) => (
+                <TouchableOpacity
+                  key={o.id}
+                  style={styles.item}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Use reasoning effort ${o.label}`}
+                  onPress={() => run('Reasoning', onSelectReasoningEffort, o.id)}
+                >
+                  <View style={styles.reasoningText}>
+                    <Text style={[styles.itemLabel, o.id === reasoningPreset && styles.itemLabelActive]}>
+                      {o.label}
+                    </Text>
+                    <Text style={styles.itemDesc}>{o.desc}</Text>
+                  </View>
+                  {o.id === reasoningPreset && <Text style={styles.check}>✓</Text>}
+                </TouchableOpacity>
+              ))}
+            </>
+          )}
         </View>
       </Pressable>
     </Modal>
@@ -140,6 +174,13 @@ const styles = StyleSheet.create({
   },
   itemLabelActive: {
     color: colors.white,
+  },
+  reasoningText: {
+    flexDirection: 'column',
+  },
+  itemDesc: {
+    fontSize: 11,
+    color: colors.gray500,
   },
   check: {
     fontSize: 12,

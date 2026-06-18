@@ -3,6 +3,7 @@
  * for `design-chat.ts`. See `design-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { codexReasoningArgs } from './codex-reasoning.js';
 import config, { resolveGrokSpawnModel } from './config.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
@@ -231,6 +232,9 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     if (codexProfileVal) {
       args.push('--profile', codexProfileVal);
     }
+    // Design Studio Codex runs have no per-session reasoning preset; use the
+    // default (`high`) to match the interactive Codex default.
+    args.push(...codexReasoningArgs(null));
     args.push(prompt);
     return { bin: bins.codex, args };
   }
