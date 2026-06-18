@@ -1,5 +1,6 @@
 import type { ActiveTaskRow, BroadcastFn, MessageRow, SessionRow, Stmts } from './types.js';
 import { findUnansweredAskIds } from '../shared/utils/awaitingInput.js';
+import { getSessionOwner } from './session-ownership.js';
 
 export interface AwaitingInputItem {
   sessionId: string;
@@ -108,8 +109,14 @@ export function broadcastAwaitingInputForSession(
   sessionId: string,
   stmts: Stmts,
   broadcast: BroadcastFn,
+  getOwner: (sessionId: string) => string | null = getSessionOwner,
 ): void {
   try {
+    // Session owner so clients can scope the foreground awaiting-input banner
+    // to the account that owns the session (matches the `done` event in
+    // chat.ts; push is filtered server-side in push.ts). `null` for unowned
+    // cron / heartbeat / autonomous sessions.
+    const ownerUserId = getOwner(sessionId);
     const state = getSessionAwaitingInputState(sessionId, stmts);
     if (state) {
       broadcast({
@@ -118,6 +125,7 @@ export function broadcastAwaitingInputForSession(
         agentId: state.agentId,
         sessionName: state.sessionName,
         askIds: state.askIds,
+        ownerUserId,
         waiting: true,
       });
     } else {
@@ -128,6 +136,7 @@ export function broadcastAwaitingInputForSession(
         agentId: sess?.agent_id ?? null,
         sessionName: sess?.name ?? null,
         askIds: [],
+        ownerUserId,
         waiting: false,
       });
     }

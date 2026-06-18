@@ -223,4 +223,43 @@ describe('broadcastAwaitingInputForSession', () => {
     expect(payload.askIds).toEqual([]);
     expect(payload.sessionId).toBe(SESSION_ID);
   });
+
+  // Regression: clients scope the foreground awaiting-input banner to the
+  // session owner, so the broadcast MUST carry `ownerUserId`. Without it the
+  // web client showed another account's "agent waiting" toast (which 404s on
+  // click). Owner resolver is injected so the unit test stays DB-free.
+  it('stamps the session owner on the waiting:true broadcast', () => {
+    const stmts = makeStmts({
+      session: makeSessionRow(),
+      messages: [makeMessage('assistant', `Sure.${ASK_BODY}`)],
+    });
+    const broadcast = vi.fn();
+    broadcastAwaitingInputForSession(SESSION_ID, stmts, broadcast, () => 'u-kevin');
+    const payload = broadcast.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.waiting).toBe(true);
+    expect(payload.ownerUserId).toBe('u-kevin');
+  });
+
+  it('stamps the session owner on the waiting:false broadcast', () => {
+    const stmts = makeStmts({
+      session: makeSessionRow(),
+      messages: [makeMessage('assistant', 'idle')],
+    });
+    const broadcast = vi.fn();
+    broadcastAwaitingInputForSession(SESSION_ID, stmts, broadcast, () => 'u-kevin');
+    const payload = broadcast.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.waiting).toBe(false);
+    expect(payload.ownerUserId).toBe('u-kevin');
+  });
+
+  it('stamps ownerUserId null for unowned (cron / system) sessions', () => {
+    const stmts = makeStmts({
+      session: makeSessionRow(),
+      messages: [makeMessage('assistant', `Sure.${ASK_BODY}`)],
+    });
+    const broadcast = vi.fn();
+    broadcastAwaitingInputForSession(SESSION_ID, stmts, broadcast, () => null);
+    const payload = broadcast.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.ownerUserId).toBeNull();
+  });
 });

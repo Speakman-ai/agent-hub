@@ -135,6 +135,7 @@ import {
 } from './utils/awaitingInputState.js';
 import { getDefaultShortcuts } from './utils/shortcuts.js';
 import { getInitialView } from './utils/navigation.js';
+import { isSessionOwnedByOtherUser } from './utils/sessionNotificationOwnership.js';
 import {
   firstEngineWithAuthenticatedModels,
   defaultModelForAuthenticatedEngine,
@@ -994,6 +995,7 @@ export default function App({ initialView } = {}) {
           setAwaitingInputBySession((current) => applyAwaitingInputEvent(current, data));
           if (
             data.waiting &&
+            !isSessionOwnedByOtherUser(data.ownerUserId) &&
             shouldNotifyForAwaitingInput({
               wasWaiting,
               sessionId: sid,
@@ -1260,8 +1262,12 @@ export default function App({ initialView } = {}) {
               });
             }
           }
-          // Desktop notification + toast for completed background sessions
-          if (!forActiveSession && data.message) {
+          // Desktop notification + toast for completed background sessions.
+          // Scope to the session owner: on a shared project the `done` event
+          // fans out to every client, so without this gate a user gets toasts
+          // (that 404 on click) for another account's session. Mirrors the
+          // server-side push scoping in push.ts.
+          if (!forActiveSession && data.message && !isSessionOwnedByOtherUser(data.ownerUserId)) {
             const session = sessionsRef.current.find((s) => s.id === data.sessionId);
             const agent = session ? agentsRef.current.find((a) => a.id === session.agent_id) : null;
             const agentName = agent?.name || 'Agent';
