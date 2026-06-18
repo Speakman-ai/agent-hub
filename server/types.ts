@@ -1482,6 +1482,9 @@ export interface Stmts {
   // Kanban cards
   getKanbanCards: Stmt;
   getKanbanCardsByColumn: Stmt;
+  getKanbanCardsByColumnPageFirst: Stmt;
+  getKanbanCardsByColumnPageAfter: Stmt;
+  countKanbanCardsByColumn: Stmt;
   getKanbanCard: Stmt;
   createKanbanCard: Stmt;
   updateKanbanCard: Stmt;

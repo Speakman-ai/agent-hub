@@ -216,10 +216,30 @@ export const BoardResponseComponent = registerComponent(
       columns: z.array(KanbanColumnComponent),
       cards: z.array(KanbanCardEnrichedComponent),
       epics: z.array(KanbanEpicComponent),
+      counts: z.record(z.string(), z.number().int()).openapi({
+        description:
+          'Total card count per column, keyed by column id (`{ [columnId]: total }`). Always present. Lets a client decide whether a column has more cards than the page in `cards` and fetch the rest via GET /board/columns/:columnId/cards.',
+      }),
     })
     .openapi({
       description:
-        'Full board state: board metadata + columns + cards (with blocker graph) + epics.',
+        'Full board state: board metadata + columns + cards (with blocker graph) + epics + per-column counts. When the request omits `?limit`, `cards` carries the full board (backward compatible). When `?limit=N` is supplied, `cards` carries only the first N cards per column (ordered by position, id), bounding the payload.',
+    }),
+);
+
+export const PaginatedColumnCardsComponent = registerComponent(
+  'PaginatedColumnCards',
+  z
+    .object({
+      cards: z.array(KanbanCardEnrichedComponent),
+      nextCursor: z.string().nullable().openapi({
+        description:
+          'Opaque keyset cursor for the next page, or null on the final page. Echo it back as the `cursor` query param to fetch the following page.',
+      }),
+      total: z.number().int().openapi({ description: 'Total card count in this column.' }),
+    })
+    .openapi({
+      description: "One keyset-paginated page of a column's cards (with blocker graph attached).",
     }),
 );
 
@@ -421,11 +441,48 @@ registerPath({
   tags: ['Board'],
   summary: 'Get full board state',
   description:
-    'Returns the project board, all columns, all cards (with blocker graph attached), and all epics. Idempotently creates the board and the four default columns on first call.',
-  request: { params: projectIdParams },
+    'Returns the project board, all columns, all cards (with blocker graph attached), all epics, and a `counts` map of total cards per column. Idempotently creates the board and the default columns on first call. Pass `?limit=N` to cap `cards` to the first N cards per column (keyset-ordered by position, id); omit it for the full board.',
+  request: {
+    params: projectIdParams,
+    query: z.object({
+      limit: z.string().optional().openapi({
+        description:
+          'Optional per-column page size. When set, `cards` carries only the first N cards per column (1–200; values out of range are clamped). When omitted, the full board is returned.',
+      }),
+    }),
+  },
   responses: {
     200: { description: 'Board state.', content: jsonContent(BoardResponseComponent) },
     404: errorResponse('Project not found.'),
+  },
+});
+
+// GET /board/columns/:columnId/cards
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/board/columns/{columnId}/cards',
+  tags: ['Board'],
+  summary: "List one keyset-paginated page of a column's cards",
+  description:
+    "Returns a page of the column's cards ordered by (position, id), enriched with the blocker graph and latest finalize run, plus an opaque `nextCursor` (null on the last page) and the column `total`. Keyset pagination resumes strictly after the supplied `cursor`, so it is stable under mid-scroll reordering.",
+  request: {
+    params: projectColumnIdParams,
+    query: z.object({
+      limit: z.string().optional().openapi({
+        description: 'Page size (default 50, clamped to 1–200).',
+      }),
+      cursor: z.string().optional().openapi({
+        description: "Opaque cursor from a prior response's `nextCursor`. Omit for the first page.",
+      }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'One page of cards.',
+      content: jsonContent(PaginatedColumnCardsComponent),
+    },
+    400: errorResponse('Invalid cursor.'),
+    404: errorResponse('Project or column not found.'),
   },
 });
 

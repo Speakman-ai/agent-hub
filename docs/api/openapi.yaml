@@ -1524,12 +1524,37 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/KanbanEpic"
+        counts:
+          type: object
+          additionalProperties:
+            type: integer
+          description: "Total card count per column, keyed by column id (`{ [columnId]: total }`). Always present. Lets a client decide whether a column has more cards than the page in `cards` and fetch the rest via GET /board/columns/:columnId/cards."
       required:
         - board
         - columns
         - cards
         - epics
-      description: "Full board state: board metadata + columns + cards (with blocker graph) + epics."
+        - counts
+      description: "Full board state: board metadata + columns + cards (with blocker graph) + epics + per-column counts. When the request omits `?limit`, `cards` carries the full board (backward compatible). When `?limit=N` is supplied, `cards` carries only the first N cards per column (ordered by position, id), bounding the payload."
+    PaginatedColumnCards:
+      type: object
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanCardEnriched"
+        nextCursor:
+          type: string
+          nullable: true
+          description: Opaque keyset cursor for the next page, or null on the final page. Echo it back as the `cursor` query param to fetch the following page.
+        total:
+          type: integer
+          description: Total card count in this column.
+      required:
+        - cards
+        - nextCursor
+        - total
+      description: One keyset-paginated page of a column's cards (with blocker graph attached).
     BoardErrorResponse:
       type: object
       properties:
@@ -8750,7 +8775,7 @@ paths:
       tags:
         - Board
       summary: Get full board state
-      description: Returns the project board, all columns, all cards (with blocker graph attached), and all epics. Idempotently creates the board and the four default columns on first call.
+      description: Returns the project board, all columns, all cards (with blocker graph attached), all epics, and a `counts` map of total cards per column. Idempotently creates the board and the default columns on first call. Pass `?limit=N` to cap `cards` to the first N cards per column (keyset-ordered by position, id); omit it for the full board.
       parameters:
         - schema:
             type: string
@@ -8759,6 +8784,13 @@ paths:
           description: Project ID (slug).
           name: projectId
           in: path
+        - schema:
+            type: string
+            description: Optional per-column page size. When set, `cards` carries only the first N cards per column (1–200; values out of range are clamped). When omitted, the full board is returned.
+          required: false
+          description: Optional per-column page size. When set, `cards` carries only the first N cards per column (1–200; values out of range are clamped). When omitted, the full board is returned.
+          name: limit
+          in: query
       responses:
         "200":
           description: Board state.
@@ -8768,6 +8800,60 @@ paths:
                 $ref: "#/components/schemas/BoardResponse"
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/columns/{columnId}/cards:
+    get:
+      tags:
+        - Board
+      summary: List one keyset-paginated page of a column's cards
+      description: Returns a page of the column's cards ordered by (position, id), enriched with the blocker graph and latest finalize run, plus an opaque `nextCursor` (null on the last page) and the column `total`. Keyset pagination resumes strictly after the supplied `cursor`, so it is stable under mid-scroll reordering.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban column UUID.
+          required: true
+          description: Kanban column UUID.
+          name: columnId
+          in: path
+        - schema:
+            type: string
+            description: Page size (default 50, clamped to 1–200).
+          required: false
+          description: Page size (default 50, clamped to 1–200).
+          name: limit
+          in: query
+        - schema:
+            type: string
+            description: Opaque cursor from a prior response's `nextCursor`. Omit for the first page.
+          required: false
+          description: Opaque cursor from a prior response's `nextCursor`. Omit for the first page.
+          name: cursor
+          in: query
+      responses:
+        "200":
+          description: One page of cards.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedColumnCards"
+        "400":
+          description: Invalid cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project or column not found.
           content:
             application/json:
               schema:

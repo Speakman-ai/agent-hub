@@ -473,6 +473,11 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS idx_kanban_cards_column ON kanban_cards(column_id);
     CREATE INDEX IF NOT EXISTS idx_kanban_cards_board ON kanban_cards(board_id);
+    -- Composite index backing keyset pagination of a column's cards ordered by
+    -- (position, id). Covers both the first-page and after-cursor fetches plus
+    -- the per-column COUNT(*) used to build the board counts map.
+    CREATE INDEX IF NOT EXISTS idx_kanban_cards_column_position
+      ON kanban_cards(column_id, position, id);
 
     -- Kanban card comments
     CREATE TABLE IF NOT EXISTS kanban_card_comments (
@@ -3096,6 +3101,23 @@ function initDb(dataDir: string): void {
     ),
     getKanbanCardsByColumn: db.prepare(
       'SELECT * FROM kanban_cards WHERE column_id = ? ORDER BY position ASC',
+    ),
+    // Keyset pagination: first page (no cursor) and after-cursor page, both
+    // ordered by (position, id) so a `(position, id)` cursor resumes at a
+    // stable point even when cards are reordered mid-scroll. The trailing `?`
+    // binds LIMIT (callers pass limit+1 to detect whether a next page exists).
+    getKanbanCardsByColumnPageFirst: db.prepare(
+      'SELECT * FROM kanban_cards WHERE column_id = ? ORDER BY position ASC, id ASC LIMIT ?',
+    ),
+    getKanbanCardsByColumnPageAfter: db.prepare(
+      `SELECT * FROM kanban_cards
+         WHERE column_id = ?
+           AND (position > ? OR (position = ? AND id > ?))
+         ORDER BY position ASC, id ASC
+         LIMIT ?`,
+    ),
+    countKanbanCardsByColumn: db.prepare(
+      'SELECT COUNT(*) AS n FROM kanban_cards WHERE column_id = ?',
     ),
     getKanbanCard: db.prepare('SELECT * FROM kanban_cards WHERE id = ?'),
     createKanbanCard: db.prepare(

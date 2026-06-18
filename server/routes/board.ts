@@ -18,6 +18,12 @@ import type {
   SessionReplayRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
+import {
+  type CardCursor,
+  clampPageLimit,
+  decodeCardCursor,
+  encodeCardCursor,
+} from '../kanban-pagination.js';
 import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { ensureOperatorBaseBranch } from '../autonomous.js';
@@ -113,6 +119,69 @@ function loadBoardFinalizeRuns(stmts: Stmts, boardId: string): Map<string, Final
     if (row.session_id) out.set(row.session_id, row);
   }
   return out;
+}
+
+/**
+ * Attach the blocker graph (`blockers` / `blocks`) and the latest finalize run
+ * to a set of card rows. Both lookups are board-scoped batched queries — one
+ * for the blocker edges, one for the latest finalize run per session — so this
+ * is cheap to call once per request whether it enriches the whole board or a
+ * single paginated column slice.
+ */
+function enrichCards(stmts: Stmts, boardId: string, cards: KanbanCardRow[]): EnrichedCard[] {
+  const index = loadBoardBlockers(stmts, boardId);
+  const finalizeRuns = loadBoardFinalizeRuns(stmts, boardId);
+  return cards.map((c) => ({
+    ...c,
+    blockers: index.blockersByCard.get(c.id) ?? [],
+    blocks: index.blocksByCard.get(c.id) ?? [],
+    finalize_run: c.session_id ? (finalizeRuns.get(c.session_id) ?? null) : null,
+  }));
+}
+
+/**
+ * Fetch one keyset page of a column's cards ordered by `(position, id)`.
+ *
+ * Asks the DB for `limit + 1` rows: if the extra row comes back there's a next
+ * page, and `nextCursor` encodes the last returned (in-page) card so the
+ * caller can resume strictly after it. Returns `nextCursor: null` on the final
+ * page. Pass `cursor = null` for the first page.
+ */
+function fetchColumnCardPage(
+  stmts: Stmts,
+  columnId: string,
+  limit: number,
+  cursor: CardCursor | null,
+): { cards: KanbanCardRow[]; nextCursor: string | null } {
+  const fetchN = limit + 1;
+  const rows = (
+    cursor
+      ? stmts.getKanbanCardsByColumnPageAfter.all(
+          columnId,
+          cursor.position,
+          cursor.position,
+          cursor.id,
+          fetchN,
+        )
+      : stmts.getKanbanCardsByColumnPageFirst.all(columnId, fetchN)
+  ) as KanbanCardRow[];
+
+  if (rows.length > limit) {
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    return { cards: page, nextCursor: encodeCardCursor({ position: last.position, id: last.id }) };
+  }
+  return { cards: rows, nextCursor: null };
+}
+
+/** Per-column total card count, keyed by column id. Used for the board `counts` map. */
+function loadColumnCounts(stmts: Stmts, columns: KanbanColumnRow[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const col of columns) {
+    const row = stmts.countKanbanCardsByColumn.get(col.id) as { n: number } | undefined;
+    counts[col.id] = row?.n ?? 0;
+  }
+  return counts;
 }
 
 /**
@@ -233,27 +302,66 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
   const router = Router();
 
+  // GET /board returns the full board state plus a `counts` map giving the
+  // total card count per column.
+  //
+  // Shape:
+  //   - `counts` (always present): `{ [columnId]: total }`. Additive — clients
+  //     that ignore it keep working.
+  //   - `?limit=N` (optional, opt-in): when supplied, `cards` carries only the
+  //     first N cards per column (ordered by position, id), bounding the
+  //     payload to N × columnCount. Clients fetch the rest via
+  //     GET /board/columns/:columnId/cards using `counts` to know when to.
+  //     When omitted, `cards` is the full board (backward compatible) so the
+  //     current web / mobile clients are unaffected until they opt in.
   router.get('/api/projects/:projectId/board', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const data = getOrCreateBoard(stmts, req.params.projectId as string);
-    // Annotate each card with its blocker relationships. A single indexed
-    // query fetches every edge on the board; we then attach empty arrays
-    // for cards with no blockers so clients can rely on the shape.
-    const index = loadBoardBlockers(stmts, data.board.id);
-    // Latest finalize run per session, keyed by session_id — one window-
-    // function query per board fetch. Folded into each card so the per-
-    // card badge in the client can render from board state instead of
-    // self-fetching (PR #1169 reviewer feedback).
-    const finalizeRuns = loadBoardFinalizeRuns(stmts, data.board.id);
-    const enrichedCards: EnrichedCard[] = data.cards.map((c) => ({
-      ...c,
-      blockers: index.blockersByCard.get(c.id) ?? [],
-      blocks: index.blocksByCard.get(c.id) ?? [],
-      finalize_run: c.session_id ? (finalizeRuns.get(c.session_id) ?? null) : null,
-    }));
-    res.json({ ...data, cards: enrichedCards });
+    const counts = loadColumnCounts(stmts, data.columns);
+
+    let cards: KanbanCardRow[];
+    if (req.query.limit !== undefined) {
+      const limit = clampPageLimit(req.query.limit);
+      cards = [];
+      for (const col of data.columns) {
+        cards.push(...fetchColumnCardPage(stmts, col.id, limit, null).cards);
+      }
+    } else {
+      cards = data.cards;
+    }
+
+    // Annotate each card with its blocker graph and latest finalize run. Both
+    // are board-scoped batched queries; folding them into the payload lets the
+    // client render blocker banners and per-card finalize badges without a GET
+    // per card.
+    res.json({ ...data, cards: enrichCards(stmts, data.board.id, cards), counts });
   });
+
+  // GET /board/columns/:columnId/cards — keyset-paginated slice of one column.
+  // Query: `limit` (default 50, max 200), `cursor` (opaque token from a prior
+  // `nextCursor`). Returns `{ cards: EnrichedCard[], nextCursor, total }`.
+  router.get(
+    '/api/projects/:projectId/board/columns/:columnId/cards',
+    (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const { board } = getOrCreateBoard(stmts, project.id);
+      const column = stmts.getKanbanColumn.get(req.params.columnId) as KanbanColumnRow | undefined;
+      if (!column || column.board_id !== board.id) {
+        return res.status(404).json({ error: 'Column not found' });
+      }
+      let cursor: CardCursor | null = null;
+      if (req.query.cursor !== undefined && req.query.cursor !== '') {
+        cursor = decodeCardCursor(String(req.query.cursor));
+        if (!cursor) return res.status(400).json({ error: 'Invalid cursor' });
+      }
+      const limit = clampPageLimit(req.query.limit);
+      const total = (stmts.countKanbanCardsByColumn.get(column.id) as { n: number }).n;
+      const { cards: rows, nextCursor } = fetchColumnCardPage(stmts, column.id, limit, cursor);
+      return res.json({ cards: enrichCards(stmts, board.id, rows), nextCursor, total });
+    },
+  );
 
   router.post('/api/projects/:projectId/board/columns', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
