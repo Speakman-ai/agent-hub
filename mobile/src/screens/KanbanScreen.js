@@ -5,6 +5,7 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
+  FlatList,
   Modal,
   StyleSheet,
   Alert,
@@ -39,6 +40,14 @@ import {
   engineEntriesWithModels,
 } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
+import {
+  KANBAN_PAGE_SIZE,
+  appendCardPage,
+  pagingEntry,
+  seedPagingFromBoard,
+  loadedCountsByColumn,
+  canLoadMore,
+} from '../utils/kanbanPagination';
 
 const DEFAULT_COLUMNS = [
   { id: 'todo', name: 'To Do', color: '#3B82F6' },
@@ -78,6 +87,12 @@ export default function KanbanScreen({ route, navigation }) {
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeColumn, setActiveColumn] = useState(null);
+  // Cards loaded so far across all columns (grows as the active column pages).
+  // Replaces the old `board.cards` (which held the entire board).
+  const [cards, setCards] = useState([]);
+  // Per-column keyset-pagination state, keyed by column id:
+  //   { nextCursor, hasMore, loading, total }
+  const [columnPaging, setColumnPaging] = useState({});
   const [showAddCard, setShowAddCard] = useState(false);
   const [newCardTitle, setNewCardTitle] = useState('');
   const [newCardPriority, setNewCardPriority] = useState('medium');
@@ -130,11 +145,72 @@ export default function KanbanScreen({ route, navigation }) {
   );
   const columnInitialized = useRef(false);
 
-  const loadBoard = useCallback(async () => {
+  // Refs mirroring async-read state so the FlatList onEndReached callback and
+  // the load-more / drain guards always see live values without re-binding on
+  // every render. `inflightRef` is a synchronous double-fetch guard (state
+  // updates are async, so a second onEndReached can fire before loading:true
+  // commits).
+  const cardsRef = useRef(cards);
+  const columnPagingRef = useRef(columnPaging);
+  const inflightRef = useRef(new Set());
+  useEffect(() => {
+    cardsRef.current = cards;
+  }, [cards]);
+  useEffect(() => {
+    columnPagingRef.current = columnPaging;
+  }, [columnPaging]);
+
+  // Load the board's first page per column (one `?limit=` request), then page
+  // forward on any column the caller asks us to preserve a deeper scroll
+  // position for (`preserveDepth[colId]` = cards previously loaded). Mirrors
+  // the web client's loadBoardPaged so a background reconcile doesn't collapse
+  // a column the user already scrolled.
+  const loadBoardPaged = useCallback(
+    async (preserveDepth) => {
+      const data = await api.getProjectBoard(projectId, { limit: KANBAN_PAGE_SIZE });
+      const cursors = data.cursors || {};
+      const allCards = [...(data.cards || [])];
+      const paging = seedPagingFromBoard({
+        columns: data.columns,
+        cards: allCards,
+        cursors,
+        counts: data.counts,
+      });
+      if (preserveDepth) {
+        for (const col of data.columns || []) {
+          let loaded = allCards.filter((c) => c.column_id === col.id).length;
+          let nextCursor = paging[col.id]?.nextCursor ?? null;
+          const want = preserveDepth[col.id] ?? 0;
+          while (nextCursor && loaded < want) {
+            const res = await api.getColumnCards(projectId, col.id, {
+              cursor: nextCursor,
+              limit: KANBAN_PAGE_SIZE,
+            });
+            const page = res.cards || [];
+            if (page.length === 0) {
+              nextCursor = null;
+              break;
+            }
+            allCards.push(...page);
+            loaded += page.length;
+            nextCursor = res.nextCursor ?? null;
+          }
+          paging[col.id] = pagingEntry(nextCursor, paging[col.id]?.total, loaded);
+        }
+      }
+      return { data, allCards, paging };
+    },
+    [projectId],
+  );
+
+  // Initial load / project switch: reset every column to its first page.
+  const fetchBoard = useCallback(async () => {
     if (!projectId) return;
     try {
-      const data = await api.getProjectBoard(projectId);
+      const { data, allCards, paging } = await loadBoardPaged(null);
       setBoard(data);
+      setCards(allCards);
+      setColumnPaging(paging);
       if (data?.columns?.length > 0 && !columnInitialized.current) {
         setActiveColumn(data.columns[0].id);
         columnInitialized.current = true;
@@ -144,29 +220,164 @@ export default function KanbanScreen({ route, navigation }) {
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, loadBoardPaged]);
 
+  // WS / refresh reconciliation. A `kanban_update` doesn't say which column
+  // changed, so reload the first page of every column and re-page each one up
+  // to its previously-loaded depth (counts, positions, cross-column moves all
+  // re-resolve) without yanking the user back to the top of a scrolled column.
+  const reconcileBoard = useCallback(async () => {
+    if (!projectId) return;
+    const preserve = loadedCountsByColumn(cardsRef.current);
+    try {
+      const { data, allCards, paging } = await loadBoardPaged(preserve);
+      setBoard(data);
+      setCards(allCards);
+      setColumnPaging(paging);
+    } catch (err) {
+      console.error('Failed to reconcile board:', err);
+    }
+  }, [projectId, loadBoardPaged]);
+
+  // Post-mutation refreshes (create / move / delete / assign) preserve each
+  // column's scroll depth rather than collapsing back to the first page.
+  const loadBoard = reconcileBoard;
+
+  // Initial mount / project switch.
   useEffect(() => {
-    loadBoard();
-  }, [loadBoard, kanbanRefreshKey]);
+    fetchBoard();
+  }, [fetchBoard]);
 
-  // Notification deep-link: open the target card once the board loads.
+  // Reconcile on a `kanban_update` WS bump (skip the first run — fetchBoard
+  // already covers the initial load).
+  const firstRefreshRef = useRef(true);
+  useEffect(() => {
+    if (firstRefreshRef.current) {
+      firstRefreshRef.current = false;
+      return;
+    }
+    reconcileBoard();
+  }, [kanbanRefreshKey, reconcileBoard]);
+
+  // Append the next keyset page for one column. Guarded against double-fetch
+  // (sync inflightRef) and against fetching past the end. Deduped by id so a
+  // racing reconcile can't double-insert.
+  const loadMoreColumn = useCallback(
+    async (columnId) => {
+      const entry = columnPagingRef.current[columnId];
+      if (!canLoadMore(entry)) return;
+      if (inflightRef.current.has(columnId)) return;
+      inflightRef.current.add(columnId);
+      setColumnPaging((prev) => ({
+        ...prev,
+        [columnId]: { ...prev[columnId], loading: true },
+      }));
+      try {
+        const res = await api.getColumnCards(projectId, columnId, {
+          cursor: entry.nextCursor,
+          limit: KANBAN_PAGE_SIZE,
+        });
+        const page = res.cards || [];
+        setCards((prev) => appendCardPage(prev, page));
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: pagingEntry(res.nextCursor, res.total ?? prev[columnId]?.total, 0),
+        }));
+      } catch (err) {
+        console.error('Failed to load more cards:', err);
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: { ...prev[columnId], loading: false },
+        }));
+      } finally {
+        inflightRef.current.delete(columnId);
+      }
+    },
+    [projectId],
+  );
+
+  // Page a column all the way to its end. Used when an epic filter is active:
+  // the filter runs client-side over loaded cards, so matches living past the
+  // first page would be invisible unless the column is fully loaded.
+  const drainColumn = useCallback(
+    async (columnId) => {
+      let cursor = columnPagingRef.current[columnId]?.nextCursor ?? null;
+      if (!cursor) return;
+      if (inflightRef.current.has(columnId)) return;
+      inflightRef.current.add(columnId);
+      setColumnPaging((prev) => ({
+        ...prev,
+        [columnId]: { ...prev[columnId], loading: true },
+      }));
+      try {
+        const collected = [];
+        let total;
+        while (cursor) {
+          const res = await api.getColumnCards(projectId, columnId, {
+            cursor,
+            limit: KANBAN_PAGE_SIZE,
+          });
+          const page = res.cards || [];
+          collected.push(...page);
+          total = res.total ?? total;
+          cursor = page.length ? (res.nextCursor ?? null) : null;
+        }
+        if (collected.length) setCards((prev) => appendCardPage(prev, collected));
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: pagingEntry(null, total ?? prev[columnId]?.total, 0),
+        }));
+      } catch (err) {
+        console.error('Failed to load remaining cards for filter:', err);
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: { ...prev[columnId], loading: false },
+        }));
+      } finally {
+        inflightRef.current.delete(columnId);
+      }
+    },
+    [projectId],
+  );
+
+  // Notification deep-link: open the target card once the board loads. The
+  // card may live past the first loaded page, so fall back to a one-shot full
+  // board fetch to locate it when it isn't in the loaded set.
   const deepLinkHandledRef = useRef(null);
   useEffect(() => {
-    if (!deepLinkCardId || !board?.cards) return;
+    if (!deepLinkCardId || loading) return;
     if (deepLinkHandledRef.current === deepLinkCardId) return;
-    const card = board.cards.find((c) => c.id === deepLinkCardId);
-    if (!card) return;
-    deepLinkHandledRef.current = deepLinkCardId;
-    setActiveColumn(card.column_id);
-    setSelectedCard(card);
-    setEditDescription(card.description || '');
-    setEditPriority(card.priority || '');
-    setEditAssignee(card.assignee || '');
-    setEditLabels((card.labels || []).join(', '));
-    setEditGithubUrl(card.github_url || '');
-    setEditEpicId(card.epic_id || '');
-  }, [deepLinkCardId, board]);
+    let cancelled = false;
+    const openCard = (card) => {
+      if (!card || cancelled) return;
+      deepLinkHandledRef.current = deepLinkCardId;
+      setActiveColumn(card.column_id);
+      setSelectedCard(card);
+      setEditDescription(card.description || '');
+      setEditPriority(card.priority || '');
+      setEditAssignee(card.assignee || '');
+      setEditLabels((card.labels || []).join(', '));
+      setEditGithubUrl(card.github_url || '');
+      setEditEpicId(card.epic_id || '');
+    };
+    const loaded = cards.find((c) => c.id === deepLinkCardId);
+    if (loaded) {
+      openCard(loaded);
+      return undefined;
+    }
+    (async () => {
+      try {
+        const full = await api.getProjectBoard(projectId);
+        const card = full?.cards?.find((c) => c.id === deepLinkCardId);
+        openCard(card);
+      } catch {
+        // Best-effort deep link; ignore failures.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deepLinkCardId, loading, cards, projectId]);
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;
@@ -188,8 +399,7 @@ export default function KanbanScreen({ route, navigation }) {
   }, [modelConfig]);
 
   const cardsForColumn = (columnId) => {
-    if (!board?.cards) return [];
-    const scoped = filterCardsByEpic(board.cards, selectedEpicId);
+    const scoped = filterCardsByEpic(cards, selectedEpicId);
     return scoped
       .filter((c) => c.column_id === columnId)
       .sort((a, b) => (a.position || 0) - (b.position || 0));
@@ -223,25 +433,32 @@ export default function KanbanScreen({ route, navigation }) {
     }
   };
 
-  const handleOpenDetail = async (card) => {
-    setSelectedCard(card);
-    setEditDescription(card.description || '');
-    setEditPriority(card.priority || 'medium');
-    setEditAssignee(card.assignee || '');
-    setEditAssignModel(card.assign_model || '');
-    setEditAssignEngine(card.assign_engine || '');
-    setEditLabels(typeof card.labels === 'string' ? card.labels : (card.labels || []).join(', '));
-    setEditGithubUrl(card.github_issue_url || '');
-    setEditEpicId(card.epic_id || '');
-    setShowReassign(false);
-    // Load comments
-    try {
-      const data = await api.getCardComments(projectId, card.id);
-      setComments(data || []);
-    } catch {
-      setComments([]);
-    }
-  };
+  // Stable across renders (only state setters + projectId) so the memoized
+  // FlatList renderCard never closes over a stale handler.
+  const handleOpenDetail = useCallback(
+    async (card) => {
+      setSelectedCard(card);
+      setEditDescription(card.description || '');
+      setEditPriority(card.priority || 'medium');
+      setEditAssignee(card.assignee || '');
+      setEditAssignModel(card.assign_model || '');
+      setEditAssignEngine(card.assign_engine || '');
+      setEditLabels(
+        typeof card.labels === 'string' ? card.labels : (card.labels || []).join(', '),
+      );
+      setEditGithubUrl(card.github_issue_url || '');
+      setEditEpicId(card.epic_id || '');
+      setShowReassign(false);
+      // Load comments
+      try {
+        const data = await api.getCardComments(projectId, card.id);
+        setComments(data || []);
+      } catch {
+        setComments([]);
+      }
+    },
+    [projectId],
+  );
 
   // --- Epic CRUD / linking ---
 
@@ -446,10 +663,11 @@ export default function KanbanScreen({ route, navigation }) {
     }
   };
 
-  const handleLongPressCard = (card) => {
+  // Stable across renders (only state setters) — see handleOpenDetail.
+  const handleLongPressCard = useCallback((card) => {
     setMoveCardTarget(card);
     setShowMoveModal(true);
-  };
+  }, []);
 
   const commitMoveCard = async (cardId, targetColumnId) => {
     try {
@@ -489,10 +707,13 @@ export default function KanbanScreen({ route, navigation }) {
   };
 
   const refreshBoardAndSelected = async () => {
-    const data = await api.getProjectBoard(projectId);
+    const preserve = loadedCountsByColumn(cardsRef.current);
+    const { data, allCards, paging } = await loadBoardPaged(preserve);
     setBoard(data);
+    setCards(allCards);
+    setColumnPaging(paging);
     if (selectedCard) {
-      const refreshed = data?.cards?.find((c) => c.id === selectedCard.id);
+      const refreshed = allCards.find((c) => c.id === selectedCard.id);
       if (refreshed) setSelectedCard(refreshed);
     }
   };
@@ -525,6 +746,83 @@ export default function KanbanScreen({ route, navigation }) {
       Alert.alert('Error', 'Failed to remove blocker');
     }
   };
+
+  // While an epic filter is active the column is drained to its end (see the
+  // effect below), so suppress the infinite-scroll fetch — filtering runs
+  // client-side over the fully loaded set.
+  const paginationActive = !selectedEpicId;
+
+  // When an epic filter is active, the filter runs over loaded cards only, so
+  // matches living past the first page would be invisible. Load the active
+  // column in full whenever a filter is selected.
+  //
+  // NOTE: these hooks must stay above the `if (loading) return` early return
+  // below — declaring them after a conditional return would change the hook
+  // count between the loading and loaded renders (rules-of-hooks violation).
+  useEffect(() => {
+    if (selectedEpicId && activeColumn) {
+      drainColumn(activeColumn);
+    }
+  }, [selectedEpicId, activeColumn, drainColumn]);
+
+  const handleEndReached = useCallback(() => {
+    if (!activeColumn || !paginationActive) return;
+    loadMoreColumn(activeColumn);
+  }, [activeColumn, paginationActive, loadMoreColumn]);
+
+  const renderCard = useCallback(
+    ({ item: card }) => (
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => handleOpenDetail(card)}
+        onLongPress={() => handleLongPressCard(card)}
+        activeOpacity={0.7}
+      >
+        <Text style={styles.cardTitle}>{card.title}</Text>
+        <View style={styles.cardMeta}>
+          <View style={[styles.priorityDotSmall, { backgroundColor: getPriorityColor(card.priority) }]} />
+          <Text style={[styles.cardPriorityText, { color: getPriorityColor(card.priority) }]}>
+            {getPriorityLabel(card.priority)}
+          </Text>
+          {hasUnresolvedBlockers(card) && (
+            <View style={styles.blockerBadge} testID="card-blocker-badge">
+              <Text style={styles.blockerBadgeText}>
+                {'Lock '}{card.blockers.filter((b) => !b.done).length}
+              </Text>
+            </View>
+          )}
+          {card.assignee ? (
+            <Text style={styles.cardAssignee} numberOfLines={1}>{card.assignee}</Text>
+          ) : null}
+        </View>
+        {card.epic_id && (() => {
+          const cardEpic = findEpic(epics, card.epic_id);
+          if (!cardEpic) return null;
+          return (
+            <View style={styles.cardEpicRow}>
+              <View style={[styles.epicDot, { backgroundColor: cardEpic.color || DEFAULT_EPIC_COLOR }]} />
+              <Text
+                style={[styles.cardEpicText, { color: cardEpic.color || DEFAULT_EPIC_COLOR }]}
+                numberOfLines={1}
+              >
+                {epicDropdownLabel(cardEpic)}
+              </Text>
+            </View>
+          );
+        })()}
+        {card.labels && (typeof card.labels === 'string' ? card.labels : '').length > 0 && (
+          <View style={styles.labelsRow}>
+            {(typeof card.labels === 'string' ? card.labels.split(',').map((l) => l.trim()).filter(Boolean) : card.labels).map((label, i) => (
+              <View key={i} style={styles.labelChip}>
+                <Text style={styles.labelChipText}>{label}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </TouchableOpacity>
+    ),
+    [epics, handleOpenDetail, handleLongPressCard],
+  );
 
   if (loading) {
     return (
@@ -1001,7 +1299,7 @@ export default function KanbanScreen({ route, navigation }) {
                     selectedCard?.id,
                     ...((selectedCard?.blockers) || []).map((b) => b.id),
                   ]);
-                  const options = (board?.cards || [])
+                  const options = cards
                     .filter((c) => !excluded.has(c.id))
                     .filter((c) => !q || (c.title || '').toLowerCase().includes(q))
                     .slice(0, 40);
@@ -1078,6 +1376,7 @@ export default function KanbanScreen({ route, navigation }) {
   }
 
   const currentCards = cardsForColumn(activeColumn);
+  const activePaging = activeColumn ? columnPaging[activeColumn] : undefined;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -1127,7 +1426,11 @@ export default function KanbanScreen({ route, navigation }) {
       {/* Column Tabs */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabBarContent}>
         {columns.map((col) => {
-          const count = cardsForColumn(col.id).length;
+          // With an epic filter active we can only count loaded+filtered cards;
+          // otherwise prefer the server-reported column total.
+          const count = selectedEpicId
+            ? cardsForColumn(col.id).length
+            : (columnPaging[col.id]?.total ?? cardsForColumn(col.id).length);
           const isActive = activeColumn === col.id;
           return (
             <TouchableOpacity
@@ -1149,64 +1452,27 @@ export default function KanbanScreen({ route, navigation }) {
       </ScrollView>
 
       {/* Cards */}
-      <ScrollView style={styles.cardList} contentContainerStyle={styles.cardListContent}>
-        {currentCards.length === 0 && (
+      <FlatList
+        style={styles.cardList}
+        contentContainerStyle={styles.cardListContent}
+        data={currentCards}
+        keyExtractor={(card) => card.id}
+        renderItem={renderCard}
+        onEndReached={handleEndReached}
+        onEndReachedThreshold={0.4}
+        ListEmptyComponent={
           <View style={styles.emptyCol}>
             <Text style={styles.emptyColText}>No cards in {activeColumnObj?.name || 'this column'}</Text>
           </View>
-        )}
-        {currentCards.map((card) => (
-          <TouchableOpacity
-            key={card.id}
-            style={styles.card}
-            onPress={() => handleOpenDetail(card)}
-            onLongPress={() => handleLongPressCard(card)}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.cardTitle}>{card.title}</Text>
-            <View style={styles.cardMeta}>
-              <View style={[styles.priorityDotSmall, { backgroundColor: getPriorityColor(card.priority) }]} />
-              <Text style={[styles.cardPriorityText, { color: getPriorityColor(card.priority) }]}>
-                {getPriorityLabel(card.priority)}
-              </Text>
-              {hasUnresolvedBlockers(card) && (
-                <View style={styles.blockerBadge} testID="card-blocker-badge">
-                  <Text style={styles.blockerBadgeText}>
-                    {'Lock '}{card.blockers.filter((b) => !b.done).length}
-                  </Text>
-                </View>
-              )}
-              {card.assignee ? (
-                <Text style={styles.cardAssignee} numberOfLines={1}>{card.assignee}</Text>
-              ) : null}
+        }
+        ListFooterComponent={
+          activePaging?.loading ? (
+            <View style={styles.listFooter}>
+              <ActivityIndicator color={colors.gray400} />
             </View>
-            {card.epic_id && (() => {
-              const cardEpic = findEpic(epics, card.epic_id);
-              if (!cardEpic) return null;
-              return (
-                <View style={styles.cardEpicRow}>
-                  <View style={[styles.epicDot, { backgroundColor: cardEpic.color || DEFAULT_EPIC_COLOR }]} />
-                  <Text
-                    style={[styles.cardEpicText, { color: cardEpic.color || DEFAULT_EPIC_COLOR }]}
-                    numberOfLines={1}
-                  >
-                    {epicDropdownLabel(cardEpic)}
-                  </Text>
-                </View>
-              );
-            })()}
-            {card.labels && (typeof card.labels === 'string' ? card.labels : '').length > 0 && (
-              <View style={styles.labelsRow}>
-                {(typeof card.labels === 'string' ? card.labels.split(',').map(l => l.trim()).filter(Boolean) : card.labels).map((label, i) => (
-                  <View key={i} style={styles.labelChip}>
-                    <Text style={styles.labelChipText}>{label}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+          ) : null
+        }
+      />
 
       {/* Add Card FAB */}
       {!showAddCard && (
@@ -1309,7 +1575,7 @@ export default function KanbanScreen({ route, navigation }) {
                 <Text style={styles.modalOptionText}>All Epics ({epics.length})</Text>
               </TouchableOpacity>
               {epics.map((epic) => {
-                const count = countOpenCardsForEpic(board?.cards, epic.id, doneColumnIds);
+                const count = countOpenCardsForEpic(cards, epic.id, doneColumnIds);
                 return (
                   <TouchableOpacity
                     key={epic.id}
@@ -1601,6 +1867,7 @@ const styles = StyleSheet.create({
   // Cards list
   cardList: { flex: 1 },
   cardListContent: { padding: 12, paddingBottom: 80 },
+  listFooter: { paddingVertical: 16, alignItems: 'center' },
   emptyCol: { paddingVertical: 40, alignItems: 'center' },
   emptyColText: { fontSize: 14, color: colors.gray600 },
 

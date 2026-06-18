@@ -509,3 +509,37 @@ describe('api support-ticket helpers — URL + method parity with web client', (
     expect(init?.method).toBe('POST');
   });
 });
+
+describe('api kanban pagination helpers — URL parity with web client', () => {
+  it('getProjectBoard(projectId) without opts → GET /projects/:id/board', async () => {
+    await api.getProjectBoard('agent-hub');
+    const [url] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/board');
+  });
+
+  it('getProjectBoard(projectId, { limit }) appends the limit query', async () => {
+    await api.getProjectBoard('agent-hub', { limit: 50 });
+    const [url] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/board?limit=50');
+  });
+
+  it('getColumnCards(projectId, columnId, { limit }) → first page URL', async () => {
+    await api.getColumnCards('agent-hub', 'col-1', { limit: 50 });
+    const [url] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/board/columns/col-1/cards?limit=50');
+  });
+
+  it('getColumnCards forwards + URL-encodes the cursor', async () => {
+    await api.getColumnCards('agent-hub', 'col-1', { cursor: 'a/b+c=', limit: 50 });
+    const [url] = lastCall();
+    expect(url).toBe(
+      'https://example.test/api/projects/agent-hub/board/columns/col-1/cards?cursor=a%2Fb%2Bc%3D&limit=50',
+    );
+  });
+
+  it('getColumnCards without opts → bare column cards URL', async () => {
+    await api.getColumnCards('agent-hub', 'col-1');
+    const [url] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/board/columns/col-1/cards');
+  });
+});

@@ -474,7 +474,27 @@ export const api = {
   getSessionQueue: (sessionId) => fetchJSON(`/sessions/${sessionId}/queue`),
 
   // Kanban Board
-  getProjectBoard: (projectId) => fetchJSON(`/projects/${projectId}/board`),
+  // Pass `{ limit }` to opt into per-column pagination: `cards` is capped to the
+  // first `limit` cards per column (keyset-ordered) and the response gains a
+  // `cursors` map `{ [columnId]: nextCursor|null }` (plus the always-present
+  // `counts` map) for seeding per-column infinite scroll. Omit `limit` for the
+  // full board (backward compatible).
+  getProjectBoard: (projectId, opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit != null) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/board${qs ? `?${qs}` : ''}`);
+  },
+  // One keyset page of a single column's cards. `cursor` is the opaque token
+  // from a prior `nextCursor` (or the board's `cursors` map). Returns
+  // `{ cards, nextCursor, total }`.
+  getColumnCards: (projectId, columnId, opts = {}) => {
+    const params = new URLSearchParams();
+    if (opts.cursor) params.set('cursor', opts.cursor);
+    if (opts.limit != null) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/board/columns/${columnId}/cards${qs ? `?${qs}` : ''}`);
+  },
   createKanbanCard: (projectId, data) =>
     fetchJSON(`/projects/${projectId}/board/cards`, {
       method: 'POST',
