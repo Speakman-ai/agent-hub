@@ -31,6 +31,12 @@ auth, error self-reporting, and a map to four domain sub-skills.
 > are the single source of truth and already handle base URL, auth, and
 > JSON bodies. If a wrapper is missing, add it.
 
+> **Script-path contract — wrappers are on `PATH`.** The server prepends the
+> bundled skill's `scripts/` dir to every spawn's `PATH` and exports its root
+> as **`$AGENT_HUB_SKILLS_DIR`**. Call wrappers by **bare name** (`board.sh`,
+> `wiki-search.sh`, `server.sh`) from any CWD — no `scripts/` prefix, never
+> `find /`. On a "command not found", use `"$AGENT_HUB_SKILLS_DIR"/scripts/<name>.sh` and report the PATH miss.
+
 > **API contract reference.** Every endpoint's request/response shape is
 > published at <https://speakman-ai.github.io/agent-hub/> (auto-generated
 > from the Zod registry, with `x-internal: true` operations stripped, kept
@@ -70,6 +76,7 @@ All scripts read these env vars:
 | `AGENT_HUB_API_KEY` | (injected by the server) | Sent as `x-api-key`; treated as Owner for all orgs. |
 | `PROJECT_ID` | (required) | Slug from the system prompt, e.g. `agent-hub`. |
 | `AGENT_HUB_SESSION_ID` | (injected) | Your session id. Pass when creating cards to auto-link. |
+| `AGENT_HUB_SKILLS_DIR` | (injected) | Absolute path to the bundled `agent-hub` skill. Its `scripts/` dir is also prepended to `PATH`, so wrappers run by bare name. |
 | `AGENT_HUB_CODEX_DANGER_BYPASS` | `true` (server default) | Server-only: when true (`1`/`true`/`on`, or unset), interactive Codex spawns use `--dangerously-bypass-approvals-and-sandbox` outside Ask Mode instead of `--full-auto` (needed when Linux bubblewrap cannot create user namespaces). Set `false`/`0`/`off` to opt into Codex's sandbox. Same as `codexDangerBypass` in host `config.json` or `PATCH /api/config`. Applies to chat, conference rooms, Design Studio, and `<delegate>` sub-agent runs plus delegation synthesis when the lead engine is Codex. |
 
 Identify yourself / the project:

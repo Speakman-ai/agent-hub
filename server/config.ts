@@ -4,7 +4,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import type { AppConfig } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
-import { resolveSpawnPath, refreshShellPath, getCachedShellPath } from './shell-path.js';
+import {
+  resolveSpawnPath,
+  refreshShellPath,
+  getCachedShellPath,
+  mergePaths,
+} from './shell-path.js';
 import { getActualPort } from './server-port.js';
 import { ensurePerUserHome } from './per-user-home.js';
 import { ensureHostCliHome } from './host-cli-home.js';
@@ -19,6 +24,26 @@ export { refreshShellPath, getCachedShellPath };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HOME = os.homedir();
+
+// ─── Bundled agent-hub skill location ────────────────────────────
+// The agent-hub skill ships its shell wrappers (`board.sh`, `wiki-search.sh`,
+// `server.sh`, …) under `server/default-skills/agent-hub/scripts`. Spawned
+// sessions document those wrappers but historically had no reliable way to
+// reach them: the scripts were neither on PATH nor pointed at by any env var,
+// so the first documented invocation (`scripts/board.sh`) failed and the agent
+// fell back to hand-rolled curl. `resolveSkillsDir` returns the skill root
+// when present so `buildSpawnEnv` can export it as `AGENT_HUB_SKILLS_DIR` and
+// prepend its `scripts/` dir to PATH (wrappers become callable by bare name).
+const AGENT_HUB_SKILL_DIR: string = path.join(__dirname, 'default-skills', 'agent-hub');
+
+/**
+ * Absolute path to the bundled `agent-hub` skill directory, or null when it
+ * cannot be found on disk (e.g. an unusual packaged layout). Exported so the
+ * spawn-env smoke test can assert the contract without re-deriving the path.
+ */
+export function resolveSkillsDir(): string | null {
+  return existsSync(AGENT_HUB_SKILL_DIR) ? AGENT_HUB_SKILL_DIR : null;
+}
 
 // ─── Data directory ─────────────────────────────────────────────
 const DEFAULT_DATA_DIR = path.join(HOME, '.agent-hub', 'data');
@@ -606,6 +631,23 @@ export function buildSpawnEnv(
   // (aws, gh, etc.) are visible without restarting the server. See
   // server/shell-path.ts for the full rationale.
   env.PATH = resolveSpawnPath(process.env.PATH);
+
+  // Skill-script contract: make the bundled agent-hub wrappers reachable on
+  // first call. Export the skill root as `AGENT_HUB_SKILLS_DIR` and prepend
+  // its `scripts/` dir to PATH so `board.sh`, `wiki-search.sh`, `server.sh`,
+  // etc. resolve by bare name regardless of the session's CWD or project.
+  // Without this the documented commands fail and agents fall back to
+  // hand-rolled curl (which then 401s on JWT deployments). Prepend (not
+  // append) so the canonical wrappers win over any same-named stragglers a
+  // project might carry.
+  const skillsDir = resolveSkillsDir();
+  if (skillsDir) {
+    env.AGENT_HUB_SKILLS_DIR = skillsDir;
+    // Prepend via mergePaths so the scripts dir wins, appears exactly once
+    // (even if the host PATH already contained it), and the join uses the
+    // platform `path.delimiter` (`;` on Windows) rather than a hardcoded `:`.
+    env.PATH = mergePaths(path.join(skillsDir, 'scripts'), env.PATH);
+  }
   // Hub config must win over the server process env: spreading `process.env` would keep a stale
   // ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN after the user clears keys in Settings or switches
   // to OAuth-only — Anthropic then prefers the API key and breaks Bearer/OAuth with 401.

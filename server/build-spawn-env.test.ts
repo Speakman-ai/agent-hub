@@ -7,6 +7,7 @@ import config, {
   buildSpawnEnv,
   normalizeClaudeSetupToken,
   refreshShellPath,
+  resolveSkillsDir,
 } from './config.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import { perUserHomePath } from './per-user-home.js';
@@ -648,6 +649,71 @@ describe('buildSpawnEnv — AGENT_HUB_DATA_DIR injection', () => {
     } finally {
       if (prev === undefined) delete process.env.AGENT_HUB_DATA_DIR;
       else process.env.AGENT_HUB_DATA_DIR = prev;
+    }
+  });
+});
+
+describe('buildSpawnEnv — agent-hub skill-script contract', () => {
+  beforeEach(() => {
+    refreshShellPath();
+  });
+
+  // The bundled agent-hub skill documents shell wrappers (board.sh,
+  // wiki-search.sh, server.sh, …) that agents are told to run on first call.
+  // These tests lock the contract that makes those commands resolvable from a
+  // spawned session: an env var pointing at the skill root, and the scripts
+  // dir on PATH so the wrappers are callable by bare name. Before this, the
+  // scripts were neither on PATH nor pointed at by any env var, so the first
+  // documented invocation failed and agents fell back to hand-rolled curl.
+
+  it('exports AGENT_HUB_SKILLS_DIR pointing at the bundled skill on disk', () => {
+    const skillsDir = resolveSkillsDir();
+    expect(skillsDir).toBeTruthy(); // bundled skill must exist in the repo
+    const env = buildSpawnEnv();
+    expect(env.AGENT_HUB_SKILLS_DIR).toBe(skillsDir);
+    expect(existsSync(env.AGENT_HUB_SKILLS_DIR as string)).toBe(true);
+  });
+
+  it('prepends the skill scripts dir to PATH', () => {
+    const skillsDir = resolveSkillsDir() as string;
+    const scriptsDir = path.join(skillsDir, 'scripts');
+    const env = buildSpawnEnv();
+    const segs = (env.PATH as string).split(path.delimiter);
+    expect(segs).toContain(scriptsDir);
+    // Prepended, so the canonical wrappers win over same-named stragglers.
+    expect(segs[0]).toBe(scriptsDir);
+  });
+
+  it('makes the documented wrappers resolvable by bare name on PATH', () => {
+    const env = buildSpawnEnv();
+    const segs = (env.PATH as string).split(path.delimiter);
+    // A representative set of wrappers the kanban / wiki / core skills tell
+    // agents to invoke. Each must live in exactly one PATH dir and be
+    // executable, or the documented happy-path breaks on first use.
+    for (const name of ['board.sh', 'wiki-search.sh', 'server.sh', 'get-board-state.sh']) {
+      const hit = segs
+        .map((d) => path.join(d, name))
+        .find((p) => existsSync(p) && (statSync(p).mode & 0o111) !== 0);
+      expect(hit, `${name} must be resolvable + executable on the spawn PATH`).toBeTruthy();
+    }
+  });
+
+  it('injects the scripts dir exactly once even if it was already on PATH', () => {
+    const skillsDir = resolveSkillsDir() as string;
+    const scriptsDir = path.join(skillsDir, 'scripts');
+    // Seed the inherited PATH with the scripts dir so a naive prepend would
+    // duplicate it. The prepend must dedupe (and not depend on the host PATH
+    // being globally duplicate-free).
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${scriptsDir}${path.delimiter}${prevPath ?? ''}`;
+    try {
+      const env = buildSpawnEnv();
+      const segs = (env.PATH as string).split(path.delimiter);
+      expect(segs.filter((s) => s === scriptsDir).length).toBe(1);
+      expect(segs[0]).toBe(scriptsDir);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
     }
   });
 });
