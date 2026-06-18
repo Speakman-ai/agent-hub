@@ -1764,6 +1764,283 @@ describe('PreviewComposeRuntime._startPreview — spawn log line', () => {
   });
 });
 
+// ─── log streaming: single source + runtime follow ─────────────────────
+
+describe('PreviewComposeRuntime — log streaming', () => {
+  const flushImmediate = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  interface LogCall {
+    line: string;
+    stream: 'stdout' | 'stderr';
+    groupId: string;
+    sessionId: string;
+  }
+
+  // A runtime whose health probe is flipped on demand via `setHealthy`. By
+  // default the probe fails and (with the clock un-advanced) the health loop
+  // parks after one probe — so tests that don't drive readiness keep the
+  // group `starting`. Tests that need the `ready` transition call
+  // `setHealthy(true)` then `driveToReady` to advance the clock.
+  function makeLogRuntime(db: Database.Database, harness: SpawnHarness) {
+    const logs: LogCall[] = [];
+    let healthy = false;
+    const fetch: HealthFetchFn = async () => {
+      if (healthy) return { ok: true, status: 200 };
+      throw new Error('ECONNREFUSED');
+    };
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      notifyLog: (info) =>
+        logs.push({
+          line: info.line,
+          stream: info.stream,
+          groupId: info.groupId,
+          sessionId: info.sessionId,
+        }),
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      config: { readyTimeoutMs: 1_000_000, healthIntervalMs: 10 },
+    });
+    const setHealthy = (v: boolean): void => {
+      healthy = v;
+    };
+    return { runtime, logs, clock, setHealthy };
+  }
+
+  async function driveToReady(
+    runtime: PreviewComposeRuntime,
+    clock: ReturnType<typeof makeClock>,
+    previewId: string,
+  ): Promise<void> {
+    for (let i = 0; i < 50 && runtime.getById(previewId)?.status === 'starting'; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+  }
+
+  // The runtime prepends a `[preview-compose] Starting …` banner whose
+  // port varies per run — drop it so assertions pin only the compose output.
+  const noBanner = (arr: string[]): string[] =>
+    arr.filter((l) => !l.startsWith('[preview-compose]'));
+
+  it('feeds build stdio into one coherent tail + live preview_log stream (no daemon poll churn)', async () => {
+    const db = freshDb();
+    const harness = makeSpawn(); // up child stays alive — we drive its stdio
+    const { runtime, logs } = makeLogRuntime(db, harness);
+
+    const result = await runtime.startPreview('sess-build', makeProject(), '/wt/build');
+    const up = harness.spawned[0];
+
+    up.stdout.emit('data', 'Building web\n');
+    up.stderr.emit('data', '#1 [internal] load build definition\n');
+    up.stdout.emit('data', 'Container web Started\n');
+
+    expect(noBanner(runtime.getLogTail(result.previewId))).toEqual([
+      'Building web',
+      '#1 [internal] load build definition',
+      'Container web Started',
+    ]);
+    // Each line fanned out once as a live event — the snapshot read above
+    // must NOT have replaced the tail out-of-band or re-emitted lines.
+    expect(noBanner(logs.map((l) => l.line))).toEqual([
+      'Building web',
+      '#1 [internal] load build definition',
+      'Container web Started',
+    ]);
+
+    // Repeated snapshot reads while the live producer is attached are
+    // idempotent — no duplication, no "looping", no extra live events.
+    const eventsBefore = logs.length;
+    const a = runtime.getLogTail(result.previewId);
+    const b = runtime.getLogTail(result.previewId);
+    expect(b).toEqual(a);
+    expect(logs.length).toBe(eventsBefore);
+    // Only the `up` spawn happened — getLogTail did not pull a daemon
+    // `--tail` snapshot (which is what used to fight the live stream).
+    expect(harness.spawned).toHaveLength(1);
+  });
+
+  it('starts `docker compose logs --follow` at the READY transition (not on build exit)', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { runtime, logs, clock, setHealthy } = makeLogRuntime(db, harness);
+
+    const result = await runtime.startPreview('sess-follow', makeProject(), '/wt/follow');
+    const up = harness.spawned[0];
+    up.stdout.emit('data', 'Container web Started\n');
+
+    // Build child exits (containers created/started) BEFORE health passes.
+    up.exitWith(0);
+    await flushImmediate();
+    await flushMicrotasks();
+    // Still `starting` → NO runtime follower yet (only the `up` spawn).
+    expect(runtime.getById(result.previewId)?.status).toBe('starting');
+    expect(harness.spawned).toHaveLength(1);
+
+    // Health passes → group flips `ready` → THIS is when the follower starts.
+    setHealthy(true);
+    await driveToReady(runtime, clock, result.previewId);
+    expect(runtime.getById(result.previewId)?.status).toBe('ready');
+
+    expect(harness.spawned).toHaveLength(2);
+    const followCall = harness.calls.find((c) => c.args.includes('--follow'));
+    expect(followCall?.command).toBe('docker');
+    // `--tail 4000`: at `ready` the tail holds only the build child's
+    // build/orchestration output (`up -d` never streams container stdout),
+    // so seeding container logs from startup is additive, not duplicative.
+    expect(followCall?.args).toEqual([
+      'compose',
+      '-p',
+      'agenthub-session-sess-follow',
+      '-f',
+      'docker-compose.yml',
+      'logs',
+      '--follow',
+      '--no-color',
+      '--tail',
+      '4000',
+    ]);
+    expect(followCall?.cwd).toBe('/wt/follow');
+
+    // Runtime stdout streams through the same appender — appended to the
+    // tail AND fanned out live, with db-service noise filtered out.
+    const follow = harness.spawned[1];
+    follow.stdout.emit('data', 'web-1  | GET /health 200\n');
+    follow.stdout.emit('data', 'db-1  | LOG: checkpoint complete\n');
+    follow.stdout.emit('data', 'web-1  | GET / 200\n');
+
+    expect(noBanner(runtime.getLogTail(result.previewId))).toEqual([
+      'Container web Started',
+      'web-1  | GET /health 200',
+      'web-1  | GET / 200',
+    ]);
+    expect(noBanner(logs.map((l) => l.line))).toEqual([
+      'Container web Started',
+      'web-1  | GET /health 200',
+      'web-1  | GET / 200',
+    ]);
+  });
+
+  it('does NOT start a follower when the build (up) exits non-zero', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { runtime } = makeLogRuntime(db, harness);
+
+    await runtime.startPreview('sess-buildfail', makeProject(), '/wt/bf');
+    const up = harness.spawned[0];
+    up.stderr.emit('data', 'ERROR: failed to build\n');
+
+    up.exitWith(1);
+    await flushImmediate();
+    await flushMicrotasks();
+
+    // A failed build never reaches `ready`, so no follower is ever started.
+    expect(harness.spawned).toHaveLength(1);
+  });
+
+  it('kills the live follower on stopPreview', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { runtime, clock, setHealthy } = makeLogRuntime(db, harness);
+
+    const result = await runtime.startPreview('sess-killfollow', makeProject(), '/wt/kf');
+    harness.spawned[0].exitWith(0);
+    await flushImmediate();
+    setHealthy(true);
+    await driveToReady(runtime, clock, result.previewId);
+    const follow = harness.spawned[1];
+    expect(follow.killed).toBe(false);
+
+    // stopPreview synchronously spawns `down` (before its first await) and
+    // kills the follower at the top — drive the down child to completion.
+    const stopping = runtime.stopPreview(result.previewId);
+    const down = harness.spawned[harness.spawned.length - 1];
+    down.exitWith(0);
+    await stopping;
+
+    expect(follow.killed).toBe(true);
+  });
+
+  it('does not race a follower into existence via a mid-teardown poll', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { runtime, clock, setHealthy } = makeLogRuntime(db, harness);
+
+    const result = await runtime.startPreview('sess-race', makeProject(), '/wt/race');
+    harness.spawned[0].exitWith(0);
+    await flushImmediate();
+    setHealthy(true);
+    await driveToReady(runtime, clock, result.previewId);
+    const followsBefore = harness.calls.filter((c) => c.args.includes('--follow')).length;
+    expect(followsBefore).toBe(1);
+
+    // Teardown begins (kills the follower, marks the group stopping, spawns
+    // `down`). A UI poll lands mid-teardown while the row is still `ready`…
+    const stopping = runtime.stopPreview(result.previewId);
+    runtime.getLogTail(result.previewId);
+    const down = harness.spawned[harness.spawned.length - 1];
+    down.exitWith(0);
+    await stopping;
+
+    // …the stoppingGroups guard must prevent a NEW follower against a stack
+    // we are tearing down.
+    const followsAfter = harness.calls.filter((c) => c.args.includes('--follow')).length;
+    expect(followsAfter).toBe(followsBefore);
+  });
+
+  it('re-attaches a follower from getLogTail for a READY stack that lost its in-memory producer (restart)', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { runtime } = makeLogRuntime(db, harness);
+
+    const result = await runtime.startPreview('sess-restart', makeProject(), '/wt/rs');
+    // Simulate a server restart: the in-memory child is gone, but the stack
+    // is up and the group row is `ready`.
+    harness.spawned[0].exitWith(2); // clears liveLogChildren (no follow on non-zero)
+    await flushImmediate();
+    db.prepare(`UPDATE worktree_preview_groups SET status = 'ready' WHERE id = ?`).run(
+      result.previewId,
+    );
+    expect(harness.spawned).toHaveLength(1);
+
+    // A snapshot read now should lazily (re)attach a follower so the next
+    // reads stream live instead of re-pulling daemon snapshots.
+    runtime.getLogTail(result.previewId);
+    const followCalls = harness.calls.filter((c) => c.args.includes('--follow'));
+    expect(followCalls).toHaveLength(1);
+    // getLogTail already seeded the tail via a one-shot daemon refresh, so
+    // the reattached follower uses `--tail 0` (no duplicate replay).
+    const tailIdx = followCalls[0].args.indexOf('--tail');
+    expect(followCalls[0].args[tailIdx + 1]).toBe('0');
+  });
+
+  it('getLogTail does NOT start a follower for a non-ready group whose build exited non-zero', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { runtime } = makeLogRuntime(db, harness);
+
+    const result = await runtime.startPreview('sess-bf-poll', makeProject(), '/wt/bfp');
+    const up = harness.spawned[0];
+    up.stderr.emit('data', 'ERROR: failed to build\n');
+    up.exitWith(1); // build failed; exit handler must not follow
+    await flushImmediate();
+    expect(harness.spawned).toHaveLength(1);
+
+    // A UI poll/snapshot lands while the row is still `starting` (the health
+    // loop hasn't timed out yet). It must NOT spawn a pointless long-lived
+    // follower against a stack that never came up…
+    const tail = runtime.getLogTail(result.previewId);
+    const followCalls = harness.calls.filter((c) => c.args.includes('--follow'));
+    expect(followCalls).toHaveLength(0);
+    // …and the build error stays visible in the tail (no daemon refresh wipe).
+    expect(tail).toContain('ERROR: failed to build');
+  });
+});
+
 // ─── systemClock smoke test ────────────────────────────────────────────
 
 describe('systemClock', () => {

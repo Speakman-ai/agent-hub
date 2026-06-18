@@ -688,6 +688,27 @@ export class PreviewComposeRuntime {
   private readonly logTails = new Map<string, string[]>();
   private readonly sessionIdByGroup = new Map<string, string>();
 
+  /**
+   * The single live log producer per group. During the build phase this
+   * is the `docker compose up -d --build` child (its stdio); once that
+   * exits 0 it is replaced by a long-lived `docker compose logs --follow`
+   * child streaming container runtime stdout. Exactly one producer feeds
+   * `logTails` at a time, so the in-memory tail is the single source of
+   * truth for both the per-line `preview_log` fan-out and the snapshot
+   * reads (`getLogTail` / `snapshotLogTail`). That coherence is what
+   * stops the boot log from "looping" — previously the health loop's
+   * `docker compose logs --tail` poll replaced the buffer out-of-band,
+   * diverging from the live stream the client was appending.
+   */
+  private readonly liveLogChildren = new Map<string, ChildProcess>();
+
+  /**
+   * Groups currently being torn down by `stopPreview`. Guards against a
+   * late `up`-child `exit(0)` re-spawning a `logs --follow` follower for a
+   * stack we are in the middle of `docker compose down`-ing.
+   */
+  private readonly stoppingGroups = new Set<string>();
+
   /** Per-session serialization lock — same shape as PreviewRuntime. */
   private readonly sessionLocks = new Map<string, Promise<unknown>>();
 
@@ -1007,7 +1028,24 @@ export class PreviewComposeRuntime {
         );
         void this.markGroupFailed(groupId, `docker compose up errored: ${err.message}`);
       });
+      // The `up -d --build` child IS the live log producer for the build
+      // phase — track it so getLogTail/snapshotLogTail know a live stream
+      // exists and don't fall back to an out-of-band daemon pull.
+      this.liveLogChildren.set(groupId, child);
       this.wireComposeChildStdio(groupId, child);
+      // `up -d --build` exits once containers are *created/started* — which
+      // is BEFORE the app health check passes. We do NOT start the runtime
+      // `logs --follow` here: a stack the product still treats as `starting`
+      // must not be followed (it may yet time out and be marked failed), and
+      // this keeps the handoff on the same readiness signal as the
+      // getLogTail reattach invariant. The runtime follower is started by
+      // the `ready` transition in runHealthCheck. Here we only drop the
+      // build child from the live-producer map when it exits.
+      child.on('exit', () => {
+        if (this.liveLogChildren.get(groupId) === child) {
+          this.liveLogChildren.delete(groupId);
+        }
+      });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[preview-compose ${groupId}] failed to spawn docker: ${reason}`);
@@ -1092,99 +1130,116 @@ export class PreviewComposeRuntime {
       );
       return;
     }
-    // Fall back to the runtime default if a legacy compose row predates
-    // the worktree_path / compose_file columns — null guards make this
-    // defensible even though startPreview always persists both now.
-    const composeFile = row.compose_file ?? this.defaultComposeFile;
-    // Mirror the up call's `--project-directory` so compose-go resolves
-    // relative bind mounts against the same base on tear-down. Without
-    // this, `down` may pick a different working dir (parent of `-f`)
-    // and emit "no such file" warnings against bind-mounted volumes.
-    //
-    // Prefer the host path persisted at startPreview time
-    // (`host_project_directory`) over re-translating `worktree_path` —
-    // see card c79c4bc0. The persisted value is what the up spawn
-    // actually used; re-translation against current env vars would emit
-    // a different path if the host mapping changed between start and
-    // stop (server restart with the data dir remounted to a new host
-    // path). Legacy rows with `host_project_directory IS NULL` (preview
-    // groups created before this column existed) fall back to the
-    // current translation — those rows can't be helped, the host path
-    // was simply never recorded.
-    let hostProjectDirectoryDown: string | null;
-    if (row.host_project_directory) {
-      hostProjectDirectoryDown = row.host_project_directory;
-    } else if (row.worktree_path) {
-      hostProjectDirectoryDown = resolveComposeProjectDirectory(
-        row.worktree_path,
-        translateContainerPathToHost(row.worktree_path),
-      );
-    } else {
-      hostProjectDirectoryDown = null;
-    }
-    const downArgs = buildComposeDownArgs({
-      composeProjectName: row.compose_project_name,
-      composeFile,
-      overrideFile: row.override_file_path,
-      projectDirectory: hostProjectDirectoryDown,
-    });
-    const downEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      AGENTHUB_HOST_PORT: row.port != null ? String(row.port) : '',
-      AGENTHUB_ENTRY_PORT: row.entry_port != null ? String(row.entry_port) : '',
-      AGENTHUB_SESSION_ID: row.session_id,
-      AGENTHUB_PROJECT_ID: row.project_id,
-    };
-    mergeProjectSecretsSpawnEnv(downEnv, {
-      projectId: row.project_id,
-      sessionId: row.session_id,
-      overwriteExisting: true,
-    });
+    // Mark the group as tearing down BEFORE we shell out to `docker
+    // compose down` so a late `up` exit (which fires `startComposeLogFollow`)
+    // can't race a follower into existence against a stack we're killing.
+    // The teardown is wrapped in try/finally so the in-memory guard
+    // (`stoppingGroups`) and child/tail state are ALWAYS cleared — an
+    // unexpected throw (DB delete, etc.) must not leave the group marked
+    // stopping forever, which would suppress future startComposeLogFollow.
+    this.stoppingGroups.add(groupId);
     try {
-      const child = this.spawn('docker', downArgs, {
-        cwd: row.worktree_path ?? undefined,
-        env: downEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      child.stdout?.resume();
-      child.stderr?.resume();
-      await this.waitForExit(child);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `[preview-compose ${groupId}] \`docker compose down\` failed: ${reason} ` +
-          `(continuing with row deletion so the port is reclaimed)`,
-      );
-    }
-    try {
-      this.removeComposeProjectVolumes({
+      this.killLiveLogChild(groupId);
+      // Fall back to the runtime default if a legacy compose row predates
+      // the worktree_path / compose_file columns — null guards make this
+      // defensible even though startPreview always persists both now.
+      const composeFile = row.compose_file ?? this.defaultComposeFile;
+      // Mirror the up call's `--project-directory` so compose-go resolves
+      // relative bind mounts against the same base on tear-down. Without
+      // this, `down` may pick a different working dir (parent of `-f`)
+      // and emit "no such file" warnings against bind-mounted volumes.
+      //
+      // Prefer the host path persisted at startPreview time
+      // (`host_project_directory`) over re-translating `worktree_path` —
+      // see card c79c4bc0. The persisted value is what the up spawn
+      // actually used; re-translation against current env vars would emit
+      // a different path if the host mapping changed between start and
+      // stop (server restart with the data dir remounted to a new host
+      // path). Legacy rows with `host_project_directory IS NULL` (preview
+      // groups created before this column existed) fall back to the
+      // current translation — those rows can't be helped, the host path
+      // was simply never recorded.
+      let hostProjectDirectoryDown: string | null;
+      if (row.host_project_directory) {
+        hostProjectDirectoryDown = row.host_project_directory;
+      } else if (row.worktree_path) {
+        hostProjectDirectoryDown = resolveComposeProjectDirectory(
+          row.worktree_path,
+          translateContainerPathToHost(row.worktree_path),
+        );
+      } else {
+        hostProjectDirectoryDown = null;
+      }
+      const downArgs = buildComposeDownArgs({
         composeProjectName: row.compose_project_name,
-        logger: this.logger,
+        composeFile,
+        overrideFile: row.override_file_path,
+        projectDirectory: hostProjectDirectoryDown,
       });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      this.logger.warn(
-        `[preview-compose ${groupId}] compose volume cleanup failed: ${reason} (ignoring)`,
-      );
-    }
-    // FK ON DELETE CASCADE removes the entry process row + frees its port.
-    this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
-    this.db.prepare(`DELETE FROM worktree_previews WHERE id = ?`).run(groupId);
-    this.logTails.delete(groupId);
-    this.sessionIdByGroup.delete(groupId);
-
-    // Best-effort cleanup of the per-group override file. Compose
-    // doesn't need it after `down` exits, and leaving it behind would
-    // grow the dataDir without bound across long-lived deployments.
-    if (row.override_file_path) {
+      const downEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        AGENTHUB_HOST_PORT: row.port != null ? String(row.port) : '',
+        AGENTHUB_ENTRY_PORT: row.entry_port != null ? String(row.entry_port) : '',
+        AGENTHUB_SESSION_ID: row.session_id,
+        AGENTHUB_PROJECT_ID: row.project_id,
+      };
+      mergeProjectSecretsSpawnEnv(downEnv, {
+        projectId: row.project_id,
+        sessionId: row.session_id,
+        overwriteExisting: true,
+      });
       try {
-        this.deleteOverrideFile(row.override_file_path);
+        const child = this.spawn('docker', downArgs, {
+          cwd: row.worktree_path ?? undefined,
+          env: downEnv,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        child.stdout?.resume();
+        child.stderr?.resume();
+        await this.waitForExit(child);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         this.logger.warn(
-          `[preview-compose ${groupId}] deleteOverrideFile failed: ${reason} (ignoring)`,
+          `[preview-compose ${groupId}] \`docker compose down\` failed: ${reason} ` +
+            `(continuing with row deletion so the port is reclaimed)`,
         );
       }
+      try {
+        this.removeComposeProjectVolumes({
+          composeProjectName: row.compose_project_name,
+          logger: this.logger,
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `[preview-compose ${groupId}] compose volume cleanup failed: ${reason} (ignoring)`,
+        );
+      }
+      // FK ON DELETE CASCADE removes the entry process row + frees its port.
+      this.db.prepare(`DELETE FROM worktree_preview_groups WHERE id = ?`).run(groupId);
+      this.db.prepare(`DELETE FROM worktree_previews WHERE id = ?`).run(groupId);
+
+      // Best-effort cleanup of the per-group override file. Compose
+      // doesn't need it after `down` exits, and leaving it behind would
+      // grow the dataDir without bound across long-lived deployments.
+      if (row.override_file_path) {
+        try {
+          this.deleteOverrideFile(row.override_file_path);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          this.logger.warn(
+            `[preview-compose ${groupId}] deleteOverrideFile failed: ${reason} (ignoring)`,
+          );
+        }
+      }
+    } finally {
+      // Always clear in-memory teardown state — even if a statement above
+      // threw. Leaving `stoppingGroups` populated would permanently suppress
+      // startComposeLogFollow for this group id and leak the log tail.
+      this.killLiveLogChild(groupId);
+      this.stoppingGroups.delete(groupId);
+      this.logTails.delete(groupId);
+      this.sessionIdByGroup.delete(groupId);
     }
   }
 
@@ -1277,7 +1332,27 @@ export class PreviewComposeRuntime {
 
   /** Fetch recent boot logs for a compose-managed group. */
   getLogTail(groupId: string): string[] {
-    this.refreshComposeLogsFromDaemon(groupId);
+    // When a live producer (the build child or a follower) is already
+    // streaming, the in-memory tail is authoritative — do NOT pull a
+    // daemon `--tail` snapshot, which would replace the buffer out-of-band
+    // and make the client log "loop".
+    //
+    // Lazy reattach is gated on `ready` — i.e. a proven-running stack. We
+    // must NOT reattach during `starting`: there the build/up child (or its
+    // success-handoff follower) is the authoritative producer, and if
+    // neither is present the build exited non-zero. Reattaching then would
+    // spawn a pointless long-lived follower against a stack that never came
+    // up and refresh away the build error in the tail — the health loop will
+    // mark the group failed instead. A `ready` group with no live producer
+    // means the in-memory child was lost (e.g. a server restart) for a stack
+    // that IS up, so we seed once from the daemon and reattach a `--tail 0`
+    // follower so subsequent reads stream live again.
+    if (!this.liveLogChildren.has(groupId) && this.getGroupStatus(groupId) === 'ready') {
+      this.refreshComposeLogsFromDaemon(groupId);
+      // The refresh above already seeded the tail with daemon history, so
+      // the reattached follower uses `--tail 0` to avoid re-emitting it.
+      this.startComposeLogFollow(groupId, { tailLines: 0 });
+    }
     return [...(this.logTails.get(groupId) ?? [])];
   }
 
@@ -1640,6 +1715,15 @@ export class PreviewComposeRuntime {
           // we'd otherwise emit a phantom `preview` event for a row that's
           // already failed/cleaned up.
           if (update.changes > 0) {
+            // The stack is now a proven-running, `ready` stack — THIS is the
+            // point we start the runtime `logs --follow` stream (not the
+            // build child's exit, which fires while still `starting`). The
+            // in-memory tail holds only the build child's build/orchestration
+            // output at this point — `up -d` is detached and never streamed
+            // container application stdout — so seeding the follower with
+            // `--tail N` replays container logs from startup through ready
+            // additively, without duplicating anything already in the tail.
+            this.startComposeLogFollow(opts.groupId, { tailLines: this.logTailLines });
             this.fireNotifyStatus(opts.groupId, 'ready');
           }
           return;
@@ -1647,24 +1731,39 @@ export class PreviewComposeRuntime {
       } catch {
         // ignore — container may not have bound the entry port yet
       }
-      this.refreshComposeLogsFromDaemon(opts.groupId);
+      // No daemon log pull here. The build phase streams via the `up`
+      // child's stdio and the runtime phase streams via the
+      // `logs --follow` child started on the `ready` transition above —
+      // both flow through `appendComposeLog`, so the in-memory tail stays
+      // the single coherent source. Polling `docker compose logs --tail`
+      // here would replace that buffer out-of-band and make the log "loop".
       await this.clock.sleep(this.healthIntervalMs);
     }
     await this.markGroupFailed(opts.groupId, `health check timed out after ${opts.timeoutMs}ms`);
   }
 
-  private wireComposeChildStdio(groupId: string, child: ChildProcess): void {
+  private wireComposeChildStdio(
+    groupId: string,
+    child: ChildProcess,
+    opts: { filterForUi?: boolean } = {},
+  ): void {
     const onChunk =
       (stream: 'stdout' | 'stderr') =>
       (chunk: Buffer | string): void => {
-        this.appendComposeLog(groupId, String(chunk), stream);
+        this.appendComposeLog(groupId, String(chunk), stream, opts.filterForUi ?? false);
       };
     child.stdout?.on('data', onChunk('stdout'));
     child.stderr?.on('data', onChunk('stderr'));
   }
 
-  private appendComposeLog(groupId: string, chunk: string, stream: 'stdout' | 'stderr'): void {
-    const lines = chunk.split(/\r?\n/).filter((line) => line.length > 0);
+  private appendComposeLog(
+    groupId: string,
+    chunk: string,
+    stream: 'stdout' | 'stderr',
+    filterForUi = false,
+  ): void {
+    let lines = chunk.split(/\r?\n/).filter((line) => line.length > 0);
+    if (filterForUi) lines = filterComposeLogLinesForUi(lines);
     if (lines.length === 0) return;
     let tail = this.logTails.get(groupId);
     if (!tail) {
@@ -1691,6 +1790,91 @@ export class PreviewComposeRuntime {
           );
         }
       }
+    }
+  }
+
+  /**
+   * Spawn a long-lived `docker compose logs --follow` that streams the
+   * container runtime stdout/stderr through `appendComposeLog`, so every
+   * runtime line both updates the in-memory tail AND fans out as a live
+   * `preview_log` WS event. Idempotent: a no-op if a live producer (the
+   * build child or an existing follower) is already attached for the
+   * group. Called on the `ready` transition (runHealthCheck) and lazily
+   * from `getLogTail` for a `ready` stack that lost its in-memory follower
+   * (e.g. a server restart).
+   *
+   * `tailLines` controls how much daemon history `--tail` replays before
+   * following — and MUST be 0 on any handoff where the tail is ALREADY
+   * seeded with container logs, otherwise Docker re-emits them into
+   * `appendComposeLog` and the client sees duplicates:
+   *   - getLogTail cold reattach (a one-shot `refreshComposeLogsFromDaemon`
+   *     already pulled the container log tail) → `tailLines: 0`.
+   *   - `ready` transition: the tail holds only the build child's
+   *     build/orchestration output (`up -d` never streams container stdout),
+   *     so `tailLines: N` replays container logs from startup additively
+   *     with nothing to duplicate.
+   */
+  private startComposeLogFollow(groupId: string, opts: { tailLines: number }): void {
+    if (this.liveLogChildren.has(groupId)) return;
+    if (this.stoppingGroups.has(groupId)) return;
+    const row = this.db
+      .prepare(
+        `SELECT status, compose_project_name, worktree_path, compose_file, override_file_path
+           FROM worktree_preview_groups WHERE id = ?`,
+      )
+      .get(groupId) as
+      | {
+          status: ComposeStatus;
+          compose_project_name: string | null;
+          worktree_path: string | null;
+          compose_file: string | null;
+          override_file_path: string | null;
+        }
+      | undefined;
+    // Don't tail a stack that's gone (row deleted) or already failed —
+    // only `starting`/`ready` groups have a live stack worth following.
+    if (!row || row.status === 'failed') return;
+    if (!row.compose_project_name || !row.worktree_path) return;
+    const composeFile = row.compose_file ?? this.defaultComposeFile;
+    const args = ['compose', '-p', row.compose_project_name, '-f', composeFile];
+    if (row.override_file_path) args.push('-f', row.override_file_path);
+    // `--tail N` replays the last N daemon lines before following; `--tail 0`
+    // follows only NEW output (used whenever the tail is already seeded).
+    args.push('logs', '--follow', '--no-color', '--tail', String(opts.tailLines));
+    let child: ChildProcess;
+    try {
+      child = this.spawn('docker', args, {
+        cwd: row.worktree_path,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[preview-compose ${groupId}] failed to spawn logs --follow: ${reason}`);
+      return;
+    }
+    this.liveLogChildren.set(groupId, child);
+    this.wireComposeChildStdio(groupId, child, { filterForUi: true });
+    const detach = (): void => {
+      if (this.liveLogChildren.get(groupId) === child) {
+        this.liveLogChildren.delete(groupId);
+      }
+    };
+    child.on('error', (err) => {
+      this.logger.warn(`[preview-compose ${groupId}] logs --follow error: ${err.message}`);
+      detach();
+    });
+    child.on('exit', detach);
+  }
+
+  /** Kill (and forget) the active live-log producer for `groupId`, if any. */
+  private killLiveLogChild(groupId: string): void {
+    const child = this.liveLogChildren.get(groupId);
+    if (!child) return;
+    this.liveLogChildren.delete(groupId);
+    try {
+      child.kill('SIGTERM');
+    } catch {
+      // best-effort — the process may already be gone
     }
   }
 
@@ -1759,6 +1943,10 @@ export class PreviewComposeRuntime {
       )
       .run(groupId);
     this.logger.warn(`[preview-compose ${groupId}] group failed: ${reason}`);
+    // Tear down the live log follower (if any) — a failed stack will be
+    // torn down later by stopPreview, but the `logs --follow` child should
+    // not linger streaming a dead stack until then.
+    this.killLiveLogChild(groupId);
     if (update.changes > 0) {
       this.fireNotifyStatus(groupId, 'failed', reason);
     }
