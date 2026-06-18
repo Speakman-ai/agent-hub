@@ -580,6 +580,49 @@ registerPath({
   },
 });
 
+const JobResourcesResponseSchema = registerComponent(
+  'FinalizeJobResourcesResponse',
+  z
+    .object({
+      project_id: z.string(),
+      run_id: z.string(),
+      jobs: z.array(
+        z.object({
+          job_name: z.string(),
+          matrix_key: z.string(),
+          peak_mem_bytes: z.number().nullable(),
+          mem_total_bytes: z.number().nullable(),
+          peak_cpu_percent: z.number().nullable(),
+          observed_at: z.number(),
+        }),
+      ),
+    })
+    .openapi({
+      description:
+        'Per-CI-job resource high-water marks (peak host memory + peak CPU) for one Finalize run, reported by the runner at job end. One entry per (job_name, matrix_key).',
+    }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/finalize/{runId}/job-resources',
+  tags: ['Finalize'],
+  summary: 'Per-job resource usage for a Finalize run',
+  description:
+    'Peak host memory and peak CPU each CI job reached during the run. One job per host on the fleet, so host memory == job memory. Empty `jobs` when no runner reported a summary (e.g. Hub-local runs or older runs).',
+  request: {
+    params: z.object({ projectId: z.string(), runId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'Per-job resource high-water marks.',
+      content: jsonContent(JobResourcesResponseSchema),
+    },
+    404: errorResponse('Project not found.'),
+    500: errorResponse('Resource rows could not be read.'),
+  },
+});
+
 const FinalizeShipGateResponseSchema = registerComponent(
   'FinalizeShipGateResponse',
   z

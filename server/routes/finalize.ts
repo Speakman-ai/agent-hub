@@ -644,6 +644,81 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
   });
 
   // ───────────────────────────────────────────────────────────────
+  // GET /api/projects/:projectId/finalize/:runId/job-resources
+  //
+  // Per-job resource high-water marks for ONE run: peak host memory and
+  // peak CPU each CI job reached (reported by the runner at job end). Powers
+  // the inline run/step badges; the aggregate histograms come from
+  // /finalize/metrics. One row per (job_name, matrix_key).
+  // ───────────────────────────────────────────────────────────────
+  router.get(
+    '/api/projects/:projectId/finalize/:runId/job-resources',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const runId = req.params.runId as string;
+      const project = findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      let rows: Array<{ metric_name: string; labels: string; value: number; observed_at: number }>;
+      try {
+        rows = stmts.listFinalizeJobResourcesByRun.all(project.id, runId) as typeof rows;
+      } catch (err) {
+        console.warn(
+          `[finalize-job-resources] read failed for project=${project.id} run=${runId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return res.status(500).json({ error: 'job_resources_read_failed' });
+      }
+
+      interface JobResource {
+        job_name: string;
+        matrix_key: string;
+        peak_mem_bytes: number | null;
+        mem_total_bytes: number | null;
+        peak_cpu_percent: number | null;
+        observed_at: number;
+      }
+      const byJob = new Map<string, JobResource>();
+      for (const row of rows) {
+        let labels: Record<string, unknown> = {};
+        try {
+          labels = JSON.parse(row.labels) as Record<string, unknown>;
+        } catch {
+          /* ignore malformed labels */
+        }
+        const jobName = typeof labels.job_name === 'string' ? labels.job_name : '(unknown)';
+        const matrixKey = typeof labels.matrix_key === 'string' ? labels.matrix_key : '';
+        const key = `${jobName} ${matrixKey}`;
+        const entry = byJob.get(key) ?? {
+          job_name: jobName,
+          matrix_key: matrixKey,
+          peak_mem_bytes: null,
+          mem_total_bytes: null,
+          peak_cpu_percent: null,
+          observed_at: row.observed_at,
+        };
+        if (row.metric_name === 'finalize_job_peak_memory_bytes') {
+          entry.peak_mem_bytes = row.value;
+          entry.mem_total_bytes =
+            typeof labels.mem_total_bytes === 'number' ? labels.mem_total_bytes : null;
+        } else if (row.metric_name === 'finalize_job_cpu_percent') {
+          entry.peak_cpu_percent = row.value;
+        }
+        entry.observed_at = Math.max(entry.observed_at, row.observed_at);
+        byJob.set(key, entry);
+      }
+
+      const jobs = [...byJob.values()].sort((a, b) =>
+        a.job_name === b.job_name
+          ? a.matrix_key.localeCompare(b.matrix_key)
+          : a.job_name.localeCompare(b.job_name),
+      );
+      return res.json({ project_id: project.id, run_id: runId, jobs });
+    },
+  );
+
+  // ───────────────────────────────────────────────────────────────
   // GET /api/sessions/:sessionId/finalize-ship-gate
   // ───────────────────────────────────────────────────────────────
   router.get('/api/sessions/:sessionId/finalize-ship-gate', async (req: Request, res: Response) => {

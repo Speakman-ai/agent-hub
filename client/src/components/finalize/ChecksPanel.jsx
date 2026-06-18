@@ -13,6 +13,7 @@ import { useState } from 'react';
 import { useFinalizeRun, describeRunPhase, formatDuration } from '../../hooks/useFinalizeRun.js';
 import ReviewerThreadsPanel from './ReviewerThreadsPanel.jsx';
 import FinalizeStepLogModal from './FinalizeStepLogModal.jsx';
+import FinalizeResourceUsage from './FinalizeResourceUsage.jsx';
 
 /**
  * GitHub-Actions-style checks panel for a Finalize Code Changes run.
@@ -91,6 +92,7 @@ export default function ChecksPanel({
         phase={phase}
         onOpenLog={setLogStep}
       />
+      <FinalizeResourceUsage projectId={projectId ?? run.project_id} runId={run.id} />
       <ReviewerThreadsPanel sessionId={sessionId} prefetchedRun={run} />
       <FinalizeStepLogModal
         open={Boolean(logStep)}

@@ -7,11 +7,63 @@ import request from 'supertest';
 import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
 import { getJobChannel } from './runner-job-channel.js';
-import createRunnerRoutes from './runner-routes.js';
+import createRunnerRoutes, {
+  parseResourceSummary,
+  type JobResourcesEvent,
+} from './runner-routes.js';
 import type { RunnerLease } from './runner-backend.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
 const FLEET = 'test-fleet-secret';
+
+describe('parseResourceSummary', () => {
+  it('accepts a well-formed summary', () => {
+    expect(
+      parseResourceSummary({
+        peakMemBytes: 100,
+        memTotalBytes: 200,
+        peakCpuPercent: 50,
+        avgCpuPercent: 10,
+        samples: 3,
+        durationMs: 5000,
+      }),
+    ).toEqual({
+      peakMemBytes: 100,
+      memTotalBytes: 200,
+      peakCpuPercent: 50,
+      avgCpuPercent: 10,
+      samples: 3,
+      durationMs: 5000,
+    });
+  });
+
+  it('preserves null CPU and defaults samples/duration', () => {
+    const r = parseResourceSummary({
+      peakMemBytes: 1,
+      memTotalBytes: 2,
+      peakCpuPercent: null,
+      avgCpuPercent: null,
+    });
+    expect(r).toMatchObject({
+      peakCpuPercent: null,
+      avgCpuPercent: null,
+      samples: 0,
+      durationMs: 0,
+    });
+  });
+
+  it.each([
+    null,
+    undefined,
+    'nope',
+    {},
+    { peakMemBytes: -1, memTotalBytes: 2 },
+    { peakMemBytes: 1, memTotalBytes: 0 },
+    { peakMemBytes: 'x', memTotalBytes: 2 },
+  ])('rejects malformed input %j', (bad) => {
+    expect(parseResourceSummary(bad)).toBeNull();
+  });
+});
 
 describe('runner-routes (HTTP control plane)', () => {
   let dir: string;
@@ -126,6 +178,100 @@ describe('runner-routes (HTTP control plane)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send();
     expect(gone.status).toBe(410);
+  });
+
+  it('reports a job resource summary on finish, resolved to its run/job context', async () => {
+    const events: JobResourcesEvent[] = [];
+    const cbApp = express()
+      .use(express.json())
+      .use(
+        createRunnerRoutes({
+          claimWaitMs: 2000,
+          pollWaitMs: 1500,
+          leaseMs: 60_000,
+          onJobResources: (e) => events.push(e),
+        }),
+      );
+    const r = await request(cbApp).post('/api/runners/register').send({ fleetToken: FLEET });
+    const token = r.body.token as string;
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 3000 });
+    let lease!: RunnerLease;
+    const acquireP = backend.acquire(SPEC).then((l) => (lease = l));
+    const claim = await request(cbApp)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    const jobId = claim.body.jobId as string;
+    await Promise.all([
+      request(cbApp)
+        .post(`/api/runners/jobs/${jobId}/poll`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(),
+      acquireP,
+    ]);
+
+    const finish = await request(cbApp)
+      .post(`/api/runners/jobs/${jobId}/finish`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        exitCode: 0,
+        resourceSummary: {
+          peakMemBytes: 1_700_000_000,
+          memTotalBytes: 32_000_000_000,
+          peakCpuPercent: 72.5,
+          avgCpuPercent: 18.1,
+          samples: 9,
+          durationMs: 45_000,
+        },
+      });
+    expect(finish.status).toBe(204);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      projectId: 'p1',
+      runId: 'r1',
+      jobName: 'e2e',
+      matrixKey: '',
+      summary: { peakMemBytes: 1_700_000_000, peakCpuPercent: 72.5 },
+    });
+    await lease.release();
+  });
+
+  it('finish without a resource summary is a clean 204 (no callback)', async () => {
+    const events: JobResourcesEvent[] = [];
+    const cbApp = express()
+      .use(express.json())
+      .use(
+        createRunnerRoutes({
+          claimWaitMs: 2000,
+          pollWaitMs: 1500,
+          leaseMs: 60_000,
+          onJobResources: (e) => events.push(e),
+        }),
+      );
+    const r = await request(cbApp).post('/api/runners/register').send({ fleetToken: FLEET });
+    const token = r.body.token as string;
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 3000 });
+    let lease!: RunnerLease;
+    const acquireP = backend.acquire(SPEC).then((l) => (lease = l));
+    const claim = await request(cbApp)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    const jobId = claim.body.jobId as string;
+    await Promise.all([
+      request(cbApp)
+        .post(`/api/runners/jobs/${jobId}/poll`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(),
+      acquireP,
+    ]);
+    const finish = await request(cbApp)
+      .post(`/api/runners/jobs/${jobId}/finish`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ exitCode: 0 });
+    expect(finish.status).toBe(204);
+    expect(events).toHaveLength(0);
+    await lease.release();
   });
 
   it("forbids another agent from touching a job it didn't claim (403)", async () => {

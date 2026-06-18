@@ -504,6 +504,11 @@ export const api = {
     fetchJSON(`/projects/${projectId}/finalize/${runId}/reviewer-threads`, {
       signal: opts.signal,
     }),
+  /** Per-CI-job resource high-water marks (peak mem / CPU) for a finalize run. */
+  getFinalizeRunResources: (projectId, runId, opts = {}) =>
+    fetchJSON(`/projects/${projectId}/finalize/${runId}/job-resources`, {
+      signal: opts.signal,
+    }),
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),

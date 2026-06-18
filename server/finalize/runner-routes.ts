@@ -21,6 +21,7 @@ import {
   markRunnerJobRunning,
 } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
+import type { JobResourceSummary } from './job-resource-sampler.js';
 import {
   bearerToken,
   isRunnerFleetEnabled,
@@ -34,13 +35,55 @@ interface RunnerReq extends Request {
   agent?: AgentTokenPayload;
 }
 
+/** Resolved per-job context + the reported summary, handed to the Hub sink. */
+export interface JobResourcesEvent {
+  jobId: string;
+  orgId: string;
+  projectId: string;
+  runId: string;
+  /** The CI job name (runner_jobs.job_id), e.g. `e2e`. */
+  jobName: string;
+  matrixKey: string;
+  summary: JobResourceSummary;
+}
+
 export interface RunnerRoutesOptions {
   claimWaitMs?: number;
   pollWaitMs?: number;
   leaseMs?: number;
+  /**
+   * Called when an agent reports a job's resource summary on finish. The mount
+   * site wires this to the metrics emitter + Hub log + WS broadcast. Best-effort
+   * — invoked inside a try/catch so it can never fail the finish handshake.
+   */
+  onJobResources?: (event: JobResourcesEvent) => void;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Validate the untrusted `resourceSummary` an agent POSTs on finish. Returns a
+ * clean {@link JobResourceSummary} or null (malformed → simply not recorded).
+ */
+export function parseResourceSummary(raw: unknown): JobResourceSummary | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const peakMemBytes = num(r.peakMemBytes);
+  const memTotalBytes = num(r.memTotalBytes);
+  if (peakMemBytes === null || peakMemBytes < 0 || memTotalBytes === null || memTotalBytes <= 0) {
+    return null;
+  }
+  return {
+    peakMemBytes,
+    memTotalBytes,
+    peakCpuPercent: r.peakCpuPercent === null ? null : num(r.peakCpuPercent),
+    avgCpuPercent: r.avgCpuPercent === null ? null : num(r.avgCpuPercent),
+    samples: num(r.samples) ?? 0,
+    durationMs: num(r.durationMs) ?? 0,
+  };
+}
 
 export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Router {
   const router = Router();
@@ -224,6 +267,44 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     const jobId = req.params.jobId as string;
     if (!authorizeJob(req.agent!, jobId, res)) return;
     getJobChannel(jobId)?.onFinish();
+    // Per-job resource summary (best-effort — never fail the finish handshake).
+    if (opts.onJobResources) {
+      try {
+        const summary = parseResourceSummary((req.body ?? {}).resourceSummary);
+        if (summary) {
+          const row = getOrgsDb()
+            .prepare(
+              'SELECT org_id, project_id, run_id, job_id, matrix_key FROM runner_jobs WHERE id=?',
+            )
+            .get(jobId) as
+            | {
+                org_id: string;
+                project_id: string;
+                run_id: string;
+                job_id: string;
+                matrix_key: string;
+              }
+            | undefined;
+          if (row) {
+            opts.onJobResources({
+              jobId,
+              orgId: row.org_id,
+              projectId: row.project_id,
+              runId: row.run_id,
+              jobName: row.job_id,
+              matrixKey: row.matrix_key,
+              summary,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(
+          `[finalize-job-resources] failed to record summary for job ${jobId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
     getOrgsDb()
       .prepare(
         "UPDATE runner_agents SET state='idle', current_job_id=NULL, last_seen_at=? WHERE id=?",

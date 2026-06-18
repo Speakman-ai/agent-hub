@@ -15,6 +15,7 @@ import {
   recordFixDispatchCount,
   recordMergedPrProvenance,
   recordMetric,
+  recordJobResourceSummary,
   recordReviewerVerdict,
   recordRunActiveSeconds,
   recordRunCompleted,
@@ -71,6 +72,54 @@ function makeFakeStmts(): {
   } as unknown as Pick<Stmts, 'insertFinalizeMetric'>;
   return { stmts, calls };
 }
+
+describe('recordJobResourceSummary', () => {
+  const summary = {
+    peakMemBytes: 1_700_000_000,
+    memTotalBytes: 32_000_000_000,
+    peakCpuPercent: 72.5,
+    avgCpuPercent: 18.1,
+    samples: 9,
+    durationMs: 45_000,
+  };
+
+  it('emits peak-memory + peak-cpu histograms with low-cardinality labels', () => {
+    const { stmts, calls } = makeFakeStmts();
+    recordJobResourceSummary(
+      { stmts },
+      { projectId: 'p', runId: 'r', jobName: 'e2e', matrixKey: 'MLS & Routing', summary },
+    );
+    expect(calls).toHaveLength(2);
+    const mem = calls.find((c) => c.name === 'finalize_job_peak_memory_bytes')!;
+    expect(mem.value).toBe(1_700_000_000);
+    expect(mem.runId).toBe('r');
+    expect(mem.labels).toEqual({
+      job_name: 'e2e',
+      matrix_key: 'MLS & Routing',
+      mem_total_bytes: 32_000_000_000,
+    });
+    const cpu = calls.find((c) => c.name === 'finalize_job_cpu_percent')!;
+    expect(cpu.value).toBe(72.5);
+    expect(cpu.labels).toEqual({ job_name: 'e2e', matrix_key: 'MLS & Routing' });
+  });
+
+  it('keeps an empty matrix key faithful and skips CPU when unavailable', () => {
+    const { stmts, calls } = makeFakeStmts();
+    recordJobResourceSummary(
+      { stmts },
+      {
+        projectId: 'p',
+        runId: 'r',
+        jobName: 'unit',
+        matrixKey: '',
+        summary: { ...summary, peakCpuPercent: null },
+      },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe('finalize_job_peak_memory_bytes');
+    expect(calls[0].labels.matrix_key).toBe('');
+  });
+});
 
 describe('recordMetric', () => {
   it('defaults value to 1 and labels to {}', () => {

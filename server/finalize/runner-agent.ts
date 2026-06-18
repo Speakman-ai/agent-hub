@@ -15,6 +15,11 @@ import { spawn } from 'child_process';
 import path from 'path';
 import { buildExecJobStepArgv, sanitizeJobContainerName } from './runner-exec-args.js';
 import { startJobContainer, stopJobContainer } from './job-container.js';
+import {
+  startHostSampler,
+  type JobResourceSummary,
+  type RunningSampler,
+} from './job-resource-sampler.js';
 import type { RunnerDirective } from './runner-job-channel.js';
 import type { RunnerJobWireSpec } from './runner-backend-remote.js';
 import { LocalDirBundleStore, materializeWorktree, type BundleStore } from './worktree-bundle.js';
@@ -38,7 +43,11 @@ export interface AgentTransport {
   poll(jobId: string): Promise<AgentPollResult>;
   postLogs(jobId: string, frames: AgentLogFrame[]): Promise<void>;
   postStepResult(jobId: string, stepIndex: number, exitCode: number | null): Promise<void>;
-  postFinish(jobId: string, exitCode: number): Promise<void>;
+  postFinish(
+    jobId: string,
+    exitCode: number,
+    resourceSummary?: JobResourceSummary | null,
+  ): Promise<void>;
   /** Extend the job's lease while it's alive (called on a background timer). */
   heartbeat(jobId: string): Promise<void>;
 }
@@ -68,6 +77,12 @@ export async function runAgentJob(args: {
   logFlushMs?: number;
   heartbeatMs?: number;
   protection?: TaskProtection;
+  /**
+   * Starts the host resource sampler for this job. Injectable for tests;
+   * defaults to the real `/proc`-backed sampler. Returns a no-op handle on
+   * platforms without `/proc` so the agent never crashes off-Linux.
+   */
+  startSampler?: () => RunningSampler;
 }): Promise<{ stepExits: Array<{ stepIndex: number; exitCode: number | null }> }> {
   const { jobId, spec, transport, docker } = args;
   const protection = args.protection ?? noopTaskProtection();
@@ -88,6 +103,10 @@ export async function runAgentJob(args: {
   if (typeof (heartbeat as { unref?: () => void }).unref === 'function') {
     (heartbeat as { unref: () => void }).unref();
   }
+  // Host resource sampler runs for the WHOLE job (materialize, DinD startup,
+  // every step). Because the fleet reserves ~the whole box per task (one job
+  // per host), host memory == job memory — see job-resource-sampler.ts.
+  const sampler: RunningSampler = (args.startSampler ?? startHostSampler)();
   const stepExits: Array<{ stepIndex: number; exitCode: number | null }> = [];
   try {
     // Materialize + run in a SUBDIR of the shared workspace, never the workspace
@@ -126,9 +145,14 @@ export async function runAgentJob(args: {
       }
     } finally {
       await docker.stopContainer(containerName);
-      await transport.postFinish(jobId, 0);
+      const summary = sampler.stop();
+      if (summary) logJobResourceSummary(jobId, spec, summary);
+      await transport.postFinish(jobId, 0, summary);
     }
   } finally {
+    // Cleanup-safe: if the container never started (inner finally skipped),
+    // this clears the sampler's timer. Double-stop is harmless.
+    sampler.stop();
     clearInterval(heartbeat);
     // Job done (or failed): release protection so deploys / scale-to-zero can
     // replace this now-idle task. Awaited so the next claim can't race a deploy
@@ -137,6 +161,25 @@ export async function runAgentJob(args: {
     await protection.set(false).catch(() => {});
   }
   return { stepExits };
+}
+
+/**
+ * Greppable one-line summary, mirrored on the Hub side by the finish route's
+ * `[finalize-job-resources]` log. Runner-side copy lands in the fleet task logs.
+ */
+function logJobResourceSummary(
+  jobId: string,
+  spec: RunnerJobWireSpec,
+  s: JobResourceSummary,
+): void {
+  const gb = (b: number): string => (b / 1024 / 1024 / 1024).toFixed(2);
+  const cpu = (n: number | null): string => (n === null ? '?' : String(n));
+  console.log(
+    `[finalize-job-resources] queueJob=${jobId} run=${spec.runId} job=${spec.jobId} ` +
+      `matrix=${spec.matrixKey} peak_mem=${gb(s.peakMemBytes)}GB/${gb(s.memTotalBytes)}GB ` +
+      `peak_cpu=${cpu(s.peakCpuPercent)}% avg_cpu=${cpu(s.avgCpuPercent)}% ` +
+      `samples=${s.samples} dur=${Math.round(s.durationMs / 1000)}s`,
+  );
 }
 
 // ── Production implementations ──────────────────────────────────────────────
@@ -217,11 +260,11 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
         body: JSON.stringify({ stepIndex, exitCode }),
       });
     },
-    async postFinish(jobId, exitCode) {
+    async postFinish(jobId, exitCode, resourceSummary) {
       await fetch(`${base}/api/runners/jobs/${jobId}/finish`, {
         method: 'POST',
         headers: auth,
-        body: JSON.stringify({ exitCode }),
+        body: JSON.stringify({ exitCode, resourceSummary: resourceSummary ?? null }),
       });
     },
     async heartbeat(jobId) {

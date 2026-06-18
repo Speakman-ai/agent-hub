@@ -4585,6 +4585,16 @@ function initDb(dataDir: string): void {
           AND observed_at < ?
         ORDER BY metric_name ASC, observed_at ASC`,
     ),
+    // Per-job resource rows for ONE run (peak memory + peak CPU). Powers the
+    // per-run UI badges; the aggregate panel reads via listAllFinalizeMetricsInRange.
+    listFinalizeJobResourcesByRun: db.prepare(
+      `SELECT metric_name, labels, value, observed_at
+         FROM finalize_metrics
+        WHERE project_id = ?
+          AND run_id = ?
+          AND metric_name IN ('finalize_job_peak_memory_bytes', 'finalize_job_cpu_percent')
+        ORDER BY observed_at ASC`,
+    ),
 
     // finalize_github_parity — Finalize↔GitHub parity harness. See
     // `server/finalize/parity-store.ts`. Upsert keyed on (project, commit).

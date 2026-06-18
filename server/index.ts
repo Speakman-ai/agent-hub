@@ -125,6 +125,7 @@ import createFinalizeParityRoutes from './routes/finalize-parity.js';
 import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
+import { recordJobResourceSummary } from './finalize/metrics.js';
 import { startFleetScaler } from './finalize/runner-fleet-scaler.js';
 import createInstanceBackupRoutes from './routes/instance-backup.js';
 import createIosBuildRoutes from './routes/ios-builds.js';
@@ -669,7 +670,32 @@ app.use((req, _res, next) => {
 // authMiddleware: fleet agents have no Hub session — these routes self-auth via
 // the fleet token (/register) and HMAC agent tokens (all others). Inert until a
 // fleet token is configured (FINALIZE_RUNNER_FLEET_TOKEN); /register 404s otherwise.
-app.use(createRunnerRoutes());
+app.use(
+  createRunnerRoutes({
+    // Persist + surface a runner's per-job resource summary (peak mem / CPU).
+    onJobResources: ({ projectId, runId, jobName, matrixKey, summary }) => {
+      recordJobResourceSummary(
+        { stmts: stmts! },
+        { projectId, runId, jobName, matrixKey, summary },
+      );
+      const gb = (b: number): string => (b / 1024 / 1024 / 1024).toFixed(2);
+      console.log(
+        `[finalize-job-resources] run=${runId} job=${jobName} matrix=${matrixKey || '(default)'} ` +
+          `peak_mem=${gb(summary.peakMemBytes)}GB/${gb(summary.memTotalBytes)}GB ` +
+          `peak_cpu=${summary.peakCpuPercent ?? '?'}% avg_cpu=${summary.avgCpuPercent ?? '?'}% ` +
+          `samples=${summary.samples} dur=${Math.round(summary.durationMs / 1000)}s`,
+      );
+      broadcast({
+        type: 'finalize_job_resources',
+        run_id: runId,
+        project_id: projectId,
+        job_name: jobName,
+        matrix_key: matrixKey,
+        summary,
+      });
+    },
+  }),
+);
 // Queue-depth autoscaler: scales the agent ECS service to run jobs concurrently
 // (and back to zero when idle). No-op unless FINALIZE_FLEET_ECS_* are configured.
 startFleetScaler();

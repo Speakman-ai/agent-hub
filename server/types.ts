@@ -1959,6 +1959,8 @@ export interface Stmts {
    * keep the prepared-statement cache small.
    */
   listAllFinalizeMetricsInRange: Stmt;
+  /** Per-job resource metric rows (peak mem + peak CPU) for one finalize run. */
+  listFinalizeJobResourcesByRun: Stmt;
   /**
    * Finalize↔GitHub parity harness — upsert one observation keyed on
    * (project_id, commit_sha). Binds the full column tuple

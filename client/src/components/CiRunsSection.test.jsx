@@ -8,6 +8,7 @@ vi.mock('../utils/api.js', () => ({
     getCiRuns: vi.fn(),
     getCiRunDetail: vi.fn(),
     getFinalizeStepOutput: vi.fn(),
+    getFinalizeRunResources: vi.fn(),
     updateProject: vi.fn(),
   },
 }));
@@ -74,6 +75,7 @@ beforeEach(() => {
     ],
   });
   api.getFinalizeStepOutput.mockResolvedValue({ lines: ['[stdout] all green'] });
+  api.getFinalizeRunResources.mockResolvedValue({ jobs: [] });
 });
 
 describe('CiRunsSection', () => {
@@ -98,6 +100,30 @@ describe('CiRunsSection', () => {
       expect(api.getFinalizeStepOutput).toHaveBeenCalledWith('proj-1', 'run-1', 1),
     );
     expect(await screen.findByText('[stdout] all green')).toBeInTheDocument();
+  });
+
+  it('renders the per-job resource badge keyed by job id + matrix', async () => {
+    // Resources endpoint keys jobs by `job_name`; the run jobs use `job_id` —
+    // the same logical identifier. The render must resolve the lookup so the
+    // badge shows. A key-format mismatch (the bug this guards) yields no badge.
+    api.getFinalizeRunResources.mockResolvedValue({
+      jobs: [
+        {
+          job_name: 'unit',
+          matrix_key: 'default',
+          peak_mem_bytes: 1.7 * 1024 * 1024 * 1024,
+          mem_total_bytes: 32 * 1024 * 1024 * 1024,
+          peak_cpu_percent: 72,
+        },
+      ],
+    });
+    render(<CiRunsSection project={hostedProject} />);
+    fireEvent.click(await screen.findByTestId('ci-run-run-1'));
+
+    await waitFor(() =>
+      expect(api.getFinalizeRunResources).toHaveBeenCalledWith('proj-1', 'run-1'),
+    );
+    expect(await screen.findByText('1.7 / 32.0 GB · 72%')).toBeInTheDocument();
   });
 
   it('CI-on-push toggle PATCHes the project (hosted projects only)', async () => {

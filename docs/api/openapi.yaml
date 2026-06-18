@@ -1098,6 +1098,8 @@ components:
             - finalize_stalled_no_response_count
             - merged_pr_provenance
             - finalize_github_parity
+            - finalize_job_peak_memory_bytes
+            - finalize_job_cpu_percent
         kind:
           type: string
           enum:
@@ -1144,6 +1146,8 @@ components:
             - finalize_stalled_no_response_count
             - merged_pr_provenance
             - finalize_github_parity
+            - finalize_job_peak_memory_bytes
+            - finalize_job_cpu_percent
         kind:
           type: string
           enum:
@@ -1210,6 +1214,45 @@ components:
         - sample_count
         - metrics
       description: Aggregated adoption metrics for the requested time window. Counter and histogram metrics share the same `metrics` array; clients discriminate via the `kind` field.
+    FinalizeJobResourcesResponse:
+      type: object
+      properties:
+        project_id:
+          type: string
+        run_id:
+          type: string
+        jobs:
+          type: array
+          items:
+            type: object
+            properties:
+              job_name:
+                type: string
+              matrix_key:
+                type: string
+              peak_mem_bytes:
+                type: number
+                nullable: true
+              mem_total_bytes:
+                type: number
+                nullable: true
+              peak_cpu_percent:
+                type: number
+                nullable: true
+              observed_at:
+                type: number
+            required:
+              - job_name
+              - matrix_key
+              - peak_mem_bytes
+              - mem_total_bytes
+              - peak_cpu_percent
+              - observed_at
+      required:
+        - project_id
+        - run_id
+        - jobs
+      description: Per-CI-job resource high-water marks (peak host memory + peak CPU) for one Finalize run, reported by the runner at job end. One entry per (job_name, matrix_key).
     FinalizeShipGateResponse:
       type: object
       properties:
@@ -8570,9 +8613,9 @@ paths:
           in: query
         - schema:
             type: string
-            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity."
+            description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity, finalize_job_peak_memory_bytes, finalize_job_cpu_percent."
           required: false
-          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity."
+          description: "Comma-separated subset: finalize_run_started, finalize_run_completed, finalize_run_active_seconds, finalize_run_wall_seconds, finalize_fix_dispatch_count, finalize_reviewer_verdict, finalize_step_result, finalize_stalled_no_response_count, merged_pr_provenance, finalize_github_parity, finalize_job_peak_memory_bytes, finalize_job_cpu_percent."
           name: metrics
           in: query
       responses:
@@ -8590,6 +8633,42 @@ paths:
                 $ref: "#/components/schemas/FinalizeErrorResponse"
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+  /api/projects/{projectId}/finalize/{runId}/job-resources:
+    get:
+      tags:
+        - Finalize
+      summary: Per-job resource usage for a Finalize run
+      description: Peak host memory and peak CPU each CI job reached during the run. One job per host on the fleet, so host memory == job memory. Empty `jobs` when no runner reported a summary (e.g. Hub-local runs or older runs).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: runId
+          in: path
+      responses:
+        "200":
+          description: Per-job resource high-water marks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeJobResourcesResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalizeErrorResponse"
+        "500":
+          description: Resource rows could not be read.
           content:
             application/json:
               schema:

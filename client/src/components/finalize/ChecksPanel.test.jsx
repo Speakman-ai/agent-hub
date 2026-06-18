@@ -22,6 +22,7 @@ vi.mock('../../utils/api.js', () => ({
   api: {
     getLatestFinalizeRunForSession: vi.fn().mockResolvedValue({ run: null }),
     getFinalizeStepOutput: vi.fn().mockResolvedValue({ lines: [] }),
+    getFinalizeRunResources: vi.fn().mockResolvedValue({ jobs: [] }),
     getReviewerThreads: vi.fn().mockResolvedValue({
       run_id: 'run-1',
       reviewer_verdict: null,

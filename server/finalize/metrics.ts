@@ -32,6 +32,7 @@
  *   better-sqlite3; the volume is tiny (a few rows per run).
  */
 import type { Stmts } from '../types.js';
+import type { JobResourceSummary } from './job-resource-sampler.js';
 
 // ─── Metric vocabulary ────────────────────────────────────────────────
 
@@ -95,6 +96,18 @@ export const METRIC_NAMES = [
    * the false-green rate the epic exit bar gates on (~0 over 200+ PRs).
    */
   'finalize_github_parity',
+  /**
+   * Per CI job: peak host RAM used (bytes) while the job ran. One job per
+   * host on the fleet, so host memory == job memory (see
+   * job-resource-sampler.ts). Histogram sample in `value`. Labels:
+   * `{ job_name, matrix_key, mem_total_bytes }`.
+   */
+  'finalize_job_peak_memory_bytes',
+  /**
+   * Per CI job: peak whole-host CPU utilization (0..100) over any sampling
+   * interval. Histogram sample in `value`. Labels: `{ job_name, matrix_key }`.
+   */
+  'finalize_job_cpu_percent',
 ] as const;
 
 export type MetricName = (typeof METRIC_NAMES)[number];
@@ -120,6 +133,8 @@ const METRIC_KIND: Record<MetricName, MetricKind> = {
   finalize_stalled_no_response_count: 'counter',
   merged_pr_provenance: 'counter',
   finalize_github_parity: 'counter',
+  finalize_job_peak_memory_bytes: 'histogram',
+  finalize_job_cpu_percent: 'histogram',
 };
 
 export function getMetricKind(name: MetricName): MetricKind {
@@ -327,6 +342,47 @@ export function recordStepResult(
     },
     runId: args.runId,
   });
+}
+
+/**
+ * Per-CI-job resource high-water marks, reported by the runner agent at job
+ * end. Emits the peak-memory histogram always, and the peak-CPU histogram when
+ * CPU sampling was available. The full per-job summary (incl. avg CPU /
+ * duration) is in the runner + Hub `[finalize-job-resources]` log lines; the
+ * metrics carry the two capacity-relevant samples for aggregation + the
+ * per-run UI badge. Labels stay low-cardinality so the aggregate histogram
+ * groups cleanly by job.
+ */
+export function recordJobResourceSummary(
+  deps: MetricsDeps,
+  args: {
+    projectId: string;
+    runId: string;
+    /** The CI job name (e.g. `e2e`), from the wire spec's `jobId`. */
+    jobName: string;
+    matrixKey: string;
+    summary: JobResourceSummary;
+  },
+): void {
+  // Keep matrix_key faithful (empty string for unsharded jobs) — the UI renders
+  // a "default" affordance, but the metric must not conflate a real key of '' .
+  const labels = { job_name: args.jobName, matrix_key: args.matrixKey };
+  recordMetric(deps, {
+    projectId: args.projectId,
+    name: 'finalize_job_peak_memory_bytes',
+    labels: { ...labels, mem_total_bytes: args.summary.memTotalBytes },
+    value: args.summary.peakMemBytes,
+    runId: args.runId,
+  });
+  if (args.summary.peakCpuPercent !== null) {
+    recordMetric(deps, {
+      projectId: args.projectId,
+      name: 'finalize_job_cpu_percent',
+      labels,
+      value: args.summary.peakCpuPercent,
+      runId: args.runId,
+    });
+  }
 }
 
 export function recordStalledNoResponse(

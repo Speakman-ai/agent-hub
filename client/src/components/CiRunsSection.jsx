@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { relativePrTime } from '../utils/prFormatting.js';
+import { resourceBadgeText, jobResourceKey } from '../utils/formatResources.js';
 
 const TERMINAL_STATUSES = new Set([
   'ready_to_push',
@@ -101,6 +102,8 @@ function RunRow({ projectId, run, onRerun = null }) {
   const [expanded, setExpanded] = useState(false);
   const [steps, setSteps] = useState(null);
   const [openStep, setOpenStep] = useState(null);
+  // Per-job resource high-water marks (peak mem / CPU), keyed by job+matrix.
+  const [resources, setResources] = useState(null);
   const { Icon, cls, label } = statusVisual(run.status);
   const trig = triggerBadge(run.trigger_source);
   const rerunnable =
@@ -116,6 +119,18 @@ function RunRow({ projectId, run, onRerun = null }) {
       .then((d) => setSteps(Array.isArray(d?.steps) ? d.steps : []))
       .catch(() => setSteps([]));
   }, [expanded, steps, projectId, run.id]);
+
+  useEffect(() => {
+    if (!expanded || resources) return;
+    api
+      .getFinalizeRunResources(projectId, run.id)
+      .then((d) => {
+        const map = {};
+        for (const j of d?.jobs || []) map[jobResourceKey(j.job_name, j.matrix_key)] = j;
+        setResources(map);
+      })
+      .catch(() => setResources({}));
+  }, [expanded, resources, projectId, run.id]);
 
   return (
     <div className="border border-gray-700/60 rounded-lg bg-gray-900/40">
@@ -173,21 +188,33 @@ function RunRow({ projectId, run, onRerun = null }) {
 
       {expanded && (
         <div className="border-t border-gray-700/60 px-3 py-2 space-y-1.5">
-          {(run.jobs || []).map((job) => (
-            <div
-              key={`${job.job_id}-${job.matrix_key}`}
-              className="flex items-center gap-2 text-xs text-gray-300"
-            >
-              {jobStateIcon(job.state)}
-              <code className="font-mono">{job.job_id}</code>
-              {job.matrix_key && job.matrix_key !== 'default' && (
-                <span className="text-gray-500">{job.matrix_key}</span>
-              )}
-              <span className="text-gray-600 ml-auto tabular-nums">
-                {job.exit_code !== null && job.exit_code !== 0 ? `exit ${job.exit_code}` : ''}
-              </span>
-            </div>
-          ))}
+          {(run.jobs || []).map((job) => {
+            const resBadge = resourceBadgeText(
+              resources?.[jobResourceKey(job.job_id, job.matrix_key)],
+            );
+            return (
+              <div
+                key={`${job.job_id}-${job.matrix_key}`}
+                className="flex items-center gap-2 text-xs text-gray-300"
+              >
+                {jobStateIcon(job.state)}
+                <code className="font-mono">{job.job_id}</code>
+                {job.matrix_key && job.matrix_key !== 'default' && (
+                  <span className="text-gray-500">{job.matrix_key}</span>
+                )}
+                <span className="ml-auto flex items-center gap-2 tabular-nums">
+                  {resBadge && (
+                    <span className="text-gray-500" title="Peak host memory · CPU">
+                      {resBadge}
+                    </span>
+                  )}
+                  <span className="text-gray-600">
+                    {job.exit_code !== null && job.exit_code !== 0 ? `exit ${job.exit_code}` : ''}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
           {steps === null && (
             <p className="text-[11px] text-gray-500 flex items-center gap-1.5">
               <Loader2 size={11} className="animate-spin" /> Loading steps…
