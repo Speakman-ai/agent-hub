@@ -28,6 +28,7 @@ import {
 } from '../auto-git.js';
 import type { NativePrService } from '../native-pr/service.js';
 import { pushAndCreateNativePr } from './push-and-create-pr-agenthub.js';
+import { generateLlmPrSummary } from './pr-summary-llm.js';
 import type {
   PushAndCreatePrArgs,
   PushAndCreatePrFn,
@@ -35,6 +36,34 @@ import type {
 } from './orchestrator.js';
 
 const execFileAsync = promisify(execFile);
+
+/** Config slice the LLM PR-summary step needs (host-wide API keys). */
+export type PrSummaryConfig = Pick<AppConfig, 'openaiApiKey'> & {
+  anthropicApiKey?: string | null;
+};
+
+/**
+ * Best-effort LLM synthesis of a PR title + summary from the full branch
+ * context. Returns `null` when no API key is configured or the call fails —
+ * callers pass the result straight to {@link buildPrDetails}, which falls back
+ * to its deterministic sources on `null`. Never throws.
+ */
+export async function resolvePrSummaryOverride(
+  args: PushAndCreatePrArgs,
+  commits: CommitInfo[],
+  diffStat: string,
+  config: PrSummaryConfig,
+): Promise<PrSummaryOverride | null> {
+  if (!config.openaiApiKey && !config.anthropicApiKey) return null;
+  return generateLlmPrSummary({
+    cardTitle: args.card.title ?? null,
+    cardDescription: args.card.description ?? null,
+    commits,
+    diffStat,
+    openaiApiKey: config.openaiApiKey ?? null,
+    anthropicApiKey: config.anthropicApiKey ?? null,
+  });
+}
 
 /**
  * Run a command, rethrowing with stderr/stdout folded into the message.
@@ -222,10 +251,22 @@ export async function collectPrDiffStat(
   return '';
 }
 
+/**
+ * LLM-synthesized title + summary that overrides the deterministic sources.
+ * When present (and non-empty) the title drives the PR name and the summary
+ * becomes the ## Summary lede, regardless of single/multi-commit. Either field
+ * may be empty — an empty field falls through to the deterministic source.
+ */
+export interface PrSummaryOverride {
+  title?: string;
+  summary?: string;
+}
+
 export function buildPrDetails(
   args: PushAndCreatePrArgs,
   commits: CommitInfo[],
   diffStat: string,
+  override?: PrSummaryOverride | null,
 ): { title: string; body: string } {
   const firstCommit = commits[0];
   const cardTitle = args.card.title?.trim() ?? '';
@@ -234,6 +275,11 @@ export function buildPrDetails(
   // trusting collectPrCommits to drop empty subjects) keeps buildPrDetails
   // defensive when called with malformed/whitespace subjects.
   const firstSubject = firstCommit?.subject?.trim() ?? '';
+  // LLM-synthesized title/summary win when available — they capture the whole
+  // session rather than the last turn or a vague card title. Empty fields fall
+  // through to the deterministic sources below.
+  const llmTitle = override?.title?.trim() ?? '';
+  const llmSummary = override?.summary?.trim() ?? '';
   // `git log <base>..HEAD` is newest-first, so commits[0] is the *last* commit
   // on the branch. A single commit describes the whole change, so its subject
   // is a good title. But with several commits the newest one describes only the
@@ -243,20 +289,29 @@ export function buildPrDetails(
   // `||` (not `??`) so an empty string always falls through to the next
   // source, ending at the raw card title — never an empty/"Untitled" PR name.
   const multiCommit = commits.length > 1;
-  const titleSource = multiCommit ? cardTitle || firstSubject : firstSubject || cardTitle;
-  const title = normalizeTitle(titleSource || args.card.title);
+  const deterministicTitleSource = multiCommit
+    ? cardTitle || firstSubject
+    : firstSubject || cardTitle;
+  const title = normalizeTitle(llmTitle || deterministicTitleSource || args.card.title);
   const sections: string[] = ['## Summary'];
 
-  if (multiCommit) {
+  // Tracks whether the Summary lede came from the card. When it did, repeating
+  // the card description under ## Original task would be redundant.
+  let summaryFromCard = false;
+  if (llmSummary) {
+    sections.push(llmSummary);
+  } else if (multiCommit) {
     // Goal-first: summarize the PR as a whole with the card (what was asked),
     // not the newest commit. The individual commits are listed below.
     sections.push(cardDescription || cardTitle || `Completed ${args.card.title}.`);
+    summaryFromCard = Boolean(cardDescription || cardTitle);
   } else if (firstCommit) {
     sections.push(
       firstCommit.body ? `${firstCommit.subject}\n\n${firstCommit.body}` : firstCommit.subject,
     );
   } else if (cardDescription) {
     sections.push(cardDescription);
+    summaryFromCard = true;
   } else {
     sections.push(`Completed ${args.card.title}.`);
   }
@@ -272,10 +327,11 @@ export function buildPrDetails(
     }
   }
 
-  // Original-task context only adds value when the Summary came from a commit
-  // (single-commit case). For multi-commit branches the Summary already IS the
-  // card, so repeating it under ## Original task would be redundant.
-  if (!multiCommit && firstCommit && cardDescription) {
+  // Original-task context adds value whenever the Summary did NOT already come
+  // from the card description (a commit drove it, or an LLM synthesized it).
+  // When the card description already IS the Summary, repeating it here would
+  // be redundant.
+  if (!summaryFromCard && cardDescription) {
     sections.push('');
     sections.push('## Original task');
     sections.push(cardDescription);
@@ -322,7 +378,7 @@ export function buildPrDetails(
  * byte-for-byte.
  */
 export function createPushAndCreatePr(deps: {
-  config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+  config: Pick<AppConfig, 'personalOAuth' | 'githubApp' | 'openaiApiKey'>;
   /** Required when any project opts into `gitHost: 'agenthub'`. */
   nativePr?: NativePrService;
 }): PushAndCreatePrFn {
@@ -335,7 +391,7 @@ export function createPushAndCreatePr(deps: {
           `project ${args.project.id} uses gitHost 'agenthub' but the native PR service is not wired`,
         );
       }
-      return pushAndCreateNativePr(deps.nativePr, args);
+      return pushAndCreateNativePr(deps.nativePr, args, deps.config);
     }
 
     // Prefer the session owner's personal GitHub token so the push and the
@@ -377,7 +433,8 @@ export function createPushAndCreatePr(deps: {
       collectPrCommits(args.worktreePath, args.baseBranch, env),
       collectPrDiffStat(args.worktreePath, args.baseBranch, env),
     ]);
-    const { title, body } = buildPrDetails(args, commits, diffStat);
+    const override = await resolvePrSummaryOverride(args, commits, diffStat, deps.config);
+    const { title, body } = buildPrDetails(args, commits, diffStat, override);
 
     // gh pr create --base <baseBranch> --head <branch> --title <title> --body <body>
     const { stdout } = await execGit(

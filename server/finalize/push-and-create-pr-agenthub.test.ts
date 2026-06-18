@@ -16,7 +16,12 @@ import type { PushAndCreatePrArgs } from './orchestrator.js';
 import type { NativePrService } from '../native-pr/service.js';
 import type { AppConfig, Project } from '../types.js';
 
-const TEST_CONFIG = {} as Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+// `openaiApiKey: null` → the LLM PR-summary step is a no-op, so these tests
+// exercise the deterministic buildPrDetails path unchanged.
+const TEST_CONFIG = { openaiApiKey: null } as Pick<
+  AppConfig,
+  'personalOAuth' | 'githubApp' | 'openaiApiKey'
+>;
 
 // Controllable native-PR author resolver so a test can force the
 // "no attributed Hub user" failure without mutating process-wide auth state.

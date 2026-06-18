@@ -27,6 +27,8 @@ import {
   collectPrDiffStat,
   execGit,
   resolveExpectedRemoteSha,
+  resolvePrSummaryOverride,
+  type PrSummaryConfig,
 } from './push-and-create-pr.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import type { PushAndCreatePrArgs, PushAndCreatePrResult } from './orchestrator.js';
@@ -37,6 +39,7 @@ const MAX_BUFFER = 10 * 1024 * 1024;
 export async function pushAndCreateNativePr(
   nativePr: NativePrService,
   args: PushAndCreatePrArgs,
+  config?: PrSummaryConfig,
 ): Promise<PushAndCreatePrResult> {
   // Guard: the push must land on the Hub repo. A worktree whose origin
   // still points at GitHub (e.g. opt-in happened mid-session, before the
@@ -86,7 +89,8 @@ export async function pushAndCreateNativePr(
     collectPrCommits(args.worktreePath, args.baseBranch, process.env),
     collectPrDiffStat(args.worktreePath, args.baseBranch, process.env),
   ]);
-  const { title, body } = buildPrDetails(args, commits, diffStat);
+  const override = config ? await resolvePrSummaryOverride(args, commits, diffStat, config) : null;
+  const { title, body } = buildPrDetails(args, commits, diffStat, override);
 
   const { prUrl } = nativePr.createOrGetOpenPr({
     project: args.project,

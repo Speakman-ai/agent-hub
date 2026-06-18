@@ -167,6 +167,64 @@ describe('buildPrDetails', () => {
     );
     expect(title).toBe('Add per-user GitHub login');
   });
+
+  it('prefers an LLM override title + summary over a vague card title (the reported bug)', () => {
+    // Regression for the support ticket: a vague auto-generated session title
+    // ("Improving Ongoing Support and Feature Implementation in") plus several
+    // real commits produced a useless PR title/summary. An LLM override that
+    // synthesizes the whole change must win over the card title.
+    const { title, body } = __test.buildPrDetails(
+      mkArgs({
+        title: 'Improving Ongoing Support and Feature Implementation in',
+        description: null,
+      }),
+      [
+        { subject: 'Scope session done/awaiting-input toasts to the session owner (#99)' },
+        { subject: 'fix(skills): make agent-hub wrappers reachable on first call' },
+      ],
+      'client/src/App.jsx | 10 +++-',
+      {
+        title: 'Scope session toasts to owner and fix skill wrapper PATH',
+        summary:
+          'Restricts done/awaiting-input toasts to the session owner and makes the agent-hub skill wrappers resolvable on the first call by exporting PATH and AGENT_HUB_SKILLS_DIR.',
+      },
+    );
+    expect(title).toBe('Scope session toasts to owner and fix skill wrapper PATH');
+    expect(body).toMatch(/## Summary\nRestricts done\/awaiting-input toasts to the session owner/);
+    // The vague card title never appears as the title or Summary lede.
+    expect(body).not.toMatch(/## Summary\nImproving Ongoing Support/);
+    // Per-commit detail still listed.
+    expect(body).toContain('## Commits');
+    expect(body).toContain('- Scope session done/awaiting-input toasts to the session owner (#99)');
+  });
+
+  it('keeps the card description under Original task when an LLM summary drives the Summary', () => {
+    const { body } = __test.buildPrDetails(
+      mkArgs({ title: 'vague title', description: 'Make PR titles capture the whole session.' }),
+      [{ subject: 'commit a' }, { subject: 'commit b' }],
+      '',
+      {
+        title: 'Synthesize PR titles from the full branch',
+        summary: 'A clear synthesized summary.',
+      },
+    );
+    expect(body).toMatch(/## Summary\nA clear synthesized summary\./);
+    expect(body).toContain('## Original task');
+    expect(body).toContain('Make PR titles capture the whole session.');
+  });
+
+  it('falls through to deterministic sources when the override fields are empty', () => {
+    // A null/empty override must not change the deterministic behavior — this
+    // is the no-API-key path.
+    const { title, body } = __test.buildPrDetails(
+      mkArgs({ title: 'Add per-user GitHub login', description: null }),
+      [{ subject: 'fix review' }, { subject: 'feat: per-user GitHub login' }],
+      '',
+      { title: '   ', summary: '' },
+    );
+    expect(title).toBe('Add per-user GitHub login');
+    expect(body).toMatch(/## Summary\nAdd per-user GitHub login/);
+  });
 });
 
 describe('createPushAndCreatePr', () => {
