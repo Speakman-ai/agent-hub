@@ -1770,6 +1770,8 @@ export interface Stmts {
   resetWorkflowStepRunForRetry: Stmt;
   failStuckRunningWorkflowRuns: Stmt;
   failStuckRunningWorkflowStepRuns: Stmt;
+  selectStuckActiveFinalizeRunsOnBoot: Stmt;
+  countInterruptedFinalizeRunsForSessionHead: Stmt;
   failStuckActiveFinalizeRunsOnBoot: Stmt;
   failStuckActiveFinalizeRunStepsOnBoot: Stmt;
   getWorkflowStepRun: Stmt;

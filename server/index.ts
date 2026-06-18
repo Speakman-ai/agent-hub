@@ -111,6 +111,10 @@ import createThreadRoutes from './routes/threads.js';
 import createWorkflowRoutes from './routes/workflows.js';
 import { failStuckWorkflowRunsOnBoot } from './workflow-runner.js';
 import { failStuckFinalizeRunsOnBoot } from './finalize/boot-recovery.js';
+import {
+  retriggerInterruptedFinalizeRunsOnBoot,
+  type InterruptedFinalizeRun,
+} from './finalize/boot-retrigger.js';
 import { createWorkflowIncomingRouter, refreshWorkflowCronSchedules } from './workflow-triggers.js';
 import createSlackRoutes from './routes/slack.js';
 import createEscalationRoutes from './routes/escalations.js';
@@ -1495,10 +1499,19 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       console.error('[workflow] failStuckWorkflowRunsOnBoot', (e as Error).message);
     }
 
+    let interruptedFinalizeRuns: InterruptedFinalizeRun[] = [];
     try {
-      failStuckFinalizeRunsOnBoot(stmts!);
+      interruptedFinalizeRuns = failStuckFinalizeRunsOnBoot(stmts!);
     } catch (e) {
       console.error('[finalize] failStuckFinalizeRunsOnBoot', (e as Error).message);
+    }
+    // Re-trigger interrupted runs from scratch so a deploy/crash mid-Finalize is
+    // non-destructive. Guarded out of tests (kicks off real git + orchestrators)
+    // and fire-and-forget so it never blocks boot.
+    if (process.env.NODE_ENV !== 'test' && interruptedFinalizeRuns.length > 0) {
+      void retriggerInterruptedFinalizeRunsOnBoot(routeDeps, interruptedFinalizeRuns).catch((e) =>
+        console.error('[finalize] retriggerInterruptedFinalizeRunsOnBoot', (e as Error).message),
+      );
     }
 
     try {

@@ -1,5 +1,5 @@
 /**
- * boot-recovery.ts — fail in-flight Finalize runs on Hub boot.
+ * boot-recovery.ts — close out in-flight Finalize runs on Hub boot.
  *
  * A Finalize run's orchestrator loop and its remote-fleet streaming (the
  * per-job WebSocket handles + the in-process CancelSignal) live entirely in the
@@ -13,10 +13,45 @@
  * already surfaces with a retrigger affordance) and their unfinished steps
  * `skipped`, so an interrupted run fails cleanly and immediately instead of
  * hanging. Mirrors `failStuckWorkflowRunsOnBoot` (server/workflow-runner.ts).
+ *
+ * Because the work product (the branch + its commits) is durable in git, the
+ * interrupted runs are *also* snapshotted and returned so the caller can
+ * re-trigger a fresh run per session — see `retriggerInterruptedFinalizeRunsOnBoot`
+ * (boot-retrigger.ts). The snapshot is taken BEFORE the sweep, since the sweep
+ * rewrites the same rows the predicate selects.
  */
 import type { Stmts } from './../types.js';
+import type { InterruptedFinalizeRun } from './boot-retrigger.js';
 
-export function failStuckFinalizeRunsOnBoot(stmts: Stmts): void {
+interface StuckFinalizeRunRow {
+  id: string;
+  session_id: string | null;
+  card_id: string | null;
+  project_id: string | null;
+  head_sha: string | null;
+}
+
+/**
+ * Sweep interrupted Finalize runs to `infra_error` and return the snapshot of
+ * runs that are candidates for re-trigger (those with a session + card + head).
+ */
+export function failStuckFinalizeRunsOnBoot(stmts: Stmts): InterruptedFinalizeRun[] {
+  let interrupted: InterruptedFinalizeRun[] = [];
+  try {
+    const rows = stmts.selectStuckActiveFinalizeRunsOnBoot.all() as StuckFinalizeRunRow[];
+    interrupted = rows
+      .filter((r) => r.session_id && r.card_id && r.project_id && r.head_sha)
+      .map((r) => ({
+        runId: r.id,
+        sessionId: r.session_id as string,
+        cardId: r.card_id as string,
+        projectId: r.project_id as string,
+        headSha: r.head_sha as string,
+      }));
+  } catch (e) {
+    console.error('[finalize] selectStuckActiveFinalizeRunsOnBoot', (e as Error).message);
+  }
+
   try {
     const runs = stmts.failStuckActiveFinalizeRunsOnBoot.run() as { changes: number };
     if (runs.changes > 0) {
@@ -37,4 +72,6 @@ export function failStuckFinalizeRunsOnBoot(stmts: Stmts): void {
   } catch (e) {
     console.error('[finalize] failStuckActiveFinalizeRunStepsOnBoot', (e as Error).message);
   }
+
+  return interrupted;
 }

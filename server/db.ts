@@ -3951,6 +3951,32 @@ function initDb(dataDir: string): void {
            completed_at = datetime('now')
        WHERE status = 'running'`,
     ),
+    // Snapshot of the in-flight runs *before* the boot sweep marks them
+    // infra_error — captured so the Hub can RE-TRIGGER a fresh run per session
+    // (boot-retrigger.ts) instead of leaving the work stranded. Same predicate
+    // (and therefore same terminal set) as failStuckActiveFinalizeRunsOnBoot;
+    // keep the two in sync. Most-recent first so per-session dedup keeps the
+    // latest interrupted run.
+    selectStuckActiveFinalizeRunsOnBoot: db.prepare(
+      `SELECT id, session_id, card_id, project_id, head_sha
+         FROM finalize_runs
+        WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response','ready_to_push')
+        ORDER BY started_at DESC, id DESC`,
+    ),
+    // Crash-loop guard for boot retrigger: how many times this exact
+    // (session, head_sha) has already been marked infra_error by the boot
+    // sweep. If the count crosses the generation cap, stop auto-retriggering
+    // (a run that crashes the Hub mid-finalize would otherwise loop forever:
+    // boot → retrigger → crash → boot → ...). Counts the just-swept generation
+    // too, since the count runs after the sweep.
+    countInterruptedFinalizeRunsForSessionHead: db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND head_sha = ?
+          AND status = 'infra_error'
+          AND failure_reason LIKE 'Finalize run interrupted%'`,
+    ),
     // A Finalize run's orchestrator + remote-fleet streaming live in the Hub
     // process; a restart/crash leaves the run row non-terminal with no live
     // handle, so it hangs forever showing "running". On boot, mark every
