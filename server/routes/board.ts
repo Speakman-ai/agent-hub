@@ -310,10 +310,16 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   //     that ignore it keep working.
   //   - `?limit=N` (optional, opt-in): when supplied, `cards` carries only the
   //     first N cards per column (ordered by position, id), bounding the
-  //     payload to N × columnCount. Clients fetch the rest via
-  //     GET /board/columns/:columnId/cards using `counts` to know when to.
-  //     When omitted, `cards` is the full board (backward compatible) so the
-  //     current web / mobile clients are unaffected until they opt in.
+  //     payload to N × columnCount. The response also gains a `cursors` map
+  //     `{ [columnId]: nextCursor|null }` so a client can resume pagination
+  //     per column from this single request (via GET
+  //     /board/columns/:columnId/cards) without reconstructing the opaque
+  //     cursor itself. A null entry means the first page is the last page.
+  //     Clients fetch the rest via GET /board/columns/:columnId/cards using
+  //     `cursors` + `counts` to know when to stop. When `?limit` is omitted,
+  //     `cards` is the full board (backward compatible) and `cursors` is
+  //     absent, so the current web / mobile clients are unaffected until they
+  //     opt in.
   router.get('/api/projects/:projectId/board', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -321,11 +327,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const counts = loadColumnCounts(stmts, data.columns);
 
     let cards: KanbanCardRow[];
+    let cursors: Record<string, string | null> | undefined;
     if (req.query.limit !== undefined) {
       const limit = clampPageLimit(req.query.limit);
       cards = [];
+      cursors = {};
       for (const col of data.columns) {
-        cards.push(...fetchColumnCardPage(stmts, col.id, limit, null).cards);
+        const page = fetchColumnCardPage(stmts, col.id, limit, null);
+        cards.push(...page.cards);
+        cursors[col.id] = page.nextCursor;
       }
     } else {
       cards = data.cards;
@@ -335,7 +345,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // are board-scoped batched queries; folding them into the payload lets the
     // client render blocker banners and per-card finalize badges without a GET
     // per card.
-    res.json({ ...data, cards: enrichCards(stmts, data.board.id, cards), counts });
+    const body: Record<string, unknown> = {
+      ...data,
+      cards: enrichCards(stmts, data.board.id, cards),
+      counts,
+    };
+    if (cursors) body.cursors = cursors;
+    res.json(body);
   });
 
   // GET /board/columns/:columnId/cards — keyset-paginated slice of one column.

@@ -136,4 +136,43 @@ describe('GET /board (counts + optional first-page-per-column)', () => {
     expect(body.cards[0].blockers).toBeDefined();
     expect(body.counts[columnId]).toBe(12);
   });
+
+  it('omits the cursors map when ?limit is not supplied', async () => {
+    const res = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const body = res.body as { cursors?: Record<string, string | null> };
+    expect(body.cursors).toBeUndefined();
+  });
+
+  it('returns a per-column cursors map when ?limit is supplied (non-null when more remain)', async () => {
+    const res = await request.get(`/api/projects/${projectId}/board?limit=4`).expect(200);
+    const body = res.body as { cursors: Record<string, string | null> };
+    expect(body.cursors).toBeDefined();
+    // 12 cards, page of 4 → there is a next page → cursor is a non-null token.
+    expect(typeof body.cursors[columnId]).toBe('string');
+    expect(body.cursors[columnId]).toBeTruthy();
+  });
+
+  it('cursors map resumes exactly where the board first page left off', async () => {
+    const board = await request.get(`/api/projects/${projectId}/board?limit=4`).expect(200);
+    const body = board.body as {
+      cards: EnrichedCard[];
+      cursors: Record<string, string | null>;
+    };
+    const firstPageIds = body.cards.map((c) => c.id);
+    const cursor = body.cursors[columnId] as string;
+
+    // Feeding the board's cursor into the column endpoint yields the next slice
+    // with no overlap and no gap.
+    const next = await fetchPage(`?limit=4&cursor=${encodeURIComponent(cursor)}`);
+    const nextIds = next.cards.map((c) => c.id);
+    expect(nextIds).toHaveLength(4);
+    expect(nextIds.some((id) => firstPageIds.includes(id))).toBe(false);
+    expect(next.total).toBe(12);
+  });
+
+  it('cursor entry is null when the first page already covers the whole column', async () => {
+    const res = await request.get(`/api/projects/${projectId}/board?limit=20`).expect(200);
+    const body = res.body as { cursors: Record<string, string | null> };
+    expect(body.cursors[columnId]).toBeNull();
+  });
 });

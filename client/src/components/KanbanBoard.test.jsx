@@ -20,6 +20,7 @@ import { api } from '../utils/api.js';
 vi.mock('../utils/api.js', () => ({
   api: {
     getBoard: vi.fn(),
+    getColumnCards: vi.fn(),
     get: vi.fn(),
     getCardComments: vi.fn(),
     // Opening a card resolves its (optional) session replay. Default to "none"
@@ -975,5 +976,189 @@ describe('KanbanBoard epic filter and autonomous dispatch', () => {
     fireEvent.click(screen.getByTestId('open-autonomous-dialog'));
     expect(screen.getByTestId('epic-autonomous-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('epic-autonomous-panel')).toBeInTheDocument();
+  });
+});
+
+describe('KanbanBoard infinite scroll (per-column pagination)', () => {
+  // Capture each ColumnLoadMoreSentinel's IntersectionObserver callback keyed
+  // by the observed element's data-testid so a test can simulate the sentinel
+  // scrolling into view. jsdom ships no IntersectionObserver, so without this
+  // mock the component's `typeof IntersectionObserver === 'undefined'` guard
+  // would skip observing entirely.
+  let triggers;
+  beforeEach(() => {
+    triggers = new Map();
+    class MockIntersectionObserver {
+      constructor(cb) {
+        this.cb = cb;
+      }
+      observe(el) {
+        triggers.set(el.getAttribute('data-testid'), this.cb);
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.IntersectionObserver = MockIntersectionObserver;
+    window.IntersectionObserver = MockIntersectionObserver;
+
+    api.getBoard.mockReset();
+    api.getColumnCards.mockReset();
+    api.get.mockReset();
+    api.get.mockResolvedValue([]);
+  });
+
+  const intersect = (testid) => {
+    const cb = triggers.get(testid);
+    if (!cb) throw new Error(`no observer for ${testid}`);
+    act(() => cb([{ isIntersecting: true }]));
+  };
+
+  // A board whose `col-todo` column has more cards than the first page, with a
+  // server-provided cursor to resume from.
+  const pagedBoard = (firstPageCards) => ({
+    board: { id: 'b1' },
+    columns: [
+      { id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 },
+      { id: 'col-done', name: 'Done', color: '#22c55e', position: 1 },
+    ],
+    cards: firstPageCards,
+    epics: [],
+    counts: { 'col-todo': 3, 'col-done': 0 },
+    cursors: { 'col-todo': 'CURSOR1', 'col-done': null },
+  });
+
+  it('fetches and appends the next page when the column sentinel scrolls into view', async () => {
+    api.getBoard.mockResolvedValue(
+      pagedBoard([
+        { id: 'card-1', title: 'Card 1', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Card 2', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+    api.getColumnCards.mockResolvedValue({
+      cards: [{ id: 'card-3', title: 'Card 3', column_id: 'col-todo', position: 2 }],
+      nextCursor: null,
+      total: 3,
+    });
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card 1')).toBeInTheDocument());
+
+    // Header shows "2 of 3" before the extra page loads.
+    expect(screen.getByTestId('column-count-col-todo')).toHaveTextContent('2 of 3');
+    // Card 3 isn't loaded yet.
+    expect(screen.queryByText('Card 3')).not.toBeInTheDocument();
+
+    // Sentinel scrolls into view → next page is fetched with the server cursor.
+    intersect('column-load-more-sentinel-col-todo');
+
+    await waitFor(() =>
+      expect(api.getColumnCards).toHaveBeenCalledWith('p1', 'col-todo', {
+        cursor: 'CURSOR1',
+        limit: 50,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('Card 3')).toBeInTheDocument());
+    // Now fully loaded → header collapses to the plain total.
+    await waitFor(() => expect(screen.getByTestId('column-count-col-todo')).toHaveTextContent('3'));
+  });
+
+  it('renders no sentinel and never fetches when the first page is the whole column', async () => {
+    api.getBoard.mockResolvedValue({
+      board: { id: 'b1' },
+      columns: [{ id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 }],
+      cards: [{ id: 'card-1', title: 'Card 1', column_id: 'col-todo', position: 0 }],
+      epics: [],
+      counts: { 'col-todo': 1 },
+      cursors: { 'col-todo': null },
+    });
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card 1')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('column-load-more-sentinel-col-todo')).not.toBeInTheDocument();
+    expect(api.getColumnCards).not.toHaveBeenCalled();
+  });
+
+  it('guards against double-fetch: two intersects before the page resolves fetch once', async () => {
+    api.getBoard.mockResolvedValue(
+      pagedBoard([{ id: 'card-1', title: 'Card 1', column_id: 'col-todo', position: 0 }]),
+    );
+    // Defer the page response so both intersects land while the fetch is inflight.
+    let resolvePage;
+    api.getColumnCards.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePage = resolve;
+      }),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card 1')).toBeInTheDocument());
+
+    intersect('column-load-more-sentinel-col-todo');
+    intersect('column-load-more-sentinel-col-todo');
+
+    await waitFor(() => expect(api.getColumnCards).toHaveBeenCalledTimes(1));
+
+    act(() =>
+      resolvePage({
+        cards: [{ id: 'card-2', title: 'Card 2', column_id: 'col-todo', position: 1 }],
+        nextCursor: null,
+        total: 3,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('Card 2')).toBeInTheDocument());
+    // Still only one fetch — the inflight guard suppressed the duplicate.
+    expect(api.getColumnCards).toHaveBeenCalledTimes(1);
+  });
+
+  it('drains remaining pages when a search filter is active so off-page matches surface', async () => {
+    // First page holds Apple + Banana; the matching "Cherry" lives on page 2.
+    // Without the filter-drain, searching "Cherry" would find nothing because
+    // it was never loaded.
+    api.getBoard.mockResolvedValue({
+      board: { id: 'b1' },
+      columns: [
+        { id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 },
+        { id: 'col-done', name: 'Done', color: '#22c55e', position: 1 },
+      ],
+      cards: [
+        { id: 'card-1', title: 'Apple', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Banana', column_id: 'col-todo', position: 1 },
+      ],
+      epics: [],
+      counts: { 'col-todo': 3, 'col-done': 0 },
+      cursors: { 'col-todo': 'CURSOR1', 'col-done': null },
+    });
+    api.getColumnCards.mockResolvedValue({
+      cards: [{ id: 'card-3', title: 'Cherry', column_id: 'col-todo', position: 2 }],
+      nextCursor: null,
+      total: 3,
+    });
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Apple')).toBeInTheDocument());
+
+    // Page 2 (Cherry) not loaded yet, and no fetch has happened.
+    expect(screen.queryByText('Cherry')).not.toBeInTheDocument();
+    expect(api.getColumnCards).not.toHaveBeenCalled();
+
+    // Activating a filter eagerly drains the column so the off-page match loads.
+    fireEvent.change(screen.getByPlaceholderText(/Search cards/i), {
+      target: { value: 'Cherry' },
+    });
+
+    await waitFor(() =>
+      expect(api.getColumnCards).toHaveBeenCalledWith('p1', 'col-todo', {
+        cursor: 'CURSOR1',
+        limit: 50,
+      }),
+    );
+    // The off-page match is now visible; the non-matching first-page cards are
+    // filtered out.
+    await waitFor(() => expect(screen.getByText('Cherry')).toBeInTheDocument());
+    expect(screen.queryByText('Apple')).not.toBeInTheDocument();
+    expect(screen.queryByText('Banana')).not.toBeInTheDocument();
+    // The fully-loaded column (cursor null) is never drained.
+    expect(api.getColumnCards).toHaveBeenCalledTimes(1);
   });
 });

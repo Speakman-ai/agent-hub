@@ -220,6 +220,10 @@ export const BoardResponseComponent = registerComponent(
         description:
           'Total card count per column, keyed by column id (`{ [columnId]: total }`). Always present. Lets a client decide whether a column has more cards than the page in `cards` and fetch the rest via GET /board/columns/:columnId/cards.',
       }),
+      cursors: z.record(z.string(), z.string().nullable()).optional().openapi({
+        description:
+          'Per-column next-page cursor, keyed by column id (`{ [columnId]: nextCursor|null }`). Present only when `?limit=N` is supplied. A non-null value is the opaque keyset cursor to pass as `cursor` to GET /board/columns/:columnId/cards for the next page; null means the first page is the last page. Lets a client seed per-column infinite scroll from this one request without reconstructing the opaque cursor.',
+      }),
     })
     .openapi({
       description:

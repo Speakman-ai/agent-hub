@@ -42,6 +42,48 @@ const PRIORITY_ACCENT = {
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
 
+/**
+ * Per-column page size for infinite scroll. The board opens by loading only
+ * the first PAGE_SIZE cards per column (via GET /board?limit=PAGE_SIZE) so a
+ * 700-card column doesn't block first paint; the rest stream in as the user
+ * scrolls each column to its bottom.
+ */
+const PAGE_SIZE = 50;
+
+/**
+ * An invisible sentinel rendered at the bottom of a column's scroll container.
+ * When it scrolls into view (observed against the column's own
+ * `.kanban-column-scroll` element as the IntersectionObserver root) it calls
+ * `onLoadMore(columnId)` to append the next page. The observer is rebuilt only
+ * when `columnId` / `onLoadMore` change, so a stable `onLoadMore` keeps it
+ * cheap. `rootMargin` pre-fetches slightly before the sentinel is fully
+ * visible for a smoother scroll.
+ */
+function ColumnLoadMoreSentinel({ columnId, onLoadMore }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const root = el.closest('.kanban-column-scroll') || null;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onLoadMore(columnId);
+      },
+      { root, rootMargin: '160px 0px' },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [columnId, onLoadMore]);
+  return (
+    <div
+      ref={ref}
+      data-testid={`column-load-more-sentinel-${columnId}`}
+      aria-hidden="true"
+      className="h-1 w-full"
+    />
+  );
+}
+
 export default function KanbanBoard({
   projectId,
   project,
@@ -63,6 +105,26 @@ export default function KanbanBoard({
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  // Per-column infinite-scroll state, keyed by column id:
+  //   { nextCursor, hasMore, loading, total }
+  // `cards` above holds only the cards loaded so far across all columns; this
+  // map tracks how far each column has paged and how many cards it really has.
+  const [columnPaging, setColumnPaging] = useState({});
+
+  // Refs mirroring async-read state so the IntersectionObserver callback and
+  // loadMore guard always see live values without re-subscribing on every
+  // render. `inflightRef` is a synchronous double-fetch guard (state updates
+  // are async, so a second intersect could fire before `loading:true` commits).
+  const cardsRef = useRef(cards);
+  const columnPagingRef = useRef(columnPaging);
+  const inflightRef = useRef(new Set());
+  useEffect(() => {
+    cardsRef.current = cards;
+  }, [cards]);
+  useEffect(() => {
+    columnPagingRef.current = columnPaging;
+  }, [columnPaging]);
 
   // Inline add card state: columnId that has the form open
   const [addingInColumn, setAddingInColumn] = useState(null);
@@ -128,21 +190,223 @@ export default function KanbanBoard({
       });
   }, []);
 
+  // Load the board's first page per column (one request), then page forward on
+  // any column where the caller asks us to preserve a deeper scroll position
+  // (`preserveDepth[colId]` = number of cards previously loaded). Returns the
+  // assembled `{ data, allCards, paging }`. Used by both the initial load
+  // (preserveDepth=null) and WebSocket reconciliation (preserveDepth=current
+  // loaded counts) so a background refresh doesn't collapse columns the user
+  // already scrolled.
+  const loadBoardPaged = useCallback(
+    async (preserveDepth) => {
+      const data = await api.getBoard(projectId, { limit: PAGE_SIZE });
+      const counts = data.counts || {};
+      const cursors = data.cursors || {};
+      const allCards = [...(data.cards || [])];
+      const paging = {};
+      for (const col of data.columns) {
+        let loaded = allCards.filter((c) => c.column_id === col.id).length;
+        let nextCursor = cursors[col.id] ?? null;
+        const total = counts[col.id] ?? loaded;
+        // Re-page forward until we've reloaded at least as deep as the user had
+        // scrolled before the refresh (bounded by the real total / cursor end).
+        const want = preserveDepth ? (preserveDepth[col.id] ?? 0) : 0;
+        while (nextCursor && loaded < want) {
+          const res = await api.getColumnCards(projectId, col.id, {
+            cursor: nextCursor,
+            limit: PAGE_SIZE,
+          });
+          const page = res.cards || [];
+          if (page.length === 0) {
+            nextCursor = null;
+            break;
+          }
+          allCards.push(...page);
+          loaded += page.length;
+          nextCursor = res.nextCursor ?? null;
+        }
+        paging[col.id] = {
+          nextCursor,
+          hasMore: nextCursor != null,
+          loading: false,
+          total,
+        };
+      }
+      return { data, allCards, paging };
+    },
+    [projectId],
+  );
+
+  // Initial load / project switch: reset every column to its first page.
   const fetchBoard = useCallback(async () => {
-    if (!projectId) return;
+    if (!projectId) return undefined;
     try {
-      const data = await api.getBoard(projectId);
+      const { data, allCards, paging } = await loadBoardPaged(null);
       setBoard(data.board);
       setColumns(data.columns);
-      setCards(data.cards);
       setEpics(data.epics || []);
+      setColumnPaging(paging);
+      setCards(allCards);
       setError(null);
+      return allCards;
     } catch (err) {
       setError(err.message);
+      return undefined;
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, loadBoardPaged]);
+
+  // WebSocket / interval reconciliation. A `kanban_update` event doesn't say
+  // which column changed, so we reload the first page of every column and
+  // re-page each one up to its previously-loaded depth. This keeps the board
+  // correct after a create / move / delete (counts, positions, and
+  // cross-column moves all re-resolve) without yanking the user back to the
+  // top of a column they'd scrolled. A card moved into a not-yet-loaded region
+  // simply waits there until scrolled — `counts` still reflect the truth.
+  // Returns the reconciled card array so callers can re-pick the open card.
+  const reconcileBoard = useCallback(async () => {
+    if (!projectId) return undefined;
+    const preserve = {};
+    for (const c of cardsRef.current) {
+      preserve[c.column_id] = (preserve[c.column_id] || 0) + 1;
+    }
+    try {
+      const { data, allCards, paging } = await loadBoardPaged(preserve);
+      setBoard(data.board);
+      setColumns(data.columns);
+      setEpics(data.epics || []);
+      setColumnPaging(paging);
+      setCards(allCards);
+      setError(null);
+      return allCards;
+    } catch (err) {
+      setError(err.message);
+      return undefined;
+    }
+  }, [projectId, loadBoardPaged]);
+
+  // Append the next keyset page for one column. Guarded against double-fetch
+  // (sync `inflightRef`) and against fetching past the end (`hasMore` /
+  // `nextCursor`). Deduped by id so a racing reconcile can't double-insert.
+  const loadMoreColumn = useCallback(
+    async (columnId) => {
+      const p = columnPagingRef.current[columnId];
+      if (!p || !p.hasMore || !p.nextCursor) return;
+      if (inflightRef.current.has(columnId)) return;
+      inflightRef.current.add(columnId);
+      setColumnPaging((prev) => ({
+        ...prev,
+        [columnId]: { ...prev[columnId], loading: true },
+      }));
+      try {
+        const res = await api.getColumnCards(projectId, columnId, {
+          cursor: p.nextCursor,
+          limit: PAGE_SIZE,
+        });
+        const page = res.cards || [];
+        setCards((prev) => {
+          const seen = new Set(prev.map((c) => c.id));
+          const fresh = page.filter((c) => !seen.has(c.id));
+          return fresh.length ? [...prev, ...fresh] : prev;
+        });
+        const nextCursor = res.nextCursor ?? null;
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: {
+            nextCursor,
+            hasMore: nextCursor != null,
+            loading: false,
+            total: res.total ?? prev[columnId]?.total ?? 0,
+          },
+        }));
+      } catch (err) {
+        console.error('Failed to load more cards:', err);
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: { ...prev[columnId], loading: false },
+        }));
+      } finally {
+        inflightRef.current.delete(columnId);
+      }
+    },
+    [projectId],
+  );
+
+  // Page a single column all the way to its end, appending every remaining
+  // card. Used when a search / epic filter is active: filters run client-side
+  // over the loaded `cards`, so with pagination we must load the column in
+  // full or matches living past the first page would be invisible (and the
+  // load-more sentinel is suppressed while filtering). Shares the per-column
+  // `inflightRef` guard with loadMoreColumn so the two can't race the same
+  // column, and dedups appended cards by id.
+  const drainColumn = useCallback(
+    async (columnId) => {
+      let cursor = columnPagingRef.current[columnId]?.nextCursor ?? null;
+      if (!cursor) return;
+      if (inflightRef.current.has(columnId)) return;
+      inflightRef.current.add(columnId);
+      setColumnPaging((prev) => ({
+        ...prev,
+        [columnId]: { ...prev[columnId], loading: true },
+      }));
+      try {
+        const collected = [];
+        let total;
+        while (cursor) {
+          const res = await api.getColumnCards(projectId, columnId, {
+            cursor,
+            limit: PAGE_SIZE,
+          });
+          const page = res.cards || [];
+          collected.push(...page);
+          total = res.total ?? total;
+          cursor = page.length ? (res.nextCursor ?? null) : null;
+        }
+        if (collected.length) {
+          setCards((prev) => {
+            const seen = new Set(prev.map((c) => c.id));
+            const fresh = collected.filter((c) => !seen.has(c.id));
+            return fresh.length ? [...prev, ...fresh] : prev;
+          });
+        }
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: {
+            nextCursor: null,
+            hasMore: false,
+            loading: false,
+            total: total ?? prev[columnId]?.total ?? 0,
+          },
+        }));
+      } catch (err) {
+        console.error('Failed to load remaining cards for filter:', err);
+        setColumnPaging((prev) => ({
+          ...prev,
+          [columnId]: { ...prev[columnId], loading: false },
+        }));
+      } finally {
+        inflightRef.current.delete(columnId);
+      }
+    },
+    [projectId],
+  );
+
+  // Optimistically adjust per-column totals when a card moves across columns
+  // so the "X of Y" header stays right before the reconcile lands.
+  const adjustColumnTotals = useCallback((fromCol, toCol) => {
+    if (fromCol === toCol) return;
+    setColumnPaging((prev) => {
+      const next = { ...prev };
+      if (next[fromCol]) {
+        next[fromCol] = { ...next[fromCol], total: Math.max(0, (next[fromCol].total || 0) - 1) };
+      }
+      if (next[toCol]) {
+        next[toCol] = { ...next[toCol], total: (next[toCol].total || 0) + 1 };
+      }
+      return next;
+    });
+  }, []);
 
   // Initial load / project switch — show loading spinner
   useEffect(() => {
@@ -161,15 +425,15 @@ export default function KanbanBoard({
       return;
     }
     if (!projectId) return;
-    fetchBoard();
-  }, [refreshKey, projectId, fetchBoard]);
+    reconcileBoard();
+  }, [refreshKey, projectId, reconcileBoard]);
 
   // WebSocket-driven `refreshKey` covers most edits; this catches long idle periods
-  // or missed events without toggling `loading` (fetchBoard leaves loading false).
+  // or missed events without toggling `loading` (reconcileBoard leaves loading false).
   useVisibleIntervalRefresh(
     () => {
       if (!projectId) return;
-      void fetchBoard();
+      void reconcileBoard();
     },
     180_000,
     { enabled: Boolean(projectId) },
@@ -397,13 +661,14 @@ export default function KanbanBoard({
         ),
       );
     } catch {
-      fetchBoard();
+      reconcileBoard();
     }
   };
 
   // Back-compat: simple single-card commit. Used by the pendingMove confirm
   // dialog to actually apply the move after the user clicks "Move anyway".
   const commitMove = async (card, targetColumnId, targetIndex) => {
+    adjustColumnTotals(card.column_id, targetColumnId);
     const updates = computePositionUpdates(card, targetColumnId, targetIndex);
     applyUpdatesOptimistic(updates);
     await commitUpdates(updates);
@@ -433,6 +698,7 @@ export default function KanbanBoard({
       return;
     }
 
+    adjustColumnTotals(card.column_id, targetColumnId);
     const updates = computePositionUpdates(card, targetColumnId, targetIndex);
     applyUpdatesOptimistic(updates);
     await commitUpdates(updates);
@@ -475,7 +741,7 @@ export default function KanbanBoard({
       setNewCardTitle('');
       setNewCardPriority('medium');
       setAddingInColumn(null);
-      fetchBoard();
+      reconcileBoard();
     } catch (err) {
       console.error('Failed to create card:', err);
     }
@@ -495,7 +761,7 @@ export default function KanbanBoard({
         prUrl: detailForm.pr_url,
         assign_model: detailForm.assign_model || null,
       });
-      fetchBoard();
+      reconcileBoard();
       setSelectedCard(null);
     } catch (err) {
       console.error('Failed to save card:', err);
@@ -510,7 +776,7 @@ export default function KanbanBoard({
       await api.deleteCard(projectId, selectedCard.id);
       setSelectedCard(null);
       setConfirmDelete(false);
-      fetchBoard();
+      reconcileBoard();
     } catch (err) {
       console.error('Failed to delete card:', err);
     }
@@ -563,10 +829,10 @@ export default function KanbanBoard({
       setShowBlockerPicker(false);
       setBlockerPickerQuery('');
       // Refresh board so both the card's `blockers` and the inverse `blocks`
-      // are updated. Then re-pick selectedCard from the fresh list.
-      const data = await api.getBoard(projectId);
-      setCards(data.cards);
-      const refreshed = data.cards.find((c) => c.id === selectedCard.id);
+      // are updated. Reconcile (rather than a full getBoard) keeps per-column
+      // pagination intact. Then re-pick selectedCard from the fresh list.
+      const fresh = await reconcileBoard();
+      const refreshed = fresh?.find((c) => c.id === selectedCard.id);
       if (refreshed) setSelectedCard(refreshed);
     } catch (err) {
       const msg = err?.message || '';
@@ -585,9 +851,8 @@ export default function KanbanBoard({
     setBlockerError(null);
     try {
       await api.removeCardBlocker(projectId, selectedCard.id, blockedByCardId);
-      const data = await api.getBoard(projectId);
-      setCards(data.cards);
-      const refreshed = data.cards.find((c) => c.id === selectedCard.id);
+      const fresh = await reconcileBoard();
+      const refreshed = fresh?.find((c) => c.id === selectedCard.id);
       if (refreshed) setSelectedCard(refreshed);
     } catch {
       setBlockerError('Failed to remove blocker.');
@@ -599,7 +864,7 @@ export default function KanbanBoard({
     try {
       await api.linkCardToEpic(projectId, selectedCard.id, epicId || null);
       setDetailForm((f) => ({ ...f, epic_id: epicId || '' }));
-      fetchBoard();
+      reconcileBoard();
     } catch (err) {
       console.error('Failed to link epic:', err);
     }
@@ -612,6 +877,35 @@ export default function KanbanBoard({
     cards.filter((c) => c.epic_id === epicId && !doneColumnIds.has(c.column_id)).length;
 
   const selectedEpic = selectedEpicId ? epics.find((e) => e.id === selectedEpicId) : null;
+
+  // Board-wide card total from per-column counts (falls back to loaded count
+  // before the first paged response lands). With pagination `cards` is only the
+  // loaded slice, so summing `total` keeps the header honest.
+  const pagingTotals = Object.values(columnPaging);
+  const totalCardCount = pagingTotals.length
+    ? pagingTotals.reduce((sum, p) => sum + (p.total || 0), 0)
+    : cards.length;
+
+  // A search query or epic filter is active. Filtering happens client-side
+  // over the loaded `cards`, so when a filter is on we must hold the complete
+  // board in memory — otherwise matches beyond the first page silently vanish.
+  const filterActive = Boolean(searchQuery.trim()) || Boolean(selectedEpicId);
+
+  // While a filter is active, eagerly drain every not-fully-loaded column so
+  // the filter searches the whole board (the pre-pagination behavior), not
+  // just the first page. This runs once when the filter flips on; each column
+  // drains to completion (hasMore→false), so it won't re-fire. The fast
+  // first-paint path (no filter) is unaffected. `columnPagingRef` is read
+  // inside the loop rather than as a dep so appends mid-drain don't retrigger.
+  const anyColumnHasMore = pagingTotals.some((p) => p.hasMore);
+  useEffect(() => {
+    if (!filterActive || !anyColumnHasMore) return;
+    for (const col of columns) {
+      if (columnPagingRef.current[col.id]?.hasMore) {
+        void drainColumn(col.id);
+      }
+    }
+  }, [filterActive, anyColumnHasMore, columns, drainColumn]);
 
   const openAutonomousDialog = () => {
     if (!selectedEpic) return;
@@ -645,7 +939,7 @@ export default function KanbanBoard({
       );
       setShowAutonomousDialog(false);
       setAutonomousForm(null);
-      fetchBoard();
+      reconcileBoard();
     } catch (err) {
       console.error('Failed to save autonomous settings:', err);
     } finally {
@@ -698,7 +992,7 @@ export default function KanbanBoard({
               {project?.name || 'Project'}
             </h1>
             <p className="text-xs text-gray-500">
-              {cards.length} card{cards.length !== 1 ? 's' : ''}
+              {totalCardCount} card{totalCardCount !== 1 ? 's' : ''}
             </p>
           </div>
         </div>
@@ -790,6 +1084,22 @@ export default function KanbanBoard({
             const colCards = cardsForColumn(col.id);
             const isDragOver = dragOverColumn === col.id;
             const columnColor = col.color || '#6b7280';
+            const paging = columnPaging[col.id];
+            // Unfiltered count of cards loaded so far for this column (the
+            // header "X of Y" is about pagination depth, not the search/epic
+            // filter — `colCards` is already filtered).
+            const loadedInColumn = cards.filter((c) => c.column_id === col.id).length;
+            const columnTotal = paging?.total ?? loadedInColumn;
+            // `filterActive` is derived once at the component top (it also
+            // drives the drain-on-filter effect). When a filter is on, show
+            // the filtered count. Otherwise show
+            // "loaded of total" while more remain, or the plain total when the
+            // whole column is loaded.
+            const countLabel = filterActive
+              ? String(colCards.length)
+              : columnTotal > loadedInColumn
+                ? `${loadedInColumn} of ${columnTotal}`
+                : String(columnTotal);
 
             return (
               <div
@@ -815,8 +1125,11 @@ export default function KanbanBoard({
                         {col.name}
                       </span>
                     </div>
-                    <span className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums flex-shrink-0">
-                      {colCards.length}
+                    <span
+                      className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums flex-shrink-0"
+                      data-testid={`column-count-${col.id}`}
+                    >
+                      {countLabel}
                     </span>
                   </div>
                 </div>
@@ -1015,6 +1328,25 @@ export default function KanbanBoard({
                       </div>
                     );
                   })}
+
+                  {/* Infinite-scroll loading row + sentinel. The sentinel sits
+                      at the bottom of the scroll container and triggers
+                      loadMoreColumn when scrolled into view. Hidden while a
+                      search/epic filter is active (the filter runs over loaded
+                      cards only; paging more in wouldn't change the matched
+                      set predictably, so we don't auto-fetch during a filter). */}
+                  {paging?.loading && (
+                    <div
+                      data-testid={`column-loading-${col.id}`}
+                      className="flex items-center justify-center gap-2 py-3 text-[11px] text-gray-500"
+                    >
+                      <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
+                      Loading more…
+                    </div>
+                  )}
+                  {paging?.hasMore && !filterActive && (
+                    <ColumnLoadMoreSentinel columnId={col.id} onLoadMore={loadMoreColumn} />
+                  )}
 
                   {/* Inline add form */}
                   {addingInColumn === col.id && (
@@ -1356,7 +1688,7 @@ export default function KanbanBoard({
                                           assign_engine: detailForm.assign_engine || null,
                                           assign_model: detailForm.assign_model || null,
                                         }));
-                                        fetchBoard();
+                                        reconcileBoard();
                                       } catch (err) {
                                         console.error(
                                           'Failed to update engine/model override:',
@@ -1414,7 +1746,7 @@ export default function KanbanBoard({
                                 assign_engine: '',
                               }));
                               setShowReassign(false);
-                              fetchBoard();
+                              reconcileBoard();
                             } catch (err) {
                               console.error('Failed to unassign card:', err);
                             } finally {
@@ -1538,7 +1870,7 @@ export default function KanbanBoard({
                                 );
                                 setSelectedCard(null);
                                 setShowReassign(false);
-                                fetchBoard();
+                                reconcileBoard();
                                 if (onNavigateToSession) {
                                   onNavigateToSession(agent.id, result.sessionId);
                                 }
