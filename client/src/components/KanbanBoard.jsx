@@ -16,6 +16,28 @@ import {
   Check,
   Eye,
 } from 'lucide-react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  useDroppable,
+  closestCorners,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import {
+  columnDroppableId,
+  resolveDropTarget,
+  computeMoveUpdates,
+} from '../utils/kanbanReorder.js';
 import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
@@ -178,6 +200,192 @@ function ColumnLoadMoreSentinel({ columnId, onLoadMore }) {
   );
 }
 
+/**
+ * Presentational card body. Pure markup (no drag wiring) so the same visual is
+ * shared between the in-place sortable card and the floating <DragOverlay> clone
+ * that follows the cursor during a drag. `overlay` lifts it with a shadow/scale
+ * so the dragged card visibly "pops" off the board.
+ */
+function KanbanCard({ card, board, epics, dragging = false, overlay = false }) {
+  const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
+  const shortLabel = cardShortLabel(board?.card_prefix, card.short_id);
+  const cardLabels = card.labels ? card.labels.split(',').filter(Boolean) : [];
+  return (
+    <div
+      className={`group w-full rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-colors border-l-[3px] ${
+        PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium
+      } ${dragging ? 'opacity-40' : ''} ${
+        overlay
+          ? 'shadow-2xl shadow-black/60 ring-1 ring-indigo-400/40 rotate-[1.5deg] scale-[1.02]'
+          : ''
+      }`}
+    >
+      <div className="p-3">
+        {/* Header: priority glyph + short id (left) · status glyphs (right). */}
+        <div className="flex items-center gap-1.5">
+          <PriorityIcon priority={card.priority} />
+          {shortLabel && (
+            <span
+              className="text-[11px] font-mono text-gray-500 tabular-nums tracking-tight"
+              data-testid="card-short-id"
+            >
+              {shortLabel}
+            </span>
+          )}
+          <div className="flex-1 min-w-0" />
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {hasUnresolvedBlockers(card) && (
+              <span
+                className="inline-flex items-center gap-0.5 text-[10px] font-medium text-red-300"
+                title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
+                data-testid="card-blocker-badge"
+              >
+                <Lock size={11} />
+                {card.blockers.filter((b) => !b.done).length}
+              </span>
+            )}
+            {card.pr_url &&
+              (/^https?:\/\//i.test(card.pr_url) ? (
+                <a
+                  href={card.pr_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-0.5 transition-colors"
+                  title={card.pr_url}
+                >
+                  <GitPullRequest size={12} />
+                  {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                </a>
+              ) : (
+                <span
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-[11px] text-gray-500 flex items-center gap-0.5"
+                  title={card.pr_url}
+                >
+                  <GitPullRequest size={12} />
+                  {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                </span>
+              ))}
+            <ReviewGlyph status={card.review_status} />
+            {card.session_id && (
+              <FinalizeCardBadge
+                sessionId={card.session_id}
+                prefetchedRun={card.finalize_run ?? null}
+              />
+            )}
+            <GripVertical
+              size={13}
+              className="text-gray-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            />
+          </div>
+        </div>
+
+        {/* Title */}
+        <span
+          className="block text-[13px] font-medium text-gray-100 leading-snug mt-1.5 break-words"
+          data-testid="card-title"
+        >
+          {card.title}
+        </span>
+
+        {/* Footer: epic + labels (left) · created date + assignee avatar (right). */}
+        {(cardEpic || card.assignee || card.created_at || cardLabels.length > 0) && (
+          <div className="flex items-center justify-between gap-2 mt-2.5">
+            <div className="flex items-center gap-1 flex-wrap min-w-0">
+              {cardEpic && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md max-w-full"
+                  style={{
+                    backgroundColor: `${cardEpic.color}18`,
+                    color: cardEpic.color,
+                    boxShadow: `inset 0 0 0 1px ${cardEpic.color}30`,
+                  }}
+                >
+                  <span
+                    className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: cardEpic.color }}
+                  />
+                  <span className="truncate">{cardEpic.name}</span>
+                </span>
+              )}
+              {cardLabels.map((label) => (
+                <span
+                  key={label}
+                  className="text-[10px] font-medium bg-white/[0.06] text-gray-400 px-1.5 py-0.5 rounded-md"
+                >
+                  {label.trim()}
+                </span>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {card.created_at && (
+                <span
+                  className="text-[10px] text-gray-500 tabular-nums whitespace-nowrap"
+                  data-testid="card-created-date"
+                  title={`Created ${card.created_at}`}
+                >
+                  {shortDate(card.created_at)}
+                </span>
+              )}
+              <CardAvatar name={card.assignee} active={!!card.session_id} />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One sortable card. `useSortable` provides the transform/transition that makes
+ * siblings glide aside as a drag passes over them, plus keyboard drag handling
+ * (Space to pick up, arrows to move, Space to drop) and ARIA wiring. The
+ * PointerSensor's distance activation (see KanbanBoard) means a plain click
+ * still falls through to `onOpen` instead of starting a drag.
+ */
+function SortableCard({ card, board, epics, onOpen, onContextMenu }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: card.id,
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      data-testid={`card-draggable-${card.id}`}
+      className="w-full touch-none"
+      {...attributes}
+      {...listeners}
+      onClick={() => onOpen(card)}
+      onContextMenu={(e) => onContextMenu(e, card)}
+    >
+      <KanbanCard card={card} board={board} epics={epics} dragging={isDragging} />
+    </div>
+  );
+}
+
+/**
+ * Droppable wrapper around a column's scroll area so drops into empty space (or
+ * past the last card) resolve to the column itself rather than a card. `isOver`
+ * tints the column while a drag hovers it.
+ */
+function ColumnDropZone({ columnId, className, children }) {
+  const { setNodeRef, isOver } = useDroppable({ id: columnDroppableId(columnId) });
+  return (
+    <div
+      ref={setNodeRef}
+      data-column-dropzone={columnId}
+      className={`${className} ${isOver ? 'bg-indigo-500/[0.05]' : ''}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 export default function KanbanBoard({
   projectId,
   project,
@@ -225,14 +433,9 @@ export default function KanbanBoard({
   const [newCardTitle, setNewCardTitle] = useState('');
   const [newCardPriority, setNewCardPriority] = useState('medium');
 
-  // Drag state
-  const [dragCardId, setDragCardId] = useState(null);
-  const [dragOverColumn, setDragOverColumn] = useState(null);
-  // Where the drop will land, relative to a specific card. Either null
-  // (dropping into empty space at the end of a column) or { cardId, half }
-  // where half is 'top' or 'bottom'. Used to render the insertion indicator
-  // line and to compute the target index on drop.
-  const [dropIndicator, setDropIndicator] = useState(null);
+  // Drag state: the id of the card currently being dragged. Drives the
+  // <DragOverlay> floating clone; null when no drag is in flight.
+  const [activeId, setActiveId] = useState(null);
 
   // Detail panel
   const [selectedCard, setSelectedCard] = useState(null);
@@ -603,141 +806,33 @@ export default function KanbanBoard({
       .sort((a, b) => a.position - b.position);
   };
 
-  // --- Drag and Drop ---
+  // --- Drag and Drop (@dnd-kit) ---
   //
-  // Goals:
-  //   * Support both cross-column moves AND within-column reordering.
-  //   * Allow dropping BETWEEN cards (not just appending).
+  // Goals (unchanged from the native-HTML5 version this replaced):
+  //   * Cross-column moves AND within-column reordering, dropping BETWEEN cards.
+  //   * The server's `/cards/:id/move` endpoint updates one card at a time and
+  //     does NOT renumber siblings — so we compute the new ordering on the
+  //     client and issue one `api.moveCard` per card whose position/column
+  //     actually changed. Tiny N (human-paced drags); Promise.all is fine.
+  //   * Optimistic: `cards` is updated locally before the round-trip; on any
+  //     failure we reconcile against the server's truth.
   //
-  // Design:
-  //   * Per-card `onDragOver` computes whether the cursor is in the top or
-  //     bottom half of the hovered card and sets `dropIndicator`.
-  //   * On drop, the target index is derived from `dropIndicator` (indicator
-  //     on top half → insert *before* that card; on bottom half → *after*).
-  //     If no indicator is set (e.g., dropped into empty column space), we
-  //     append to the end.
-  //   * The server's `/cards/:id/move` endpoint only updates one card at a
-  //     time and does NOT renumber siblings — so we compute the new ordering
-  //     on the client and issue `api.moveCard` for every card whose position
-  //     (or column) actually changed. Tiny N (visible human-paced drags);
-  //     Promise.all is fine.
-  //   * Optimistic: the `cards` state is updated locally before the network
-  //     round-trip; on any failure we call `fetchBoard()` to roll back.
-  const columnCardsSorted = useCallback(
-    (columnId) =>
-      cards.filter((c) => c.column_id === columnId).sort((a, b) => a.position - b.position),
-    [cards],
+  // dnd-kit gives us the animated lift (<DragOverlay>), the glide-aside of
+  // siblings (SortableContext + verticalListSortingStrategy), edge auto-scroll
+  // (DndContext autoScroll, default on), and keyboard dragging (KeyboardSensor).
+  // The reorder/drop-target math lives in utils/kanbanReorder.js so it's pure
+  // and unit-tested. This component is the thin wiring layer.
+  //
+  // Pagination note: like the previous implementation, the math runs over the
+  // loaded `cards` slice only — a column paged only partway in renumbers its
+  // loaded cards from 0. The subsequent reconcile re-resolves against the full
+  // server ordering.
+  const sensors = useSensors(
+    // distance activation: a click that moves < 6px never starts a drag, so
+    // tapping a card still opens its detail modal.
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-
-  const handleDragStart = (e, cardId) => {
-    setDragCardId(cardId);
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', String(cardId));
-  };
-
-  const handleColumnDragOver = (e, columnId) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverColumn(columnId);
-  };
-
-  const handleColumnDragLeave = (e) => {
-    if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
-      setDragOverColumn(null);
-      setDropIndicator(null);
-    }
-  };
-
-  const handleCardDragOver = (e, cardId) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const midpoint = rect.top + rect.height / 2;
-    const half = e.clientY < midpoint ? 'top' : 'bottom';
-    setDropIndicator((prev) => {
-      if (prev && prev.cardId === cardId && prev.half === half) return prev;
-      return { cardId, half };
-    });
-  };
-
-  // Resolve the drop target to `{ columnId, index }` in the target column's
-  // full sorted list. When an indicator is present, `index` comes from the
-  // hovered card; otherwise it's the end of the column.
-  const resolveDropTarget = (fallbackColumnId, indicator) => {
-    if (indicator && indicator.cardId) {
-      const hovered = cards.find((c) => c.id === indicator.cardId);
-      if (hovered) {
-        const targetColumnId = hovered.column_id;
-        const sorted = columnCardsSorted(targetColumnId);
-        const hoveredIdx = sorted.findIndex((c) => c.id === indicator.cardId);
-        const index =
-          hoveredIdx === -1
-            ? sorted.length
-            : indicator.half === 'top'
-              ? hoveredIdx
-              : hoveredIdx + 1;
-        return { columnId: targetColumnId, index };
-      }
-    }
-    const sorted = columnCardsSorted(fallbackColumnId);
-    return { columnId: fallbackColumnId, index: sorted.length };
-  };
-
-  // Build the list of {cardId, columnId, position} updates needed to reflect
-  // the requested move. Returns [] if the drop is a no-op.
-  const computePositionUpdates = (card, targetColumnId, targetIndex) => {
-    const sourceColumnId = card.column_id;
-    const targetSorted = columnCardsSorted(targetColumnId);
-
-    let newTargetOrder;
-    if (sourceColumnId === targetColumnId) {
-      const without = targetSorted.filter((c) => c.id !== card.id);
-      const currentIdx = targetSorted.findIndex((c) => c.id === card.id);
-      // If targetIndex is past the card's current slot, account for the
-      // splice so adjacent bottom-half drops become no-ops.
-      let adjusted = targetIndex;
-      if (currentIdx !== -1 && targetIndex > currentIdx) adjusted -= 1;
-      if (adjusted === currentIdx) return [];
-      adjusted = Math.max(0, Math.min(adjusted, without.length));
-      newTargetOrder = [...without.slice(0, adjusted), card, ...without.slice(adjusted)];
-    } else {
-      const clamped = Math.max(0, Math.min(targetIndex, targetSorted.length));
-      newTargetOrder = [
-        ...targetSorted.slice(0, clamped),
-        { ...card, column_id: targetColumnId },
-        ...targetSorted.slice(clamped),
-      ];
-    }
-
-    const updates = [];
-    newTargetOrder.forEach((c, idx) => {
-      if (c.id === card.id) {
-        // Compare the server's current view (original `card`) against the
-        // requested slot — not against the spread copy `c`, whose
-        // `column_id` has already been rewritten to the target.
-        if (card.column_id !== targetColumnId || card.position !== idx) {
-          updates.push({ id: c.id, columnId: targetColumnId, position: idx });
-        }
-        return;
-      }
-      if (c.position !== idx) {
-        updates.push({ id: c.id, columnId: targetColumnId, position: idx });
-      }
-    });
-
-    // Cross-column: cards left behind in the source column shift up.
-    if (sourceColumnId !== targetColumnId) {
-      const sourceSorted = columnCardsSorted(sourceColumnId).filter((c) => c.id !== card.id);
-      sourceSorted.forEach((c, idx) => {
-        if (c.position !== idx) {
-          updates.push({ id: c.id, columnId: sourceColumnId, position: idx });
-        }
-      });
-    }
-
-    return updates;
-  };
 
   const applyUpdatesOptimistic = (updates) => {
     if (updates.length === 0) return;
@@ -762,64 +857,53 @@ export default function KanbanBoard({
     }
   };
 
-  // Back-compat: simple single-card commit. Used by the pendingMove confirm
-  // dialog to actually apply the move after the user clicks "Move anyway".
-  const commitMove = async (card, targetColumnId, targetIndex) => {
+  // Apply a resolved move (already past the blocker check): optimistic local
+  // reorder, then persist. `overCardId` is the card the drop lands relative to
+  // (null = append to the end); `after` true = insert below the hovered card.
+  const applyResolvedMove = async (card, targetColumnId, overCardId, after = false) => {
     adjustColumnTotals(card.column_id, targetColumnId);
-    const updates = computePositionUpdates(card, targetColumnId, targetIndex);
+    const updates = computeMoveUpdates(cards, card.id, targetColumnId, overCardId, after);
     applyUpdatesOptimistic(updates);
     await commitUpdates(updates);
   };
 
-  const performDrop = async (fallbackColumnId, indicator) => {
-    const cardId = dragCardId;
-    setDragCardId(null);
-    setDragOverColumn(null);
-    setDropIndicator(null);
-    if (!cardId) return;
-
-    const card = cards.find((c) => c.id === cardId || c.id === Number(cardId));
-    if (!card) return;
-
-    const { columnId: targetColumnId, index: targetIndex } = resolveDropTarget(
-      fallbackColumnId,
-      indicator,
-    );
+  // Move entry point. Soft-warns before moving a blocked card into a
+  // blocker-sensitive column (the API still allows it; the user confirms).
+  const requestMove = (card, targetColumnId, overCardId, after = false) => {
     const targetColumn = columns.find((c) => c.id === targetColumnId);
     if (!targetColumn) return;
-
-    // Soft-warn before moving a blocked card into a blocker-sensitive column.
-    // API still allows it; the user just has to confirm.
     if (shouldConfirmMove(card, card.column_id, targetColumn)) {
-      setPendingMove({ card, targetColumn, position: targetIndex });
+      setPendingMove({ card, targetColumn, overCardId, after });
       return;
     }
-
-    adjustColumnTotals(card.column_id, targetColumnId);
-    const updates = computePositionUpdates(card, targetColumnId, targetIndex);
-    applyUpdatesOptimistic(updates);
-    await commitUpdates(updates);
+    void applyResolvedMove(card, targetColumnId, overCardId, after);
   };
 
-  const handleColumnDrop = async (e, columnId) => {
-    e.preventDefault();
-    const indicator = dropIndicator;
-    await performDrop(columnId, indicator);
+  // Back-compat helper used by the quick-actions context menu and the
+  // pendingMove confirm dialog: append `card` to the end of a target column.
+  const commitMove = async (card, targetColumnId, overCardId = null, after = false) => {
+    await applyResolvedMove(card, targetColumnId, overCardId, after);
   };
 
-  const handleCardDrop = async (e, targetCardId) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const indicator = dropIndicator || { cardId: targetCardId, half: 'bottom' };
-    const hovered = cards.find((c) => c.id === targetCardId);
-    await performDrop(hovered ? hovered.column_id : null, indicator);
+  const handleDragStart = (event) => {
+    setActiveId(event.active?.id ?? null);
   };
 
-  const handleDragEnd = () => {
-    setDragCardId(null);
-    setDragOverColumn(null);
-    setDropIndicator(null);
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    setActiveId(null);
+    if (!over) return;
+    // Pass dnd-kit's `over` object + the dragged clone's translated rect so the
+    // resolver can recover the top-half/bottom-half (before/after) distinction
+    // that collision detection alone doesn't give us for cross-column drops.
+    const resolved = resolveDropTarget(active.id, over, cards, active.rect?.current?.translated);
+    if (!resolved) return;
+    const card = cards.find((c) => c.id === active.id);
+    if (!card) return;
+    requestMove(card, resolved.targetColumnId, resolved.overCardId, resolved.after);
   };
+
+  const handleDragCancel = () => setActiveId(null);
 
   // --- Card CRUD ---
   const handleAddCard = async (columnId) => {
@@ -1001,16 +1085,11 @@ export default function KanbanBoard({
     quickPatchCard(card, { labels: next.join(',') });
   };
 
-  const quickMove = async (card, columnId) => {
+  const quickMove = (card, columnId) => {
     if (card.column_id === columnId) return;
-    const targetColumn = columns.find((c) => c.id === columnId);
-    if (!targetColumn) return;
-    const targetIndex = cardsForColumn(columnId).length;
-    if (shouldConfirmMove(card, card.column_id, targetColumn)) {
-      setPendingMove({ card, targetColumn, position: targetIndex });
-      return;
-    }
-    await commitMove(card, columnId, targetIndex);
+    // Quick-move appends to the end of the target column (overCardId = null);
+    // requestMove handles the blocker-confirm gate.
+    requestMove(card, columnId, null);
   };
 
   const quickAssign = async (card, agent) => {
@@ -1286,324 +1365,183 @@ export default function KanbanBoard({
       />
 
       {/* Board */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden p-5 min-w-0">
-        <div className="flex gap-3.5 h-full w-full min-w-0 pb-1">
-          {columns.map((col) => {
-            const colCards = cardsForColumn(col.id);
-            const isDragOver = dragOverColumn === col.id;
-            const columnColor = col.color || '#6b7280';
-            const paging = columnPaging[col.id];
-            // Unfiltered count of cards loaded so far for this column (the
-            // header "X of Y" is about pagination depth, not the search/epic
-            // filter — `colCards` is already filtered).
-            const loadedInColumn = cards.filter((c) => c.column_id === col.id).length;
-            const columnTotal = paging?.total ?? loadedInColumn;
-            // `filterActive` is derived once at the component top (it also
-            // drives the drain-on-filter effect). When a filter is on, show
-            // the filtered count. Otherwise show
-            // "loaded of total" while more remain, or the plain total when the
-            // whole column is loaded.
-            const countLabel = filterActive
-              ? String(colCards.length)
-              : columnTotal > loadedInColumn
-                ? `${loadedInColumn} of ${columnTotal}`
-                : String(columnTotal);
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCorners}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
+      >
+        <div className="flex-1 overflow-x-auto overflow-y-hidden p-5 min-w-0">
+          <div className="flex gap-3.5 h-full w-full min-w-0 pb-1">
+            {columns.map((col) => {
+              const colCards = cardsForColumn(col.id);
+              const columnColor = col.color || '#6b7280';
+              const paging = columnPaging[col.id];
+              // Unfiltered count of cards loaded so far for this column (the
+              // header "X of Y" is about pagination depth, not the search/epic
+              // filter — `colCards` is already filtered).
+              const loadedInColumn = cards.filter((c) => c.column_id === col.id).length;
+              const columnTotal = paging?.total ?? loadedInColumn;
+              // `filterActive` is derived once at the component top (it also
+              // drives the drain-on-filter effect). When a filter is on, show
+              // the filtered count. Otherwise show
+              // "loaded of total" while more remain, or the plain total when the
+              // whole column is loaded.
+              const countLabel = filterActive
+                ? String(colCards.length)
+                : columnTotal > loadedInColumn
+                  ? `${loadedInColumn} of ${columnTotal}`
+                  : String(columnTotal);
+              const colCardIds = colCards.map((c) => c.id);
 
-            return (
-              <div
-                key={col.id}
-                className={`flex flex-col flex-1 min-w-[220px] h-full min-h-0 rounded-xl border transition-all duration-150 ${
-                  isDragOver
-                    ? 'border-indigo-500/40 bg-indigo-500/[0.06] ring-1 ring-indigo-500/30'
-                    : 'border-white/[0.06] bg-white/[0.02]'
-                }`}
-                onDragOver={(e) => handleColumnDragOver(e, col.id)}
-                onDragLeave={handleColumnDragLeave}
-                onDrop={(e) => handleColumnDrop(e, col.id)}
-              >
-                {/* Column header */}
-                <div className="px-3.5 py-3 border-b border-white/[0.05]">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
+              return (
+                <div
+                  key={col.id}
+                  className="flex flex-col flex-1 min-w-[220px] h-full min-h-0 rounded-xl border border-white/[0.06] bg-white/[0.02]"
+                >
+                  {/* Column header */}
+                  <div className="px-3.5 py-3 border-b border-white/[0.05]">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className="w-2 h-2 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: columnColor }}
+                        />
+                        <span className="text-xs font-semibold uppercase tracking-wide text-gray-300 truncate">
+                          {col.name}
+                        </span>
+                      </div>
                       <span
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: columnColor }}
-                      />
-                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-300 truncate">
-                        {col.name}
+                        className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums flex-shrink-0"
+                        data-testid={`column-count-${col.id}`}
+                      >
+                        {countLabel}
                       </span>
                     </div>
-                    <span
-                      className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums flex-shrink-0"
-                      data-testid={`column-count-${col.id}`}
-                    >
-                      {countLabel}
-                    </span>
                   </div>
-                </div>
 
-                {/* Cards */}
-                <div className="flex-1 overflow-y-auto kanban-column-scroll px-2.5 py-2 space-y-2">
-                  {colCards.map((card) => {
-                    const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
-                    const shortLabel = cardShortLabel(board?.card_prefix, card.short_id);
-                    const cardLabels = card.labels ? card.labels.split(',').filter(Boolean) : [];
-                    const showTopIndicator =
-                      dropIndicator &&
-                      dropIndicator.cardId === card.id &&
-                      dropIndicator.half === 'top' &&
-                      dragCardId !== card.id;
-                    const showBottomIndicator =
-                      dropIndicator &&
-                      dropIndicator.cardId === card.id &&
-                      dropIndicator.half === 'bottom' &&
-                      dragCardId !== card.id;
-                    return (
-                      <div key={card.id} data-testid={`card-wrapper-${card.id}`} className="w-full">
-                        {showTopIndicator && (
-                          <div
-                            className="h-0.5 bg-indigo-400 rounded-full mb-1.5 shadow-[0_0_8px_rgba(129,140,248,0.6)]"
-                            data-testid={`drop-indicator-top-${card.id}`}
-                          />
-                        )}
-                        <div
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, card.id)}
-                          onDragEnd={handleDragEnd}
-                          onDragOver={(e) => handleCardDragOver(e, card.id)}
-                          onDrop={(e) => handleCardDrop(e, card.id)}
-                          onClick={() => openDetail(card)}
-                          onContextMenu={(e) => openCardContextMenu(e, card)}
-                          className={`group w-full rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-all duration-150 border-l-[3px] ${
-                            PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium
-                          } ${dragCardId === card.id ? 'opacity-40 scale-[0.98]' : ''}`}
-                        >
-                          <div className="p-3">
-                            {/* Header: priority glyph + short id (left) · status
-                                glyphs (right). Linear-style density. */}
-                            <div className="flex items-center gap-1.5">
-                              <PriorityIcon priority={card.priority} />
-                              {shortLabel && (
-                                <span
-                                  className="text-[11px] font-mono text-gray-500 tabular-nums tracking-tight"
-                                  data-testid="card-short-id"
-                                >
-                                  {shortLabel}
-                                </span>
-                              )}
-                              <div className="flex-1 min-w-0" />
-                              <div className="flex items-center gap-1.5 flex-shrink-0">
-                                {hasUnresolvedBlockers(card) && (
-                                  <span
-                                    className="inline-flex items-center gap-0.5 text-[10px] font-medium text-red-300"
-                                    title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
-                                    data-testid="card-blocker-badge"
-                                  >
-                                    <Lock size={11} />
-                                    {card.blockers.filter((b) => !b.done).length}
-                                  </span>
-                                )}
-                                {card.pr_url &&
-                                  (/^https?:\/\//i.test(card.pr_url) ? (
-                                    <a
-                                      href={card.pr_url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-0.5 transition-colors"
-                                      title={card.pr_url}
-                                    >
-                                      <GitPullRequest size={12} />
-                                      {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                    </a>
-                                  ) : (
-                                    /* Agent Hub-native PR (relative client
-                                       route) — no external tab; the Pull
-                                       Requests page shows it in-app. */
-                                    <span
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-[11px] text-gray-500 flex items-center gap-0.5"
-                                      title={card.pr_url}
-                                    >
-                                      <GitPullRequest size={12} />
-                                      {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                    </span>
-                                  ))}
-                                <ReviewGlyph status={card.review_status} />
-                                {/* Finalize Code Changes status badge — renders only
-                                    when the card's session has an active or recent
-                                    Finalize run. `card.finalize_run` is folded into
-                                    the board payload server-side; passing it as
-                                    `prefetchedRun` skips the initial REST call.
-                                    Live updates flow via the WebSocket bridge. */}
-                                {card.session_id && (
-                                  <FinalizeCardBadge
-                                    sessionId={card.session_id}
-                                    prefetchedRun={card.finalize_run ?? null}
-                                  />
-                                )}
-                                <GripVertical
-                                  size={13}
-                                  className="text-gray-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                                />
-                              </div>
-                            </div>
-
-                            {/* Title */}
-                            <span
-                              className="block text-[13px] font-medium text-gray-100 leading-snug mt-1.5 break-words"
-                              data-testid="card-title"
-                            >
-                              {card.title}
-                            </span>
-
-                            {/* Footer: epic + labels (left) · created date +
-                                assignee avatar (right). */}
-                            {(cardEpic ||
-                              card.assignee ||
-                              card.created_at ||
-                              cardLabels.length > 0) && (
-                              <div className="flex items-center justify-between gap-2 mt-2.5">
-                                <div className="flex items-center gap-1 flex-wrap min-w-0">
-                                  {cardEpic && (
-                                    <span
-                                      className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md max-w-full"
-                                      style={{
-                                        backgroundColor: `${cardEpic.color}18`,
-                                        color: cardEpic.color,
-                                        boxShadow: `inset 0 0 0 1px ${cardEpic.color}30`,
-                                      }}
-                                    >
-                                      <span
-                                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                        style={{ backgroundColor: cardEpic.color }}
-                                      />
-                                      <span className="truncate">{cardEpic.name}</span>
-                                    </span>
-                                  )}
-                                  {cardLabels.map((label) => (
-                                    <span
-                                      key={label}
-                                      className="text-[10px] font-medium bg-white/[0.06] text-gray-400 px-1.5 py-0.5 rounded-md"
-                                    >
-                                      {label.trim()}
-                                    </span>
-                                  ))}
-                                </div>
-                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  {card.created_at && (
-                                    <span
-                                      className="text-[10px] text-gray-500 tabular-nums whitespace-nowrap"
-                                      data-testid="card-created-date"
-                                      title={`Created ${card.created_at}`}
-                                    >
-                                      {shortDate(card.created_at)}
-                                    </span>
-                                  )}
-                                  <CardAvatar name={card.assignee} active={!!card.session_id} />
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        {showBottomIndicator && (
-                          <div
-                            className="h-0.5 bg-indigo-400 rounded-full mt-1.5 shadow-[0_0_8px_rgba(129,140,248,0.6)]"
-                            data-testid={`drop-indicator-bottom-${card.id}`}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {/* Infinite-scroll loading row + sentinel. The sentinel sits
-                      at the bottom of the scroll container and triggers
-                      loadMoreColumn when scrolled into view. Hidden while a
-                      search/epic filter is active (the filter runs over loaded
-                      cards only; paging more in wouldn't change the matched
-                      set predictably, so we don't auto-fetch during a filter). */}
-                  {paging?.loading && (
-                    <div
-                      data-testid={`column-loading-${col.id}`}
-                      className="flex items-center justify-center gap-2 py-3 text-[11px] text-gray-500"
-                    >
-                      <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
-                      Loading more…
-                    </div>
-                  )}
-                  {paging?.hasMore && !filterActive && (
-                    <ColumnLoadMoreSentinel columnId={col.id} onLoadMore={loadMoreColumn} />
-                  )}
-
-                  {/* Inline add form */}
-                  {addingInColumn === col.id && (
-                    <div className="w-full rounded-xl p-3 bg-white/[0.04] border border-indigo-500/30">
-                      <input
-                        ref={addTitleRef}
-                        type="text"
-                        value={newCardTitle}
-                        onChange={(e) => setNewCardTitle(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleAddCard(col.id);
-                          if (e.key === 'Escape') {
-                            setAddingInColumn(null);
-                            setNewCardTitle('');
-                          }
-                        }}
-                        placeholder="Card title…"
-                        className="w-full bg-gray-950/80 border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500/50 mb-2.5"
-                      />
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={newCardPriority}
-                          onChange={(e) => setNewCardPriority(e.target.value)}
-                          className="bg-gray-950/80 border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none"
-                        >
-                          {PRIORITIES.map((p) => (
-                            <option key={p} value={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() => handleAddCard(col.id)}
-                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
-                        >
-                          Add
-                        </button>
-                        <button
-                          onClick={() => {
-                            setAddingInColumn(null);
-                            setNewCardTitle('');
-                          }}
-                          className="p-1.5 text-gray-500 hover:text-gray-200 rounded-md hover:bg-white/[0.06]"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Add button at bottom */}
-                {addingInColumn !== col.id && (
-                  <button
-                    onClick={() => {
-                      setAddingInColumn(col.id);
-                      setNewCardTitle('');
-                      setNewCardPriority('medium');
-                    }}
-                    className="flex items-center gap-1.5 mx-2.5 mb-2.5 px-2.5 py-2 text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] rounded-lg transition-colors"
+                  {/* Cards — the scroll area is the column droppable (drops into
+                      empty space / past the last card resolve to the column). */}
+                  <ColumnDropZone
+                    columnId={col.id}
+                    className="flex-1 overflow-y-auto kanban-column-scroll px-2.5 py-2 space-y-2"
                   >
-                    <Plus size={12} />
-                    Add card
-                  </button>
-                )}
-              </div>
-            );
-          })}
+                    <SortableContext items={colCardIds} strategy={verticalListSortingStrategy}>
+                      {colCards.map((card) => (
+                        <SortableCard
+                          key={card.id}
+                          card={card}
+                          board={board}
+                          epics={epics}
+                          onOpen={openDetail}
+                          onContextMenu={openCardContextMenu}
+                        />
+                      ))}
+                    </SortableContext>
+
+                    {/* Infinite-scroll loading row + sentinel. The sentinel sits
+                        at the bottom of the scroll container and triggers
+                        loadMoreColumn when scrolled into view. Hidden while a
+                        search/epic filter is active (the filter runs over loaded
+                        cards only; paging more in wouldn't change the matched
+                        set predictably, so we don't auto-fetch during a filter). */}
+                    {paging?.loading && (
+                      <div
+                        data-testid={`column-loading-${col.id}`}
+                        className="flex items-center justify-center gap-2 py-3 text-[11px] text-gray-500"
+                      >
+                        <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
+                        Loading more…
+                      </div>
+                    )}
+                    {paging?.hasMore && !filterActive && (
+                      <ColumnLoadMoreSentinel columnId={col.id} onLoadMore={loadMoreColumn} />
+                    )}
+
+                    {/* Inline add form */}
+                    {addingInColumn === col.id && (
+                      <div className="w-full rounded-xl p-3 bg-white/[0.04] border border-indigo-500/30">
+                        <input
+                          ref={addTitleRef}
+                          type="text"
+                          value={newCardTitle}
+                          onChange={(e) => setNewCardTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleAddCard(col.id);
+                            if (e.key === 'Escape') {
+                              setAddingInColumn(null);
+                              setNewCardTitle('');
+                            }
+                          }}
+                          placeholder="Card title…"
+                          className="w-full bg-gray-950/80 border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500/50 mb-2.5"
+                        />
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={newCardPriority}
+                            onChange={(e) => setNewCardPriority(e.target.value)}
+                            className="bg-gray-950/80 border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none"
+                          >
+                            {PRIORITIES.map((p) => (
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => handleAddCard(col.id)}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
+                          >
+                            Add
+                          </button>
+                          <button
+                            onClick={() => {
+                              setAddingInColumn(null);
+                              setNewCardTitle('');
+                            }}
+                            className="p-1.5 text-gray-500 hover:text-gray-200 rounded-md hover:bg-white/[0.06]"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </ColumnDropZone>
+
+                  {/* Add button at bottom */}
+                  {addingInColumn !== col.id && (
+                    <button
+                      onClick={() => {
+                        setAddingInColumn(col.id);
+                        setNewCardTitle('');
+                        setNewCardPriority('medium');
+                      }}
+                      className="flex items-center gap-1.5 mx-2.5 mb-2.5 px-2.5 py-2 text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] rounded-lg transition-colors"
+                    >
+                      <Plus size={12} />
+                      Add card
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+
+        {/* Floating clone that follows the cursor during a drag — the visible
+            "lift". Renders nothing when no drag is in flight. */}
+        <DragOverlay dropAnimation={{ duration: 200, easing: 'cubic-bezier(0.18,0.67,0.6,1.22)' }}>
+          {activeId != null
+            ? (() => {
+                const activeCard = cards.find((c) => c.id === activeId);
+                return activeCard ? (
+                  <KanbanCard card={activeCard} board={board} epics={epics} overlay />
+                ) : null;
+              })()
+            : null}
+        </DragOverlay>
+      </DndContext>
 
       {/* Card Detail Modal (centered) */}
       {selectedCard && (
@@ -2454,9 +2392,9 @@ export default function KanbanBoard({
               <button
                 type="button"
                 onClick={async () => {
-                  const { card, targetColumn, position } = pendingMove;
+                  const { card, targetColumn, overCardId, after } = pendingMove;
                   setPendingMove(null);
-                  await commitMove(card, targetColumn.id, position);
+                  await commitMove(card, targetColumn.id, overCardId, after);
                 }}
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors"
               >

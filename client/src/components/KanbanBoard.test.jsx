@@ -46,49 +46,6 @@ vi.mock('../utils/api.js', () => ({
   },
 }));
 
-// HTML5 drag-and-drop relies on a DataTransfer object. jsdom doesn't provide
-// one that `setData` / `getData` correctly round-trip on, so we fake one that
-// both handlers share across the whole drag sequence.
-const makeDataTransfer = () => {
-  const store = {};
-  return {
-    setData: (k, v) => {
-      store[k] = v;
-    },
-    getData: (k) => store[k] || '',
-    effectAllowed: '',
-    dropEffect: '',
-  };
-};
-
-// Give each draggable card a deterministic bounding rect so
-// `handleCardDragOver` can compute top/bottom half from `clientY`.
-const stubCardRect = (el, top, height = 100) => {
-  el.getBoundingClientRect = () => ({
-    top,
-    bottom: top + height,
-    left: 0,
-    right: 200,
-    width: 200,
-    height,
-    x: 0,
-    y: top,
-    toJSON: () => ({}),
-  });
-};
-
-// jsdom + testing-library don't round-trip `clientY` on synthetic drag events.
-// Dispatch the event manually with a defineProperty-set clientY so the
-// component's drag handlers can read it.
-const fireDragEventWithY = (element, type, { dataTransfer, clientY }) => {
-  const event = new Event(type, { bubbles: true, cancelable: true });
-  Object.defineProperty(event, 'dataTransfer', { value: dataTransfer, configurable: true });
-  Object.defineProperty(event, 'clientY', { value: clientY, configurable: true });
-  act(() => {
-    element.dispatchEvent(event);
-  });
-};
-
 const makeBoard = (cards = []) => ({
   board: { id: 'b1' },
   columns: [
@@ -643,7 +600,16 @@ describe('KanbanBoard reassign active session', () => {
   });
 });
 
-describe('KanbanBoard drag-and-drop', () => {
+describe('KanbanBoard drag-and-drop (@dnd-kit)', () => {
+  // The reorder / cross-column / drop-target math is unit-tested directly in
+  // utils/kanbanReorder.test.js. The full pointer + keyboard drag *gesture*
+  // (sensor activation, collision detection, DragOverlay) is exercised in the
+  // Playwright e2e suite (e2e/tests/kanban.spec.js) where a real layout engine
+  // exists — jsdom has no geometry, so simulating a dnd-kit pointer drag here
+  // would be testing the mock, not the behavior. These tests cover the move
+  // *pipeline* (optimistic apply → persist → reconcile-on-error, blocker
+  // gating) through the supported quick-move trigger, which routes through the
+  // exact same requestMove/applyResolvedMove path a drop does.
   beforeEach(() => {
     api.getBoard.mockReset();
     api.get.mockReset();
@@ -654,110 +620,51 @@ describe('KanbanBoard drag-and-drop', () => {
     api.moveCard.mockResolvedValue({});
   });
 
-  // Grab the *outer* draggable container for a card by its rendered title.
-  // KanbanBoard wraps every card in a non-draggable wrapper and nests the
-  // draggable div inside — `getByText(title).closest('[draggable]')` finds
-  // that nested div.
-  const draggableFor = (title) => screen.getByText(title).closest('[draggable]');
-
-  it('reorders within the same column when dropping on the top half of another card', async () => {
+  it('renders cards as dnd-kit sortables, not native HTML5 draggables', async () => {
     api.getBoard.mockResolvedValue(
-      makeBoard([
-        { id: 'card-a', title: 'Card A', column_id: 'col-todo', position: 0 },
-        { id: 'card-b', title: 'Card B', column_id: 'col-todo', position: 1 },
-      ]),
+      makeBoard([{ id: 'card-a', title: 'Card A', column_id: 'col-todo', position: 0 }]),
     );
-
-    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    const { container } = render(
+      <KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />,
+    );
     await waitFor(() => expect(screen.getByText('Card A')).toBeInTheDocument());
 
-    const cardA = draggableFor('Card A');
-    const cardB = draggableFor('Card B');
-    stubCardRect(cardA, 0);
-    stubCardRect(cardB, 100);
-
-    const dt = makeDataTransfer();
-    fireDragEventWithY(cardB, 'dragstart', { dataTransfer: dt, clientY: 110 });
-    // Drop on Card A's top half — B should land at position 0.
-    fireDragEventWithY(cardA, 'dragover', { dataTransfer: dt, clientY: 10 });
-    fireDragEventWithY(cardA, 'drop', { dataTransfer: dt, clientY: 10 });
-
-    await waitFor(() => expect(api.moveCard).toHaveBeenCalledTimes(2));
-
-    // Card B should be moved to position 0 in col-todo.
-    expect(api.moveCard).toHaveBeenCalledWith('p1', 'card-b', {
-      columnId: 'col-todo',
-      position: 0,
-    });
-    // Card A should be pushed down to position 1.
-    expect(api.moveCard).toHaveBeenCalledWith('p1', 'card-a', {
-      columnId: 'col-todo',
-      position: 1,
-    });
-
-    // Optimistic DOM update: Card B is now rendered before Card A.
-    await waitFor(() => {
-      const titles = screen.getAllByText(/^Card [AB]$/).map((n) => n.textContent);
-      expect(titles).toEqual(['Card B', 'Card A']);
-    });
+    // No native draggable attribute anywhere — the native HTML5 DnD is gone.
+    expect(container.querySelector('[draggable]')).toBeNull();
+    // The card is wrapped in the dnd-kit sortable wrapper instead.
+    expect(screen.getByTestId('card-draggable-card-a')).toBeInTheDocument();
   });
 
-  it('cross-column drop on the top half of a card inserts at that index (not appended)', async () => {
+  it('cross-column move optimistically updates column_id and reverts on server error', async () => {
     api.getBoard.mockResolvedValue(
-      makeBoard([
-        { id: 'card-a', title: 'Card A', column_id: 'col-todo', position: 0 },
-        { id: 'card-b', title: 'Card B', column_id: 'col-done', position: 0 },
-        { id: 'card-c', title: 'Card C', column_id: 'col-done', position: 1 },
-      ]),
+      makeBoard([{ id: 'card-1', title: 'Card 1', column_id: 'col-todo', position: 0 }]),
     );
+    // The move persist fails — the pipeline must reconcile (re-fetch) the board.
+    api.moveCard.mockRejectedValueOnce(new Error('boom'));
 
     render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
-    await waitFor(() => expect(screen.getByText('Card C')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Card 1')).toBeInTheDocument());
+    const initialFetches = api.getBoard.mock.calls.length;
 
-    const cardA = draggableFor('Card A');
-    const cardC = draggableFor('Card C');
-    stubCardRect(cardA, 0);
-    stubCardRect(cardC, 100);
+    // Quick-move into Done (cross-column) — same requestMove path as a drop.
+    fireEvent.contextMenu(screen.getByText('Card 1'));
+    await screen.findByTestId('card-context-menu');
+    fireEvent.click(screen.getByTestId('ctx-item-status'));
+    fireEvent.click(screen.getByTestId('ctx-sub-col-col-done'));
 
-    const dt = makeDataTransfer();
-    fireDragEventWithY(cardA, 'dragstart', { dataTransfer: dt, clientY: 10 });
-    // Drop on Card C's top half → A should land at index 1 in col-done
-    // (between B and C), not appended to the end.
-    fireDragEventWithY(cardC, 'dragover', { dataTransfer: dt, clientY: 110 });
-    fireDragEventWithY(cardC, 'drop', { dataTransfer: dt, clientY: 110 });
-
-    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
-
-    // Card A moves to col-done at position 1 (between B@0 and C@2).
-    expect(api.moveCard).toHaveBeenCalledWith('p1', 'card-a', {
-      columnId: 'col-done',
-      position: 1,
-    });
-    // Card C is pushed down to position 2.
-    expect(api.moveCard).toHaveBeenCalledWith('p1', 'card-c', {
-      columnId: 'col-done',
-      position: 2,
-    });
-    // Card B stays at position 0 — no call needed for it.
-    const bCalls = api.moveCard.mock.calls.filter((args) => args[1] === 'card-b');
-    expect(bCalls).toEqual([]);
+    // Optimistic persist attempt targets the new column...
+    await waitFor(() =>
+      expect(api.moveCard).toHaveBeenCalledWith(
+        'p1',
+        'card-1',
+        expect.objectContaining({ columnId: 'col-done' }),
+      ),
+    );
+    // ...and because it rejected, the board reconciles via a fresh getBoard.
+    await waitFor(() => expect(api.getBoard.mock.calls.length).toBeGreaterThan(initialFetches));
   });
 
-  it('keeps the blocker-warn confirm dialog working for cross-column moves', async () => {
-    api.getBoard.mockResolvedValue(
-      makeBoard([
-        {
-          id: 'card-a',
-          title: 'Blocked card',
-          column_id: 'col-todo',
-          position: 0,
-          blockers: [{ id: 'blk-1', title: 'Blocker', done: false }],
-        },
-        { id: 'card-b', title: 'Other card', column_id: 'col-todo', position: 1 },
-      ]),
-    );
-    // Rename the second column to something blocker-sensitive so the
-    // confirm dialog fires. (Default "Done" is exempt.)
+  it('gates a blocked-card move into a blocker-sensitive column behind the confirm dialog', async () => {
     api.getBoard.mockResolvedValue({
       board: { id: 'b1' },
       columns: [
@@ -772,7 +679,6 @@ describe('KanbanBoard drag-and-drop', () => {
           position: 0,
           blockers: [{ id: 'blk-1', title: 'Blocker', done: false }],
         },
-        { id: 'card-target', title: 'Landing card', column_id: 'col-progress', position: 0 },
       ],
       epics: [],
     });
@@ -780,28 +686,25 @@ describe('KanbanBoard drag-and-drop', () => {
     render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
     await waitFor(() => expect(screen.getByText('Blocked card')).toBeInTheDocument());
 
-    const cardA = draggableFor('Blocked card');
-    const cardTarget = draggableFor('Landing card');
-    stubCardRect(cardA, 0);
-    stubCardRect(cardTarget, 0);
+    fireEvent.contextMenu(screen.getByText('Blocked card'));
+    await screen.findByTestId('card-context-menu');
+    fireEvent.click(screen.getByTestId('ctx-item-status'));
+    fireEvent.click(screen.getByTestId('ctx-sub-col-col-progress'));
 
-    const dt = makeDataTransfer();
-    fireDragEventWithY(cardA, 'dragstart', { dataTransfer: dt, clientY: 10 });
-    fireDragEventWithY(cardTarget, 'dragover', { dataTransfer: dt, clientY: 10 });
-    fireDragEventWithY(cardTarget, 'drop', { dataTransfer: dt, clientY: 10 });
-
-    // Confirm dialog appears; moveCard should NOT have fired yet.
+    // Confirm dialog appears; moveCard must NOT have fired yet.
     const confirm = await screen.findByTestId('confirm-move-dialog');
     expect(confirm).toBeInTheDocument();
     expect(api.moveCard).not.toHaveBeenCalled();
 
-    // Click "Move anyway" to commit the move.
+    // "Move anyway" commits the (cross-column) move.
     fireEvent.click(within(confirm).getByRole('button', { name: /Move anyway/i }));
-    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
-    expect(api.moveCard).toHaveBeenCalledWith('p1', 'card-a', {
-      columnId: 'col-progress',
-      position: 0,
-    });
+    await waitFor(() =>
+      expect(api.moveCard).toHaveBeenCalledWith(
+        'p1',
+        'card-a',
+        expect.objectContaining({ columnId: 'col-progress', position: 0 }),
+      ),
+    );
   });
 });
 
