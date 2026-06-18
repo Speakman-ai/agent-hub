@@ -37,6 +37,7 @@ vi.mock('../utils/api.js', () => ({
     addCardComment: vi.fn(),
     linkCardToEpic: vi.fn(),
     assignCard: vi.fn(),
+    unassignCard: vi.fn(),
     updateEpic: vi.fn().mockResolvedValue({}),
     // Cards now render <FinalizeCardBadge /> which calls this on mount
     // whenever the card has a session_id. Mocked to "no run" so the badge
@@ -1228,5 +1229,112 @@ describe('KanbanBoard card redesign (Linear density)', () => {
       'approved',
     );
     expect(screen.queryByText('Approved')).not.toBeInTheDocument();
+  });
+});
+
+describe('KanbanBoard right-click context menu', () => {
+  beforeEach(() => {
+    api.getBoard.mockReset();
+    api.get.mockReset();
+    api.updateCard.mockReset();
+    api.moveCard.mockReset();
+    api.deleteCard.mockReset();
+    api.linkCardToEpic.mockReset();
+    api.assignCard.mockReset();
+    api.unassignCard.mockReset();
+    api.get.mockResolvedValue([]);
+    api.updateCard.mockResolvedValue({});
+    api.moveCard.mockResolvedValue({});
+    api.deleteCard.mockResolvedValue({});
+  });
+
+  const ctxBoard = (overrides = {}) =>
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-1',
+          title: 'Context card',
+          column_id: 'col-todo',
+          position: 0,
+          priority: 'medium',
+          labels: 'bug',
+          ...overrides,
+        },
+      ]),
+    );
+
+  const openMenu = async () => {
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Context card')).toBeInTheDocument());
+    fireEvent.contextMenu(screen.getByText('Context card'));
+    return screen.findByTestId('card-context-menu');
+  };
+
+  it('opens on right-click without opening the card detail modal', async () => {
+    ctxBoard();
+    const menu = await openMenu();
+    expect(menu).toBeInTheDocument();
+    expect(screen.queryByTestId('card-detail-modal')).not.toBeInTheDocument();
+  });
+
+  it('Priority > High calls updateCard with priority:high', async () => {
+    ctxBoard();
+    await openMenu();
+    fireEvent.click(screen.getByTestId('ctx-item-priority'));
+    fireEvent.click(screen.getByTestId('ctx-sub-pri-high'));
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'high' }),
+    );
+  });
+
+  it('Status > Done moves the card via moveCard', async () => {
+    ctxBoard();
+    await openMenu();
+    fireEvent.click(screen.getByTestId('ctx-item-status'));
+    fireEvent.click(screen.getByTestId('ctx-sub-col-col-done'));
+    await waitFor(() =>
+      expect(api.moveCard).toHaveBeenCalledWith(
+        'p1',
+        'card-1',
+        expect.objectContaining({ columnId: 'col-done' }),
+      ),
+    );
+  });
+
+  it('Delete confirms before deleting', async () => {
+    ctxBoard();
+    await openMenu();
+    fireEvent.click(screen.getByTestId('ctx-item-delete'));
+    // First click only reveals the confirm step — no delete yet.
+    expect(api.deleteCard).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ctx-delete-confirm')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('ctx-confirm-delete'));
+    await waitFor(() => expect(api.deleteCard).toHaveBeenCalledWith('p1', 'card-1'));
+  });
+
+  it('toggling a label calls updateCard with the new comma list', async () => {
+    ctxBoard();
+    await openMenu();
+    fireEvent.click(screen.getByTestId('ctx-item-labels'));
+    // Existing label "bug" is checked; toggling removes it -> empty string.
+    fireEvent.click(screen.getByTestId('ctx-sub-label-bug'));
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { labels: '' }),
+    );
+  });
+
+  it('outside-click closes the menu', async () => {
+    ctxBoard();
+    const menu = await openMenu();
+    expect(menu).toBeInTheDocument();
+    fireEvent.mouseDown(document.body);
+    await waitFor(() => expect(screen.queryByTestId('card-context-menu')).not.toBeInTheDocument());
+  });
+
+  it('Escape closes the menu', async () => {
+    ctxBoard();
+    const menu = await openMenu();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('card-context-menu')).not.toBeInTheDocument());
   });
 });

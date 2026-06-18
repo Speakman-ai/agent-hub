@@ -29,6 +29,7 @@ import EpicFilterDropdown from './EpicFilterDropdown.jsx';
 import EpicAutonomousDialog from './EpicAutonomousDialog.jsx';
 import { epicToAutonomousForm } from './EpicAutonomousPanel.jsx';
 import ReplayPlayerModal from './ReplayPlayerModal.jsx';
+import CardContextMenu from './CardContextMenu.jsx';
 
 const PRIORITY_ACCENT = {
   urgent: 'border-l-red-500',
@@ -263,6 +264,9 @@ export default function KanbanBoard({
   const [blockerPickerQuery, setBlockerPickerQuery] = useState('');
   const [blockerError, setBlockerError] = useState(null);
   const [pendingMove, setPendingMove] = useState(null); // { card, targetColumn, position }
+
+  // Right-click quick-actions menu: { card, x, y } or null.
+  const [contextMenu, setContextMenu] = useState(null);
 
   /** Card detail: description shown as rendered markdown until user chooses Edit. */
   const [descriptionEditing, setDescriptionEditing] = useState(false);
@@ -963,6 +967,117 @@ export default function KanbanBoard({
     }
   };
 
+  // --- Right-click quick actions (no detail panel) ---
+  // Each handler operates on an explicit card (the right-clicked one), applies
+  // an optimistic update, persists, then reconciles against the eventual
+  // `kanban_update` broadcast. Failures fall back to a reconcile so the board
+  // re-syncs with the server's truth.
+
+  const openCardContextMenu = (e, card) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ card, x: e.clientX, y: e.clientY });
+  };
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const quickPatchCard = async (card, patch) => {
+    setCards((prev) => prev.map((c) => (c.id === card.id ? { ...c, ...patch } : c)));
+    try {
+      await api.updateCard(projectId, card.id, patch);
+      reconcileBoard();
+    } catch (err) {
+      console.error('Quick update failed:', err);
+      reconcileBoard();
+    }
+  };
+
+  const quickSetPriority = (card, priority) => quickPatchCard(card, { priority });
+
+  const quickToggleLabel = (card, label) => {
+    const current = (card.labels ? String(card.labels).split(',') : [])
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const next = current.includes(label) ? current.filter((l) => l !== label) : [...current, label];
+    quickPatchCard(card, { labels: next.join(',') });
+  };
+
+  const quickMove = async (card, columnId) => {
+    if (card.column_id === columnId) return;
+    const targetColumn = columns.find((c) => c.id === columnId);
+    if (!targetColumn) return;
+    const targetIndex = cardsForColumn(columnId).length;
+    if (shouldConfirmMove(card, card.column_id, targetColumn)) {
+      setPendingMove({ card, targetColumn, position: targetIndex });
+      return;
+    }
+    await commitMove(card, columnId, targetIndex);
+  };
+
+  const quickAssign = async (card, agent) => {
+    if (!agent) return;
+    try {
+      const result = await api.assignCard(projectId, card.id, agent.id);
+      reconcileBoard();
+      if (onNavigateToSession && result?.sessionId) {
+        onNavigateToSession(agent.id, result.sessionId);
+      }
+    } catch (err) {
+      console.error('Quick assign failed:', err);
+    }
+  };
+
+  const quickUnassign = async (card) => {
+    try {
+      await api.unassignCard(projectId, card.id);
+      reconcileBoard();
+    } catch (err) {
+      console.error('Quick unassign failed:', err);
+    }
+  };
+
+  const quickLinkEpic = async (card, epicId) => {
+    setCards((prev) => prev.map((c) => (c.id === card.id ? { ...c, epic_id: epicId || null } : c)));
+    try {
+      await api.linkCardToEpic(projectId, card.id, epicId || null);
+      reconcileBoard();
+    } catch (err) {
+      console.error('Quick epic link failed:', err);
+      reconcileBoard();
+    }
+  };
+
+  const quickDelete = async (card) => {
+    setCards((prev) => prev.filter((c) => c.id !== card.id));
+    try {
+      await api.deleteCard(projectId, card.id);
+      reconcileBoard();
+    } catch (err) {
+      console.error('Quick delete failed:', err);
+      reconcileBoard();
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    try {
+      navigator.clipboard?.writeText(text);
+    } catch (err) {
+      console.error('Clipboard write failed:', err);
+    }
+  };
+
+  // Distinct labels across all loaded cards — drives the Labels submenu toggle.
+  const allLabels = useMemo(() => {
+    const set = new Set();
+    for (const c of cards) {
+      if (!c.labels) continue;
+      for (const l of String(c.labels).split(',')) {
+        const t = l.trim();
+        if (t) set.add(t);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [cards]);
+
   const doneColumnIds = new Set(
     columns.filter((c) => c.name.toLowerCase() === 'done').map((c) => c.id),
   );
@@ -1258,6 +1373,7 @@ export default function KanbanBoard({
                           onDragOver={(e) => handleCardDragOver(e, card.id)}
                           onDrop={(e) => handleCardDrop(e, card.id)}
                           onClick={() => openDetail(card)}
+                          onContextMenu={(e) => openCardContextMenu(e, card)}
                           className={`group w-full rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-all duration-150 border-l-[3px] ${
                             PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium
                           } ${dragCardId === card.id ? 'opacity-40 scale-[0.98]' : ''}`}
@@ -2350,6 +2466,51 @@ export default function KanbanBoard({
           </div>
         </div>
       )}
+
+      {/* Right-click quick-actions menu. `contextCard` re-reads the live card
+          from state so submenus reflect optimistic priority/epic changes. */}
+      {contextMenu &&
+        (() => {
+          const live = cards.find((c) => c.id === contextMenu.card.id) || contextMenu.card;
+          const cardUrl = `${window.location.origin}/projects/${projectId}/board?card=${live.id}`;
+          const idLabel = cardShortLabel(board?.card_prefix, live.short_id) || String(live.id);
+          return (
+            <CardContextMenu
+              card={live}
+              x={contextMenu.x}
+              y={contextMenu.y}
+              columns={columns}
+              epics={epics}
+              agents={projectAgents}
+              labels={allLabels}
+              onClose={closeContextMenu}
+              onMove={(columnId) => {
+                closeContextMenu();
+                quickMove(live, columnId);
+              }}
+              onSetPriority={(priority) => {
+                closeContextMenu();
+                quickSetPriority(live, priority);
+              }}
+              onAssign={(agent) => {
+                closeContextMenu();
+                quickAssign(live, agent);
+              }}
+              onUnassign={() => {
+                closeContextMenu();
+                quickUnassign(live);
+              }}
+              onToggleLabel={(label) => quickToggleLabel(live, label)}
+              onLinkEpic={(epicId) => {
+                closeContextMenu();
+                quickLinkEpic(live, epicId);
+              }}
+              onCopyId={() => copyToClipboard(idLabel)}
+              onCopyLink={() => copyToClipboard(cardUrl)}
+              onDelete={() => quickDelete(live)}
+            />
+          );
+        })()}
     </div>
   );
 }
