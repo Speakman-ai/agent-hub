@@ -3,6 +3,7 @@
  */
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
+import { isReservedEnvKey } from './preview/reserved-env-keys.js';
 
 const README_NAMES = ['README.md', 'Readme.md', 'readme.md', 'README.MD'];
 const ENV_EXAMPLE_NAMES = ['.env.example', '.env.sample', 'env.example', '.env.template'];
@@ -158,6 +159,12 @@ export function mergeEnvVarSuggestions(
 
   const add = (key: string, source: EnvVarSource) => {
     if (!key || key.length < 2) return;
+    // Reserved keys (AGENT_HUB_*, NODE_*, PATH, HOME) are server-injected at
+    // spawn time and the secrets store hard-rejects them. A project that
+    // calls the Hub API references AGENT_HUB_API_KEY in its source / .env,
+    // which would otherwise pre-fill the Preview settings form and make
+    // "Build and run" 400 on the whole payload. Never suggest them.
+    if (isReservedEnvKey(key)) return;
     let set = map.get(key);
     if (!set) {
       set = new Set();

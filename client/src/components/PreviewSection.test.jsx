@@ -300,4 +300,16 @@ describe('buildBuildPayload — readyTimeoutMs', () => {
     });
     expect(payload.compose.readyTimeoutMs).toBeUndefined();
   });
+
+  it('drops reserved-namespace env rows so the build never 400s on them', () => {
+    // Regression: AGENT_HUB_API_KEY pre-filled an env row and the build
+    // request was rejected wholesale by the secrets store.
+    const envRows = [
+      { key: 'AGENT_HUB_API_KEY', value: 'leak', kind: 'secret' },
+      { key: 'NODE_ENV', value: 'production', kind: 'plain' },
+      { key: 'DATABASE_URL', value: 'postgres://x', kind: 'secret' },
+    ];
+    const payload = buildBuildPayload(baseForm, envRows, { needsBootstrap: false });
+    expect(payload.envVars.map((e) => e.key)).toEqual(['DATABASE_URL']);
+  });
 });

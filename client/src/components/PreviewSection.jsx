@@ -17,7 +17,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
-import { envRowsFromDraftAndSecrets } from '../utils/projectEnvRows.js';
+import { envRowsFromDraftAndSecrets, isReservedEnvKey } from '../utils/projectEnvRows.js';
 
 const PREVIEW_IDLE_TTL_MIN = 60;
 const PREVIEW_IDLE_TTL_MAX = 86400;
@@ -173,6 +173,10 @@ export function buildBuildPayload(form, envRows, { needsBootstrap }) {
     idleTTL: Number(form.idleTTL),
     envVars: (envRows || [])
       .filter((r) => r.key?.trim())
+      // Reserved keys (AGENT_HUB_*, NODE_*, PATH, HOME) are server-injected
+      // and the secrets store rejects them with a 400 that fails the whole
+      // build. Drop them here so "Build and run" can never trip on one.
+      .filter((r) => !isReservedEnvKey(r.key.trim()))
       .map((r) => ({
         key: r.key.trim(),
         value: r.value ?? '',

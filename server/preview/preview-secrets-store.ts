@@ -26,20 +26,18 @@
 import { v4 as uuidv4 } from 'uuid';
 import { encryptSecret, decryptSecret, MASK } from '../secret-crypto.js';
 import { getDb } from '../db.js';
+import { RESERVED_KEY_RE } from './reserved-env-keys.js';
 
 // ─── Reserved namespace ─────────────────────────────────────────────
 
 /**
- * Keys we refuse to accept from user input. AGENT_HUB_* is reserved
- * for server-injected spawn config (the spawned CLI relies on these
- * being canonical), NODE_* is the platform runtime's namespace, and
- * PATH / HOME are the two env vars whose modification can break a
- * spawned child outright.
- *
- * The regex matches the exact production rule called out in the card.
- * Tests live in `preview-secrets-store.test.ts`.
+ * Keys we refuse to accept from user input. Canonical definition lives in
+ * `reserved-env-keys.ts` so the pure repo scanner can share the exact same
+ * rule without importing the DB layer. Re-exported here to keep existing
+ * `import { RESERVED_KEY_RE } from './preview-secrets-store.js'` callers
+ * working. Tests live in `preview-secrets-store.test.ts`.
  */
-export const RESERVED_KEY_RE = /^(AGENT_HUB_|NODE_|PATH$|HOME$)/;
+export { RESERVED_KEY_RE } from './reserved-env-keys.js';
 
 /** Env var name validation — bash-style identifier rules. */
 const VALID_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
