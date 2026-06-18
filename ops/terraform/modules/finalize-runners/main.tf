@@ -63,8 +63,8 @@ resource "aws_launch_template" "runner" {
     ebs {
       volume_size           = var.root_volume_size
       volume_type           = "gp3"
-      iops                  = 6000
-      throughput            = 250
+      iops                  = var.root_iops
+      throughput            = var.root_throughput
       delete_on_termination = true
     }
   }

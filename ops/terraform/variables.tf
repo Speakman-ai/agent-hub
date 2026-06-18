@@ -435,6 +435,38 @@ variable "finalize_runner_instance_type" {
   default = "r7i.xlarge"
 }
 
+variable "finalize_runner_task_memory_mib" {
+  type        = number
+  default     = 28672
+  description = "ECS soft memory reservation per runner-agent task. Sized to force one job per host (≈host RAM). Couple to the instance type: 32 GB host → ~28672; 16 GB host (m*.xlarge) → ~12288."
+}
+
+variable "finalize_runner_root_iops" {
+  type        = number
+  default     = 6000
+  description = "gp3 provisioned IOPS for each runner's root volume. gp3's free baseline is 3000; set 3000 to drop the per-volume IOPS premium."
+}
+
+variable "finalize_runner_root_throughput" {
+  type        = number
+  default     = 250
+  description = "gp3 provisioned throughput (MB/s) per runner root volume. gp3's free baseline is 125; set 125 to drop the per-volume throughput premium."
+}
+
+variable "finalize_runner_instance_types" {
+  type = list(string)
+  # The ASG mixed-instances OVERRIDE pool — this, NOT the launch template's
+  # instance_type, is what the ASG actually launches. Default mirrors the
+  # module's 32 GB r/m pool so envs that don't override (e.g. test) keep
+  # one-job-per-host on a 28 GB reservation. For a 16 GB host + ~12 GB
+  # reservation, set an all-16 GB m-family xlarge pool (see prod.tfvars).
+  default = [
+    "r7i.xlarge", "r6i.xlarge", "r6a.xlarge", "r7a.xlarge", "r5.xlarge",
+    "m7i.2xlarge", "m6i.2xlarge", "m6a.2xlarge", "m7a.2xlarge", "m5.2xlarge",
+  ]
+  description = "Mixed-instances override pool for the Finalize fleet ASG. All entries must match the host size that task_memory_mib assumes (one job per host)."
+}
+
 variable "finalize_runner_use_spot" {
   type        = bool
   default     = true

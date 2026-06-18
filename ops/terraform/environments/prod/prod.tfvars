@@ -80,9 +80,28 @@ alb_health_check_timeout             = 10
 alb_health_check_unhealthy_threshold = 5
 
 # ── Finalize remote-runner fleet (full production config) ────────────────────
-enable_finalize_runners       = true
-manage_shared_finalize_infra  = true # this account owns its buckets/ECR
-finalize_runner_instance_type = "r7i.xlarge"
+enable_finalize_runners      = true
+manage_shared_finalize_infra = true # this account owns its buckets/ECR
+# Right-size: m7a.xlarge is 4 vCPU / 16 GB (AMD) vs r7i.xlarge 4 vCPU / 32 GB.
+# Jobs are hard-capped at 8 GB (GitHub-parity) and measured ~1.7 GB peak, so the
+# 32 GB was unused headroom. MUST move with finalize_runner_task_memory_mib
+# below (28 GB reservation can't place on a 16 GB host). Keeps one job/host.
+#
+# NOTE: the ASG launches from instance_types (the mixed-instances override pool),
+# NOT instance_type — so the override pool below is what actually changes the
+# host. All entries are 16 GB m-family xlarge (4 vCPU) so a ~12 GB reservation
+# still binds one job per host; diversified across families/generations to keep
+# on-demand/Spot fulfillable. instance_type is kept in sync as the no-override
+# fallback but is otherwise inert here.
+finalize_runner_instance_type = "m7a.xlarge"
+finalize_runner_instance_types = [
+  "m7a.xlarge", "m7i.xlarge", "m6a.xlarge", "m6i.xlarge", "m5.xlarge",
+]
+finalize_runner_task_memory_mib = 12288 # ~12 GB on a 16 GB host → still one job/instance
+# Drop gp3 to its free baseline (3000 IOPS / 125 MB/s). Sampled CI I/O ~480 IOPS,
+# so the provisioned premium (6000/250) was unused. ~$20/mo per volume saved.
+finalize_runner_root_iops       = 3000
+finalize_runner_root_throughput = 125
 # On-demand: us-east-2 Spot for r/m-family 32GB types went region-wide
 # UnfulfillableCapacity (all 3 AZs), stranding runs. On-demand always has capacity.
 # Flip back to true once Spot recovers if the ~3x fleet cost matters (lost jobs
@@ -92,13 +111,16 @@ finalize_runner_min_size = 0 # scale-to-zero when idle
 # 64-agent ceiling. This single var drives the ASG max_size, on_demand_base_capacity,
 # and maximum_scaling_step_size (modules/finalize-runners) AND the Hub env
 # FINALIZE_FLEET_MAX_AGENTS (finalize-hub.tf) in lockstep — one task per instance
-# (28 GiB reservation on 32 GiB hosts), so agents == instances.
+# (~12 GiB reservation on 16 GiB hosts), so agents == instances.
 # Sized from measured demand: 14-day peak queue depth hit 50 with p99 queue wait
 # ~27 min at the old ceiling of 8.
-# Quota: worst case the mixed pool falls back to m-family 2xlarge (8 vCPU/agent),
-# so 64 agents ≈ 16 baseline + 64*8 = 528 On-Demand Standard vCPUs. The L-1216C47A
-# quota (acct 350025135582 us-east-2) was raised 512 -> 768 and APPROVED 2026-06-15,
-# so 64 agents sit at ~69% of quota. This value is not enforced by comment alone:
+# Quota: the active override pool is all m-family xlarge (4 vCPU/agent), so 64
+# agents actually draw ~16 baseline + 64*4 = 272 On-Demand Standard vCPUs. The
+# quota guard (finalize-runners.tf) deliberately sizes against a more conservative
+# 8 vCPU/agent worst case (= 528 vCPUs) as a safety margin against a future swap to
+# a larger instance type. The L-1216C47A quota (acct 350025135582 us-east-2) was
+# raised 512 -> 768 and APPROVED 2026-06-15, so even the conservative 528 figure
+# sits at ~69% of quota. This value is not enforced by comment alone:
 # terraform_data.finalize_quota_guard (finalize-runners.tf) reads the LIVE quota and
 # FAILS the plan if finalize_runner_max_size would exceed it, so a future bump past
 # the approved quota is blocked until the quota is raised first.

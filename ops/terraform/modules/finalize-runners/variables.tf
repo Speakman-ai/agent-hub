@@ -70,6 +70,18 @@ variable "root_volume_size" {
   default = 200
 }
 
+variable "root_iops" {
+  type        = number
+  default     = 6000
+  description = "gp3 provisioned IOPS for the runner root volume. gp3 includes 3000 free; anything above is billed."
+}
+
+variable "root_throughput" {
+  type        = number
+  default     = 250
+  description = "gp3 provisioned throughput (MB/s) for the runner root volume. gp3 includes 125 free; anything above is billed."
+}
+
 variable "agent_desired_count" {
   type        = number
   default     = 1

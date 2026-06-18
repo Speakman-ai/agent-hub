@@ -20,9 +20,13 @@ module "finalize_runners" {
   )
 
   instance_type       = var.finalize_runner_instance_type
+  instance_types      = var.finalize_runner_instance_types
   min_size            = var.finalize_runner_min_size
   max_size            = var.finalize_runner_max_size
   root_volume_size    = var.finalize_runner_root_volume_size
+  root_iops           = var.finalize_runner_root_iops
+  root_throughput     = var.finalize_runner_root_throughput
+  task_memory_mib     = var.finalize_runner_task_memory_mib
   agent_desired_count = var.finalize_agent_desired_count
   spot                = var.finalize_runner_use_spot
 
@@ -84,12 +88,14 @@ resource "aws_iam_role_policy" "hub_fleet_scale" {
 
 # ── Quota guard: fleet ceiling can never outrun the live On-Demand vCPU quota ──
 # One agent == one instance. An ON-DEMAND fleet draws from the "Running On-Demand
-# Standard" vCPU quota (L-1216C47A); the mixed pool can fall back to m-family
-# 2xlarge, so size for the WORST case of 8 vCPU/agent plus a baseline for the Hub
-# and any other on-demand usage. This reads the LIVE quota and FAILS the plan if
-# finalize_runner_max_size would exceed it — so a future bump past the approved
-# quota is blocked at plan time, not just discouraged by a comment. (Spot fleets
-# draw from a different quota, so the guard only applies when use_spot = false.)
+# Standard" vCPU quota (L-1216C47A). The active override pool is all m-family
+# xlarge (4 vCPU), but this guard deliberately sizes against a more conservative
+# 8 vCPU/agent worst case plus a baseline for the Hub and any other on-demand
+# usage, so swapping in a larger instance type later can't silently breach quota.
+# This reads the LIVE quota and FAILS the plan if finalize_runner_max_size would
+# exceed it — so a future bump past the approved quota is blocked at plan time,
+# not just discouraged by a comment. (Spot fleets draw from a different quota, so
+# the guard only applies when use_spot = false.)
 data "aws_servicequotas_service_quota" "finalize_ondemand_vcpu" {
   count        = var.enable_finalize_runners && !var.finalize_runner_use_spot ? 1 : 0
   service_code = "ec2"
@@ -97,7 +103,7 @@ data "aws_servicequotas_service_quota" "finalize_ondemand_vcpu" {
 }
 
 locals {
-  finalize_worst_case_vcpu_per_agent = 8  # m-family 2xlarge fallback
+  finalize_worst_case_vcpu_per_agent = 8  # conservative margin: 2x the all-xlarge pool's 4 vCPU
   finalize_nonfleet_baseline_vcpu    = 16 # Hub + headroom for other on-demand usage
   finalize_fleet_worst_case_vcpu = (
     var.finalize_runner_max_size * local.finalize_worst_case_vcpu_per_agent
