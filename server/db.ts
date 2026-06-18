@@ -11,6 +11,11 @@ import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schem
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
+import {
+  deriveCardPrefix,
+  KANBAN_CARD_SHORT_ID_TRIGGER_SQL,
+  KANBAN_BOARD_CARD_SEQ_RECONCILE_SQL,
+} from './kanban-short-id.js';
 import type { Stmts } from './types.js';
 
 let db: Database.Database | undefined;
@@ -436,6 +441,14 @@ function initDb(dataDir: string): void {
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      -- Monotonic per-board counter backing each card's human-readable short id
+      -- (e.g. "AH-123"). Only ever incremented — deleting a card never frees its
+      -- number, so short ids stay stable and never collide after a delete.
+      card_seq INTEGER NOT NULL DEFAULT 0,
+      -- Persisted alphabetic prefix for human card ids (the "AH" in "AH-123").
+      -- Frozen at board creation from the immutable project slug so that
+      -- renaming a project never rewrites existing, already-shared card ids.
+      card_prefix TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_kanban_boards_project ON kanban_boards(project_id);
@@ -465,6 +478,11 @@ function initDb(dataDir: string): void {
       session_id TEXT,
       github_issue_url TEXT,
       created_by TEXT,
+      -- Human-readable per-board sequence number (the "123" in "AH-123").
+      -- Assigned by the kanban_card_assign_short_id trigger on insert; NULL only
+      -- transiently before the trigger fires (and on pre-migration legacy rows
+      -- until backfilled).
+      short_id INTEGER,
       position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1421,6 +1439,87 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN autonomous_iterations INTEGER NOT NULL DEFAULT 0');
   } catch (_e) {
     /* already exists */
+  }
+
+  // Human-readable short card ids ("AH-123"). `kanban_boards.card_seq` is a
+  // monotonic per-board counter; `kanban_cards.short_id` is the assigned
+  // number. A trigger assigns short_id on insert so every card-create path
+  // (board route, finalize, provisioning, support-ticket convert, …) gets one
+  // without touching each call site. card_seq is only ever incremented, so a
+  // deleted card never frees its number — short ids are stable and collision
+  // free across deletes. Existing rows are backfilled once in created-order.
+  try {
+    db.exec('ALTER TABLE kanban_boards ADD COLUMN card_seq INTEGER NOT NULL DEFAULT 0');
+  } catch (_e) {
+    /* already exists */
+  }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN short_id INTEGER');
+  } catch (_e) {
+    /* already exists */
+  }
+  // Backfill any rows that predate the column: number each board's cards in
+  // (created_at, id) order. The numbering runs inside a transaction so the
+  // multi-row assignment is atomic — an interruption can never leave a board
+  // half-numbered. card_seq is advanced separately (and self-healingly) by the
+  // unconditional reconcile below, so even an interruption between the two can't
+  // leave a stale counter.
+  {
+    const needsBackfill = db
+      .prepare('SELECT COUNT(*) AS n FROM kanban_cards WHERE short_id IS NULL')
+      .get() as { n: number };
+    if (needsBackfill.n > 0) {
+      // Local non-null handle: the transaction callback is a nested closure, so
+      // TS widens the module-level `db` back to possibly-undefined inside it.
+      const database = db;
+      const backfillShortIds = database.transaction(() => {
+        database.exec(`
+          WITH numbered AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY board_id ORDER BY created_at ASC, id ASC
+                   ) AS rn
+            FROM kanban_cards
+            WHERE short_id IS NULL
+          )
+          UPDATE kanban_cards
+             SET short_id = (SELECT rn FROM numbered WHERE numbered.id = kanban_cards.id)
+           WHERE short_id IS NULL;
+        `);
+      });
+      backfillShortIds();
+    }
+  }
+  // Assign-on-insert trigger (shared SQL in kanban-short-id.ts).
+  db.exec(KANBAN_CARD_SHORT_ID_TRIGGER_SQL);
+  // Reconcile card_seq to MAX(short_id) on every init — idempotent and
+  // self-healing, so an interrupted prior backfill can't leave card_seq stale
+  // and cause the trigger to mint a colliding human id. See the constant's doc.
+  db.exec(KANBAN_BOARD_CARD_SEQ_RECONCILE_SQL);
+
+  // Persist the card-id prefix on the board (the "AH" in "AH-123"). Derived
+  // once from the immutable project slug — NOT the mutable display name — so
+  // renaming a project never rewrites existing, already-shared card ids. New
+  // boards get it set at creation (see getOrCreateBoard); here we backfill any
+  // board that predates the column.
+  try {
+    db.exec('ALTER TABLE kanban_boards ADD COLUMN card_prefix TEXT');
+  } catch (_e) {
+    /* already exists */
+  }
+  {
+    const boardsNeedingPrefix = db
+      .prepare('SELECT id, project_id FROM kanban_boards WHERE card_prefix IS NULL')
+      .all() as Array<{ id: string; project_id: string }>;
+    if (boardsNeedingPrefix.length > 0) {
+      const setPrefix = db.prepare('UPDATE kanban_boards SET card_prefix = ? WHERE id = ?');
+      const backfill = db.transaction((boards: Array<{ id: string; project_id: string }>) => {
+        for (const b of boards) {
+          setPrefix.run(deriveCardPrefix(b.project_id), b.id);
+        }
+      });
+      backfill(boardsNeedingPrefix);
+    }
   }
 
   try {
@@ -3088,8 +3187,14 @@ function initDb(dataDir: string): void {
     // Kanban boards
     getKanbanBoard: db.prepare('SELECT * FROM kanban_boards WHERE project_id = ? LIMIT 1'),
     getKanbanBoardById: db.prepare('SELECT * FROM kanban_boards WHERE id = ?'),
+    // NOTE: 4 positional params (id, project_id, name, card_prefix). If you
+    // change this arity, update EVERY `.run()` call site in the same commit —
+    // they are positional and unchecked at compile time. Current callers:
+    // server/routes/board.ts (getOrCreateBoard), server/routes/config.ts
+    // (import-board), plus the test fixtures in routes/pulls-native.test.ts and
+    // test/handoff-integration.test.ts.
     createKanbanBoard: db.prepare(
-      'INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)',
+      'INSERT INTO kanban_boards (id, project_id, name, card_prefix) VALUES (?, ?, ?, ?)',
     ),
     deleteKanbanBoard: db.prepare('DELETE FROM kanban_boards WHERE id = ?'),
 

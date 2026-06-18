@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge } from './time.js';
+import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge, shortDate } from './time.js';
 
 describe('formatElapsed', () => {
   it('formats seconds under a minute', () => {
@@ -13,6 +13,37 @@ describe('formatElapsed', () => {
     expect(formatElapsed(90)).toBe('1m 30s');
     expect(formatElapsed(125)).toBe('2m 5s');
     expect(formatElapsed(3661)).toBe('61m 1s');
+  });
+});
+
+describe('shortDate', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-06-15T12:00:00Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns empty string for falsy / unparseable input', () => {
+    expect(shortDate(null)).toBe('');
+    expect(shortDate(undefined)).toBe('');
+    expect(shortDate('')).toBe('');
+  });
+
+  it('omits the year for dates in the current year', () => {
+    const out = shortDate('2025-03-09T00:00:00Z');
+    expect(out).not.toMatch(/2025/);
+    expect(out).toMatch(/Mar/);
+  });
+
+  it('includes the year for dates in a different year', () => {
+    expect(shortDate('2024-12-31T00:00:00Z')).toMatch(/2024/);
+  });
+
+  it('parses SQLite datetime (no T) as UTC', () => {
+    expect(shortDate('2025-03-09 08:30:00')).toMatch(/Mar/);
   });
 });
 

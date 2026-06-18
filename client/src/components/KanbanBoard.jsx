@@ -13,11 +13,15 @@ import {
   AlertTriangle,
   Zap,
   PlayCircle,
+  Check,
+  Eye,
 } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh.js';
 import { epicFormToUpdateBody } from '../utils/epics.js';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers.js';
+import { cardShortLabel, assigneeInitials, assigneeColorClass } from '../utils/kanbanCard.js';
+import { shortDate } from '../utils/time.js';
 import { filterAgentsByProject } from '../utils/kanbanAgents.js';
 import { MarkdownContent } from './MarkdownRenderer.jsx';
 import FinalizeCardBadge from './finalize/CardBadge.jsx';
@@ -25,13 +29,6 @@ import EpicFilterDropdown from './EpicFilterDropdown.jsx';
 import EpicAutonomousDialog from './EpicAutonomousDialog.jsx';
 import { epicToAutonomousForm } from './EpicAutonomousPanel.jsx';
 import ReplayPlayerModal from './ReplayPlayerModal.jsx';
-
-const PRIORITY_STYLES = {
-  urgent: 'bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/25',
-  high: 'bg-orange-500/10 text-orange-300 ring-1 ring-inset ring-orange-500/25',
-  medium: 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25',
-  low: 'bg-gray-500/10 text-gray-400 ring-1 ring-inset ring-gray-500/20',
-};
 
 const PRIORITY_ACCENT = {
   urgent: 'border-l-red-500',
@@ -41,6 +38,102 @@ const PRIORITY_ACCENT = {
 };
 
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
+
+const PRIORITY_BAR_COLOR = {
+  high: 'bg-orange-400',
+  medium: 'bg-sky-400',
+  low: 'bg-gray-400',
+};
+
+/**
+ * Linear-style priority glyph. Urgent renders a filled warning square; the
+ * other levels render an ascending three-bar signal with `filled` bars lit.
+ */
+function PriorityIcon({ priority }) {
+  const p = priority || 'medium';
+  const label = `${p[0].toUpperCase()}${p.slice(1)} priority`;
+  if (p === 'urgent') {
+    return (
+      <span
+        title={label}
+        aria-label={label}
+        data-testid="card-priority-icon"
+        data-priority="urgent"
+        className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-[3px] bg-red-500/90 text-white flex-shrink-0"
+      >
+        <AlertTriangle size={9} strokeWidth={3} />
+      </span>
+    );
+  }
+  const filled = p === 'high' ? 3 : p === 'low' ? 1 : 2;
+  const onClass = PRIORITY_BAR_COLOR[p] || PRIORITY_BAR_COLOR.medium;
+  return (
+    <span
+      title={label}
+      aria-label={label}
+      data-testid="card-priority-icon"
+      data-priority={p}
+      className="inline-flex items-end gap-[2px] h-3.5 flex-shrink-0"
+    >
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={`w-[3px] rounded-[1px] ${i < filled ? onClass : 'bg-gray-600/50'}`}
+          style={{ height: `${5 + i * 3}px` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+const REVIEW_GLYPHS = {
+  approved: { Icon: Check, cls: 'text-emerald-300', label: 'Approved' },
+  reviewing: { Icon: Eye, cls: 'text-amber-300 animate-pulse', label: 'Reviewing…' },
+  changes_requested: { Icon: AlertTriangle, cls: 'text-red-300', label: 'Changes requested' },
+  awaiting_review: { Icon: Eye, cls: 'text-sky-300', label: 'Awaiting review' },
+};
+
+/** Compact review-status glyph (icon + tooltip) replacing the old text badge. */
+function ReviewGlyph({ status }) {
+  const m = REVIEW_GLYPHS[status];
+  if (!m) return null;
+  const { Icon } = m;
+  return (
+    <span
+      className={`inline-flex items-center ${m.cls}`}
+      title={m.label}
+      aria-label={m.label}
+      data-testid="card-review-glyph"
+      data-review-status={status}
+    >
+      <Icon size={12} />
+    </span>
+  );
+}
+
+/**
+ * Assignee avatar: initials over a stable hashed colour (kanban assignees are
+ * free-text names, not agent rows, so there's no uploaded image). A small
+ * indigo dot + ring marks an active linked session.
+ */
+function CardAvatar({ name, active }) {
+  const initials = assigneeInitials(name);
+  if (!initials) return null;
+  return (
+    <span
+      title={active ? `${name} · session active` : name}
+      data-testid="card-assignee-avatar"
+      className={`relative inline-flex items-center justify-center w-5 h-5 rounded-full text-[9px] font-semibold flex-shrink-0 ${assigneeColorClass(
+        name,
+      )} ${active ? 'ring-2 ring-indigo-400/70' : ''}`}
+    >
+      {initials}
+      {active && (
+        <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-indigo-400 ring-2 ring-gray-900" />
+      )}
+    </span>
+  );
+}
 
 /**
  * Per-column page size for infinite scroll. The board opens by loading only
@@ -100,7 +193,7 @@ export default function KanbanBoard({
     [agents, projectId],
   );
 
-  const [_board, setBoard] = useState(null);
+  const [board, setBoard] = useState(null);
   const [columns, setColumns] = useState([]);
   const [cards, setCards] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1138,6 +1231,8 @@ export default function KanbanBoard({
                 <div className="flex-1 overflow-y-auto kanban-column-scroll px-2.5 py-2 space-y-2">
                   {colCards.map((card) => {
                     const cardEpic = card.epic_id ? epics.find((e) => e.id === card.epic_id) : null;
+                    const shortLabel = cardShortLabel(board?.card_prefix, card.short_id);
+                    const cardLabels = card.labels ? card.labels.split(',').filter(Boolean) : [];
                     const showTopIndicator =
                       dropIndicator &&
                       dropIndicator.cardId === card.id &&
@@ -1167,156 +1262,132 @@ export default function KanbanBoard({
                             PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium
                           } ${dragCardId === card.id ? 'opacity-40 scale-[0.98]' : ''}`}
                         >
-                          <div className="flex items-start gap-1.5 p-3">
-                            <GripVertical
-                              size={14}
-                              className="text-gray-600 mt-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                            />
-                            <div className="flex-1 min-w-0 -ml-1 group-hover:ml-0 transition-all">
-                              <span
-                                className="block text-[13px] font-medium text-gray-100 leading-snug break-words"
-                                data-testid="card-title"
-                              >
-                                {card.title}
-                              </span>
-                              <div className="flex items-center gap-1 flex-wrap mt-2">
-                                {card.priority && (
-                                  <span
-                                    className={`inline-block text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-md ${
-                                      PRIORITY_STYLES[card.priority] || PRIORITY_STYLES.medium
-                                    }`}
-                                  >
-                                    {card.priority}
-                                  </span>
-                                )}
+                          <div className="p-3">
+                            {/* Header: priority glyph + short id (left) · status
+                                glyphs (right). Linear-style density. */}
+                            <div className="flex items-center gap-1.5">
+                              <PriorityIcon priority={card.priority} />
+                              {shortLabel && (
+                                <span
+                                  className="text-[11px] font-mono text-gray-500 tabular-nums tracking-tight"
+                                  data-testid="card-short-id"
+                                >
+                                  {shortLabel}
+                                </span>
+                              )}
+                              <div className="flex-1 min-w-0" />
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
                                 {hasUnresolvedBlockers(card) && (
                                   <span
-                                    className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/20"
+                                    className="inline-flex items-center gap-0.5 text-[10px] font-medium text-red-300"
                                     title={`Blocked by ${card.blockers.filter((b) => !b.done).length} unresolved card(s)`}
                                     data-testid="card-blocker-badge"
                                   >
-                                    <Lock size={10} />
+                                    <Lock size={11} />
                                     {card.blockers.filter((b) => !b.done).length}
                                   </span>
                                 )}
-                                {cardEpic && (
-                                  <span
-                                    className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md max-w-full"
-                                    style={{
-                                      backgroundColor: `${cardEpic.color}18`,
-                                      color: cardEpic.color,
-                                      boxShadow: `inset 0 0 0 1px ${cardEpic.color}30`,
-                                    }}
-                                  >
-                                    <span
-                                      className="w-1.5 h-1.5 rounded-full flex-shrink-0"
-                                      style={{ backgroundColor: cardEpic.color }}
-                                    />
-                                    <span className="truncate">{cardEpic.name}</span>
-                                  </span>
-                                )}
-                              </div>
-                              {(card.pr_url ||
-                                card.review_status ||
-                                card.session_id ||
-                                card.assignee ||
-                                (card.labels &&
-                                  card.labels.split(',').filter(Boolean).length > 0)) && (
-                                <div className="flex items-center gap-1.5 mt-2.5 pt-2.5 border-t border-white/[0.05] flex-wrap">
-                                  {card.pr_url &&
-                                    (/^https?:\/\//i.test(card.pr_url) ? (
-                                      <a
-                                        href={card.pr_url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-1 transition-colors"
-                                        title={card.pr_url}
-                                      >
-                                        <GitPullRequest size={12} />#
-                                        {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                      </a>
-                                    ) : (
-                                      /* Agent Hub-native PR (relative client
-                                         route) — no external tab; the Pull
-                                         Requests page shows it in-app. */
-                                      <span
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="text-[11px] text-gray-500 flex items-center gap-1"
-                                        title={card.pr_url}
-                                      >
-                                        <GitPullRequest size={12} />#
-                                        {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
-                                      </span>
-                                    ))}
-                                  {card.review_status && (
-                                    <span
-                                      className={`text-[10px] font-medium px-1.5 py-0.5 rounded-md ${
-                                        card.review_status === 'approved'
-                                          ? 'bg-emerald-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-500/25'
-                                          : card.review_status === 'reviewing'
-                                            ? 'bg-amber-500/10 text-amber-300 ring-1 ring-inset ring-amber-500/25 animate-pulse'
-                                            : card.review_status === 'changes_requested'
-                                              ? 'bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/25'
-                                              : 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25'
-                                      }`}
+                                {card.pr_url &&
+                                  (/^https?:\/\//i.test(card.pr_url) ? (
+                                    <a
+                                      href={card.pr_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-0.5 transition-colors"
+                                      title={card.pr_url}
                                     >
-                                      {card.review_status === 'approved'
-                                        ? 'Approved'
-                                        : card.review_status === 'reviewing'
-                                          ? 'Reviewing...'
-                                          : card.review_status === 'changes_requested'
-                                            ? 'Changes Requested'
-                                            : 'Awaiting Review'}
+                                      <GitPullRequest size={12} />
+                                      {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
+                                    </a>
+                                  ) : (
+                                    /* Agent Hub-native PR (relative client
+                                       route) — no external tab; the Pull
+                                       Requests page shows it in-app. */
+                                    <span
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-[11px] text-gray-500 flex items-center gap-0.5"
+                                      title={card.pr_url}
+                                    >
+                                      <GitPullRequest size={12} />
+                                      {card.pr_url.match(/\d+$/)?.[0] || 'PR'}
                                     </span>
-                                  )}
-                                  {/* Finalize Code Changes status badge — renders only
+                                  ))}
+                                <ReviewGlyph status={card.review_status} />
+                                {/* Finalize Code Changes status badge — renders only
                                     when the card's session has an active or recent
-                                    Finalize run. The badge surfaces phase + active
-                                    time (with wall-clock in the tooltip) so the
-                                    user can see at a glance whether the run is
-                                    progressing or paused waiting on a session.
+                                    Finalize run. `card.finalize_run` is folded into
+                                    the board payload server-side; passing it as
+                                    `prefetchedRun` skips the initial REST call.
+                                    Live updates flow via the WebSocket bridge. */}
+                                {card.session_id && (
+                                  <FinalizeCardBadge
+                                    sessionId={card.session_id}
+                                    prefetchedRun={card.finalize_run ?? null}
+                                  />
+                                )}
+                                <GripVertical
+                                  size={13}
+                                  className="text-gray-600 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                />
+                              </div>
+                            </div>
 
-                                    `card.finalize_run` is folded into the board
-                                    payload server-side (see server/routes/board.ts
-                                    + listLatestFinalizeRunsForBoard). Passing it
-                                    as `prefetchedRun` tells useFinalizeRun to skip
-                                    its initial REST call entirely — both when the
-                                    value is a row and when it's `null` (the
-                                    server already checked, there is nothing to
-                                    load). This eliminates the per-card GET
-                                    fan-out that PR #1169 reviewer flagged.
-                                    Live updates still flow through the WebSocket
-                                    bridge in App.jsx. */}
-                                  {card.session_id && (
-                                    <FinalizeCardBadge
-                                      sessionId={card.session_id}
-                                      prefetchedRun={card.finalize_run ?? null}
-                                    />
-                                  )}
-                                  {card.assignee && (
+                            {/* Title */}
+                            <span
+                              className="block text-[13px] font-medium text-gray-100 leading-snug mt-1.5 break-words"
+                              data-testid="card-title"
+                            >
+                              {card.title}
+                            </span>
+
+                            {/* Footer: epic + labels (left) · created date +
+                                assignee avatar (right). */}
+                            {(cardEpic ||
+                              card.assignee ||
+                              card.created_at ||
+                              cardLabels.length > 0) && (
+                              <div className="flex items-center justify-between gap-2 mt-2.5">
+                                <div className="flex items-center gap-1 flex-wrap min-w-0">
+                                  {cardEpic && (
                                     <span
-                                      className={`text-[11px] font-medium ${card.session_id ? 'text-indigo-300' : 'text-gray-400'}`}
+                                      className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md max-w-full"
+                                      style={{
+                                        backgroundColor: `${cardEpic.color}18`,
+                                        color: cardEpic.color,
+                                        boxShadow: `inset 0 0 0 1px ${cardEpic.color}30`,
+                                      }}
                                     >
-                                      {card.session_id ? '● ' : ''}
-                                      {card.assignee}
+                                      <span
+                                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                        style={{ backgroundColor: cardEpic.color }}
+                                      />
+                                      <span className="truncate">{cardEpic.name}</span>
                                     </span>
                                   )}
-                                  {card.labels &&
-                                    card.labels
-                                      .split(',')
-                                      .filter(Boolean)
-                                      .map((label) => (
-                                        <span
-                                          key={label}
-                                          className="text-[10px] font-medium bg-white/[0.06] text-gray-400 px-1.5 py-0.5 rounded-md"
-                                        >
-                                          {label.trim()}
-                                        </span>
-                                      ))}
+                                  {cardLabels.map((label) => (
+                                    <span
+                                      key={label}
+                                      className="text-[10px] font-medium bg-white/[0.06] text-gray-400 px-1.5 py-0.5 rounded-md"
+                                    >
+                                      {label.trim()}
+                                    </span>
+                                  ))}
                                 </div>
-                              )}
-                            </div>
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  {card.created_at && (
+                                    <span
+                                      className="text-[10px] text-gray-500 tabular-nums whitespace-nowrap"
+                                      data-testid="card-created-date"
+                                      title={`Created ${card.created_at}`}
+                                    >
+                                      {shortDate(card.created_at)}
+                                    </span>
+                                  )}
+                                  <CardAvatar name={card.assignee} active={!!card.session_id} />
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                         {showBottomIndicator && (

@@ -50,6 +50,7 @@ function mkCard(): KanbanCardRow {
     pr_url: null,
     review_status: null,
     created_by: null,
+    short_id: 1,
     position: 0,
     epic_id: null,
     documented: 0,

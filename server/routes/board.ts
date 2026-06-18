@@ -18,6 +18,7 @@ import type {
   SessionReplayRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
+import { deriveCardPrefix } from '../kanban-short-id.js';
 import {
   type CardCursor,
   clampPageLimit,
@@ -261,7 +262,10 @@ export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
     };
   }
   const boardId = uuidv4();
-  stmts.createKanbanBoard.run(boardId, projectId, 'Board');
+  // Freeze the card-id prefix at creation from the immutable project slug, so a
+  // later project rename never rewrites existing card ids (e.g. AH-123 stays
+  // AH-123 forever, even if the project is renamed).
+  stmts.createKanbanBoard.run(boardId, projectId, 'Board', deriveCardPrefix(projectId));
   const defaultColumns = [
     { name: 'To Do', color: '#3B82F6' },
     { name: 'In Progress', color: '#F59E0B' },
@@ -345,8 +349,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // are board-scoped batched queries; folding them into the payload lets the
     // client render blocker banners and per-card finalize badges without a GET
     // per card.
+    // The card-id prefix is persisted on the board (frozen at creation from the
+    // immutable project slug) so renaming the project never rewrites existing,
+    // already-shared card ids. Fall back to deriving from the slug only for a
+    // legacy board whose prefix predates the column and somehow wasn't
+    // backfilled.
+    const cardPrefix = data.board.card_prefix ?? deriveCardPrefix(project.id);
     const body: Record<string, unknown> = {
       ...data,
+      board: { ...data.board, card_prefix: cardPrefix },
       cards: enrichCards(stmts, data.board.id, cards),
       counts,
     };

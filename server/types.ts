@@ -547,6 +547,13 @@ export interface KanbanBoardRow {
   id: string;
   project_id: string;
   name: string;
+  /** Monotonic per-board counter backing card short ids. Only ever incremented. */
+  card_seq: number;
+  /** Persisted prefix for human card ids (the "AH" in "AH-123"). Frozen at board
+   *  creation from the immutable project slug so renaming a project never
+   *  rewrites already-shared card ids. NULL only on legacy rows before backfill;
+   *  GET /board falls back to deriving from the slug in that case. */
+  card_prefix: string | null;
   created_at: string;
 }
 
@@ -573,6 +580,10 @@ export interface KanbanCardRow {
   pr_url: string | null;
   review_status: 'awaiting_review' | 'reviewing' | 'approved' | 'changes_requested' | null;
   created_by: string | null;
+  /** Human-readable per-board sequence number (the "123" in "AH-123"). Assigned
+   *  on insert by the kanban_card_assign_short_id trigger. NULL only on legacy
+   *  rows before backfill. */
+  short_id: number | null;
   position: number;
   epic_id: string | null;
   documented: number;

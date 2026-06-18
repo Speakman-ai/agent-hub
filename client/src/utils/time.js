@@ -35,6 +35,23 @@ export function relativeTime(dateStr) {
 }
 
 /**
+ * Compact absolute date label for dense card UIs.
+ *   - Same calendar year as today → "Jun 18"
+ *   - Different year → "Jun 18, 2025"
+ * Returns '' for falsy / unparseable input.
+ */
+export function shortDate(dateStr) {
+  const d = parseDate(dateStr);
+  if (!d || isNaN(d)) return '';
+  const now = new Date();
+  const opts =
+    d.getFullYear() === now.getFullYear()
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: 'numeric' };
+  return d.toLocaleDateString(undefined, opts);
+}
+
+/**
  * Format elapsed seconds as "Xm Ys"
  */
 export function formatElapsed(seconds) {

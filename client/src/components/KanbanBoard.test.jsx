@@ -1162,3 +1162,71 @@ describe('KanbanBoard infinite scroll (per-column pagination)', () => {
     expect(api.getColumnCards).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('KanbanBoard card redesign (Linear density)', () => {
+  beforeEach(() => {
+    api.getBoard.mockReset();
+    api.get.mockReset();
+    api.get.mockResolvedValue([]);
+  });
+
+  const renderCard = async (cardOverrides, boardOverrides = {}) => {
+    api.getBoard.mockResolvedValueOnce({
+      board: { id: 'b1', card_prefix: 'AH', ...boardOverrides },
+      columns: [{ id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 }],
+      cards: [
+        {
+          id: 'c1',
+          title: 'Redesigned card',
+          column_id: 'col-todo',
+          position: 0,
+          priority: 'urgent',
+          short_id: 7,
+          assignee: 'Agent Hub Dev',
+          created_at: '2025-03-09T10:00:00Z',
+          ...cardOverrides,
+        },
+      ],
+      epics: [],
+    });
+    render(<KanbanBoard projectId="p1" project={{ name: 'Agent Hub' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Redesigned card')).toBeInTheDocument());
+  };
+
+  it('renders the short id from board prefix + card short_id', async () => {
+    await renderCard();
+    expect(screen.getByTestId('card-short-id')).toHaveTextContent('AH-7');
+  });
+
+  it('renders a priority icon carrying the card priority', async () => {
+    await renderCard({ priority: 'urgent' });
+    expect(screen.getByTestId('card-priority-icon')).toHaveAttribute('data-priority', 'urgent');
+  });
+
+  it('renders the assignee as an avatar with initials, not the raw name', async () => {
+    await renderCard({ assignee: 'Agent Hub Dev' });
+    const avatar = screen.getByTestId('card-assignee-avatar');
+    expect(avatar).toHaveTextContent('AH');
+    // The full name is not rendered as card body text (it lives in the title attr).
+    expect(screen.queryByText('Agent Hub Dev')).not.toBeInTheDocument();
+  });
+
+  it('renders the created date', async () => {
+    await renderCard({ created_at: '2025-03-09T10:00:00Z' });
+    expect(screen.getByTestId('card-created-date')).toHaveTextContent(/Mar/);
+  });
+
+  it('omits the short-id chip when the card has no short_id (legacy row)', async () => {
+    await renderCard({ short_id: null });
+    expect(screen.queryByTestId('card-short-id')).not.toBeInTheDocument();
+  });
+
+  it('renders a compact review glyph instead of the old text badge', async () => {
+    await renderCard({ review_status: 'approved' });
+    expect(screen.getByTestId('card-review-glyph')).toHaveAttribute(
+      'data-review-status',
+      'approved',
+    );
+    expect(screen.queryByText('Approved')).not.toBeInTheDocument();
+  });
+});

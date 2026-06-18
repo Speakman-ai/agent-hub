@@ -76,6 +76,14 @@ export const KanbanBoardComponent = registerComponent(
       id: z.string(),
       project_id: z.string(),
       name: z.string(),
+      card_seq: z.number().int().openapi({
+        description:
+          'Monotonic per-board counter backing card short ids. Only ever incremented, so a deleted card never frees its number.',
+      }),
+      card_prefix: z.string().openapi({
+        description:
+          'Persisted alphabetic prefix for human card ids, e.g. "AH". Frozen at board creation from the immutable project slug, so renaming a project never rewrites existing card ids. The full label is `${card_prefix}-${card.short_id}` ("AH-123"). Always present and non-null on the GET /board board payload (the server backfills/derives it).',
+      }),
       created_at: z.string(),
     })
     .openapi({ description: 'A project kanban board (one per project).' }),
@@ -112,6 +120,10 @@ export const KanbanCardComponent = registerComponent(
       pr_url: z.string().nullable(),
       review_status: ReviewStatusSchema,
       created_by: z.string().nullable(),
+      short_id: z.number().int().nullable().openapi({
+        description:
+          'Human-readable per-board sequence number (the "123" in "AH-123"). Assigned on insert; null only on legacy rows before backfill. Pair with the board `card_prefix` to build the display label.',
+      }),
       position: z.number().int(),
       epic_id: z.string().nullable(),
       documented: z.number().int(),

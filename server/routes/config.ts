@@ -17,6 +17,7 @@ import type {
 import type { AuthenticatedRequest } from '../auth.js';
 import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
+import { deriveCardPrefix } from '../kanban-short-id.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
@@ -966,6 +967,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             boardId,
             targetProjectId,
             kanban.board?.name || `${targetProject.name} Board`,
+            deriveCardPrefix(targetProjectId),
           );
           boardCreated = true;
           for (const col of kanban.columns || []) {

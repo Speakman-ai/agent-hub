@@ -1257,12 +1257,20 @@ components:
           type: string
         name:
           type: string
+        card_seq:
+          type: integer
+          description: Monotonic per-board counter backing card short ids. Only ever incremented, so a deleted card never frees its number.
+        card_prefix:
+          type: string
+          description: Persisted alphabetic prefix for human card ids, e.g. "AH". Frozen at board creation from the immutable project slug, so renaming a project never rewrites existing card ids. The full label is `${card_prefix}-${card.short_id}` ("AH-123"). Always present and non-null on the GET /board board payload (the server backfills/derives it).
         created_at:
           type: string
       required:
         - id
         - project_id
         - name
+        - card_seq
+        - card_prefix
         - created_at
       description: A project kanban board (one per project).
     KanbanColumn:
@@ -1337,6 +1345,10 @@ components:
         created_by:
           type: string
           nullable: true
+        short_id:
+          type: integer
+          nullable: true
+          description: Human-readable per-board sequence number (the "123" in "AH-123"). Assigned on insert; null only on legacy rows before backfill. Pair with the board `card_prefix` to build the display label.
         position:
           type: integer
         epic_id:
@@ -1374,6 +1386,7 @@ components:
         - pr_url
         - review_status
         - created_by
+        - short_id
         - position
         - epic_id
         - documented

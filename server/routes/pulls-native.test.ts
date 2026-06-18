@@ -969,7 +969,7 @@ describe('linked card + list CI status', () => {
 
     const { stmts } = await import('../db.js');
     // Link a kanban card to the PR by its native URL.
-    stmts!.createKanbanBoard.run('board-x', id, 'Board');
+    stmts!.createKanbanBoard.run('board-x', id, 'Board', 'BRD');
     stmts!.createKanbanColumn.run('col-x', 'board-x', 'In Progress', 0, null);
     stmts!.createKanbanCard.run(
       'card-lk1',

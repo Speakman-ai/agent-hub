@@ -442,7 +442,7 @@ describe('handleHandoff — end-to-end', () => {
     const cardId = `${opts.prefix}-card`;
     const epicId = opts.autonomous ? `${opts.prefix}-epic` : null;
 
-    stmts.createKanbanBoard.run(boardId, 'proj-test', 'Test Board');
+    stmts.createKanbanBoard.run(boardId, 'proj-test', 'Test Board', 'PT');
     stmts.createKanbanColumn.run(columnId, boardId, 'In Progress', 2, null);
     if (epicId) {
       stmts.createKanbanEpic.run(epicId, boardId, 'Auto Epic', null, '#fff', 0);
