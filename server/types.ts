@@ -112,6 +112,15 @@ export interface SessionRow {
    * never merge a half-finished turn. See `server/turn-error.ts`.
    */
   last_turn_error?: string | null;
+  /**
+   * Number of consecutive automatic post-restart resume attempts for this
+   * session that have NOT yet been followed by a clean turn completion.
+   * Incremented in `reconcileOrphanedTasks` each boot before re-spawning an
+   * orphaned turn; reset to 0 whenever a spawned process exits normally (the
+   * server survived the turn). Caps auto-resume so a crash/restart loop can't
+   * re-spawn the same session forever. See `MAX_RESUME_ATTEMPTS` in index.ts.
+   */
+  resume_attempts?: number;
 }
 
 export interface MessageRow {
@@ -1331,6 +1340,8 @@ export interface Stmts {
   updateSessionFinalizeAutomation: Stmt;
   updateSessionState: Stmt;
   updateSessionLastTurnError: Stmt;
+  incrementSessionResumeAttempts: Stmt;
+  resetSessionResumeAttempts: Stmt;
   updateSessionWorktree: Stmt;
   updateSessionWorktreePath: Stmt;
   setSessionResolvePrHeadBranch: Stmt;
@@ -3086,6 +3097,17 @@ export interface ChatMessage {
   images?: string[];
   _fromQueue?: boolean;
   _existingMsgId?: string;
+  /**
+   * Set to true ONLY by `reconcileOrphanedTasks` → `resumeOrphanedSessions`
+   * (server/index.ts) when auto-resuming an orphaned turn after a server
+   * restart. It marks the turn as an *automatic* crash-resume so `handleChat`
+   * does NOT clear the session's `resume_attempts` cap at turn start — that
+   * counter must keep accumulating across consecutive crash-interrupted
+   * resumes. Every other (externally-initiated) turn leaves this unset and
+   * resets the cap, so a human-initiated turn always supersedes a prior
+   * give-up. See `server/resume-attempts.ts`.
+   */
+  _autoResume?: boolean;
   /**
    * Set to true when this message was produced by the bug-report reroute
    * guard in `handleChat`. Prevents re-entrant reroutes if the intake agent

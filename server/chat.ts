@@ -121,6 +121,7 @@ import {
   type AuthStampedWs,
 } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
+import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
 import { recomputeSessionState } from './session-state.js';
 import { billSessionTurnDurationIfTaggedToFinalize } from './finalize/budget.js';
@@ -2609,6 +2610,30 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           );
           return;
         }
+      }
+
+      // Crash-loop resume cap supersession. Placed here — at the point a fresh
+      // turn is actually committed and about to spawn, PAST validation, the
+      // session-busy/duplicate-send enqueue guard, auth, and cursor-chat
+      // creation — so a rejected or queued send can never wipe the counter. A
+      // fresh, externally-initiated turn (human message, queue drain, cron,
+      // autonomous dispatch) clears the session's `resume_attempts` so a
+      // human-initiated recovery turn is never blocked by a prior give-up: even
+      // if the server restarts before this turn reaches a clean exit, reconcile
+      // sees `resume_attempts = 0` and auto-resumes it with a full budget.
+      // Automatic resumes (`_autoResume`) and in-turn ReAct continuations
+      // (`_autoContinuation`) must skip the reset, or the cap could never
+      // accumulate / would reset mid-resume. See reconcileOrphanedTasks +
+      // MAX_RESUME_ATTEMPTS in index.ts.
+      if (
+        shouldResetResumeAttemptsOnTurnStart({
+          isAutoResume: msg._autoResume,
+          isAutoContinuation,
+        })
+      ) {
+        try {
+          stmts.resetSessionResumeAttempts.run(sessionId);
+        } catch {}
       }
 
       try {

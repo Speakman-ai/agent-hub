@@ -1761,6 +1761,17 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE sessions ADD COLUMN linked_design_id TEXT DEFAULT NULL');
   }
 
+  // Consecutive automatic post-restart resume attempts not yet followed by a
+  // clean turn completion. Incremented per boot in reconcileOrphanedTasks before
+  // re-spawning an orphaned turn; reset to 0 when a spawned process exits
+  // normally. Caps auto-resume so a crash/restart loop can't re-spawn the same
+  // session forever (see MAX_RESUME_ATTEMPTS in index.ts).
+  try {
+    db.prepare('SELECT resume_attempts FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN resume_attempts INTEGER NOT NULL DEFAULT 0');
+  }
+
   // Message attribution for multi-agent assistant turns
   try {
     db.prepare('SELECT agent_id FROM messages LIMIT 1').get();
@@ -2882,6 +2893,14 @@ function initDb(dataDir: string): void {
     // Turn-error flag — intentionally does NOT touch `updated_at` (set/cleared
     // around every spawn; must not churn the session sort order).
     updateSessionLastTurnError: db.prepare('UPDATE sessions SET last_turn_error = ? WHERE id = ?'),
+    // Post-restart resume-attempt counter — intentionally does NOT touch
+    // `updated_at` (boot-time / process-exit bookkeeping must not churn sort).
+    incrementSessionResumeAttempts: db.prepare(
+      'UPDATE sessions SET resume_attempts = resume_attempts + 1 WHERE id = ?',
+    ),
+    resetSessionResumeAttempts: db.prepare(
+      'UPDATE sessions SET resume_attempts = 0 WHERE id = ? AND resume_attempts != 0',
+    ),
     updateSessionWorktree: db.prepare(
       "UPDATE sessions SET use_worktree = ?, updated_at = datetime('now') WHERE id = ?",
     ),
