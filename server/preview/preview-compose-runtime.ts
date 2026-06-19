@@ -206,6 +206,22 @@ export interface PreviewComposeRuntimeConfig {
   /** Cadence for the health-check loop. Default 1000. */
   healthIntervalMs?: number;
   /**
+   * Cadence for the "still starting" progress heartbeat emitted into the
+   * boot-log tail while the health check is waiting on a slow first boot.
+   *
+   * Compose's `up` blocks on a dependent service's `depends_on:
+   * condition: service_healthy`, printing `Container … Waiting` exactly
+   * once and then nothing until the dependency goes healthy. For a stack
+   * with a heavy first boot (image build, S3 dump restore, migrations) that
+   * silent gap can run for minutes, so the preview *looks* hung. The
+   * heartbeat appends a periodic, elapsed/remaining-stamped line through the
+   * same `notifyLog` + tail path as real boot output, so the client sees the
+   * wait is progressing rather than frozen.
+   *
+   * Default: 15_000 ms. Set to 0 to disable (no heartbeat lines).
+   */
+  startingHeartbeatMs?: number;
+  /**
    * Upper bound on how long a new `startPreview` call will wait on the
    * per-session lock before assuming the prior call wedged and proceeding.
    *
@@ -361,6 +377,8 @@ export interface PreviewComposeRuntimeDeps {
 export const DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS = 600_000; // 10 min
 const DEFAULT_READY_TIMEOUT_MS = DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS;
 const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
+/** Default cadence for the "still starting" boot-log heartbeat. */
+const DEFAULT_STARTING_HEARTBEAT_MS = 15_000;
 /**
  * Hard cap on how long `withSessionLock` will wait on a prior call. Two
  * minutes is wider than any legitimate single `_startPreview` (which is
@@ -670,6 +688,7 @@ export class PreviewComposeRuntime {
   private readonly portRange: PortRange;
   private readonly readyTimeoutMs: number;
   private readonly healthIntervalMs: number;
+  private readonly startingHeartbeatMs: number;
   private readonly sessionLockTimeoutMs: number;
   private readonly urlBase: (port: number, sessionId: string) => string;
   private readonly healthUrlBase: (port: number) => string;
@@ -720,6 +739,7 @@ export class PreviewComposeRuntime {
     this.portRange = deps.config?.portRange ?? DEFAULT_PREVIEW_PORT_RANGE;
     this.readyTimeoutMs = deps.config?.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
     this.healthIntervalMs = deps.config?.healthIntervalMs ?? DEFAULT_HEALTH_INTERVAL_MS;
+    this.startingHeartbeatMs = deps.config?.startingHeartbeatMs ?? DEFAULT_STARTING_HEARTBEAT_MS;
     this.sessionLockTimeoutMs =
       deps.config?.sessionLockTimeoutMs ?? DEFAULT_SESSION_LOCK_TIMEOUT_MS;
     this.urlBase = deps.config?.urlBase ?? ((p, _sid) => `http://localhost:${p}`);
@@ -1680,7 +1700,12 @@ export class PreviewComposeRuntime {
     timeoutMs: number;
   }): Promise<void> {
     const healthUrl = opts.url + opts.healthPath;
-    const deadline = this.clock.nowMs() + opts.timeoutMs;
+    const startedAt = this.clock.nowMs();
+    const deadline = startedAt + opts.timeoutMs;
+    // Throttle state for the "still starting" progress heartbeat. Seeded to
+    // `startedAt` so the first heartbeat fires one interval in, not on the
+    // very first (already-noisy) poll.
+    let lastHeartbeatAt = startedAt;
     while (this.clock.nowMs() < deadline) {
       // If the group has already been torn down or flipped to failed,
       // bail. Cheap query — happy path runs at most ~300 times during
@@ -1737,9 +1762,38 @@ export class PreviewComposeRuntime {
       // both flow through `appendComposeLog`, so the in-memory tail stays
       // the single coherent source. Polling `docker compose logs --tail`
       // here would replace that buffer out-of-band and make the log "loop".
+      //
+      // We DO emit a lightweight, throttled "still starting" heartbeat into
+      // the same tail. While compose is blocked on a dependent service's
+      // `service_healthy` condition it prints `Container … Waiting` exactly
+      // once, so a multi-minute first boot (build / dump restore / migrations)
+      // otherwise looks frozen. The heartbeat is a synthetic informational
+      // line — it does not pull from the daemon and keeps the single-producer
+      // tail invariant intact.
+      const now = this.clock.nowMs();
+      if (this.startingHeartbeatMs > 0 && now - lastHeartbeatAt >= this.startingHeartbeatMs) {
+        lastHeartbeatAt = now;
+        this.emitStartingHeartbeat(opts.groupId, now - startedAt, deadline - now);
+      }
       await this.clock.sleep(this.healthIntervalMs);
     }
     await this.markGroupFailed(opts.groupId, `health check timed out after ${opts.timeoutMs}ms`);
+  }
+
+  /**
+   * Append a throttled "still starting" progress line to the boot-log tail
+   * (and fan it out via `notifyLog`) so a slow first boot reads as
+   * in-progress rather than hung. Synthetic — no daemon pull — so it does
+   * not disturb the single-producer log tail.
+   */
+  private emitStartingHeartbeat(groupId: string, elapsedMs: number, remainingMs: number): void {
+    const elapsed = Math.max(0, Math.round(elapsedMs / 1000));
+    const remaining = Math.max(0, Math.round(remainingMs / 1000));
+    const line =
+      `==> [preview] still starting — waiting for the entry service to pass its ` +
+      `health check (${elapsed}s elapsed, ${remaining}s before timeout). ` +
+      `A first boot that builds images or restores a database can take several minutes.`;
+    this.appendComposeLog(groupId, line, 'stdout', false);
   }
 
   private wireComposeChildStdio(

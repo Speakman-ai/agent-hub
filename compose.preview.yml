@@ -35,10 +35,20 @@ services:
           '-e',
           "fetch('http://localhost:3051/api/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))",
         ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+      # Cold boot of the prod Hub image (tsx start, SQLite WAL init, schema
+      # migrations) routinely takes longer than the previous ~100s budget
+      # (start_period 10s + retries 3 × interval 30s). When it did, compose
+      # marked `server` unhealthy, `up` exited non-zero, and the preview was
+      # marked **failed** — even though the server was merely slow, not broken.
+      # The same compose file declares a 600s ready timeout
+      # (AGENT_HUB_PREVIEW_READY_TIMEOUT_MS), so the container healthcheck must
+      # tolerate the same order of magnitude. 60s grace + 30 × 10s = ~360s of
+      # failures tolerated before unhealthy — comfortably under the 600s ready
+      # budget, and well above a normal cold boot.
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
 
   # Runs the Vite dev server for live HMR against the worktree the Hub
   # bind-mounts at /app (see .agent-hub/preview.json `entryWorkdir`). Assumes

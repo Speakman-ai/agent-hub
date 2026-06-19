@@ -781,6 +781,83 @@ describe('PreviewComposeRuntime.startPreview — failure paths', () => {
   });
 });
 
+// ─── "still starting" progress heartbeat ───────────────────────────────
+
+describe('PreviewComposeRuntime — starting-phase heartbeat', () => {
+  it('streams a throttled "still starting" heartbeat while waiting on a slow boot', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    // Never goes healthy — models a slow first boot blocked behind a
+    // dependent service's `service_healthy` condition.
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const logLines: string[] = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      notifyLog: (info) => logLines.push(info.line),
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      // healthIntervalMs 10, heartbeat every 30ms → a heartbeat roughly
+      // every 3 polls. readyTimeoutMs 200 leaves room for several.
+      config: { readyTimeoutMs: 200, healthIntervalMs: 10, startingHeartbeatMs: 30 },
+    });
+
+    const result = await runtime.startPreview('sess-hb', makeProject(), '/wt');
+    for (let i = 0; i < 30; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    const heartbeats = logLines.filter((l) => l.includes('still starting'));
+    // ~6 fit in the 200ms budget at a 30ms cadence; assert a robust lower
+    // bound so micro-task scheduling jitter can't flake the test.
+    expect(heartbeats.length).toBeGreaterThanOrEqual(3);
+    // Each line carries an elapsed/remaining stamp so the wait reads as
+    // progressing rather than frozen.
+    expect(heartbeats[0]).toMatch(/\d+s elapsed/);
+    expect(heartbeats[0]).toMatch(/before timeout/);
+    // The heartbeat is purely informational — it does not change the
+    // terminal outcome of a boot that never answers.
+    expect(runtime.getById(result.previewId)!.status).toBe('failed');
+    // …and the lines are retained in the boot-log tail, not just fanned out.
+    expect(runtime.getLogTail(result.previewId).some((l) => l.includes('still starting'))).toBe(
+      true,
+    );
+    // The heartbeat must NOT spawn anything (no daemon pull / follower) —
+    // the single live-producer invariant stays intact during `starting`.
+    expect(harness.spawned).toHaveLength(1);
+  });
+
+  it('emits no heartbeat when startingHeartbeatMs is 0', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const logLines: string[] = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      notifyLog: (info) => logLines.push(info.line),
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      config: { readyTimeoutMs: 200, healthIntervalMs: 10, startingHeartbeatMs: 0 },
+    });
+
+    await runtime.startPreview('sess-hb-off', makeProject(), '/wt');
+    for (let i = 0; i < 30; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(logLines.filter((l) => l.includes('still starting'))).toHaveLength(0);
+  });
+});
+
 // ─── notifyStatus terminal-transition hook ─────────────────────────────
 
 describe('PreviewComposeRuntime — notifyStatus', () => {
