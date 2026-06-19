@@ -206,7 +206,10 @@ describe('App — session switch + getMessages loading', () => {
     });
 
     await waitFor(() => {
-      expect(api.getMessages).toHaveBeenCalledWith('s-a');
+      expect(api.getMessages).toHaveBeenCalledWith(
+        's-a',
+        expect.objectContaining({ limit: expect.any(Number) }),
+      );
     });
     expect(await screen.findByText('from-a')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-messages-loading')).not.toBeInTheDocument();
@@ -216,7 +219,10 @@ describe('App — session switch + getMessages loading', () => {
       globalThis.__ahTestSelectSession('s-b');
     });
 
-    expect(api.getMessages).toHaveBeenCalledWith('s-b');
+    expect(api.getMessages).toHaveBeenCalledWith(
+      's-b',
+      expect.objectContaining({ limit: expect.any(Number) }),
+    );
     expect(screen.getByTestId('chat-messages-loading')).toBeInTheDocument();
     expect(screen.queryByText('from-a')).not.toBeInTheDocument();
 
@@ -240,7 +246,12 @@ describe('App — session switch + getMessages loading', () => {
       ctl.resolveSessionsByAgent['agent-1'](THREE_SESSIONS);
     });
 
-    await waitFor(() => expect(api.getMessages).toHaveBeenCalledWith('s-a'));
+    await waitFor(() =>
+      expect(api.getMessages).toHaveBeenCalledWith(
+        's-a',
+        expect.objectContaining({ limit: expect.any(Number) }),
+      ),
+    );
     expect(await screen.findByText('from-a')).toBeInTheDocument();
 
     await act(async () => {
@@ -279,7 +290,12 @@ describe('App — session switch + getMessages loading', () => {
       ctl.resolveSessionsByAgent['agent-1'](TWO_SESSIONS);
     });
 
-    await waitFor(() => expect(api.getMessages).toHaveBeenCalledWith('s-a'));
+    await waitFor(() =>
+      expect(api.getMessages).toHaveBeenCalledWith(
+        's-a',
+        expect.objectContaining({ limit: expect.any(Number) }),
+      ),
+    );
 
     await act(async () => {
       globalThis.__ahTestSelectSession('s-b');

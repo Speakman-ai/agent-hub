@@ -86,6 +86,13 @@ import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
 import { isNearBottom, forcePinChatTailScroll } from './utils/chatScroll.js';
 import {
+  MESSAGES_PAGE_SIZE,
+  inferHasMore,
+  shouldLoadOlder,
+  prependOlderMessages,
+  restoredScrollTop,
+} from './utils/messagePagination.js';
+import {
   buildInterruptQueuedMessageDispatch,
   isPersistedUploadAttachment,
 } from '../../shared/utils/queuedMessageAttachments.js';
@@ -184,6 +191,8 @@ export default function App({ initialView } = {}) {
   const [messages, setMessages] = useState([]);
   /** True while GET /api/sessions/:id/messages is in flight after a session switch. */
   const [sessionMessagesLoading, setSessionMessagesLoading] = useState(false);
+  /** True while an older page is being fetched (scroll-up). Drives the top spinner. */
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   // Handoffs (rows from GET /api/sessions/:id/handoffs) for the active
   // source session — used by HandoffCard to render an "Open session" link.
   const [sessionHandoffs, setSessionHandoffs] = useState([]);
@@ -425,6 +434,15 @@ export default function App({ initialView } = {}) {
   const scrollContainerRef = useRef(null);
   /** Observed for height changes (streaming, images, code blocks) while pinned to bottom. */
   const messagesColumnRef = useRef(null);
+  // Reverse-infinite-scroll bookkeeping. Flags live in refs so the scroll
+  // handler (a stable useCallback) reads fresh values without redefining.
+  const olderHasMoreRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  /** Mirrors `messages` so the scroll handler can read the oldest loaded id. */
+  const messagesRef = useRef([]);
+  messagesRef.current = messages;
+  /** Set just before a prepend so the layout effect can restore scroll offset. */
+  const prependRestoreRef = useRef(null);
   /** Imperative handle on the chat composer — lets the toggle-microphone hotkey
    *  start/stop voice input without prop-drilling recording state up the tree. */
   const messageInputRef = useRef(null);
@@ -660,15 +678,73 @@ export default function App({ initialView } = {}) {
 
   const checkNearBottom = useCallback(() => isNearBottom(scrollContainerRef.current), []);
 
+  // Reverse infinite scroll: fetch the next older page (keyed off the oldest
+  // loaded message id), prepend it, and restore the viewport so the messages
+  // the user was reading don't jump.
+  const loadOlderMessages = useCallback(() => {
+    if (loadingOlderRef.current || !olderHasMoreRef.current) return;
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    const loaded = messagesRef.current;
+    const oldest = loaded[0];
+    if (!oldest?.id) return;
+    const el = scrollContainerRef.current;
+    // Anchor against the current scroll position; the layout effect keyed on
+    // `messages` reads this back and offsets scrollTop by the height added.
+    prependRestoreRef.current = {
+      prevScrollHeight: el ? el.scrollHeight : 0,
+      prevScrollTop: el ? el.scrollTop : 0,
+    };
+    loadingOlderRef.current = true;
+    setLoadingOlderMessages(true);
+    api
+      .getMessages(sid, { limit: MESSAGES_PAGE_SIZE, before: oldest.id })
+      .then((older) => {
+        if (activeSessionIdRef.current !== sid) {
+          prependRestoreRef.current = null;
+          return;
+        }
+        const page = Array.isArray(older) ? older : [];
+        olderHasMoreRef.current = inferHasMore(page.length);
+        setMessages((prev) => {
+          const { messages: next, addedCount } = prependOlderMessages(prev, page);
+          if (addedCount === 0) {
+            // Nothing new to render — drop the anchor so no scroll restore runs.
+            prependRestoreRef.current = null;
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        prependRestoreRef.current = null;
+      })
+      .finally(() => {
+        loadingOlderRef.current = false;
+        setLoadingOlderMessages(false);
+      });
+  }, []);
+
   const handleScrollEvent = useCallback(() => {
     // Ignore scroll events caused by our own programmatic scrolling —
     // these would otherwise flip isNearBottomRef to false mid-animation
     // and break auto-follow.
     if (programmaticScrollRef.current) return;
+    const el = scrollContainerRef.current;
+    // Near the top with older history available → pull the next older page.
+    if (
+      el &&
+      shouldLoadOlder({
+        scrollTop: el.scrollTop,
+        hasMore: olderHasMoreRef.current,
+        loading: loadingOlderRef.current,
+      })
+    ) {
+      loadOlderMessages();
+    }
     const nearBottom = checkNearBottom();
     isNearBottomRef.current = nearBottom;
     setShowScrollBtn(!nearBottom);
-  }, [checkNearBottom]);
+  }, [checkNearBottom, loadOlderMessages]);
 
   /** Snap to the tail. Always instant — smooth scroll cannot keep up with streaming tokens. */
   const scrollToBottom = useCallback(() => {
@@ -737,6 +813,27 @@ export default function App({ initialView } = {}) {
     }
     initialScrollRef.current = false;
   }, [messages, thinking, streamingContent, scrollToBottom]);
+
+  // After an older page is prepended, restore the scroll position so the
+  // viewport stays anchored on the messages the user was reading instead of
+  // jumping as content is inserted above. Runs last (after the tail-pin effect
+  // above, which is a no-op while scrolled up).
+  useLayoutEffect(() => {
+    const restore = prependRestoreRef.current;
+    if (!restore) return;
+    prependRestoreRef.current = null;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    programmaticScrollRef.current = true;
+    el.scrollTop = restoredScrollTop({
+      prevScrollTop: restore.prevScrollTop,
+      prevScrollHeight: restore.prevScrollHeight,
+      newScrollHeight: el.scrollHeight,
+    });
+    requestAnimationFrame(() => {
+      programmaticScrollRef.current = false;
+    });
+  }, [messages]);
 
   // Late layout (images, syntax-highlighted blocks) can grow the column without a
   // React state change — keep the viewport pinned when the user is following the tail.
@@ -2854,8 +2951,16 @@ export default function App({ initialView } = {}) {
   }, [modelConfig, activeSessionId, sessionEngine, sessions]);
 
   // Load messages when session changes — clear immediately so the chat column
-  // never briefly shows the previous session's transcript on the new id.
+  // never briefly shows the previous session's transcript on the new id. Only
+  // the newest page is fetched up front; older messages load on scroll-up
+  // (reverse infinite scroll), so a huge post-finalize transcript no longer
+  // streams the whole history on every session open.
   useEffect(() => {
+    // Reset the older-message window for the new session.
+    prependRestoreRef.current = null;
+    loadingOlderRef.current = false;
+    setLoadingOlderMessages(false);
+    olderHasMoreRef.current = false;
     if (!activeSessionId) {
       setMessages([]);
       setSessionMessagesLoading(false);
@@ -2865,15 +2970,19 @@ export default function App({ initialView } = {}) {
     setSessionMessagesLoading(true);
     let cancelled = false;
     api
-      .getMessages(activeSessionId)
+      .getMessages(activeSessionId, { limit: MESSAGES_PAGE_SIZE })
       .then((rows) => {
         if (cancelled) return;
-        setMessages(Array.isArray(rows) ? rows : []);
+        const page = Array.isArray(rows) ? rows : [];
+        setMessages(page);
+        // A full page implies older messages exist above the loaded window.
+        olderHasMoreRef.current = inferHasMore(page.length);
         setSessionMessagesLoading(false);
       })
       .catch(() => {
         if (cancelled) return;
         setMessages([]);
+        olderHasMoreRef.current = false;
         setSessionMessagesLoading(false);
       });
     return () => {
@@ -4711,6 +4820,17 @@ export default function App({ initialView } = {}) {
                         style={{ borderTopColor: chatAccentColor }}
                       >
                         <div className="mx-auto" ref={messagesColumnRef}>
+                          {/* Reverse-infinite-scroll: spinner shown at the top
+                      while an older page is being fetched on scroll-up. */}
+                          {loadingOlderMessages && (
+                            <div
+                              className="flex items-center justify-center gap-2 py-3 text-xs text-gray-500"
+                              data-testid="chat-loading-older"
+                            >
+                              <Loader2 size={14} className="animate-spin" />
+                              <span>Loading earlier messages…</span>
+                            </div>
+                          )}
                           {/* Cursor-style timed checklist — rendered at top of chat
                       whenever the session has emitted `[[STEP:...]]` markers.
                       Collapses automatically once all steps resolve. */}

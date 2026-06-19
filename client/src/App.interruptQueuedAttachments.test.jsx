@@ -219,7 +219,12 @@ describe('App — interrupt queued message with persisted attachments', () => {
       ctl.resolveSessionsByAgent['agent-1'](ONE_SESSION);
     });
 
-    await waitFor(() => expect(api.getMessages).toHaveBeenCalledWith('s-1'));
+    await waitFor(() =>
+      expect(api.getMessages).toHaveBeenCalledWith(
+        's-1',
+        expect.objectContaining({ limit: expect.any(Number) }),
+      ),
+    );
 
     await waitFor(() => expect(typeof ctl.onMessage).toBe('function'));
     await act(async () => {
@@ -281,7 +286,12 @@ describe('App — interrupt queued message with persisted attachments', () => {
     await act(async () => {
       ctl.resolveSessionsByAgent['agent-1'](ONE_SESSION);
     });
-    await waitFor(() => expect(api.getMessages).toHaveBeenCalledWith('s-1'));
+    await waitFor(() =>
+      expect(api.getMessages).toHaveBeenCalledWith(
+        's-1',
+        expect.objectContaining({ limit: expect.any(Number) }),
+      ),
+    );
     await screen.findByText('follow-up while streaming');
     await waitFor(() => expect(typeof ctl.onMessage).toBe('function'));
 

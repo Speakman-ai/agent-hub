@@ -331,9 +331,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, ask_mode: askMode || false }),
     }),
+  /**
+   * Fetch session messages (oldest-first array).
+   *
+   * - No opts → full transcript (legacy; large sessions may be truncated).
+   * - `{ limit }` → newest N via DB-side keyset pagination (reverse infinite
+   *   scroll initial page).
+   * - `{ limit, before }` → the page of messages immediately older than the
+   *   `before` message id (scroll-up older page).
+   *
+   * Always resolves to a plain array so existing callers stay unchanged; the
+   * caller infers "older messages exist" from whether a full page came back.
+   */
   getMessages: async (sessionId, opts = {}) => {
-    const q = opts.limit != null ? `?limit=${encodeURIComponent(String(opts.limit))}` : '';
-    const data = await fetchJSON(`/sessions/${sessionId}/messages${q}`);
+    const params = new URLSearchParams();
+    if (opts.limit != null) params.set('limit', String(opts.limit));
+    if (opts.before != null) params.set('before', String(opts.before));
+    if (opts.limit != null || opts.before != null) params.set('paginated', '1');
+    const qs = params.toString();
+    const data = await fetchJSON(`/sessions/${sessionId}/messages${qs ? `?${qs}` : ''}`);
     return normalizeSessionMessagesResponse(data).messages;
   },
   getSessionHandoffs: (sessionId) => fetchJSON(`/sessions/${sessionId}/handoffs`),

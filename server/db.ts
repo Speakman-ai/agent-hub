@@ -2889,6 +2889,19 @@ function initDb(dataDir: string): void {
       'INSERT INTO messages (id, session_id, role, content, engine, model, attachments, metadata, agent_id, agent_name, agent_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     getMessages: db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'),
+    // Keyset pagination by rowid (monotonic insert order, stable under
+    // same-second created_at collisions). Newest page first; older pages key
+    // off the oldest loaded message's id (resolved to its rowid via subquery).
+    getMessagesPageLatest: db.prepare(
+      'SELECT * FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT ?',
+    ),
+    // The cursor subquery is scoped by session_id too: a `before` id that
+    // belongs to another session (or is unknown) resolves to NULL, making
+    // `rowid < NULL` match nothing — the foreign/invalid cursor is treated as
+    // an empty page rather than leaking an arbitrary window of this session.
+    getMessagesPageBeforeId: db.prepare(
+      'SELECT * FROM messages WHERE session_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ? AND session_id = ?) ORDER BY rowid DESC LIMIT ?',
+    ),
     getMessageById: db.prepare('SELECT * FROM messages WHERE id = ?'),
     getLastMessage: db.prepare(
       'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1',

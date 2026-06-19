@@ -28,6 +28,12 @@ import {
   buildSessionMessagesHttpBody,
   sendSessionMessagesJson,
 } from '../session-messages-response.js';
+import {
+  isPaginatedMessagesQuery,
+  parseBeforeMessageId,
+  parseMessagesPageSize,
+  toAscendingPage,
+} from '../session-messages-pagination.js';
 import type {
   RouteDeps,
   AppConfig,
@@ -510,7 +516,26 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/sessions/:sessionId/messages', (req: Request, res: Response) => {
-    const all = stmts.getMessages.all(req.params.sessionId) as MessageRow[];
+    const sid = req.params.sessionId;
+
+    // Opt-in keyset pagination: newest page first, older pages via `?before=`
+    // (the oldest loaded message's id). Returns a plain oldest-first array so
+    // the response shape matches the legacy endpoint; the client infers
+    // "more older messages" from page fullness. The DB-side LIMIT is what
+    // keeps a huge post-finalize transcript from loading all at once.
+    if (isPaginatedMessagesQuery(req.query)) {
+      const pageSize = parseMessagesPageSize(req.query.limit);
+      const before = parseBeforeMessageId(req.query.before);
+      const rowsDesc = (
+        before !== null
+          ? stmts.getMessagesPageBeforeId.all(sid, before, sid, pageSize)
+          : stmts.getMessagesPageLatest.all(sid, pageSize)
+      ) as MessageRow[];
+      res.json(toAscendingPage(rowsDesc));
+      return;
+    }
+
+    const all = stmts.getMessages.all(sid) as MessageRow[];
     const limited = applyMessagesLimitQuery(all, req.query.limit);
     const body = buildSessionMessagesHttpBody(limited);
     if (!Array.isArray(body) && body.truncated) {

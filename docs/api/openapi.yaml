@@ -10178,7 +10178,7 @@ paths:
       tags:
         - Sessions
       summary: List messages in a session (oldest first)
-      description: Returns the full transcript when it fits the JSON response budget; otherwise returns a truncated envelope with the newest rows. Use `limit` to request only the newest N messages.
+      description: Without `paginated`, returns the full transcript when it fits the JSON response budget, otherwise a truncated envelope with the newest rows; `limit` slices the newest N. With `paginated=1`, returns a DB-limited keyset page (newest page first, `limit` page size, default 40, max 200) as a plain oldest-first array; pass `before` (the oldest loaded message id) to fetch the next older page. Powers the client reverse-infinite-scroll loader.
       parameters:
         - schema:
             type: string
@@ -10189,14 +10189,28 @@ paths:
           in: path
         - schema:
             type: string
-            description: When set, return only the newest N messages (positive integer).
+            description: "Newest N messages (positive integer). Legacy: in-memory slice. Paginated: DB page size, clamped to 200 (default 40)."
           required: false
-          description: When set, return only the newest N messages (positive integer).
+          description: "Newest N messages (positive integer). Legacy: in-memory slice. Paginated: DB page size, clamped to 200 (default 40)."
           name: limit
+          in: query
+        - schema:
+            type: string
+            description: Set to `1` (or `true`) to opt into DB-side keyset pagination (newest page first).
+          required: false
+          description: Set to `1` (or `true`) to opt into DB-side keyset pagination (newest page first).
+          name: paginated
+          in: query
+        - schema:
+            type: string
+            description: The oldest already-loaded message id. Returns the page of messages immediately older than it. Implies pagination.
+          required: false
+          description: The oldest already-loaded message id. Returns the page of messages immediately older than it. Implies pagination.
+          name: before
           in: query
       responses:
         "200":
-          description: Message rows, or a truncated envelope for very large transcripts.
+          description: Message rows (oldest-first), or a truncated envelope for very large un-paginated transcripts.
           content:
             application/json:
               schema:

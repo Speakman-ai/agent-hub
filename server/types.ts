@@ -1355,6 +1355,8 @@ export interface Stmts {
   // Messages
   addMessage: Stmt;
   getMessages: Stmt;
+  getMessagesPageLatest: Stmt;
+  getMessagesPageBeforeId: Stmt;
   getMessageById: Stmt;
   getLastMessage: Stmt;
   getLastAssistantMessage: Stmt;

@@ -1056,6 +1056,72 @@ describe('Sessions', () => {
       expect(Array.isArray(res.body)).toBe(true);
       expect(res.body.map((m: { content: string }) => m.content)).toEqual(['second', 'third']);
     });
+
+    it('keyset-paginates with ?paginated=1 and walks older pages via ?before=', async () => {
+      const session = await createSession();
+      const sessionId = session.id as string;
+      const { getDb } = await import('../db.js');
+      const db = getDb();
+      const insert = db.prepare(
+        `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`,
+      );
+      // Five messages all sharing the same created_at second — the keyset cursor
+      // must stay stable despite the collision (rowid, not created_at).
+      const ts = '2026-02-02T00:00:00.000Z';
+      for (let i = 1; i <= 5; i++) insert.run(`p${i}`, sessionId, `body ${i}`, ts);
+
+      // Newest page (page size 2): plain oldest-first array of the newest 2.
+      const page1 = await request
+        .get(`/api/sessions/${sessionId}/messages?paginated=1&limit=2`)
+        .expect(200);
+      expect(Array.isArray(page1.body)).toBe(true);
+      expect(page1.body.map((m: { id: string }) => m.id)).toEqual(['p4', 'p5']);
+
+      // Next older page keyed off the oldest loaded id (p4).
+      const page2 = await request
+        .get(`/api/sessions/${sessionId}/messages?paginated=1&limit=2&before=p4`)
+        .expect(200);
+      expect(page2.body.map((m: { id: string }) => m.id)).toEqual(['p2', 'p3']);
+
+      // Final page: one row older than p2.
+      const page3 = await request
+        .get(`/api/sessions/${sessionId}/messages?paginated=1&limit=2&before=p2`)
+        .expect(200);
+      expect(page3.body.map((m: { id: string }) => m.id)).toEqual(['p1']);
+
+      // Past the start: no rows older than the oldest message.
+      const page4 = await request
+        .get(`/api/sessions/${sessionId}/messages?paginated=1&limit=2&before=p1`)
+        .expect(200);
+      expect(page4.body).toEqual([]);
+    });
+
+    it('returns an empty array for a paginated request on an empty session', async () => {
+      const session = await createSession();
+      const res = await request.get(`/api/sessions/${session.id}/messages?paginated=1`).expect(200);
+      expect(res.body).toEqual([]);
+    });
+
+    it('treats a before cursor from another session as an empty page (no cross-session leak)', async () => {
+      const sessionA = await createSession();
+      const sessionB = await createSession();
+      const { getDb } = await import('../db.js');
+      const db = getDb();
+      const insert = db.prepare(
+        `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`,
+      );
+      // Session A's messages get the LOWER rowids (inserted first), so a global
+      // (un-scoped) `rowid < B's id` threshold would wrongly return A's rows.
+      insert.run('a1', sessionA.id, 'a-one', '2026-03-03T00:00:00.000Z');
+      insert.run('a2', sessionA.id, 'a-two', '2026-03-03T00:00:00.000Z');
+      insert.run('b1', sessionB.id, 'b-one', '2026-03-03T00:00:01.000Z');
+
+      // Use session B's message id as the cursor while querying session A.
+      const res = await request
+        .get(`/api/sessions/${sessionA.id}/messages?paginated=1&limit=10&before=b1`)
+        .expect(200);
+      expect(res.body).toEqual([]);
+    });
   });
 
   describe('GET /api/sessions/:sessionId/summary', () => {
