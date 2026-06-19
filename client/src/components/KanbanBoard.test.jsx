@@ -249,6 +249,33 @@ describe('KanbanBoard card detail modal', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('renders an orphaned badge on a card whose working session was closed', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        {
+          id: 'card-orphan',
+          title: 'Orphaned card',
+          column_id: 'col-todo',
+          position: 0,
+          orphaned_at: '2026-06-19 20:00:00',
+        },
+        {
+          id: 'card-live',
+          title: 'Live card',
+          column_id: 'col-todo',
+          position: 1,
+          orphaned_at: null,
+        },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Orphaned card')).toBeInTheDocument());
+
+    // Exactly one badge — only the orphaned card carries it.
+    expect(screen.getAllByTestId('card-orphaned-badge')).toHaveLength(1);
+  });
+
   it('renders markdown images in the card detail preview when the card is opened', async () => {
     api.getBoard.mockResolvedValue(
       makeBoard([

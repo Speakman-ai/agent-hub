@@ -1410,6 +1410,10 @@ components:
           type: integer
         dispatched_by_autonomous:
           type: integer
+        orphaned_at:
+          type: string
+          nullable: true
+          description: Set when the card's working session was closed/archived but the card had already progressed (PR, finalize run, advanced column, comments, or epic), so it was kept and flagged rather than deleted as an abandoned stub. NULL for live cards.
         assign_model:
           type: string
           nullable: true

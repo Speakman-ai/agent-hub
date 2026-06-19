@@ -165,6 +165,9 @@ export function cardMetaModel(card, { board, epics = [] } = {}) {
     prNumber: prNumber(card?.pr_url),
     prUrl: card?.pr_url || null,
     review: reviewMeta(card?.review_status),
+    // Set when the card's working session was closed but the card had
+    // progressed too far to garbage-collect — flagged for human attention.
+    orphaned: !!card?.orphaned_at,
     createdAt: card?.created_at || null,
   };
 }

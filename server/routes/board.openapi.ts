@@ -128,6 +128,10 @@ export const KanbanCardComponent = registerComponent(
       epic_id: z.string().nullable(),
       documented: z.number().int(),
       dispatched_by_autonomous: z.number().int(),
+      orphaned_at: z.string().nullable().optional().openapi({
+        description:
+          "Set when the card's working session was closed/archived but the card had already progressed (PR, finalize run, advanced column, comments, or epic), so it was kept and flagged rather than deleted as an abandoned stub. NULL for live cards.",
+      }),
       assign_model: z.string().nullable().optional(),
       assign_engine: z.string().nullable().optional().openapi({
         description:

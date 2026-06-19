@@ -201,4 +201,17 @@ describe('cardMetaModel', () => {
     const m = cardMetaModel({ id: 'c5', pr_url: 'https://example.com/pr', title: 't' }, { board });
     expect(m.prNumber).toBe('PR');
   });
+
+  it('flags orphaned when the card carries orphaned_at', () => {
+    const m = cardMetaModel(
+      { id: 'c6', title: 't', orphaned_at: '2026-06-19 20:00:00' },
+      { board, epics },
+    );
+    expect(m.orphaned).toBe(true);
+  });
+
+  it('is not orphaned for a live card', () => {
+    const m = cardMetaModel({ id: 'c7', title: 't', orphaned_at: null }, { board, epics });
+    expect(m.orphaned).toBe(false);
+  });
 });

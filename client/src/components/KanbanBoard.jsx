@@ -15,6 +15,7 @@ import {
   PlayCircle,
   Check,
   Eye,
+  Unlink,
 } from 'lucide-react';
 import {
   DndContext,
@@ -242,6 +243,15 @@ function KanbanCard({ card, board, epics, dragging = false, overlay = false }) {
               >
                 <Lock size={11} />
                 {card.blockers.filter((b) => !b.done).length}
+              </span>
+            )}
+            {card.orphaned_at && (
+              <span
+                className="inline-flex items-center gap-0.5 text-[10px] font-medium text-amber-300/90"
+                title="Orphaned — this card's working session was closed. Review or reassign it."
+                data-testid="card-orphaned-badge"
+              >
+                <Unlink size={11} />
               </span>
             )}
             {card.pr_url &&

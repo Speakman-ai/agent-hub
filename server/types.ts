@@ -589,6 +589,10 @@ export interface KanbanCardRow {
   documented: number;
   /** Set when autonomous dispatch claims a card — controls auto-PR at session end vs Create PR banner. */
   dispatched_by_autonomous: number;
+  /** ISO timestamp set when the card's working session was closed/archived but
+   *  the card had progressed too far to garbage-collect as an abandoned stub.
+   *  NULL for live cards. See `server/card-orphan-cleanup.ts`. */
+  orphaned_at?: string | null;
   /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
   assign_model?: string | null;
   /** Optional engine override chosen at assign time. When set, the spawn engine
@@ -1534,6 +1538,7 @@ export interface Stmts {
   getNextUndocumentedCard: Stmt;
   markCardDocumented: Stmt;
   deleteKanbanCard: Stmt;
+  markKanbanCardOrphaned: Stmt;
 
   // Kanban card comments
   getKanbanCardComments: Stmt;
@@ -1543,6 +1548,7 @@ export interface Stmts {
   // Card blockers (card-to-card dependencies)
   getBlockersForBoard: Stmt;
   getBlockersForCard: Stmt;
+  countBlockerEdgesForCard: Stmt;
   getBlocker: Stmt;
   createBlocker: Stmt;
   deleteBlocker: Stmt;

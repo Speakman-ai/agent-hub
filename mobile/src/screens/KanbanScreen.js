@@ -1032,6 +1032,11 @@ export default function KanbanScreen({ route, navigation }) {
                 </Text>
               </View>
             )}
+            {meta.orphaned && (
+              <Text style={styles.orphanedBadge} testID="card-orphaned-badge" numberOfLines={1}>
+                ⛓️‍💥
+              </Text>
+            )}
             {meta.prNumber && (
               <Text style={styles.prChip} numberOfLines={1}>
                 PR {meta.prNumber}
@@ -2247,6 +2252,7 @@ const styles = StyleSheet.create({
   // Status glyphs (right of header)
   prChip: { fontSize: 11, color: colors.gray500 },
   reviewGlyph: { fontSize: 11, fontWeight: '500' },
+  orphanedBadge: { fontSize: 11 },
   // Footer
   cardFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 9 },
   cardFooterLeft: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4, flexShrink: 1 },

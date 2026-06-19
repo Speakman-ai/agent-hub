@@ -56,6 +56,7 @@ import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { checkWorktreeChanges } from '../auto-git.js';
+import { cleanupOrphanCardForClosedSession } from '../card-orphan-cleanup.js';
 import {
   computeSessionChanges,
   computeFileDiff,
@@ -374,6 +375,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     activeProcesses,
     broadcast,
   } = deps;
+
+  /**
+   * Garbage-collect / flag the kanban card left behind by a closed session.
+   * Best-effort: a card-less session (the common case) is a no-op, and any
+   * failure is swallowed so it can never block the archive. See
+   * `server/card-orphan-cleanup.ts` for the delete-vs-flag-vs-keep decision.
+   */
+  function cleanupOrphanCardBestEffort(sessionId: string): void {
+    try {
+      cleanupOrphanCardForClosedSession({ stmts, broadcast, findAgent }, sessionId);
+    } catch (err) {
+      console.warn(`[sessions] orphan-card cleanup failed (${sessionId}):`, (err as Error).message);
+    }
+  }
 
   /**
    * Tear down any preview groups owned by `sessionId` across both runtimes.
@@ -928,6 +943,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       }
       closeBrowserBestEffort(session.id);
       stopPreviewsBestEffort(session.id);
+      // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
+      // agent via `getSession`, and keeping it ahead of the archive removes any
+      // dependency on whether `getSession` filters `deleted_at` rows.
+      cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -958,6 +977,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (computeSessionState(stmts, session.id) !== 'pushed') continue;
       closeBrowserBestEffort(session.id);
       stopPreviewsBestEffort(session.id);
+      // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
+      // agent via `getSession`, and keeping it ahead of the archive removes any
+      // dependency on whether `getSession` filters `deleted_at` rows.
+      cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -990,6 +1013,10 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       if (computeSessionState(stmts, session.id) !== 'merged') continue;
       closeBrowserBestEffort(session.id);
       stopPreviewsBestEffort(session.id);
+      // Cleanup must run BEFORE the soft-delete: it resolves the card's owning
+      // agent via `getSession`, and keeping it ahead of the archive removes any
+      // dependency on whether `getSession` filters `deleted_at` rows.
+      cleanupOrphanCardBestEffort(session.id);
       stmts.softDeleteSession.run(session.id);
       archived++;
       try {
@@ -1031,6 +1058,9 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     closeBrowserBestEffort(sessionId);
     await stopPreviewsForSession(sessionId);
 
+    // Cleanup runs BEFORE the soft-delete so it can resolve the card's owning
+    // agent without depending on whether `getSession` filters archived rows.
+    cleanupOrphanCardBestEffort(sessionId);
     stmts.softDeleteSession.run(sessionId);
 
     // Broadcast `session_deleted` for cross-tab sync — the client treats

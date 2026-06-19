@@ -1963,6 +1963,17 @@ function initDb(dataDir: string): void {
     );
   }
 
+  // Set when a card's working session is closed/archived but the card had
+  // already progressed (PR, finalize run, advanced column, comments, or epic)
+  // so it can't be safely garbage-collected as an abandoned stub. The card is
+  // kept and flagged so a human can see its originating session is gone. NULL
+  // for live cards. See `server/card-orphan-cleanup.ts`.
+  try {
+    db.prepare('SELECT orphaned_at FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN orphaned_at TEXT DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
@@ -3390,6 +3401,12 @@ function initDb(dataDir: string): void {
       "UPDATE kanban_cards SET documented = 1, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
+    // Flag a card as orphaned (its working session was closed but the card had
+    // progressed too far to delete). Idempotent: re-flagging keeps the first
+    // orphaned_at timestamp via COALESCE.
+    markKanbanCardOrphaned: db.prepare(
+      "UPDATE kanban_cards SET orphaned_at = COALESCE(orphaned_at, datetime('now')), updated_at = datetime('now') WHERE id = ?",
+    ),
 
     // Kanban card comments
     getKanbanCardComments: db.prepare(
@@ -3425,6 +3442,12 @@ function initDb(dataDir: string): void {
     ),
     getBlockersForCard: db.prepare(
       'SELECT blocked_by_card_id FROM kanban_card_blockers WHERE card_id = ?',
+    ),
+    // Count blocker edges touching a card in EITHER direction (it is blocked by
+    // something, or it blocks something). Used to treat coordination state as a
+    // progression signal before garbage-collecting an orphaned card.
+    countBlockerEdgesForCard: db.prepare(
+      'SELECT COUNT(*) AS n FROM kanban_card_blockers WHERE card_id = ? OR blocked_by_card_id = ?',
     ),
     getBlocker: db.prepare(
       'SELECT * FROM kanban_card_blockers WHERE card_id = ? AND blocked_by_card_id = ?',
