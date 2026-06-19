@@ -14,6 +14,15 @@
 const S3_BUCKET_BASE = 'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com';
 
 /**
+ * Root of the published release bucket (trailing slash). Use this when we want
+ * to point the user at "all releases" rather than a specific DMG — e.g. the
+ * General settings download link, or the UpdateAvailableModal fallback when no
+ * platform-specific DMG exists. Single source of truth so the URL only lives in
+ * one place.
+ */
+export const RELEASE_BUCKET_ROOT = `${S3_BUCKET_BASE}/`;
+
+/**
  * Parse a version string into a `[major, minor, patch]` tuple of numbers.
  * Returns `null` for inputs that aren't parseable — callers should treat
  * `null` as "unknown, do not compare" rather than falling through to 0.0.0.
@@ -74,4 +83,4 @@ export function buildDmgDownloadUrl({ version, platform, arch } = {}) {
 }
 
 /** Exposed for testing. Not part of the public API. */
-export const __test = { parseVersion, S3_BUCKET_BASE };
+export const __test = { parseVersion, S3_BUCKET_BASE, RELEASE_BUCKET_ROOT };

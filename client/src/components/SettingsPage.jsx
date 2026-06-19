@@ -22,6 +22,7 @@ import GitHostSettingsSection from './GitHostSettingsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import { isElectron } from '../utils/isElectron.js';
+import { RELEASE_BUCKET_ROOT } from '../utils/version.js';
 import * as LucideIcons from 'lucide-react';
 
 /** Error boundary to catch render crashes in individual settings tabs */
@@ -852,6 +853,30 @@ export function GeneralSection() {
           </div>
         )}
       </div>
+
+      {!isElectron() && (
+        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Monitor size={16} className="text-sky-400 shrink-0" />
+            <h4 className="text-sm font-medium text-gray-300">Desktop App</h4>
+          </div>
+          <p className="text-xs text-gray-500">
+            Agent Hub ships a native desktop app (macOS) that bundles its own server and handles
+            <code className="text-gray-400"> PATH</code> setup for Git and the GitHub CLI. Grab the
+            latest build from the releases bucket.
+          </p>
+          <a
+            href={RELEASE_BUCKET_ROOT}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 transition-colors"
+          >
+            <Download size={14} />
+            Download desktop app
+            <ExternalLink size={11} />
+          </a>
+        </div>
+      )}
 
       <div className="bg-gray-800 rounded-xl p-4 space-y-4">
         <h4 className="text-sm font-medium text-gray-300">CLI Binary Paths</h4>

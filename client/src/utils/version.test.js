@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { compareSemver, buildDmgDownloadUrl } from './version.js';
+import { compareSemver, buildDmgDownloadUrl, RELEASE_BUCKET_ROOT } from './version.js';
+
+describe('RELEASE_BUCKET_ROOT', () => {
+  it('is the release bucket base with a trailing slash', () => {
+    expect(RELEASE_BUCKET_ROOT).toBe('https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/');
+  });
+
+  it('shares the same origin as buildDmgDownloadUrl output', () => {
+    const dmg = buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'arm64' });
+    expect(dmg.startsWith(RELEASE_BUCKET_ROOT)).toBe(true);
+  });
+});
 
 describe('compareSemver', () => {
   const cases = [

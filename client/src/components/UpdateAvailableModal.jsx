@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Download, X } from 'lucide-react';
+import { RELEASE_BUCKET_ROOT } from '../utils/version.js';
 
 /**
  * Modal shown on startup when the Electron desktop app detects that the
@@ -12,8 +13,6 @@ import { Download, X } from 'lucide-react';
  * the dark, but we swap the Download button for a plain pointer at the
  * release bucket root.
  */
-const RELEASE_BUCKET_ROOT = 'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/';
-
 export default function UpdateAvailableModal({
   serverVersion,
   clientVersion,
