@@ -729,13 +729,17 @@ export const api = {
       body: JSON.stringify({ dataUrl, filename }),
     }),
 
-  // Binary file upload (for videos and large files — avoids base64 overhead)
+  // Binary file upload (for videos, PDFs, and large files — avoids base64 overhead).
+  // Bypasses fetchJSON because the body is a raw Blob, not JSON — so it must
+  // attach auth headers itself. Omitting getAuthHeaders() here was the cause of
+  // "Attachment upload failed: Authentication required" on JWT-enabled
+  // deployments (the request arrived with no credentials → 401).
   uploadFile: async (file) => {
-    const { getApiBase } = await import('./connection.js');
     const base = getApiBase();
     const resp = await fetch(`${base}/upload/file`, {
       method: 'POST',
       headers: {
+        ...getAuthHeaders(),
         'Content-Type': file.type || 'application/octet-stream',
         'X-Filename': file.name || 'upload',
       },
