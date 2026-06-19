@@ -5495,6 +5495,8 @@ components:
             - investigating
             - converted
             - closed
+            - duplicate
+            - wont_do
         subject:
           type: string
         body:
@@ -5521,6 +5523,10 @@ components:
         converted_card_id:
           type: string
           nullable: true
+        wont_do_reason:
+          type: string
+          nullable: true
+          description: Operator reason the ticket was marked 'wont_do', or null otherwise.
         read_at:
           type: string
           nullable: true
@@ -5544,6 +5550,7 @@ components:
         - replay_ref
         - screenshot_ref
         - converted_card_id
+        - wont_do_reason
         - read_at
         - created_at
         - updated_at
@@ -5553,19 +5560,24 @@ components:
       properties:
         card:
           $ref: "#/components/schemas/KanbanCard"
+        ticket:
+          allOf:
+            - $ref: "#/components/schemas/SupportTicket"
+            - description: The source ticket, now retained and flagged 'converted'.
         ticketId:
           type: string
-          description: Id of the source ticket that was converted and removed.
-        deleted:
+          description: Id of the converted source ticket.
+        converted:
           type: boolean
           enum:
             - true
-          description: Always true — the source ticket is removed once promoted to the board.
+          description: Always true — the source ticket is retained and flagged converted.
       required:
         - card
+        - ticket
         - ticketId
-        - deleted
-      description: The kanban card the ticket became; the source ticket is removed.
+        - converted
+      description: The kanban card the ticket became, plus the retained source ticket (now converted).
     SupportTicketOverviewErrorResponse:
       type: object
       properties:
@@ -18140,6 +18152,7 @@ paths:
       tags:
         - Support
       summary: List a project’s support tickets, ordered by severity
+      description: Defaults to the open states (new, investigating) — terminal tickets (converted/closed/duplicate/wont_do) are hidden until requested. Pass a comma-separated `status` list (e.g. `converted,closed`) and/or a single `type` to filter.
       parameters:
         - schema:
             type: string
@@ -18150,15 +18163,23 @@ paths:
           in: path
         - schema:
             type: string
-            enum:
-              - new
-              - investigating
-              - converted
-              - closed
-            description: Filter to a single lifecycle status.
+            description: Comma-separated lifecycle states to include (new | investigating | converted | closed | duplicate | wont_do). Omit to default to the open states.
           required: false
-          description: Filter to a single lifecycle status.
+          description: Comma-separated lifecycle states to include (new | investigating | converted | closed | duplicate | wont_do). Omit to default to the open states.
           name: status
+          in: query
+        - schema:
+            type: string
+            enum:
+              - bug
+              - question
+              - feature_request
+              - incident
+              - other
+            description: Filter to a single request type (e.g. bug, feature_request).
+          required: false
+          description: Filter to a single request type (e.g. bug, feature_request).
+          name: type
           in: query
       responses:
         "200":
@@ -18170,7 +18191,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/SupportTicket"
         "400":
-          description: Invalid status filter.
+          description: Invalid status or type filter.
           content:
             application/json:
               schema:
@@ -18345,6 +18366,12 @@ paths:
                     - investigating
                     - converted
                     - closed
+                    - duplicate
+                    - wont_do
+                wontDoReason:
+                  type: string
+                  nullable: true
+                  description: Reason the ticket is being marked 'wont_do'. Required (non-empty) when status is 'wont_do'; cleared on any other status transition.
                 aiSummary:
                   type: string
                   nullable: true
@@ -18523,7 +18550,7 @@ paths:
       tags:
         - Support
       summary: Convert a support ticket into a To Do kanban card
-      description: "Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels) and then removes the source ticket — the card is the single source of truth. Not idempotent: re-converting the same ticket id 404s."
+      description: Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), then flags the source ticket `converted` and marks it read (it is retained, not deleted). Re-converting an already-converted ticket 409s rather than creating a duplicate card.
       parameters:
         - schema:
             type: string
@@ -18541,13 +18568,19 @@ paths:
           in: path
       responses:
         "201":
-          description: Ticket converted to a new card and removed from the queue.
+          description: Ticket converted to a new card; the source ticket is retained as converted.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ConvertSupportTicketResponse"
         "404":
           description: Project or ticket not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "409":
+          description: Support ticket already converted.
           content:
             application/json:
               schema:
@@ -18572,6 +18605,8 @@ paths:
               - investigating
               - converted
               - closed
+              - duplicate
+              - wont_do
             description: Filter to a single lifecycle status.
           required: false
           description: Filter to a single lifecycle status.

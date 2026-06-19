@@ -29,6 +29,19 @@ let stmts: Stmts | undefined;
 const dbRegistry = new Map<string, { db: Database.Database; stmts: Stmts }>();
 
 /**
+ * Whether an existing `support_tickets` table DDL predates the `duplicate` /
+ * `wont_do` lifecycle states and so needs its status CHECK rebuilt.
+ *
+ * Matches the QUOTED status literal `'wont_do'` (the value embedded in the
+ * CHECK clause), NOT the bare substring: the `wont_do_reason` column — added by
+ * an earlier migration step — also contains "wont_do", and a substring test
+ * would mask a still-stale CHECK and silently skip the rebuild.
+ */
+export function supportTicketsStatusCheckNeedsRebuild(ddl: string): boolean {
+  return Boolean(ddl) && !ddl.includes("'wont_do'");
+}
+
+/**
  * Initialize (or switch to) the database at the given data directory.
  * Creates tables, runs migrations, and prepares all statements on first use.
  * Subsequent calls for the same dataDir reuse the cached handle. Switching to
@@ -683,7 +696,7 @@ function initDb(dataDir: string): void {
       severity TEXT NOT NULL DEFAULT 'medium'
         CHECK(severity IN ('critical','high','medium','low')),
       status TEXT NOT NULL DEFAULT 'new'
-        CHECK(status IN ('new','investigating','converted','closed')),
+        CHECK(status IN ('new','investigating','converted','closed','duplicate','wont_do')),
       subject TEXT NOT NULL DEFAULT '',
       body TEXT NOT NULL DEFAULT '',
       reporter TEXT,
@@ -691,6 +704,9 @@ function initDb(dataDir: string): void {
       ai_investigation TEXT,
       ai_investigated_at TEXT,
       replay_ref TEXT,
+      -- Operator-supplied reason a ticket was marked 'wont_do' (NULL otherwise).
+      -- See migration block below for existing installs.
+      wont_do_reason TEXT,
       -- Optional server-relative ref to a screenshot the reporter attached
       -- (/uploads/support-screenshot-<id>.<ext>). See migration block below for
       -- existing installs.
@@ -1309,6 +1325,77 @@ function initDb(dataDir: string): void {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_support_tickets_unread ON support_tickets(project_id, read_at)',
   );
+
+  // Operator-supplied "won't do" reason on support tickets (existing installs
+  // predate the column in the CREATE TABLE above).
+  try {
+    db.prepare('SELECT wont_do_reason FROM support_tickets LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE support_tickets ADD COLUMN wont_do_reason TEXT');
+  }
+
+  // Widen the support_tickets.status CHECK to allow the 'duplicate' and
+  // 'wont_do' lifecycle states. SQLite can't ALTER a CHECK in place, so when an
+  // existing install's table DDL predates these states we rebuild the table
+  // (preserving every row + the read/unread index) inside a transaction so a
+  // partial failure can't leave the schema half-migrated.
+  //
+  // Detection matches the QUOTED status literal `'wont_do'` (the value inside
+  // the CHECK), NOT the bare substring — the `wont_do_reason` column added just
+  // above also contains "wont_do" and would otherwise mask a stale CHECK.
+  {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'support_tickets'")
+      .get() as { sql?: string } | undefined;
+    const ddl = row?.sql ?? '';
+    if (supportTicketsStatusCheckNeedsRebuild(ddl)) {
+      const handle = db;
+      handle.transaction(() => {
+        handle.exec(`
+          CREATE TABLE support_tickets_new (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'other'
+              CHECK(type IN ('bug','question','feature_request','incident','other')),
+            severity TEXT NOT NULL DEFAULT 'medium'
+              CHECK(severity IN ('critical','high','medium','low')),
+            status TEXT NOT NULL DEFAULT 'new'
+              CHECK(status IN ('new','investigating','converted','closed','duplicate','wont_do')),
+            subject TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            reporter TEXT,
+            ai_summary TEXT,
+            ai_investigation TEXT,
+            ai_investigated_at TEXT,
+            replay_ref TEXT,
+            wont_do_reason TEXT,
+            screenshot_ref TEXT,
+            converted_card_id TEXT,
+            read_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          );
+          INSERT INTO support_tickets_new
+            (id, project_id, type, severity, status, subject, body, reporter,
+             ai_summary, ai_investigation, ai_investigated_at, replay_ref,
+             wont_do_reason, screenshot_ref, converted_card_id, read_at,
+             created_at, updated_at)
+            SELECT id, project_id, type, severity, status, subject, body, reporter,
+             ai_summary, ai_investigation, ai_investigated_at, replay_ref,
+             wont_do_reason, screenshot_ref, converted_card_id, read_at,
+             created_at, updated_at
+            FROM support_tickets;
+          DROP TABLE support_tickets;
+          ALTER TABLE support_tickets_new RENAME TO support_tickets;
+          CREATE INDEX IF NOT EXISTS idx_support_tickets_project ON support_tickets(project_id);
+          CREATE INDEX IF NOT EXISTS idx_support_tickets_status
+            ON support_tickets(project_id, status);
+          CREATE INDEX IF NOT EXISTS idx_support_tickets_unread
+            ON support_tickets(project_id, read_at);
+        `);
+      })();
+    }
+  }
 
   // Resolve-PR sessions store the PR's head branch here so the worktree is
   // provisioned directly on that branch (commits append to the existing PR and
@@ -3853,6 +3940,9 @@ function initDb(dataDir: string): void {
     ),
     setSupportTicketBody: db.prepare(
       `UPDATE support_tickets SET body = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setSupportTicketWontDoReason: db.prepare(
+      `UPDATE support_tickets SET wont_do_reason = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     convertSupportTicketToCard: db.prepare(
       `UPDATE support_tickets

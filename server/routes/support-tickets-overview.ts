@@ -43,7 +43,7 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
 
     const tickets = listAllSupportTickets({
       projectId: resolvedProjectId,
-      status: status as SupportTicketStatus | undefined,
+      statuses: status ? [status as SupportTicketStatus] : undefined,
     }).map((t: SupportTicketRow) => ({
       ...t,
       project_name: projectNameById.get(t.project_id) ?? t.project_id,

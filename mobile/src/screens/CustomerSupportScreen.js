@@ -10,6 +10,8 @@ import {
   Image,
   Linking,
   Alert,
+  Modal,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -39,13 +41,38 @@ const TYPE_LABEL = {
   other: 'Other',
 };
 
+// Human label per lifecycle status (closed reads as "Done").
+const STATUS_LABEL = {
+  new: 'New',
+  investigating: 'Investigating',
+  converted: 'Converted',
+  closed: 'Done',
+  duplicate: 'Duplicate',
+  wont_do: "Won't do",
+};
+
+const ALL_STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'];
+
+// Filter groups. Default ("Open") shows the working states only; terminal
+// states are retained but hidden until their filter is selected.
 const STATUS_FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'new', label: 'New' },
-  { key: 'investigating', label: 'Investigating' },
+  { key: 'open', label: 'Open', statuses: ['new', 'investigating'] },
+  { key: 'done', label: 'Done', statuses: ['converted', 'closed'] },
+  { key: 'duplicate', label: 'Duplicate', statuses: ['duplicate'] },
+  { key: 'wont_do', label: "Won't do", statuses: ['wont_do'] },
+  { key: 'all', label: 'All', statuses: ALL_STATUSES },
 ];
 
-function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress }) {
+const TYPE_FILTERS = [
+  { key: 'all', label: 'All types' },
+  { key: 'bug', label: 'Bug' },
+  { key: 'feature_request', label: 'Feature' },
+  { key: 'question', label: 'Question' },
+  { key: 'incident', label: 'Incident' },
+  { key: 'other', label: 'Other' },
+];
+
+function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo }) {
   const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
   const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
   const hasReplay = item.type === 'bug' && item.replay_ref;
@@ -113,7 +140,7 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress }) {
           <Text style={styles.typeText}>{TYPE_LABEL[item.type] || 'Other'}</Text>
         </View>
         <View style={styles.statusBadge}>
-          <Text style={styles.statusText}>{item.status}</Text>
+          <Text style={styles.statusText}>{STATUS_LABEL[item.status] || item.status}</Text>
         </View>
         <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
       </View>
@@ -127,6 +154,13 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress }) {
       ) : null}
 
       {item.reporter ? <Text style={styles.reporter}>Reported by {item.reporter}</Text> : null}
+
+      {item.status === 'wont_do' && item.wont_do_reason ? (
+        <View style={styles.wontDoBox} testID="wont-do-reason">
+          <Text style={styles.wontDoLabel}>Won&apos;t do</Text>
+          <Text style={styles.wontDoText}>{item.wont_do_reason}</Text>
+        </View>
+      ) : null}
 
       {item.ai_summary ? (
         <View style={styles.aiBox}>
@@ -178,6 +212,34 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress }) {
         {convertError ? <Text style={styles.convertErrorText}>{convertError}</Text> : null}
         {deleteError ? <Text style={styles.convertErrorText}>{deleteError}</Text> : null}
       </View>
+
+      {item.status !== 'converted' ? (
+        <View style={styles.statusActionRow}>
+          {[
+            { value: 'closed', label: 'Done' },
+            { value: 'duplicate', label: 'Duplicate' },
+            { value: 'wont_do', label: "Won't do" },
+          ].map((s) => {
+            const active = item.status === s.value;
+            return (
+              <TouchableOpacity
+                key={s.value}
+                testID={`status-action-${s.value}`}
+                onPress={() =>
+                  s.value === 'wont_do' ? onWontDo?.(item) : onSetStatus?.(item, s.value)
+                }
+                style={[styles.statusActionButton, active && styles.statusActionButtonActive]}
+              >
+                <Text
+                  style={[styles.statusActionText, active && styles.statusActionTextActive]}
+                >
+                  {s.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -195,10 +257,18 @@ export default function CustomerSupportScreen({ route }) {
   const project = projects?.find((p) => p.id === projectId);
 
   const [tickets, setTickets] = useState([]);
-  const [statusFilter, setStatusFilter] = useState('all');
+  // Default to the "Open" group; terminal tickets are retained but hidden.
+  const [statusFilter, setStatusFilter] = useState('open');
+  const [typeFilter, setTypeFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedTicket, setSelectedTicket] = useState(null);
+  // The ticket whose "won't do" reason is being captured (null = modal closed).
+  const [wontDoTicket, setWontDoTicket] = useState(null);
+  const [wontDoReason, setWontDoReason] = useState('');
+
+  const activeStatusFilter =
+    STATUS_FILTERS.find((f) => f.key === statusFilter) || STATUS_FILTERS[0];
 
   const load = useCallback(async () => {
     if (!projectId) return;
@@ -207,7 +277,8 @@ export default function CustomerSupportScreen({ route }) {
     try {
       const data = await api.getSupportTickets(
         projectId,
-        statusFilter === 'all' ? undefined : statusFilter,
+        activeStatusFilter.statuses.join(','),
+        typeFilter === 'all' ? undefined : typeFilter,
       );
       setTickets(sortTickets(Array.isArray(data) ? data : []));
     } catch (err) {
@@ -215,7 +286,7 @@ export default function CustomerSupportScreen({ route }) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, statusFilter]);
+  }, [projectId, activeStatusFilter, typeFilter]);
 
   useEffect(() => {
     load();
@@ -245,11 +316,13 @@ export default function CustomerSupportScreen({ route }) {
     if (!ticket) return;
     setTickets((prev) => {
       const without = prev.filter((t) => t.id !== ticket.id);
-      // A status change can move a ticket out of the active filter.
-      if (statusFilter !== 'all' && ticket.status !== statusFilter) return without;
+      // A status/type change can move a ticket out of the active filter.
+      const statusOk = activeStatusFilter.statuses.includes(ticket.status);
+      const typeOk = typeFilter === 'all' || ticket.type === typeFilter;
+      if (!statusOk || !typeOk) return without;
       return sortTickets([...without, ticket]);
     });
-  }, [lastSupportTicketEvent, projectId, statusFilter]);
+  }, [lastSupportTicketEvent, projectId, activeStatusFilter, typeFilter]);
 
   const openReplay = useCallback((ref) => {
     const url = resolveReplayUrl(ref);
@@ -286,6 +359,43 @@ export default function CustomerSupportScreen({ route }) {
     setTickets((prev) => prev.filter((t) => t.id !== ticketId));
   }, []);
 
+  // Insert/replace a ticket honouring the active filters — a status/type change
+  // can move it out of the current view, so drop it then.
+  const upsertOrDrop = (updated) => {
+    setTickets((prev) => {
+      const without = prev.filter((t) => t.id !== updated.id);
+      const statusOk = activeStatusFilter.statuses.includes(updated.status);
+      const typeOk = typeFilter === 'all' || updated.type === typeFilter;
+      if (!statusOk || !typeOk) return without;
+      return sortTickets([...without, updated]);
+    });
+  };
+
+  // Optimistically apply a status change, reconciling with the server's row.
+  const setStatus = async (ticket, status, reason) => {
+    upsertOrDrop({ ...ticket, status, wont_do_reason: status === 'wont_do' ? reason : null });
+    try {
+      const updated = await api.setSupportTicketStatus(projectId, ticket.id, status, reason);
+      if (updated) upsertOrDrop(updated);
+    } catch (err) {
+      upsertOrDrop(ticket); // revert
+      Alert.alert('Could not update status', err?.message || 'Failed to update status');
+    }
+  };
+
+  const handleWontDo = (ticket) => {
+    setWontDoTicket(ticket);
+    setWontDoReason(ticket.wont_do_reason || '');
+  };
+
+  const submitWontDo = async () => {
+    const reason = wontDoReason.trim();
+    if (!reason || !wontDoTicket) return;
+    const target = wontDoTicket;
+    setWontDoTicket(null);
+    await setStatus(target, 'wont_do', reason);
+  };
+
   const handleTicketPress = useCallback(
     (ticket) => {
       markRead(ticket);
@@ -317,6 +427,8 @@ export default function CustomerSupportScreen({ route }) {
       onOpenReplay={openReplay}
       onDeleted={removeTicket}
       onPress={handleTicketPress}
+      onSetStatus={setStatus}
+      onWontDo={handleWontDo}
     />
   );
 
@@ -338,13 +450,19 @@ export default function CustomerSupportScreen({ route }) {
           <Text style={styles.detailTitle}>{title}</Text>
           <Text style={styles.detailMeta}>
             {TYPE_LABEL[selectedTicket.type] || 'Other'} · {selectedTicket.severity} ·{' '}
-            {selectedTicket.status}
+            {STATUS_LABEL[selectedTicket.status] || selectedTicket.status}
           </Text>
           {selectedTicket.body ? (
             <Text style={styles.detailBody}>{selectedTicket.body}</Text>
           ) : null}
           {selectedTicket.reporter ? (
             <Text style={styles.reporter}>Reported by {selectedTicket.reporter}</Text>
+          ) : null}
+          {selectedTicket.status === 'wont_do' && selectedTicket.wont_do_reason ? (
+            <View style={styles.wontDoBox} testID="detail-wont-do-reason">
+              <Text style={styles.wontDoLabel}>Won&apos;t do</Text>
+              <Text style={styles.wontDoText}>{selectedTicket.wont_do_reason}</Text>
+            </View>
           ) : null}
           {selectedTicket.ai_summary ? (
             <View style={styles.aiBox}>
@@ -387,10 +505,26 @@ export default function CustomerSupportScreen({ route }) {
         {STATUS_FILTERS.map((f) => (
           <TouchableOpacity
             key={f.key}
+            testID={`status-filter-${f.key}`}
             onPress={() => setStatusFilter(f.key)}
             style={[styles.filterButton, statusFilter === f.key && styles.filterButtonActive]}
           >
             <Text style={[styles.filterText, statusFilter === f.key && styles.filterTextActive]}>
+              {f.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <View style={styles.typeFilterRow}>
+        {TYPE_FILTERS.map((f) => (
+          <TouchableOpacity
+            key={f.key}
+            testID={`type-filter-${f.key}`}
+            onPress={() => setTypeFilter(f.key)}
+            style={[styles.typeFilterButton, typeFilter === f.key && styles.filterButtonActive]}
+          >
+            <Text style={[styles.filterText, typeFilter === f.key && styles.filterTextActive]}>
               {f.label}
             </Text>
           </TouchableOpacity>
@@ -418,6 +552,42 @@ export default function CustomerSupportScreen({ route }) {
           renderItem={renderItem}
         />
       )}
+
+      <Modal
+        visible={!!wontDoTicket}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWontDoTicket(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard} testID="wont-do-modal">
+            <Text style={styles.modalTitle}>Won&apos;t do — why?</Text>
+            <TextInput
+              testID="wont-do-input"
+              value={wontDoReason}
+              onChangeText={setWontDoReason}
+              placeholder="Reason this won't be done"
+              placeholderTextColor={colors.gray600}
+              style={styles.modalInput}
+              multiline
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => setWontDoTicket(null)} style={styles.modalCancel}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                testID="wont-do-save"
+                onPress={submitWontDo}
+                disabled={!wontDoReason.trim()}
+                style={[styles.modalSave, !wontDoReason.trim() && styles.convertButtonDisabled]}
+              >
+                <Text style={styles.modalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -566,4 +736,88 @@ const styles = StyleSheet.create({
     borderColor: colors.gray700,
     backgroundColor: colors.gray900,
   },
+  typeFilterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 12,
+    paddingBottom: 8,
+    gap: 6,
+  },
+  typeFilterButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: colors.gray800,
+  },
+  statusActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+  },
+  statusActionButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+  },
+  statusActionButtonActive: { backgroundColor: colors.gray700 },
+  statusActionText: { fontSize: 11, color: colors.gray400, fontWeight: '600' },
+  statusActionTextActive: { color: colors.gray200 },
+  wontDoBox: {
+    marginTop: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.gray700,
+    paddingLeft: 8,
+  },
+  wontDoLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.gray500,
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  wontDoText: { fontSize: 12, color: colors.gray300 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: colors.gray900,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    padding: 16,
+  },
+  modalTitle: { fontSize: 15, fontWeight: '700', color: colors.white, marginBottom: 10 },
+  modalInput: {
+    minHeight: 64,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 8,
+    backgroundColor: colors.gray950,
+    color: colors.gray100,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 14,
+    textAlignVertical: 'top',
+  },
+  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 12 },
+  modalCancel: { paddingHorizontal: 12, paddingVertical: 8 },
+  modalCancelText: { fontSize: 13, color: colors.gray400, fontWeight: '600' },
+  modalSave: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    backgroundColor: colors.gray800,
+  },
+  modalSaveText: { fontSize: 13, color: colors.gray200, fontWeight: '700' },
 });

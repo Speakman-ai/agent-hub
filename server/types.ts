@@ -903,11 +903,19 @@ export interface NoteRow {
 // ─── Support Tickets ────────────────────────────────────────────
 // Customer support requests persisted in their OWN queue, separate from the
 // kanban board. The status lifecycle is distinct from kanban columns:
-// new → investigating → converted / closed. Severity drives list ordering.
+// new → investigating → converted / closed / duplicate / wont_do. Severity
+// drives list ordering. `new` and `investigating` are the "open" states shown
+// by default; the rest are terminal and hidden until explicitly filtered for.
 
 export type SupportTicketType = 'bug' | 'question' | 'feature_request' | 'incident' | 'other';
 export type SupportTicketSeverity = 'critical' | 'high' | 'medium' | 'low';
-export type SupportTicketStatus = 'new' | 'investigating' | 'converted' | 'closed';
+export type SupportTicketStatus =
+  | 'new'
+  | 'investigating'
+  | 'converted'
+  | 'closed'
+  | 'duplicate'
+  | 'wont_do';
 
 export interface SupportTicketRow {
   id: string;
@@ -929,6 +937,9 @@ export interface SupportTicketRow {
   screenshot_ref: string | null;
   // Set when the ticket is promoted to a kanban card (status → 'converted').
   converted_card_id: string | null;
+  // Operator-supplied reason a ticket was marked "wont_do". Required when the
+  // status is 'wont_do'; null/cleared for every other status.
+  wont_do_reason: string | null;
   // Timestamp a human first viewed the ticket, or null when still unread.
   // Drives the per-project unread counter on the Support sidebar item.
   read_at: string | null;
@@ -1667,6 +1678,7 @@ export interface Stmts {
   setSupportTicketReplayRef: Stmt;
   setSupportTicketScreenshotRef: Stmt;
   setSupportTicketBody: Stmt;
+  setSupportTicketWontDoReason: Stmt;
   convertSupportTicketToCard: Stmt;
   markSupportTicketRead: Stmt;
   markSupportTicketUnread: Stmt;

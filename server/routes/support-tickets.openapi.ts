@@ -12,7 +12,7 @@ import { KanbanCardComponent } from './board.openapi.js';
 
 const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as const;
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
-const STATUSES = ['new', 'investigating', 'converted', 'closed'] as const;
+const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
 
 const ErrorResponse = registerComponent(
   'SupportTicketErrorResponse',
@@ -42,6 +42,9 @@ export const SupportTicketComponent = registerComponent(
         .nullable()
         .openapi({ description: 'Server-relative ref to an attached screenshot, or null.' }),
       converted_card_id: z.string().nullable(),
+      wont_do_reason: z.string().nullable().openapi({
+        description: "Operator reason the ticket was marked 'wont_do', or null otherwise.",
+      }),
       read_at: z
         .string()
         .nullable()
@@ -68,6 +71,10 @@ export const CreateSupportTicketRequestSchema = z.object({
 export const PatchSupportTicketRequestSchema = z
   .object({
     status: z.enum(STATUSES).optional(),
+    wontDoReason: z.string().nullable().optional().openapi({
+      description:
+        "Reason the ticket is being marked 'wont_do'. Required (non-empty) when status is 'wont_do'; cleared on any other status transition.",
+    }),
     aiSummary: z.string().nullable().optional(),
     aiInvestigation: z.string().nullable().optional(),
     replayRef: z.string().nullable().optional(),
@@ -100,13 +107,19 @@ registerPath({
   path: '/api/projects/{projectId}/support-tickets',
   tags: ['Support'],
   summary: 'List a project’s support tickets, ordered by severity',
+  description:
+    'Defaults to the open states (new, investigating) — terminal tickets (converted/closed/duplicate/wont_do) are hidden until requested. Pass a comma-separated `status` list (e.g. `converted,closed`) and/or a single `type` to filter.',
   request: {
     params: projectIdParams,
     query: z.object({
-      status: z
-        .enum(STATUSES)
+      status: z.string().optional().openapi({
+        description:
+          'Comma-separated lifecycle states to include (new | investigating | converted | closed | duplicate | wont_do). Omit to default to the open states.',
+      }),
+      type: z
+        .enum(TYPES)
         .optional()
-        .openapi({ description: 'Filter to a single lifecycle status.' }),
+        .openapi({ description: 'Filter to a single request type (e.g. bug, feature_request).' }),
     }),
   },
   responses: {
@@ -114,7 +127,7 @@ registerPath({
       description: 'Tickets ordered by severity (critical → low) then newest.',
       content: jsonContent(z.array(SupportTicketComponent)),
     },
-    400: errorResponse('Invalid status filter.'),
+    400: errorResponse('Invalid status or type filter.'),
     404: errorResponse('Project not found.'),
   },
 });
@@ -229,14 +242,18 @@ const ConvertSupportTicketResponse = registerComponent(
   z
     .object({
       card: KanbanCardComponent,
-      ticketId: z
-        .string()
-        .openapi({ description: 'Id of the source ticket that was converted and removed.' }),
-      deleted: z.literal(true).openapi({
-        description: 'Always true — the source ticket is removed once promoted to the board.',
+      ticket: SupportTicketComponent.openapi({
+        description: "The source ticket, now retained and flagged 'converted'.",
+      }),
+      ticketId: z.string().openapi({ description: 'Id of the converted source ticket.' }),
+      converted: z.literal(true).openapi({
+        description: 'Always true — the source ticket is retained and flagged converted.',
       }),
     })
-    .openapi({ description: 'The kanban card the ticket became; the source ticket is removed.' }),
+    .openapi({
+      description:
+        'The kanban card the ticket became, plus the retained source ticket (now converted).',
+    }),
 );
 
 registerPath({
@@ -245,14 +262,15 @@ registerPath({
   tags: ['Support'],
   summary: 'Convert a support ticket into a To Do kanban card',
   description:
-    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels) and then removes the source ticket — the card is the single source of truth. Not idempotent: re-converting the same ticket id 404s.',
+    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), then flags the source ticket `converted` and marks it read (it is retained, not deleted). Re-converting an already-converted ticket 409s rather than creating a duplicate card.',
   request: { params: ticketParams },
   responses: {
     201: {
-      description: 'Ticket converted to a new card and removed from the queue.',
+      description: 'Ticket converted to a new card; the source ticket is retained as converted.',
       content: jsonContent(ConvertSupportTicketResponse),
     },
     404: errorResponse('Project or ticket not found.'),
+    409: errorResponse('Support ticket already converted.'),
     500: errorResponse('Board has no columns to place the card in.'),
   },
 });

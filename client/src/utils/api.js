@@ -1100,23 +1100,29 @@ export const api = {
   stopTask: (taskId) => fetchJSON(`/tasks/${taskId}/stop`, { method: 'POST' }),
 
   // Support tickets — project-scoped queue, ordered by severity (server-side).
-  // Pass `status` to filter to a single lifecycle state (new | investigating |
-  // converted | closed).
-  getSupportTickets: (projectId, status) => {
-    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  // `status` is a comma-separated list of lifecycle states (new | investigating
+  // | converted | closed | duplicate | wont_do); omit it to get the default
+  // open view. `type` optionally narrows to a single request type (e.g. bug).
+  getSupportTickets: (projectId, status, type) => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (type) params.set('type', type);
+    const qs = params.toString() ? `?${params}` : '';
     return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
   },
   getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
-  // Change a ticket's lifecycle status (new | investigating | closed). Returns
-  // the updated ticket and emits a support_ticket_updated WebSocket event.
-  setSupportTicketStatus: (projectId, id, status) =>
+  // Change a ticket's lifecycle status. Pass `wontDoReason` (required by the
+  // server) when status is 'wont_do'. Returns the updated ticket and emits a
+  // support_ticket_updated WebSocket event.
+  setSupportTicketStatus: (projectId, id, status, wontDoReason) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify(wontDoReason === undefined ? { status } : { status, wontDoReason }),
     }),
-  // Promote a support ticket to a To Do kanban card and REMOVE the source
-  // ticket. Returns { card, ticketId, deleted: true }. Not idempotent:
-  // re-converting the same id 404s (the ticket no longer exists).
+  // Promote a support ticket to a To Do kanban card. The source ticket is
+  // RETAINED and flagged `converted` (it leaves the default open queue but is
+  // not deleted). Returns { card, ticket, ticketId, converted: true }.
+  // Re-converting an already-converted ticket 409s.
   convertSupportTicketToCard: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
   // Permanently delete a support ticket. The server emits a

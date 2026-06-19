@@ -22,6 +22,7 @@ function ticket(overrides: Partial<SupportTicketRow> = {}): SupportTicketRow {
     replay_ref: null,
     screenshot_ref: null,
     converted_card_id: null,
+    wont_do_reason: null,
     read_at: null,
     created_at: '2026-06-14 00:00:00',
     updated_at: '2026-06-14 00:00:00',

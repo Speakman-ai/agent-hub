@@ -40,6 +40,19 @@ export const SUPPORT_TICKET_STATUSES = [
   'investigating',
   'converted',
   'closed',
+  'duplicate',
+  'wont_do',
+] as const satisfies readonly SupportTicketStatus[];
+
+/**
+ * The "open" lifecycle states — the queue's default view. Everything else
+ * (`converted`, `closed`, `duplicate`, `wont_do`) is terminal and hidden until
+ * the operator explicitly filters for it, so resolved tickets don't clutter the
+ * working queue but are never destroyed.
+ */
+export const SUPPORT_TICKET_OPEN_STATUSES = [
+  'new',
+  'investigating',
 ] as const satisfies readonly SupportTicketStatus[];
 
 function isType(v: unknown): v is SupportTicketType {
@@ -107,23 +120,44 @@ export function getSupportTicket(id: string): SupportTicketRow | null {
 
 /**
  * List a project's tickets ordered by severity (critical → low) then newest.
- * Pass `status` to filter to a single lifecycle state.
+ *
+ * - `statuses` — restrict to these lifecycle states (the queue uses this to
+ *   show only "open" tickets by default and to reveal terminal states on
+ *   demand). Omit/empty to return every status.
+ * - `type` — restrict to a single request type (bug / feature_request / …).
+ *
+ * The query is built dynamically because the optional filters multiply out to
+ * several combinations; the severity ordering matches the prepared statements.
  */
 export function listSupportTickets(
   projectId: string,
-  opts: { status?: SupportTicketStatus } = {},
+  opts: { statuses?: SupportTicketStatus[]; type?: SupportTicketType } = {},
 ): SupportTicketRow[] {
-  const stmts = getStmts();
-  if (opts.status) {
-    if (!isStatus(opts.status)) {
-      throw new Error(`status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}`);
+  const where: string[] = ['project_id = ?'];
+  const params: unknown[] = [projectId];
+
+  const statuses = opts.statuses ?? [];
+  if (statuses.length) {
+    for (const s of statuses) {
+      if (!isStatus(s)) {
+        throw new Error(`status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}`);
+      }
     }
-    return stmts.listSupportTicketsByProjectAndStatus.all(
-      projectId,
-      opts.status,
-    ) as SupportTicketRow[];
+    where.push(`status IN (${statuses.map(() => '?').join(',')})`);
+    params.push(...statuses);
   }
-  return stmts.listSupportTicketsByProject.all(projectId) as SupportTicketRow[];
+  if (opts.type !== undefined) {
+    if (!isType(opts.type)) {
+      throw new Error(`type must be one of: ${SUPPORT_TICKET_TYPES.join(', ')}`);
+    }
+    where.push('type = ?');
+    params.push(opts.type);
+  }
+
+  const sql = `SELECT * FROM support_tickets WHERE ${where.join(' AND ')} ORDER BY ${SEVERITY_ORDER_SQL}`;
+  return getDb()
+    .prepare(sql)
+    .all(...params) as SupportTicketRow[];
 }
 
 /**
@@ -150,7 +184,7 @@ const SEVERITY_ORDER_SQL = `CASE severity
  * combinations; the severity ordering is identical to the per-project queries.
  */
 export function listAllSupportTickets(
-  opts: { projectId?: string; status?: SupportTicketStatus } = {},
+  opts: { projectId?: string; statuses?: SupportTicketStatus[]; type?: SupportTicketType } = {},
 ): SupportTicketRow[] {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -158,12 +192,22 @@ export function listAllSupportTickets(
     where.push('project_id = ?');
     params.push(opts.projectId);
   }
-  if (opts.status) {
-    if (!isStatus(opts.status)) {
-      throw new Error(`status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}`);
+  const statuses = opts.statuses ?? [];
+  if (statuses.length) {
+    for (const s of statuses) {
+      if (!isStatus(s)) {
+        throw new Error(`status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}`);
+      }
     }
-    where.push('status = ?');
-    params.push(opts.status);
+    where.push(`status IN (${statuses.map(() => '?').join(',')})`);
+    params.push(...statuses);
+  }
+  if (opts.type !== undefined) {
+    if (!isType(opts.type)) {
+      throw new Error(`type must be one of: ${SUPPORT_TICKET_TYPES.join(', ')}`);
+    }
+    where.push('type = ?');
+    params.push(opts.type);
   }
   const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const sql = `SELECT * FROM support_tickets ${whereClause} ORDER BY ${SEVERITY_ORDER_SQL}`;
@@ -219,6 +263,21 @@ export function recordSupportTicketInvestigation(
 export function setSupportTicketBody(id: string, body: string): SupportTicketRow | null {
   if (!getSupportTicket(id)) return null;
   getStmts().setSupportTicketBody.run(body, id);
+  return getSupportTicket(id);
+}
+
+/**
+ * Set (or clear, with null) the operator-supplied "won't do" reason. Returns
+ * the updated row, or null if the ticket doesn't exist. The route pairs this
+ * with a status transition: a non-empty reason when moving to `wont_do`, and a
+ * `null` clear when moving to any other status.
+ */
+export function setSupportTicketWontDoReason(
+  id: string,
+  reason: string | null,
+): SupportTicketRow | null {
+  if (!getSupportTicket(id)) return null;
+  getStmts().setSupportTicketWontDoReason.run(reason, id);
   return getSupportTicket(id);
 }
 

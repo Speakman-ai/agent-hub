@@ -144,7 +144,7 @@ describe('support-tickets-store — list ordering by severity', () => {
     updateSupportTicketStatus(a.id, 'investigating');
     updateSupportTicketStatus(c.id, 'investigating');
 
-    const investigating = listSupportTickets('p1', { status: 'investigating' });
+    const investigating = listSupportTickets('p1', { statuses: ['investigating'] });
     expect(investigating.map((t) => t.severity)).toEqual(['high', 'low']);
   });
 });

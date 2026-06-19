@@ -53,10 +53,38 @@ const TYPE_META = {
   other: { label: 'Other', Icon: MessageSquare, className: 'text-gray-400' },
 };
 
+// Human labels per lifecycle status. `closed` reads as "Done" (an operator
+// resolving a ticket); `converted` is the auto-state a ticket lands in when
+// promoted to a card.
+const STATUS_LABEL = {
+  new: 'New',
+  investigating: 'Investigating',
+  converted: 'Converted',
+  closed: 'Done',
+  duplicate: 'Duplicate',
+  wont_do: "Won't do",
+};
+
+const ALL_STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'];
+
+// Filter groups. The default ("Open") shows only the working states; the
+// terminal states each get their own filter so resolved tickets are retained
+// but stay out of the way until explicitly requested.
 const STATUS_FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'new', label: 'New' },
-  { key: 'investigating', label: 'Investigating' },
+  { key: 'open', label: 'Open', statuses: ['new', 'investigating'] },
+  { key: 'done', label: 'Done', statuses: ['converted', 'closed'] },
+  { key: 'duplicate', label: 'Duplicate', statuses: ['duplicate'] },
+  { key: 'wont_do', label: "Won't do", statuses: ['wont_do'] },
+  { key: 'all', label: 'All', statuses: ALL_STATUSES },
+];
+
+const TYPE_FILTERS = [
+  { key: 'all', label: 'All types' },
+  { key: 'bug', label: 'Bug' },
+  { key: 'feature_request', label: 'Feature' },
+  { key: 'question', label: 'Question' },
+  { key: 'incident', label: 'Incident' },
+  { key: 'other', label: 'Other' },
 ];
 
 function sortTickets(list) {
@@ -152,12 +180,15 @@ function DeleteTicketButton({ projectId, ticketId, stretched = false, onDeleted 
 }
 
 // Manually-settable ticket lifecycle states. `converted` is intentionally
-// absent — conversion is an action (it promotes the ticket to a card and
-// removes it), not a status a human picks from a dropdown.
+// absent — conversion is an action (it promotes the ticket to a card), not a
+// status a human picks from a dropdown. "Won't do" requires a reason, captured
+// inline before the change is sent.
 const STATUS_OPTIONS = [
   { value: 'new', label: 'New' },
   { value: 'investigating', label: 'Investigating' },
-  { value: 'closed', label: 'Closed' },
+  { value: 'closed', label: 'Done' },
+  { value: 'duplicate', label: 'Duplicate' },
+  { value: 'wont_do', label: "Won't do" },
 ];
 
 // Inline status changer. Replaces the old read-only status badge so an operator
@@ -168,19 +199,24 @@ const STATUS_OPTIONS = [
 // events for use over the card's full-card overlay button.
 function StatusSelect({ projectId, ticket, stretched = false, onUpdated }) {
   const [saving, setSaving] = useState(false);
+  // Non-null while capturing a "won't do" reason (the status isn't committed
+  // until the operator supplies one).
+  const [reasonDraft, setReasonDraft] = useState(null);
   const pe = stretched ? 'pointer-events-auto relative' : '';
-  // A legacy/automatic state (e.g. an old `converted` row) isn't in the manual
-  // option list — surface it as the current value so the control still renders
-  // a sensible label, but don't offer it as a pickable choice.
+  // A legacy/automatic state (e.g. a `converted` row) isn't in the manual option
+  // list — surface it as the current value so the control still renders a
+  // sensible label, but don't offer it as a pickable choice.
   const isLegacy = !STATUS_OPTIONS.some((o) => o.value === ticket.status);
 
-  const handleChange = async (e) => {
-    const next = e.target.value;
-    if (next === ticket.status || saving) return;
+  const applyStatus = async (next, reason) => {
     setSaving(true);
-    onUpdated?.({ ...ticket, status: next }); // optimistic
+    onUpdated?.({
+      ...ticket,
+      status: next,
+      wont_do_reason: next === 'wont_do' ? reason : null,
+    }); // optimistic
     try {
-      const updated = await api.setSupportTicketStatus(projectId, ticket.id, next);
+      const updated = await api.setSupportTicketStatus(projectId, ticket.id, next, reason);
       if (updated) onUpdated?.(updated);
     } catch {
       onUpdated?.(ticket); // revert on failure
@@ -188,6 +224,58 @@ function StatusSelect({ projectId, ticket, stretched = false, onUpdated }) {
       setSaving(false);
     }
   };
+
+  const handleChange = (e) => {
+    const next = e.target.value;
+    if (next === ticket.status || saving) return;
+    // "Won't do" requires a reason — switch to the inline capture form instead
+    // of committing immediately.
+    if (next === 'wont_do') {
+      setReasonDraft(ticket.wont_do_reason || '');
+      return;
+    }
+    applyStatus(next, undefined);
+  };
+
+  if (reasonDraft !== null) {
+    const submit = async () => {
+      const reason = reasonDraft.trim();
+      if (!reason || saving) return;
+      await applyStatus('wont_do', reason);
+      setReasonDraft(null);
+    };
+    return (
+      <span className={`${pe} inline-flex items-center gap-1.5`} data-testid="wont-do-reason-form">
+        <input
+          autoFocus
+          value={reasonDraft}
+          onChange={(e) => setReasonDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+            if (e.key === 'Escape') setReasonDraft(null);
+          }}
+          placeholder="Why won't this be done?"
+          aria-label="Won't do reason"
+          data-testid="wont-do-reason-input"
+          className={`${pe} text-[11px] bg-gray-800/60 border border-gray-700 rounded px-1.5 py-0.5 text-gray-200 focus:outline-none focus:border-gray-600 w-44`}
+        />
+        <button
+          onClick={submit}
+          disabled={saving || !reasonDraft.trim()}
+          className={`${pe} text-[11px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
+          Save
+        </button>
+        <button
+          onClick={() => setReasonDraft(null)}
+          disabled={saving}
+          className={`${pe} text-[11px] px-1.5 py-0.5 rounded border border-gray-700 text-gray-500 hover:text-gray-300 disabled:opacity-50`}
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
 
   return (
     <select
@@ -199,13 +287,29 @@ function StatusSelect({ projectId, ticket, stretched = false, onUpdated }) {
       data-testid="ticket-status-select"
       className={`${pe} text-[10px] uppercase tracking-wide bg-gray-800/60 border border-gray-700 rounded px-1.5 py-0.5 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed`}
     >
-      {isLegacy ? <option value={ticket.status}>{ticket.status}</option> : null}
+      {isLegacy ? (
+        <option value={ticket.status}>{STATUS_LABEL[ticket.status] || ticket.status}</option>
+      ) : null}
       {STATUS_OPTIONS.map((o) => (
         <option key={o.value} value={o.value}>
           {o.label}
         </option>
       ))}
     </select>
+  );
+}
+
+// Small inline note rendering a ticket's "won't do" reason. Shown on the card
+// and in the detail modal so the rationale is visible at a glance.
+function WontDoReason({ ticket }) {
+  if (ticket.status !== 'wont_do' || !ticket.wont_do_reason) return null;
+  return (
+    <div
+      data-testid="wont-do-reason"
+      className="mt-2 text-[11px] text-gray-400 border-l-2 border-gray-700 pl-2"
+    >
+      <span className="text-gray-500 font-medium">Won&apos;t do:</span> {ticket.wont_do_reason}
+    </div>
   );
 }
 
@@ -454,6 +558,8 @@ function SupportTicketCard({
               </button>
             ) : null}
 
+            <WontDoReason ticket={ticket} />
+
             <div className="mt-2.5 flex items-center gap-2 flex-wrap">
               {isConverted ? (
                 <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
@@ -587,7 +693,7 @@ function SupportTicketDetailModal({
                 </span>
                 {isConverted ? (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/60 text-gray-500">
-                    {ticket.status}
+                    {STATUS_LABEL[ticket.status] || ticket.status}
                   </span>
                 ) : (
                   <StatusSelect projectId={projectId} ticket={ticket} onUpdated={onUpdated} />
@@ -621,6 +727,8 @@ function SupportTicketDetailModal({
                 </div>
               </div>
             ) : null}
+
+            <WontDoReason ticket={ticket} />
 
             {investigation ? (
               <div className="rounded-md bg-violet-500/10 border border-violet-500/20 px-3 py-2.5">
@@ -724,7 +832,10 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [statusFilter, setStatusFilter] = useState('all');
+  // Default to the "Open" group: terminal tickets (converted/closed/duplicate/
+  // wont_do) are retained but hidden until their filter is selected.
+  const [statusFilter, setStatusFilter] = useState('open');
+  const [typeFilter, setTypeFilter] = useState('all');
   // The ticket whose detail modal is open (null = closed), held independently of
   // the filtered list so a status-filter change never drops the modal out from
   // under the user. It's kept fresh by the same WebSocket upsert/remove path
@@ -732,13 +843,23 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
   // live updates and closes if the ticket is deleted.
   const [openTicket, setOpenTicket] = useState(null);
 
+  // Resolve the active filter group to the set of statuses it covers (the API
+  // takes a comma-separated list); always send an explicit set so the server's
+  // default-open behaviour never surprises the chosen view.
+  const activeStatusFilter =
+    STATUS_FILTERS.find((f) => f.key === statusFilter) || STATUS_FILTERS[0];
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
 
     api
-      .getSupportTickets(projectId, statusFilter === 'all' ? undefined : statusFilter)
+      .getSupportTickets(
+        projectId,
+        activeStatusFilter.statuses.join(','),
+        typeFilter === 'all' ? undefined : typeFilter,
+      )
       .then((data) => {
         if (!cancelled) setTickets(sortTickets(Array.isArray(data) ? data : []));
       })
@@ -752,10 +873,12 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
     return () => {
       cancelled = true;
     };
-  }, [projectId, statusFilter]);
+  }, [projectId, statusFilter, typeFilter, activeStatusFilter]);
 
   // ── WebSocket-driven live updates (pushed from App.jsx via the ref) ──
-  const matchesFilter = (ticket) => statusFilter === 'all' || ticket.status === statusFilter;
+  const matchesFilter = (ticket) =>
+    activeStatusFilter.statuses.includes(ticket.status) &&
+    (typeFilter === 'all' || ticket.type === typeFilter);
 
   const upsertTicket = (ticket) => {
     if (!ticket) return;
@@ -826,9 +949,10 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
       // queue; flag our loaded rows read without a refetch.
       markAllRead: markAllReadLocally,
     }),
-    // statusFilter is read inside upsertTicket; rebuild the handle when it changes.
+    // statusFilter/typeFilter are read inside upsertTicket (via matchesFilter);
+    // rebuild the handle when either changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [statusFilter],
+    [statusFilter, typeFilter],
   );
 
   return (
@@ -853,6 +977,7 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
             <button
               key={f.key}
               onClick={() => setStatusFilter(f.key)}
+              data-testid={`status-filter-${f.key}`}
               className={`text-[11px] px-2 py-1 rounded transition-colors ${
                 statusFilter === f.key
                   ? 'bg-gray-700 text-gray-200'
@@ -863,6 +988,25 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }, ref) {
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Type filter */}
+      <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-800 bg-gray-900/30 flex-wrap">
+        <span className="text-[11px] text-gray-600 mr-1">Type</span>
+        {TYPE_FILTERS.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => setTypeFilter(f.key)}
+            data-testid={`type-filter-${f.key}`}
+            className={`text-[11px] px-2 py-1 rounded transition-colors ${
+              typeFilter === f.key
+                ? 'bg-gray-700 text-gray-200'
+                : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
       </div>
 
       {/* Body */}

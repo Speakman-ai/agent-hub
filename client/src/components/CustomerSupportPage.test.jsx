@@ -101,7 +101,8 @@ describe('CustomerSupportPage', () => {
 
     // Type + severity badges, AI summary, and a bug "Watch replay" button render
     // (the replay now opens a sandboxed in-app player rather than a raw JSON link).
-    expect(screen.getByText('Bug')).toBeInTheDocument();
+    // "Bug" also appears as a type-filter chip, so scope to the card badges.
+    expect(screen.getAllByText('Bug').length).toBeGreaterThan(0);
     expect(screen.getByText('Feature request')).toBeInTheDocument();
     expect(screen.getByText('critical')).toBeInTheDocument();
     expect(screen.getByText('Likely a null deref in checkout')).toBeInTheDocument();
@@ -427,13 +428,13 @@ describe('CustomerSupportPage — ticket detail view', () => {
   });
 
   it('keeps the detail modal open when a status filter would drop the ticket from the list', async () => {
-    // 'all'/'new' return the ticket; the narrower 'investigating' filter returns an
-    // empty list (the open 'new' ticket is no longer in view).
+    // The default "Open" group includes 'new' and returns the ticket; the "Done"
+    // group (converted/closed) returns an empty list (the open ticket is hidden).
     api.getSupportTickets.mockImplementation((_projectId, status) =>
       Promise.resolve(
-        status === 'investigating'
-          ? []
-          : [ticket({ id: 't1', subject: 'Stay open', status: 'new' })],
+        status && status.includes('new')
+          ? [ticket({ id: 't1', subject: 'Stay open', status: 'new' })]
+          : [],
       ),
     );
     api.getSupportTicket.mockResolvedValue(
@@ -449,7 +450,7 @@ describe('CustomerSupportPage — ticket detail view', () => {
     );
 
     // Switch to a filter that excludes the open ticket.
-    fireEvent.click(screen.getByRole('button', { name: 'Investigating' }));
+    fireEvent.click(screen.getByTestId('status-filter-done'));
 
     // The list card drops out of view, but the modal must stay open — the user
     // keeps their place rather than having it yanked away.
@@ -595,7 +596,12 @@ describe('CustomerSupportPage — change ticket status', () => {
     fireEvent.change(select, { target: { value: 'investigating' } });
 
     await waitFor(() =>
-      expect(api.setSupportTicketStatus).toHaveBeenCalledWith('proj-1', 't1', 'investigating'),
+      expect(api.setSupportTicketStatus).toHaveBeenCalledWith(
+        'proj-1',
+        't1',
+        'investigating',
+        undefined,
+      ),
     );
     // The optimistic + server-confirmed update leaves the row showing the new state.
     await waitFor(() =>
@@ -603,7 +609,7 @@ describe('CustomerSupportPage — change ticket status', () => {
     );
   });
 
-  it('offers New / Investigating / Closed but not Converted as manual choices', async () => {
+  it('offers the manual lifecycle states (Done/Duplicate/Won’t do) but not Converted', async () => {
     api.getSupportTickets.mockResolvedValue([
       ticket({ id: 't1', subject: 'Options', status: 'new' }),
     ]);
@@ -613,7 +619,75 @@ describe('CustomerSupportPage — change ticket status', () => {
     const values = Array.from(screen.getByTestId('ticket-status-select').options).map(
       (o) => o.value,
     );
-    expect(values).toEqual(['new', 'investigating', 'closed']);
+    expect(values).toEqual(['new', 'investigating', 'closed', 'duplicate', 'wont_do']);
+  });
+
+  it('captures a required reason before marking a ticket Won’t do', async () => {
+    api.getSupportTickets.mockResolvedValue([
+      ticket({ id: 't1', subject: 'Decline me', status: 'new' }),
+    ]);
+    api.setSupportTicketStatus.mockResolvedValue(
+      ticket({
+        id: 't1',
+        subject: 'Decline me',
+        status: 'wont_do',
+        wont_do_reason: 'out of scope',
+      }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Decline me')).toBeInTheDocument());
+
+    // Selecting "Won't do" opens the inline reason form instead of committing.
+    fireEvent.change(screen.getByTestId('ticket-status-select'), { target: { value: 'wont_do' } });
+    expect(screen.getByTestId('wont-do-reason-form')).toBeInTheDocument();
+    expect(api.setSupportTicketStatus).not.toHaveBeenCalled();
+
+    // Supplying a reason and saving commits the status with the reason.
+    fireEvent.change(screen.getByTestId('wont-do-reason-input'), {
+      target: { value: 'out of scope' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(api.setSupportTicketStatus).toHaveBeenCalledWith(
+        'proj-1',
+        't1',
+        'wont_do',
+        'out of scope',
+      ),
+    );
+    // Under the default "Open" group, a now-"won't do" ticket leaves the view,
+    // and the inline reason form closes with it.
+    await waitFor(() => expect(screen.queryByTestId('wont-do-reason-form')).toBeNull());
+    expect(screen.queryByText('Decline me')).toBeNull();
+  });
+});
+
+describe('CustomerSupportPage — filters', () => {
+  it('refetches with a type filter when a type chip is selected', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Filterable' })]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Filterable')).toBeInTheDocument());
+
+    // Initial load uses the default Open status group and no type filter.
+    expect(api.getSupportTickets).toHaveBeenCalledWith('proj-1', 'new,investigating', undefined);
+
+    fireEvent.click(screen.getByTestId('type-filter-bug'));
+    await waitFor(() =>
+      expect(api.getSupportTickets).toHaveBeenCalledWith('proj-1', 'new,investigating', 'bug'),
+    );
+  });
+
+  it('requests the Done group (converted + closed) when the Done filter is selected', async () => {
+    api.getSupportTickets.mockResolvedValue([]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('No support requests')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('status-filter-done'));
+    await waitFor(() =>
+      expect(api.getSupportTickets).toHaveBeenCalledWith('proj-1', 'converted,closed', undefined),
+    );
   });
 });
 

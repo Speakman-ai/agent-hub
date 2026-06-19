@@ -5,6 +5,8 @@ import {
   getSupportTicket,
   listSupportTickets,
   updateSupportTicketStatus,
+  setSupportTicketWontDoReason,
+  convertSupportTicketToCard,
   recordSupportTicketInvestigation,
   deleteSupportTicket,
   markSupportTicketRead,
@@ -12,8 +14,10 @@ import {
   markAllSupportTicketsRead,
   countUnreadSupportTickets,
   SUPPORT_TICKET_STATUSES,
+  SUPPORT_TICKET_OPEN_STATUSES,
+  SUPPORT_TICKET_TYPES,
 } from '../support-tickets-store.js';
-import type { SupportTicketStatus, SupportTicketRow } from '../types.js';
+import type { SupportTicketStatus, SupportTicketType, SupportTicketRow } from '../types.js';
 import { intakeSupportTicket, setGuardedReplayRef } from '../support-ticket-intake.js';
 import { setSupportTicketScreenshotRef } from '../support-tickets-store.js';
 import {
@@ -91,16 +95,56 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const status = req.query.status as string | undefined;
-    if (status && !(SUPPORT_TICKET_STATUSES as readonly string[]).includes(status)) {
+    // `status` accepts a comma-separated list (e.g. `converted,closed`) so a UI
+    // filter group can map to several lifecycle states in one request. When the
+    // param is absent we default to the OPEN states only — terminal tickets
+    // (converted / closed / duplicate / wont_do) are hidden until explicitly
+    // requested, so resolved work doesn't clutter the live queue.
+    //
+    // A repeated query key (`?status=new&status=closed`) makes Express parse the
+    // value as an array; only a single string is valid here, so reject any other
+    // shape with the same 400 rather than letting `.split` throw a 500.
+    const rawStatus = req.query.status;
+    let statuses: SupportTicketStatus[];
+    if (rawStatus === undefined) {
+      statuses = [...SUPPORT_TICKET_OPEN_STATUSES];
+    } else if (typeof rawStatus !== 'string') {
       return res
         .status(400)
         .json({ error: `status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}` });
+    } else {
+      const tokens = rawStatus
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const bad = tokens.filter((s) => !(SUPPORT_TICKET_STATUSES as readonly string[]).includes(s));
+      if (bad.length) {
+        return res
+          .status(400)
+          .json({ error: `status must be one of: ${SUPPORT_TICKET_STATUSES.join(', ')}` });
+      }
+      statuses = tokens.length
+        ? (tokens as SupportTicketStatus[])
+        : [...SUPPORT_TICKET_OPEN_STATUSES];
     }
 
-    const tickets = listSupportTickets(project.id, {
-      status: status as SupportTicketStatus | undefined,
-    });
+    // `type` is likewise single-valued — an array (repeated key) or other
+    // non-string shape is a 400, not a silent miss.
+    const rawType = req.query.type;
+    let type: SupportTicketType | undefined;
+    if (rawType !== undefined) {
+      if (
+        typeof rawType !== 'string' ||
+        !(SUPPORT_TICKET_TYPES as readonly string[]).includes(rawType)
+      ) {
+        return res
+          .status(400)
+          .json({ error: `type must be one of: ${SUPPORT_TICKET_TYPES.join(', ')}` });
+      }
+      type = rawType as SupportTicketType;
+    }
+
+    const tickets = listSupportTickets(project.id, { statuses, type });
     res.json(tickets);
   });
 
@@ -186,13 +230,31 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Support ticket not found' });
       }
 
-      const { status, aiSummary, aiInvestigation, replayRef, screenshot } = req.body as {
-        status?: string;
-        aiSummary?: string | null;
-        aiInvestigation?: string | null;
-        replayRef?: string | null;
-        screenshot?: string | null;
-      };
+      const { status, wontDoReason, aiSummary, aiInvestigation, replayRef, screenshot } =
+        req.body as {
+          status?: string;
+          wontDoReason?: string | null;
+          aiSummary?: string | null;
+          aiInvestigation?: string | null;
+          replayRef?: string | null;
+          screenshot?: string | null;
+        };
+
+      // A "won't do" ticket must always carry a non-empty reason. Fail fast
+      // before any field is written (clear 400 for the UI) when either:
+      //   - moving a ticket TO 'wont_do' without a reason, or
+      //   - a reason-only edit on an already-'wont_do' ticket that would blank
+      //     it — clearing the reason while the status stays 'wont_do' would
+      //     break the invariant, so require a status transition to clear it.
+      const trimmedReason = typeof wontDoReason === 'string' ? wontDoReason.trim() : '';
+      const reasonOnlyEditOnWontDo =
+        status === undefined && existing.status === 'wont_do' && wontDoReason !== undefined;
+      if ((status === 'wont_do' || reasonOnlyEditOnWontDo) && !trimmedReason) {
+        return res.status(400).json({
+          error:
+            "wontDoReason is required for a 'wont_do' ticket; transition the status to clear it",
+        });
+      }
 
       // Resolve the screenshot mutation up-front so a bad data URL fails the
       // whole PATCH with a 400 before any field is written. `null` clears the
@@ -214,6 +276,17 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         let ticket = existing;
         if (status !== undefined) {
           ticket = updateSupportTicketStatus(ticket.id, status as SupportTicketStatus)!;
+          // Keep wont_do_reason in lock-step with the status: store it when
+          // moving to 'wont_do', clear it on any other transition so a stale
+          // reason never lingers on a re-opened ticket.
+          ticket =
+            status === 'wont_do'
+              ? setSupportTicketWontDoReason(ticket.id, trimmedReason)!
+              : setSupportTicketWontDoReason(ticket.id, null)!;
+        } else if (wontDoReason !== undefined && existing.status === 'wont_do') {
+          // Reason-only edit on an already-"won't do" ticket. A blank reason was
+          // already rejected above, so this only ever stores a non-empty reason.
+          ticket = setSupportTicketWontDoReason(ticket.id, trimmedReason)!;
         }
         if (aiSummary !== undefined || aiInvestigation !== undefined) {
           // Pass the raw values through: the store preserves fields left
@@ -317,19 +390,20 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
    *
    * Creates a To Do card carrying over the ticket's title/description, a
    * severity→priority mapping, and `support,<type>` labels, with a footer in
-   * the description linking back to the source ticket. The source ticket is
-   * then **removed** — once promoted to the board the card is the single
-   * source of truth, so the ticket queue isn't left holding a stale duplicate.
+   * the description linking back to the source ticket. The ticket itself is
+   * **retained** and flagged `converted` (recording `converted_card_id`) — it
+   * drops out of the default "open" queue but is never destroyed, so the
+   * support history stays intact and auditable. Converting also marks the
+   * ticket read so it no longer pings the unread badge.
    *
-   * Returns `{ card, ticketId, deleted: true }`. Because the ticket is gone
-   * afterwards, the operation is not idempotent: re-POSTing the same ticket id
-   * 404s (there's nothing left to convert).
+   * Returns `{ card, ticket, ticketId, converted: true }`. The operation is
+   * idempotent-safe: re-POSTing an already-converted ticket 409s (the original
+   * card is the canonical one) rather than creating a duplicate.
    *
-   * Card-creation and ticket-deletion run in a single synchronous SQLite
-   * transaction that re-claims the ticket inside the transaction. This makes
-   * conversion duplicate-safe: a retry (e.g. after a lost/slow 201) finds the
-   * ticket already gone and 404s instead of inserting a second card — there is
-   * no create-then-delete window for a concurrent request to slip into.
+   * Card-creation + status flip run in a single synchronous SQLite transaction
+   * that re-reads the ticket inside the transaction and bails if it has already
+   * been converted by a concurrent/retried request, so at most one card is ever
+   * created for a given ticket.
    */
   router.post(
     '/api/projects/:projectId/support-tickets/:id/convert',
@@ -340,6 +414,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       const ticket = getSupportTicket(req.params.id as string);
       if (!ticket || ticket.project_id !== project.id) {
         return res.status(404).json({ error: 'Support ticket not found' });
+      }
+      if (ticket.status === 'converted') {
+        return res.status(409).json({ error: 'Support ticket already converted' });
       }
 
       const { board, columns } = getOrCreateBoard(stmts, project.id);
@@ -358,64 +435,72 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
       const cardId = uuidv4();
 
-      // Atomic create-card + delete-ticket. The transaction re-reads the ticket
-      // and bails (returns null) if it has already been converted/deleted by a
-      // concurrent or retried request — so at most one card is ever created for
-      // a given ticket. better-sqlite3 transactions run synchronously, and
-      // nothing between the top-of-handler read and this block awaits, so no
-      // second request can observe the ticket as still-present after the claim.
-      const convert = getDb().transaction((): KanbanCardRow | null => {
-        if (!getSupportTicket(ticket.id)) return null; // already converted — lost the race
-        stmts.createKanbanCard.run(
-          cardId,
-          todo.id,
-          board.id,
-          fields.title,
-          fields.description,
-          fields.priority,
-          null, // assignee
-          fields.labels,
-          null, // session_id
-          null, // github_issue_url
-          'support-ticket', // created_by
-          null, // assign_model
-          maxPos,
-        );
-        deleteSupportTicket(ticket.id);
-        return stmts.getKanbanCard.get(cardId) as KanbanCardRow;
-      });
+      // Atomic create-card + flip-status-to-converted. The transaction re-reads
+      // the ticket and bails if it's gone ('gone') or already converted
+      // ('already') by a concurrent or retried request — so at most one card is
+      // ever created for a given ticket. better-sqlite3 transactions run
+      // synchronously and nothing between the top-of-handler read and this block
+      // awaits, so no second request can slip in mid-claim.
+      const convert = getDb().transaction(
+        (): { kind: 'ok'; card: KanbanCardRow } | { kind: 'gone' } | { kind: 'already' } => {
+          const fresh = getSupportTicket(ticket.id);
+          if (!fresh) return { kind: 'gone' };
+          if (fresh.status === 'converted') return { kind: 'already' };
+          stmts.createKanbanCard.run(
+            cardId,
+            todo.id,
+            board.id,
+            fields.title,
+            fields.description,
+            fields.priority,
+            null, // assignee
+            fields.labels,
+            null, // session_id
+            null, // github_issue_url
+            'support-ticket', // created_by
+            null, // assign_model
+            maxPos,
+          );
+          // Flag the ticket converted (records converted_card_id) and mark it
+          // read so a converted ticket no longer counts toward the unread badge.
+          convertSupportTicketToCard(ticket.id, cardId);
+          markSupportTicketRead(ticket.id);
+          // Converting changes the lifecycle to 'converted', so a reason left
+          // over from a prior 'wont_do' state must be cleared — the invariant is
+          // that wont_do_reason is non-null only while status is 'wont_do'.
+          if (fresh.wont_do_reason) setSupportTicketWontDoReason(ticket.id, null);
+          return { kind: 'ok', card: stmts.getKanbanCard.get(cardId) as KanbanCardRow };
+        },
+      );
 
-      const card = convert();
-      if (!card) {
-        // A concurrent/retried convert already promoted this ticket; the card it
-        // created is the canonical one, so don't create a duplicate.
+      const result = convert();
+      if (result.kind === 'gone') {
         return res.status(404).json({ error: 'Support ticket not found' });
       }
+      if (result.kind === 'already') {
+        // A concurrent/retried convert already promoted this ticket; the card it
+        // created is the canonical one, so don't create a duplicate.
+        return res.status(409).json({ error: 'Support ticket already converted' });
+      }
+      const { card } = result;
 
-      // Carry the replay attribution onto the new card. The source ticket has
-      // been deleted, so attribute to the card (and project) only — a
-      // supportTicketId pointer would dangle now that the row is gone.
+      // Carry the replay attribution onto the new card. The ticket is retained,
+      // so attribute to the project, card, AND the (still-present) ticket.
       if (ticket.replay_ref) {
         await tryLinkReplay(stmts, ticket.replay_ref, {
           projectId: project.id,
+          supportTicketId: ticket.id,
           cardId,
         });
       }
 
-      // Preserve the screenshot file: `buildCardFieldsFromTicket` bakes the ref
-      // into the card description as a markdown image, so the card still needs
-      // it even though the ticket row is gone.
-      if (
-        ticket.screenshot_ref &&
-        !(typeof card.description === 'string' && card.description.includes(ticket.screenshot_ref))
-      ) {
-        await deleteSupportTicketScreenshot(deps.serverDir, ticket.screenshot_ref);
-      }
-
+      const converted = getSupportTicket(ticket.id)!;
       broadcast({ type: 'kanban_update', projectId: project.id });
-      broadcastTicket('support_ticket_deleted', project.id, { ticketId: ticket.id });
+      // The ticket is retained (now `converted`); broadcast the updated row so
+      // open clients move it out of the default queue rather than dropping it.
+      broadcastTicket('support_ticket_updated', project.id, { ticket: converted });
 
-      res.status(201).json({ card, ticketId: ticket.id, deleted: true });
+      res.status(201).json({ card, ticket: converted, ticketId: ticket.id, converted: true });
     },
   );
 

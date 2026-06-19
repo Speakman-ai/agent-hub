@@ -157,9 +157,11 @@ describe('support-tickets routes', () => {
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
       .expect(201);
 
-    // Response reports the card it became and that the source ticket was removed.
-    expect(convert.body.deleted).toBe(true);
+    // Response reports the card it became and the retained, now-converted ticket.
+    expect(convert.body.converted).toBe(true);
     expect(convert.body.ticketId).toBe(ticketId);
+    expect(convert.body.ticket.status).toBe('converted');
+    expect(convert.body.ticket.converted_card_id).toBe(convert.body.card.id);
 
     // Card carries over the mapped fields.
     const card = convert.body.card;
@@ -176,11 +178,17 @@ describe('support-tickets routes', () => {
     const onBoard = board.body.cards.find((c: { id: string }) => c.id === card.id);
     expect(onBoard).toBeTruthy();
 
-    // The source ticket is gone from the queue.
-    await request.get(`/api/projects/${projectId}/support-tickets/${ticketId}`).expect(404);
+    // The source ticket is RETAINED (now converted), not deleted…
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${ticketId}`)
+      .expect(200);
+    expect(detail.body.status).toBe('converted');
+    // …but it drops out of the default (open) queue view.
+    const openList = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(openList.body.find((t: { id: string }) => t.id === ticketId)).toBeUndefined();
   });
 
-  it('removes the ticket after converting — re-converting the same id 404s', async () => {
+  it('retains the ticket after converting — re-converting the same id 409s', async () => {
     const projectId = await newProjectId();
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
@@ -191,18 +199,20 @@ describe('support-tickets routes', () => {
     const first = await request
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
       .expect(201);
-    // The ticket no longer exists, so a second convert has nothing to act on.
+    // The ticket is already converted, so a second convert is a 409 (no dupe card).
     await request
       .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
-      .expect(404);
+      .expect(409);
 
     // Exactly one card was created (no duplicate from a retry).
     const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const matching = board.body.cards.filter((c: { id: string }) => c.id === first.body.card.id);
     expect(matching).toHaveLength(1);
-    // And the ticket is absent from the list.
-    const list = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
-    expect(list.body.find((t: { id: string }) => t.id === ticketId)).toBeUndefined();
+    // The ticket is retained as converted, and the "Done" filter surfaces it.
+    const done = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=converted`)
+      .expect(200);
+    expect(done.body.find((t: { id: string }) => t.id === ticketId)?.status).toBe('converted');
   });
 
   it('is duplicate-safe — concurrent converts create exactly one card', async () => {
@@ -221,7 +231,8 @@ describe('support-tickets routes', () => {
       request.post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`),
     ]);
     const statuses = [a.status, b.status].sort();
-    expect(statuses).toEqual([201, 404]);
+    // One wins (201); the other observes the ticket already converted (409).
+    expect(statuses).toEqual([201, 409]);
 
     // Only one support-ticket card landed on the board for this ticket.
     const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
@@ -361,7 +372,7 @@ describe('support-tickets routes', () => {
     await request.get(secondRef).expect(200); // new file live
   });
 
-  it('converting a ticket PRESERVES its screenshot file (the new card embeds it) while removing the ticket', async () => {
+  it('converting a ticket PRESERVES its screenshot file (the new card embeds it) and retains the ticket', async () => {
     const projectId = await newProjectId();
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
@@ -371,16 +382,20 @@ describe('support-tickets routes', () => {
     const ref = created.body.screenshot_ref as string;
     await request.get(ref).expect(200);
 
-    // Convert: the card description bakes in the ref as a markdown image, so the
-    // file must survive the ticket deletion.
+    // Convert: the card description bakes in the ref as a markdown image, and the
+    // retained ticket keeps its own screenshot ref too.
     const convert = await request
       .post(`/api/projects/${projectId}/support-tickets/${id}/convert`)
       .expect(201);
     expect(convert.body.card.description).toContain(ref);
 
-    await request.get(ref).expect(200); // preserved for the card
-    // The source ticket itself is gone.
-    await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(404);
+    await request.get(ref).expect(200); // preserved for the card + ticket
+    // The source ticket is retained (converted), still carrying its screenshot.
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('converted');
+    expect(detail.body.screenshot_ref).toBe(ref);
   });
 
   it('DELETE removes the screenshot file of an unconverted ticket', async () => {
@@ -504,7 +519,7 @@ describe('support-tickets routes', () => {
     expect(again.body.marked).toBe(0);
   });
 
-  it('converting a ticket removes it, clearing it from the unread count', async () => {
+  it('converting a ticket marks it read, clearing it from the unread count (ticket retained)', async () => {
     const projectId = await newProjectId();
     const created = await request
       .post(`/api/projects/${projectId}/support-tickets`)
@@ -520,8 +535,12 @@ describe('support-tickets routes', () => {
 
     await request.post(`/api/projects/${projectId}/support-tickets/${id}/convert`).expect(201);
 
-    // The ticket is gone, so the unread count drops back to zero.
-    await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(404);
+    // The ticket is retained (converted + read), so the unread count drops to zero.
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(detail.body.status).toBe('converted');
+    expect(detail.body.read_at).not.toBeNull();
     expect(
       (await request.get(`/api/projects/${projectId}/support-tickets/unread-count`).expect(200))
         .body.count,
@@ -561,5 +580,191 @@ describe('support-tickets routes', () => {
       .expect(200);
     expect(detail.body.status).toBe('new');
     expect(detail.body.screenshot_ref).toBeNull();
+  });
+
+  it('hides terminal statuses from the default (open) list and reveals them per-status', async () => {
+    const projectId = await newProjectId();
+
+    // One open ticket, plus one of each terminal state.
+    const open = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'still open', severity: 'high', type: 'bug' })
+      .expect(201);
+    const closedT = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'closed one', severity: 'medium', type: 'bug' })
+      .expect(201);
+    const dupT = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'dup one', severity: 'low', type: 'bug' })
+      .expect(201);
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${closedT.body.id}`)
+      .send({ status: 'closed' })
+      .expect(200);
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${dupT.body.id}`)
+      .send({ status: 'duplicate' })
+      .expect(200);
+
+    // Default view = open states only.
+    const def = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(def.body.map((t: { id: string }) => t.id)).toEqual([open.body.id]);
+
+    // Each terminal state is reachable via its own filter.
+    const closed = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=closed`)
+      .expect(200);
+    expect(closed.body.map((t: { id: string }) => t.id)).toEqual([closedT.body.id]);
+
+    const dup = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=duplicate`)
+      .expect(200);
+    expect(dup.body.map((t: { id: string }) => t.id)).toEqual([dupT.body.id]);
+
+    // A comma-separated list unions several states (severity-ordered).
+    const both = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=closed,duplicate`)
+      .expect(200);
+    expect(both.body.map((t: { id: string }) => t.id)).toEqual([closedT.body.id, dupT.body.id]);
+  });
+
+  it('filters by request type (bug / feature_request)', async () => {
+    const projectId = await newProjectId();
+    const bug = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'a bug', severity: 'high', type: 'bug' })
+      .expect(201);
+    const feat = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'a feature', severity: 'high', type: 'feature_request' })
+      .expect(201);
+
+    const bugs = await request
+      .get(`/api/projects/${projectId}/support-tickets?type=bug`)
+      .expect(200);
+    expect(bugs.body.map((t: { id: string }) => t.id)).toEqual([bug.body.id]);
+
+    const feats = await request
+      .get(`/api/projects/${projectId}/support-tickets?type=feature_request`)
+      .expect(200);
+    expect(feats.body.map((t: { id: string }) => t.id)).toEqual([feat.body.id]);
+
+    // An invalid type is a 400.
+    await request.get(`/api/projects/${projectId}/support-tickets?type=nope`).expect(400);
+  });
+
+  it('400s (not 500s) when status/type are repeated into an array query param', async () => {
+    const projectId = await newProjectId();
+    // A repeated key parses to an array; the route must reject it with a 400
+    // rather than throwing while splitting/validating.
+    await request
+      .get(`/api/projects/${projectId}/support-tickets?status=new&status=closed`)
+      .expect(400);
+    await request
+      .get(`/api/projects/${projectId}/support-tickets?type=bug&type=feature_request`)
+      .expect(400);
+  });
+
+  it("requires a reason to mark a ticket 'wont_do' and clears it on re-open", async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'maybe later', severity: 'low', type: 'feature_request' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    // Won't-do without a reason is rejected, and the status must not change.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'wont_do' })
+      .expect(400);
+    expect(
+      (await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(200)).body
+        .status,
+    ).toBe('new');
+
+    // A blank/whitespace reason is also rejected.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'wont_do', wontDoReason: '   ' })
+      .expect(400);
+
+    // With a reason it lands, storing the trimmed reason.
+    const wontDo = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'wont_do', wontDoReason: '  out of scope for now  ' })
+      .expect(200);
+    expect(wontDo.body.status).toBe('wont_do');
+    expect(wontDo.body.wont_do_reason).toBe('out of scope for now');
+
+    // Hidden from the default queue, visible under the wont_do filter.
+    const def = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(def.body.find((t: { id: string }) => t.id === id)).toBeUndefined();
+    const wontDoList = await request
+      .get(`/api/projects/${projectId}/support-tickets?status=wont_do`)
+      .expect(200);
+    expect(wontDoList.body.map((t: { id: string }) => t.id)).toEqual([id]);
+
+    // A reason-ONLY edit that would blank the reason (no status change) is
+    // rejected — the invariant is that a 'wont_do' ticket always has a reason.
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ wontDoReason: '   ' })
+      .expect(400);
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ wontDoReason: null })
+      .expect(400);
+    // The reason survived the rejected edits.
+    expect(
+      (await request.get(`/api/projects/${projectId}/support-tickets/${id}`).expect(200)).body
+        .wont_do_reason,
+    ).toBe('out of scope for now');
+
+    // A reason-only edit WITH content updates it in place.
+    const reworded = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ wontDoReason: 'duplicate of an existing roadmap item' })
+      .expect(200);
+    expect(reworded.body.status).toBe('wont_do');
+    expect(reworded.body.wont_do_reason).toBe('duplicate of an existing roadmap item');
+
+    // Re-opening clears the reason.
+    const reopened = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'investigating' })
+      .expect(200);
+    expect(reopened.body.status).toBe('investigating');
+    expect(reopened.body.wont_do_reason).toBeNull();
+  });
+
+  it('clears wont_do_reason when a wont_do ticket is converted to a card', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'reconsidered', severity: 'medium', type: 'bug' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    // Mark it won't-do with a reason…
+    const wontDo = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ status: 'wont_do', wontDoReason: 'not now' })
+      .expect(200);
+    expect(wontDo.body.wont_do_reason).toBe('not now');
+
+    // …then convert it: the lifecycle flips to 'converted', so the stale reason
+    // must be cleared inside the same transaction.
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${id}/convert`)
+      .expect(201);
+    expect(convert.body.ticket.status).toBe('converted');
+    expect(convert.body.ticket.wont_do_reason).toBeNull();
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${id}`)
+      .expect(200);
+    expect(detail.body.wont_do_reason).toBeNull();
   });
 });

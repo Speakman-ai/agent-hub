@@ -678,8 +678,13 @@ export const api = {
     }),
 
   // Support tickets — project-scoped queue, ordered by severity (server-side).
-  getSupportTickets: (projectId, status) => {
-    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  // `status` is a comma-separated list of lifecycle states; omit for the
+  // default open view. `type` optionally narrows to one request type.
+  getSupportTickets: (projectId, status, type) => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (type) params.set('type', type);
+    const qs = params.toString() ? `?${params}` : '';
     return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
   },
   // Cross-project support overview for the org dashboard.
@@ -688,8 +693,15 @@ export const api = {
     return fetchJSON(`/support-tickets${qs}`);
   },
   getSupportTicket: (projectId, id) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
-  // Promote a support ticket to a To Do kanban card. Idempotent: re-converting
-  // returns the existing card with `alreadyConverted: true`.
+  // Change a ticket's lifecycle status. Pass `wontDoReason` (required by the
+  // server) when status is 'wont_do'.
+  setSupportTicketStatus: (projectId, id, status, wontDoReason) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(wontDoReason === undefined ? { status } : { status, wontDoReason }),
+    }),
+  // Promote a support ticket to a To Do kanban card. The source ticket is
+  // RETAINED and flagged `converted`; re-converting 409s.
   convertSupportTicketToCard: (projectId, id) =>
     fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
   // Permanently delete a support ticket. The server emits a

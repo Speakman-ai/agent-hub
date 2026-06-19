@@ -10,7 +10,7 @@
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { SupportTicketComponent } from './support-tickets.openapi.js';
 
-const STATUSES = ['new', 'investigating', 'converted', 'closed'] as const;
+const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
 
 const ErrorResponse = registerComponent(
   'SupportTicketOverviewErrorResponse',
