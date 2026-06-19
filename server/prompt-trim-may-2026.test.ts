@@ -251,6 +251,25 @@ describe('Prompt trim — May 2026 audit', () => {
     });
   });
 
+  describe('Artifacts delivery instruction', () => {
+    it('tells agents to upload generated files as artifacts on the first message', () => {
+      const first = buildEnrichedPrompt(makeProject(), makeAgent(), {
+        isFirstMessage: true,
+      });
+      expect(first).toContain('Deliver Files as Artifacts');
+      expect(first).toContain('artifacts.sh put');
+      // Should mention the panel so agents point the user there instead of pasting bytes.
+      expect(first).toContain('Artifacts panel');
+    });
+
+    it('omits the artifacts block on follow-up turns to save tokens', () => {
+      const subsequent = buildEnrichedPrompt(makeProject(), makeAgent(), {
+        isFirstMessage: false,
+      });
+      expect(subsequent).not.toContain('Deliver Files as Artifacts');
+    });
+  });
+
   describe('Follow-up turn byte budget', () => {
     it('is materially smaller than first-message budget', () => {
       mkdirSync(tmpBase, { recursive: true });

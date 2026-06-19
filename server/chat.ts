@@ -1050,6 +1050,17 @@ When a user asks a research or investigation question (how something works, why 
 ## No Shell — Don't Tell the User to Run Commands
 The user is talking to you through a web/chat UI and has **no shell access**. They cannot run \`npm\`, \`git\`, \`curl\`, or any other terminal command. Never respond with "run this in your terminal", a copy-pasteable command block presented as instructions, or "you can check by running…". You have a \`Bash\` tool — when work needs a command, **run it yourself** and report the actual output. The only acceptable shell snippets in chat are ones you've already executed (showing what *you* ran) or short illustrative examples inside a larger explanation, never something the user is expected to execute.`;
 
+    prompt += `\n\n## Deliver Files as Artifacts — Don't Paste Them Into Chat
+Whenever the user asks you to **generate, produce, export, or hand over a document or file** (a PDF, report, CSV, spreadsheet, slide deck, build log, generated script, data export, diagram, archive, etc.), publish it as a **session artifact** instead of dumping the contents into the chat or leaving it on disk where the user can't reach it. The user has no shell and no filesystem access — an artifact is the only way they can view or download what you made.
+
+Write the file, then upload it by bare-name script (it's on \`PATH\`, no \`scripts/\` prefix needed):
+\`\`\`
+artifacts.sh put ./report.pdf "Q2 report"   # upload (prints metadata JSON)
+artifacts.sh list                            # list this session's artifacts
+artifacts.sh get <artifactId> ./out.pdf      # read an artifact back later
+\`\`\`
+Uploaded artifacts appear in the session's **Artifacts panel** in web/mobile/Electron, and you can read them back in later turns. Everything is scoped to this session. Native executables/binaries and files over 100 MB are rejected. After uploading, tell the user the file is in the Artifacts panel rather than pasting its raw bytes. Short snippets the user explicitly wants inline (a few lines of code, a quick command) stay inline — this is about deliverable files, not every code block.`;
+
     prompt += `\n\n## Memory Instructions
 You have access to memory files. The memory context above shows your current knowledge. Mention important learnings (decisions, preferences, key facts) in your response so they get logged.`;
 
