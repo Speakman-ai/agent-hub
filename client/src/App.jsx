@@ -4460,6 +4460,11 @@ export default function App({ initialView } = {}) {
                     isLive={Boolean(streamingMsgId || activeTasks[activeSessionId])}
                     variant="top"
                     onOpenPrDetail={handleOpenPrDetail}
+                    onOpenCard={(projectId) => {
+                      if (!projectId) return;
+                      setCurrentView(`kanban:${projectId}`);
+                      setSidebarOpen(false);
+                    }}
                   />
                 </>
               ) : (

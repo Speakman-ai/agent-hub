@@ -128,6 +128,28 @@ export default function SessionSummarySheet({
                   </Text>
                 )}
 
+                {/* Linked ticket */}
+                {summary.linkedCardTitle ? (
+                  <>
+                    <Text style={styles.sectionLabel}>TICKET</Text>
+                    <View style={styles.prCard}>
+                      <View style={styles.prTitleRow}>
+                        <AppIcon name="pricetag-outline" size={14} color={colors.gray400} />
+                        <Text style={styles.prTitle} numberOfLines={2}>
+                          {summary.linkedCardTitle}
+                        </Text>
+                        {summary.linkedCardColumn ? (
+                          <View style={[styles.badge, { backgroundColor: colors.gray800 }]}>
+                            <Text style={[styles.badgeText, { color: colors.gray200 }]}>
+                              {summary.linkedCardColumn}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  </>
+                ) : null}
+
                 {/* Linked PR */}
                 <Text style={styles.sectionLabel}>LINKED PR</Text>
                 {summary.linkedPrUrl ? (

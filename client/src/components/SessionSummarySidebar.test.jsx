@@ -264,3 +264,93 @@ describe('<SessionSummarySidebar /> — finalize strip removal', () => {
     expect(screen.queryByTestId('finalize-phase-pill-collapsed')).toBeNull();
   });
 });
+
+describe('<SessionSummarySidebar /> — linked ticket', () => {
+  beforeEach(() => {
+    api.getSessionSummary.mockReset();
+    api.getProjectPullDetail.mockReset();
+    api.getProjectPullDetail.mockResolvedValue({
+      pr: { title: 'PR', state: 'open', merged_at: null },
+      reviews: [],
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the linked ticket title and column next to the PR and opens the board on click', async () => {
+    const onOpenCard = vi.fn();
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: {
+        id: 'card-42',
+        title: 'Persist user filters across list pages',
+        pr_url: 'https://github.com/acme/widgets/pull/12',
+        review_status: null,
+        columnName: 'In Progress',
+      },
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      skills: [],
+    });
+
+    render(
+      <SessionSummarySidebar sessionId="sess-ticket" isLive={false} onOpenCard={onOpenCard} />,
+    );
+    await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+
+    const ticket = await screen.findByTestId('session-linked-ticket');
+    expect(ticket).toHaveTextContent('Persist user filters across list pages');
+    expect(screen.getByTestId('linked-ticket-column-pill')).toHaveTextContent('In Progress');
+
+    fireEvent.click(ticket);
+    expect(onOpenCard).toHaveBeenCalledWith('proj-1', 'card-42');
+  });
+
+  it('shows the ticket even when the card has no PR linked', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: {
+        id: 'card-7',
+        title: 'No PR yet',
+        pr_url: null,
+        review_status: null,
+        columnName: 'To Do',
+      },
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      skills: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-ticket-nopr" isLive={false} />);
+    await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+    expect(await screen.findByTestId('session-linked-ticket')).toHaveTextContent('No PR yet');
+  });
+
+  it('does not render the ticket section when no card is linked', async () => {
+    api.getSessionSummary.mockResolvedValue({
+      projectId: 'proj-1',
+      projectGithubRepo: 'acme/widgets',
+      linkedCard: null,
+      sessionTitlePrUrl: null,
+      session: { id: 's1', name: 'x' },
+      skills: [],
+    });
+
+    render(<SessionSummarySidebar sessionId="sess-ticket-none" isLive={false} />);
+    await waitFor(() => expect(api.getSessionSummary).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('session-summary-toggle'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('session-summary-loading')).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId('session-linked-ticket')).toBeNull();
+  });
+});

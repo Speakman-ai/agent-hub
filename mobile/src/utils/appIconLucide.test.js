@@ -33,6 +33,7 @@ vi.mock('lucide-react-native', () => {
     ScanEye: stub,
     Send: stub,
     Square: stub,
+    Ticket: stub,
     Video: stub,
     Wrench: stub,
     X: stub,
@@ -84,6 +85,8 @@ const USED_ICON_NAMES = [
   'time-outline',
   'arrow-up-circle-outline',
   'git-merge-outline',
+  'pricetag-outline',
+  'ticket-outline',
 ];
 
 describe('resolveAppLucideIcon', () => {

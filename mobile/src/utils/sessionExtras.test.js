@@ -141,6 +141,7 @@ describe('normalizeSessionSummary', () => {
     expect(out.linkedPrUrl).toBe('https://github.com/o/r/pull/42');
     expect(out.prNumber).toBe('42');
     expect(out.prBadge.key).toBe('approved');
+    expect(out.linkedCardId).toBe('c1');
     expect(out.linkedCardTitle).toBe('Bug card');
     expect(out.linkedCardColumn).toBe('Review');
     expect(out.skills).toEqual([
@@ -156,6 +157,7 @@ describe('normalizeSessionSummary', () => {
       linkedPrUrl: null,
       prNumber: null,
       prBadge: null,
+      linkedCardId: '',
       linkedCardTitle: '',
       linkedCardColumn: '',
       skills: [],

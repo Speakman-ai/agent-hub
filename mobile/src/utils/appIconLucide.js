@@ -38,6 +38,7 @@ import {
   Clock,
   Loader2,
   ScanEye,
+  Ticket,
 } from 'lucide-react-native';
 
 /** @type {Record<string, React.ComponentType<{ size?: number, color?: string, strokeWidth?: number, style?: object }>>} */
@@ -62,6 +63,9 @@ export const APP_LUCIDE_ICONS = {
   'information-circle': Info,
   'git-pull-request-outline': GitPullRequest,
   'git-pull-request': GitPullRequest,
+  'ticket-outline': Ticket,
+  ticket: Ticket,
+  'pricetag-outline': Ticket,
   'chatbubbles-outline': MessageCircle,
   'chatbubble-ellipses-outline': MessageCircle,
   'construct-outline': Wrench,

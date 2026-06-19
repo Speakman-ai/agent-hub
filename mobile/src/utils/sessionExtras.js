@@ -113,6 +113,7 @@ export function normalizeSessionSummary(data) {
     linkedPrUrl,
     prNumber: linkedPrUrl ? prNumberFromUrl(linkedPrUrl) : null,
     prBadge: linkedPrBadge(data),
+    linkedCardId: data?.linkedCard?.id || '',
     linkedCardTitle: data?.linkedCard?.title || '',
     linkedCardColumn: data?.linkedCard?.columnName || '',
     skills: dedupeSkillInvocations(data?.skills).map((s) => ({

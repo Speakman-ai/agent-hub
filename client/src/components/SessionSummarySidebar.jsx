@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { GitPullRequest, Sparkles, Loader2, ChevronDown } from 'lucide-react';
+import { GitPullRequest, Sparkles, Loader2, ChevronDown, Ticket } from 'lucide-react';
 import { api } from '../utils/api.js';
 import {
   prNumberFromUrl,
@@ -34,12 +34,14 @@ function readCollapsedPreference(sessionId) {
  * `variant="bottom"` / `panel` — aliases of `top`.
  *
  * `onOpenPrDetail(projectId, prNumber)` — navigate to in-app PR detail (Pull Requests view).
+ * `onOpenCard(projectId, cardId)` — navigate to the linked kanban ticket's board.
  */
 export default function SessionSummarySidebar({
   sessionId,
   isLive,
   variant = 'top',
   onOpenPrDetail,
+  onOpenCard,
 }) {
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
@@ -182,6 +184,15 @@ export default function SessionSummarySidebar({
     onOpenPrDetail(summary.projectId, Number.parseInt(String(prNum), 10));
   };
 
+  const linkedCard = summary?.linkedCard ?? null;
+  const canOpenTicket =
+    typeof onOpenCard === 'function' && Boolean(summary?.projectId) && Boolean(linkedCard?.id);
+
+  const handleOpenTicket = () => {
+    if (!canOpenTicket) return;
+    onOpenCard(summary.projectId, linkedCard.id);
+  };
+
   if (!sessionId) return null;
 
   const showSummarySkeleton = summaryInitialLoading && !loadError;
@@ -276,6 +287,44 @@ export default function SessionSummarySidebar({
 
           {!showSummarySkeleton && (
             <>
+              {linkedCard ? (
+                <button
+                  type="button"
+                  data-testid="session-linked-ticket"
+                  onClick={handleOpenTicket}
+                  disabled={!canOpenTicket}
+                  className={`${sectionClass} text-left transition-colors ${
+                    canOpenTicket
+                      ? 'hover:border-sky-500/50 hover:bg-gray-900/70 cursor-pointer'
+                      : 'cursor-default opacity-90'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <h3 className="text-[11px] font-semibold text-gray-200 flex items-center gap-1.5">
+                      <Ticket size={14} className="text-gray-500" />
+                      Ticket
+                    </h3>
+                    {linkedCard.columnName && (
+                      <span
+                        data-testid="linked-ticket-column-pill"
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-gray-700/40 shrink-0 text-gray-300 bg-gray-800/50"
+                      >
+                        {linkedCard.columnName}
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className="text-gray-200 font-medium line-clamp-2"
+                    title={linkedCard.title || undefined}
+                  >
+                    {linkedCard.title || '—'}
+                  </p>
+                  {canOpenTicket && (
+                    <p className="text-sky-400/80 mt-1 text-[10px]">Open ticket →</p>
+                  )}
+                </button>
+              ) : null}
+
               {linkedPrUrl ? (
                 <button
                   type="button"
