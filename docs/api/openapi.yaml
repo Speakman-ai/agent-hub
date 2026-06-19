@@ -834,6 +834,13 @@ components:
           items:
             $ref: "#/components/schemas/FinalizeRunStep"
           description: Persisted CI step states for the latest run; empty when no run.
+        currentHeadSha:
+          type: string
+          nullable: true
+          description: The session worktree's live `git rev-parse HEAD` at request time, or `null` when the worktree is missing or HEAD could not be resolved.
+        stale:
+          type: boolean
+          description: True when the latest run's `head_sha` no longer matches the worktree's current HEAD — i.e. the agent committed new work after this run finished, so the run's results predate the current code. Clients (and `finalize.sh latest`) should surface this and trigger a fresh run rather than acting on the stale results. Fail-safe `false` when HEAD cannot be resolved.
         phases:
           type: object
           properties:
@@ -852,6 +859,8 @@ components:
       required:
         - run
         - steps
+        - currentHeadSha
+        - stale
         - phases
       description: Latest Finalize run for a given session.
     FinalizeErrorResponse:

@@ -144,6 +144,14 @@ export const LatestFinalizeRunResponseSchema = registerComponent(
       steps: z.array(FinalizeRunStepComponent).openapi({
         description: 'Persisted CI step states for the latest run; empty when no run.',
       }),
+      currentHeadSha: z.string().nullable().openapi({
+        description:
+          "The session worktree's live `git rev-parse HEAD` at request time, or `null` when the worktree is missing or HEAD could not be resolved.",
+      }),
+      stale: z.boolean().openapi({
+        description:
+          "True when the latest run's `head_sha` no longer matches the worktree's current HEAD — i.e. the agent committed new work after this run finished, so the run's results predate the current code. Clients (and `finalize.sh latest`) should surface this and trigger a fresh run rather than acting on the stale results. Fail-safe `false` when HEAD cannot be resolved.",
+      }),
       phases: z
         .object({
           checks: FinalizePhaseSummaryComponent.nullable(),

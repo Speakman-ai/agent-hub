@@ -9,6 +9,10 @@
  * route mounting is exercised exactly as production does it.
  */
 import '../test/setup.js';
+import { execFileSync } from 'child_process';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import type supertest from 'supertest';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
@@ -228,6 +232,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body).toEqual({
       run: null,
       steps: [],
+      currentHeadSha: null,
+      stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
@@ -397,10 +403,116 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest', () => {
     expect(res.body).toEqual({
       run: null,
       steps: [],
+      currentHeadSha: null,
+      stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
     });
+  });
+});
+
+describe('GET /api/sessions/:sessionId/finalize-runs/latest — staleness', () => {
+  // Regression for "Stale code gets run on sessions": after the agent commits
+  // a new fix, the latest finalize_runs row still carries the OLD head_sha.
+  // Reading it (web panel or `finalize.sh latest`) made the agent treat an old
+  // commit's failure as current and loop re-fixing forever. The endpoint now
+  // compares the run's head_sha to the worktree's live HEAD and flags `stale`.
+  let tmpRoot: string;
+
+  beforeAll(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'finalize-stale-'));
+  });
+
+  function makeGitRepo(): { dir: string; headSha: string } {
+    const dir = mkdtempSync(join(tmpRoot, 'wt-'));
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir });
+    run('init', '-q');
+    run('config', 'user.email', 'test@example.com');
+    run('config', 'user.name', 'Test');
+    run('commit', '-q', '--allow-empty', '-m', 'initial');
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim();
+    return { dir, headSha };
+  }
+
+  function seedSessionWithWorktree(sessionId: string, worktreePath: string): void {
+    getDb()
+      .prepare(
+        `INSERT INTO sessions (id, agent_id, name, worktree_path, created_at, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`,
+      )
+      .run(sessionId, `agent-${uuidv4().slice(0, 8)}`, 'Test session', worktreePath);
+  }
+
+  function seedRunWithHead(projectId: string, sessionId: string, headSha: string): string {
+    const id = `run-${uuidv4().slice(0, 8)}`;
+    getDb()
+      .prepare(
+        `INSERT INTO finalize_runs (
+          id, card_id, session_id, project_id, branch, head_sha,
+          idempotency_key, status, phase, trigger_source, worktree_path,
+          triggered_by_user_id, author_name, author_email,
+          reviewer_verdict, active_seconds_consumed, started_at, mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        `card-${uuidv4().slice(0, 8)}`,
+        sessionId,
+        projectId,
+        'feature/x',
+        headSha,
+        `idem-${uuidv4()}`,
+        'failed',
+        'review',
+        'ui_button',
+        '/tmp/wt',
+        'user-1',
+        'Test User',
+        'test@example.com',
+        null,
+        0,
+        1_000,
+        'full',
+      );
+    return id;
+  }
+
+  it('flags stale=true when the run head_sha predates the worktree HEAD', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir, headSha } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    // Run recorded against an OLD commit that no longer matches HEAD.
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBe(headSha);
+    expect(res.body.stale).toBe(true);
+  });
+
+  it('flags stale=false when the run head_sha matches the worktree HEAD', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir, headSha } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    seedRunWithHead(projectId, sessionId, headSha);
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBe(headSha);
+    expect(res.body.stale).toBe(false);
+  });
+
+  it('fails safe (stale=false) when the worktree HEAD cannot be resolved', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    // Point the session at a non-existent worktree so git rev-parse throws.
+    seedSessionWithWorktree(sessionId, join(tmpRoot, 'does-not-exist'));
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBeNull();
+    expect(res.body.stale).toBe(false);
   });
 });
 

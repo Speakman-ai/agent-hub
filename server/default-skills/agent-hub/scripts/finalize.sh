@@ -86,6 +86,14 @@ if not run:
     sys.exit(0)
 head = (run.get("head_sha") or "")[:9]
 print(f'run {run.get("id")}  status={run.get("status")}  phase={run.get("phase")}  head={head}')
+if d.get("stale"):
+    cur = (d.get("currentHeadSha") or "")[:9]
+    print()
+    print(f'!! STALE: this run was for head {head}, but the worktree HEAD is now {cur}.')
+    print('   These results predate your latest commit(s). Do NOT treat them as the')
+    print('   current state — trigger a fresh Finalize run and re-read, rather than')
+    print('   re-fixing against this stale output.')
+    print()
 print(f'{"idx":>3}  {"state":<8} {"exit":>4}  {"job":<14} name')
 for s in steps:
     ec = s.get("exitCode")

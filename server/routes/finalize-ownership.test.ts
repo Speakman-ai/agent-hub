@@ -31,6 +31,10 @@ function makeStmts() {
     getLatestFinalizeRunForSession: { get: vi.fn() },
     getLatestChecksRunForSession: { get: vi.fn() },
     getLatestReviewRunForSession: { get: vi.fn() },
+    // The latest-run handler resolves the session to compute staleness; the
+    // ownership tests don't seed a worktree, so a no-row mock keeps
+    // currentHeadSha=null / stale=false.
+    getSession: { get: vi.fn() },
     listReviewerThreadsForRun: { all: vi.fn().mockReturnValue([]) },
   };
 }
@@ -77,6 +81,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
     expect(res.body).toEqual({
       run: null,
       steps: [],
+      currentHeadSha: null,
+      stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },
@@ -110,6 +116,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest ownership gate', () 
     expect(empty.body).toEqual({
       run: null,
       steps: [],
+      currentHeadSha: null,
+      stale: false,
       flakeRecovered: [],
       flakeGate: { status: 'clean', reason: null },
       phases: { checks: null, review: null },

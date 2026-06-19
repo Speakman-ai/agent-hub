@@ -182,40 +182,67 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
   // ───────────────────────────────────────────────────────────────
   // GET /api/sessions/:sessionId/finalize-runs/latest
   // ───────────────────────────────────────────────────────────────
-  router.get('/api/sessions/:sessionId/finalize-runs/latest', (req: Request, res: Response) => {
-    const sessionId = req.params.sessionId as string;
-    if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-    const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
-    const steps = run ? listFinalizeRunSteps(stmts, run.id) : [];
-    // Per-phase done-state for the split "Run Tests" / "Reviewer" buttons.
-    // Each phase may be satisfied by its own phase-scoped run OR by a
-    // combined 'full' run, so they're resolved independently here rather
-    // than read off the single latest row.
-    const checksRun = stmts.getLatestChecksRunForSession.get(sessionId) as
-      | FinalizeRunRow
-      | undefined;
-    const reviewRun = stmts.getLatestReviewRunForSession.get(sessionId) as
-      | FinalizeRunRow
-      | undefined;
-    // Flake gate: `status` is 'clean' | 'flake_recovered' | 'blocked'. A
-    // non-clean status means auto-merge is withheld and a manual push is
-    // required — 'flake_recovered' lists the offending jobs, 'blocked' means
-    // the gate could not verify the run is clean. Parsed off
-    // run.flake_recovered_jobs for client convenience.
-    const flakeGate = parseFlakeGate(run?.flake_recovered_jobs);
-    return res.json({
-      run: run ?? null,
-      steps,
-      flakeRecovered: flakeGate.jobs,
-      flakeGate: { status: flakeGate.status, reason: flakeGate.reason ?? null },
-      phases: {
-        checks: summarizeFinalizePhase(checksRun),
-        review: summarizeFinalizePhase(reviewRun),
-      },
-    });
-  });
+  router.get(
+    '/api/sessions/:sessionId/finalize-runs/latest',
+    async (req: Request, res: Response) => {
+      const sessionId = req.params.sessionId as string;
+      if (!userCanReadSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
+      const steps = run ? listFinalizeRunSteps(stmts, run.id) : [];
+
+      // Staleness: the latest run row may predate new commits the agent made
+      // after it finished. An agent reading these results (via the web panel
+      // or `finalize.sh latest`) would otherwise treat an old commit's failure
+      // as the current state and loop re-fixing forever. Resolve the worktree's
+      // live HEAD and flag when the run no longer reflects it. Fail-safe: any
+      // resolution failure leaves `stale=false` so we never cry stale wrongly.
+      const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
+      let currentHeadSha: string | null = null;
+      if (session?.worktree_path) {
+        try {
+          const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+            cwd: session.worktree_path,
+            timeout: 30_000,
+            maxBuffer: 1 * 1024 * 1024,
+          });
+          currentHeadSha = stdout.trim() || null;
+        } catch {
+          currentHeadSha = null;
+        }
+      }
+      const stale = Boolean(run?.head_sha && currentHeadSha && run.head_sha !== currentHeadSha);
+      // Per-phase done-state for the split "Run Tests" / "Reviewer" buttons.
+      // Each phase may be satisfied by its own phase-scoped run OR by a
+      // combined 'full' run, so they're resolved independently here rather
+      // than read off the single latest row.
+      const checksRun = stmts.getLatestChecksRunForSession.get(sessionId) as
+        | FinalizeRunRow
+        | undefined;
+      const reviewRun = stmts.getLatestReviewRunForSession.get(sessionId) as
+        | FinalizeRunRow
+        | undefined;
+      // Flake gate: `status` is 'clean' | 'flake_recovered' | 'blocked'. A
+      // non-clean status means auto-merge is withheld and a manual push is
+      // required — 'flake_recovered' lists the offending jobs, 'blocked' means
+      // the gate could not verify the run is clean. Parsed off
+      // run.flake_recovered_jobs for client convenience.
+      const flakeGate = parseFlakeGate(run?.flake_recovered_jobs);
+      return res.json({
+        run: run ?? null,
+        steps,
+        currentHeadSha,
+        stale,
+        flakeRecovered: flakeGate.jobs,
+        flakeGate: { status: flakeGate.status, reason: flakeGate.reason ?? null },
+        phases: {
+          checks: summarizeFinalizePhase(checksRun),
+          review: summarizeFinalizePhase(reviewRun),
+        },
+      });
+    },
+  );
 
   // ───────────────────────────────────────────────────────────────
   // POST /api/projects/:projectId/cards/:cardId/finalize
