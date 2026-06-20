@@ -5559,6 +5559,7 @@ export default function App({ initialView } = {}) {
                         reloadToken={
                           (codeChangedTickBySession[activeSessionId] || 0) + designModeManualReload
                         }
+                        busy={isProcessing || Boolean(activeTasks[activeSessionId])}
                         onManualReload={() => setDesignModeManualReload((n) => n + 1)}
                       />
                     )}

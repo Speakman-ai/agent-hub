@@ -140,6 +140,38 @@ describe('exportDesignPdf', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(`${SAME_ORIGIN_BASE}/design-files/d-1/index.html`);
   });
 
+  it('loads from srcBase (session worktree mount) when provided, not /design-files/', async () => {
+    html2canvasMock.mockResolvedValue(fakeCanvas({ width: 800, height: 800 }));
+    await exportDesignPdf({
+      designId: 'session-sess-1',
+      base: SAME_ORIGIN_BASE,
+      srcBase: '/session-files/sess-1/design',
+      filename: 'design-sess-1',
+    });
+
+    // The artifact URL targets the session mount, decoupled from the
+    // standalone Design Studio `/design-files/` path.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${SAME_ORIGIN_BASE}/session-files/sess-1/design/index.html`,
+    );
+    expect(fetchMock.mock.calls[0][0]).not.toContain('/design-files/');
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock.mock.calls[0][0]).toBe('design-sess-1.pdf');
+  });
+
+  it('tolerates a trailing slash on srcBase without doubling it', async () => {
+    html2canvasMock.mockResolvedValue(fakeCanvas({ width: 800, height: 800 }));
+    await exportDesignPdf({
+      designId: 'session-sess-2',
+      base: SAME_ORIGIN_BASE,
+      srcBase: '/session-files/sess-2/design/',
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${SAME_ORIGIN_BASE}/session-files/sess-2/design/index.html`,
+    );
+  });
+
   it('paginates long designs across multiple PDF pages', async () => {
     // canvas.height (4000) / pageHeightPx (canvas.width=800 / 210mm * 297mm ≈ 1131)
     // = ~4 pages. addPage is called once less than the total page count.

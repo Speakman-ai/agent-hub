@@ -1,5 +1,8 @@
-import { Palette } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { Palette, Download } from 'lucide-react';
 import { DesignCanvas } from './DesignView.jsx';
+import { exportDesignPdf } from '../utils/exportDesignPdf.js';
+import { getServerBase } from '../utils/connection.js';
 
 /**
  * SessionDesignModePane — live canvas for a session running in `session_mode =
@@ -13,12 +16,49 @@ import { DesignCanvas } from './DesignView.jsx';
  * bumps it on `code_changed` / turn-`done` for this session, so the agent's
  * file writes show up on the canvas without a manual refresh.
  *
+ * PDF export reuses the same `exportDesignPdf` util the standalone Design Studio
+ * uses — we just point it at the session's worktree mount via `srcBase`. The
+ * Electron native-save path (`window.electronAPI.saveDesignPdf`) inside that
+ * util is engine-agnostic, so desktop gets the OS save dialog with no extra
+ * wiring (card 1028: Electron parity + PDF export reuse).
+ *
  * Props:
  *   - sessionId:      session whose worktree design/ dir to render — required.
  *   - reloadToken:    number; bump to force the canvas to re-fetch.
+ *   - busy:           true while the agent is streaming/writing — disables PDF
+ *                     export so the capture reflects a stable index.html.
  *   - onManualReload(): user-triggered canvas refresh.
  */
-export default function SessionDesignModePane({ sessionId, reloadToken = 0, onManualReload }) {
+export default function SessionDesignModePane({
+  sessionId,
+  reloadToken = 0,
+  busy = false,
+  onManualReload,
+}) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
+
+  const handleDownloadPdf = useCallback(async () => {
+    if (!sessionId || exporting || busy) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportDesignPdf({
+        designId: `session-${sessionId}`,
+        base: getServerBase(),
+        // Encode the id segment: session ids can carry URL-significant chars
+        // (`#`, `?`, spaces, `/`) and `srcBase` is interpolated raw into the
+        // fetch URL, so a literal id would resolve to the wrong artifact path.
+        srcBase: `/session-files/${encodeURIComponent(sessionId)}/design`,
+        filename: `design-${sessionId}`,
+      });
+    } catch (err) {
+      setExportError(err?.message || 'Failed to export PDF');
+    } finally {
+      setExporting(false);
+    }
+  }, [sessionId, exporting, busy]);
+
   if (!sessionId) return null;
 
   return (
@@ -34,10 +74,33 @@ export default function SessionDesignModePane({ sessionId, reloadToken = 0, onMa
             Design mode
           </span>
         </div>
+        <div className="flex items-center gap-2 min-w-0">
+          {exportError && (
+            <span className="text-xs text-red-400 hidden xl:inline truncate" title={exportError}>
+              {exportError}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
+            disabled={exporting || busy}
+            className="flex items-center gap-1 text-xs text-gray-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+            title={
+              busy
+                ? 'Wait for the agent to finish before exporting'
+                : 'Download this design as a PDF'
+            }
+            aria-label="Download design as PDF"
+            data-testid="session-design-export-pdf"
+          >
+            <Download size={14} />
+            <span className="hidden sm:inline">{exporting ? 'Exporting…' : 'PDF'}</span>
+          </button>
+        </div>
       </div>
       <DesignCanvas
         designId={`session-${sessionId}`}
-        srcBase={`/session-files/${sessionId}/design`}
+        srcBase={`/session-files/${encodeURIComponent(sessionId)}/design`}
         reloadToken={reloadToken}
         onManualReload={onManualReload}
       />

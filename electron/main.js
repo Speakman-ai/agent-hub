@@ -474,7 +474,9 @@ ipcMain.handle('bug-report:capture-page', async () => {
   }
 });
 
-// Design Studio — save exported PDF via native dialog (renderer uses jsPDF).
+// Design PDF export — save via native dialog (renderer renders with jsPDF).
+// Content-agnostic: receives PDF bytes + a filename, so it serves both the
+// standalone Design Studio and in-session Design-mode exports (card 1028).
 ipcMain.handle('design-pdf:save', async (event, { defaultFilename, data }) => {
   const win =
     BrowserWindow.fromWebContents(event.sender) ||

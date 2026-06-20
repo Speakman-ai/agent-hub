@@ -96,10 +96,26 @@ function awaitIframeLoad(iframe, errorMessage) {
  * Render the given design as a PDF and trigger a browser download.
  *
  * @param {object}   opts
- * @param {string}   opts.designId   Design id — used to build both the
- *                                   `/design-files/:id/index.html` URL and
- *                                   the default download filename.
+ * @param {string}   opts.designId   Design id — used to build the default
+ *                                   `/design-files/:id/` URL (when no
+ *                                   `srcBase` is given) and the fallback
+ *                                   download filename.
  * @param {string}   opts.base       Server base URL (from `getServerBase`).
+ * @param {string}  [opts.srcBase]   Optional server-relative directory the
+ *                                   artifacts load from, e.g.
+ *                                   `/session-files/<id>/design`. Lets a
+ *                                   design-mode session export from its
+ *                                   worktree mount instead of the standalone
+ *                                   Design Studio `/design-files/<id>/` path.
+ *                                   Mirrors `DesignCanvas`'s `srcBase` prop.
+ *                                   CONTRACT: must be an already-URL-safe path
+ *                                   fragment — it is interpolated raw into the
+ *                                   fetch URL (no per-segment encoding here),
+ *                                   so callers must `encodeURIComponent` any
+ *                                   dynamic id segments (session ids can carry
+ *                                   `#`, `?`, spaces, `/`). The default
+ *                                   `/design-files/<id>/` path encodes
+ *                                   `designId` for you; `srcBase` does not.
  * @param {string}  [opts.filename]  Optional output filename (without .pdf);
  *                                   falls back to `design-<id>`.
  * @param {Document}[opts.doc]       Host document (defaults to `document`).
@@ -108,14 +124,21 @@ function awaitIframeLoad(iframe, errorMessage) {
  *                                   initiated; rejects on fetch/render
  *                                   failure so callers can surface errors.
  */
-export async function exportDesignPdf({ designId, base, filename, doc } = {}) {
+export async function exportDesignPdf({ designId, base, srcBase, filename, doc } = {}) {
   if (!designId) throw new Error('designId is required');
   if (!base) throw new Error('base is required');
   const hostDoc = doc || (typeof document !== 'undefined' ? document : null);
   if (!hostDoc) throw new Error('No document available for PDF export');
 
   const safeName = (filename || `design-${designId}`).replace(/[^a-z0-9._-]+/gi, '_');
-  const designUrl = `${base}/design-files/${encodeURIComponent(designId)}/index.html`;
+  // Directory the artifact loads from. Standalone Design Studio defaults to
+  // `/design-files/<id>/`; design-mode sessions pass `srcBase` for the worktree
+  // mount (`/session-files/<id>/design/`). Same shape as DesignCanvas's dirBase
+  // so the on-screen canvas and the exported PDF resolve assets identically.
+  const dirBase = srcBase
+    ? `${base}${srcBase.endsWith('/') ? srcBase : `${srcBase}/`}`
+    : `${base}/design-files/${encodeURIComponent(designId)}/`;
+  const designUrl = `${dirBase}index.html`;
 
   // Layer 1: cross-origin guard. iframe.contentDocument is unreadable when
   // the page and the iframe don't share an origin — no amount of retrying
@@ -136,7 +159,7 @@ export async function exportDesignPdf({ designId, base, filename, doc } = {}) {
     if (!res.ok) {
       throw new Error(
         `Design artifact is unavailable (HTTP ${res.status}). ` +
-          'The design may have been deleted, or the dev server is not proxying /design-files/.',
+          'The design may have been deleted, or the dev server is not proxying the design artifact directory.',
       );
     }
     prefetchedHtml = await res.text();
