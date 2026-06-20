@@ -728,6 +728,19 @@ export class PreviewComposeRuntime {
    */
   private readonly stoppingGroups = new Set<string>();
 
+  /**
+   * Wall-clock ms at which the `docker compose up -d --build` child exited
+   * cleanly (code 0) for a group — i.e. the image build finished and the
+   * containers were created/started. The health-check loop reads this to
+   * **rebase** its readiness deadline: a slow first-time image build (e.g.
+   * surveytracker's `pyproj sync` pulling geodetic grids for minutes) must
+   * not eat into the app-readiness budget. Without this rebase the single
+   * `readyTimeoutMs` window covers build + start + health, so a long build
+   * trips "health check timed out" before the app ever gets a chance.
+   * Populated by the up-child `exit` handler; cleared on teardown / failure.
+   */
+  private readonly buildCompletedAtMs = new Map<string, number>();
+
   /** Per-session serialization lock — same shape as PreviewRuntime. */
   private readonly sessionLocks = new Map<string, Promise<unknown>>();
 
@@ -1067,9 +1080,19 @@ export class PreviewComposeRuntime {
       // getLogTail reattach invariant. The runtime follower is started by
       // the `ready` transition in runHealthCheck. Here we only drop the
       // build child from the live-producer map when it exits.
-      child.on('exit', () => {
+      child.on('exit', (code) => {
         if (this.liveLogChildren.get(groupId) === child) {
           this.liveLogChildren.delete(groupId);
+        }
+        // A clean exit (code 0) means the build finished and the containers
+        // were created/started. Stamp the moment so runHealthCheck can rebase
+        // its deadline and grant the app the FULL readiness budget after the
+        // build — instead of letting a slow first-time image build burn the
+        // window. A non-zero exit (build/up failed) is intentionally NOT
+        // stamped: a doomed boot should time out on the original deadline,
+        // never earn a fresh readiness window.
+        if (code === 0) {
+          this.buildCompletedAtMs.set(groupId, this.clock.nowMs());
         }
       });
     } catch (err) {
@@ -1266,6 +1289,7 @@ export class PreviewComposeRuntime {
       this.stoppingGroups.delete(groupId);
       this.logTails.delete(groupId);
       this.sessionIdByGroup.delete(groupId);
+      this.buildCompletedAtMs.delete(groupId);
     }
   }
 
@@ -1707,12 +1731,52 @@ export class PreviewComposeRuntime {
   }): Promise<void> {
     const healthUrl = opts.url + opts.healthPath;
     const startedAt = this.clock.nowMs();
-    const deadline = startedAt + opts.timeoutMs;
+    // Two-phase budget. `originalDeadline` caps the BUILD phase (build can't
+    // hang forever) and is held SEPARATELY so it can gate the rebase below.
+    // When the `docker compose up -d --build` child exits cleanly — recorded
+    // in `buildCompletedAtMs` — we rebase `deadline` to `buildExit + timeoutMs`
+    // exactly once, so the app gets the full readiness budget independent of
+    // how long the image build took. A cached/fast build (child exits almost
+    // immediately) collapses this back to the original single-window
+    // behaviour. The rebase is the fix for slow first boots tripping
+    // "health check timed out" before the app ever starts.
+    //
+    // The rebase is gated on `buildExitAt <= originalDeadline`: a build that
+    // OVERRAN its own budget must not earn a fresh readiness window. If the
+    // loop is delayed/sleeping past `originalDeadline` and the `up` child
+    // exits cleanly at `originalDeadline + epsilon`, we leave `deadline` at
+    // the original so the expiry check fails the preview instead of extending.
+    const originalDeadline = startedAt + opts.timeoutMs;
+    let deadline = originalDeadline;
+    let rebasedForBuild = false;
     // Throttle state for the "still starting" progress heartbeat. Seeded to
     // `startedAt` so the first heartbeat fires one interval in, not on the
     // very first (already-noisy) poll.
     let lastHeartbeatAt = startedAt;
-    while (this.clock.nowMs() < deadline) {
+    // NOTE: the loop is `for (;;)` rather than `while (now < deadline)` so the
+    // build-completion rebase is applied BEFORE the expiry check on every
+    // iteration — including the one that wakes from `sleep`. A `while`
+    // condition evaluated first would mis-fire the boundary race the reviewer
+    // flagged: a clean `up` exit stamped at, say, 95ms (within the build-phase
+    // budget) while the loop sleeps would be missed if the sleep ends at
+    // 100-105ms — the `while` would see `now >= original deadline` and mark
+    // the preview failed before ever consulting the freshly-stamped
+    // `buildCompletedAtMs`. Checking the rebase first closes that window.
+    for (;;) {
+      if (!rebasedForBuild) {
+        const buildExitAt = this.buildCompletedAtMs.get(opts.groupId);
+        if (buildExitAt !== undefined) {
+          rebasedForBuild = true;
+          // Only extend when the build finished within its own budget. A
+          // build that overran `originalDeadline` keeps the original
+          // deadline so the expiry check below fails it — it cannot launder
+          // an over-budget build into a fresh readiness window.
+          if (buildExitAt <= originalDeadline) {
+            deadline = buildExitAt + opts.timeoutMs;
+          }
+        }
+      }
+      if (this.clock.nowMs() >= deadline) break;
       // If the group has already been torn down or flipped to failed,
       // bail. Cheap query — happy path runs at most ~300 times during
       // a 5-min boot at the default 1s cadence.
@@ -2007,6 +2071,7 @@ export class PreviewComposeRuntime {
     // torn down later by stopPreview, but the `logs --follow` child should
     // not linger streaming a dead stack until then.
     this.killLiveLogChild(groupId);
+    this.buildCompletedAtMs.delete(groupId);
     if (update.changes > 0) {
       this.fireNotifyStatus(groupId, 'failed', reason);
     }

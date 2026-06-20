@@ -788,6 +788,233 @@ describe('PreviewComposeRuntime.startPreview — failure paths', () => {
   });
 });
 
+// ─── slow-build readiness-deadline rebase ──────────────────────────────
+
+describe('PreviewComposeRuntime — readiness deadline rebases past a slow image build', () => {
+  // Flush the macrotask (setImmediate) queue so FakeChild.exitWith's
+  // `setImmediate(() => emit('exit'))` actually delivers the up-child exit
+  // before we assert. `flushMicrotasks` only drains the microtask queue.
+  const flushImmediate = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  it('grants the app the full readiness window after the build child exits clean (no premature timeout)', async () => {
+    const db = freshDb();
+    // Default makeSpawn keeps the `up -d --build` child alive until we
+    // explicitly exit it — modelling a long first-time image build.
+    const harness = makeSpawn();
+    // The app only answers 2xx on the 13th poll (~120ms in), which is PAST
+    // the original 100ms single-window budget but well within the rebased
+    // (buildExit + 100ms) window. Without the rebase the group would have
+    // been marked failed at ~100ms, before the app ever came up.
+    const { fetch } = makeFetch({ okOnAttempt: 13 });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      config: { readyTimeoutMs: 100, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-slowbuild', makeProject(), '/wt');
+
+    // Let the build run for ~50ms (5 failing polls) then have the
+    // `docker compose up -d --build` child exit cleanly — image built,
+    // containers created/started.
+    for (let i = 0; i < 5; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    harness.spawned[0].exitWith(0);
+    await flushImmediate();
+    await flushMicrotasks();
+
+    // Keep draining well past the ORIGINAL 100ms deadline. The rebase moved
+    // it to ~150ms (buildExit) + 100ms, so the attempt-13 success at ~120ms
+    // lands inside the window and flips the group to ready.
+    for (let i = 0; i < 12; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)!.status).toBe('ready');
+  });
+
+  it('catches a clean build exit stamped during the sleep that ends past the original deadline (boundary race)', async () => {
+    // Regression for the loop-boundary race: with readyTimeoutMs=100 and a
+    // 10ms poll, if the `up` child exits cleanly at 95ms WHILE the health
+    // loop is parked in sleep, the next wake lands at 100ms. A
+    // `while (now < deadline)` loop would evaluate `100 < 100` → false and
+    // mark the preview failed BEFORE consulting the freshly-stamped
+    // buildCompletedAtMs — even though the build finished within the
+    // build-phase budget. The rebase must be considered before the expiry
+    // decision.
+    const db = freshDb();
+    const harness = makeSpawn();
+    // Success only after the rebase window opens, well past the original
+    // 100ms deadline.
+    const { fetch } = makeFetch({ okOnAttempt: 13 });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      config: { readyTimeoutMs: 100, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-boundary', makeProject(), '/wt');
+
+    // Advance to now=90 with the build still running (all polls fail), then
+    // flush so the now=90 iteration parks in sleep(resolveAt=100).
+    for (let i = 0; i < 9; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    // Cross the original deadline in two steps: advance to 95ms (the
+    // resolveAt=100 sleep is NOT yet resolved), stamp a CLEAN build exit
+    // there, then advance the final 5ms so the loop wakes at exactly 100ms —
+    // the boundary a naive `while` condition would mis-handle.
+    clock.advance(5); // now = 95, sleep still pending
+    harness.spawned[0].exitWith(0);
+    await flushImmediate(); // deliver exit → buildCompletedAtMs stamped @95
+    clock.advance(5); // now = 100 → sleep resolves, loop wakes
+    await flushMicrotasks();
+
+    // Drain into the rebased (95 + 100 = 195ms) window; the app answers
+    // healthy and the group flips to ready instead of timing out at 100ms.
+    for (let i = 0; i < 12; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)!.status).toBe('ready');
+  });
+
+  it('does NOT rebase on a non-zero build exit — a doomed boot still times out on the original window', async () => {
+    const db = freshDb();
+    const harness = makeSpawn();
+    // Same late-success fetch, but the build child exits 1 (build/up
+    // failed). A failed build must not earn a fresh readiness window, so the
+    // group times out on the original 100ms deadline before attempt 13.
+    const { fetch } = makeFetch({ okOnAttempt: 13 });
+    const clock = makeClock();
+    const warnings: string[] = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      logger: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      config: { readyTimeoutMs: 100, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-badbuild', makeProject(), '/wt');
+
+    for (let i = 0; i < 5; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    harness.spawned[0].exitWith(1);
+    await flushImmediate();
+    await flushMicrotasks();
+
+    for (let i = 0; i < 12; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)!.status).toBe('failed');
+    expect(warnings.some((w) => w.includes('health check timed out'))).toBe(true);
+  });
+
+  it('does NOT rebase when the build exits AFTER its own budget (over-budget build cannot launder a fresh window)', async () => {
+    // Regression for the reviewer's gating concern: if the health loop is
+    // delayed/sleeping past `startedAt + timeoutMs` and the `up` child exits
+    // cleanly at `originalDeadline + epsilon`, an ungated rebase would extend
+    // the deadline and grant a fresh readiness window to a build that already
+    // blew its budget. The rebase must be gated on `buildExitAt <=
+    // originalDeadline`.
+    const db = freshDb();
+    const harness = makeSpawn();
+    // Would-succeed fetch — proves that an (incorrect) rebase would flip the
+    // group to ready. With the gate it must stay failed.
+    const { fetch } = makeFetch({ okOnAttempt: 13 });
+    const clock = makeClock();
+    const warnings: string[] = [];
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      logger: { log: () => {}, warn: (m) => warnings.push(m), error: () => {} },
+      // originalDeadline = 95ms, poll every 10ms → the loop parks in a
+      // sleep(resolveAt=100) that wakes PAST the 95ms build budget.
+      config: { readyTimeoutMs: 95, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-overbudget', makeProject(), '/wt');
+
+    // Park the loop at sleep(resolveAt=100) with the build still running.
+    for (let i = 0; i < 9; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    // Jump to now=100 (past the 95ms build budget), THEN synchronously deliver
+    // a clean up-child exit so buildCompletedAtMs is stamped at 100 — strictly
+    // greater than originalDeadline (95). A synchronous `emit('exit')` pins the
+    // stamp time exactly; exitWith's setImmediate would fire only after the
+    // sleep-resolve microtask, defeating the ordering this test needs.
+    clock.advance(10); // now = 100
+    harness.spawned[0].emit('exit', 0, null); // stamps buildCompletedAtMs @100
+    await flushMicrotasks();
+
+    // Drain further — the over-budget build must not have extended the window.
+    for (let i = 0; i < 12; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)!.status).toBe('failed');
+    expect(warnings.some((w) => w.includes('health check timed out'))).toBe(true);
+  });
+
+  it('still caps a build that never finishes on the original window (no infinite wait)', async () => {
+    const db = freshDb();
+    // Build child never exits — modelling a genuinely hung build.
+    const harness = makeSpawn();
+    const { fetch } = makeFetch({ alwaysFail: true });
+    const clock = makeClock();
+    const runtime = new PreviewComposeRuntime({
+      db,
+      spawn: harness.spawn,
+      fetch,
+      clock,
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+      config: { readyTimeoutMs: 50, healthIntervalMs: 10 },
+    });
+
+    const result = await runtime.startPreview('sess-hung', makeProject(), '/wt');
+
+    for (let i = 0; i < 10; i++) {
+      await flushMicrotasks();
+      clock.advance(10);
+    }
+    await flushMicrotasks();
+
+    expect(runtime.getById(result.previewId)!.status).toBe('failed');
+  });
+});
+
 // ─── "still starting" progress heartbeat ───────────────────────────────
 
 describe('PreviewComposeRuntime — starting-phase heartbeat', () => {
