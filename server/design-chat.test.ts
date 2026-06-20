@@ -3,8 +3,15 @@
  * spawns a real CLI and is exercised through integration tests; here we just
  * cover the state-inspection surface that the `/status` endpoint relies on.
  */
-import { getDesignStatus, activeDesignProcesses, resolveDesignStudioModel } from './design-chat.js';
-import type { AppConfig } from './types.js';
+import { vi } from 'vitest';
+import {
+  getDesignStatus,
+  activeDesignProcesses,
+  resolveDesignStudioModel,
+  handleDesignChat,
+  initDesignChat,
+} from './design-chat.js';
+import type { AppConfig, DesignWithProjects } from './types.js';
 
 function cfg(partial: Partial<AppConfig>): AppConfig {
   return partial as AppConfig;
@@ -59,6 +66,42 @@ describe('getDesignStatus', () => {
     expect(resolveDesignStudioModel(null, c)).toBe('claude-opus-4-8');
     expect(resolveDesignStudioModel('  ', c)).toBe('claude-opus-4-8');
     expect(resolveDesignStudioModel('not-on-list', c)).toBe('claude-opus-4-8');
+  });
+
+  it('refuses a chat turn on a migrated (imported) design and starts no turn', async () => {
+    const broadcast = vi.fn();
+    const migrated = {
+      id: 'd-migrated',
+      name: 'Old',
+      imported_session_id: 'sess-1',
+      agent_engine: null,
+      agent_model: null,
+      engine_session_id: null,
+    } as unknown as DesignWithProjects;
+    initDesignChat({
+      broadcast,
+      stmts: {},
+      getDesign: () => migrated,
+    } as unknown as Parameters<typeof initDesignChat>[0]);
+
+    const ws = { send: vi.fn() };
+    await handleDesignChat(
+      ws as unknown as Parameters<typeof handleDesignChat>[0],
+      {
+        type: 'design_chat',
+        designId: 'd-migrated',
+        content: 'keep editing',
+      } as unknown as Parameters<typeof handleDesignChat>[1],
+    );
+
+    // Sent a migrated error pointing at the session; no message was appended and
+    // no turn was started (split-brain prevented).
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(ws.send.mock.calls[0][0] as string);
+    expect(payload.code).toBe('design_migrated');
+    expect(payload.sessionId).toBe('sess-1');
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(activeDesignProcesses.has('d-migrated')).toBe(false);
   });
 
   it('treats a live entry with no streamed output yet as inFlight with empty text', () => {

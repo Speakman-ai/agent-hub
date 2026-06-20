@@ -131,6 +131,7 @@ import {
 } from './utils/orgs.js';
 import { getApiBase, getAuthHeaders, reloadForOrgSwitch } from './utils/connection.js';
 import { extractSubmittedAskIds } from './utils/askAnswers.js';
+import { resolveDesignRedirect } from './utils/designRedirect.js';
 import {
   applyDiffCountWsEffect,
   createDiffFileCountRefresher,
@@ -3596,6 +3597,18 @@ export default function App({ initialView } = {}) {
 
   const activeDesign = designs.find((d) => d.id === activeDesignId);
 
+  // If the open design has been migrated to a design-mode session (e.g. the
+  // importer ran while it was open, or it was opened by a stale deep link),
+  // redirect to that session instead of rendering the read-only canvas.
+  useEffect(() => {
+    if (currentView !== 'design') return;
+    const redirect = resolveDesignRedirect(activeDesign);
+    if (redirect) {
+      focusAgentSession(undefined, redirect.sessionId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentView, activeDesign?.id, activeDesign?.imported_session_id]);
+
   const handleNewSession = async () => {
     if (!activeAgentId) return;
     // Reviewer agents are spawned exclusively by the Finalize review phase.
@@ -4968,8 +4981,18 @@ export default function App({ initialView } = {}) {
                   designs={designs}
                   projects={projects}
                   onNavigate={(view, extra) => {
+                    // Migrated designs redirect to their design-mode session
+                    // instead of opening the (read-only) standalone canvas.
+                    if (view === 'design' && extra) {
+                      const target = designs.find((d) => d.id === extra);
+                      const redirect = resolveDesignRedirect(target);
+                      if (redirect) {
+                        focusAgentSession(undefined, redirect.sessionId);
+                        return;
+                      }
+                      setActiveDesignId(extra);
+                    }
                     setCurrentView(view);
-                    if (view === 'design' && extra) setActiveDesignId(extra);
                   }}
                   onChanged={refreshDesigns}
                 />

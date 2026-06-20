@@ -17,8 +17,11 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import { resolveDesignRedirect, isDesignMigrated } from '../utils/designRedirect';
+import { useApp } from '../context/AppContext';
 
 export default function DesignsListScreen({ navigation }) {
+  const { setActiveAgentId, setActiveSessionId } = useApp();
   const [designs, setDesigns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -66,6 +69,25 @@ export default function DesignsListScreen({ navigation }) {
     }
   };
 
+  // Open a design: migrated designs redirect to their design-mode session
+  // (resolving the owning agent from the session row); others open the
+  // standalone read-only canvas as before.
+  const openDesign = async (d) => {
+    const redirect = resolveDesignRedirect(d);
+    if (!redirect) {
+      navigation.navigate('DesignView', { designId: d.id, design: d });
+      return;
+    }
+    try {
+      const session = await api.getSession(redirect.sessionId);
+      if (session?.agent_id) setActiveAgentId(session.agent_id);
+      setActiveSessionId(redirect.sessionId);
+      navigation.navigate('Chat');
+    } catch (err) {
+      Alert.alert('Open failed', err.message || 'Could not open the migrated design session');
+    }
+  };
+
   const handleDelete = (id) => {
     Alert.alert('Delete design', 'Delete this design? The artifact directory will be wiped.', [
       { text: 'Cancel', style: 'cancel' },
@@ -96,13 +118,14 @@ export default function DesignsListScreen({ navigation }) {
   const renderItem = ({ item: d }) => (
     <TouchableOpacity
       style={styles.card}
-      onPress={() => navigation.navigate('DesignView', { designId: d.id, design: d })}
+      onPress={() => openDesign(d)}
       onLongPress={() => handleDelete(d.id)}
     >
       <View style={styles.cardTop}>
         <Text style={styles.cardTitle} numberOfLines={1}>
           {d.name}
         </Text>
+        {isDesignMigrated(d) ? <Text style={styles.migratedBadge}>Migrated</Text> : null}
         {deletingId === d.id ? (
           <ActivityIndicator size="small" color={colors.gray500} />
         ) : null}
@@ -228,6 +251,15 @@ const styles = StyleSheet.create({
   },
   cardTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   cardTitle: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.white },
+  migratedBadge: {
+    fontSize: 10,
+    color: '#6ee7b7',
+    backgroundColor: 'rgba(6,78,59,0.6)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
   linkedRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
   linkedTag: { fontSize: 10, backgroundColor: colors.gray800, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   cardMeta: { fontSize: 11, color: colors.gray600, marginTop: 8 },

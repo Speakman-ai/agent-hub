@@ -31,6 +31,13 @@ import { getDesignStatus } from '../design-chat.js';
 import { getActiveOrgId } from '../orgs.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import {
+  importDesignToSession,
+  DesignImportError,
+  DesignImportInProgressError,
+  type ImportCandidateAgent,
+} from '../design-import.js';
+import './designs.openapi.js';
 
 interface DesignRouteDeps extends RouteDeps {
   /** Absolute path of `<dataDir>/designs/`. Injected by index.ts. */
@@ -74,10 +81,31 @@ function isPathStrictlyInsideRoot(resolvedFile: string, resolvedRoot: string): b
 
 export default function createDesignRoutes(deps: DesignRouteDeps): Router {
   const { findProject, broadcast, getDesignsRoot, config, stmts, findAgent, handleChat } = deps;
+  const { allAgents, provisionSessionWorkspace } = deps;
   const router = Router();
 
   function lookup(projectId: string) {
     return findProject(projectId);
+  }
+
+  /**
+   * Once a design has been migrated into a design-mode session
+   * (`imported_session_id` set), the standalone copy is read-only: further
+   * mutations would land in the legacy store and never reach the session,
+   * creating split-brain state. Mutating routes call this first and 409 when the
+   * design is already imported, pointing the caller at the session. Returns true
+   * when the request was handled (rejected), false to continue.
+   */
+  function rejectIfImported(design: DesignWithProjects, res: Response): boolean {
+    if (!design.imported_session_id) return false;
+    res.status(409).json({
+      error: 'design_migrated',
+      sessionId: design.imported_session_id,
+      message:
+        'This design has been migrated to a design-mode session and is now read-only. ' +
+        'Continue your work in the session instead.',
+    });
+    return true;
   }
 
   router.get('/api/designs', (_req: Request, res: Response) => {
@@ -118,6 +146,7 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
   router.patch('/api/designs/:id', (req: Request, res: Response) => {
     const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
     if (!design) return res.status(404).json({ error: 'Design not found' });
+    if (rejectIfImported(design, res)) return;
 
     const body = req.body as {
       name?: string;
@@ -217,6 +246,9 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
   router.delete('/api/designs/:id', (req: Request, res: Response) => {
     const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
     if (!design) return res.status(404).json({ error: 'Design not found' });
+    // Migrated designs are preserved read-only for the migration window ("no
+    // destructive delete until parity") — refuse to drop the legacy artifact.
+    if (rejectIfImported(design, res)) return;
     deleteDesign(design.id, getDesignsRoot());
     broadcast({ type: 'design_deleted', designId: design.id });
     res.json({ ok: true });
@@ -464,6 +496,86 @@ export default function createDesignRoutes(deps: DesignRouteDeps): Router {
         },
       });
     } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  /**
+   * Migrate a standalone design into a real `design`-mode session: create the
+   * session for an agent in one of the design's linked projects, provision its
+   * worktree, copy the design's artifact dir into `<worktree>/design/`, and
+   * replay the design transcript as session messages. Non-destructive — the
+   * design row, its files, and messages are left intact (the standalone tables
+   * are dropped a release later, gated on production parity). Re-running on an
+   * already-imported design returns the existing mapping (`reused: true`).
+   *
+   * Requires the worktree-provisioning hook to be wired (it is in index.ts);
+   * test harnesses that omit it get a 503.
+   */
+  router.post('/api/designs/:id/import', async (req: Request, res: Response) => {
+    const design = getDesign(req.params.id as string, lookup, getActiveOrgId());
+    if (!design) return res.status(404).json({ error: 'Design not found' });
+    if (!provisionSessionWorkspace) {
+      return res.status(503).json({
+        error: 'Worktree provisioning is not available — cannot import design',
+      });
+    }
+
+    const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+    const messages = listDesignMessages(design.id);
+    const agents = (): ImportCandidateAgent[] =>
+      allAgents().map((a) => ({
+        id: a.id,
+        projectId: a.projectId,
+        engine: a.engine,
+        role: a.role ?? null,
+      }));
+
+    try {
+      const result = await importDesignToSession(
+        {
+          stmts,
+          getDesignsRoot,
+          provisionSessionWorkspace,
+          resolveEngineModel: (agentId: string) => {
+            const found = findAgent(agentId);
+            const engine = found?.agent?.engine || 'claude-code';
+            const model = resolveEffectiveModel(config, engine, {
+              agentModel: found?.agent?.model ?? null,
+              ownerUserId: ownerUid,
+            });
+            return { engine, model };
+          },
+          setSessionOwner,
+          ownerUserId: ownerUid,
+          agents,
+          broadcast,
+        },
+        design,
+        messages,
+      );
+      const reused = result.skipped === 'already-imported';
+      return res.status(reused ? 200 : 201).json({ ...result, reused });
+    } catch (err: unknown) {
+      if (err instanceof DesignImportInProgressError) {
+        // Transient: a concurrent import holds the lock. Caller should retry.
+        return res.status(409).json({
+          error: 'import_in_progress',
+          retryable: true,
+          message: 'An import for this design is already in progress. Retry shortly.',
+        });
+      }
+      if (err instanceof DesignImportError) {
+        return res.status(409).json({
+          error: 'design_import_failed',
+          reason: err.reason,
+          message:
+            err.reason === 'no-target-agent'
+              ? 'Design has no linked project with an eligible agent to own the imported session.'
+              : err.message,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       return res.status(500).json({ error: message });
     }

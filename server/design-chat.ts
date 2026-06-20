@@ -220,6 +220,24 @@ export async function handleDesignChat(
     return;
   }
 
+  // Once a design has been migrated to a design-mode session it is read-only:
+  // new chat turns would write to the legacy design store and never reach the
+  // session, creating split-brain state. Refuse and point at the session.
+  if (design.imported_session_id) {
+    if (ws)
+      ws.send(
+        JSON.stringify({
+          type: 'error',
+          error:
+            'This design has been migrated to a design-mode session and is read-only. ' +
+            'Continue in the session instead.',
+          code: 'design_migrated',
+          sessionId: design.imported_session_id,
+        }),
+      );
+    return;
+  }
+
   if (!content || !content.trim()) {
     if (ws) ws.send(JSON.stringify({ type: 'error', error: 'Empty message' }));
     return;

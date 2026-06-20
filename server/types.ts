@@ -336,6 +336,21 @@ export interface DesignRow {
   agent_model: string | null;
   /** Engine-native session id for resume (Claude/Cursor/Codex); null until first successful turn. */
   engine_session_id: string | null;
+  /**
+   * Set once the standalone design has been FULLY migrated into a design-mode
+   * session (see server/design-import.ts). NULL = not yet imported. When set,
+   * the design is read-only and the standalone routes redirect to this session.
+   * Only ever references a completed import — an in-flight one uses `import_lock`.
+   */
+  imported_session_id: string | null;
+  /**
+   * In-progress import lock: the session id currently being imported, or NULL
+   * when no import is running. Internal concurrency control; not the redirect
+   * target (that's `imported_session_id`). Reclaimable after a stale timeout.
+   */
+  import_lock: string | null;
+  /** When `import_lock` was acquired (datetime); drives stale-lock reclaim. */
+  import_locked_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1389,6 +1404,14 @@ export interface Stmts {
 
   // Messages
   addMessage: Stmt;
+  /**
+   * Like `addMessage` but with an explicit `created_at` (last param). Used by
+   * the Design Studio → design-mode session importer to replay
+   * `design_messages` while preserving their original timestamps so the
+   * imported transcript keeps its order under `getMessages` (ORDER BY
+   * created_at ASC).
+   */
+  addMessageWithCreatedAt: Stmt;
   getMessages: Stmt;
   getMessagesPageLatest: Stmt;
   getMessagesPageBeforeId: Stmt;
@@ -1457,6 +1480,16 @@ export interface Stmts {
   updateDesignChatEngineModelSession: Stmt;
   touchDesign: Stmt;
   deleteDesign: Stmt;
+  /**
+   * Design-import concurrency control. `imported_session_id` is published only
+   * on full completion (`completeDesignImport`); an in-flight import holds
+   * `import_lock` instead, so concurrent callers never see a half-built import
+   * as "done". See server/design-import.ts.
+   */
+  clearStaleImportedSession: Stmt;
+  acquireDesignImportLock: Stmt;
+  completeDesignImport: Stmt;
+  releaseDesignImportLock: Stmt;
   listDesignProjects: Stmt;
   linkDesignProject: Stmt;
   unlinkDesignProject: Stmt;

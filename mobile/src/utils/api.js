@@ -37,6 +37,7 @@ export const api = {
   // Agents & Sessions
   getAgents: () => fetchJSON('/agents'),
   getSessions: (agentId) => fetchJSON(`/agents/${agentId}/sessions`),
+  getSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`),
   createSession: (agentId, name, options = {}) =>
     fetchJSON(`/agents/${agentId}/sessions`, {
       method: 'POST',

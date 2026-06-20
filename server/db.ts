@@ -2231,6 +2231,34 @@ function initDb(dataDir: string): void {
     /* column already exists */
   }
 
+  // Migration: design-mode fold-in. Records the design-mode session a
+  // standalone design was migrated into so the old routes can redirect and
+  // the design becomes read-only. NULL until the importer runs. See
+  // server/design-import.ts.
+  try {
+    db.exec('ALTER TABLE designs ADD COLUMN imported_session_id TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+
+  // Migration: design-import concurrency lock. `import_lock` holds the
+  // in-progress session id WHILE an import runs; `imported_session_id` is only
+  // written once the import has FULLY committed (worktree + artifacts +
+  // transcript). This separation means a concurrent importer never mistakes an
+  // in-flight (or about-to-be-rolled-back) session for a completed import.
+  // `import_locked_at` lets a crashed import's lock be reclaimed after a
+  // timeout. See server/design-import.ts.
+  try {
+    db.exec('ALTER TABLE designs ADD COLUMN import_lock TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+  try {
+    db.exec('ALTER TABLE designs ADD COLUMN import_locked_at TEXT');
+  } catch (_e) {
+    /* column already exists */
+  }
+
   // PR-env subsystem tables were removed by PR-Env Removal #4 along with
   // the PR-env backing directory and the `pr_env_config` row.
   // Drop the tables on existing installs so they don't linger after
@@ -3022,7 +3050,19 @@ function initDb(dataDir: string): void {
     addMessage: db.prepare(
       'INSERT INTO messages (id, session_id, role, content, engine, model, attachments, metadata, agent_id, agent_name, agent_color) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
-    getMessages: db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC'),
+    // Same columns as addMessage but with an explicit trailing created_at, so
+    // the Design Studio importer can replay design_messages with their
+    // original timestamps preserved (transcript order survives the import).
+    addMessageWithCreatedAt: db.prepare(
+      'INSERT INTO messages (id, session_id, role, content, engine, model, attachments, metadata, agent_id, agent_name, agent_color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ),
+    // `rowid` (monotonic insert order) is a deterministic tie-breaker so
+    // messages sharing the same second-precision `created_at` keep insertion
+    // order instead of an arbitrary one. This matters for replayed transcripts
+    // (Design Studio import) and any rapidly-created same-second messages.
+    getMessages: db.prepare(
+      'SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC',
+    ),
     // Keyset pagination by rowid (monotonic insert order, stable under
     // same-second created_at collisions). Newest page first; older pages key
     // off the oldest loaded message's id (resolved to its rowid via subquery).
@@ -3191,6 +3231,35 @@ function initDb(dataDir: string): void {
     ),
     touchDesign: db.prepare("UPDATE designs SET updated_at = datetime('now') WHERE id = ?"),
     deleteDesign: db.prepare('DELETE FROM designs WHERE id = ?'),
+    // Clears a STALE `imported_session_id` (a recorded session that was later
+    // deleted) so a re-import can proceed. CAS on the observed value: if a
+    // concurrent importer already swapped in a fresh id, this no-ops
+    // (changes === 0) and the caller defers to that import.
+    clearStaleImportedSession: db.prepare(
+      "UPDATE designs SET imported_session_id = NULL, updated_at = datetime('now') WHERE id = ? AND imported_session_id IS ?",
+    ),
+    // Acquire the import lock. Succeeds (changes === 1) only when the design is
+    // NOT already imported AND no live lock is held — a lock older than the
+    // stale window (passed as the SQLite datetime modifier, e.g.
+    // '-300 seconds') is reclaimable so a crashed import doesn't wedge the row
+    // forever. The in-progress session id is stored in `import_lock`;
+    // `imported_session_id` stays NULL until the import fully commits.
+    acquireDesignImportLock: db.prepare(
+      "UPDATE designs SET import_lock = ?, import_locked_at = datetime('now'), updated_at = datetime('now') " +
+        "WHERE id = ? AND imported_session_id IS NULL AND (import_lock IS NULL OR import_locked_at < datetime('now', ?))",
+    ),
+    // Commit the import: publish `imported_session_id` and drop the lock, but
+    // only if THIS caller still holds it (import_lock = our session id).
+    completeDesignImport: db.prepare(
+      "UPDATE designs SET imported_session_id = ?, import_lock = NULL, import_locked_at = NULL, updated_at = datetime('now') " +
+        'WHERE id = ? AND import_lock = ?',
+    ),
+    // Release the lock without publishing (failure rollback). Scoped to the
+    // holder so a late failure can't clobber a newer importer's lock.
+    releaseDesignImportLock: db.prepare(
+      "UPDATE designs SET import_lock = NULL, import_locked_at = NULL, updated_at = datetime('now') " +
+        'WHERE id = ? AND import_lock = ?',
+    ),
 
     // Design <-> project links
     listDesignProjects: db.prepare(
@@ -3205,8 +3274,10 @@ function initDb(dataDir: string): void {
     clearDesignProjects: db.prepare('DELETE FROM design_projects WHERE design_id = ?'),
 
     // Design messages
+    // `rowid` tie-breaks same-second messages so the source transcript order is
+    // deterministic — the importer relies on this to replay in original order.
     listDesignMessages: db.prepare(
-      'SELECT * FROM design_messages WHERE design_id = ? ORDER BY created_at ASC',
+      'SELECT * FROM design_messages WHERE design_id = ? ORDER BY created_at ASC, rowid ASC',
     ),
     appendDesignMessage: db.prepare(
       'INSERT INTO design_messages (id, design_id, role, content) VALUES (?, ?, ?, ?)',

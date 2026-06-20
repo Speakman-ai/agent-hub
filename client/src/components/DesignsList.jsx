@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Palette, Plus, Trash2, X } from 'lucide-react';
 import { api } from '../utils/api.js';
 import { relativeTime } from '../utils/time.js';
+import { isDesignMigrated } from '../utils/designRedirect.js';
 
 /**
  * DesignsList — top-level list of Claude Designs with a "New Design" modal.
@@ -100,6 +101,14 @@ export default function DesignsList({ designs = [], projects = [], onNavigate, o
                     <div className="flex items-center gap-2 min-w-0">
                       <Palette size={16} className="text-purple-400 flex-shrink-0" />
                       <span className="font-semibold text-sm text-gray-100 truncate">{d.name}</span>
+                      {isDesignMigrated(d) && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/60 text-emerald-300 flex-shrink-0"
+                          title="This design has moved to a design-mode session — opening it goes there"
+                        >
+                          Migrated
+                        </span>
+                      )}
                     </div>
                     <span
                       role="button"

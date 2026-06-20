@@ -6642,6 +6642,32 @@ components:
         - path
         - size
         - mtime
+    DesignImportResult:
+      type: object
+      properties:
+        designId:
+          type: string
+        sessionId:
+          type: string
+          description: The design-mode session the design now lives in.
+        agentId:
+          type: string
+        importedMessages:
+          type: integer
+          description: Count of design messages replayed into the session.
+        reused:
+          type: boolean
+          description: True when the design was already imported and the existing session was returned.
+        skipped:
+          type: string
+          enum:
+            - already-imported
+      required:
+        - designId
+        - sessionId
+        - agentId
+        - importedMessages
+        - reused
   parameters: {}
 paths:
   /api/agents:
@@ -13462,6 +13488,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardErrorResponse"
+  /api/designs/{id}/import:
+    post:
+      tags:
+        - Designs
+      summary: Migrate a standalone design into a design-mode session
+      description: "Creates a `design`-mode session for an agent in one of the design’s linked projects, provisions its worktree, copies the design artifact dir into `<worktree>/design/`, and replays the design transcript as session messages. Non-destructive: the design row, files, and messages are preserved (standalone tables are dropped a release later, gated on parity). Idempotent — re-running returns the existing mapping with `reused: true`."
+      parameters:
+        - schema:
+            type: string
+            description: Design id.
+          required: true
+          description: Design id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Design was already imported; existing session returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesignImportResult"
+        "201":
+          description: Design imported into a new session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesignImportResult"
+        "404":
+          description: Design not found.
+        "409":
+          description: 'Import could not proceed. `error: "design_import_failed"` (e.g. no eligible target agent in a linked project) is terminal; `error: "import_in_progress"` (`retryable: true`) means a concurrent import holds the lock — retry shortly.'
+        "503":
+          description: Worktree provisioning is not wired.
   /api/escalations:
     get:
       tags:
