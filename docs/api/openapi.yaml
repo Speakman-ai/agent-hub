@@ -5412,6 +5412,303 @@ components:
         - branch
         - session_id
       description: Instrumentation commit landed on the worktree branch.
+    CreateSkillBody:
+      anyOf:
+        - type: object
+          properties:
+            name:
+              type: string
+              description: "Skill slug + frontmatter name: lowercase letters, digits and hyphens. On PUT it must match the `:skillId` path segment (rename is not supported)."
+              example: jira-triage
+            description:
+              type: string
+              description: Trigger text — the single most important field. State WHAT the skill does and WHEN to use it.
+              example: Triage Jira issues. TRIGGER when the user mentions Jira tickets or sprint triage.
+            content:
+              type: string
+              description: Raw SKILL.md text (frontmatter + body). Its parsed frontmatter supplies any structured field omitted from the body; explicit fields win. Lets a minimal editor post a single textarea. The frontmatter MUST still yield a valid `name` (slug) and `description`. Frontmatter keys the server does not manage (anything other than name/description/category/version/credentials/keep-coding-instructions) are preserved verbatim, so fetching the raw file and PUTting it back is lossless.
+            category:
+              type: string
+              enum:
+                - general
+                - integration
+                - platform
+                - workflow
+                - automation
+                - tooling
+                - data
+                - communication
+              description: Skill category. Defaults to `general`.
+            version:
+              type: string
+              description: Optional semver-ish version string.
+            body:
+              type: string
+              description: Markdown body of SKILL.md (no YAML frontmatter block).
+            keepCodingInstructions:
+              type: boolean
+              description: "Emit `keep-coding-instructions: true` in the frontmatter."
+            credentials:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: POSIX env var name the credential is injected as.
+                    example: LINEAR_API_KEY
+                  label:
+                    type: string
+                  description:
+                    type: string
+                  required:
+                    type: boolean
+                  type:
+                    type: string
+                    enum:
+                      - string
+                      - secret
+                      - file
+                      - json
+                  docs_url:
+                    type: string
+                required:
+                  - name
+                description: A single declarative credential the skill needs at spawn time.
+              description: Optional declarative credentials injected at spawn time.
+          required:
+            - name
+            - description
+          title: StructuredSkillWrite
+          description: "Structured form: `name` and `description` supplied explicitly."
+        - type: object
+          properties:
+            content:
+              type: string
+              description: Raw SKILL.md text (frontmatter + body). Its parsed frontmatter supplies any structured field omitted from the body; explicit fields win. Lets a minimal editor post a single textarea. The frontmatter MUST still yield a valid `name` (slug) and `description`. Frontmatter keys the server does not manage (anything other than name/description/category/version/credentials/keep-coding-instructions) are preserved verbatim, so fetching the raw file and PUTting it back is lossless.
+            name:
+              type: string
+              description: "Skill slug + frontmatter name: lowercase letters, digits and hyphens. On PUT it must match the `:skillId` path segment (rename is not supported)."
+              example: jira-triage
+            description:
+              type: string
+              description: Trigger text — the single most important field. State WHAT the skill does and WHEN to use it.
+              example: Triage Jira issues. TRIGGER when the user mentions Jira tickets or sprint triage.
+            category:
+              type: string
+              enum:
+                - general
+                - integration
+                - platform
+                - workflow
+                - automation
+                - tooling
+                - data
+                - communication
+              description: Skill category. Defaults to `general`.
+            version:
+              type: string
+              description: Optional semver-ish version string.
+            body:
+              type: string
+              description: Markdown body of SKILL.md (no YAML frontmatter block).
+            keepCodingInstructions:
+              type: boolean
+              description: "Emit `keep-coding-instructions: true` in the frontmatter."
+            credentials:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: POSIX env var name the credential is injected as.
+                    example: LINEAR_API_KEY
+                  label:
+                    type: string
+                  description:
+                    type: string
+                  required:
+                    type: boolean
+                  type:
+                    type: string
+                    enum:
+                      - string
+                      - secret
+                      - file
+                      - json
+                  docs_url:
+                    type: string
+                required:
+                  - name
+                description: A single declarative credential the skill needs at spawn time.
+              description: Optional declarative credentials injected at spawn time.
+          required:
+            - content
+          title: RawContentSkillWrite
+          description: "Raw form: a `content` SKILL.md string whose frontmatter carries name/description."
+      description: Create a project skill. Provide EITHER structured fields (`name` + `description` required) OR a raw `content` SKILL.md whose frontmatter yields a valid `name` + `description`. Either way the server validates the resolved frontmatter and returns 400 on a missing/invalid `name` or `description`.
+    UpdateSkillBody:
+      anyOf:
+        - type: object
+          properties:
+            description:
+              type: string
+              description: Trigger text — the single most important field. State WHAT the skill does and WHEN to use it.
+              example: Triage Jira issues. TRIGGER when the user mentions Jira tickets or sprint triage.
+            name:
+              type: string
+              description: "Skill slug + frontmatter name: lowercase letters, digits and hyphens. On PUT it must match the `:skillId` path segment (rename is not supported)."
+              example: jira-triage
+            content:
+              type: string
+              description: Raw SKILL.md text (frontmatter + body). Its parsed frontmatter supplies any structured field omitted from the body; explicit fields win. Lets a minimal editor post a single textarea. The frontmatter MUST still yield a valid `name` (slug) and `description`. Frontmatter keys the server does not manage (anything other than name/description/category/version/credentials/keep-coding-instructions) are preserved verbatim, so fetching the raw file and PUTting it back is lossless.
+            category:
+              type: string
+              enum:
+                - general
+                - integration
+                - platform
+                - workflow
+                - automation
+                - tooling
+                - data
+                - communication
+              description: Skill category. Defaults to `general`.
+            version:
+              type: string
+              description: Optional semver-ish version string.
+            body:
+              type: string
+              description: Markdown body of SKILL.md (no YAML frontmatter block).
+            keepCodingInstructions:
+              type: boolean
+              description: "Emit `keep-coding-instructions: true` in the frontmatter."
+            credentials:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: POSIX env var name the credential is injected as.
+                    example: LINEAR_API_KEY
+                  label:
+                    type: string
+                  description:
+                    type: string
+                  required:
+                    type: boolean
+                  type:
+                    type: string
+                    enum:
+                      - string
+                      - secret
+                      - file
+                      - json
+                  docs_url:
+                    type: string
+                required:
+                  - name
+                description: A single declarative credential the skill needs at spawn time.
+              description: Optional declarative credentials injected at spawn time.
+          required:
+            - description
+          title: StructuredSkillUpdate
+          description: "Structured form: `description` required; `name` optional (resolved from the path, must match when given)."
+        - type: object
+          properties:
+            content:
+              type: string
+              description: Raw SKILL.md text (frontmatter + body). Its parsed frontmatter supplies any structured field omitted from the body; explicit fields win. Lets a minimal editor post a single textarea. The frontmatter MUST still yield a valid `name` (slug) and `description`. Frontmatter keys the server does not manage (anything other than name/description/category/version/credentials/keep-coding-instructions) are preserved verbatim, so fetching the raw file and PUTting it back is lossless.
+            name:
+              type: string
+              description: "Skill slug + frontmatter name: lowercase letters, digits and hyphens. On PUT it must match the `:skillId` path segment (rename is not supported)."
+              example: jira-triage
+            description:
+              type: string
+              description: Trigger text — the single most important field. State WHAT the skill does and WHEN to use it.
+              example: Triage Jira issues. TRIGGER when the user mentions Jira tickets or sprint triage.
+            category:
+              type: string
+              enum:
+                - general
+                - integration
+                - platform
+                - workflow
+                - automation
+                - tooling
+                - data
+                - communication
+              description: Skill category. Defaults to `general`.
+            version:
+              type: string
+              description: Optional semver-ish version string.
+            body:
+              type: string
+              description: Markdown body of SKILL.md (no YAML frontmatter block).
+            keepCodingInstructions:
+              type: boolean
+              description: "Emit `keep-coding-instructions: true` in the frontmatter."
+            credentials:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: POSIX env var name the credential is injected as.
+                    example: LINEAR_API_KEY
+                  label:
+                    type: string
+                  description:
+                    type: string
+                  required:
+                    type: boolean
+                  type:
+                    type: string
+                    enum:
+                      - string
+                      - secret
+                      - file
+                      - json
+                  docs_url:
+                    type: string
+                required:
+                  - name
+                description: A single declarative credential the skill needs at spawn time.
+              description: Optional declarative credentials injected at spawn time.
+          required:
+            - content
+          title: RawContentSkillWrite
+          description: "Raw form: a `content` SKILL.md string whose frontmatter carries name/description."
+      description: Update a project skill. Provide EITHER structured fields (`description` required; `name` optional, resolved from the path) OR a raw `content` SKILL.md. The resolved frontmatter is validated and returns 400 on a missing/invalid `description` (or a `name` that disagrees with the path).
+    SkillWriteResult:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        path:
+          type: string
+          description: Absolute path to the skill directory on disk.
+      required:
+        - id
+        - name
+        - description
+        - path
+      description: The created / updated project skill.
+    SkillWriteError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -18078,6 +18375,113 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RumWizardErrorResponse"
+  /api/projects/{projectId}/skills:
+    post:
+      tags:
+        - Skills
+      summary: Create a project skill
+      description: Validates the author payload, composes a canonical `SKILL.md` (YAML frontmatter + Markdown body), and writes it to `<project.ahw>/skills/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md whose frontmatter carries them. Rejects a slug that shadows a bundled default skill (409) or an already-existing project skill (409 — use PUT). Invalid frontmatter (bad slug, missing description, disallowed category, malformed credentials) returns 400.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSkillBody"
+      responses:
+        "201":
+          description: Skill created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteResult"
+        "400":
+          description: Request body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "409":
+          description: Slug collides with a bundled default or an existing project skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/projects/{projectId}/skills/{skillId}:
+    put:
+      tags:
+        - Skills
+      summary: Update a project skill
+      description: Rewrites an existing project skill's `SKILL.md` (frontmatter + body). Accepts EITHER structured fields (`description` required; `name` optional, resolved from the path) OR a raw `content` SKILL.md. A body `name` (or `content` frontmatter name) must equal the `:skillId` path segment — rename is not supported. Rejects bundled-default ids (409) and unknown project skills (404). Invalid frontmatter returns 400.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Project skill slug (folder id).
+          required: true
+          description: Project skill slug (folder id).
+          name: skillId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSkillBody"
+      responses:
+        "200":
+          description: Skill updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteResult"
+        "400":
+          description: Request body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project or project skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "409":
+          description: Slug is a bundled default skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
   /api/projects/{projectId}/support-requests:
     options:
       tags:

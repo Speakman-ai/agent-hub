@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 import type { RouteDeps, AgentSkillOverrideRow } from '../types.js';
 import { extractCredentialsFromSkillContent } from '../skill-credentials-resolve.js';
+import { validateAndComposeSkill, validateSkillSlug } from '../skill-write.js';
 // The unfiltered options list used by the Settings allowlist editor lives in
 // agent-skills-list (built on collectSkillsFromDir below). Importing it here
 // keeps the merge defined once; the FS primitive `collectSkillsFromDir` stays
@@ -266,6 +267,105 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       }
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Create a project skill. Writes <project.ahw>/skills/<slug>/SKILL.md.
+  // Phase 1 of the Skill Builder epic — see wiki `skill-builder-architecture`.
+  router.post('/api/projects/:projectId/skills', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!project.ahw) return res.status(400).json({ error: 'No workspace configured for project' });
+
+    const composed = validateAndComposeSkill(req.body ?? {});
+    if (!composed.ok) return res.status(400).json({ error: composed.error });
+    const { slug, content } = composed;
+
+    // A project skill may not shadow a bundled default skill: the default is the
+    // canonical version and a same-id project copy would silently override it.
+    if (existsSync(path.join(DEFAULT_SKILLS_DIR, slug))) {
+      return res.status(409).json({
+        error: `"${slug}" is a bundled default skill and cannot be overridden by a project skill`,
+      });
+    }
+
+    const skillDir = path.join(project.ahw, 'skills', slug);
+    if (existsSync(skillDir)) {
+      return res.status(409).json({
+        error: `A project skill "${slug}" already exists — use PUT to update it`,
+      });
+    }
+
+    try {
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(path.join(skillDir, 'SKILL.md'), content);
+      broadcast({
+        type: 'skills_update',
+        payload: { action: 'installed', skillId: slug, projectId: req.params.projectId },
+      });
+      // Best-effort: register the new skill with the Claude Code CLI plugin dir
+      // so it is loadable in already-running sessions without a server restart.
+      try {
+        syncSkillsToClaude([path.join(project.ahw, 'skills')]);
+      } catch {
+        /* non-fatal — discovery still works via the merge list */
+      }
+      const { data } = matter(content);
+      return res.status(201).json({
+        id: slug,
+        name: (data.name as string) || slug,
+        description: (data.description as string) || '',
+        path: skillDir,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Update an existing project skill's SKILL.md (frontmatter + body).
+  router.put('/api/projects/:projectId/skills/:skillId', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!project.ahw) return res.status(400).json({ error: 'No workspace configured for project' });
+
+    const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
+    if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
+    const skillId = slugRes.slug;
+
+    if (existsSync(path.join(DEFAULT_SKILLS_DIR, skillId))) {
+      return res.status(409).json({
+        error: `"${skillId}" is a bundled default skill and cannot be overridden by a project skill`,
+      });
+    }
+
+    const skillDir = path.join(project.ahw, 'skills', skillId);
+    if (!existsSync(skillDir) || !statSync(skillDir).isDirectory()) {
+      return res.status(404).json({ error: 'Project skill not found' });
+    }
+
+    const composed = validateAndComposeSkill(req.body ?? {}, { expectedSlug: skillId });
+    if (!composed.ok) return res.status(400).json({ error: composed.error });
+
+    try {
+      writeFileSync(path.join(skillDir, 'SKILL.md'), composed.content);
+      broadcast({
+        type: 'skills_update',
+        payload: { action: 'updated', skillId, projectId: req.params.projectId },
+      });
+      try {
+        syncSkillsToClaude([path.join(project.ahw, 'skills')]);
+      } catch {
+        /* non-fatal */
+      }
+      const { data } = matter(composed.content);
+      return res.json({
+        id: skillId,
+        name: (data.name as string) || skillId,
+        description: (data.description as string) || '',
+        path: skillDir,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
     }
   });
 

@@ -729,6 +729,16 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 
+  createProjectSkill: (projectId, body) =>
+    fetchJSON(`/projects/${projectId}/skills`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateProjectSkill: (projectId, skillId, body) =>
+    fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   uninstallSkill: (projectId, skillId) =>
     fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
   toggleSkill: (agentId, skillId, enabled) =>

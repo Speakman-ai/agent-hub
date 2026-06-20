@@ -62,7 +62,159 @@ function CategoryBadge({ category }) {
   return <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${cls}`}>{category}</span>;
 }
 
-function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstalled }) {
+const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+const NEW_SKILL_TEMPLATE = `---
+name: my-skill
+description: >-
+  What this skill does and WHEN to use it. The description is the trigger —
+  state what + when, because models under-trigger.
+category: general
+---
+
+# My Skill
+
+Write the instructions here. Explain the *why* of rules so the skill
+generalizes. Keep it under ~500 lines.
+`;
+
+/**
+ * Minimal create/edit editor for a project skill (Skill Builder, Phase 1).
+ * Edits the raw SKILL.md (frontmatter + body) in one textarea; the server
+ * validates the frontmatter and returns a clear error on failure. For an
+ * existing skill we fetch its current SKILL.md and seed the textarea.
+ */
+function SkillEditor({ projectId, agentId, skill, onClose, onSaved }) {
+  const isEdit = !!skill;
+  const [content, setContent] = useState(isEdit ? '' : NEW_SKILL_TEMPLATE);
+  const [loading, setLoading] = useState(isEdit);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!isEdit) return undefined;
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getSkill(agentId, skill.id)
+      .then((data) => {
+        if (!cancelled) setContent(data.content || '');
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err?.message || 'Failed to load skill');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isEdit, agentId, skill]);
+
+  // Light client-side validation; the server is the source of truth.
+  const clientError = (() => {
+    const m = /^---\s*\n([\s\S]*?)\n---/.exec(content);
+    if (!m) return 'SKILL.md must start with a YAML frontmatter block (--- ... ---).';
+    const fm = m[1];
+    const nameMatch = /^name:\s*(.+)$/m.exec(fm);
+    const name = nameMatch ? nameMatch[1].trim().replace(/^["']|["']$/g, '') : '';
+    if (!name) return 'Frontmatter is missing a "name" field.';
+    if (!isEdit && !SKILL_SLUG_RE.test(name))
+      return `name "${name}" must be a slug (lowercase letters, digits, hyphens).`;
+    if (isEdit && name !== skill.id)
+      return `name must stay "${skill.id}" — rename is not supported.`;
+    if (!/^description:\s*\S/m.test(fm) && !/^description:\s*[>|]/m.test(fm))
+      return 'Frontmatter is missing a "description" field.';
+    return null;
+  })();
+
+  const handleSave = async () => {
+    if (clientError) {
+      setError(clientError);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = isEdit
+        ? await api.updateProjectSkill(projectId, skill.id, { name: skill.id, content })
+        : await api.createProjectSkill(projectId, { content });
+      onSaved(saved, isEdit);
+    } catch (err) {
+      setError(err?.message || 'Failed to save skill');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-label={isEdit ? 'Edit skill' : 'New skill'}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <h3 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
+            <PenLine size={16} /> {isEdit ? `Edit skill: ${skill.id}` : 'New project skill'}
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-white"
+            aria-label="Close editor"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          <p className="text-xs text-gray-500 mb-2">
+            Edit the SKILL.md frontmatter and Markdown body. The{' '}
+            <code className="bg-gray-800 px-1 rounded">name</code> in the frontmatter is the slug
+            you load with <code className="bg-gray-800 px-1 rounded">&lt;agenthub:skill&gt;</code>.
+          </p>
+          {loading ? (
+            <p className="text-sm text-gray-500">Loading…</p>
+          ) : (
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              spellCheck={false}
+              className="w-full h-80 font-mono text-xs bg-gray-950 border border-gray-700 rounded-lg p-3 text-gray-100 focus:border-indigo-500 focus:outline-none resize-y"
+            />
+          )}
+          {(error || (clientError && !loading)) && (
+            <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-900/20 border border-red-800/50 rounded-lg px-3 py-2">
+              <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
+              <span className="break-words">{error || clientError}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-700">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs rounded-md text-gray-300 hover:bg-gray-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || loading || !!clientError}
+            className="px-3 py-1.5 text-xs rounded-md bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 inline-flex items-center gap-1.5"
+          >
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+            {isEdit ? 'Save changes' : 'Create skill'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, isInstalled }) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
@@ -215,6 +367,18 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
                 ) : (
                   <ToggleLeft size={20} />
                 )}
+              </button>
+            )}
+            {onEdit && skill.source !== 'default' && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(skill);
+                }}
+                className="text-gray-500 hover:text-indigo-400 transition-colors"
+                title="Edit skill"
+              >
+                <Pencil size={14} />
               </button>
             )}
             {onUninstall && isInstalled && skill.source !== 'default' && (
@@ -577,6 +741,13 @@ export default function SkillsPage({ agents, projects }) {
     setContext((prev) => ({ ...prev, [filename]: newContent }));
   };
 
+  // null = closed; { skill: null } = create; { skill } = edit existing.
+  const [editorState, setEditorState] = useState(null);
+  const handleSkillSaved = useCallback(() => {
+    setEditorState(null);
+    setReloadKey((k) => k + 1);
+  }, []);
+
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
@@ -629,10 +800,21 @@ export default function SkillsPage({ agents, projects }) {
           <>
             {/* Skills Section */}
             <div className="mb-8">
-              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Puzzle size={18} /> Skills
-                <span className="text-xs text-gray-500 font-normal">({skills.length} total)</span>
-              </h3>
+              <div className="flex items-center justify-between mb-4 gap-2">
+                <h3 className="text-lg font-semibold flex items-center gap-2">
+                  <Puzzle size={18} /> Skills
+                  <span className="text-xs text-gray-500 font-normal">({skills.length} total)</span>
+                </h3>
+                {currentProjectId && (
+                  <button
+                    onClick={() => setEditorState({ skill: null })}
+                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+                    title="Create a new project skill"
+                  >
+                    <PenLine size={13} /> New skill
+                  </button>
+                )}
+              </div>
               {loadingSkills ? (
                 <p className="text-sm text-gray-500">Loading skills...</p>
               ) : skillsError ? (
@@ -661,6 +843,7 @@ export default function SkillsPage({ agents, projects }) {
                       overrides={overrides}
                       onToggle={handleToggle}
                       onUninstall={handleUninstall}
+                      onEdit={(s) => setEditorState({ skill: s })}
                       isInstalled
                     />
                   ))}
@@ -705,6 +888,16 @@ export default function SkillsPage({ agents, projects }) {
               )}
             </div>
           </>
+        )}
+
+        {editorState && currentProjectId && (
+          <SkillEditor
+            projectId={currentProjectId}
+            agentId={activeAgentId}
+            skill={editorState.skill}
+            onClose={() => setEditorState(null)}
+            onSaved={handleSkillSaved}
+          />
         )}
       </div>
     </div>
