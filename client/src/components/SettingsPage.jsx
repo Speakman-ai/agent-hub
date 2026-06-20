@@ -21,6 +21,11 @@ import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import GitHostSettingsSection from './GitHostSettingsSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
+import {
+  agentAcceptsAutonomousTickets,
+  isAutonomyLocked,
+  isAutonomyLockedOn,
+} from '../utils/agentAutonomy.js';
 import { isElectron } from '../utils/isElectron.js';
 import { RELEASE_BUCKET_ROOT } from '../utils/version.js';
 import * as LucideIcons from 'lucide-react';
@@ -3997,6 +4002,7 @@ export function AgentConfigSection({
     color: '#6b7280',
     avatar: '',
     systemPrompt: '',
+    isDev: false,
     heartbeat: { enabled: false, interval: '', prompt: '' },
   });
 
@@ -5124,6 +5130,27 @@ export function AgentConfigSection({
               className={inputClass + ' resize-none'}
             />
           </div>
+          <div className="border-t border-gray-700 pt-3">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <label className="text-xs text-gray-400 font-medium">Dev</label>
+              <button
+                type="button"
+                data-testid="agent-create-dev-toggle"
+                onClick={() => setNewForm({ ...newForm, isDev: !newForm.isDev })}
+                className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                  newForm.isDev
+                    ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+              >
+                {newForm.isDev ? 'ON' : 'OFF'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500">
+              When ON, this agent can be automatically assigned autonomous tickets from the kanban
+              board. Defaults to OFF — flip it on to opt the agent into autonomous dispatch.
+            </p>
+          </div>
           <button
             type="submit"
             className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
@@ -5389,6 +5416,55 @@ export function AgentConfigSection({
                       rows={4}
                       className={inputClass + ' resize-none'}
                     />
+                  </div>
+
+                  <div className="border-t border-gray-700 pt-3">
+                    {(() => {
+                      const lockedOn = isAutonomyLockedOn(agent);
+                      const locked = isAutonomyLocked(agent);
+                      // Editable value follows the explicit edit, else the
+                      // agent's effective eligibility (so a pre-flag agent
+                      // shows its real routing state, not a misleading OFF).
+                      const devOn = locked
+                        ? lockedOn
+                        : edit.isDev !== undefined
+                          ? edit.isDev
+                          : agentAcceptsAutonomousTickets(agent);
+                      return (
+                        <>
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <label className="text-xs text-gray-400 font-medium">Dev</label>
+                            <button
+                              type="button"
+                              data-testid="agent-dev-toggle"
+                              disabled={locked}
+                              onClick={() => {
+                                if (locked) return;
+                                setEdit(agent.id, 'isDev', !devOn);
+                              }}
+                              className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
+                                locked ? 'cursor-not-allowed opacity-70 ' : ''
+                              }${
+                                devOn
+                                  ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
+                                  : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                              }`}
+                            >
+                              {devOn ? 'ON' : 'OFF'}
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            When ON, this agent can be automatically assigned autonomous tickets
+                            from the kanban board.
+                            {lockedOn
+                              ? ' Default Dev agent — always on and cannot be changed.'
+                              : locked
+                                ? ' Out-of-band role — never receives autonomous tickets.'
+                                : ' Turn OFF to stop autonomous tickets from routing here.'}
+                          </p>
+                        </>
+                      );
+                    })()}
                   </div>
 
                   <div className="border-t border-gray-700 pt-3">

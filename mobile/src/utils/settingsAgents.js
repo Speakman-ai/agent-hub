@@ -68,12 +68,14 @@ export function validateNewAgentForm(form) {
  * Build the POST /api/agents payload from the new-agent form. Empty
  * optional fields are omitted so the server applies its own defaults
  * (name falls back to id, model to the engine default, color to the
- * project color).
+ * project color). `isDev` is always sent (defaults to `false`) so new
+ * agents are opt-in for autonomous-ticket dispatch.
  */
 export function buildCreateAgentPayload(form) {
   const payload = {
     id: (form.id || '').trim(),
     projectId: form.projectId,
+    isDev: form.isDev === true,
   };
   if ((form.name || '').trim()) payload.name = form.name.trim();
   if (form.engine) payload.engine = form.engine;
@@ -96,7 +98,54 @@ export function buildUpdateAgentPayload(original, edit) {
       payload[field] = next;
     }
   }
+  // The Dev flag: include it only when the editable value actually differs
+  // from the agent's effective eligibility, and never for locked agents
+  // (default Dev roles / out-of-band roles can't be changed).
+  if (edit.isDev !== undefined && !isAutonomyLocked(original)) {
+    if (edit.isDev !== agentAcceptsAutonomousTickets(original)) {
+      payload.isDev = edit.isDev;
+    }
+  }
   return payload;
+}
+
+// ─── Per-agent "Dev" flag (autonomous-ticket eligibility) ────────────────────
+// Mirror of server/agent-autonomy.ts — keep in sync with the server + web util.
+
+const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer']);
+const DEFAULT_DEV_ROLES = new Set(['dev', 'lead']);
+
+function autonomyRoleOf(agent) {
+  return agent && typeof agent.role === 'string' ? agent.role.trim().toLowerCase() : '';
+}
+
+/** Out-of-band role (docs/intake/reviewer) — the Dev toggle is locked OFF. */
+export function isAutonomyLockedOff(agent) {
+  return OUT_OF_BAND_ROLES.has(autonomyRoleOf(agent));
+}
+
+/** Default Dev role (dev/lead) — the Dev toggle is locked ON. */
+export function isAutonomyLockedOn(agent) {
+  return DEFAULT_DEV_ROLES.has(autonomyRoleOf(agent));
+}
+
+/** The Dev toggle cannot be changed for this agent. */
+export function isAutonomyLocked(agent) {
+  return isAutonomyLockedOff(agent) || isAutonomyLockedOn(agent);
+}
+
+/**
+ * Effective: may this agent receive an autonomously-dispatched ticket?
+ *  - out-of-band roles → never
+ *  - default Dev roles → always
+ *  - explicit isDev === false → opt-out
+ *  - otherwise (isDev true, or undefined for pre-flag agents) → eligible
+ */
+export function agentAcceptsAutonomousTickets(agent) {
+  if (!agent) return false;
+  if (isAutonomyLockedOff(agent)) return false;
+  if (isAutonomyLockedOn(agent)) return true;
+  return agent.isDev !== false;
 }
 
 /**

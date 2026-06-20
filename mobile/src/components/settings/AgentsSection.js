@@ -24,9 +24,20 @@ import {
   settingsResolveModelChip,
   settingsEffectiveEngine,
   settingsModelOverrideIsStale,
+  isAutonomyLocked,
+  isAutonomyLockedOn,
+  agentAcceptsAutonomousTickets,
 } from '../../utils/settingsAgents';
 
-const EMPTY_NEW_FORM = { id: '', name: '', projectId: '', engine: 'claude-code', model: '', systemPrompt: '' };
+const EMPTY_NEW_FORM = {
+  id: '',
+  name: '',
+  projectId: '',
+  engine: 'claude-code',
+  model: '',
+  systemPrompt: '',
+  isDev: false,
+};
 
 function ChipRow({ options, selected, onSelect, labelFor = (o) => o }) {
   return (
@@ -46,6 +57,34 @@ function ChipRow({ options, selected, onSelect, labelFor = (o) => o }) {
         );
       })}
     </View>
+  );
+}
+
+function DevToggle({ value, onChange, locked = false, lockedOn = false, fallbackOn = false }) {
+  // Display follows the explicit edit value; when unset (undefined) fall back
+  // to the agent's effective eligibility so a pre-flag agent shows its real
+  // routing state instead of a misleading OFF. The stored value stays
+  // undefined until the user actually toggles, so an unrelated Save never
+  // silently rewrites isDev (matches the web form).
+  const on = locked ? lockedOn : value !== undefined ? !!value : fallbackOn;
+  return (
+    <>
+      <Text style={styles.fieldLabel}>Dev (accepts autonomous tickets)</Text>
+      <TouchableOpacity
+        style={[styles.chip, on && styles.chipActive, locked && { opacity: 0.6 }]}
+        onPress={() => !locked && onChange(!on)}
+        disabled={locked}
+      >
+        <Text style={[styles.chipText, on && styles.chipTextActive]}>{on ? 'ON' : 'OFF'}</Text>
+      </TouchableOpacity>
+      <Text style={styles.helpText}>
+        {lockedOn
+          ? 'Default Dev agent — always on and cannot be changed.'
+          : locked
+            ? 'Out-of-band role — never receives autonomous tickets.'
+            : 'When ON, the kanban board can auto-assign autonomous tickets to this agent.'}
+      </Text>
+    </>
   );
 }
 
@@ -231,6 +270,11 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
       name: agent.name || '',
       engine: agent.engine || 'claude-code',
       systemPrompt: agent.systemPrompt || '',
+      // Seed from the STORED field (may be undefined), not effective
+      // eligibility, so saving an unrelated edit never silently persists a
+      // value the user didn't set. The toggle's display falls back to
+      // effective eligibility via DevToggle's `fallbackOn`.
+      isDev: agent.isDev,
     });
   };
 
@@ -494,6 +538,10 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
             multiline
             textAlignVertical="top"
           />
+          <DevToggle
+            value={newForm.isDev}
+            onChange={(isDev) => setNewForm({ ...newForm, isDev })}
+          />
           <TouchableOpacity
             style={[styles.primaryBtn, creating && { opacity: 0.5 }]}
             onPress={handleCreate}
@@ -577,6 +625,13 @@ export default function AgentsSection({ projectId: filterProjectId, hideBulk = f
                         multiline
                         textAlignVertical="top"
                         placeholderTextColor={colors.gray500}
+                      />
+                      <DevToggle
+                        value={editForm.isDev}
+                        onChange={(isDev) => setEditForm({ ...editForm, isDev })}
+                        locked={isAutonomyLocked(agent)}
+                        lockedOn={isAutonomyLockedOn(agent)}
+                        fallbackOn={agentAcceptsAutonomousTickets(agent)}
                       />
                       <View style={styles.actionRow}>
                         <TouchableOpacity style={styles.dangerBtn} onPress={() => handleDelete(agent)}>
@@ -709,6 +764,11 @@ const styles = StyleSheet.create({
     color: colors.gray400,
     marginBottom: 4,
     marginTop: 10,
+  },
+  helpText: {
+    fontSize: 11,
+    color: colors.gray500,
+    marginTop: 4,
   },
   formInput: {
     backgroundColor: colors.gray900,

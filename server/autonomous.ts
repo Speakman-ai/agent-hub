@@ -10,6 +10,7 @@ import { lastDispatchedReviewId } from './review-feedback-dedup.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { loadBoardBlockers, hasUnresolvedBlockers, isColumnDone } from './kanban-blockers.js';
 import { pickAgentForCard, pickLead } from './routing.js';
+import { agentAcceptsAutonomousTickets } from './agent-autonomy.js';
 import type {
   Stmts,
   Project,
@@ -802,6 +803,12 @@ async function runAutonomousLoopInner(projectId: string, epic: KanbanEpicRow): P
   } else {
     assignableAgents = roleFiltered;
   }
+
+  // Honour the per-agent "Dev" flag: an agent that is not a Dev (explicit
+  // `isDev: false`) never receives autonomously-dispatched tickets. Default
+  // Dev roles (dev/lead) are always kept; out-of-band roles are already gone.
+  // `undefined` stays eligible so pre-flag rosters don't silently stop.
+  assignableAgents = assignableAgents.filter((a) => agentAcceptsAutonomousTickets(a));
 
   // ── Integration-branch serialization override ──────────────────────────
   // When an epic targets an operator-set integration branch

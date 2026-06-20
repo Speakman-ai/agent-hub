@@ -940,6 +940,96 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
     expect(sessionArgs[1]).toBe('dev-1');
   });
 
+  it('excludes a non-Dev agent (isDev: false) from the assignment pool', async () => {
+    // Two togglable specialists; the first has opted out of autonomous
+    // dispatch (`isDev: false`), so the card must land on the second.
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          { id: 'opted-out', name: 'Opted Out', role: 'sub', engine: 'claude-code', isDev: false },
+          { id: 'opted-in', name: 'Opted In', role: 'sub', engine: 'claude-code', isDev: true },
+        ] as never,
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    const sessionArgs = stmts.createSession.run.mock.calls[0];
+    expect(sessionArgs[1]).toBe('opted-in');
+  });
+
+  it('skips dispatch and logs a notice when every agent has opted out (isDev: false)', async () => {
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          { id: 'a', name: 'A', role: 'sub', engine: 'claude-code', isDev: false },
+          { id: 'b', name: 'B', role: 'frontend', engine: 'claude-code', isDev: false },
+        ] as never,
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createKanbanCardComment.run.mock.calls[0][3]).toMatch(
+      /Autonomous dispatch skipped/,
+    );
+  });
+
+  it('keeps a locked default Dev agent (role dev) assignable even with isDev: false', async () => {
+    // A contradictory stored value must not strand dispatch — role dev/lead is
+    // always eligible (the "default Dev agent cannot be changed" guarantee).
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [
+          {
+            id: 'default-dev',
+            name: 'Default Dev',
+            role: 'dev',
+            engine: 'claude-code',
+            isDev: false,
+          },
+        ] as never,
+      }),
+    );
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('default-dev');
+  });
+
   it('logs a notice and skips dispatch when no assignable agents exist', async () => {
     const card = makeCard();
     const stmts = makeStmts({

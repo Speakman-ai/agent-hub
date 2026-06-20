@@ -2142,6 +2142,17 @@ export interface Agent {
   installCommand?: string;
   reviewer?: string;
   canReview?: boolean;
+  /**
+   * "Dev" flag — does this agent accept autonomously-dispatched kanban
+   * tickets? When explicitly `false`, the autonomous dispatcher never routes
+   * a card to this agent. New agents created through the UI default to
+   * `false`. `undefined` preserves the pre-flag behaviour (eligible), so
+   * existing rosters keep dispatching. Agents whose `role` is a default Dev
+   * role (`dev` / `lead`) are always eligible regardless of this field, and
+   * out-of-band roles (`docs` / `intake` / `reviewer`) are never eligible —
+   * see `agentAcceptsAutonomousTickets` in `server/agent-autonomy.ts`.
+   */
+  isDev?: boolean;
   model?: string;
   active?: boolean;
   [key: string]: unknown;

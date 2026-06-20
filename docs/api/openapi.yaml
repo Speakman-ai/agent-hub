@@ -96,6 +96,9 @@ components:
           type: string
         canReview:
           type: boolean
+        isDev:
+          type: boolean
+          description: Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/intake/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.
         active:
           type: boolean
         delegationEnabled:
@@ -6563,6 +6566,9 @@ paths:
                   type: string
                 role:
                   type: string
+                isDev:
+                  type: boolean
+                  description: Accept autonomously-dispatched kanban tickets. Defaults to false in the UI (opt-in). Sending a value that contradicts a locked role (dev/lead → must be true; docs/intake/reviewer → must be false) is rejected with 400.
                 heartbeat:
                   type: object
                   properties:
@@ -6665,6 +6671,9 @@ paths:
                   type: string
                 canReview:
                   type: boolean
+                isDev:
+                  type: boolean
+                  description: Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/intake/reviewer → must be false) is rejected with 400; a matching value is a no-op.
                 delegationEnabled:
                   type: boolean
                 browserToolsEnabled:

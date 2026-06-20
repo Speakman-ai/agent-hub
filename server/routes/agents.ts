@@ -11,6 +11,7 @@ import { updateMemory, getMemoryData } from '../memory.js';
 import { HOOK_EVENTS } from '../hooks.js';
 import type { RouteDeps, Agent, Project, HookConfig } from '../types.js';
 import { canViewProject } from '../project-visibility.js';
+import { isAutonomyLocked, agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { getUserPreferencesRow, mergeUserPreferencesJson } from '../user-preferences-store.js';
 import {
@@ -236,6 +237,33 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       });
     }
 
+    // The "Dev" flag is derived from role for locked agents (default Dev roles
+    // dev/lead are always on; out-of-band roles docs/intake/reviewer always
+    // off). Reject a contradictory `isDev` with a 400 — checked BEFORE any
+    // mutation below — so a client never believes an impossible change took
+    // effect. A write that matches the role-fixed value is accepted as a
+    // harmless no-op. See `agentAcceptsAutonomousTickets` for the contract.
+    //
+    // Validate against the POST-PATCH role: this same request can mutate
+    // `role` in the `allowed` loop below, so e.g. `{ role: 'reviewer', isDev:
+    // true }` or `{ role: 'dev', isDev: false }` must be judged against the
+    // candidate role, not the current one — otherwise the guard is bypassed.
+    if (parsed.isDev !== undefined) {
+      const nextRole = parsed.role !== undefined ? parsed.role : agent.role;
+      const candidate = { role: nextRole, isDev: parsed.isDev };
+      if (
+        isAutonomyLocked(candidate) &&
+        parsed.isDev !== agentAcceptsAutonomousTickets(candidate)
+      ) {
+        return res.status(400).json({
+          error:
+            `isDev cannot be changed for agent '${agent.id}': role ` +
+            `'${nextRole}' fixes autonomous-ticket eligibility to ` +
+            `${agentAcceptsAutonomousTickets(candidate)}.`,
+        });
+      }
+    }
+
     const allowed = [
       'name',
       'engine',
@@ -258,6 +286,18 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     // any `model` field here so a settings save can't rewrite the shared row.
     if (parsed.browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = parsed.browserToolsEnabled;
+    }
+    // "Dev" flag (accepts autonomous tickets). The `allowed` loop above may
+    // have just changed `role`, so `isAutonomyLocked(agent)` now reflects the
+    // POST-PATCH role. Contradictions were already rejected with a 400; here
+    // we persist the value only for togglable (unlocked) agents, and drop any
+    // lingering raw `isDev` when the resulting role locks eligibility (it is
+    // role-derived for locked agents, so the field would only be dead — and
+    // potentially contradictory — weight on the row).
+    if (isAutonomyLocked(agent)) {
+      delete (agent as Record<string, unknown>).isDev;
+    } else if (parsed.isDev !== undefined) {
+      agent.isDev = parsed.isDev;
     }
     // Skill allowlist: `null` clears the restriction (back to all skills),
     // an array restricts to those ids, `undefined` preserves the current value.
@@ -338,6 +378,24 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       heartbeat: heartbeatConfig,
     };
     if (role) agent.role = role;
+    // "Dev" flag (accepts autonomous tickets). Locked roles (dev/lead,
+    // docs/intake/reviewer) derive eligibility from their role: reject a
+    // contradictory `isDev` with a 400 (before the agent is persisted),
+    // accept a matching one as a no-op, and store it for togglable agents.
+    if (typeof parsed.isDev === 'boolean') {
+      if (isAutonomyLocked(agent)) {
+        if (parsed.isDev !== agentAcceptsAutonomousTickets(agent)) {
+          return res.status(400).json({
+            error:
+              `isDev cannot be set for agent '${agent.id}': its role ` +
+              `'${agent.role}' fixes autonomous-ticket eligibility to ` +
+              `${agentAcceptsAutonomousTickets(agent)}.`,
+          });
+        }
+      } else {
+        agent.isDev = parsed.isDev;
+      }
+    }
     if (browserToolsEnabled !== undefined) {
       agent.browserToolsEnabled = browserToolsEnabled;
     }

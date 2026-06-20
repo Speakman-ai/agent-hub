@@ -121,6 +121,98 @@ describe('Schema validation — PATCH /api/agents/:agentId', () => {
   });
 });
 
+describe('isDev contract — autonomous-ticket eligibility', () => {
+  it('POST persists isDev for a togglable agent', async () => {
+    const id = `agent-${Date.now()}-dev`;
+    const res = await request.post('/api/agents').send({ id, projectId, isDev: true }).expect(201);
+    expect((res.body as { isDev?: boolean }).isDev).toBe(true);
+  });
+
+  it('POST rejects a contradictory isDev for a locked default Dev role (400)', async () => {
+    const res = await request
+      .post('/api/agents')
+      .send({ id: `agent-${Date.now()}-lead`, projectId, role: 'lead', isDev: false })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/isDev cannot be set/i);
+  });
+
+  it('POST rejects a contradictory isDev for an out-of-band role (400)', async () => {
+    const res = await request
+      .post('/api/agents')
+      .send({ id: `agent-${Date.now()}-rev`, projectId, role: 'reviewer', isDev: true })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/isDev cannot be set/i);
+  });
+
+  it('POST accepts a matching isDev for a locked role as a no-op (201)', async () => {
+    await request
+      .post('/api/agents')
+      .send({ id: `agent-${Date.now()}-rev2`, projectId, role: 'reviewer', isDev: false })
+      .expect(201);
+  });
+
+  it('PATCH persists isDev for a togglable agent (200)', async () => {
+    const agent = (await createAgent({ projectId })) as { id: string };
+    const res = await request.patch(`/api/agents/${agent.id}`).send({ isDev: false }).expect(200);
+    expect((res.body as { isDev?: boolean }).isDev).toBe(false);
+  });
+
+  it('PATCH rejects a contradictory isDev on a locked default Dev role (400)', async () => {
+    const id = `agent-${Date.now()}-dev2`;
+    await request.post('/api/agents').send({ id, projectId, role: 'dev' }).expect(201);
+    const res = await request.patch(`/api/agents/${id}`).send({ isDev: false }).expect(400);
+    expect((res.body as { error: string }).error).toMatch(/isDev cannot be changed/i);
+  });
+
+  it('PATCH accepts a matching isDev on a locked role as a no-op (200)', async () => {
+    const id = `agent-${Date.now()}-dev3`;
+    await request.post('/api/agents').send({ id, projectId, role: 'dev' }).expect(201);
+    await request.patch(`/api/agents/${id}`).send({ isDev: true }).expect(200);
+  });
+
+  it('PATCH validates isDev against the POST-PATCH role (role→locked-off + isDev:true) (400)', async () => {
+    // Unlocked agent; the SAME request moves it to a locked-off role AND sets
+    // isDev:true — must be judged against the candidate role, not the current.
+    const agent = (await createAgent({ projectId })) as { id: string };
+    const res = await request
+      .patch(`/api/agents/${agent.id}`)
+      .send({ role: 'reviewer', isDev: true })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/isDev cannot be changed/i);
+  });
+
+  it('PATCH validates isDev against the POST-PATCH role (role→locked-on + isDev:false) (400)', async () => {
+    const agent = (await createAgent({ projectId })) as { id: string };
+    const res = await request
+      .patch(`/api/agents/${agent.id}`)
+      .send({ role: 'dev', isDev: false })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/isDev cannot be changed/i);
+  });
+
+  it('PATCH allows a role change with a consistent isDev (role→togglable + isDev:true) (200)', async () => {
+    const agent = (await createAgent({ projectId })) as { id: string };
+    const res = await request
+      .patch(`/api/agents/${agent.id}`)
+      .send({ role: 'sub', isDev: true })
+      .expect(200);
+    expect((res.body as { isDev?: boolean; role?: string }).isDev).toBe(true);
+    expect((res.body as { role?: string }).role).toBe('sub');
+  });
+
+  it('PATCH clears a lingering raw isDev when the role changes to a locked role (200)', async () => {
+    // Stored isDev:true on an unlocked agent, then promoted to a locked-off
+    // role with no isDev in the body — the raw field must not linger.
+    const agent = (await createAgent({ projectId, isDev: true })) as { id: string; isDev: boolean };
+    expect(agent.isDev).toBe(true);
+    const res = await request
+      .patch(`/api/agents/${agent.id}`)
+      .send({ role: 'reviewer' })
+      .expect(200);
+    expect((res.body as { isDev?: boolean }).isDev).toBeUndefined();
+  });
+});
+
 describe('Schema validation — POST /api/agents/bulk-engine', () => {
   // bulk-engine now writes per-user overrides and auth-gates ahead of body
   // validation. This suite runs in no-auth-configured mode (no authUserId),

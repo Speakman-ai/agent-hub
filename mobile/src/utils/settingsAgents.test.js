@@ -13,6 +13,10 @@ import {
   settingsResolveModelChip,
   settingsEffectiveEngine,
   settingsModelOverrideIsStale,
+  isAutonomyLocked,
+  isAutonomyLockedOn,
+  isAutonomyLockedOff,
+  agentAcceptsAutonomousTickets,
 } from './settingsAgents.js';
 
 const projects = [
@@ -99,6 +103,7 @@ describe('buildCreateAgentPayload', () => {
     expect(buildCreateAgentPayload({ id: ' a1 ', projectId: 'p1', name: '', model: '' })).toEqual({
       id: 'a1',
       projectId: 'p1',
+      isDev: false,
     });
   });
 
@@ -119,7 +124,14 @@ describe('buildCreateAgentPayload', () => {
       engine: 'codex-cli',
       model: 'gpt-5.5',
       systemPrompt: 'do things',
+      isDev: false,
     });
+  });
+
+  it('sends isDev: true when the Dev toggle is on, false otherwise', () => {
+    expect(buildCreateAgentPayload({ id: 'a1', projectId: 'p1', isDev: true }).isDev).toBe(true);
+    expect(buildCreateAgentPayload({ id: 'a1', projectId: 'p1', isDev: false }).isDev).toBe(false);
+    expect(buildCreateAgentPayload({ id: 'a1', projectId: 'p1' }).isDev).toBe(false);
   });
 });
 
@@ -137,6 +149,31 @@ describe('buildUpdateAgentPayload', () => {
     expect(buildUpdateAgentPayload(original, { name: 'Old' })).toEqual({});
     expect(buildUpdateAgentPayload(null, { name: 'x' })).toEqual({});
     expect(buildUpdateAgentPayload(original, null)).toEqual({});
+  });
+
+  it('includes isDev only when it differs from effective eligibility, never for locked agents', () => {
+    // Togglable specialist that is currently eligible (undefined → eligible):
+    // turning it OFF is a real change, leaving it ON is a no-op.
+    const sub = { id: 's', role: 'sub' };
+    expect(buildUpdateAgentPayload(sub, { isDev: false })).toEqual({ isDev: false });
+    expect(buildUpdateAgentPayload(sub, { isDev: true })).toEqual({});
+    // Already opted out → turning it back ON is the change.
+    const optedOut = { id: 's', role: 'sub', isDev: false };
+    expect(buildUpdateAgentPayload(optedOut, { isDev: true })).toEqual({ isDev: true });
+    // Locked agents never emit isDev (default Dev role + out-of-band role).
+    expect(buildUpdateAgentPayload({ id: 'd', role: 'dev' }, { isDev: false })).toEqual({});
+    expect(buildUpdateAgentPayload({ id: 'r', role: 'reviewer' }, { isDev: true })).toEqual({});
+  });
+
+  it('omits isDev when the edit form never set it (undefined seed → no silent write)', () => {
+    // The mobile edit form seeds editForm.isDev from the STORED field, so an
+    // untouched toggle leaves it undefined and an unrelated Save must not
+    // persist any isDev value (regression: previously seeded a phantom `true`).
+    const eligibleSub = { id: 's', role: 'sub', name: 'Old' };
+    expect(buildUpdateAgentPayload(eligibleSub, { name: 'Renamed' })).toEqual({ name: 'Renamed' });
+    expect(buildUpdateAgentPayload(eligibleSub, { isDev: undefined, name: 'Renamed' })).toEqual({
+      name: 'Renamed',
+    });
   });
 
   it('treats missing original field as empty string', () => {
@@ -235,5 +272,25 @@ describe('per-user engine/model reconciliation', () => {
 
   it('flags any non-empty override when the engine has no known models', () => {
     expect(settingsModelOverrideIsStale('claude-a', 'unknown-engine', modelConfig)).toBe(true);
+  });
+});
+
+describe('agent autonomy flag (mobile)', () => {
+  it('locks ON default Dev roles and OFF out-of-band roles', () => {
+    expect(isAutonomyLockedOn({ role: 'dev' })).toBe(true);
+    expect(isAutonomyLockedOn({ role: 'lead' })).toBe(true);
+    expect(isAutonomyLockedOff({ role: 'reviewer' })).toBe(true);
+    expect(isAutonomyLockedOff({ role: 'docs' })).toBe(true);
+    expect(isAutonomyLocked({ role: 'sub' })).toBe(false);
+    expect(isAutonomyLocked({ role: 'frontend' })).toBe(false);
+  });
+
+  it('resolves effective eligibility', () => {
+    expect(agentAcceptsAutonomousTickets({ role: 'dev', isDev: false })).toBe(true);
+    expect(agentAcceptsAutonomousTickets({ role: 'reviewer', isDev: true })).toBe(false);
+    expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: true })).toBe(true);
+    expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: false })).toBe(false);
+    expect(agentAcceptsAutonomousTickets({ role: 'sub' })).toBe(true);
+    expect(agentAcceptsAutonomousTickets(null)).toBe(false);
   });
 });
