@@ -769,24 +769,30 @@ export function injectBaseHref(html, baseHref) {
  * `reloadToken` re-runs the fetch (e.g. on every `design_updated` WS event)
  * so the agent's file writes show up immediately on the canvas.
  */
-export function DesignCanvas({ designId, reloadToken, onManualReload }) {
+export function DesignCanvas({ designId, srcBase, reloadToken, onManualReload }) {
   const base = getServerBase();
   const [srcdoc, setSrcdoc] = useState(null);
   const [error, setError] = useState(null);
+
+  // The directory URL the canvas loads from. Defaults to the standalone Design
+  // Studio mount (`/design-files/<id>/`); design-mode sessions pass an explicit
+  // `srcBase` for the worktree mount (`/session-files/<id>/design/`). Both are
+  // served by express.static BEFORE authMiddleware's gate (which only guards
+  // `/api/*` — see server/auth.ts). Neither is cookie-authenticated, so the
+  // fetch below must NOT set `credentials: 'include'`: in remote mode (Vite
+  // client → EC2 hub) `cors-config.ts` replies with `credentials: false`, and
+  // the browser rejects a credentialed response. The opaque id in the path is
+  // the capability token, gated per-design/per-session inside the handler.
+  const dirBase = srcBase
+    ? `${base}${srcBase.endsWith('/') ? srcBase : `${srcBase}/`}`
+    : `${base}/design-files/${designId}/`;
 
   useEffect(() => {
     let cancelled = false;
     setSrcdoc(null);
     setError(null);
 
-    // `/design-files/` is served by express.static BEFORE authMiddleware's
-    // gate (which only guards `/api/*` — see server/auth.ts). It is not
-    // cookie-authenticated, so we must NOT set `credentials: 'include'`: in
-    // remote mode (Vite client → EC2 hub) `cors-config.ts` replies with
-    // `credentials: false`, and the browser rejects the response with
-    // "Access-Control-Allow-Credentials must be 'true'". Path is gated by
-    // the opaque designId + per-design org check inside the handler.
-    const url = `${base}/design-files/${designId}/index.html?v=${reloadToken}`;
+    const url = `${dirBase}index.html?v=${reloadToken}`;
     fetch(url)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -794,8 +800,7 @@ export function DesignCanvas({ designId, reloadToken, onManualReload }) {
       })
       .then((html) => {
         if (cancelled) return;
-        const baseHref = `${base}/design-files/${designId}/`;
-        setSrcdoc(injectBaseHref(html, baseHref));
+        setSrcdoc(injectBaseHref(html, dirBase));
       })
       .catch((err) => {
         if (cancelled) return;
@@ -805,7 +810,7 @@ export function DesignCanvas({ designId, reloadToken, onManualReload }) {
     return () => {
       cancelled = true;
     };
-  }, [base, designId, reloadToken]);
+  }, [dirBase, reloadToken]);
 
   return (
     <>

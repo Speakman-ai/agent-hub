@@ -1,5 +1,6 @@
 import type { SessionRow, Stmts } from './types.js';
 import { computeSessionState, DEFAULT_SESSION_STATE, type SessionState } from './session-state.js';
+import { sessionHasUsableWorktree } from './session-mode.js';
 
 /**
  * File-level checkpoint rewind is implemented by spawning the Claude Code CLI
@@ -38,6 +39,15 @@ export type SessionWireRow = SessionRow & {
    * per state, so this field is never null on the wire.
    */
   state: SessionState;
+  /**
+   * Whether this session can enter Design mode (`PUT /api/sessions/:id/mode`
+   * with `design`). Computed from the SAME `sessionHasUsableWorktree` helper the
+   * mode route and chat spawn path gate on, so the client's mode picker offers
+   * Design exactly when the server would accept it — never reimplementing the
+   * worktree check (which would drift if the helper's definition tightens). Not
+   * gated on `stmts`; derivable from the row alone.
+   */
+  can_design_mode: boolean;
 };
 
 /**
@@ -151,5 +161,6 @@ export function enrichSessionForClient(row: SessionRow, stmts?: Stmts): SessionW
     state: stmts
       ? computeSessionState(stmts, row.id)
       : ((row.state as SessionState | null | undefined) ?? DEFAULT_SESSION_STATE),
+    can_design_mode: sessionHasUsableWorktree(row),
   };
 }

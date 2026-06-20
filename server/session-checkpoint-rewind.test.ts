@@ -53,6 +53,19 @@ describe('enrichSessionForClient', () => {
     expect(wire.finalize_status).toBeNull();
   });
 
+  it('can_design_mode mirrors sessionHasUsableWorktree (worktree presence)', () => {
+    expect(enrichSessionForClient(minimalSession({ worktree_path: null })).can_design_mode).toBe(
+      false,
+    );
+    expect(enrichSessionForClient(minimalSession({ worktree_path: '   ' })).can_design_mode).toBe(
+      false,
+    );
+    expect(
+      enrichSessionForClient(minimalSession({ worktree_path: '/tmp/wt/session-x' }))
+        .can_design_mode,
+    ).toBe(true);
+  });
+
   it('finalize_status reflects the latest finalize run status when stmts is provided', () => {
     const stmts = {
       getKanbanCardBySession: { get: () => undefined },

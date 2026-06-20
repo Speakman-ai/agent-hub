@@ -27,6 +27,7 @@ import DelegationPanel from './components/DelegationPanel.jsx';
 import SessionSummarySidebar from './components/SessionSummarySidebar.jsx';
 import SessionPreviewPane from './components/SessionPreviewPane.jsx';
 import SessionDesignPane from './components/SessionDesignPane.jsx';
+import SessionDesignModePane from './components/SessionDesignModePane.jsx';
 // Lazy — pulls in @git-diff-view/react + its CSS only when the diff pane opens.
 const SessionChangesPane = lazy(() => import('./components/SessionChangesPane.jsx'));
 const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane.jsx'));
@@ -276,6 +277,13 @@ export default function App({ initialView } = {}) {
   const [sessionDesignReloadToken, setSessionDesignReloadToken] = useState(0);
   // Controls the "Link a design" picker modal for the active chat session.
   const [showLinkDesign, setShowLinkDesign] = useState(false);
+  // True while a `session_mode` switch (chat ↔ design) is in flight, so the
+  // mode picker disables itself until the server confirms.
+  const [sessionModeBusy, setSessionModeBusy] = useState(false);
+  // Manual-refresh counter for the design-mode canvas pane. Combined with the
+  // per-session `code_changed` tick so the canvas reloads both on agent file
+  // writes and on an explicit user reload click.
+  const [designModeManualReload, setDesignModeManualReload] = useState(0);
   // Delegation state: Map of sessionId -> { parentMessageId, tasks: [{delegationId, agentId, agentName, agentColor, task, status, content, output, error}] }
   const [delegations, setDelegations] = useState({});
   // Last `delegation_error` per session — surfaces "Dispatch failed: …" on
@@ -4015,6 +4023,31 @@ export default function App({ initialView } = {}) {
     setCurrentView('design');
   }, [linkedDesign]);
 
+  // Session mode (chat | design). Design mode needs an isolated worktree — the
+  // server rejects `PUT /mode design` without one. We use the server-computed
+  // `can_design_mode` capability (derived from the SAME `sessionHasUsableWorktree`
+  // gate) rather than reimplementing the worktree check here, so the picker
+  // offers Design exactly when the server would accept it and can't drift.
+  const sessionMode = activeSession?.session_mode === 'design' ? 'design' : 'chat';
+  const canDesignMode = !!activeSession?.can_design_mode;
+  const designModeActive = sessionMode === 'design';
+
+  const handleSessionModeChange = useCallback(
+    async (nextMode) => {
+      if (!activeSessionId) return;
+      setSessionModeBusy(true);
+      try {
+        const updated = await api.setSessionMode(activeSessionId, nextMode);
+        setSessions((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)));
+      } catch (err) {
+        showToast(err?.message || 'Failed to change session mode', 'error', 6000);
+      } finally {
+        setSessionModeBusy(false);
+      }
+    },
+    [activeSessionId, showToast],
+  );
+
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
   const chatAgent = useMemo(
     () => agents.find((a) => a.id === sessionOwnerAgentId) ?? activeAgent ?? null,
@@ -4602,6 +4635,10 @@ export default function App({ initialView } = {}) {
                     onOpenLinkDesign={() => setShowLinkDesign(true)}
                     canLinkDesign={!!activeSessionId}
                     linkedDesignActive={!!linkedDesign}
+                    sessionMode={sessionMode}
+                    canDesignMode={canDesignMode}
+                    onSessionModeChange={handleSessionModeChange}
+                    sessionModeBusy={sessionModeBusy}
                   />
 
                   <SessionSummarySidebar
@@ -5514,6 +5551,15 @@ export default function App({ initialView } = {}) {
                         onUnlink={handleUnlinkSessionDesign}
                         onOpenStudio={handleOpenLinkedDesignStudio}
                         onManualReload={() => setSessionDesignReloadToken((t) => t + 1)}
+                      />
+                    )}
+                    {designModeActive && (
+                      <SessionDesignModePane
+                        sessionId={activeSessionId}
+                        reloadToken={
+                          (codeChangedTickBySession[activeSessionId] || 0) + designModeManualReload
+                        }
+                        onManualReload={() => setDesignModeManualReload((n) => n + 1)}
                       />
                     )}
                   </div>

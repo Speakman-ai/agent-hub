@@ -594,6 +594,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ enabled }),
     }),
+  /**
+   * Session mode picker: 'chat' (normal build) or 'design' (loads the design
+   * skill + renders the in-session canvas pane). The server rejects 'design'
+   * for a worktree-less session — surface that error to the caller. Returns the
+   * enriched session row.
+   */
+  setSessionMode: (sessionId, mode) =>
+    fetchJSON(`/sessions/${sessionId}/mode`, {
+      method: 'PUT',
+      body: JSON.stringify({ mode }),
+    }),
   /** Codex reasoning ("thinking") level: 'high' (default) or 'pro' (→ xhigh). */
   setSessionReasoningEffort: (sessionId, effort) =>
     fetchJSON(`/sessions/${sessionId}/reasoning-effort`, {

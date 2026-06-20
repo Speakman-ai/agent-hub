@@ -163,6 +163,7 @@ import { handleMultiAgentCancel } from './session-multi-agent.js';
 
 import { initDesignChat, handleDesignChat, handleDesignCancel } from './design-chat.js';
 import { ensureDesignsRoot, getDesign as getDesignStore } from './designs-store.js';
+import { createSessionDesignFilesHandler } from './session-files-mount.js';
 
 import {
   initAutoGit,
@@ -743,6 +744,19 @@ app.use('/design-files/:designId', (req: Request, res: Response, next) => {
   }
   return express.static(root, { fallthrough: false })(req, res, next);
 });
+
+// Session design-mode artifact files: `<worktree>/design/*` →
+// `/session-files/<sessionId>/design/*`. Mirrors the `/design-files` mount but
+// sources from the session's *worktree* instead of the standalone designs root —
+// this is what the in-session Design-mode canvas pane renders (see
+// SessionDesignModePane / DesignCanvas on the web client). Handler + guards live
+// in session-files-mount.ts so they unit-test without booting the server.
+app.use(
+  '/session-files/:sessionId/design',
+  createSessionDesignFilesHandler({
+    getSession: (id) => stmts!.getSession.get(id) as SessionRow | undefined,
+  }),
+);
 
 const CLIENT_DIST: string =
   process.env.AGENT_HUB_SERVE_CLIENT || path.join(__dirname, '..', 'client', 'dist');
