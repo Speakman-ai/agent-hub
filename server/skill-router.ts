@@ -1,3 +1,5 @@
+import { normalizeSessionMode } from './session-mode.js';
+
 interface SkillLike {
   id: string;
   name: string;
@@ -17,6 +19,16 @@ interface SkillRouteInput {
    * message doesn't contain a platform tell).
    */
   projectSlug?: string;
+  /**
+   * Session mode of the producing session (`chat` | `design`; see
+   * `session-mode.ts`). When `design`, the `design` skill routes even without
+   * the legacy Design Studio agent id / artifact-dir cwd: design-mode sessions
+   * run in an ordinary session worktree (cwd is the worktree root, artifacts
+   * live under `design/`), so the old `designs/<uuid>` cwd regex never matches.
+   * Normalized via `normalizeSessionMode`, so unknown/legacy values collapse to
+   * `chat` and never spuriously enable the design gate.
+   */
+  sessionMode?: string | null;
 }
 
 export interface SkillRouteMatch {
@@ -136,6 +148,7 @@ function builtInScore(
 
   if (skillId === 'design') {
     const isDesignSession =
+      normalizeSessionMode(input.sessionMode) === 'design' ||
       agentId === '__design_studio__' ||
       systemPrompt.includes('you are design studio') ||
       DESIGN_ARTIFACT_DIR_RE.test(cwd);

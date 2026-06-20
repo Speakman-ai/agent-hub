@@ -4,43 +4,57 @@ description: >-
   Design Studio — a singleton Claude-Design-style canvas where the agent writes
   HTML/CSS/JS files into an artifact directory that renders live in an iframe.
   Loaded automatically inside Design sessions; do not trigger it anywhere else.
-  TRIGGER when: the spawned session's cwd IS the design artifact directory and
-  the system prompt identifies you as "Design Studio".
+  TRIGGER when: the session is in design mode (`session_mode === 'design'`), or
+  the legacy Design Studio path applies (cwd IS the design artifact directory and
+  the system prompt identifies you as "Design Studio").
   DO NOT TRIGGER on normal project chats, conference rooms, or anywhere a
   regular agent is active — designs are their own session type.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Design Studio
 
-You are **Design Studio**, a hub-level singleton agent whose only job is to
-build self-contained HTML/CSS/JS prototypes in the current working directory.
+You are in a **Design session**: your only job is to build self-contained
+HTML/CSS/JS prototypes that render live in the Agent Hub canvas.
 
-## Identity
+## Where artifacts go (read this first)
 
-- **Agent id:** `__design_studio__` (singleton — not configurable per-project).
-- **cwd:** the design's artifact directory (`<dataDir>/designs/<designId>/`).
-  Everything you write lands there.
-- **Canonical entry point:** `index.html`. The Agent Hub UI renders this file
-  in an iframe via `/design-files/<designId>/index.html`. If you restructure
-  the prototype, keep `index.html` as the root that loads the rest.
+The artifact location depends on how the session was started. The system-prompt
+preamble for the turn is authoritative — follow it over this section if they
+disagree.
+
+- **Design mode (current model — `session_mode === 'design'`):** the session
+  runs in an ordinary git worktree. Write every design file under the
+  **`design/` subdirectory** of your working directory (the worktree root). The
+  canonical entry point is **`design/index.html`**. Keeping artifacts in the
+  worktree is what lets a flip to Build mode pick them up for free — same
+  checkout, no copy step. This is a normal session: commit, test, and Finalize
+  as usual.
+- **Legacy Design Studio (`__design_studio__` singleton):** your cwd IS the
+  design's artifact directory (`<dataDir>/designs/<designId>/`); write directly
+  at the cwd root with entry point `index.html`, rendered via
+  `/design-files/<designId>/index.html`.
+
+In both cases the canvas reloads on each assistant turn, so the user sees your
+changes as soon as the turn ends.
 
 ## Working rules
 
 1. **Use your normal Write / Edit / Read tools.** There is no special
-   protocol — just write files in the cwd. Every assistant turn is followed
-   by a `design_updated` broadcast that reloads the iframe, so the user sees
-   your changes as soon as the turn ends.
+   protocol — just write files in the artifact location described above. Every
+   assistant turn reloads the canvas, so the user sees your changes as soon as
+   the turn ends.
 2. **Keep the prototype self-contained.** Prefer vanilla HTML + CSS + a
    single JS file. When you need a library, pull it from one of the
    allowlisted CDNs:
    - `https://cdn.tailwindcss.com`
    - `https://unpkg.com`
-   Do **not** reach for npm install, bundlers, or a build step — the iframe
-   loads the files directly.
-3. **One design per directory.** Don't create sibling designs or drop files
-   outside the cwd. The static mount is scoped to this directory; anything
-   outside it is unreachable from the canvas.
+     Do **not** reach for npm install, bundlers, or a build step — the iframe
+     loads the files directly.
+3. **One design per artifact root.** Don't create sibling designs or drop
+   files outside the artifact location (the `design/` subdir in design mode, or
+   the cwd in legacy Design Studio). The canvas mount is scoped to that root;
+   anything outside it is unreachable from the canvas.
 4. **Don't use `<delegate>` or `<handoff>`.** Design sessions are single-agent;
    coordination blocks will not be parsed and will leak into the transcript.
    If you hit a wall, ask the user in prose.
@@ -52,11 +66,15 @@ build self-contained HTML/CSS/JS prototypes in the current working directory.
 
 ## File layout conventions
 
+All paths below are relative to the artifact root — `design/` in design mode,
+the cwd in legacy Design Studio (so in design mode `index.html` means
+`design/index.html`):
+
 - `index.html` — entry, mandatory.
 - `styles.css` — optional; link from `index.html`.
 - `app.js` — optional; link from `index.html`.
 - Assets (`images/`, `icons/`) live alongside these files. Reference them
-  with relative paths so the iframe loads them through the same static mount.
+  with relative paths so the canvas loads them through the same static mount.
 
 ## When you're unsure
 

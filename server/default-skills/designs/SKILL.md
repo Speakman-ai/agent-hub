@@ -12,11 +12,20 @@ description: >-
   cross-session). DO NOT TRIGGER on generic design-system or Figma/Sketch
   discussions unrelated to an Agent Hub design artifact.
 category: platform
-version: 1.0.0
+version: 1.1.0
 keep-coding-instructions: true
 ---
 
 # Designs — Cross-Session Read Access
+
+> **Design mode (current model).** New designs are produced by ordinary
+> sessions running in `session_mode === 'design'`, which write their artifacts
+> into the **`design/` subdirectory of the session worktree** — not the legacy
+> standalone `designs/<id>` store this skill's scripts read. To reference a
+> design-mode session's output, read the files directly from that session's
+> worktree (`<worktree>/design/…`); the scripts below cover only the legacy
+> standalone Design Studio store, which is kept read-only during the migration
+> window. A cross-session worktree-artifact read API is a separate follow-up.
 
 Agent Hub hosts "designs" as a distinct session type: a Claude-Design-style
 canvas where an agent writes HTML/CSS/JS into an artifact directory that's

@@ -75,6 +75,50 @@ describe('routeSkillFromMessage', () => {
     expect(result?.skillId).toBe('design');
   });
 
+  it('routes design in a design-mode session (worktree cwd, no Design Studio id)', () => {
+    // Design-mode sessions run in an ordinary worktree: cwd is the worktree
+    // root (artifacts under design/), the agent id is a normal project agent,
+    // and the system prompt is not "Design Studio". Only sessionMode gates it.
+    const result = routeSkillFromMessage({
+      message: 'Build a polished hero section',
+      skills: ALL_SKILLS,
+      agentId: 'hub-frontend',
+      cwd: '/home/node/.agent-hub/workspaces/acme/session-abc',
+      agentSystemPrompt: 'You are the Acme frontend engineer.',
+      sessionMode: 'design',
+    });
+    expect(result?.skillId).toBe('design');
+    expect(result?.reason).toContain('design session context');
+  });
+
+  it('does not route design in a normal (chat-mode) worktree session', () => {
+    const result = routeSkillFromMessage({
+      message: 'Build a polished hero section',
+      skills: ALL_SKILLS,
+      agentId: 'hub-frontend',
+      cwd: '/home/node/.agent-hub/workspaces/acme/session-abc',
+      agentSystemPrompt: 'You are the Acme frontend engineer.',
+      sessionMode: 'chat',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('does not enable the design gate for unknown/legacy session_mode values', () => {
+    // normalizeSessionMode collapses null/undefined/garbage to chat, so a stray
+    // value can never spuriously force-load the design skill in a normal session.
+    for (const sessionMode of [null, undefined, '', 'Design ', 'studio', 'DESIGN']) {
+      const result = routeSkillFromMessage({
+        message: 'Build a polished hero section',
+        skills: ALL_SKILLS,
+        agentId: 'hub-frontend',
+        cwd: '/home/node/.agent-hub/workspaces/acme/session-abc',
+        agentSystemPrompt: 'You are the Acme frontend engineer.',
+        sessionMode: sessionMode as string | null | undefined,
+      });
+      expect(result, `sessionMode=${JSON.stringify(sessionMode)}`).toBeNull();
+    }
+  });
+
   it('routes Agent Hub platform requests', () => {
     const result = routeSkillFromMessage({
       message: 'Use http://localhost:3051/api/projects/agent-hub/board to inspect state.',

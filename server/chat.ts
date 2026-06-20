@@ -2336,6 +2336,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           agentSystemPrompt: agent.systemPrompt || '',
           cwd: session!.worktree_path || project.cwd,
           projectSlug: project.id,
+          sessionMode: session!.session_mode ?? undefined,
         });
         const injections: string[] = [];
         for (const routed of routedMatches) {
