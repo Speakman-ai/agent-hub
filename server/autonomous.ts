@@ -387,6 +387,14 @@ interface AutonomousDeps {
 const autonomousCrons = new Map<string, cron.ScheduledTask>();
 const autonomousProjects = new Set<string>();
 
+// A board may run MORE THAN ONE epic in autonomous mode at once. `autonomousCrons`
+// is keyed by epic id, but `autonomousProjects` (consumed by `tryAutonomousDispatch`
+// and `chat.ts`) is a flat set of project ids — so when one epic of a multi-epic
+// project flips off we must NOT drop the project until its LAST autonomous epic
+// is gone. This tracks the live autonomous-epic ids per project so membership in
+// `autonomousProjects` is reference-counted, not last-writer-wins.
+const autonomousEpicsByProject = new Map<string, Set<string>>();
+
 /**
  * Debounce key for blocker-skip card comments: cardId → signature of the
  * unresolved-blocker set the last time we commented. Without this the
@@ -477,7 +485,31 @@ export function initAutonomous(d: AutonomousDeps): void {
 
 // ─── Getters for shared state (used by index.ts) ───────────────────────────
 
-export { autonomousCrons, autonomousProjects, lastDispatchedReviewId, lastBlockerSkipSignature };
+export {
+  autonomousCrons,
+  autonomousProjects,
+  autonomousEpicsByProject,
+  lastDispatchedReviewId,
+  lastBlockerSkipSignature,
+};
+
+/**
+ * List every epic on a board that is currently in autonomous mode.
+ *
+ * Prefers the plural `getAutonomousEpics` statement (multi-epic aware). Falls
+ * back to the singular `getAutonomousEpic` for callers/tests that only wired the
+ * older statement — in that case the board behaves as it did before (one epic),
+ * so existing single-epic mocks keep working unchanged.
+ */
+function listAutonomousEpics(stmts: Stmts, boardId: string): KanbanEpicRow[] {
+  const plural = (stmts as { getAutonomousEpics?: { all?: (id: string) => unknown } })
+    .getAutonomousEpics;
+  if (plural?.all) {
+    return (plural.all(boardId) as KanbanEpicRow[]) ?? [];
+  }
+  const one = stmts.getAutonomousEpic?.get(boardId) as KanbanEpicRow | undefined;
+  return one ? [one] : [];
+}
 
 // ─── Core Dispatch ─────────────────────────────────────────────────────────
 
@@ -495,12 +527,39 @@ export { autonomousCrons, autonomousProjects, lastDispatchedReviewId, lastBlocke
  * epic, return the existing promise instead of starting a second body. The
  * caller still sees a resolved promise once dispatch settles, but no second
  * body runs. The map key is the epic id (not project id) because
- * `autonomous_max_concurrent` is an epic-level setting and a project may
- * legitimately have multiple epics in flight (today only one is autonomous,
- * but the gate is forward-compatible).
+ * `autonomous_max_concurrent` is an epic-level setting and a board may run
+ * several epics autonomously at once — each gets its own single-flight gate so
+ * coalescing one epic's burst never blocks a sibling epic's dispatch.
  */
 const inflightLoops = new Map<string, Promise<void>>();
 
+/**
+ * Run the dispatch body for a single epic behind the per-epic single-flight
+ * gate. Shared by the whole-board sweep (`runAutonomousLoop`) and the
+ * per-epic cron tick (`runAutonomousLoopForEpic`) so both honor the same
+ * coalescing rule.
+ */
+function dispatchEpicGated(projectId: string, epic: KanbanEpicRow): Promise<void> {
+  const existing = inflightLoops.get(epic.id);
+  if (existing) return existing;
+
+  const p = runAutonomousLoopInner(projectId, epic).finally(() => {
+    inflightLoops.delete(epic.id);
+  });
+  inflightLoops.set(epic.id, p);
+  return p;
+}
+
+/**
+ * Whole-board sweep: dispatch EVERY autonomous epic on the project's board.
+ *
+ * This is the right entry point for board-level triggers (manual
+ * `POST /autonomous/run`, the event-driven `tryAutonomousDispatch` after a
+ * session ends, the PR-merged webhook) where we want to give every epic a
+ * chance to pick up newly-freed slots. The per-epic 60s safety-net cron does
+ * NOT call this — see `runAutonomousLoopForEpic` — so a board with N
+ * autonomous epics does not produce N full-board sweeps every minute.
+ */
 export async function runAutonomousLoop(projectId: string): Promise<void> {
   const d = getDeps();
   const project = d.findProject(projectId);
@@ -509,20 +568,29 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   const boardData = getOrCreateBoard(d.stmts, projectId);
   if (!boardData?.board) return Promise.resolve();
 
-  const epic = d.stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
-  if (!epic) return Promise.resolve();
+  // A board can run several epics autonomously at once. Tick each one
+  // independently — every epic carries its own slot cap and its own per-epic
+  // single-flight gate, so a slow dispatch on one epic never stalls another.
+  const epics = listAutonomousEpics(d.stmts, boardData.board.id);
+  if (epics.length === 0) return Promise.resolve();
 
-  const existing = inflightLoops.get(epic.id);
-  if (existing) return existing;
-
-  const p = runAutonomousLoopInner(projectId).finally(() => {
-    inflightLoops.delete(epic.id);
-  });
-  inflightLoops.set(epic.id, p);
-  return p;
+  await Promise.all(epics.map((epic) => dispatchEpicGated(projectId, epic)));
 }
 
-async function runAutonomousLoopInner(projectId: string): Promise<void> {
+/**
+ * Single-epic dispatch: tick ONLY the named epic.
+ *
+ * Each autonomous epic owns its own cron (keyed by epic id). That cron fires
+ * this — not the whole-board `runAutonomousLoop` — so one epic's tick never
+ * dispatches its siblings. Without this, N per-epic crons would each sweep the
+ * full board, causing N× duplicate dispatch attempts per tick and letting a
+ * fast-ticking epic drive a slower sibling.
+ *
+ * The epic is re-read fresh from the DB on every tick (the cron closure only
+ * captures the id) so a mid-flight settings change or an autonomous-off
+ * transition is honored without rescheduling.
+ */
+export async function runAutonomousLoopForEpic(projectId: string, epicId: string): Promise<void> {
   const d = getDeps();
   const project = d.findProject(projectId);
   if (!project) return;
@@ -530,8 +598,22 @@ async function runAutonomousLoopInner(projectId: string): Promise<void> {
   const boardData = getOrCreateBoard(d.stmts, projectId);
   if (!boardData?.board) return;
 
-  const epic = d.stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
-  if (!epic) return;
+  const epic = d.stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+  // Skip if the epic was deleted, turned off, or somehow belongs to a different
+  // board than this project's — the stale cron will be torn down on the next
+  // `scheduleAutonomousEpic` call.
+  if (!epic || !epic.autonomous || epic.board_id !== boardData.board.id) return;
+
+  await dispatchEpicGated(projectId, epic);
+}
+
+async function runAutonomousLoopInner(projectId: string, epic: KanbanEpicRow): Promise<void> {
+  const d = getDeps();
+  const project = d.findProject(projectId);
+  if (!project) return;
+
+  const boardData = getOrCreateBoard(d.stmts, projectId);
+  if (!boardData?.board) return;
 
   const colsForDoneCheck = d.stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
   const colNameByIdForEpic = Object.fromEntries(colsForDoneCheck.map((c) => [c.id, c.name]));
@@ -1102,28 +1184,52 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
     existing.stop();
     autonomousCrons.delete(key);
   }
-  autonomousProjects.delete(projectId);
 
   if (!epic.autonomous) {
+    // Drop this epic from the project's live set. Only remove the PROJECT from
+    // `autonomousProjects` once its LAST autonomous epic is gone — other epics
+    // on the same board may still be dispatching.
+    const liveEpics = autonomousEpicsByProject.get(projectId);
+    if (liveEpics) {
+      liveEpics.delete(key);
+      if (liveEpics.size === 0) {
+        autonomousEpicsByProject.delete(projectId);
+        autonomousProjects.delete(projectId);
+      }
+    } else {
+      autonomousProjects.delete(projectId);
+    }
     console.log(`[Autonomous] Stopped for epic "${epic.name}"`);
     return;
   }
 
+  let liveEpics = autonomousEpicsByProject.get(projectId);
+  if (!liveEpics) {
+    liveEpics = new Set<string>();
+    autonomousEpicsByProject.set(projectId, liveEpics);
+  }
+  liveEpics.add(key);
   autonomousProjects.add(projectId);
 
+  // This epic's safety-net cron dispatches ONLY this epic, not the whole board.
+  // With multiple autonomous epics, a per-board sweep here would mean every
+  // epic's cron re-dispatches every sibling each minute (N× duplicate sweeps,
+  // and the fastest cron driving the slowest epic). Whole-board sweeps stay on
+  // the event-driven / manual paths via `runAutonomousLoop`.
+  const epicId = epic.id;
   const task = cron.schedule(
     '* * * * *',
     wrapCronTick(
       () =>
-        runAutonomousLoop(projectId).catch((err: unknown) => {
+        runAutonomousLoopForEpic(projectId, epicId).catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
           console.error(`[Autonomous] Safety-net error for "${epic.name}":`, msg);
         }),
-      `autonomous:${projectId}`,
+      `autonomous:${projectId}:${epicId}`,
     ),
     defaultTickOptions({
       intervalSeconds: estimateIntervalSeconds('* * * * *'),
-      name: `autonomous:${projectId}`,
+      name: `autonomous:${projectId}:${epicId}`,
     }),
   );
   autonomousCrons.set(key, task);
@@ -1131,7 +1237,7 @@ export function scheduleAutonomousEpic(projectId: string, epic: KanbanEpicRow): 
     `[Autonomous] Activated epic "${epic.name}" for project "${projectId}" (event-driven + 60s safety net)`,
   );
 
-  runAutonomousLoop(projectId).catch((err: unknown) => {
+  runAutonomousLoopForEpic(projectId, epicId).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Autonomous] Initial dispatch error:`, msg);
   });
@@ -1146,8 +1252,9 @@ export function restoreAutonomousCrons(): void {
     try {
       const boardData = getOrCreateBoard(d.stmts, project.id);
       if (!boardData?.board) continue;
-      const epic = d.stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
-      if (epic) {
+      // Restore a cron for EVERY autonomous epic on the board, not just the first.
+      const epics = listAutonomousEpics(d.stmts, boardData.board.id);
+      for (const epic of epics) {
         scheduleAutonomousEpic(project.id, epic);
       }
     } catch (err: unknown) {

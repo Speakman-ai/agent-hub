@@ -48,10 +48,12 @@ vi.mock('./secrets.js', async (importOriginal) => {
 const {
   initAutonomous,
   runAutonomousLoop,
+  runAutonomousLoopForEpic,
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
   autonomousProjects,
   autonomousCrons,
+  autonomousEpicsByProject,
   lastDispatchedReviewId,
   lastBlockerSkipSignature,
 } = await import('./autonomous.js');
@@ -70,6 +72,11 @@ const mockMarkFinalizeAutomationFn = mockMarkFinalizeAutomation as Mock;
 
 interface MockStmts {
   getAutonomousEpic: { get: Mock };
+  // Optional plural statement. When present, the loop dispatches EVERY returned
+  // epic (multi-epic boards). When absent, `listAutonomousEpics` falls back to
+  // the singular `getAutonomousEpic`, preserving legacy single-epic behavior —
+  // which is why the default `makeStmts` intentionally omits it.
+  getAutonomousEpics?: { all: Mock };
   getEligibleAutonomousCards: { all: Mock };
   getKanbanColumns: { all: Mock };
   getSession: { get: Mock };
@@ -219,6 +226,7 @@ beforeEach(() => {
   mockGetOrCreateBoard.mockReset();
   mockMarkFinalizeAutomationFn.mockClear();
   autonomousProjects.clear();
+  autonomousEpicsByProject.clear();
   for (const t of autonomousCrons.values()) t.stop?.();
   autonomousCrons.clear();
   lastDispatchedReviewId.clear();
@@ -358,6 +366,130 @@ describe('runAutonomousLoop — dispatch', () => {
       .filter((p) => p.type === 'session_created');
     expect(sessionCreated).toHaveLength(1);
     expect(sessionCreated[0]).toMatchObject({ type: 'session_created', agentId: 'dev-1' });
+  });
+
+  it('dispatches cards for EVERY autonomous epic on the board (multi-epic)', async () => {
+    // Two epics both in autonomous mode, each with one eligible card. The loop
+    // must tick both — not just the first — so a board can run several epics
+    // autonomously at once.
+    const epicA = {
+      ...ACTIVE_EPIC,
+      id: 'epic-a',
+      name: 'Epic A',
+      autonomous_max_concurrent: 1,
+    } as unknown as KanbanEpicRow;
+    const epicB = {
+      ...ACTIVE_EPIC,
+      id: 'epic-b',
+      name: 'Epic B',
+      autonomous_max_concurrent: 1,
+    } as unknown as KanbanEpicRow;
+    const cardA = makeCard({ id: 'card-a', epic_id: 'epic-a', title: 'A work' });
+    const cardB = makeCard({ id: 'card-b', epic_id: 'epic-b', title: 'B work' });
+    const byEpic: Record<string, KanbanCardRow[]> = {
+      'epic-a': [cardA],
+      'epic-b': [cardB],
+    };
+    const stmts = makeStmts({
+      // Plural statement present → loop iterates both epics.
+      getAutonomousEpics: { all: vi.fn(() => [epicA, epicB]) },
+      getEligibleAutonomousCards: { all: vi.fn((id: string) => byEpic[id] ?? []) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn((id: string) => byEpic[id] ?? []) },
+    });
+    stmts.getSession.get.mockImplementation((sessionId: string) => {
+      const call = stmts.createSession.run.mock.calls.find((c) => c[0] === sessionId);
+      if (!call) return undefined;
+      return {
+        id: sessionId,
+        agent_id: call[1] as string,
+        ask_mode: 0,
+      } as unknown as SessionRow;
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // One card from each epic was claimed and dispatched.
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('card-a');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('card-b');
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(2);
+    expect(deps.handleChat).toHaveBeenCalledTimes(2);
+  });
+
+  it('runAutonomousLoopForEpic dispatches ONLY the named epic, not its siblings', async () => {
+    // The per-epic safety-net cron calls this. With two autonomous epics, a
+    // tick for epic A must NOT pick up epic B's cards — otherwise every epic's
+    // cron would re-sweep the whole board.
+    const epicA = {
+      ...ACTIVE_EPIC,
+      id: 'epic-a',
+      board_id: 'board-1',
+      name: 'Epic A',
+      autonomous_max_concurrent: 1,
+    } as unknown as KanbanEpicRow;
+    const epicB = {
+      ...ACTIVE_EPIC,
+      id: 'epic-b',
+      board_id: 'board-1',
+      name: 'Epic B',
+      autonomous_max_concurrent: 1,
+    } as unknown as KanbanEpicRow;
+    const cardA = makeCard({ id: 'card-a', epic_id: 'epic-a', title: 'A work' });
+    const cardB = makeCard({ id: 'card-b', epic_id: 'epic-b', title: 'B work' });
+    const byEpic: Record<string, KanbanCardRow[]> = { 'epic-a': [cardA], 'epic-b': [cardB] };
+    const epicById: Record<string, KanbanEpicRow> = { 'epic-a': epicA, 'epic-b': epicB };
+    const stmts = makeStmts({
+      // Plural present so a stray whole-board sweep would dispatch both — proving
+      // the single-epic path is what keeps B untouched.
+      getAutonomousEpics: { all: vi.fn(() => [epicA, epicB]) },
+      getKanbanEpic: { get: vi.fn((id: string) => epicById[id]) },
+      getEligibleAutonomousCards: { all: vi.fn((id: string) => byEpic[id] ?? []) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn((id: string) => byEpic[id] ?? []) },
+    });
+    stmts.getSession.get.mockImplementation((sessionId: string) => {
+      const call = stmts.createSession.run.mock.calls.find((c) => c[0] === sessionId);
+      if (!call) return undefined;
+      return { id: sessionId, agent_id: call[1] as string, ask_mode: 0 } as unknown as SessionRow;
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForEpic('proj-1', 'epic-a');
+
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('card-a');
+    expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalledWith('card-b');
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('runAutonomousLoopForEpic is a no-op when the epic turned off since the cron was scheduled', async () => {
+    const offEpic = {
+      ...ACTIVE_EPIC,
+      id: 'epic-off',
+      board_id: 'board-1',
+      autonomous: 0,
+    } as unknown as KanbanEpicRow;
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => offEpic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [makeCard({ epic_id: 'epic-off' })]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForEpic('proj-1', 'epic-off');
+
+    expect(stmts.getEligibleAutonomousCards.all).not.toHaveBeenCalled();
+    expect(deps.handleChat).not.toHaveBeenCalled();
   });
 
   it('starts dispatched sessions at "Build and Push" when project auto-merge is off and epic Auto Merge is off', async () => {
@@ -1306,6 +1438,31 @@ describe('scheduleAutonomousEpic', () => {
 
     expect(autonomousProjects.has('proj-1')).toBe(false);
     expect(autonomousCrons.has(ACTIVE_EPIC.id)).toBe(false);
+  });
+
+  it('keeps the project autonomous until its LAST epic flips off (multi-epic)', () => {
+    const deps = makeDeps();
+    initAutonomous(deps as never);
+
+    const epicA = { ...ACTIVE_EPIC, id: 'epic-a' } as unknown as KanbanEpicRow;
+    const epicB = { ...ACTIVE_EPIC, id: 'epic-b' } as unknown as KanbanEpicRow;
+
+    scheduleAutonomousEpic('proj-1', epicA);
+    scheduleAutonomousEpic('proj-1', epicB);
+    expect(autonomousProjects.has('proj-1')).toBe(true);
+    expect(autonomousCrons.has('epic-a')).toBe(true);
+    expect(autonomousCrons.has('epic-b')).toBe(true);
+
+    // Turning off epic A must NOT drop the project — epic B is still autonomous.
+    scheduleAutonomousEpic('proj-1', { ...epicA, autonomous: 0 } as unknown as KanbanEpicRow);
+    expect(autonomousProjects.has('proj-1')).toBe(true);
+    expect(autonomousCrons.has('epic-a')).toBe(false);
+    expect(autonomousCrons.has('epic-b')).toBe(true);
+
+    // Turning off the last epic drops the project.
+    scheduleAutonomousEpic('proj-1', { ...epicB, autonomous: 0 } as unknown as KanbanEpicRow);
+    expect(autonomousProjects.has('proj-1')).toBe(false);
+    expect(autonomousCrons.has('epic-b')).toBe(false);
   });
 });
 

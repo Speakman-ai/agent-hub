@@ -1575,6 +1575,7 @@ export interface Stmts {
   getKanbanCardsByEpic: Stmt;
   updateKanbanCardEpic: Stmt;
   getAutonomousEpic: Stmt;
+  getAutonomousEpics: Stmt;
   getEligibleAutonomousCards: Stmt;
   markCardDispatchedByAutonomous: Stmt;
 

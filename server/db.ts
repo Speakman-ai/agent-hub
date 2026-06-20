@@ -3601,6 +3601,13 @@ function initDb(dataDir: string): void {
     getAutonomousEpic: db.prepare(
       'SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1',
     ),
+    // Plural variant: a board may have MORE THAN ONE epic in autonomous mode
+    // at a time. The dispatch loop ticks each of these independently (each with
+    // its own slot cap and single-flight gate). `getAutonomousEpic` (singular,
+    // LIMIT 1) is retained for callers that only need a representative epic.
+    getAutonomousEpics: db.prepare(
+      'SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 ORDER BY name ASC',
+    ),
     getEligibleAutonomousCards: db.prepare(
       // Autonomous dispatch pulls from the 'To Do' column (Backlog was
       // dropped in May 2026). Within the column we sort by `priority`

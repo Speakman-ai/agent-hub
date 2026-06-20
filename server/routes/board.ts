@@ -1229,38 +1229,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    if (autonomous && !epic.autonomous) {
-      const currentAutonomous = stmts.getAutonomousEpic.get(epic.board_id) as
-        | KanbanEpicRow
-        | undefined;
-      if (currentAutonomous && currentAutonomous.id !== epic.id) {
-        stmts.updateKanbanEpic.run(
-          currentAutonomous.name,
-          currentAutonomous.description,
-          currentAutonomous.color,
-          0,
-          currentAutonomous.autonomous_interval,
-          currentAutonomous.autonomous_max_concurrent,
-          currentAutonomous.autonomous_model ?? null,
-          (currentAutonomous as { orchestration_budgets_json?: string | null })
-            .orchestration_budgets_json ?? null,
-          currentAutonomous.pr_base_branch ?? null,
-          currentAutonomous.id,
-        );
-      }
-    }
-
-    if (autonomous && !epic.autonomous) {
-      const currentAutonomous2 = stmts.getAutonomousEpic.get(epic.board_id) as
-        | KanbanEpicRow
-        | undefined;
-      if (currentAutonomous2 && currentAutonomous2.id !== epic.id) {
-        scheduleAutonomousEpic(req.params.projectId as string, {
-          ...currentAutonomous2,
-          autonomous: 0,
-        });
-      }
-    }
+    // NOTE: enabling autonomous on this epic no longer disables any other epic
+    // on the board. A board may run multiple epics autonomously at once; each is
+    // dispatched independently by the autonomous loop (see `runAutonomousLoop`).
 
     // Stamp the user who flipped autonomous on, so
     // `resolveAutonomousOwnerUserId` can fall back to them when an
@@ -1345,35 +1316,51 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
   router.get('/api/projects/:projectId/board/autonomous/status', (req: Request, res: Response) => {
     const boardData = getOrCreateBoard(stmts, req.params.projectId as string);
-    if (!boardData?.board) return res.json({ active: false });
-    const epic = stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
-    if (!epic) return res.json({ active: false });
+    if (!boardData?.board) return res.json({ active: false, epics: [] });
 
-    const eligible = stmts.getEligibleAutonomousCards.all(epic.id) as KanbanCardRow[];
-    const allEpicCards = stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
+    // A board may run multiple epics autonomously at once. Prefer the plural
+    // statement; fall back to the singular for older wiring.
+    const pluralStmt = (stmts as { getAutonomousEpics?: { all?: (id: string) => unknown } })
+      .getAutonomousEpics;
+    const epics = pluralStmt?.all
+      ? ((pluralStmt.all(boardData.board.id) as KanbanEpicRow[]) ?? [])
+      : (() => {
+          const one = stmts.getAutonomousEpic.get(boardData.board.id) as KanbanEpicRow | undefined;
+          return one ? [one] : [];
+        })();
+
+    if (epics.length === 0) return res.json({ active: false, epics: [] });
+
     const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
     const colNameMap = Object.fromEntries(cols.map((c) => [c.id, c.name]));
-    const inProgress = allEpicCards.filter((c) => colNameMap[c.column_id] === 'In Progress');
-    const inReview = allEpicCards.filter((c) => colNameMap[c.column_id] === 'Review');
-    const done = allEpicCards.filter((c) => colNameMap[c.column_id] === 'Done');
-    const activeCards = inProgress.length + inReview.length;
 
-    res.json({
-      active: true,
-      epicId: epic.id,
-      epicName: epic.name,
-      model: epic.autonomous_model,
-      interval: epic.autonomous_interval,
-      maxConcurrent: epic.autonomous_max_concurrent,
-      eligibleCards: eligible.length,
-      inProgressCards: inProgress.length,
-      inReviewCards: inReview.length,
-      activeCards,
-      slotsAvailable: Math.max(0, epic.autonomous_max_concurrent - activeCards),
-      doneCards: done.length,
-      totalCards: allEpicCards.length,
-      cronActive: autonomousCrons.has(epic.id),
+    const epicStatuses = epics.map((epic) => {
+      const eligible = stmts.getEligibleAutonomousCards.all(epic.id) as KanbanCardRow[];
+      const allEpicCards = stmts.getKanbanCardsByEpic.all(epic.id) as KanbanCardRow[];
+      const inProgress = allEpicCards.filter((c) => colNameMap[c.column_id] === 'In Progress');
+      const inReview = allEpicCards.filter((c) => colNameMap[c.column_id] === 'Review');
+      const done = allEpicCards.filter((c) => colNameMap[c.column_id] === 'Done');
+      const activeCards = inProgress.length + inReview.length;
+      return {
+        epicId: epic.id,
+        epicName: epic.name,
+        model: epic.autonomous_model,
+        interval: epic.autonomous_interval,
+        maxConcurrent: epic.autonomous_max_concurrent,
+        eligibleCards: eligible.length,
+        inProgressCards: inProgress.length,
+        inReviewCards: inReview.length,
+        activeCards,
+        slotsAvailable: Math.max(0, epic.autonomous_max_concurrent - activeCards),
+        doneCards: done.length,
+        totalCards: allEpicCards.length,
+        cronActive: autonomousCrons.has(epic.id),
+      };
     });
+
+    // Top-level fields mirror the first epic so existing single-epic callers keep
+    // working; `epics` carries the full per-epic breakdown for multi-epic boards.
+    res.json({ active: true, epics: epicStatuses, ...epicStatuses[0] });
   });
 
   router.post(
