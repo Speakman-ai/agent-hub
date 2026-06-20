@@ -5412,6 +5412,338 @@ components:
         - branch
         - session_id
       description: Instrumentation commit landed on the worktree branch.
+    SkillEvalsBody:
+      type: object
+      properties:
+        evals:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Slug id (lowercase letters, digits, hyphens) — lets a single eval be re-run.
+                example: happy-path
+              prompt:
+                type: string
+                description: Realistic user prompt fed identically to the with-skill and baseline runs.
+                example: How do I run only the server tests for the file I just edited?
+              assertions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - contains
+                        - icontains
+                        - not_contains
+                        - regex
+                      description: Check kind. `contains`/`not_contains` are case-sensitive substring; `icontains` is case-insensitive; `regex` is a JS regular-expression source matched against the output.
+                    value:
+                      type: string
+                      example: cd server && npx vitest
+                  required:
+                    - type
+                    - value
+                  additionalProperties: false
+                  description: One objective pass/fail check applied to a run output.
+                description: Objective checks. Omit for a subjective eval that only gets a side-by-side diff (no auto pass/fail).
+            required:
+              - id
+              - prompt
+            additionalProperties: false
+            description: 'A single eval: one prompt plus optional objective assertions. Unknown fields are rejected (a typo like "assertion" would otherwise silently drop the checks).'
+        version:
+          type: integer
+          description: Optional, server-managed. The saved evals.json file carries `version` (currently 1); it is accepted here so the file can be round-tripped back verbatim, but clients normally send only `evals` and the server writes the canonical version.
+      required:
+        - evals
+      description: The eval suite for a skill (2-3 prompts is typical; max 10).
+    SkillEvalsList:
+      type: object
+      properties:
+        evals:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Slug id (lowercase letters, digits, hyphens) — lets a single eval be re-run.
+                example: happy-path
+              prompt:
+                type: string
+                description: Realistic user prompt fed identically to the with-skill and baseline runs.
+                example: How do I run only the server tests for the file I just edited?
+              assertions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - contains
+                        - icontains
+                        - not_contains
+                        - regex
+                      description: Check kind. `contains`/`not_contains` are case-sensitive substring; `icontains` is case-insensitive; `regex` is a JS regular-expression source matched against the output.
+                    value:
+                      type: string
+                      example: cd server && npx vitest
+                  required:
+                    - type
+                    - value
+                  additionalProperties: false
+                  description: One objective pass/fail check applied to a run output.
+                description: Objective checks. Omit for a subjective eval that only gets a side-by-side diff (no auto pass/fail).
+            required:
+              - id
+              - prompt
+            additionalProperties: false
+            description: 'A single eval: one prompt plus optional objective assertions. Unknown fields are rejected (a typo like "assertion" would otherwise silently drop the checks).'
+      required:
+        - evals
+      description: The skill eval suite.
+    SkillEvalRunSummary:
+      type: object
+      properties:
+        skillId:
+          type: string
+        total:
+          type: number
+        graded:
+          type: number
+          description: Count of evals with assertions (auto-graded).
+        withSkillPassed:
+          type: number
+        baselinePassed:
+          type: number
+        improvedCount:
+          type: number
+          description: Objective evals that went baseline-fail → with-skill-pass.
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              evalId:
+                type: string
+              prompt:
+                type: string
+              graded:
+                type: boolean
+              withSkill:
+                type: object
+                properties:
+                  output:
+                    type: string
+                  grade:
+                    type: object
+                    properties:
+                      graded:
+                        type: boolean
+                      passed:
+                        type: boolean
+                      assertionResults:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            assertion:
+                              type: object
+                              properties:
+                                type:
+                                  type: string
+                                  enum:
+                                    - contains
+                                    - icontains
+                                    - not_contains
+                                    - regex
+                                  description: Check kind. `contains`/`not_contains` are case-sensitive substring; `icontains` is case-insensitive; `regex` is a JS regular-expression source matched against the output.
+                                value:
+                                  type: string
+                                  example: cd server && npx vitest
+                              required:
+                                - type
+                                - value
+                              additionalProperties: false
+                              description: One objective pass/fail check applied to a run output.
+                            passed:
+                              type: boolean
+                            timedOut:
+                              type: boolean
+                              description: Set on a regex assertion aborted by the ReDoS time bound (treated as not matched).
+                          required:
+                            - assertion
+                            - passed
+                    required:
+                      - graded
+                      - passed
+                      - assertionResults
+                  error:
+                    type: string
+                required:
+                  - output
+                  - grade
+              baseline:
+                type: object
+                properties:
+                  output:
+                    type: string
+                  grade:
+                    type: object
+                    properties:
+                      graded:
+                        type: boolean
+                      passed:
+                        type: boolean
+                      assertionResults:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            assertion:
+                              type: object
+                              properties:
+                                type:
+                                  type: string
+                                  enum:
+                                    - contains
+                                    - icontains
+                                    - not_contains
+                                    - regex
+                                  description: Check kind. `contains`/`not_contains` are case-sensitive substring; `icontains` is case-insensitive; `regex` is a JS regular-expression source matched against the output.
+                                value:
+                                  type: string
+                                  example: cd server && npx vitest
+                              required:
+                                - type
+                                - value
+                              additionalProperties: false
+                              description: One objective pass/fail check applied to a run output.
+                            passed:
+                              type: boolean
+                            timedOut:
+                              type: boolean
+                              description: Set on a regex assertion aborted by the ReDoS time bound (treated as not matched).
+                          required:
+                            - assertion
+                            - passed
+                    required:
+                      - graded
+                      - passed
+                      - assertionResults
+                  error:
+                    type: string
+                required:
+                  - output
+                  - grade
+              improved:
+                type: boolean
+                nullable: true
+            required:
+              - evalId
+              - prompt
+              - graded
+              - withSkill
+              - baseline
+              - improved
+        markdown:
+          type: string
+          description: Rendered side-by-side report the coach surfaces / saves.
+        engine:
+          type: string
+        model:
+          type: string
+      required:
+        - skillId
+        - total
+        - graded
+        - withSkillPassed
+        - baselinePassed
+        - improvedCount
+        - results
+        - markdown
+        - engine
+        - model
+      description: With-skill vs baseline run summary plus a Markdown report.
+    SkillEvalRunBody:
+      type: object
+      properties:
+        evals:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: Slug id (lowercase letters, digits, hyphens) — lets a single eval be re-run.
+                example: happy-path
+              prompt:
+                type: string
+                description: Realistic user prompt fed identically to the with-skill and baseline runs.
+                example: How do I run only the server tests for the file I just edited?
+              assertions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - contains
+                        - icontains
+                        - not_contains
+                        - regex
+                      description: Check kind. `contains`/`not_contains` are case-sensitive substring; `icontains` is case-insensitive; `regex` is a JS regular-expression source matched against the output.
+                    value:
+                      type: string
+                      example: cd server && npx vitest
+                  required:
+                    - type
+                    - value
+                  additionalProperties: false
+                  description: One objective pass/fail check applied to a run output.
+                description: Objective checks. Omit for a subjective eval that only gets a side-by-side diff (no auto pass/fail).
+            required:
+              - id
+              - prompt
+            additionalProperties: false
+            description: 'A single eval: one prompt plus optional objective assertions. Unknown fields are rejected (a typo like "assertion" would otherwise silently drop the checks).'
+          description: Inline eval suite to run instead of the saved evals.json — iterate on the suite without PUTting it first. Only skips saving the eval suite; the skill itself must already be saved (its SKILL.md is loaded from disk).
+        evalIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Restrict the run to these eval ids (single-prompt re-run). Must be non-empty when present — an empty array is a 400, not "run everything" (omit the field to run the whole suite). Every id must exist in the suite — a partial miss is a 400 listing the missing ids, never a silent run of the resolvable subset.
+        engine:
+          type: string
+          enum:
+            - claude-code
+            - cursor-agent
+            - codex-cli
+          description: "Engine to run on. Must be an agent CLI — Gemini is excluded. An unknown value is rejected (400). When set, this is the engine the run uses: if it is unavailable the request 400s rather than silently falling back to another CLI (which would make results misleading). Omit to fall back across the agent CLIs."
+        model:
+          type: string
+          description: Model override (non-empty).
+        timeoutMs:
+          type: integer
+          description: Per-run timeout (ms). Must be an integer in [1000, 600000]; out of range is 400.
+      additionalProperties: false
+      description: Options for an eval run. All fields optional; unknown keys are rejected (400) so a typo cannot silently change the run.
+    SkillEvalsError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
     CreateSkillBody:
       anyOf:
         - type: object
@@ -18423,6 +18755,183 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RumWizardErrorResponse"
+  /api/projects/{projectId}/skills/{skillId}/evals:
+    get:
+      tags:
+        - Skills
+      summary: Read a skill eval suite
+      description: "Returns the eval suite at `<project.ahw>/skills/<skillId>/evals/evals.json`. An absent file yields `{ evals: [] }`. A present-but-invalid file returns 422."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Project skill slug (folder id).
+          required: true
+          description: Project skill slug (folder id).
+          name: skillId
+          in: path
+      responses:
+        "200":
+          description: The eval suite.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsList"
+        "400":
+          description: No workspace / invalid skill id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "404":
+          description: Project or skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "422":
+          description: evals.json present but invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+    put:
+      tags:
+        - Skills
+      summary: Write a skill eval suite
+      description: Validates and writes the eval suite to `evals/evals.json`. Eval ids must be unique slugs; each prompt is required; assertions are optional objective checks (`regex` patterns are compiled at write time).
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Project skill slug (folder id).
+          required: true
+          description: Project skill slug (folder id).
+          name: skillId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SkillEvalsBody"
+      responses:
+        "200":
+          description: The written eval suite.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsList"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "403":
+          description: Requires the Admin role or higher (project mutation).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "404":
+          description: Project or skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+  /api/projects/{projectId}/skills/{skillId}/evals/run:
+    post:
+      tags:
+        - Skills
+      summary: Run a skill eval suite (with-skill vs baseline)
+      description: Runs each eval prompt twice — once with the skill's SKILL.md injected as the system prompt (with-skill) and once without (baseline) — grades both against the eval assertions, and returns a structured summary plus a rendered Markdown report. Uses the saved evals.json unless an inline `evals` array is supplied. Gemini is excluded from the engine fallback chain.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Project skill slug (folder id).
+          required: true
+          description: Project skill slug (folder id).
+          name: skillId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SkillEvalRunBody"
+      responses:
+        "200":
+          description: Run summary + report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalRunSummary"
+        "400":
+          description: No evals defined / body validation failed / unknown evalIds / requested engine unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "403":
+          description: Requires the Admin role or higher (spawns agent CLIs).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "404":
+          description: Project, skill, or SKILL.md not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "422":
+          description: Saved evals.json invalid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
+        "500":
+          description: Spawn / runtime error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillEvalsError"
   /api/projects/{projectId}/skills:
     post:
       tags:

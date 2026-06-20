@@ -11,7 +11,7 @@ description: >-
   loading an existing skill (`<agenthub:skill>`), browsing the Settings skills
   list, or general coding work that merely mentions the word "skill".
 category: platform
-version: 1.0.0
+version: 1.1.0
 keep-coding-instructions: true
 ---
 
@@ -35,7 +35,7 @@ trigger. Models *under*-trigger skills, so descriptions must be "pushy" — stat
 both **what** the skill does and **when** to use it, with concrete trigger
 phrases.
 
-## The loop: capture → interview → draft → confirm → save
+## The loop: capture → interview → draft → confirm → save → test
 
 Work through these phases. Bias toward action — do not interrogate the user with
 a dozen questions; ask the few that change the output, infer the rest, and show
@@ -147,8 +147,52 @@ quotes survive. Expected responses:
 Tell the user, in one or two lines, what you created and how to use it: which
 agents will see it (per-agent allowlists may scope it), and that it loads
 automatically when its `description` triggers, or on demand via the skill
-loader. Suggest the natural next step: test it (Phase 3 eval loop, once
-available) and refine the description if it under- or over-fires.
+loader. Then offer to **test** it (step 6) — proving the skill changes behavior
+is what separates a real skill from a plausible-looking one.
+
+### 6. Test (eval loop — with-skill vs baseline)
+
+A skill is only worth saving if it actually changes the agent's behavior. Prove
+it: write 2-3 realistic test prompts, run each one twice — once with the skill
+loaded (with-skill) and once without (baseline) — and compare. The platform does
+the running and grading; you author the prompts and read the results.
+
+1. **Write the evals.** Turn the success criteria you captured in the interview
+   into 2-3 prompts a user would really ask. For objective skills add
+   `assertions` (substring / regex checks) so the run grades itself; for
+   subjective skills (tone, style) leave assertions off and judge the
+   side-by-side diff. Save them:
+
+   ```bash
+   ah-api.sh PUT "/api/projects/$PROJECT_ID/skills/<skill-id>/evals" -d '{
+     "evals": [
+       { "id": "happy-path", "prompt": "How do I run only the tests for the file I just changed?",
+         "assertions": [ { "type": "contains", "value": "npx vitest" } ] }
+     ]
+   }'
+   ```
+
+2. **Run them.** The runner spawns a throwaway run per variant and returns a
+   structured summary plus a rendered Markdown report:
+
+   ```bash
+   ah-api.sh POST "/api/projects/$PROJECT_ID/skills/<skill-id>/evals/run" -d '{}'
+   ```
+
+   Read `withSkillPassed` / `baselinePassed` / `improvedCount`, then surface the
+   `markdown` field to the user (paste it, or upload it as an artifact with
+   `artifacts.sh put report.md "eval results"`).
+
+3. **Iterate.** If a prompt failed with-skill, or didn't improve over baseline,
+   the skill text is the problem, not the eval. Tighten the SKILL.md body (or the
+   description), PUT the updated skill, and re-run. Repeat until the prompts pass
+   with-skill *and* improve over baseline — or until two rounds make no progress,
+   in which case tell the user the skill plateaued and show them the diff.
+
+Acceptance for a good skill: the objective evals pass with-skill, and at least
+one prompt goes baseline-fail → with-skill-pass (proving the skill is what made
+the difference). The full eval/assertion format and run options are in
+`references/eval-loop.md`.
 
 ## Authoring rules you enforce (the "why" matters)
 
@@ -208,8 +252,10 @@ the user correct the draft.
 - This flow writes **`SKILL.md` only**. Bundling `scripts/` or `references/`
   files is a separate capability (tracked as a follow-up); when a skill needs
   them, write the `SKILL.md` now and tell the user the extra files come next.
-- This flow does **not** run eval tests — that is the Phase 3 eval loop
-  (with-skill vs. baseline). Still capture success criteria during the
-  interview so the tests have something to assert against later.
+- The eval loop (step 6) runs **saved** project skills: PUT the skill via the
+  write API first, then PUT its evals and run them. You cannot eval a skill that
+  only exists as draft text in the chat — save it (the user can delete it later
+  if the evals are damning). Capture success criteria during the interview so
+  the evals have something concrete to assert against.
 - You can only write **project** skills. Bundled default skills (the ones
   shipped with Agent Hub) are read-only; the API rejects shadowing them.
