@@ -19127,6 +19127,87 @@ paths:
                   cardId:
                     type: string
                     nullable: true
+                  autoPr:
+                    type: object
+                    nullable: true
+                    properties:
+                      opened:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            branch:
+                              type: string
+                            manifestPath:
+                              type: string
+                            packageName:
+                              type: string
+                            fromVersions:
+                              type: array
+                              items:
+                                type: string
+                            toVersion:
+                              type: string
+                            advisoryIds:
+                              type: array
+                              items:
+                                type: string
+                            severity:
+                              type: string
+                              enum:
+                                - critical
+                                - high
+                                - medium
+                                - low
+                                - unknown
+                            prNumber:
+                              type: number
+                            prUrl:
+                              type: string
+                            prCreated:
+                              type: boolean
+                            branchUpdated:
+                              type: boolean
+                          required:
+                            - branch
+                            - manifestPath
+                            - packageName
+                            - fromVersions
+                            - toVersion
+                            - advisoryIds
+                            - severity
+                            - prNumber
+                            - prUrl
+                            - prCreated
+                            - branchUpdated
+                      skipped:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            manifestPath:
+                              type: string
+                            packageName:
+                              type: string
+                            toVersion:
+                              type: string
+                            reason:
+                              type: string
+                              enum:
+                                - lockfile_missing
+                                - lockfile_unchanged
+                                - error
+                            detail:
+                              type: string
+                          required:
+                            - manifestPath
+                            - packageName
+                            - toVersion
+                            - reason
+                    required:
+                      - opened
+                      - skipped
+                    description: "Auto-PR generation result when the project opted in (securityAutoPr.enabled) and the repo is Hub-hosted: native bump PRs opened/refreshed and bumps skipped (with reason). null when auto-PR was not requested or this was a dry run."
                 required:
                   - ref
                   - dryRun
@@ -19141,6 +19222,7 @@ paths:
                   - fixed
                   - suppressed
                   - cardId
+                  - autoPr
         "400":
           description: Invalid request body, or the requested ref does not resolve.
           content:

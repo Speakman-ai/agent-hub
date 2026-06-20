@@ -53,6 +53,35 @@ export const FindingsListSchema = z.object({
   openCounts: SeverityCountsSchema,
 });
 
+export const AutoPrResultSchema = z
+  .object({
+    opened: z.array(
+      z.object({
+        branch: z.string(),
+        manifestPath: z.string(),
+        packageName: z.string(),
+        fromVersions: z.array(z.string()),
+        toVersion: z.string(),
+        advisoryIds: z.array(z.string()),
+        severity: SeveritySchema,
+        prNumber: z.number(),
+        prUrl: z.string(),
+        prCreated: z.boolean(),
+        branchUpdated: z.boolean(),
+      }),
+    ),
+    skipped: z.array(
+      z.object({
+        manifestPath: z.string(),
+        packageName: z.string(),
+        toVersion: z.string(),
+        reason: z.enum(['lockfile_missing', 'lockfile_unchanged', 'error']),
+        detail: z.string().optional(),
+      }),
+    ),
+  })
+  .nullable();
+
 export const ScanResultSchema = z.object({
   ref: z.string(),
   dryRun: z.boolean().openapi({
@@ -78,6 +107,10 @@ export const ScanResultSchema = z.object({
   fixed: z.number(),
   suppressed: z.number(),
   cardId: z.string().nullable(),
+  autoPr: AutoPrResultSchema.openapi({
+    description:
+      'Auto-PR generation result when the project opted in (securityAutoPr.enabled) and the repo is Hub-hosted: native bump PRs opened/refreshed and bumps skipped (with reason). null when auto-PR was not requested or this was a dry run.',
+  }),
 });
 
 // `.strict()` on the mutating bodies: a typo'd key (e.g. `supress`,

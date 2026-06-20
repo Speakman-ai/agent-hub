@@ -760,4 +760,167 @@ describe('runSecurityScan (real bare repo)', () => {
     expect(r3.cardId).toBe('card-x');
     expect(cardGen).toHaveBeenCalledTimes(2);
   });
+
+  it('invokes openBumpPrs with the scan findings on a persisted run and surfaces its result', async () => {
+    const store = memStore();
+    const source = new FakeSource((deps) =>
+      deps
+        .filter((d) => d.name === 'lodash')
+        .map((d) => ({
+          dependency: d,
+          advisory: {
+            id: 'GHSA-lodash',
+            summary: 'Prototype pollution',
+            severity: 'critical' as const,
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: '',
+          },
+        })),
+    );
+    const autoPrResult = { opened: [], skipped: [] };
+    const openBumpPrs = vi.fn(
+      async (_ctx: { findings: DependencyFinding[]; baseBranch: string; baseSha: string }) =>
+        autoPrResult,
+    );
+    const result = await runSecurityScan(
+      {
+        stmts: {} as never,
+        broadcast: vi.fn(),
+        advisorySource: source,
+        store,
+        dataDir,
+        now: () => 1000,
+        openBumpPrs,
+      },
+      { project: fakeProject(), generateCard: false },
+    );
+
+    expect(result.dryRun).toBe(false);
+    expect(openBumpPrs).toHaveBeenCalledTimes(1);
+    const ctx = openBumpPrs.mock.calls[0][0];
+    // Reuses the freshly-computed findings (no re-scan), pinned to the scanned tip.
+    expect(ctx.findings).toHaveLength(1);
+    expect(ctx.findings[0].dependency.name).toBe('lodash');
+    expect(ctx.findings[0].advisory.fixedVersion).toBe('4.17.21');
+    expect(ctx.baseBranch).toBe('main');
+    expect(ctx.baseSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.autoPr).toBe(autoPrResult);
+  });
+
+  it('does NOT invoke openBumpPrs on a dry run, and autoPr is null', async () => {
+    const store = memStore();
+    const source = new FakeSource(() => []);
+    const openBumpPrs = vi.fn(async () => ({ opened: [], skipped: [] }));
+    const result = await runSecurityScan(
+      {
+        stmts: {} as never,
+        broadcast: vi.fn(),
+        advisorySource: source,
+        store,
+        dataDir,
+        now: () => 2000,
+        openBumpPrs,
+      },
+      { project: fakeProject(), ref: 'feature', generateCard: false },
+    );
+    expect(result.dryRun).toBe(true);
+    expect(result.autoPr).toBeNull();
+    expect(openBumpPrs).not.toHaveBeenCalled();
+  });
+
+  it('a failing openBumpPrs is swallowed: the scan still succeeds with autoPr null', async () => {
+    const store = memStore();
+    const source = new FakeSource((deps) =>
+      deps
+        .filter((d) => d.name === 'lodash')
+        .map((d) => ({
+          dependency: d,
+          advisory: {
+            id: 'GHSA-lodash',
+            summary: 'x',
+            severity: 'high' as const,
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: '',
+          },
+        })),
+    );
+    const openBumpPrs = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    const result = await runSecurityScan(
+      {
+        stmts: {} as never,
+        broadcast: vi.fn(),
+        advisorySource: source,
+        store,
+        dataDir,
+        now: () => 1000,
+        openBumpPrs,
+      },
+      { project: fakeProject(), generateCard: false },
+    );
+    expect(result.dryRun).toBe(false);
+    expect(result.autoPr).toBeNull();
+    // The scan still persisted its finding despite the auto-PR failure.
+    expect(store.listFindings(projectId, { status: 'open' })).toHaveLength(1);
+  });
+
+  it('auto-PR excludes findings the user suppressed/dismissed (only actionable findings)', async () => {
+    const store = memStore();
+    // Both lodash and express are vulnerable with published fixes.
+    const source = new FakeSource((deps) =>
+      deps
+        .filter((d) => d.name === 'lodash' || d.name === 'express')
+        .map((d) => ({
+          dependency: d,
+          advisory: {
+            id: `GHSA-${d.name}`,
+            summary: 'x',
+            severity: 'high' as const,
+            aliases: [],
+            fixedVersion: d.name === 'lodash' ? '4.17.21' : '4.18.3',
+            url: '',
+          },
+        })),
+    );
+    const received: string[][] = [];
+    const openBumpPrs = vi.fn(
+      async (ctx: { findings: DependencyFinding[]; baseBranch: string; baseSha: string }) => {
+        received.push(ctx.findings.map((f) => f.dependency.name).sort());
+        return { opened: [], skipped: [] };
+      },
+    );
+    const base = {
+      stmts: {} as never,
+      broadcast: vi.fn(),
+      advisorySource: source,
+      store,
+      dataDir,
+      openBumpPrs,
+    };
+
+    // First scan: both findings open → both are actionable.
+    await runSecurityScan(
+      { ...base, now: () => 1000 },
+      { project: fakeProject(), generateCard: false },
+    );
+    expect(received[0]).toEqual(['express', 'lodash']);
+
+    // The user dismisses + suppresses lodash.
+    const lodashRow = store
+      .listFindings(projectId, { status: 'open' })
+      .find((r) => r.package_name === 'lodash');
+    expect(lodashRow).toBeDefined();
+    store.dismissFinding({ projectId, id: lodashRow!.id, suppress: true });
+
+    // Second scan: lodash reconciles to dismissed (suppression is sticky), so
+    // auto-PR must receive ONLY express — the suppressed advisory is silenced.
+    await runSecurityScan(
+      { ...base, now: () => 2000 },
+      { project: fakeProject(), generateCard: false },
+    );
+    expect(received[1]).toEqual(['express']);
+  });
 });

@@ -20,7 +20,8 @@ import {
 } from '../git-host/repo-store.js';
 import { gitRepoFileReader, scanResolvedDependencies, type RepoFileReader } from './scanner.js';
 import { revParse } from '../native-pr/git-read.js';
-import type { AdvisorySource } from './types.js';
+import type { AdvisorySource, DependencyFinding } from './types.js';
+import type { OpenSecurityBumpPrsResult } from './auto-pr.js';
 import {
   createSecurityAuditStore,
   type RecordScanSummary,
@@ -83,6 +84,22 @@ export interface RunSecurityScanDeps {
   /** Clock seam (tests). */
   now?: () => number;
   dataDir?: string;
+  /**
+   * Optional auto-PR opener. When provided AND the scan persisted (i.e. NOT a
+   * dry run on a non-default ref), open/refresh one native Hub PR per fixable
+   * advisory bump, reusing the findings just computed. Best-effort: a failure
+   * is logged and swallowed so it never fails the scan. The route wires this
+   * only when the project opted in (`securityAutoPr.enabled`) and a native PR
+   * service is available.
+   */
+  openBumpPrs?: (ctx: {
+    project: Project;
+    findings: DependencyFinding[];
+    repoPath: string;
+    reader: RepoFileReader;
+    baseBranch: string;
+    baseSha: string;
+  }) => Promise<OpenSecurityBumpPrsResult>;
 }
 
 export interface RunSecurityScanResult {
@@ -107,6 +124,12 @@ export interface RunSecurityScanResult {
   summary: RecordScanSummary;
   /** Id of the kanban card opened for new findings, when one was created. */
   cardId: string | null;
+  /**
+   * Result of auto-PR generation: PRs opened/refreshed and bumps skipped.
+   * `null` when auto-PR wasn't requested for this run (no opener injected) or
+   * this was a dry run.
+   */
+  autoPr: OpenSecurityBumpPrsResult | null;
 }
 
 /** Empty summary for a dry-run (non-default ref): nothing was persisted. */
@@ -202,6 +225,7 @@ export async function runSecurityScan(
         dryRun: true,
         summary: EMPTY_SUMMARY,
         cardId: null,
+        autoPr: null,
       };
     }
 
@@ -252,6 +276,55 @@ export async function runSecurityScan(
       },
     );
 
+    // Auto-PR generation runs AFTER the (synchronous) persistence transaction:
+    // it does async git writes + PR opens, so it can't sit inside the
+    // better-sqlite3 transaction. Best-effort — a failure is logged and never
+    // fails the scan. The per-project serialize lock orders same-process scans;
+    // cross-process/worker races on a bump branch are handled at the git layer
+    // by the compare-and-swap update-ref in commitFilesToBareBranch.
+    let autoPr: OpenSecurityBumpPrsResult | null = null;
+    if (deps.openBumpPrs) {
+      try {
+        // Open PRs only for ACTIONABLE findings — i.e. those that reconciled to
+        // `open` in the store. `scan.findings` is the raw detection set and
+        // includes advisories the user suppressed or manually dismissed; handing
+        // those to openBumpPrs would resurrect a bump PR for something the user
+        // explicitly silenced. Intersect the freshly-computed findings (which
+        // carry the rich advisory/fix data) with the store's open rows by their
+        // unique identity (advisory+package+version+manifest).
+        const openKeys = new Set(
+          store
+            .listFindings(project.id, { status: 'open' })
+            .map((r) =>
+              JSON.stringify([r.advisory_id, r.package_name, r.package_version, r.manifest_path]),
+            ),
+        );
+        const actionable = scan.findings.filter((f) =>
+          openKeys.has(
+            JSON.stringify([
+              f.advisory.id,
+              f.dependency.name,
+              f.dependency.version,
+              f.dependency.manifestPath,
+            ]),
+          ),
+        );
+        autoPr = await deps.openBumpPrs({
+          project,
+          findings: actionable,
+          repoPath,
+          reader,
+          // Non-dry-run guarantees defaultTip resolved, hence defaultBranch is
+          // set; `?? ref` only satisfies the type checker.
+          baseBranch: defaultBranch ?? ref,
+          baseSha: scanRef,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[security-audit] auto-PR generation failed for ${project.id}: ${msg}`);
+      }
+    }
+
     return {
       ref,
       scannedManifests: scan.scannedManifests,
@@ -263,6 +336,7 @@ export async function runSecurityScan(
       dryRun: false,
       summary,
       cardId,
+      autoPr,
     };
   });
 }

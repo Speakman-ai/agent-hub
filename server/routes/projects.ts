@@ -2279,6 +2279,23 @@ This workspace has no git repo and no PR automation — your job is planning, or
         };
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'securityAutoPr')) {
+      const rawSec = (req.body as Record<string, unknown>).securityAutoPr;
+      if (rawSec === null) {
+        delete (project as Record<string, unknown>).securityAutoPr;
+      } else if (typeof rawSec !== 'object' || Array.isArray(rawSec)) {
+        return res.status(400).json({ error: 'securityAutoPr must be an object or null' });
+      } else {
+        const enabled = (rawSec as Record<string, unknown>).enabled;
+        if (enabled !== undefined && typeof enabled !== 'boolean') {
+          return res.status(400).json({ error: 'securityAutoPr.enabled must be a boolean' });
+        }
+        (project as Record<string, unknown>).securityAutoPr = {
+          ...(project.securityAutoPr ?? {}),
+          ...(enabled !== undefined ? { enabled } : {}),
+        };
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'deleteBranchOnMerge')) {
       const rawDel = (req.body as Record<string, unknown>).deleteBranchOnMerge;
       if (rawDel === null) {

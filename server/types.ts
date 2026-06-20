@@ -2556,6 +2556,16 @@ export interface Project {
    */
   ciOnPush?: { enabled?: boolean };
   /**
+   * Dependabot-style auto-PR for the dependency security audit (Agent
+   * Hub-hosted projects only). When `enabled`, a scan that persists findings
+   * (default-branch tip, not a dry run) opens/refreshes one native Hub PR per
+   * fixable advisory: a branch bumping the vulnerable package to its fixed
+   * version in `package-lock.json` (+ the sibling `package.json` range).
+   * Open bump PRs are de-duped by deterministic branch name. Default off.
+   * See `server/security-audit/auto-pr.ts`.
+   */
+  securityAutoPr?: { enabled?: boolean };
+  /**
    * Branch protection for the hosted repo's default branch (Agent
    * Hub-hosted projects only).
    * - `requiredChecks`: PRs into the default branch merge only when the

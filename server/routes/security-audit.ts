@@ -25,6 +25,9 @@ import {
 import { OsvAdvisorySource } from '../security-audit/osv.js';
 import type { AdvisorySource } from '../security-audit/types.js';
 import { runSecurityScan, SecurityScanError } from '../security-audit/run.js';
+import { openSecurityBumpPrs } from '../security-audit/auto-pr.js';
+import { commitFilesToBareBranch } from '../security-audit/git-write.js';
+import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import {
   DismissRequestSchema,
   FindingsQuerySchema,
@@ -136,9 +139,58 @@ export default function createSecurityAuditRoutes(
       const ref = parsed.data.ref;
       const generateCard = parsed.data.generateCard !== false;
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
+      // Opt-in auto-PR: only for Hub-hosted projects that enabled the setting
+      // AND when a native PR service is wired. The closure binds the git write
+      // + PR open; run.ts invokes it after a successful (non-dry-run) scan,
+      // reusing the findings it just computed. Author resolution / git failures
+      // are swallowed by run.ts so they never fail the scan.
+      const nativePr = deps.nativePr;
+      const autoPrEnabled =
+        project.gitHost === 'agenthub' && project.securityAutoPr?.enabled === true && !!nativePr;
+      const openBumpPrs = autoPrEnabled
+        ? async (ctx: {
+            project: Project;
+            findings: Parameters<typeof openSecurityBumpPrs>[0];
+            repoPath: string;
+            reader: { readFile(ref: string, p: string): Promise<string | null> };
+            baseBranch: string;
+            baseSha: string;
+          }) => {
+            const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
+            return openSecurityBumpPrs(ctx.findings, {
+              readFile: (p) => ctx.reader.readFile(ctx.baseSha, p),
+              commitFiles: ({ branch, files, message }) =>
+                commitFilesToBareBranch({
+                  repoPath: ctx.repoPath,
+                  baseSha: ctx.baseSha,
+                  branch,
+                  files,
+                  message,
+                }),
+              createOrGetOpenPr: ({ headBranch, headSha, title, body }) => {
+                const r = nativePr!.createOrGetOpenPr({
+                  project: ctx.project,
+                  headBranch,
+                  baseBranch: ctx.baseBranch,
+                  headSha,
+                  title,
+                  body,
+                  author,
+                });
+                return { prNumber: r.row.number, prUrl: r.prUrl, prCreated: r.created };
+              },
+            });
+          }
+        : undefined;
       try {
         const result = await runScan(
-          { stmts: deps.stmts, broadcast: deps.broadcast, advisorySource, store: store() },
+          {
+            stmts: deps.stmts,
+            broadcast: deps.broadcast,
+            advisorySource,
+            store: store(),
+            openBumpPrs,
+          },
           { project, ref, generateCard, createdBy },
         );
         res.json({
@@ -155,6 +207,7 @@ export default function createSecurityAuditRoutes(
           fixed: result.summary.fixed,
           suppressed: result.summary.suppressed,
           cardId: result.cardId,
+          autoPr: result.autoPr,
         });
       } catch (err: unknown) {
         if (err instanceof SecurityScanError) {
