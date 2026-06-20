@@ -8,6 +8,7 @@ import {
   epicFormToCreateBody,
   filterCardsByEpic,
   countOpenCardsForEpic,
+  epicsWithActiveCards,
   findEpic,
   epicDropdownLabel,
 } from './epics.js';
@@ -222,6 +223,35 @@ describe('countOpenCardsForEpic', () => {
 
   it('returns 0 for missing epic id', () => {
     expect(countOpenCardsForEpic(cards, null)).toBe(0);
+  });
+});
+
+describe('epicsWithActiveCards', () => {
+  const epics = [
+    { id: 'e1', name: 'Alpha' },
+    { id: 'e2', name: 'Beta' },
+    { id: 'e3', name: 'Empty' },
+  ];
+  const countFor = (id) => ({ e1: 2, e2: 1, e3: 0 })[id] ?? 0;
+
+  it('drops epics with zero active cards', () => {
+    expect(epicsWithActiveCards(epics, countFor, null).map((e) => e.id)).toEqual(['e1', 'e2']);
+  });
+
+  it('keeps the selected epic even when its active count is 0', () => {
+    expect(epicsWithActiveCards(epics, countFor, 'e3').map((e) => e.id)).toEqual([
+      'e1',
+      'e2',
+      'e3',
+    ]);
+  });
+
+  it('returns all epics when no count function is provided', () => {
+    expect(epicsWithActiveCards(epics, undefined, null)).toEqual(epics);
+  });
+
+  it('returns an empty array for a non-array input', () => {
+    expect(epicsWithActiveCards(null, countFor, null)).toEqual([]);
   });
 });
 

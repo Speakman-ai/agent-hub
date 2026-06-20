@@ -114,6 +114,22 @@ export function countOpenCardsForEpic(cards, epicId, doneColumnIds = new Set()) 
 }
 
 /**
+ * Filter the epics shown in the board's epic filter dropdown so empty epics
+ * (no active / non-Done cards) drop out of the picker. The currently-selected
+ * epic is always kept visible even if its active count is 0, so the user can
+ * still see and clear the active filter. Mirrors client/src/utils/epics.js.
+ *
+ * @param {Array} epics - epic rows from the board payload
+ * @param {(epicId: string) => number} countFor - active card count for an epic
+ * @param {string|null} selectedEpicId - the epic currently filtered on, if any
+ */
+export function epicsWithActiveCards(epics, countFor, selectedEpicId = null) {
+  if (!Array.isArray(epics)) return [];
+  if (typeof countFor !== 'function') return epics;
+  return epics.filter((e) => e.id === selectedEpicId || countFor(e.id) > 0);
+}
+
+/**
  * Convenience — find an epic by id inside the board payload's `epics` array.
  */
 export function findEpic(epics, epicId) {

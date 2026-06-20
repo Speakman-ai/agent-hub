@@ -38,6 +38,22 @@ export function epicFormToUpdateBody(form) {
 }
 
 /**
+ * Filter the epics shown in the board's epic filter dropdown so empty epics
+ * (no active / non-Done cards) drop out of the picker. The currently-selected
+ * epic is always kept visible even if its active count is 0, so the user can
+ * still see and clear the active filter. Mirrors mobile/src/utils/epics.js.
+ *
+ * @param {Array} epics - epic rows from the board payload
+ * @param {(epicId: string) => number} countFor - active card count for an epic
+ * @param {string|null} selectedEpicId - the epic currently filtered on, if any
+ */
+export function epicsWithActiveCards(epics, countFor, selectedEpicId = null) {
+  if (!Array.isArray(epics)) return [];
+  if (typeof countFor !== 'function') return epics;
+  return epics.filter((e) => e.id === selectedEpicId || countFor(e.id) > 0);
+}
+
+/**
  * POST /board/epics only accepts name, description, color. Autonomous
  * settings are applied via a follow-up PUT if needed.
  */

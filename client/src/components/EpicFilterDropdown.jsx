@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Layers, Zap } from 'lucide-react';
+import { epicsWithActiveCards } from '../utils/epics.js';
 
 /**
  * Custom epic filter for the kanban toolbar — styled menu with epic colors,
@@ -38,6 +39,10 @@ export default function EpicFilterDropdown({
   };
 
   const activeTotal = epics.reduce((sum, epic) => sum + epicCardCount(epic.id), 0);
+
+  // Hide epics with no active cards from the picker; always keep the
+  // currently-selected epic so the filter stays visible and clearable.
+  const visibleEpics = epicsWithActiveCards(epics, epicCardCount, selectedEpicId);
 
   return (
     <div ref={rootRef} className="relative" data-testid="epic-filter-dropdown">
@@ -106,7 +111,7 @@ export default function EpicFilterDropdown({
               ) : null}
             </button>
 
-            {epics.map((epic) => {
+            {visibleEpics.map((epic) => {
               const count = epicCardCount(epic.id);
               const isSelected = selectedEpicId === epic.id;
               return (

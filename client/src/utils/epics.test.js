@@ -1,5 +1,37 @@
 import { describe, it, expect } from 'vitest';
-import { epicFormToUpdateBody, epicFormToCreateBody, DEFAULT_EPIC_COLOR } from './epics.js';
+import {
+  epicFormToUpdateBody,
+  epicFormToCreateBody,
+  epicsWithActiveCards,
+  DEFAULT_EPIC_COLOR,
+} from './epics.js';
+
+describe('epicsWithActiveCards', () => {
+  const epics = [
+    { id: 'e1', name: 'Platform' },
+    { id: 'e2', name: 'Mobile' },
+    { id: 'e3', name: 'Empty' },
+  ];
+  const countFor = (id) => ({ e1: 3, e2: 1, e3: 0 })[id] ?? 0;
+
+  it('drops epics with zero active cards', () => {
+    const visible = epicsWithActiveCards(epics, countFor, null);
+    expect(visible.map((e) => e.id)).toEqual(['e1', 'e2']);
+  });
+
+  it('keeps the selected epic even when its active count is 0', () => {
+    const visible = epicsWithActiveCards(epics, countFor, 'e3');
+    expect(visible.map((e) => e.id)).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('returns all epics when no count function is provided', () => {
+    expect(epicsWithActiveCards(epics, undefined, null)).toEqual(epics);
+  });
+
+  it('returns an empty array for a non-array input', () => {
+    expect(epicsWithActiveCards(null, countFor, null)).toEqual([]);
+  });
+});
 
 describe('epicFormToUpdateBody', () => {
   it('emits the camelCase keys the server PUT endpoint expects', () => {

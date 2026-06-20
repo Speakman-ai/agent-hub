@@ -28,6 +28,7 @@ import {
   epicFormToCreateBody,
   filterCardsByEpic,
   countOpenCardsForEpic,
+  epicsWithActiveCards,
   findEpic,
   epicDropdownLabel,
 } from '../utils/epics';
@@ -1939,7 +1940,11 @@ export default function KanbanScreen({ route, navigation }) {
                 <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]} />
                 <Text style={styles.modalOptionText}>All Epics ({epics.length})</Text>
               </TouchableOpacity>
-              {epics.map((epic) => {
+              {epicsWithActiveCards(
+                epics,
+                (id) => countOpenCardsForEpic(cards, id, doneColumnIds),
+                selectedEpicId,
+              ).map((epic) => {
                 const count = countOpenCardsForEpic(cards, epic.id, doneColumnIds);
                 return (
                   <TouchableOpacity
