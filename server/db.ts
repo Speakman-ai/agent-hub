@@ -10,6 +10,7 @@ import {
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
+import { SECURITY_AUDIT_SCHEMA } from './security-audit/findings-store.js';
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import {
   deriveCardPrefix,
@@ -946,6 +947,10 @@ function initDb(dataDir: string): void {
   // the Finalize verdict vs the GitHub Actions verdict + divergence class. See
   // `server/finalize/parity-store.ts`.
   db.exec(FINALIZE_PARITY_SCHEMA);
+
+  // Dependency security audit — vulnerable-dependency findings + operator
+  // suppressions for Hub-hosted repos. See `server/security-audit/`.
+  db.exec(SECURITY_AUDIT_SCHEMA);
 
   // Native pull requests — DB-backed PRs for Agent Hub-hosted projects
   // (Project.gitHost === 'agenthub'). The PR's git side (diff, files,
