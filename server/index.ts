@@ -26,6 +26,8 @@ import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { notifyMirrorPush } from './git-host/mirror.js';
 import { startMirrorReconcilePoller } from './git-host/reconcile.js';
 import { maybeRunPushCi, maybeRunPrCi, handleHostedRepoPush } from './git-host/push-ci.js';
+import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
+import { startScheduledSecurityScanner } from './security-audit/scheduled-scan.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
 import { createNativePrService } from './native-pr/service.js';
 import { maybeRunPrAutoReview } from './native-pr/auto-review.js';
@@ -434,6 +436,10 @@ app.use(
     onPush: (project, refs, ctx) => {
       recordRecentPush(project.id, refs); // feeds the "Create pull request" banner
       handleHostedRepoPush(project, refs, { stmts: stmts!, broadcast });
+      // Opt-in dependency security re-scan when the default branch moved.
+      // Fire-and-forget — the module gates on `securityScan.onPush`, serializes
+      // per project, and swallows failures so it never breaks the push path.
+      void maybeRunPushSecurityScan(project, refs, { stmts: stmts!, broadcast });
       // Review safety net for external pushes: any moved branch backing
       // an open PR gets the Reviewer agent when branch protection
       // requires review and the head isn't Finalize-validated.
@@ -525,6 +531,12 @@ const nativePr = createNativePrService({
     // branch moved" hang off this hook: the GitHub mirror push and CI on
     // push.
     void maybeRunPushCi(project, [`refs/heads/${baseBranch}`], { stmts: stmts!, broadcast });
+    // Native merges move the base branch via update-ref (no post-receive hook),
+    // so the on-push security re-scan hangs off this hook too.
+    void maybeRunPushSecurityScan(project, [`refs/heads/${baseBranch}`], {
+      stmts: stmts!,
+      broadcast,
+    });
     await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
   },
   // PR head changed (created or reused with a new sha): if Finalize
@@ -1640,6 +1652,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
           if (!found) return null;
           return { name: found.agent.name, projectId: found.project.id };
         },
+      });
+
+      // Periodic dependency security re-scan for projects that opted into a
+      // daily/weekly cadence (Project.securityScan.schedule). Opens a kanban
+      // card only when a scan surfaces new/reopened findings.
+      startScheduledSecurityScanner({
+        stmts: stmts!,
+        broadcast,
+        getProjects,
       });
     }
 

@@ -119,6 +119,33 @@ describe('git-host lifecycle routes', () => {
     const project = (projects.body as Array<Record<string, unknown>>).find((p) => p.id === id);
     expect(project?.gitMirror).toEqual({ enabled: false, refs: 'all' });
   });
+
+  it('projects PATCH validates securityScan triggers', async () => {
+    const id = await freshProject();
+    await request.patch(`/api/projects/${id}`).send({ securityScan: 'on' }).expect(400);
+    await request
+      .patch(`/api/projects/${id}`)
+      .send({ securityScan: { onPush: 'yes' } })
+      .expect(400);
+    await request
+      .patch(`/api/projects/${id}`)
+      .send({ securityScan: { schedule: 'hourly' } })
+      .expect(400);
+    await request
+      .patch(`/api/projects/${id}`)
+      .send({ securityScan: { onPush: true, schedule: 'weekly' } })
+      .expect(200);
+
+    const projects = await request.get('/api/projects').expect(200);
+    const project = (projects.body as Array<Record<string, unknown>>).find((p) => p.id === id);
+    expect(project?.securityScan).toEqual({ onPush: true, schedule: 'weekly' });
+
+    // null clears it.
+    await request.patch(`/api/projects/${id}`).send({ securityScan: null }).expect(200);
+    const after = await request.get('/api/projects').expect(200);
+    const cleared = (after.body as Array<Record<string, unknown>>).find((p) => p.id === id);
+    expect(cleared?.securityScan).toBeUndefined();
+  });
 });
 
 describe('git-host repository browsing routes', () => {

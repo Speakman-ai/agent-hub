@@ -2566,6 +2566,18 @@ export interface Project {
    */
   securityAutoPr?: { enabled?: boolean };
   /**
+   * Automatic triggers for the dependency security audit (Agent Hub-hosted
+   * projects only). Both default off — the audit otherwise only runs from the
+   * manual `POST /security-audit/scan` endpoint.
+   * - `onPush`: re-scan when the default branch moves (smart-HTTP push or
+   *   native PR merge). See `server/security-audit/on-push.ts`.
+   * - `schedule`: periodic re-scan cadence (`daily` | `weekly`; `off`/unset =
+   *   no scheduled scan). See `server/security-audit/scheduled-scan.ts`.
+   * Both respect suppressions and open a kanban card only when the scan
+   * surfaces new/reopened findings.
+   */
+  securityScan?: { onPush?: boolean; schedule?: 'off' | 'daily' | 'weekly' };
+  /**
    * Branch protection for the hosted repo's default branch (Agent
    * Hub-hosted projects only).
    * - `requiredChecks`: PRs into the default branch merge only when the

@@ -2296,6 +2296,35 @@ This workspace has no git repo and no PR automation — your job is planning, or
         };
       }
     }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'securityScan')) {
+      const rawScan = (req.body as Record<string, unknown>).securityScan;
+      if (rawScan === null) {
+        delete (project as Record<string, unknown>).securityScan;
+      } else if (typeof rawScan !== 'object' || Array.isArray(rawScan)) {
+        return res.status(400).json({ error: 'securityScan must be an object or null' });
+      } else {
+        const onPush = (rawScan as Record<string, unknown>).onPush;
+        if (onPush !== undefined && typeof onPush !== 'boolean') {
+          return res.status(400).json({ error: 'securityScan.onPush must be a boolean' });
+        }
+        const schedule = (rawScan as Record<string, unknown>).schedule;
+        if (
+          schedule !== undefined &&
+          schedule !== 'off' &&
+          schedule !== 'daily' &&
+          schedule !== 'weekly'
+        ) {
+          return res
+            .status(400)
+            .json({ error: 'securityScan.schedule must be "off", "daily", or "weekly"' });
+        }
+        (project as Record<string, unknown>).securityScan = {
+          ...(project.securityScan ?? {}),
+          ...(onPush !== undefined ? { onPush } : {}),
+          ...(schedule !== undefined ? { schedule } : {}),
+        };
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'deleteBranchOnMerge')) {
       const rawDel = (req.body as Record<string, unknown>).deleteBranchOnMerge;
       if (rawDel === null) {
