@@ -116,7 +116,9 @@ import {
   ArrowLeftRight,
   GitBranch,
   Package,
+  PanelLeftOpen,
 } from 'lucide-react';
+import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarCollapse.js';
 import {
   migrateFromLegacy,
   fetchOrgs,
@@ -222,6 +224,10 @@ export default function App({ initialView } = {}) {
   const [showForward, setShowForward] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop-only: collapse the sidebar to reclaim horizontal space (mobile keeps
+  // using the `sidebarOpen` slide-out drawer and ignores this flag). Persisted
+  // to localStorage so the preference survives reloads.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [deletingSessionIds, setDeletingSessionIds] = useState(new Set());
   const [deletingBulk, setDeletingBulk] = useState(null); // 'all' | 'inactive' | null
   // Map of sessionId -> running task state ({messageId, content, engine, model}).
@@ -471,6 +477,10 @@ export default function App({ initialView } = {}) {
       /* quota / disabled storage — non-fatal */
     }
   }, [activeAgentId, activeSessionId]);
+  // Persist the desktop sidebar collapse preference.
+  useEffect(() => {
+    writeSidebarCollapsed(sidebarCollapsed);
+  }, [sidebarCollapsed]);
   /** One in-flight implicit `createSession` per agent + ask-mode (send with no session). */
   const implicitSessionCreateByKeyRef = useRef(new Map());
   const activeAgentIdRef = useRef(activeAgentId);
@@ -4316,13 +4326,32 @@ export default function App({ initialView } = {}) {
           />
         )}
 
+        {/* Collapsed rail (desktop only) — lets users re-open the sidebar from
+            any view after collapsing it. Hidden on mobile, which uses the
+            slide-out drawer instead. */}
+        {sidebarCollapsed && (
+          <div className="hidden md:flex flex-col items-center w-10 flex-shrink-0 border-r border-gray-800 bg-gray-900 pt-2.5 electron-no-drag">
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(false)}
+              className="text-gray-400 hover:text-white p-2 rounded-lg hover:bg-gray-800 transition-colors"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+              data-testid="sidebar-expand"
+            >
+              <PanelLeftOpen size={18} />
+            </button>
+          </div>
+        )}
+
         {/* Sidebar */}
         <div
           className={`fixed md:relative inset-y-0 left-0 z-50 md:z-auto flex h-dvh max-h-dvh md:h-full md:max-h-none overflow-hidden transition-transform duration-200 ${
             sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-          }`}
+          } ${sidebarCollapsed ? 'md:hidden' : ''}`}
         >
           <Sidebar
+            onCollapseSidebar={() => setSidebarCollapsed(true)}
             isLoading={sidebarDataLoading}
             projects={projects}
             agents={agents}

@@ -30,6 +30,7 @@ import {
   GitBranch,
   StickyNote,
   LifeBuoy,
+  PanelLeftClose,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
 import { useClientBuildVersion } from '../hooks/useClientBuildVersion.js';
@@ -122,6 +123,11 @@ export default function Sidebar({
   /** Electron: parent provides canonical /api/health so footer matches update prompt. */
   electronSuppressHealthFetch = false,
   electronHealthSnapshot = null,
+  /**
+   * Collapse the sidebar on desktop (md+). When provided, a collapse button
+   * renders in the header. Mobile uses the slide-out drawer and never shows it.
+   */
+  onCollapseSidebar,
 }) {
   const [hoveredSession, setHoveredSession] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState({});
@@ -314,6 +320,18 @@ export default function Sidebar({
               agentId={bugReportAgentId}
               onToast={showToast}
             />
+            {onCollapseSidebar && (
+              <button
+                type="button"
+                onClick={onCollapseSidebar}
+                className="hidden md:flex flex-shrink-0 items-center justify-center text-gray-400 hover:text-white p-1.5 rounded-lg hover:bg-gray-800 transition-colors"
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+                data-testid="sidebar-collapse"
+              >
+                <PanelLeftClose size={16} />
+              </button>
+            )}
           </div>
 
           {/* Org-scoped dashboard — sits above the project list because it's
