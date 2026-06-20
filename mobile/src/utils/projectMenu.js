@@ -38,6 +38,7 @@ export function projectLifecycleEntries(project) {
     { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' },
     { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' },
     { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' },
+    { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' },
     { key: 'wiki', label: 'Wiki', icon: 'BookOpen', screen: 'Wiki' },
   );
 

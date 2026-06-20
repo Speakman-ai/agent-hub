@@ -32,6 +32,7 @@ export const HUB_NATIVE_ICONS = {
   Plus: { family: 'feather', name: 'plus' },
   ScanEye: { family: 'feather', name: 'eye' },
   Settings: { family: 'feather', name: 'settings' },
+  ShieldAlert: { family: 'material', name: 'shield-alert' },
   Sparkles: { family: 'material', name: 'creation' },
   StickyNote: { family: 'feather', name: 'file-text' },
   Target: { family: 'feather', name: 'target' },

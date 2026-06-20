@@ -17,6 +17,7 @@ import NotesScreen from './src/screens/NotesScreen';
 import PullRequestsScreen from './src/screens/PullRequestsScreen';
 import ThreadsScreen from './src/screens/ThreadsScreen';
 import CustomerSupportScreen from './src/screens/CustomerSupportScreen';
+import SecurityScreen from './src/screens/SecurityScreen';
 import SessionChangesScreen from './src/screens/SessionChangesScreen';
 import DesignsListScreen from './src/screens/DesignsListScreen';
 import DesignViewScreen from './src/screens/DesignViewScreen';
@@ -188,6 +189,7 @@ function AppContent() {
             <Stack.Screen name="PullRequests" component={PullRequestsScreen} />
             <Stack.Screen name="Threads" component={ThreadsScreen} />
             <Stack.Screen name="CustomerSupport" component={CustomerSupportScreen} />
+            <Stack.Screen name="Security" component={SecurityScreen} />
             <Stack.Screen name="SessionChanges" component={SessionChangesScreen} />
             <Stack.Screen name="Designs" component={DesignsListScreen} />
             <Stack.Screen name="DesignView" component={DesignViewScreen} />

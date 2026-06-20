@@ -46,6 +46,7 @@ export default function DrawerContent({ navigation }) {
     finalizeStatusBySession,
     unreadThreadCounts,
     unreadTicketCounts,
+    securityOpenCounts,
     reloadMessages,
     connected,
     reconnecting,
@@ -359,6 +360,19 @@ export default function DrawerContent({ navigation }) {
           </Text>
         </View>
       )}
+      {entry.key === 'security' &&
+        (() => {
+          const counts = securityOpenCounts?.[project.id];
+          const criticalHigh = counts ? (counts.critical || 0) + (counts.high || 0) : 0;
+          if (criticalHigh <= 0) return null;
+          return (
+            <View style={[styles.unreadBadge, styles.securityBadge]}>
+              <Text style={styles.unreadBadgeText}>
+                {criticalHigh > 99 ? '99+' : criticalHigh}
+              </Text>
+            </View>
+          );
+        })()}
     </TouchableOpacity>
   );
 
@@ -885,6 +899,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  securityBadge: {
+    backgroundColor: colors.red500,
   },
   unreadBadgeText: {
     color: colors.white,

@@ -1168,6 +1168,26 @@ export const api = {
     return fetchJSON(`/support-tickets${qs}`);
   },
 
+  // Security audit — Dependabot-style dependency findings for a Hub-hosted repo.
+  // `status` optionally narrows to a single lifecycle state (open | fixed |
+  // dismissed); omit it for every finding. Returns { findings, openCounts }
+  // where openCounts is the per-severity tally of OPEN findings (independent of
+  // the status filter) that drives the Security sidebar badge.
+  getSecurityFindings: (projectId, status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return fetchJSON(`/projects/${projectId}/security-audit/findings${qs}`);
+  },
+  // Dismiss (and, unless suppress:false, suppress on future re-scans) a single
+  // finding. Requires the Admin role server-side. Returns the updated finding.
+  dismissSecurityFinding: (projectId, id, { reason, suppress } = {}) =>
+    fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(reason ? { reason } : {}),
+        ...(suppress === false ? { suppress: false } : {}),
+      }),
+    }),
+
   // Session replays — record-on-error rrweb captures. Metadata + paginated
   // events back the sandboxed rrweb-player playback surface. Reads are
   // authenticated + per-replay authorized server-side.

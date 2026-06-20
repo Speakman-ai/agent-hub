@@ -107,6 +107,10 @@ export function AppProvider({ children }) {
   // badge. Seeded on demand and kept live by the unreadCount the
   // support_ticket_* events carry.
   const [unreadTicketCounts, setUnreadTicketCounts] = useState({});
+  // Open-severity counts per project: { [projectId]: { critical, high, … } }.
+  // Drives the Security drawer badge (open critical + high). Seeded from the
+  // server on load and refreshed on kanban_update (a scan's only WS signal).
+  const [securityOpenCounts, setSecurityOpenCounts] = useState({});
   // Last `finalize_wizard_*` WS event for the Settings → Finalize panel.
   // Mirrors the web component's `agenthub:finalize_wizard_complete`
   // window CustomEvent — RN has no DOM event bus, so we surface the last
@@ -121,6 +125,9 @@ export function AppProvider({ children }) {
   // user isn't already looking at that project's threads list).
   const activeThreadsProjectIdRef = useRef(null);
   const activeThreadIdRef = useRef(null);
+  // Stable ref to refreshSecurityOpenCounts so the WS handler (defined before
+  // the helper) can call it without a stale-closure / ordering problem.
+  const refreshSecurityOpenCountsRef = useRef(null);
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
   // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
@@ -598,6 +605,9 @@ export function AppProvider({ children }) {
 
       case 'kanban_update':
         setKanbanRefreshKey((k) => (k || 0) + 1);
+        // A security scan's only WS signal is kanban_update. Refresh the
+        // affected project's open-severity counts so the drawer badge stays live.
+        if (data.projectId) refreshSecurityOpenCountsRef.current?.(data.projectId);
         break;
 
       case 'dispatch_failure':
@@ -1729,6 +1739,62 @@ export function AppProvider({ children }) {
     setUnreadTicketCounts((prev) => ({ ...prev, [projectId]: Math.max(0, count) }));
   }, []);
 
+  /**
+   * Seed/refresh a project's open-severity security counts from the server.
+   * Called by the Security screen on mount and on every kanban_update for the
+   * project (a scan's only WS signal), so the drawer badge stays live. Passing
+   * ?status=open keeps the payload to just the open rows.
+   */
+  const refreshSecurityOpenCounts = useCallback(async (projectId) => {
+    if (!projectId) return;
+    try {
+      const data = await api.getSecurityFindings(projectId, 'open');
+      const counts = data?.openCounts;
+      if (counts) setSecurityOpenCounts((prev) => ({ ...prev, [projectId]: counts }));
+    } catch {
+      /* best-effort; the badge stays at its last value */
+    }
+  }, []);
+  refreshSecurityOpenCountsRef.current = refreshSecurityOpenCounts;
+
+  // Provider-level seed of the Security drawer badge: once the project list is
+  // known, fetch each project's open-severity counts so the badge is correct on
+  // a cold launch. Mirrors the Support badge seed. Each project seeded once; the
+  // kanban_update refresh keeps it live. Resets when the list empties (logout).
+  const seededSecurityProjectsRef = useRef(new Set());
+  useEffect(() => {
+    if (!projects || projects.length === 0) {
+      seededSecurityProjectsRef.current = new Set();
+      return;
+    }
+    const toSeed = projects.filter(
+      (p) => p?.id && !seededSecurityProjectsRef.current.has(p.id),
+    );
+    if (toSeed.length === 0) return;
+    toSeed.forEach((p) => seededSecurityProjectsRef.current.add(p.id));
+    let cancelled = false;
+    Promise.all(
+      toSeed.map((p) =>
+        api
+          .getSecurityFindings(p.id, 'open')
+          .then((data) => [p.id, data?.openCounts || null])
+          .catch(() => [p.id, null]),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      setSecurityOpenCounts((prev) => {
+        const next = { ...prev };
+        for (const [pid, counts] of entries) {
+          if (next[pid] === undefined && counts) next[pid] = counts;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+
   // Provider-level seed of the Support drawer badge: as soon as the project list
   // is known, fetch each project's unread count so the badge is correct on a
   // cold app launch — not only after the user opens a project's Support screen.
@@ -1923,6 +1989,9 @@ export function AppProvider({ children }) {
     unreadTicketCounts,
     refreshSupportUnreadCount,
     setSupportUnreadCount,
+    // Security audit drawer badge + screen seed
+    securityOpenCounts,
+    refreshSecurityOpenCounts,
     markProjectThreadsRead,
     setActiveThreadsProject,
     setActiveThread,

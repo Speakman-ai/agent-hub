@@ -62,6 +62,7 @@ import WikiBrowser from './components/WikiBrowser.jsx';
 import ThreadList from './components/ThreadList.jsx';
 import ThreadView from './components/ThreadView.jsx';
 import CustomerSupportPage from './components/CustomerSupportPage.jsx';
+import SecurityPage from './components/SecurityPage.jsx';
 import NotesEditor from './components/NotesEditor.jsx';
 import PullRequestsPage from './components/PullRequestsPage.jsx';
 import RepositoryPage from './components/RepositoryPage.jsx';
@@ -404,6 +405,15 @@ export default function App({ initialView } = {}) {
   // from the server on load and kept live by the unreadCount the support_ticket_*
   // WebSocket events carry, so the Support sidebar badge survives a refresh.
   const [unreadTicketCounts, setUnreadTicketCounts] = useState({});
+  // Security audit page state.
+  const [securityProjectId, setSecurityProjectId] = useState(null);
+  // Bumped on a kanban_update for the active security project so SecurityPage
+  // re-fetches (a scan's only WebSocket signal is kanban_update).
+  const [securityRefreshNonce, setSecurityRefreshNonce] = useState(0);
+  // Open-severity counts per project: { [projectId]: { critical, high, … } }.
+  // Seeded from the server on load and refreshed on kanban_update; drives the
+  // Security sidebar badge (open critical + high).
+  const [securityOpenCounts, setSecurityOpenCounts] = useState({});
   // Cron-linked sessions (scheduled tasks)
   const [cronSessions, setCronSessions] = useState([]);
   // Skills for the active agent (for /slash-command autocomplete)
@@ -519,6 +529,8 @@ export default function App({ initialView } = {}) {
   threadsProjectIdRef.current = threadsProjectId;
   const supportProjectIdRef = useRef(supportProjectId);
   supportProjectIdRef.current = supportProjectId;
+  const securityProjectIdRef = useRef(securityProjectId);
+  securityProjectIdRef.current = securityProjectId;
   const activeThreadIdRef = useRef(activeThreadId);
   activeThreadIdRef.current = activeThreadId;
   const currentViewRef = useRef(currentView);
@@ -602,6 +614,52 @@ export default function App({ initialView } = {}) {
         const next = { ...prev };
         for (const [pid, count] of entries) {
           if (next[pid] === undefined) next[pid] = count;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+
+  // Seed per-project security open-severity counts once projects are known, so
+  // the Security sidebar badge is correct on a cold load. The findings endpoint
+  // returns openCounts alongside the list; passing ?status=open keeps the
+  // payload to just the open rows. Runs once; never clobbers a value a later
+  // refetch already delivered. Refreshed on kanban_update (see the WS handler).
+  const securityCountsSeededRef = useRef(false);
+  const refreshSecurityOpenCounts = useCallback((projectId) => {
+    if (!projectId) return;
+    api
+      .getSecurityFindings(projectId, 'open')
+      .then((data) => {
+        const counts = data?.openCounts;
+        if (!counts) return;
+        setSecurityOpenCounts((prev) => ({ ...prev, [projectId]: counts }));
+      })
+      .catch(() => {
+        /* best-effort; the badge stays at its last value */
+      });
+  }, []);
+  useEffect(() => {
+    if (securityCountsSeededRef.current) return;
+    if (!projects || projects.length === 0) return;
+    securityCountsSeededRef.current = true;
+    let cancelled = false;
+    Promise.all(
+      projects.map((p) =>
+        api
+          .getSecurityFindings(p.id, 'open')
+          .then((data) => [p.id, data?.openCounts || null])
+          .catch(() => [p.id, null]),
+      ),
+    ).then((entries) => {
+      if (cancelled) return;
+      setSecurityOpenCounts((prev) => {
+        const next = { ...prev };
+        for (const [pid, counts] of entries) {
+          if (next[pid] === undefined && counts) next[pid] = counts;
         }
         return next;
       });
@@ -2061,6 +2119,19 @@ export default function App({ initialView } = {}) {
           ) {
             setPullsListRefreshNonce((n) => n + 1);
           }
+          // A security scan's only WebSocket signal is kanban_update. Keep the
+          // open Security view live (refetch via the nonce) and refresh the
+          // affected project's open-severity counts for the sidebar badge.
+          if (data.projectId) {
+            if (
+              securityProjectIdRef.current === data.projectId &&
+              currentViewRef.current === 'security'
+            ) {
+              setSecurityRefreshNonce((n) => n + 1);
+            } else {
+              refreshSecurityOpenCounts(data.projectId);
+            }
+          }
           break;
 
         case 'native_pr_update':
@@ -2628,7 +2699,15 @@ export default function App({ initialView } = {}) {
         }
       }
     },
-    [notify, refreshAgents, showToast, pinChatTail, refreshDiffFileCount, bumpDiffReloadToken],
+    [
+      notify,
+      refreshAgents,
+      showToast,
+      pinChatTail,
+      refreshDiffFileCount,
+      bumpDiffReloadToken,
+      refreshSecurityOpenCounts,
+    ],
   );
 
   const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
@@ -4134,6 +4213,7 @@ export default function App({ initialView } = {}) {
     if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
     if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
     if (currentView === 'support' && supportProjectId) return supportProjectId;
+    if (currentView === 'security' && securityProjectId) return securityProjectId;
     const byAgent = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
     return byAgent?.id || projects[0]?.id || null;
   }, [
@@ -4145,6 +4225,7 @@ export default function App({ initialView } = {}) {
     pullsProjectId,
     threadsProjectId,
     supportProjectId,
+    securityProjectId,
     projects,
     activeAgentId,
   ]);
@@ -4415,6 +4496,7 @@ export default function App({ initialView } = {}) {
                 });
               }
               if (view === 'support' && extra) setSupportProjectId(extra);
+              if (view === 'security' && extra) setSecurityProjectId(extra);
               setSidebarOpen(false);
             }}
             currentView={currentView}
@@ -4432,10 +4514,12 @@ export default function App({ initialView } = {}) {
             reviewerProjectId={reviewerProjectId}
             threadsProjectId={threadsProjectId}
             supportProjectId={supportProjectId}
+            securityProjectId={securityProjectId}
             pullsProjectId={pullsProjectId}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
             unreadTicketCounts={unreadTicketCounts}
+            securityOpenCounts={securityOpenCounts}
             activeReviews={activeReviews}
             designs={designs}
             activeDesignId={activeDesignId}
@@ -4743,6 +4827,15 @@ export default function App({ initialView } = {}) {
                   ref={supportListRef}
                   projectId={supportProjectId}
                   agents={agents.filter((a) => a.projectId === supportProjectId)}
+                  onNotify={(message, type = 'info') => showToast(message, type, 8000)}
+                />
+              ) : currentView === 'security' && securityProjectId ? (
+                <SecurityPage
+                  projectId={securityProjectId}
+                  refreshNonce={securityRefreshNonce}
+                  onOpenCounts={(counts) =>
+                    setSecurityOpenCounts((prev) => ({ ...prev, [securityProjectId]: counts }))
+                  }
                   onNotify={(message, type = 'info') => showToast(message, type, 8000)}
                 />
               ) : currentView === 'pulls' && pullsProjectId ? (

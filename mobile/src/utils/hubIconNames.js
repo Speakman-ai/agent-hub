@@ -23,6 +23,7 @@ export const HUB_ICON_NAMES = [
   'Plus',
   'ScanEye',
   'Settings',
+  'ShieldAlert',
   'Sparkles',
   'StickyNote',
   'Target',

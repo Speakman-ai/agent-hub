@@ -13,6 +13,7 @@ describe('projectLifecycleEntries', () => {
     expect(keys).toContain('epics');
     expect(keys).toContain('threads');
     expect(keys).toContain('support');
+    expect(keys).toContain('security');
     expect(keys).toContain('wiki');
     expect(keys).toContain('notes');
     expect(keys).not.toContain('workflows');

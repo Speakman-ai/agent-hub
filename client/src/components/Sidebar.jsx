@@ -30,6 +30,7 @@ import {
   GitBranch,
   StickyNote,
   LifeBuoy,
+  ShieldAlert,
   PanelLeftClose,
 } from 'lucide-react';
 import { getServerBase } from '../utils/connection.js';
@@ -88,12 +89,15 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   supportProjectId,
+  securityProjectId,
   wikiProjectId,
   pullsProjectId,
   notesProjectId,
   workflowBadgeByProject = {},
   unreadThreadCounts = {},
   unreadTicketCounts = {},
+  /** Per-project open-severity counts: { [projectId]: { critical, high, … } }. */
+  securityOpenCounts = {},
   activeReviews = {},
   designs = [],
   activeDesignId,
@@ -1097,6 +1101,30 @@ export default function Sidebar({
                               </span>
                             )}
                           </button>
+
+                          {(() => {
+                            const counts = securityOpenCounts[project.id];
+                            const criticalHigh = counts
+                              ? (counts.critical || 0) + (counts.high || 0)
+                              : 0;
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => onNavigate('security', project.id)}
+                                className={projectMenuLinkClass(
+                                  currentView === 'security' && securityProjectId === project.id,
+                                )}
+                              >
+                                <ShieldAlert size={14} className="flex-shrink-0" />
+                                <span className="truncate">Security</span>
+                                {criticalHigh > 0 && (
+                                  <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white px-1">
+                                    {criticalHigh > 99 ? '99+' : criticalHigh}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })()}
 
                           <button
                             type="button"

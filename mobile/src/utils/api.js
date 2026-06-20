@@ -724,6 +724,25 @@ export const api = {
   markAllSupportTicketsRead: (projectId) =>
     fetchJSON(`/projects/${projectId}/support-tickets/read-all`, { method: 'POST' }),
 
+  // Security audit — Dependabot-style dependency findings for a Hub-hosted repo.
+  // `status` optionally narrows to one lifecycle state (open | fixed |
+  // dismissed); omit for all. Returns { findings, openCounts } where openCounts
+  // is the per-severity tally of OPEN findings that drives the Security badge.
+  getSecurityFindings: (projectId, status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return fetchJSON(`/projects/${projectId}/security-audit/findings${qs}`);
+  },
+  // Dismiss (and, unless suppress:false, suppress on future re-scans) a finding.
+  // Requires Admin server-side. Returns the updated finding.
+  dismissSecurityFinding: (projectId, id, { reason, suppress } = {}) =>
+    fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify({
+        ...(reason ? { reason } : {}),
+        ...(suppress === false ? { suppress: false } : {}),
+      }),
+    }),
+
   // Threads (persistent output logs for crons & heartbeats)
   getThreads: (projectId, type) => {
     const qs = type ? `?type=${encodeURIComponent(type)}` : '';
