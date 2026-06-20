@@ -399,6 +399,85 @@ Keep it short. Don't repeat the full description back.`,
 }
 
 /**
+ * Seeds a dedicated Skill Builder agent — the conversational coach that authors
+ * project skills for users who do not know the skill format. It is wired to the
+ * bundled `skill-creator` meta-skill (interview → draft `SKILL.md` → save via
+ * the skills write API) and scoped (via `allowedSkills`) to that skill plus the
+ * core `agent-hub` skill so its prompt stays focused.
+ *
+ * **Creation-scoped, not a backfill.** Callers MUST pass the `projectId` of the
+ * project being created; only that project is considered, so introducing this
+ * helper does not retroactively add a Skill Builder to every pre-existing
+ * project. (Unlike `ensureIntakeAgents`/`ensureDocsAgents`, whose iterate-all
+ * shape is a no-op on existing projects only because those projects already
+ * carry their intake/docs agents — a brand-new agent role has no such existing
+ * rows to skip, so iterate-all would mass-backfill on the next project create.)
+ * Passing no `projectId` falls back to iterate-all and is intended only for an
+ * explicit, deliberate backfill migration — not the creation path.
+ */
+function ensureSkillBuilderAgents(projectId?: string): void {
+  let changed = false;
+  const targets = projectId ? projects.filter((p) => p.id === projectId) : projects;
+  for (const project of targets) {
+    if (!project.agents || project.agents.length === 0) continue;
+    if (project.agents.some((a) => a.role === 'skill-builder')) continue;
+
+    const builderId = `${project.id}-skill-builder`;
+    if (findAgent(builderId)) continue;
+
+    const builderAgent: Agent = {
+      id: builderId,
+      name: `Skill Builder`,
+      engine: 'claude-code',
+      role: 'skill-builder',
+      color: '#8B5CF6',
+      // Scope the agent to the coach skill + core platform skill so its
+      // Available Skills block stays focused on authoring.
+      allowedSkills: ['skill-creator', 'agent-hub'],
+      systemPrompt: `You are the **Skill Builder** coach for the ${project.name} project on Agent Hub. Your job is to help a user create a new project skill end-to-end, even when they have never seen the skill format.
+
+## How you work
+
+Load the \`skill-creator\` skill on your first turn — it carries the full interview → draft → save procedure and the authoring best practices. Then:
+
+1. **Capture** the capability the user wants, in one sentence.
+2. **Interview** for the few things that change the output: the trigger phrases that should fire the skill, the inputs/outputs, and how success is judged. Use \`agenthub:ask\` pickers for clean choices (e.g. category); infer the rest. Bias toward action — do not over-question.
+3. **Draft** a lean, well-formed \`SKILL.md\`. The \`description\` is the most important line: it is the trigger, so write it "pushy" (what + when + real phrases + a "DO NOT TRIGGER on…" guard). Keep the body under 500 lines and explain the *why* of rules instead of shouting ALL-CAPS imperatives.
+4. **Show** the draft to the user and confirm before saving.
+5. **Save** it as a project skill via the write API (\`POST /api/projects/${project.id}/skills\`; \`PUT …/skills/:id\` to update). Use the bundled \`ah-api.sh\` wrapper — never hand-roll curl. The host injects \`$PROJECT_ID\` and puts the wrappers on \`$PATH\` (with \`$AGENT_HUB_SKILLS_DIR/scripts/ah-api.sh\` as the absolute fallback); the \`skill-creator\` skill has a preflight check for both — run it before saving.
+6. **Confirm** what you created and where to find it (Settings → Skills), and suggest testing/refining the description if it under- or over-fires.
+
+## Rules
+
+- You write project skills only; bundled default skills are read-only and the API rejects shadowing them.
+- This flow writes \`SKILL.md\` only — if a skill needs \`scripts/\` or \`references/\` files, write the \`SKILL.md\` now and tell the user those are a follow-up.
+- Prefer **extracting** a skill from work the user actually did over inventing one — real procedures generalize better.
+
+Be concise and practical. The user should walk away with a working, well-described skill without learning YAML.`,
+      heartbeat: { enabled: false, interval: '', prompt: '' },
+    };
+
+    const dataDir = getProjectDataDir(project.id);
+    const agentDir = path.join(dataDir, 'agents', builderId);
+    mkdirSync(agentDir, { recursive: true });
+
+    writeFileSync(
+      path.join(agentDir, 'IDENTITY.md'),
+      `# ${project.name} Skill Builder\n\nYou are the Skill Builder coach. You interview users in plain language and author well-formed project skills for them via the skills write API — they never have to learn the skill format. You enforce authoring best practices: pushy trigger descriptions, lean bodies, and explaining the *why* of rules.\n`,
+      'utf-8',
+    );
+
+    project.agents.push(builderAgent);
+    changed = true;
+    console.log(`[Skill Builder Agent] Created "${builderId}" for project "${project.id}"`);
+  }
+
+  if (changed) {
+    saveProjects();
+  }
+}
+
+/**
  * Ensures every project that has GitHub integration (a `githubRepo` set) gets a
  * dedicated Reviewer agent. The Reviewer is the single, project-wide review
  * advisor used by the Finalize review phase: it inspects the local diff and
@@ -585,6 +664,7 @@ export {
   // Auto-create helpers
   ensureDocsAgents,
   ensureIntakeAgents,
+  ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,
 };

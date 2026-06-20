@@ -1122,6 +1122,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     getProjectDataDir,
     ensureDocsAgents,
     ensureIntakeAgents,
+    ensureSkillBuilderAgents,
     ensureReviewerAgents,
     ensureContextFiles,
     getClaudeBin,
@@ -2073,6 +2074,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
         //    on `githubRepo` / webhook configs).
         ensureDocsAgents();
         ensureIntakeAgents();
+        // Creation-scoped: pass the new project's id so we never backfill a
+        // Skill Builder into every pre-existing project.
+        ensureSkillBuilderAgents(project.id);
 
         // 5. Create the project's conference room now that we have an
         //    anchor agent.
@@ -2933,6 +2937,8 @@ This workspace has no git repo and no PR automation — your job is planning, or
     try {
       ensureDocsAgents();
       ensureIntakeAgents();
+      // Creation-scoped: only the project just onboarded, never a backfill.
+      ensureSkillBuilderAgents(project.id);
       ensureReviewerAgents();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

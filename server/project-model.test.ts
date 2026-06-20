@@ -7,6 +7,7 @@ import {
   getProjects,
   saveProjects,
   ensureReviewerAgents,
+  ensureSkillBuilderAgents,
 } from './project-model.js';
 import type { Stmts, Project } from './types.js';
 
@@ -350,5 +351,126 @@ describe('ensureReviewerAgents', () => {
     await createProjectWithAgent(projId, 'No GitHub Reviewer', '#333');
     // No githubRepo → nothing to seed.
     expect(ensureReviewerAgents()).toBe(false);
+  });
+});
+
+describe('ensureSkillBuilderAgents', () => {
+  async function createProjectWithAgent(
+    projId: string,
+    name: string,
+    color: string,
+  ): Promise<Project> {
+    const request = await getRequest();
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name, cwd: '/tmp', color })
+      .expect(201);
+    createdProjectIds.push(projId);
+
+    const project = findProject(projId)!;
+    project.agents = project.agents || [];
+    project.agents.push({
+      id: `${projId}-dev`,
+      name: 'Dev',
+      role: 'sub',
+      engine: 'claude-code',
+    });
+    saveProjects();
+    return project;
+  }
+
+  it('seeds a Skill Builder coach scoped to the skill-creator skill', async () => {
+    const projId = `skillbuilder-seed-${Date.now()}`;
+    await createProjectWithAgent(projId, 'Skill Builder Seed', '#abc');
+
+    ensureSkillBuilderAgents(projId);
+
+    const updated = findProject(projId);
+    const builder = updated!.agents?.find((a) => a.role === 'skill-builder');
+    expect(builder).toBeTruthy();
+    expect(builder!.id).toBe(`${projId}-skill-builder`);
+    expect(builder!.name).toBe('Skill Builder');
+    // Allowlisted to the coach skill (+ core) so its prompt stays focused.
+    expect(builder!.allowedSkills).toContain('skill-creator');
+    // System prompt encodes the coach contract: load the skill, push trigger
+    // descriptions, save via the write API.
+    const sp = builder!.systemPrompt || '';
+    expect(sp).toContain('skill-creator');
+    expect(sp).toContain(`/api/projects/${projId}/skills`);
+  });
+
+  it('does NOT seed a builder for an agentless project', async () => {
+    const projId = `skillbuilder-noseed-${Date.now()}`;
+    const request = await getRequest();
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name: 'Agentless', cwd: '/tmp', color: '#def' })
+      .expect(201);
+    createdProjectIds.push(projId);
+    // Strip any auto-seeded agents so the roster is empty.
+    const project = findProject(projId)!;
+    project.agents = [];
+    saveProjects();
+
+    ensureSkillBuilderAgents(projId);
+
+    const updated = findProject(projId);
+    expect(updated!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+  });
+
+  it('is idempotent — calling twice does not duplicate the builder', async () => {
+    const projId = `skillbuilder-idem-${Date.now()}`;
+    await createProjectWithAgent(projId, 'Idempotent Builder', '#fed');
+
+    ensureSkillBuilderAgents(projId);
+    ensureSkillBuilderAgents(projId);
+
+    const updated = findProject(projId);
+    const builders = (updated!.agents || []).filter((a) => a.role === 'skill-builder');
+    expect(builders).toHaveLength(1);
+  });
+
+  it('is creation-scoped — seeding one project does NOT backfill others', async () => {
+    // Regression guard for the reviewer's backfill concern: the iterate-all
+    // shape of the sibling ensure-* helpers would mass-seed this new agent
+    // role into every existing project on the next create. The creation path
+    // passes a projectId, which must confine the seed to that one project.
+    const otherId = `skillbuilder-other-${Date.now()}`;
+    await createProjectWithAgent(otherId, 'Pre-existing Project', '#0ad');
+    const newId = `skillbuilder-new-${Date.now()}`;
+    await createProjectWithAgent(newId, 'Newly Created Project', '#0da');
+
+    // Model a genuinely "pre-existing" project (one that predates this
+    // feature) without depending on whether the create route auto-seeds a
+    // builder: strip any skill-builder rows from BOTH projects and pin the
+    // clean precondition. The explicit scoped call below is then the only
+    // thing that can seed a builder, so the test can't be masked by
+    // creation-path seeding.
+    for (const id of [otherId, newId]) {
+      const p = findProject(id)!;
+      p.agents = (p.agents || []).filter((a) => a.role !== 'skill-builder');
+    }
+    saveProjects();
+    expect(findProject(otherId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+    expect(findProject(newId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+
+    // Seed only the freshly-created project.
+    ensureSkillBuilderAgents(newId);
+
+    expect(findProject(newId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(true);
+    // The pre-existing project must be untouched — no backfill.
+    expect(findProject(otherId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
   });
 });

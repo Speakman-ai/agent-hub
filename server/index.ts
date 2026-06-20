@@ -42,6 +42,7 @@ import {
   reloadProjects,
   ensureDocsAgents,
   ensureIntakeAgents,
+  ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,
 } from './project-model.js';
@@ -951,6 +952,7 @@ export const routeDeps: RouteDeps = {
   getProjectDataDir,
   ensureDocsAgents,
   ensureIntakeAgents,
+  ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,
   getClaudeBin: () => CLAUDE_BIN,
