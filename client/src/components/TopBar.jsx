@@ -685,6 +685,44 @@ export default function TopBar({
                       </svg>
                       Save Summary as Note
                     </button>
+                    <div className="my-1 border-t border-gray-700" />
+                    <button
+                      onClick={async () => {
+                        setExportOpen(false);
+                        setExportState('extracting');
+                        try {
+                          await api.extractSkillFromSession(activeSessionId);
+                          setExportState(null);
+                          showToast?.(
+                            'Skill Builder is drafting a skill from this session — open the new "[Skill from] …" session to review it.',
+                            'success',
+                          );
+                        } catch (err) {
+                          console.error('Extract skill failed:', err);
+                          setExportState(null);
+                          showToast?.(
+                            `Turn into Skill failed: ${err.message || 'Unknown error'}`,
+                            'error',
+                          );
+                        }
+                      }}
+                      disabled={
+                        exportState === 'extracting' ||
+                        exportState === 'summarizing' ||
+                        exportState === 'saving'
+                      }
+                      className="w-full text-left px-3 py-2.5 text-sm text-gray-300 hover:bg-gray-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="h-4 w-4 text-gray-500"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                      >
+                        <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM8 16v-1h4v1a2 2 0 11-4 0zM12 14c.015-.34.208-.646.477-.859a4 4 0 10-4.954 0c.27.213.462.519.476.859h4.002z" />
+                      </svg>
+                      {exportState === 'extracting' ? 'Starting…' : 'Turn into Skill'}
+                    </button>
                   </>
                 )}
               </div>

@@ -10574,6 +10574,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/extract-skill:
+    post:
+      tags:
+        - Sessions
+      summary: Turn this session into a skill (Skill Builder Phase 4)
+      description: Hands the session's transcript to the project's Skill Builder coach agent, which mines the repeated context/procedures and drafts a SKILL.md via the skills write API ("extract, don't invent"). Spawns a fresh non-worktree coach session and returns its id; the coach streams a draft for the user to review/edit and save.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "201":
+          description: Skill Builder coach session spawned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                    description: The new coach session id.
+                  agentId:
+                    type: string
+                    description: The Skill Builder agent id.
+                  session:
+                    allOf:
+                      - $ref: "#/components/schemas/Session"
+                      - nullable: true
+                required:
+                  - sessionId
+                  - agentId
+                  - session
+        "400":
+          description: No messages, no resolvable project, or no Skill Builder coach agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
   /api/sessions/{sessionId}/linked-design:
     put:
       tags:

@@ -40,6 +40,7 @@ export default function TopBar() {
   const [showPicker, setShowPicker] = useState(false);
   const [showForward, setShowForward] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
+  const [extractingSkill, setExtractingSkill] = useState(false);
 
   const canForward =
     !!activeSessionId && filterForwardTargets(agents || [], activeAgent).length > 0;
@@ -60,6 +61,23 @@ export default function TopBar() {
       Alert.alert('Summary failed', err?.message || 'Unknown error');
     } finally {
       setSummarizing(false);
+    }
+  };
+
+  const handleExtractSkill = async () => {
+    if (!activeSessionId || extractingSkill) return;
+    setExtractingSkill(true);
+    try {
+      await api.extractSkillFromSession(activeSessionId);
+      Alert.alert(
+        'Turning session into a skill',
+        'Skill Builder is drafting a skill from this session. Open the new "[Skill from] …" session to review and save it.',
+        [{ text: 'OK' }],
+      );
+    } catch (err) {
+      Alert.alert('Turn into Skill failed', err?.message || 'Unknown error');
+    } finally {
+      setExtractingSkill(false);
     }
   };
 
@@ -175,6 +193,27 @@ export default function TopBar() {
             ) : (
               <AppIcon
                 name="document-text-outline"
+                size={18}
+                color={activeSessionId ? colors.white : colors.gray500}
+              />
+            )}
+          </TouchableOpacity>
+        )}
+
+        {/* Turn this session into a skill — Skill Builder Phase 4 */}
+        {activeAgent && (
+          <TouchableOpacity
+            style={styles.newButton}
+            onPress={handleExtractSkill}
+            disabled={!activeSessionId || extractingSkill}
+            accessibilityRole="button"
+            accessibilityLabel="Turn this session into a skill"
+          >
+            {extractingSkill ? (
+              <ActivityIndicator size="small" color={colors.white} />
+            ) : (
+              <AppIcon
+                name="bulb-outline"
                 size={18}
                 color={activeSessionId ? colors.white : colors.gray500}
               />

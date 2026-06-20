@@ -49,6 +49,14 @@ from real work** (the user just did the thing by hand), prefer turning that
 concrete procedure into the skill over inventing one from scratch — real
 procedures generalize better than imagined ones.
 
+**Extract-from-session mode.** When you are booted from the **"Turn this session
+into a skill"** action, you are handed a finished session's transcript instead
+of a blank interview. Mine the repeated context and procedures out of that real
+work, reconstruct most of the interview from what you read, and only ask the
+user what the transcript leaves ambiguous. Read
+`references/extract-from-session.md` for the full procedure (what to mine for,
+when *not* to make a skill, handling truncated transcripts).
+
 ### 2. Interview (only what changes the result)
 
 Gather these four things. Use an `agenthub:ask` picker for the structured

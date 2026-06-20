@@ -57,6 +57,10 @@ export const api = {
   // surface a loading state. Returns `{ summary: string }`.
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST' }),
+  // Skill Builder Phase 4 — spawn the coach to extract a skill from this
+  // session's transcript. Returns `{ sessionId, agentId, session }`.
+  extractSkillFromSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/extract-skill`, { method: 'POST' }),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),
   // Soft-delete recovery — rows within the 7-day window, newest first.
   getArchivedSessions: (agentId) => fetchJSON(`/agents/${agentId}/archived-sessions`),

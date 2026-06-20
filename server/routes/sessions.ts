@@ -53,6 +53,7 @@ import { resolveFinalizeBaseBranchForCard } from '../finalize/resolve-base-branc
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
+import { buildExtractSkillKickoffPrompt, buildExtractSkillSessionName } from '../skill-extract.js';
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { checkWorktreeChanges } from '../auto-git.js';
@@ -1699,6 +1700,108 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       res.json({ summary });
     } catch (err) {
       console.error('Summarize session error:', err);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ───────────────────────────────────────────────────────────────
+  // POST /api/sessions/:sessionId/extract-skill  (Skill Builder Phase 4)
+  // ───────────────────────────────────────────────────────────────
+  //
+  // "Turn this session into a skill." Hands the source session's transcript
+  // to the project's Skill Builder coach agent, which mines the repeated
+  // context/procedures out of the real work and drafts a SKILL.md via the
+  // Phase 1 write API ("extract, don't invent"). The coach runs in a fresh
+  // (non-worktree) chat session — skill writes go through the skills REST API
+  // into the project's `ahw` skills dir, not a git branch. Returns
+  // `{ sessionId, agentId, session }`; the new coach session streams its
+  // draft into chat for the user to review/edit and save.
+  router.post('/api/sessions/:sessionId/extract-skill', (req: Request, res: Response) => {
+    try {
+      const source = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+      if (!source) return res.status(404).json({ error: 'Session not found' });
+
+      // Ownership/visibility guard BEFORE reading the transcript. Without this
+      // a caller who guesses another user's session id could exfiltrate that
+      // session's full transcript into their own Skill Builder session. We use
+      // the read predicate (shared reviewer threads stay readable) and return
+      // 404 — not 403 — so a non-owner can't probe for the session's existence.
+      // The `/api/sessions/:sessionId` mount middleware also enforces this for
+      // POST, but keeping the check explicit here makes the security property
+      // local and robust to any future change in route/middleware ordering.
+      if (!userCanReadSession(req as AuthenticatedRequest, source.id)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+
+      const messages = stmts.getMessages.all(req.params.sessionId) as MessageRow[];
+      if (!messages.length) {
+        return res.status(400).json({ error: 'Session has no messages to extract a skill from' });
+      }
+
+      const sourceFound = findAgent(source.agent_id);
+      const project = sourceFound?.project;
+      if (!project) {
+        return res.status(400).json({ error: 'Source session has no resolvable project' });
+      }
+
+      // The project must carry a seeded Skill Builder coach (role
+      // 'skill-builder'). It is seeded at project creation, not backfilled, so
+      // projects created before the Skill Builder epic won't have one yet —
+      // surface that explicitly rather than spawning the wrong agent.
+      const builder = (project.agents || []).find((a) => a.role === 'skill-builder');
+      if (!builder) {
+        return res.status(400).json({
+          error: 'skill_builder_missing',
+          message:
+            'This project has no Skill Builder coach agent. It is seeded on project creation; recreate the project or add a skill-builder agent to use this action.',
+        });
+      }
+
+      const transcript = buildTranscript(messages, {
+        agentName: sourceFound?.agent?.name,
+        isRoom: (stmts.getSessionAgents.all(source.id) as unknown[]).length > 1,
+      });
+
+      const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+      const newSessionId = uuidv4();
+      const engine = builder.engine || 'claude-code';
+      const model = resolveEffectiveModel(config, engine, {
+        agentModel: builder.model,
+        ownerUserId: ownerUid,
+      });
+      const sessionName = buildExtractSkillSessionName(source.name);
+      // No worktree: the coach saves skills via the write API, not git.
+      stmts.createSession.run(newSessionId, builder.id, sessionName, engine, model, 0, 0, 1);
+      setSessionOwner(newSessionId, ownerUid);
+
+      const prompt = buildExtractSkillKickoffPrompt({
+        projectId: project.id,
+        sourceSessionId: source.id,
+        sourceSessionName: source.name,
+        sourceAgentName: sourceFound?.agent?.name,
+        transcript,
+      });
+
+      // Fire-and-forget: the HTTP response is already returning. The coach's
+      // first turn runs the extraction.
+      void handleChat(null, {
+        type: 'chat',
+        agentId: builder.id,
+        sessionId: newSessionId,
+        content: prompt,
+      }).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[extract-skill] handleChat failed for session ${newSessionId}: ${message}`);
+      });
+
+      const session = stmts.getSession.get(newSessionId) as SessionRow;
+      const sessionWire = session ? enrichSessionForClient(session, stmts) : null;
+      if (sessionWire) {
+        broadcast({ type: 'session_created', agentId: builder.id, session: sessionWire });
+      }
+      res.status(201).json({ sessionId: newSessionId, agentId: builder.id, session: sessionWire });
+    } catch (err) {
+      console.error('Extract skill error:', err);
       res.status(500).json({ error: (err as Error).message });
     }
   });

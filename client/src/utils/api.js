@@ -527,6 +527,10 @@ export const api = {
     }),
   summarizeSession: (sessionId) =>
     fetchJSON(`/sessions/${sessionId}/summarize`, { method: 'POST', timeout: 120000 }),
+  // Skill Builder Phase 4 — spawn the coach to extract a skill from this
+  // session's transcript. Returns { sessionId, agentId, session }.
+  extractSkillFromSession: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/extract-skill`, { method: 'POST', timeout: 30000 }),
   getMessageEvents: (messageId) => fetchJSON(`/messages/${messageId}/events`),
   getSessionProgress: (sessionId) => fetchJSON(`/sessions/${sessionId}/progress`),
   deleteSession: (sessionId) => fetchJSON(`/sessions/${sessionId}`, { method: 'DELETE' }),

@@ -461,6 +461,31 @@ registerPath({
   },
 });
 
+// POST /api/sessions/:sessionId/extract-skill
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/extract-skill',
+  tags: ['Sessions'],
+  summary: 'Turn this session into a skill (Skill Builder Phase 4)',
+  description:
+    "Hands the session's transcript to the project's Skill Builder coach agent, which mines the repeated context/procedures and drafts a SKILL.md via the skills write API (\"extract, don't invent\"). Spawns a fresh non-worktree coach session and returns its id; the coach streams a draft for the user to review/edit and save.",
+  request: { params: sessionIdParams },
+  responses: {
+    201: {
+      description: 'Skill Builder coach session spawned.',
+      content: jsonContent(
+        z.object({
+          sessionId: z.string().openapi({ description: 'The new coach session id.' }),
+          agentId: z.string().openapi({ description: 'The Skill Builder agent id.' }),
+          session: SessionComponent.nullable(),
+        }),
+      ),
+    },
+    400: errorResponse('No messages, no resolvable project, or no Skill Builder coach agent.'),
+    404: errorResponse('Session not found (or hidden by ownership).'),
+  },
+});
+
 // PATCH /api/sessions/:sessionId
 registerPath({
   method: 'patch',
