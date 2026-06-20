@@ -39,6 +39,9 @@ vi.mock('lucide-react-native', () => {
     X: stub,
     XCircle: stub,
     Zap: stub,
+    Palette: stub,
+    FolderOpen: stub,
+    ExternalLink: stub,
   };
 });
 
@@ -87,6 +90,10 @@ const USED_ICON_NAMES = [
   'git-merge-outline',
   'pricetag-outline',
   'ticket-outline',
+  'chatbubble-outline',
+  'color-palette-outline',
+  'folder-open-outline',
+  'open-outline',
 ];
 
 describe('resolveAppLucideIcon', () => {

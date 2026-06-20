@@ -23,6 +23,7 @@ import SessionTail from '../components/SessionTail';
 import SessionAgentsPanel from '../components/SessionAgentsPanel';
 import ChangesReadyBox from '../components/ChangesReadyBox';
 import FinalizeBar from '../components/FinalizeBar';
+import SessionDesignFilesPanel from '../components/SessionDesignFilesPanel';
 import { useFinalizeRunPoll } from '../hooks/useFinalizeRunPoll';
 import { useSessionCommittable } from '../hooks/useSessionCommittable';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -294,6 +295,12 @@ export default function ChatScreen() {
           phases={finalize.phases}
           run={finalize.run}
           onChanged={finalize.refetch}
+        />
+      ) : null}
+      {activeSessionId && activeSession?.session_mode === 'design' ? (
+        <SessionDesignFilesPanel
+          sessionId={activeSessionId}
+          reloadNonce={isProcessing ? 0 : messages.length}
         />
       ) : null}
       {activeSessionId ? (

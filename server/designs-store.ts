@@ -215,7 +215,21 @@ export interface DesignFileEntry {
  * files are ignored; directories are walked but not emitted themselves.
  */
 export function listDesignFilesRecursive(designsRoot: string, designId: string): DesignFileEntry[] {
-  const root = designDir(designsRoot, designId);
+  return listFilesUnder(designDir(designsRoot, designId));
+}
+
+/**
+ * Recursive listing of every regular file under an absolute directory.
+ *
+ * Shared by the standalone Design Studio (`listDesignFilesRecursive`) and the
+ * session-mode design artifact listing (`GET /api/sessions/:id/design-files`).
+ * Returns a flat array of `{path, size, mtime}` with forward-slash paths
+ * relative to `root`. A missing root yields `[]`. Symlinks and special files
+ * are skipped (never followed); directories are walked but not emitted — this
+ * keeps listings aligned with the forward static route's realpath containment
+ * and avoids surprise entries.
+ */
+export function listFilesUnder(root: string): DesignFileEntry[] {
   if (!existsSync(root)) return [];
   const out: DesignFileEntry[] = [];
   const walk = (abs: string, rel: string) => {
@@ -230,8 +244,6 @@ export function listDesignFilesRecursive(designsRoot: string, designId: string):
       const childRel = rel ? `${rel}/${name}` : name;
       let st: ReturnType<typeof lstatSync>;
       try {
-        // Do not follow symlinks — keeps listings aligned with the forward
-        // route's realpath containment and avoids surprise entries.
         st = lstatSync(childAbs);
       } catch {
         continue;

@@ -111,6 +111,21 @@ describe('api session helpers — URL + method + body parity with web client', (
     expect(JSON.parse(init.body)).toEqual({ enabled: false });
   });
 
+  it('setSessionMode(id, "design") → PUT /sessions/:id/mode with {mode}', async () => {
+    await api.setSessionMode('sess-dm', 'design');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-dm/mode');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ mode: 'design' });
+  });
+
+  it('getSessionDesignFiles(id) → GET /sessions/:id/design-files', async () => {
+    await api.getSessionDesignFiles('sess-df');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/sessions/sess-df/design-files');
+    expect(init.method ?? 'GET').toBe('GET');
+  });
+
   it('setSessionOrchestration(id, body) → PUT /sessions/:id/orchestration', async () => {
     await api.setSessionOrchestration('sess-o', { phase: 'verifying', meta: { pr: 1 } });
     const [url, init] = lastCall();

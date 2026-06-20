@@ -106,6 +106,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ model }),
     }),
+  // Session mode picker: 'chat' (normal build) or 'design' (loads the design
+  // skill + produces HTML/CSS/JS artifacts in the worktree). The server rejects
+  // 'design' for a worktree-less session (400 design_mode_requires_worktree).
+  // Returns the updated, enriched session row.
+  setSessionMode: (sessionId, mode) =>
+    fetchJSON(`/sessions/${sessionId}/mode`, {
+      method: 'PUT',
+      body: JSON.stringify({ mode }),
+    }),
+  // List the design artifacts a design-mode session has produced in its
+  // worktree `design/` dir. Returns `{ files: [{ path, size, mtime }] }`.
+  // Mobile renders this flat list (no in-app iframe canvas) plus open-in-web.
+  getSessionDesignFiles: (sessionId) => fetchJSON(`/sessions/${sessionId}/design-files`),
   // `setSessionWorktree` was removed when Agent Hub locked to
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
   // endpoint no longer exists.

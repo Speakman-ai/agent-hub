@@ -17,6 +17,7 @@ import {
   PatchCheckpointRequestSchema,
 } from './sessions.openapi.js';
 import { normalizeSessionMode, sessionHasUsableWorktree } from '../session-mode.js';
+import { listSessionDesignFiles } from '../session-design-files.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { markSessionTermination } from '../process-termination.js';
 import { getDb } from '../db.js';
@@ -1306,6 +1307,25 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const enriched = enrichSessionForClient(updated, stmts);
     deps.broadcast({ type: 'session-updated', session: enriched });
     res.json(enriched);
+  });
+
+  /**
+   * List the design artifacts a `session_mode = 'design'` session has produced
+   * in its worktree `design/` dir. The web client renders these live in an
+   * iframe canvas; mobile/Electron (no in-app iframe) show this flat file list
+   * plus an open-in-browser link to `/session-files/:id/design/<path>`. Returns
+   * `{ files: [{ path, size, mtime }] }` with forward-slash paths relative to
+   * the `design/` dir. A worktree-less session (which can never enter design
+   * mode) and a session that wrote no artifacts both yield an empty list.
+   */
+  router.get('/api/sessions/:sessionId/design-files', (req: Request, res: Response) => {
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (!sessionHasUsableWorktree(session)) {
+      return res.json({ files: [] });
+    }
+    const files = listSessionDesignFiles(session.worktree_path);
+    res.json({ files });
   });
 
   router.put('/api/sessions/:sessionId/react-loop', (req: Request, res: Response) => {

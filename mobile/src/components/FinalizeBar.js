@@ -20,6 +20,7 @@ import {
 import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
+import SessionModePicker from './SessionModePicker';
 import SessionSummarySheet from './SessionSummarySheet';
 import {
   FINALIZE_AUTOMATION_OPTIONS,
@@ -55,6 +56,13 @@ export default function FinalizeBar({
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false); // finalize/cancel in flight (optimistic)
   const [pushing, setPushing] = useState(false);
+  // Optimistic `session_mode` (chat | design) for the segmented picker, synced
+  // from the session row below. The server broadcasts a `session-updated` event
+  // on change so the context row (and the design-files panel keyed off it) also
+  // updates — the optimistic copy just keeps the toggle snappy.
+  const [mode, setMode] = useState(() =>
+    session?.session_mode === 'design' ? 'design' : 'chat',
+  );
 
   // Re-sync the dropdown from the session whenever the session changes (the bar
   // is reused across sessions) or these fields change (e.g. session arrived
@@ -66,11 +74,38 @@ export default function FinalizeBar({
     const next = deriveSessionFinalizeMode(session);
     setAutomation(next.automation);
     setAskMode(next.askMode);
-    // Keyed on the session id + the two fields the bar mirrors; intentionally
+    setMode(session?.session_mode === 'design' ? 'design' : 'chat');
+    // Keyed on the session id + the fields the bar mirrors; intentionally
     // not the whole session object, so unrelated session updates don't clobber
     // an in-flight optimistic selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, session?.finalize_automation, session?.ask_mode]);
+  }, [sessionId, session?.finalize_automation, session?.ask_mode, session?.session_mode]);
+
+  const canDesignMode = !!session?.can_design_mode;
+  const [modeBusy, setModeBusy] = useState(false);
+
+  const selectMode = useCallback(
+    async (next) => {
+      if (!sessionId || modeBusy || next === mode) return;
+      const prev = mode;
+      setMode(next); // optimistic
+      setModeBusy(true);
+      try {
+        await api.setSessionMode(sessionId, next);
+        // The server broadcasts `session-updated`; the context row + the
+        // design-files panel update from that. Also nudge the finalize poll.
+        onChanged?.();
+      } catch (err) {
+        setMode(prev); // revert on failure
+        reportError(err?.message || 'Failed to switch session mode');
+      } finally {
+        setModeBusy(false);
+      }
+    },
+    // reportError is defined below; stable via useCallback. Listed to satisfy lint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId, mode, modeBusy, onChanged],
+  );
 
   const fullyValidated = isFullyValidated(phases);
   const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
@@ -171,6 +206,15 @@ export default function FinalizeBar({
         contentContainerStyle={styles.row}
         keyboardShouldPersistTaps="handled"
       >
+        {sessionId ? (
+          <SessionModePicker
+            mode={mode}
+            canDesign={canDesignMode}
+            disabled={modeBusy}
+            onChange={selectMode}
+          />
+        ) : null}
+
         <TouchableOpacity
           style={styles.outlineBtn}
           onPress={() => setShowSummary(true)}

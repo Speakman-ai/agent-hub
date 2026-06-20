@@ -702,6 +702,34 @@ registerPath({
   },
 });
 
+// GET /api/sessions/:sessionId/design-files
+const SessionDesignFileComponent = z
+  .object({
+    path: z
+      .string()
+      .openapi({ description: 'Forward-slash path relative to the worktree `design/` dir.' }),
+    size: z.number().openapi({ description: 'File size in bytes.' }),
+    mtime: z.string().openapi({ description: 'Last-modified time, ISO 8601.' }),
+  })
+  .openapi('SessionDesignFile');
+
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/design-files',
+  tags: ['Sessions'],
+  summary: 'List design-mode artifacts produced in the session worktree',
+  description:
+    'Returns the regular files a `design`-mode session has written under its worktree `design/` dir. The web client renders these live in an iframe canvas; mobile/Electron (no in-app iframe) show this flat list plus an open-in-browser link to `/session-files/{sessionId}/design/<path>`. A worktree-less session (which can never enter design mode) and a session that wrote no artifacts both return an empty list.',
+  request: { params: sessionIdParams },
+  responses: {
+    200: {
+      description: 'Design artifact listing.',
+      content: jsonContent(z.object({ files: z.array(SessionDesignFileComponent) })),
+    },
+    404: errorResponse('Session not found.'),
+  },
+});
+
 // PUT /api/sessions/:sessionId/react-loop
 registerPath({
   method: 'put',

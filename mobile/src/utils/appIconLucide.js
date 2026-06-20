@@ -39,6 +39,9 @@ import {
   Loader2,
   ScanEye,
   Ticket,
+  Palette,
+  FolderOpen,
+  ExternalLink,
 } from 'lucide-react-native';
 
 /** @type {Record<string, React.ComponentType<{ size?: number, color?: string, strokeWidth?: number, style?: object }>>} */
@@ -86,6 +89,10 @@ export const APP_LUCIDE_ICONS = {
   'time-outline': Clock,
   'arrow-up-circle-outline': ArrowUpCircle,
   'git-merge-outline': GitMerge,
+  'chatbubble-outline': MessageCircle,
+  'color-palette-outline': Palette,
+  'folder-open-outline': FolderOpen,
+  'open-outline': ExternalLink,
 };
 
 /**

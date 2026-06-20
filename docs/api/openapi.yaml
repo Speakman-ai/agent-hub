@@ -6626,6 +6626,22 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    SessionDesignFile:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Forward-slash path relative to the worktree `design/` dir.
+        size:
+          type: number
+          description: File size in bytes.
+        mtime:
+          type: string
+          description: Last-modified time, ISO 8601.
+      required:
+        - path
+        - size
+        - mtime
   parameters: {}
 paths:
   /api/agents:
@@ -11521,6 +11537,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/design-files:
+    get:
+      tags:
+        - Sessions
+      summary: List design-mode artifacts produced in the session worktree
+      description: Returns the regular files a `design`-mode session has written under its worktree `design/` dir. The web client renders these live in an iframe canvas; mobile/Electron (no in-app iframe) show this flat list plus an open-in-browser link to `/session-files/{sessionId}/design/<path>`. A worktree-less session (which can never enter design mode) and a session that wrote no artifacts both return an empty list.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: Design artifact listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  files:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionDesignFile"
+                required:
+                  - files
         "404":
           description: Session not found.
           content:
