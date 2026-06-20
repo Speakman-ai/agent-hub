@@ -547,7 +547,14 @@ describe('PreviewComposeRuntime.startPreview — happy path', () => {
     // entry service's `ports:` mapping.
     expect(harness.calls[0].env.AGENTHUB_HOST_PORT).toBe(String(result.port));
     expect(harness.calls[0].env.FRONTEND_PORT).toBe('8000');
-    expect(harness.calls[0].env.PORT).toBe(String(result.port));
+    // PORT MUST be the entry (container-internal) port, not the host port.
+    // The override publishes hostPort:entryPort, so a dev server that honours
+    // the conventional PORT var has to bind entryPort inside the container or
+    // the published socket stays dead and the health poll never gets a 2xx.
+    // Regression: previously PORT was set to the allocated host port, which
+    // made surveytracker's frontend bind the wrong port and time out at 600s.
+    expect(harness.calls[0].env.PORT).toBe('8000');
+    expect(harness.calls[0].env.PORT).not.toBe(String(result.port));
     expect(harness.calls[0].env.AGENTHUB_ENTRY_PORT).toBe('8000');
     expect(harness.calls[0].env.AGENTHUB_SESSION_ID).toBe('sess-1');
     expect(harness.calls[0].env.AGENTHUB_PROJECT_ID).toBe('proj-1');

@@ -1003,11 +1003,17 @@ export class PreviewComposeRuntime {
       AGENTHUB_HOST_PORT: String(port),
       AGENTHUB_ENTRY_PORT: String(cfg.entryPort),
       // Survey Tracker (and similar stacks) bind ng serve with FRONTEND_PORT /
-      // PORT, not AGENTHUB_HOST_PORT. Without this, the override may map
-      // host:4100→4200 while the dev server never listens on the published
-      // socket and the health poll on :4100 never succeeds.
+      // PORT, not AGENTHUB_HOST_PORT. Both MUST be the entry (container-internal)
+      // port, NOT the host port: the override publishes `hostPort:entryPort`
+      // (e.g. 4100:4200), so the in-container dev server has to listen on
+      // `entryPort` (4200) for docker to forward host:4100 traffic to it. The
+      // host port is a host-namespace concept the container never binds. Setting
+      // `PORT` to the host port made any app that honours the conventional `PORT`
+      // var (Angular `ng serve --port $PORT`, Express, Vite, Next, CRA) listen on
+      // the wrong socket inside the container, leaving the published port dead and
+      // the health poll on host:<hostPort> failing until the 600s timeout.
       FRONTEND_PORT: String(cfg.entryPort),
-      PORT: String(port),
+      PORT: String(cfg.entryPort),
       AGENTHUB_SESSION_ID: sessionId,
       AGENTHUB_PROJECT_ID: project.id,
     };
