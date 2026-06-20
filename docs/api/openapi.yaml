@@ -1684,6 +1684,14 @@ components:
         react_loop_enabled:
           type: integer
           nullable: true
+        session_mode:
+          type: string
+          nullable: true
+          enum:
+            - chat
+            - design
+            - null
+          description: "Session mode picker dimension: `chat` (default) or `design`. NULL/absent on legacy rows → treated as `chat`. A `design` session loads the design skill and produces HTML/CSS/JS artifacts in its worktree. Set via `PUT /api/sessions/{sessionId}/mode`."
         reasoning_effort:
           type: string
           nullable: true
@@ -11354,6 +11362,52 @@ paths:
                   type: boolean
               required:
                 - enabled
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/mode:
+    put:
+      tags:
+        - Sessions
+      summary: Set the session mode (chat | design)
+      description: Folds the standalone Design Studio into the chat-mode picker. `chat` (default) is a normal coding session; `design` loads the design skill and produces HTML/CSS/JS artifacts in the session worktree. Flipping back to `chat` keeps those artifacts in the same checkout. `design` requires a session with an isolated worktree — setting it on a worktree-less session is rejected with 400 (`design_mode_requires_worktree`), since artifacts must live in the worktree and must not pollute the shared project checkout.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum:
+                    - chat
+                    - design
+              required:
+                - mode
       responses:
         "200":
           description: Updated session.

@@ -1626,6 +1626,15 @@ function initDb(dataDir: string): void {
     /* already exists */
   }
 
+  // Session mode — the "what is this session for" picker dimension (chat |
+  // design). Legacy rows default to 'chat'. See server/session-mode.ts and the
+  // architecture spec design-mode-fold-into-session-mode-picker.
+  try {
+    db.prepare('SELECT session_mode FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec("ALTER TABLE sessions ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'chat'");
+  }
+
   // Codex reasoning-effort preset: 'high' (default) | 'pro' (→ xhigh).
   // NULL on legacy rows / non-Codex sessions; resolver treats NULL as 'high'.
   try {
@@ -2926,6 +2935,9 @@ function initDb(dataDir: string): void {
     ),
     updateSessionReactLoop: db.prepare(
       "UPDATE sessions SET react_loop_enabled = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionMode: db.prepare(
+      "UPDATE sessions SET session_mode = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     updateSessionReasoningEffort: db.prepare(
       "UPDATE sessions SET reasoning_effort = ?, updated_at = datetime('now') WHERE id = ?",

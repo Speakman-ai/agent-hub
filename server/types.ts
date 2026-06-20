@@ -34,6 +34,14 @@ export interface SessionRow {
   ask_mode: number;
   react_loop_enabled?: number;
   /**
+   * Session mode — the user-selectable "what is this session for" dimension
+   * ('chat' | 'design'). NULL/absent on legacy rows → treated as 'chat'. See
+   * `server/session-mode.ts`. A 'design' session loads the design skill and
+   * produces HTML/CSS/JS artifacts in its worktree (folding the standalone
+   * Design Studio into the chat-mode picker).
+   */
+  session_mode?: string | null;
+  /**
    * Codex reasoning-effort preset for this session: `'high'` (default) or
    * `'pro'` (→ native `model_reasoning_effort=xhigh`). NULL/absent on legacy
    * rows and non-Codex sessions → treated as `'high'`. See
@@ -1348,6 +1356,7 @@ export interface Stmts {
   updateSessionGitWorktreeDetected: Stmt;
   updateSessionAskMode: Stmt;
   updateSessionReactLoop: Stmt;
+  updateSessionMode: Stmt;
   updateSessionReasoningEffort: Stmt;
   updateSessionChangesReady: Stmt;
   updateSessionCodeChangedAt: Stmt;

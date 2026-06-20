@@ -1,0 +1,90 @@
+import './setup.js';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { getRequest, createAgent, createSession } from './helpers.js';
+import { routeDeps } from '../index.js';
+import type TestAgent from 'supertest/lib/agent.js';
+
+let request: TestAgent;
+let agentId: string;
+
+/** Attach an isolated worktree to a session so design mode is permitted. */
+function giveSessionWorktree(sessionId: string): void {
+  routeDeps.stmts.updateSessionWorktreePath.run(
+    `/tmp/agent-hub-test-wt-${sessionId.slice(0, 8)}`,
+    `agent-hub/test/session-${sessionId.slice(0, 8)}`,
+    sessionId,
+  );
+}
+
+beforeAll(async () => {
+  request = await getRequest();
+  const agent = await createAgent({
+    id: 'session-mode-route-agent',
+    name: 'Session Mode Route Agent',
+    engine: 'claude-code',
+  });
+  agentId = agent.id as string;
+});
+
+describe('PUT /api/sessions/:sessionId/mode', () => {
+  it('defaults new sessions to chat mode', async () => {
+    const session = await createSession({ agentId, name: 'mode-default' });
+    const fetched = await request.get(`/api/sessions/${session.id}`).expect(200);
+    expect(fetched.body.session_mode).toBe('chat');
+  });
+
+  it('returns 400 for an unknown mode', async () => {
+    const session = await createSession({ agentId, name: 'mode-bad-body' });
+    await request.put(`/api/sessions/${session.id}/mode`).send({ mode: 'deploy' }).expect(400);
+  });
+
+  it('returns 404 for an unknown session id', async () => {
+    await request
+      .put('/api/sessions/00000000-0000-4000-8000-0000000000aa/mode')
+      .send({ mode: 'design' })
+      .expect(404);
+  });
+
+  it('switches a session WITH a worktree to design mode and back to chat', async () => {
+    const session = await createSession({ agentId, name: 'mode-toggle' });
+    const sessionId = session.id as string;
+    giveSessionWorktree(sessionId);
+
+    const design = await request
+      .put(`/api/sessions/${sessionId}/mode`)
+      .send({ mode: 'design' })
+      .expect(200);
+    expect(design.body.session_mode).toBe('design');
+
+    const chat = await request
+      .put(`/api/sessions/${sessionId}/mode`)
+      .send({ mode: 'chat' })
+      .expect(200);
+    expect(chat.body.session_mode).toBe('chat');
+  });
+
+  it('rejects design mode (400) for a session without an isolated worktree', async () => {
+    const session = await createSession({ agentId, name: 'mode-no-worktree' });
+    const sessionId = session.id as string;
+
+    const res = await request
+      .put(`/api/sessions/${sessionId}/mode`)
+      .send({ mode: 'design' })
+      .expect(400);
+    expect(res.body.error).toBe('design_mode_requires_worktree');
+
+    // The mode must NOT have been persisted — API/UI state stays `chat`.
+    const fetched = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    expect(fetched.body.session_mode).toBe('chat');
+  });
+
+  it('allows chat mode on a session without a worktree', async () => {
+    const session = await createSession({ agentId, name: 'mode-chat-no-worktree' });
+    const sessionId = session.id as string;
+    const res = await request
+      .put(`/api/sessions/${sessionId}/mode`)
+      .send({ mode: 'chat' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('chat');
+  });
+});

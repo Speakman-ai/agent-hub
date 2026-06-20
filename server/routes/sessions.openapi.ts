@@ -54,6 +54,10 @@ export const SessionComponent = registerComponent(
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
       react_loop_enabled: z.number().int().nullable().optional(),
+      session_mode: z.enum(['chat', 'design']).nullable().optional().openapi({
+        description:
+          'Session mode picker dimension: `chat` (default) or `design`. NULL/absent on legacy rows → treated as `chat`. A `design` session loads the design skill and produces HTML/CSS/JS artifacts in its worktree. Set via `PUT /api/sessions/{sessionId}/mode`.',
+      }),
       reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
         description:
           'Codex reasoning ("thinking") preset: `high` (default) or `pro` (→ xhigh). NULL/absent on legacy rows and non-Codex sessions; treated as `high`.',
@@ -261,6 +265,17 @@ export const PutSessionModelRequestSchema = z.object({
 export const PutSessionReasoningEffortRequestSchema = z.object({
   effort: z.enum(['high', 'pro'], {
     error: 'Invalid reasoning effort. Must be "high" or "pro".',
+  }),
+});
+
+/**
+ * PUT /api/sessions/:sessionId/mode — set the session mode picker dimension.
+ * `chat` (default) or `design`. A `design` session loads the design skill and
+ * produces HTML/CSS/JS artifacts in its worktree.
+ */
+export const PutSessionModeRequestSchema = z.object({
+  mode: z.enum(['chat', 'design'], {
+    error: 'Invalid session mode. Must be "chat" or "design".',
   }),
 });
 
@@ -660,6 +675,25 @@ registerPath({
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(ToggleEnabledRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Session not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/mode
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/mode',
+  tags: ['Sessions'],
+  summary: 'Set the session mode (chat | design)',
+  description:
+    'Folds the standalone Design Studio into the chat-mode picker. `chat` (default) is a normal coding session; `design` loads the design skill and produces HTML/CSS/JS artifacts in the session worktree. Flipping back to `chat` keeps those artifacts in the same checkout. `design` requires a session with an isolated worktree — setting it on a worktree-less session is rejected with 400 (`design_mode_requires_worktree`), since artifacts must live in the worktree and must not pollute the shared project checkout.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(PutSessionModeRequestSchema) },
   },
   responses: {
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },

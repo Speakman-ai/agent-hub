@@ -11,10 +11,12 @@ import {
   PutSessionEngineRequestSchema,
   PutSessionModelRequestSchema,
   PutSessionReasoningEffortRequestSchema,
+  PutSessionModeRequestSchema,
   PutSessionLinkedDesignRequestSchema,
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
 } from './sessions.openapi.js';
+import { normalizeSessionMode, sessionHasUsableWorktree } from '../session-mode.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { markSessionTermination } from '../process-termination.js';
 import { getDb } from '../db.js';
@@ -1276,6 +1278,34 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     stmts.updateSessionAskMode.run(enabled ? 1 : 0, req.params.sessionId);
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(enrichSessionForClient(updated, stmts));
+  });
+
+  // Session mode picker (chat | design). Persists the chosen mode; the spawn
+  // path reads it to decide design-skill loading / artifact behavior. Accepted
+  // on any session. See server/session-mode.ts.
+  router.put('/api/sessions/:sessionId/mode', (req: Request, res: Response) => {
+    const parsed = parseBody(PutSessionModeRequestSchema, req, res);
+    if (!parsed) return;
+    const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const mode = normalizeSessionMode(parsed.mode);
+    // Design mode requires an isolated worktree: the spawn path disables design
+    // behavior (no skill, no artifacts) for a worktree-less session rather than
+    // writing into the shared project checkout. Refuse to persist `design` here
+    // so API/UI state never claims a mode the session cannot actually run.
+    if (mode === 'design' && !sessionHasUsableWorktree(session)) {
+      return res.status(400).json({
+        error: 'design_mode_requires_worktree',
+        message:
+          'Design mode requires a session with an isolated worktree. This session has no ' +
+          'worktree, so design artifacts cannot be produced.',
+      });
+    }
+    stmts.updateSessionMode.run(mode, req.params.sessionId);
+    const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
+    const enriched = enrichSessionForClient(updated, stmts);
+    deps.broadcast({ type: 'session-updated', session: enriched });
+    res.json(enriched);
   });
 
   router.put('/api/sessions/:sessionId/react-loop', (req: Request, res: Response) => {

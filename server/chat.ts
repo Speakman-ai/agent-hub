@@ -79,6 +79,12 @@ import {
   parseSkillBlock,
 } from './skill-invoke.js';
 import { routeSkillsFromMessage } from './skill-router.js';
+import { isDesignModeActive, sessionHasUsableWorktree } from './session-mode.js';
+import {
+  buildDesignModePreamble,
+  requiredSkillIdsForSession,
+  ensureRealDesignDir,
+} from './design-mode-prompt.js';
 import {
   detectTagBlockInLastFence,
   extractJsonFromTagBody,
@@ -1531,6 +1537,128 @@ export function augmentChatTurnForSlashSkill(args: {
   return { slashSkillSuffix, cliContent };
 }
 
+export interface DesignModeTurnAugmentation {
+  /** SKILL.md injections to append to the enriched prompt (one per skill). */
+  skillInjections: string[];
+  /** Design-mode preamble to PREPEND to the enriched prompt ('' when inactive). */
+  preamble: string;
+  /**
+   * Whether the `design/` artifact dir is a real, usable directory this turn.
+   * `true` for a healthy design turn; `false` when a non-directory entry blocks
+   * it (the preamble then carries an explicit error + recovery path instead of
+   * write instructions); `null` for a non-design session. Exposed for telemetry
+   * / tests so the caller can observe the blocked post-condition.
+   */
+  artifactDirReady: boolean | null;
+}
+
+/**
+ * Design-mode (`session_mode === 'design'`) turn augmentation, extracted so it
+ * is unit-testable independently of the streaming chat handler.
+ *
+ * Two responsibilities, both required by the design-mode fold and neither of
+ * which the message-driven skill router can guarantee:
+ *   1. **Force-load** the mode-required skills (`design`) by id — the router
+ *      returns `[]` when the user's message carries an explicit
+ *      `<agenthub:skill>` block and is also allowlist-filtered, so relying on it
+ *      could strand a design-mode spawn with the preamble but no SKILL.md body.
+ *      Deduped against `alreadyLoadedSkillIds` (the routed/pending set) so the
+ *      skill never loads twice. Skipped when `loadSkills` is false (e.g. an
+ *      auto-continuation, where the body already persists in the model context).
+ *   2. Build the worktree-aware **preamble** (artifact dir + linked-project
+ *      design docs + a snapshot of files produced) and ensure `design/` exists.
+ *
+ * Design mode REQUIRES an isolated session worktree — it never falls back to
+ * `project.cwd` (that would pollute the shared checkout and break the
+ * Design→Build handoff). A design session with no worktree is disabled: no skill
+ * load, no dir creation, and a preamble explaining the mode is unavailable.
+ *
+ * Returns empty/`''` for non-design sessions, so the caller can apply it
+ * unconditionally.
+ */
+export function augmentChatTurnForDesignMode(args: {
+  session: { session_mode?: string | null; worktree_path?: string | null };
+  project: Project;
+  paths: { skillsDir: string };
+  sessionId: string;
+  stmts: Stmts;
+  broadcast: BroadcastFn;
+  /** When false, skip the skill force-load (preamble still built). */
+  loadSkills: boolean;
+  /** Skill ids already injected this turn (router/pending) — used to dedupe. */
+  alreadyLoadedSkillIds?: Set<string>;
+}): DesignModeTurnAugmentation {
+  const { session, project, paths, sessionId, stmts, broadcast, loadSkills } = args;
+  if (!isDesignModeActive(session)) {
+    return { skillInjections: [], preamble: '', artifactDirReady: null };
+  }
+
+  // Design mode REQUIRES an isolated session worktree. Do NOT fall back to
+  // project.cwd: a non-worktree session would create `<project.cwd>/design`,
+  // polluting the shared project checkout and breaking the Design→Build handoff
+  // (which relies on artifacts living in the same worktree). When there is no
+  // worktree, disable design behavior — skip the skill force-load and emit a
+  // preamble explaining the mode is unavailable, never instructing a write.
+  if (!sessionHasUsableWorktree(session)) {
+    console.warn(
+      `[design-mode] session ${sessionId} is in design mode but has no isolated ` +
+        `worktree — design behavior disabled (would pollute the project checkout).`,
+    );
+    return {
+      skillInjections: [],
+      preamble: buildDesignModePreamble({
+        worktreePath: '',
+        linkedProjects: [project],
+        worktreeAvailable: false,
+      }),
+      artifactDirReady: false,
+    };
+  }
+
+  // Guaranteed non-empty by the sessionHasUsableWorktree guard above.
+  const worktree = (session.worktree_path ?? '').trim();
+
+  const alreadyLoaded = args.alreadyLoadedSkillIds ?? new Set<string>();
+  const skillInjections: string[] = [];
+  if (loadSkills) {
+    for (const requiredId of requiredSkillIdsForSession(session)) {
+      if (alreadyLoaded.has(requiredId)) continue;
+      const injection = loadSkillByName({
+        name: requiredId,
+        reason: 'session_mode=design (required)',
+        paths: { skillsDir: paths.skillsDir },
+        sessionId,
+        stmts,
+        broadcast,
+      });
+      skillInjections.push(injection);
+      alreadyLoaded.add(requiredId);
+    }
+  }
+
+  // Neutralize a symlinked `design/` root BEFORE the preamble instructs the
+  // agent to write there. mkdirSync follows symlinks, so a `design -> /elsewhere`
+  // root would silently send design-mode writes outside the worktree; this
+  // removes the link (not its target) and creates a real dir, keeping artifacts
+  // in the checkout. See ensureRealDesignDir (unit-tested).
+  const prep = ensureRealDesignDir(worktree);
+  if (!prep.ok) {
+    // A non-directory entry occupies `design/` (or mkdir failed) — do NOT send a
+    // prompt telling the agent to write into an impossible path. The preamble
+    // switches to an explicit error + recovery path (artifactDirReady: false).
+    console.warn(
+      `[design-mode] artifact dir not usable for session ${sessionId} at ${prep.dir} — ` +
+        `prompting the agent to clear the conflicting entry before writing.`,
+    );
+  }
+  const preamble = buildDesignModePreamble({
+    worktreePath: worktree,
+    linkedProjects: [project],
+    artifactDirReady: prep.ok,
+  });
+  return { skillInjections, preamble, artifactDirReady: prep.ok };
+}
+
 export function buildGrokHeadlessPrompt(args: {
   enrichedPrompt: string;
   finalPrompt: string;
@@ -2291,6 +2419,29 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       if (pendingSkillSuffix) enrichedPrompt += pendingSkillSuffix;
       if (slashSkillSuffix) enrichedPrompt += slashSkillSuffix;
       if (routedSkillSuffix) enrichedPrompt += routedSkillSuffix;
+
+      // Design mode (session_mode === 'design'): fold the standalone Design
+      // Studio behavior into this normal session. Force-load the `design` skill
+      // by id (independent of the message-driven router, which returns [] for an
+      // explicit <agenthub:skill> block and is allowlist-filtered) and prepend a
+      // worktree-aware preamble so the agent writes self-contained HTML/CSS/JS
+      // into the `design/` subdir of the session worktree. The normal turn loop,
+      // streaming, persistence, and Finalize are untouched — no design_chat WS
+      // branch. See augmentChatTurnForDesignMode (unit-tested).
+      const designTurn = augmentChatTurnForDesignMode({
+        session: session!,
+        project: project as Project,
+        paths,
+        sessionId,
+        stmts: stmts as Stmts,
+        broadcast,
+        loadSkills: !isAutoContinuation,
+        alreadyLoadedSkillIds: loadedRoutedSkillIds,
+      });
+      if (designTurn.skillInjections.length > 0) {
+        enrichedPrompt += `\n\n${designTurn.skillInjections.join('\n\n')}`;
+      }
+      if (designTurn.preamble) enrichedPrompt = `${designTurn.preamble}\n\n${enrichedPrompt}`;
 
       const projectId =
         (project as ProjectWithCommands & { id?: string }).id ||
