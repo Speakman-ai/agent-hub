@@ -27,7 +27,7 @@ import { summarizeTranscript, buildTranscript } from './routes/sessions.js';
 import { writeHooksConfig } from './hooks.js';
 import { getSessionOwner } from './session-ownership.js';
 import { resolveSessionPrUrl } from './session-title-pr.js';
-import { maybeFinalizeExternalPushAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
+import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycle.js';
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
 import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
@@ -2731,7 +2731,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: err.message,
           });
-          maybeFinalizeExternalPushAutoReviewSession(
+          maybeFinalizeAutoReviewSession(
             { stmts, broadcast },
             { sessionId, agentId, error: err.message },
           );
@@ -2755,7 +2755,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             sessionId,
             error: errText,
           });
-          maybeFinalizeExternalPushAutoReviewSession(
+          maybeFinalizeAutoReviewSession(
             { stmts, broadcast },
             { sessionId, agentId, error: errText },
           );
@@ -4150,7 +4150,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
               S.updateNoteProcessing.run('error', JSON.stringify({ error: errorMsg }), np.id);
             }
           } catch {}
-          maybeFinalizeExternalPushAutoReviewSession(
+          maybeFinalizeAutoReviewSession(
             { stmts: S, broadcast },
             { sessionId, agentId, error: errorMsg },
           );
@@ -4938,7 +4938,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // would claim the task as `done` and the helper could no longer flip it
         // to `error` on a turn that ended with both output and an error.
         if (!shouldAutoContinue) {
-          maybeFinalizeExternalPushAutoReviewSession(
+          maybeFinalizeAutoReviewSession(
             { stmts: S, broadcast },
             { sessionId, agentId, error: turnEndError?.errorText ?? null },
           );

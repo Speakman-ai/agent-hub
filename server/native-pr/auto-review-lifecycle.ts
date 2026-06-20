@@ -1,29 +1,36 @@
 /**
- * Ephemeral external-push auto-review sessions are archived (soft-deleted)
- * when their single background turn finishes. Failures are recorded on the
- * native PR as a `commented` review before the session is removed from the
- * live sidebar.
+ * Ephemeral auto-review sessions are archived (soft-deleted) when their single
+ * background turn finishes. Both flavors `maybeRunPrAutoReview` dispatches are
+ * covered: the `external push` review that keeps the required-review gate
+ * flowing, and the `requested` review a human triggers with "Request review".
+ * Both are throwaway reviewer runs that must not linger on the dashboard once
+ * the turn ends. Failures are recorded on the native PR as a `commented`
+ * review before the session is removed from the live sidebar.
  */
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, Project, Stmts } from '../types.js';
 import { findAgent } from '../project-model.js';
 
-/** Matches titles from `maybeRunPrAutoReview` in auto-review.ts. */
-export const EXTERNAL_PUSH_AUTO_REVIEW_TITLE_RE =
-  /^\[Review PR #(\d+)\] external push @ [0-9a-f]{8}$/i;
+/**
+ * Matches both ephemeral reviewer-session titles from `maybeRunPrAutoReview`
+ * in auto-review.ts: `external push` (gate-driven) and `requested` (manual
+ * "Request review" press). Capture group 1 is the PR number.
+ */
+export const AUTO_REVIEW_SESSION_TITLE_RE =
+  /^\[Review PR #(\d+)\] (?:external push|requested) @ [0-9a-f]{8}$/i;
 
-export function parseExternalPushAutoReviewTitle(
+export function parseAutoReviewSessionTitle(
   sessionName: string | null | undefined,
 ): { prNumber: number } | null {
   if (sessionName == null || typeof sessionName !== 'string') return null;
-  const m = sessionName.trim().match(EXTERNAL_PUSH_AUTO_REVIEW_TITLE_RE);
+  const m = sessionName.trim().match(AUTO_REVIEW_SESSION_TITLE_RE);
   if (!m) return null;
   const prNumber = Number.parseInt(m[1], 10);
   if (!Number.isFinite(prNumber) || prNumber < 1) return null;
   return { prNumber };
 }
 
-export interface FinalizeExternalPushAutoReviewArgs {
+export interface FinalizeAutoReviewSessionArgs {
   sessionId: string;
   agentId: string;
   sessionName: string;
@@ -36,8 +43,8 @@ export interface AutoReviewLifecycleDeps {
   broadcast: BroadcastFn;
 }
 
-/** Loads session title and delegates to {@link finalizeExternalPushAutoReviewSession}. */
-export function maybeFinalizeExternalPushAutoReviewSession(
+/** Loads session title and delegates to {@link finalizeAutoReviewSession}. */
+export function maybeFinalizeAutoReviewSession(
   deps: AutoReviewLifecycleDeps,
   args: { sessionId: string; agentId: string; error?: string | null },
 ): void {
@@ -45,7 +52,7 @@ export function maybeFinalizeExternalPushAutoReviewSession(
     | { name?: string | null; deleted_at?: string | null }
     | undefined;
   if (!session?.name || session.deleted_at) return;
-  finalizeExternalPushAutoReviewSession(deps, {
+  finalizeAutoReviewSession(deps, {
     sessionId: args.sessionId,
     agentId: args.agentId,
     sessionName: session.name,
@@ -54,8 +61,8 @@ export function maybeFinalizeExternalPushAutoReviewSession(
 }
 
 /**
- * Resolve the project + reviewer display name for an external-push auto-review
- * session. Returns null unless the agent exists, belongs to an Agent
+ * Resolve the project + reviewer display name for an auto-review session.
+ * Returns null unless the agent exists, belongs to an Agent
  * Hub-hosted project, AND is a reviewer — archival is part of the reviewer
  * lifecycle contract, so a manually renamed non-reviewer session that happens
  * to match the title pattern must never be swept up.
@@ -112,15 +119,16 @@ function postAutoReviewFailureReview(
 }
 
 /**
- * Archive an external-push auto-review session. No-op for other session types.
- * Never throws — chat turn teardown must not fail because cleanup did.
+ * Archive an ephemeral auto-review session (external-push or manually
+ * requested). No-op for other session types. Never throws — chat turn teardown
+ * must not fail because cleanup did.
  */
-export function finalizeExternalPushAutoReviewSession(
+export function finalizeAutoReviewSession(
   deps: AutoReviewLifecycleDeps,
-  args: FinalizeExternalPushAutoReviewArgs,
+  args: FinalizeAutoReviewSessionArgs,
 ): void {
   try {
-    const parsed = parseExternalPushAutoReviewTitle(args.sessionName);
+    const parsed = parseAutoReviewSessionTitle(args.sessionName);
     if (!parsed) return;
 
     const session = deps.stmts.getSession.get(args.sessionId) as

@@ -1,10 +1,7 @@
 import '../test/setup.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
-import {
-  parseExternalPushAutoReviewTitle,
-  finalizeExternalPushAutoReviewSession,
-} from './auto-review-lifecycle.js';
+import { parseAutoReviewSessionTitle, finalizeAutoReviewSession } from './auto-review-lifecycle.js';
 import type { Agent, BroadcastFn, Project, Stmts } from '../types.js';
 
 const findAgent = vi.fn();
@@ -13,20 +10,29 @@ vi.mock('../project-model.js', () => ({
   findAgent: (...args: unknown[]) => findAgent(...args),
 }));
 
-describe('parseExternalPushAutoReviewTitle', () => {
+describe('parseAutoReviewSessionTitle', () => {
   it('parses external-push auto-review session titles', () => {
-    expect(parseExternalPushAutoReviewTitle('[Review PR #28] external push @ bb98fd1c')).toEqual({
+    expect(parseAutoReviewSessionTitle('[Review PR #28] external push @ bb98fd1c')).toEqual({
+      prNumber: 28,
+    });
+  });
+
+  it('parses manually-requested auto-review session titles', () => {
+    // Regression: the manual "Request review" press names the session
+    // `requested @ <sha>`; it must be archivable too, or it lingers on the
+    // dashboard forever (support ticket cabb0074).
+    expect(parseAutoReviewSessionTitle('[Review PR #28] requested @ bb98fd1c')).toEqual({
       prNumber: 28,
     });
   });
 
   it('rejects resolve/autofix titles', () => {
-    expect(parseExternalPushAutoReviewTitle('[Resolve PR #28]')).toBeNull();
-    expect(parseExternalPushAutoReviewTitle('normal session')).toBeNull();
+    expect(parseAutoReviewSessionTitle('[Resolve PR #28]')).toBeNull();
+    expect(parseAutoReviewSessionTitle('normal session')).toBeNull();
   });
 });
 
-describe('finalizeExternalPushAutoReviewSession', () => {
+describe('finalizeAutoReviewSession', () => {
   const projectId = 'proj-auto-review';
   const agentId = 'agent-reviewer';
   const sessionId = uuidv4();
@@ -57,7 +63,7 @@ describe('finalizeExternalPushAutoReviewSession', () => {
   });
 
   it('archives the session after a successful turn', () => {
-    finalizeExternalPushAutoReviewSession(
+    finalizeAutoReviewSession(
       { stmts, broadcast: broadcast as unknown as BroadcastFn },
       { sessionId, agentId, sessionName },
     );
@@ -68,8 +74,20 @@ describe('finalizeExternalPushAutoReviewSession', () => {
     expect(broadcast).toHaveBeenCalledWith({ type: 'session_deleted', sessionId });
   });
 
+  it('archives a manually-requested review session after a successful turn', () => {
+    // Regression for support ticket cabb0074: `requested @ <sha>` sessions used
+    // to slip past the lifecycle regex and pile up on the dashboard.
+    finalizeAutoReviewSession(
+      { stmts, broadcast: broadcast as unknown as BroadcastFn },
+      { sessionId, agentId, sessionName: '[Review PR #3] requested @ deadbeef' },
+    );
+
+    expect(stmts.softDeleteSession?.run).toHaveBeenCalledWith(sessionId);
+    expect(broadcast).toHaveBeenCalledWith({ type: 'session_deleted', sessionId });
+  });
+
   it('posts a commented review on failure, then archives', () => {
-    finalizeExternalPushAutoReviewSession(
+    finalizeAutoReviewSession(
       { stmts, broadcast: broadcast as unknown as BroadcastFn },
       { sessionId, agentId, sessionName, error: 'codex exited 1' },
     );
@@ -88,7 +106,7 @@ describe('finalizeExternalPushAutoReviewSession', () => {
   });
 
   it('no-ops for unrelated session titles', () => {
-    finalizeExternalPushAutoReviewSession(
+    finalizeAutoReviewSession(
       { stmts, broadcast: broadcast as unknown as BroadcastFn },
       { sessionId, agentId, sessionName: 'regular chat' },
     );
@@ -103,7 +121,7 @@ describe('finalizeExternalPushAutoReviewSession', () => {
       agent: { id: agentId, name: 'Some Dev', role: 'dev' } as Agent,
     });
 
-    finalizeExternalPushAutoReviewSession(
+    finalizeAutoReviewSession(
       { stmts, broadcast: broadcast as unknown as BroadcastFn },
       { sessionId, agentId, sessionName },
     );
@@ -127,7 +145,7 @@ describe('chat turn-end auto-review finalization ordering', () => {
     expect(autoBranchIdx).toBeGreaterThan(resolveIdx);
     const region = src.slice(resolveIdx, autoBranchIdx);
 
-    const finalizeIdx = region.indexOf('maybeFinalizeExternalPushAutoReviewSession(');
+    const finalizeIdx = region.indexOf('maybeFinalizeAutoReviewSession(');
     expect(finalizeIdx).toBeGreaterThan(-1);
 
     // Blocker [5/10]: the turn-end finalize must be guarded by !shouldAutoContinue
