@@ -46,7 +46,7 @@ describe('SkillsPage — project skill editor', () => {
     render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
 
-    fireEvent.click(screen.getByRole('button', { name: /New skill/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Write raw/i }));
     await flush();
 
     const dialog = screen.getByRole('dialog', { name: /New skill/i });
@@ -69,7 +69,7 @@ describe('SkillsPage — project skill editor', () => {
     render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
     await flush();
 
-    fireEvent.click(screen.getByRole('button', { name: /New skill/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Write raw/i }));
     await flush();
 
     const textarea = screen.getByRole('dialog').querySelector('textarea');

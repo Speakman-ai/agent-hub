@@ -83,6 +83,7 @@ import createCronRoutes from './routes/crons.js';
 import createMemoryRoutes from './routes/memory.js';
 import createDesignRoutes from './routes/designs.js';
 import createSkillRoutes, { DEFAULT_SKILLS_DIR, syncSkillsToClaude } from './routes/skills.js';
+import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import createSkillEvalRoutes from './routes/skill-evals.js';
 import createBoardRoutes from './routes/board.js';
 import createConfigRoutes from './routes/config.js';
@@ -328,14 +329,14 @@ try {
   );
 }
 
-// Sync default + per-project skill dirs to the Claude Code CLI so both
-// bundled and per-project skills register at startup.
+// Sync default + global + per-project skill dirs to the Claude Code CLI so
+// bundled, global (shared), and per-project skills register at startup.
 try {
   const projectSkillDirs = getProjects()
     .map((p) => (p.ahw ? path.join(p.ahw, 'skills') : ''))
     .filter((d) => !!d);
   // TODO(skill-gateway): remove after one release once no active sessions rely on the native Skill tool.
-  syncSkillsToClaude(projectSkillDirs);
+  syncSkillsToClaude([resolveGlobalSkillsDir(), ...projectSkillDirs]);
 } catch (err) {
   console.warn('[skills] Startup sync failed:', (err as Error).message);
 }

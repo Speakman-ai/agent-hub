@@ -6113,6 +6113,106 @@ components:
       required:
         - error
       description: Error envelope.
+    GlobalSkillListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        path:
+          type: string
+        source:
+          type: string
+          enum:
+            - global
+      required:
+        - id
+        - name
+        - description
+        - path
+        - source
+      description: A global (shared) skill discovered under <dataDir>/skills.
+    GlobalSkillDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        content:
+          type: string
+          description: Raw SKILL.md text (frontmatter + body).
+        path:
+          type: string
+        credentials:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: POSIX env var name the credential is injected as.
+                example: LINEAR_API_KEY
+              label:
+                type: string
+              description:
+                type: string
+              required:
+                type: boolean
+              type:
+                type: string
+                enum:
+                  - string
+                  - secret
+                  - file
+                  - json
+              docs_url:
+                type: string
+            required:
+              - name
+            description: A single declarative credential the skill needs at spawn time.
+        source:
+          type: string
+          enum:
+            - global
+      required:
+        - id
+        - name
+        - description
+        - content
+        - path
+        - credentials
+        - source
+      description: A single global skill with its raw SKILL.md content.
+    GlobalSkillWriteResult:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        path:
+          type: string
+          description: Absolute path to the skill directory on disk.
+        source:
+          type: string
+          enum:
+            - global
+          description: Always `global` — lets clients pick the global delete path.
+      required:
+        - id
+        - name
+        - description
+        - path
+        - source
+      description: The created / updated global (shared) skill.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -19389,6 +19489,211 @@ paths:
                 $ref: "#/components/schemas/SkillWriteError"
         "500":
           description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/global-skills:
+    get:
+      tags:
+        - Skills
+      summary: List global (shared) skills
+      description: Lists every skill authored in the writable global tier (`<dataDir>/skills`). These are merged into every agent's skill list between the project tier and the bundled defaults.
+      responses:
+        "200":
+          description: Global skills.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GlobalSkillListItem"
+        "500":
+          description: Filesystem read error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+    post:
+      tags:
+        - Skills
+      summary: Create a global (shared) skill
+      description: Validates the author payload, composes a canonical `SKILL.md`, and writes it to `<dataDir>/skills/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md. Rejects a slug that shadows a bundled default skill (409) or an existing global skill (409 — use PUT). Invalid frontmatter returns 400.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSkillBody"
+      responses:
+        "201":
+          description: Skill created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GlobalSkillWriteResult"
+        "400":
+          description: Request body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "409":
+          description: Slug collides with a bundled default or an existing global skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "503":
+          description: Global skills directory unavailable (server data dir not configured).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+  /api/global-skills/{skillId}:
+    get:
+      tags:
+        - Skills
+      summary: Get a global skill
+      description: Returns a single global skill's raw SKILL.md content (for editing).
+      parameters:
+        - schema:
+            type: string
+            description: Global skill slug (folder id).
+          required: true
+          description: Global skill slug (folder id).
+          name: skillId
+          in: path
+      responses:
+        "200":
+          description: Global skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GlobalSkillDetail"
+        "400":
+          description: Invalid skill id or malformed credentials frontmatter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Global skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem read error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "503":
+          description: Global skills directory unavailable (server data dir not configured).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+    put:
+      tags:
+        - Skills
+      summary: Update a global (shared) skill
+      description: Rewrites an existing global skill's `SKILL.md`. A body `name` (or `content` frontmatter name) must equal the `:skillId` path segment — rename is not supported. Rejects bundled-default ids (409) and unknown global skills (404). Invalid frontmatter returns 400.
+      parameters:
+        - schema:
+            type: string
+            description: Global skill slug (folder id).
+          required: true
+          description: Global skill slug (folder id).
+          name: skillId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSkillBody"
+      responses:
+        "200":
+          description: Skill updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GlobalSkillWriteResult"
+        "400":
+          description: Request body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Global skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "409":
+          description: Slug is a bundled default skill.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem write error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "503":
+          description: Global skills directory unavailable (server data dir not configured).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+    delete:
+      tags:
+        - Skills
+      summary: Delete a global (shared) skill
+      description: Removes a global skill directory from `<dataDir>/skills`.
+      parameters:
+        - schema:
+            type: string
+            description: Global skill slug (folder id).
+          required: true
+          description: Global skill slug (folder id).
+          name: skillId
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "400":
+          description: Invalid skill id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "503":
+          description: Global skills directory unavailable (server data dir not configured).
           content:
             application/json:
               schema:

@@ -183,6 +183,141 @@ registerPath({
   },
 });
 
+// ─── Global (shared) skills ───────────────────────────────────────────────
+// Same write contract as project skills, but the skill lands in the writable
+// global tier (`<dataDir>/skills/<slug>`) and is visible to every agent in
+// every project. Precedence on a same-id conflict: project > global > bundled
+// default. See server/global-skills-dir.ts.
+
+const GlobalSkillListItemSchema = registerComponent(
+  'GlobalSkillListItem',
+  z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      path: z.string(),
+      source: z.literal('global'),
+    })
+    .openapi({ description: 'A global (shared) skill discovered under <dataDir>/skills.' }),
+);
+
+const GlobalSkillDetailSchema = registerComponent(
+  'GlobalSkillDetail',
+  z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      content: z.string().openapi({ description: 'Raw SKILL.md text (frontmatter + body).' }),
+      path: z.string(),
+      credentials: z.array(SkillCredentialSpecSchema),
+      source: z.literal('global'),
+    })
+    .openapi({ description: 'A single global skill with its raw SKILL.md content.' }),
+);
+
+const GlobalSkillWriteResultSchema = registerComponent(
+  'GlobalSkillWriteResult',
+  z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      path: z.string().openapi({ description: 'Absolute path to the skill directory on disk.' }),
+      source: z
+        .literal('global')
+        .openapi({ description: 'Always `global` — lets clients pick the global delete path.' }),
+    })
+    .openapi({ description: 'The created / updated global (shared) skill.' }),
+);
+
+const skillIdParam = z.object({
+  skillId: z.string().openapi({ description: 'Global skill slug (folder id).' }),
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/global-skills',
+  tags: ['Skills'],
+  summary: 'List global (shared) skills',
+  description:
+    "Lists every skill authored in the writable global tier (`<dataDir>/skills`). These are merged into every agent's skill list between the project tier and the bundled defaults.",
+  responses: {
+    200: {
+      description: 'Global skills.',
+      content: jsonContent(z.array(GlobalSkillListItemSchema)),
+    },
+    500: errorResponse('Filesystem read error.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/global-skills/{skillId}',
+  tags: ['Skills'],
+  summary: 'Get a global skill',
+  description: "Returns a single global skill's raw SKILL.md content (for editing).",
+  request: { params: skillIdParam },
+  responses: {
+    200: { description: 'Global skill.', content: jsonContent(GlobalSkillDetailSchema) },
+    400: errorResponse('Invalid skill id or malformed credentials frontmatter.'),
+    404: errorResponse('Global skill not found.'),
+    500: errorResponse('Filesystem read error.'),
+    503: errorResponse('Global skills directory unavailable (server data dir not configured).'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/global-skills',
+  tags: ['Skills'],
+  summary: 'Create a global (shared) skill',
+  description:
+    'Validates the author payload, composes a canonical `SKILL.md`, and writes it to `<dataDir>/skills/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md. Rejects a slug that shadows a bundled default skill (409) or an existing global skill (409 — use PUT). Invalid frontmatter returns 400.',
+  request: { body: { content: jsonContent(CreateSkillBodySchema) } },
+  responses: {
+    201: { description: 'Skill created.', content: jsonContent(GlobalSkillWriteResultSchema) },
+    400: errorResponse('Request body validation failed.'),
+    409: errorResponse('Slug collides with a bundled default or an existing global skill.'),
+    500: errorResponse('Filesystem write error.'),
+    503: errorResponse('Global skills directory unavailable (server data dir not configured).'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/global-skills/{skillId}',
+  tags: ['Skills'],
+  summary: 'Update a global (shared) skill',
+  description:
+    "Rewrites an existing global skill's `SKILL.md`. A body `name` (or `content` frontmatter name) must equal the `:skillId` path segment — rename is not supported. Rejects bundled-default ids (409) and unknown global skills (404). Invalid frontmatter returns 400.",
+  request: { params: skillIdParam, body: { content: jsonContent(UpdateSkillBodySchema) } },
+  responses: {
+    200: { description: 'Skill updated.', content: jsonContent(GlobalSkillWriteResultSchema) },
+    400: errorResponse('Request body validation failed.'),
+    404: errorResponse('Global skill not found.'),
+    409: errorResponse('Slug is a bundled default skill.'),
+    500: errorResponse('Filesystem write error.'),
+    503: errorResponse('Global skills directory unavailable (server data dir not configured).'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/global-skills/{skillId}',
+  tags: ['Skills'],
+  summary: 'Delete a global (shared) skill',
+  description: 'Removes a global skill directory from `<dataDir>/skills`.',
+  request: { params: skillIdParam },
+  responses: {
+    200: { description: 'Deleted.', content: jsonContent(z.object({ ok: z.boolean() })) },
+    400: errorResponse('Invalid skill id.'),
+    500: errorResponse('Filesystem error.'),
+    503: errorResponse('Global skills directory unavailable (server data dir not configured).'),
+  },
+});
+
 registerPath({
   method: 'put',
   path: '/api/projects/{projectId}/skills/{skillId}',

@@ -3618,6 +3618,42 @@ export default function App({ initialView } = {}) {
     setCurrentView('chat');
   };
 
+  // Start a chat session with a SPECIFIC agent (not necessarily the active one)
+  // and navigate into it. Used by the Skills page "Build a skill" button to open
+  // a conversation with the project's Skill Builder coach.
+  const handleStartSessionWithAgent = useCallback(
+    async (agentId) => {
+      if (!agentId) return;
+      const agent = agents.find((a) => a.id === agentId);
+      if (agent?.role === 'reviewer') {
+        showToast(
+          'Reviewer agents only run from the Finalize review phase — sessions cannot be started manually.',
+          'info',
+          4000,
+        );
+        return;
+      }
+      try {
+        const session = await api.createSession(agentId, undefined, { askMode: sessionAskMode });
+        setActiveAgentId(agentId);
+        setSessions((prev) => prependSessionDeduped(prev, session));
+        setActiveSessionId(session.id);
+        setSessionEngine(session.engine || agent?.engine || 'claude-code');
+        setSessionModel(
+          session.model ||
+            modelConfig?.engineDefaultModels?.[session.engine || agent?.engine || 'claude-code'] ||
+            'claude-opus-4-8',
+        );
+        setSessionAskMode(isSessionAskModeEnabled(session));
+        setMessages([]);
+        setCurrentView('chat');
+      } catch (err) {
+        showToast(err?.message || 'Failed to start session', 'error', 4000);
+      }
+    },
+    [agents, sessionAskMode, modelConfig, setActiveAgentId],
+  );
+
   const defaultModelForEngine = useCallback(
     (engine) => {
       const fromConfig = modelConfig?.engineDefaultModels?.[engine];
@@ -4885,7 +4921,11 @@ export default function App({ initialView } = {}) {
                   }}
                 />
               ) : currentView === 'skills' || currentView.startsWith('skills:') ? (
-                <SkillsPage agents={agents} projects={projects} />
+                <SkillsPage
+                  agents={agents}
+                  projects={projects}
+                  onStartCoachSession={handleStartSessionWithAgent}
+                />
               ) : currentView === 'designs' ? (
                 <DesignsList
                   designs={designs}

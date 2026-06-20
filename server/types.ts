@@ -479,7 +479,7 @@ export interface SkillInvocationRow {
   id: string;
   session_id: string;
   skill_id: string;
-  source: 'project' | 'default' | null;
+  source: 'project' | 'global' | 'default' | null;
   reason: string | null;
   status: 'loaded' | 'not-found' | 'malformed';
   injected_bytes: number | null;

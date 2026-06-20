@@ -23,6 +23,7 @@
 
 import type { SkillInfo, SkillWithSource } from './routes/skills.js';
 import { collectSkillsFromDir, DEFAULT_SKILLS_DIR } from './routes/skills.js';
+import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import { getStmts } from './db.js';
 
 export type { SkillInfo, SkillWithSource };
@@ -70,23 +71,30 @@ export function applyAgentSkillOverrides(agentId: string, skills: SkillInfo[]): 
 }
 
 /**
- * Unfiltered merge of a project's skills dir + the bundled default skills, each
- * tagged with its source (project wins over a same-id bundled skill). Applies
- * NO per-agent overrides and NO allowlist — see the module header. This is the
- * options list the Settings allowlist editor (`GET /agents/:id/skills`) must use
- * so a previously denied skill can always be re-added.
+ * Unfiltered merge of the three skill tiers, each tagged with its source.
+ * Precedence on a same-id conflict is **project > global > bundled default**
+ * (a higher tier shadows lower ones), mirroring Claude Code's
+ * project-over-user precedence. Applies NO per-agent overrides and NO allowlist
+ * — see the module header. This is the options list the Settings allowlist
+ * editor (`GET /agents/:id/skills`) must use so a previously denied skill can
+ * always be re-added.
  */
 export function listMergedSkills(skillsDir: string): SkillWithSource[] {
-  const projectSkills: SkillWithSource[] = collectSkillsFromDir(skillsDir).map((s) => ({
-    ...s,
-    source: 'project',
-  }));
-  const defaultSkills: SkillWithSource[] = collectSkillsFromDir(DEFAULT_SKILLS_DIR).map((s) => ({
-    ...s,
-    source: 'default',
-  }));
-  const projectIds = new Set(projectSkills.map((s) => s.id));
-  return [...projectSkills, ...defaultSkills.filter((s) => !projectIds.has(s.id))];
+  const tiers: Array<{ source: SkillWithSource['source']; dir: string }> = [
+    { source: 'project', dir: skillsDir },
+    { source: 'global', dir: resolveGlobalSkillsDir() },
+    { source: 'default', dir: DEFAULT_SKILLS_DIR },
+  ];
+  const seen = new Set<string>();
+  const merged: SkillWithSource[] = [];
+  for (const { source, dir } of tiers) {
+    for (const s of collectSkillsFromDir(dir)) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      merged.push({ ...s, source });
+    }
+  }
+  return merged;
 }
 
 /**

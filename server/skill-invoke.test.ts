@@ -5,11 +5,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const skillInvokeMock = vi.hoisted(() => ({
   defaultSkillsDir: '/tmp/skill-invoke-default',
+  globalSkillsDir: '/tmp/skill-invoke-global',
 }));
 
 vi.mock('./routes/skills.js', () => ({
   get DEFAULT_SKILLS_DIR() {
     return skillInvokeMock.defaultSkillsDir;
+  },
+}));
+
+vi.mock('./global-skills-dir.js', () => ({
+  resolveGlobalSkillsDir() {
+    return skillInvokeMock.globalSkillsDir;
   },
 }));
 
@@ -53,15 +60,19 @@ function makeSkill(
 describe('skill-invoke', () => {
   let tmpRoot: string;
   let projectSkillsDir: string;
+  let globalSkillsDir: string;
   let defaultSkillsDir: string;
 
   beforeEach(() => {
     tmpRoot = mkdtempSync(path.join(os.tmpdir(), 'skill-invoke-'));
     projectSkillsDir = path.join(tmpRoot, 'project-skills');
+    globalSkillsDir = path.join(tmpRoot, 'global-skills');
     defaultSkillsDir = path.join(tmpRoot, 'default-skills');
     mkdirSync(projectSkillsDir, { recursive: true });
+    mkdirSync(globalSkillsDir, { recursive: true });
     mkdirSync(defaultSkillsDir, { recursive: true });
     skillInvokeMock.defaultSkillsDir = defaultSkillsDir;
+    skillInvokeMock.globalSkillsDir = globalSkillsDir;
   });
 
   afterEach(() => {
@@ -136,6 +147,30 @@ describe('skill-invoke', () => {
       expect(loaded).not.toBeNull();
       expect(loaded?.source).toBe('project');
       expect(loaded?.skillDir).toBe(p);
+    });
+
+    it('loads a global-tier skill (source=global) when no project skill exists', () => {
+      const g = makeSkill(globalSkillsDir, 'shared-skill');
+      const loaded = loadSkillBody('shared-skill', { skillsDir: projectSkillsDir });
+      expect(loaded?.source).toBe('global');
+      expect(loaded?.skillDir).toBe(g);
+    });
+
+    it('precedence: project shadows global shadows default for the same id', () => {
+      const p = makeSkill(projectSkillsDir, 'tiered');
+      makeSkill(globalSkillsDir, 'tiered');
+      makeSkill(defaultSkillsDir, 'tiered');
+      const loaded = loadSkillBody('tiered', { skillsDir: projectSkillsDir });
+      expect(loaded?.source).toBe('project');
+      expect(loaded?.skillDir).toBe(p);
+    });
+
+    it('global shadows default when no project skill exists', () => {
+      const g = makeSkill(globalSkillsDir, 'g-over-d');
+      makeSkill(defaultSkillsDir, 'g-over-d');
+      const loaded = loadSkillBody('g-over-d', { skillsDir: projectSkillsDir });
+      expect(loaded?.source).toBe('global');
+      expect(loaded?.skillDir).toBe(g);
     });
 
     it('loads a flat skills/<id>.md file', () => {

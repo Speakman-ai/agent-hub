@@ -7,8 +7,10 @@ import {
   TextInput,
   StyleSheet,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
@@ -87,6 +89,11 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
                 <Text style={[styles.categoryBadgeText, { color: colors.gray500 }]}>built-in</Text>
               </View>
             )}
+            {skill.source === 'global' && (
+              <View style={[styles.categoryBadge, { backgroundColor: colors.blue900_40 }]}>
+                <Text style={[styles.categoryBadgeText, { color: colors.blue400 }]}>shared</Text>
+              </View>
+            )}
           </View>
           {skill.description && (
             <Text style={styles.cardDescription} numberOfLines={2}>
@@ -113,7 +120,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
             <TouchableOpacity
               onPress={(e) => {
                 e.stopPropagation?.();
-                onUninstall(skill.id);
+                onUninstall(skill.id, skill.source);
               }}
               style={styles.iconButton}
               hitSlop={8}
@@ -218,7 +225,8 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
 }
 
 export default function SkillsScreen() {
-  const { agents, projects } = useApp();
+  const { agents, projects, handleStartSessionWithAgent } = useApp();
+  const navigation = useNavigation();
   const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
   const [skills, setSkills] = useState([]);
   const [context, setContext] = useState({});
@@ -234,6 +242,27 @@ export default function SkillsScreen() {
     const proj = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
     return proj?.id || projects[0]?.id || null;
   }, [activeAgentId, activeAgent, projects]);
+
+  // The project's seeded Skill Builder coach (role 'skill-builder'), if any.
+  // Resolved from the canonical flat `agents` collection filtered by
+  // `projectId` — NOT from embedded `project.agents`, which the projects
+  // payload may not hydrate (that would hide the entry point even when the
+  // seeded coach exists).
+  const coachAgent = useMemo(
+    () =>
+      agents.find((a) => a.role === 'skill-builder' && a.projectId === currentProjectId) || null,
+    [agents, currentProjectId],
+  );
+
+  const startCoach = useCallback(async () => {
+    if (!coachAgent || !handleStartSessionWithAgent) return;
+    try {
+      await handleStartSessionWithAgent(coachAgent.id);
+      navigation.navigate('Chat');
+    } catch (err) {
+      console.error('Failed to start Skill Builder session:', err);
+    }
+  }, [coachAgent, handleStartSessionWithAgent, navigation]);
 
   // Load installed skills + context + overrides
   useEffect(() => {
@@ -283,14 +312,35 @@ export default function SkillsScreen() {
   );
 
   const handleUninstall = useCallback(
-    async (skillId) => {
-      if (!currentProjectId) return;
-      try {
-        await api.uninstallSkill(currentProjectId, skillId);
-        setSkills((prev) => prev.filter((s) => s.id !== skillId));
-      } catch (err) {
-        console.error('Failed to uninstall:', err);
+    async (skillId, source) => {
+      const doDelete = async () => {
+        try {
+          if (source === 'global') {
+            await api.deleteGlobalSkill(skillId);
+          } else {
+            if (!currentProjectId) return;
+            await api.uninstallSkill(currentProjectId, skillId);
+          }
+          setSkills((prev) => prev.filter((s) => s.id !== skillId));
+        } catch (err) {
+          console.error('Failed to uninstall:', err);
+        }
+      };
+      // Global skills are shared across every project — gate the irreversible
+      // cross-project delete behind an explicit destructive confirmation.
+      // Project skills only affect this project, so they delete directly.
+      if (source === 'global') {
+        Alert.alert(
+          'Delete shared skill?',
+          `"${skillId}" is a shared (global) skill. Deleting it removes it for every agent in every project — not just this one — and cannot be undone.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete everywhere', style: 'destructive', onPress: doDelete },
+          ],
+        );
+        return;
       }
+      await doDelete();
     },
     [currentProjectId],
   );
@@ -337,6 +387,15 @@ export default function SkillsScreen() {
                   <View style={styles.sectionHeader}>
                     <Text style={styles.sectionTitle}>Skills</Text>
                     <Text style={styles.sectionCount}>({skills.length} total)</Text>
+                    {coachAgent && handleStartSessionWithAgent && (
+                      <TouchableOpacity
+                        style={styles.buildSkillButton}
+                        onPress={startCoach}
+                        accessibilityLabel="Build a skill"
+                      >
+                        <Text style={styles.buildSkillButtonText}>+ Build a skill</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                   {loadingSkills ? (
                     <ActivityIndicator
@@ -501,6 +560,18 @@ const styles = StyleSheet.create({
   sectionCount: {
     fontSize: 12,
     color: colors.gray500,
+  },
+  buildSkillButton: {
+    marginLeft: 'auto',
+    backgroundColor: colors.indigo600,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  buildSkillButtonText: {
+    color: colors.white,
+    fontSize: 12,
+    fontWeight: '600',
   },
   cardList: {
     gap: 8,

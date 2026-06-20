@@ -317,6 +317,12 @@ export const api = {
 
   uninstallSkill: (projectId, skillId) =>
     fetchJSON(`/projects/${projectId}/skills/${skillId}`, { method: 'DELETE' }),
+
+  // Global (shared) skills — visible to every agent in every project.
+  getGlobalSkills: () => fetchJSON(`/global-skills`),
+  getGlobalSkill: (skillId) => fetchJSON(`/global-skills/${encodeURIComponent(skillId)}`),
+  deleteGlobalSkill: (skillId) =>
+    fetchJSON(`/global-skills/${encodeURIComponent(skillId)}`, { method: 'DELETE' }),
   toggleSkill: (agentId, skillId, enabled) =>
     fetchJSON(`/agents/${agentId}/skills/${skillId}/toggle`, {
       method: 'PUT',

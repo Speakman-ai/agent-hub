@@ -2,6 +2,7 @@ import path from 'path';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { DEFAULT_SKILLS_DIR } from './routes/skills.js';
+import { resolveGlobalSkillsDir } from './global-skills-dir.js';
 import { isSkillAllowed } from './agent-skills-list.js';
 import type { BroadcastFn, Stmts } from './types.js';
 import {
@@ -58,7 +59,7 @@ export interface SkillInvokePaths {
 }
 
 export interface LoadedSkillBody {
-  source: 'project' | 'default';
+  source: 'project' | 'global' | 'default';
   skillDir: string;
   /**
    * When the skill is a flat `<skillsRoot>/<id>.md` file, set this so injection
@@ -198,7 +199,7 @@ function resolveFlatSkillMdUnderSkillsRoot(
 }
 
 function loadSkillFromDirectory(
-  source: 'project' | 'default',
+  source: 'project' | 'global' | 'default',
   skillsRoot: string,
   skillDir: string,
 ): LoadedSkillBody | null {
@@ -278,7 +279,7 @@ function loadSkillFromDirectory(
 }
 
 function loadSkillFromFlatMarkdownFile(
-  source: 'project' | 'default',
+  source: 'project' | 'global' | 'default',
   skillsRoot: string,
   mdPath: string,
   skillTitle: string,
@@ -309,8 +310,13 @@ export function loadSkillBody(name: string, paths: SkillInvokePaths): LoadedSkil
   if (!trimmedName) return null;
 
   const projectRoot = paths.skillsDir?.trim() ? paths.skillsDir.trim() : '';
-  const searchOrder: Array<{ source: 'project' | 'default'; root: string }> = [];
+  // Search order encodes precedence: project > global > bundled default. The
+  // first tier with a matching SKILL.md wins, so a project skill shadows a
+  // same-id global one, which shadows a same-id bundled default.
+  const searchOrder: Array<{ source: 'project' | 'global' | 'default'; root: string }> = [];
   if (projectRoot) searchOrder.push({ source: 'project', root: projectRoot });
+  const globalRoot = resolveGlobalSkillsDir();
+  if (globalRoot) searchOrder.push({ source: 'global', root: globalRoot });
   searchOrder.push({ source: 'default', root: DEFAULT_SKILLS_DIR });
 
   for (const { source, root } of searchOrder) {

@@ -12,6 +12,12 @@ vi.mock('../utils/api.js', () => ({
     uninstallSkill: vi.fn(),
     saveContext: vi.fn(),
     getSkillCredentials: vi.fn(),
+    createProjectSkill: vi.fn(),
+    createGlobalSkill: vi.fn(),
+    updateProjectSkill: vi.fn(),
+    updateGlobalSkill: vi.fn(),
+    deleteGlobalSkill: vi.fn(),
+    getGlobalSkill: vi.fn(),
   },
 }));
 
@@ -147,5 +153,153 @@ describe('SkillsPage is skill management only', () => {
     }
     // The GitHub-import affordance lived on the removed Registry tab.
     expect(screen.queryByRole('button', { name: /Import from GitHub/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('SkillsPage — Skill Builder coach + skill scope', () => {
+  // The coach is resolved from the flat `agents` list filtered by `projectId`
+  // (NOT from embedded project.agents), so it must carry projectId here.
+  const COACH = {
+    id: 'agent-hub-skill-builder',
+    role: 'skill-builder',
+    name: 'Skill Builder',
+    projectId: 'agent-hub',
+  };
+  const AGENTS_WITH_COACH = [AGENT, COACH];
+  const PROJECTS_WITH_COACH = [{ id: 'agent-hub', agents: [{ id: 'hub-frontend' }, COACH] }];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getSkillOverrides.mockResolvedValue([]);
+    api.getSkills.mockResolvedValue([]);
+    api.getContext.mockResolvedValue({});
+    api.createProjectSkill.mockResolvedValue({ id: 'my-skill' });
+    api.createGlobalSkill.mockResolvedValue({ id: 'my-skill' });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('shows "Build a skill" and starts a session with the project coach', async () => {
+    const onStartCoachSession = vi.fn();
+    render(
+      <SkillsPage
+        agents={AGENTS_WITH_COACH}
+        projects={PROJECTS_WITH_COACH}
+        onStartCoachSession={onStartCoachSession}
+      />,
+    );
+    await flush();
+
+    const build = screen.getByRole('button', { name: /Build a skill/i });
+    fireEvent.click(build);
+    expect(onStartCoachSession).toHaveBeenCalledWith('agent-hub-skill-builder');
+  });
+
+  it('finds the coach via the flat agents list even when project.agents is not hydrated', async () => {
+    // Regression: the lookup must not depend on embedded project.agents — the
+    // projects payload may omit them. A project object with NO agents array
+    // still surfaces the coach because it lives in the flat `agents` list.
+    const onStartCoachSession = vi.fn();
+    render(
+      <SkillsPage
+        agents={AGENTS_WITH_COACH}
+        projects={[{ id: 'agent-hub' }]}
+        onStartCoachSession={onStartCoachSession}
+      />,
+    );
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: /Build a skill/i }));
+    expect(onStartCoachSession).toHaveBeenCalledWith('agent-hub-skill-builder');
+  });
+
+  it('hides "Build a skill" and makes the raw editor primary when there is no coach', async () => {
+    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} onStartCoachSession={vi.fn()} />);
+    await flush();
+
+    expect(screen.queryByRole('button', { name: /Build a skill/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Write raw/i })).toBeInTheDocument();
+  });
+
+  it('saving a new skill with scope=Shared calls createGlobalSkill, not createProjectSkill', async () => {
+    render(
+      <SkillsPage agents={[AGENT]} projects={PROJECTS_WITH_COACH} onStartCoachSession={vi.fn()} />,
+    );
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: /Write raw/i }));
+    // Switch the scope toggle to shared.
+    fireEvent.click(screen.getByRole('button', { name: /Shared \(all projects\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create skill/i }));
+    await flush();
+
+    expect(api.createGlobalSkill).toHaveBeenCalledTimes(1);
+    expect(api.createProjectSkill).not.toHaveBeenCalled();
+  });
+
+  it('saving a new skill with the default scope calls createProjectSkill', async () => {
+    render(
+      <SkillsPage agents={[AGENT]} projects={PROJECTS_WITH_COACH} onStartCoachSession={vi.fn()} />,
+    );
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: /Write raw/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create skill/i }));
+    await flush();
+
+    expect(api.createProjectSkill).toHaveBeenCalledTimes(1);
+    expect(api.createGlobalSkill).not.toHaveBeenCalled();
+  });
+
+  const GLOBAL_SKILL = {
+    id: 'shared-x',
+    name: 'Shared X',
+    description: 'a shared skill',
+    category: 'general',
+    source: 'global',
+  };
+
+  it('deleting a shared (global) skill is gated by a confirmation and aborts on cancel', async () => {
+    api.getSkills.mockResolvedValue([GLOBAL_SKILL]);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(
+      <SkillsPage agents={[AGENT]} projects={PROJECTS_WITH_COACH} onStartCoachSession={vi.fn()} />,
+    );
+    await flush();
+
+    fireEvent.click(screen.getByTitle('Uninstall'));
+    await flush();
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // Copy must make the cross-project blast radius explicit.
+    expect(confirmSpy.mock.calls[0][0]).toMatch(/every (agent|project)/i);
+    expect(api.deleteGlobalSkill).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('deletes a shared (global) skill only after the confirmation is accepted', async () => {
+    api.getSkills.mockResolvedValue([GLOBAL_SKILL]);
+    api.deleteGlobalSkill.mockResolvedValue({ ok: true });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(
+      <SkillsPage agents={[AGENT]} projects={PROJECTS_WITH_COACH} onStartCoachSession={vi.fn()} />,
+    );
+    await flush();
+
+    fireEvent.click(screen.getByTitle('Uninstall'));
+    await flush();
+
+    expect(api.deleteGlobalSkill).toHaveBeenCalledWith('shared-x');
+    confirmSpy.mockRestore();
   });
 });

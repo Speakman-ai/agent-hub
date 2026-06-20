@@ -1367,6 +1367,30 @@ export function AppProvider({ children }) {
     setMessages([]);
   }, [activeAgentId, agents, sessionAskMode]);
 
+  // Start a chat session with a SPECIFIC agent (not necessarily the active one)
+  // and make it active. The caller navigates to the Chat screen. Used by the
+  // Skills screen "Build a skill" button to open the project's Skill Builder
+  // coach. Mirrors the web client's handleStartSessionWithAgent.
+  const handleStartSessionWithAgent = useCallback(
+    async (agentId) => {
+      if (!agentId) return;
+      const agent = agents.find((a) => a.id === agentId);
+      if (agent?.role === 'reviewer') return;
+      const session = await api.createSession(agentId, undefined, { askMode: sessionAskMode });
+      setActiveAgentId(agentId);
+      setSessions((prev) => (prev.some((s) => s.id === session.id) ? prev : [session, ...prev]));
+      setActiveSessionId(session.id);
+      setSessionEngine(session.engine || agent?.engine || 'claude-code');
+      setSessionModel(
+        session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'),
+      );
+      setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
+      setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
+      setMessages([]);
+    },
+    [agents, sessionAskMode],
+  );
+
   // `handleWorktreeChange` was removed when Agent Hub locked to
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
   // endpoint no longer exists.
@@ -1937,6 +1961,7 @@ export function AppProvider({ children }) {
     activeTasks,
     finalizeStatusBySession,
     handleNewSession,
+    handleStartSessionWithAgent,
     handleEngineChange,
     handleModelChange,
     handleDeleteSession,

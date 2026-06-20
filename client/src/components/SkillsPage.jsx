@@ -21,6 +21,8 @@ import {
   Trash2,
   AlertTriangle,
   RefreshCw,
+  Sparkles,
+  Globe,
 } from 'lucide-react';
 
 function SkillsLoadError({ section, message, onRetry }) {
@@ -86,6 +88,11 @@ generalizes. Keep it under ~500 lines.
  */
 function SkillEditor({ projectId, agentId, skill, onClose, onSaved }) {
   const isEdit = !!skill;
+  // On edit, the scope is fixed by where the skill already lives (its source).
+  // On create, the author chooses: project-only vs shared across all projects.
+  const editScope = isEdit && skill.source === 'global' ? 'global' : 'project';
+  const [scope, setScope] = useState('project');
+  const effectiveScope = isEdit ? editScope : scope;
   const [content, setContent] = useState(isEdit ? '' : NEW_SKILL_TEMPLATE);
   const [loading, setLoading] = useState(isEdit);
   const [saving, setSaving] = useState(false);
@@ -95,8 +102,11 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }) {
     if (!isEdit) return undefined;
     let cancelled = false;
     setLoading(true);
-    api
-      .getSkill(agentId, skill.id)
+    // A global skill isn't found by the agent-scoped read (it searches project →
+    // default), so fetch it from the global tier directly.
+    const fetchSkill =
+      skill.source === 'global' ? api.getGlobalSkill(skill.id) : api.getSkill(agentId, skill.id);
+    fetchSkill
       .then((data) => {
         if (!cancelled) setContent(data.content || '');
       })
@@ -136,9 +146,18 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }) {
     setSaving(true);
     setError(null);
     try {
-      const saved = isEdit
-        ? await api.updateProjectSkill(projectId, skill.id, { name: skill.id, content })
-        : await api.createProjectSkill(projectId, { content });
+      let saved;
+      if (isEdit) {
+        saved =
+          effectiveScope === 'global'
+            ? await api.updateGlobalSkill(skill.id, { name: skill.id, content })
+            : await api.updateProjectSkill(projectId, skill.id, { name: skill.id, content });
+      } else {
+        saved =
+          scope === 'global'
+            ? await api.createGlobalSkill({ content })
+            : await api.createProjectSkill(projectId, { content });
+      }
       onSaved(saved, isEdit);
     } catch (err) {
       setError(err?.message || 'Failed to save skill');
@@ -160,7 +179,12 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }) {
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
           <h3 className="text-sm font-semibold text-gray-100 flex items-center gap-2">
-            <PenLine size={16} /> {isEdit ? `Edit skill: ${skill.id}` : 'New project skill'}
+            <PenLine size={16} /> {isEdit ? `Edit skill: ${skill.id}` : 'New skill'}
+            {isEdit && effectiveScope === 'global' && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-300 inline-flex items-center gap-0.5">
+                <Globe size={9} /> shared
+              </span>
+            )}
           </h3>
           <button
             onClick={onClose}
@@ -176,6 +200,42 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }) {
             <code className="bg-gray-800 px-1 rounded">name</code> in the frontmatter is the slug
             you load with <code className="bg-gray-800 px-1 rounded">&lt;agenthub:skill&gt;</code>.
           </p>
+          {!isEdit && (
+            <div className="mb-3">
+              <span className="block text-[11px] font-medium text-gray-400 mb-1.5">
+                Where should this skill live?
+              </span>
+              <div className="inline-flex rounded-lg border border-gray-700 overflow-hidden text-xs">
+                <button
+                  type="button"
+                  onClick={() => setScope('project')}
+                  className={`px-3 py-1.5 transition-colors ${
+                    scope === 'project'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-800'
+                  }`}
+                >
+                  This project only
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setScope('global')}
+                  className={`px-3 py-1.5 inline-flex items-center gap-1 transition-colors ${
+                    scope === 'global'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-800'
+                  }`}
+                >
+                  <Globe size={12} /> Shared (all projects)
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-500 mt-1.5">
+                {scope === 'global'
+                  ? 'Shared skills are stored globally and available to every agent in every project.'
+                  : "Project skills are only available to this project's agents."}
+              </p>
+            </div>
+          )}
           {loading ? (
             <p className="text-sm text-gray-500">Loading…</p>
           ) : (
@@ -347,6 +407,11 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, i
                   built-in
                 </span>
               )}
+              {skill.source === 'global' && (
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-400 inline-flex items-center gap-0.5">
+                  <Globe size={9} /> shared
+                </span>
+              )}
             </div>
             {skill.description && (
               <p className="text-xs text-gray-400 mt-1 line-clamp-2">{skill.description}</p>
@@ -385,7 +450,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, i
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onUninstall(skill.id);
+                  onUninstall(skill.id, skill.source);
                 }}
                 className="text-gray-500 hover:text-red-400 transition-colors"
                 title="Uninstall"
@@ -630,7 +695,7 @@ function ContextFilePanel({ filename, content, agentId, onSaved }) {
   );
 }
 
-export default function SkillsPage({ agents, projects }) {
+export default function SkillsPage({ agents, projects, onStartCoachSession }) {
   const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
   const [skills, setSkills] = useState([]);
   const [context, setContext] = useState({});
@@ -648,6 +713,17 @@ export default function SkillsPage({ agents, projects }) {
     const proj = projects.find((p) => p.agents?.some((a) => a.id === activeAgentId));
     return proj?.id || projects[0]?.id || null;
   })();
+
+  // The project's seeded Skill Builder coach (role 'skill-builder'). Resolved
+  // from the canonical flat `agents` list filtered by `projectId` — NOT from
+  // embedded `project.agents`, which the projects payload may not hydrate
+  // (that would hide the entry point even when the seeded coach exists). Older
+  // projects created before the coach was seeded won't have one — in that case
+  // the conversational entry point is hidden and the raw editor is the primary
+  // action.
+  const coachAgent =
+    agents.find((a) => a.role === 'skill-builder' && a.projectId === currentProjectId) || null;
+  const canCoach = !!(coachAgent && onStartCoachSession);
 
   // Load installed skills + overrides + context
   useEffect(() => {
@@ -724,10 +800,26 @@ export default function SkillsPage({ agents, projects }) {
   );
 
   const handleUninstall = useCallback(
-    async (skillId) => {
-      if (!currentProjectId) return;
+    async (skillId, source) => {
+      // Global skills are shared across EVERY project — deleting one is a
+      // cross-project, irreversible action, so gate it behind an explicit
+      // confirmation that spells out the blast radius. Project skills only
+      // affect the current project, so they delete without a prompt (unchanged).
+      if (source === 'global') {
+        const confirmed = window.confirm(
+          `Delete the shared skill "${skillId}" for ALL projects?\n\n` +
+            'This is a shared (global) skill. Removing it deletes it for every agent ' +
+            'in every project — not just this one — and cannot be undone.',
+        );
+        if (!confirmed) return;
+      }
       try {
-        await api.uninstallSkill(currentProjectId, skillId);
+        if (source === 'global') {
+          await api.deleteGlobalSkill(skillId);
+        } else {
+          if (!currentProjectId) return;
+          await api.uninstallSkill(currentProjectId, skillId);
+        }
         setSkills((prev) => prev.filter((s) => s.id !== skillId));
       } catch (err) {
         console.error('Failed to uninstall:', err);
@@ -806,13 +898,28 @@ export default function SkillsPage({ agents, projects }) {
                   <span className="text-xs text-gray-500 font-normal">({skills.length} total)</span>
                 </h3>
                 {currentProjectId && (
-                  <button
-                    onClick={() => setEditorState({ skill: null })}
-                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
-                    title="Create a new project skill"
-                  >
-                    <PenLine size={13} /> New skill
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {canCoach && (
+                      <button
+                        onClick={() => onStartCoachSession(coachAgent.id)}
+                        className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+                        title="Chat with the Skill Builder coach to create a skill"
+                      >
+                        <Sparkles size={13} /> Build a skill
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setEditorState({ skill: null })}
+                      className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+                        canCoach
+                          ? 'border border-gray-700 text-gray-300 hover:bg-gray-800'
+                          : 'bg-indigo-600 text-white hover:bg-indigo-500'
+                      }`}
+                      title="Write a skill's SKILL.md directly"
+                    >
+                      <PenLine size={13} /> Write raw
+                    </button>
+                  </div>
                 )}
               </div>
               {loadingSkills ? (
