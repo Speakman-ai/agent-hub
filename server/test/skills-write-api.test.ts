@@ -178,11 +178,11 @@ describe('Project skills — write API (POST/PUT)', () => {
     const proj = await newProject();
     const res = await request
       .post(`/api/projects/${proj.id}/skills`)
-      .send({ name: 'kanban', description: 'shadow attempt' })
+      .send({ name: 'agent-hub-kanban', description: 'shadow attempt' })
       .expect(409);
     expect((res.body as { error: string }).error).toContain('bundled default');
     // Nothing should have been written.
-    expect(existsSync(path.join(proj.ahw, 'skills', 'kanban'))).toBe(false);
+    expect(existsSync(path.join(proj.ahw, 'skills', 'agent-hub-kanban'))).toBe(false);
   });
 
   it('POST rejects a duplicate project skill with 409 (use PUT)', async () => {

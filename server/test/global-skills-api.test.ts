@@ -129,10 +129,10 @@ describe('Global (shared) skills — write/read API', () => {
   it('POST rejects shadowing a bundled default skill with 409', async () => {
     const res = await request
       .post('/api/global-skills')
-      .send({ name: 'kanban', description: 'shadow attempt' })
+      .send({ name: 'agent-hub-kanban', description: 'shadow attempt' })
       .expect(409);
     expect((res.body as { error: string }).error).toContain('bundled default');
-    expect(existsSync(path.join(globalDir, 'kanban'))).toBe(false);
+    expect(existsSync(path.join(globalDir, 'agent-hub-kanban'))).toBe(false);
   });
 
   // NOTE: the FLAT-default (`<slug>.md`) collision case is covered in isolation

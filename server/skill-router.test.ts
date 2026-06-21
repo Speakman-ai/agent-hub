@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { routeSkillFromMessage, routeSkillsFromMessage } from './skill-router.js';
 
 const ALL_SKILLS = [
-  { id: 'kanban', name: 'kanban', description: 'Manage board cards' },
-  { id: 'wiki-search', name: 'wiki-search', description: 'Search project wiki' },
+  { id: 'agent-hub-kanban', name: 'agent-hub-kanban', description: 'Manage board cards' },
+  { id: 'agent-hub-wiki', name: 'agent-hub-wiki', description: 'Search project wiki' },
   { id: 'using-git-worktrees', name: 'using-git-worktrees', description: 'Create worktrees' },
   { id: 'design', name: 'design', description: 'Design Studio authoring' },
   { id: 'designs', name: 'designs', description: 'Read design artifacts' },
@@ -17,7 +17,7 @@ describe('routeSkillFromMessage', () => {
       message: 'Please move this card on the board and update the backlog.',
       skills: ALL_SKILLS,
     });
-    expect(result?.skillId).toBe('kanban');
+    expect(result?.skillId).toBe('agent-hub-kanban');
   });
 
   it('does not false-positive kanban for third-party tools', () => {
@@ -25,15 +25,15 @@ describe('routeSkillFromMessage', () => {
       message: 'Create this in Linear kanban board and sync to Jira.',
       skills: ALL_SKILLS,
     });
-    expect(result?.skillId).not.toBe('kanban');
+    expect(result?.skillId).not.toBe('agent-hub-kanban');
   });
 
-  it('routes wiki-search for docs/architecture requests', () => {
+  it('routes agent-hub-wiki for docs/architecture requests', () => {
     const result = routeSkillFromMessage({
       message: 'Search wiki for architecture docs before implementing.',
       skills: ALL_SKILLS,
     });
-    expect(result?.skillId).toBe('wiki-search');
+    expect(result?.skillId).toBe('agent-hub-wiki');
   });
 
   it('routes using-git-worktrees for isolation request', () => {
@@ -161,8 +161,8 @@ describe('routeSkillFromMessage', () => {
 describe('routeSkillsFromMessage — multi-match + project default', () => {
   const SKILLS = [
     { id: 'agent-hub', name: 'Agent Hub' },
-    { id: 'kanban', name: 'Kanban' },
-    { id: 'wiki-search', name: 'Wiki Search' },
+    { id: 'agent-hub-kanban', name: 'Kanban' },
+    { id: 'agent-hub-wiki', name: 'Wiki Search' },
   ];
 
   it('(a) injects agent-hub via project-default rule when no platform tell is present', () => {
@@ -185,16 +185,16 @@ describe('routeSkillsFromMessage — multi-match + project default', () => {
     expect(matches.find((m) => m.skillId === 'agent-hub')).toBeUndefined();
   });
 
-  it('(c) returns kanban first by score when both kanban and agent-hub default match', () => {
+  it('(c) returns agent-hub-kanban first by score when both it and agent-hub default match', () => {
     const matches = routeSkillsFromMessage({
       message: 'create a kanban card',
       skills: SKILLS,
       projectSlug: 'agent-hub',
     });
     const ids = matches.map((m) => m.skillId);
-    expect(ids).toContain('kanban');
+    expect(ids).toContain('agent-hub-kanban');
     expect(ids).toContain('agent-hub');
-    expect(ids[0]).toBe('kanban');
+    expect(ids[0]).toBe('agent-hub-kanban');
     const ahMatch = matches.find((m) => m.skillId === 'agent-hub')!;
     expect(ahMatch.reason).toContain('project default');
   });
@@ -231,6 +231,6 @@ describe('routeSkillsFromMessage — multi-match + project default', () => {
       skills: SKILLS,
       projectSlug: 'agent-hub',
     });
-    expect(result?.skillId).toBe('kanban');
+    expect(result?.skillId).toBe('agent-hub-kanban');
   });
 });

@@ -4,11 +4,30 @@ import { fileURLToPath } from 'url';
 import { describe, it, expect } from 'vitest';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_SKILL = path.join(__dirname, '..', 'default-skills', 'kanban', 'SKILL.md');
-const PLUGIN_SKILL = path.join(__dirname, '..', '..', 'plugin', 'skills', 'kanban', 'SKILL.md');
+// The legacy standalone `kanban` skill was retired in favor of the canonical
+// `agent-hub-kanban` sub-skill; its detailed blocker documentation was folded
+// into that skill's reference. The coverage guard follows the docs.
+const DEFAULT_SKILL = path.join(
+  __dirname,
+  '..',
+  'default-skills',
+  'agent-hub-kanban',
+  'references',
+  'kanban.md',
+);
+const PLUGIN_SKILL = path.join(
+  __dirname,
+  '..',
+  '..',
+  'plugin',
+  'skills',
+  'agent-hub-kanban',
+  'references',
+  'kanban.md',
+);
 
 /**
- * Coverage guard for the `kanban` skill.
+ * Coverage guard for the `agent-hub-kanban` skill.
  *
  * Blockers are a first-class concept on the board (cycle-checked edges,
  * autonomous-dispatcher skip semantics, UI confirm gating) but the skill
@@ -67,19 +86,20 @@ function assertAllMarkersPresent(file: string, label: string): void {
   }
 }
 
-describe('kanban skill documents card blockers', () => {
-  it('server/default-skills/kanban/SKILL.md covers every blocker surface', () => {
+describe('agent-hub-kanban skill documents card blockers', () => {
+  it('default-skills/agent-hub-kanban/references/kanban.md covers every blocker surface', () => {
     expect(existsSync(DEFAULT_SKILL)).toBe(true);
-    assertAllMarkersPresent(DEFAULT_SKILL, 'default-skills/kanban/SKILL.md');
+    assertAllMarkersPresent(DEFAULT_SKILL, 'default-skills/agent-hub-kanban/references/kanban.md');
   });
 
-  it('plugin/skills/kanban/SKILL.md stays byte-identical to default-skills', () => {
+  it('plugin/skills/agent-hub-kanban/references/kanban.md stays byte-identical to default-skills', () => {
     if (!existsSync(PLUGIN_SKILL)) return;
     const a = readFileSync(DEFAULT_SKILL, 'utf8');
     const b = readFileSync(PLUGIN_SKILL, 'utf8');
-    expect(b, 'plugin/skills/kanban/SKILL.md diverges from default-skills — re-run the copy').toBe(
-      a,
-    );
+    expect(
+      b,
+      'plugin/skills/agent-hub-kanban/references/kanban.md diverges from default-skills — re-run the copy',
+    ).toBe(a);
   });
 
   it('markers are specific enough to fail on accidental deletion', () => {

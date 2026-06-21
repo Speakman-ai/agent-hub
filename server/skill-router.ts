@@ -43,9 +43,14 @@ const DESIGN_ARTIFACT_DIR_RE = /(?:^|\/)designs\/[^/]+\/?$/i;
 
 /** Skills with dedicated `builtInScore` heuristics — skip bare-word `explicitMentionScore` for these ids so common English ("design", "kanban") does not hijack routing. */
 const BUILT_IN_ROUTE_SKILL_IDS = new Set(
-  ['kanban', 'wiki-search', 'using-git-worktrees', 'designs', 'design', 'agent-hub'].map((s) =>
-    s.toLowerCase(),
-  ),
+  [
+    'agent-hub-kanban',
+    'agent-hub-wiki',
+    'using-git-worktrees',
+    'designs',
+    'design',
+    'agent-hub',
+  ].map((s) => s.toLowerCase()),
 );
 
 function normalize(text: string): string {
@@ -100,7 +105,7 @@ function builtInScore(
   const systemPrompt = normalize(input.agentSystemPrompt || '');
   const cwd = normalize(input.cwd || '');
 
-  if (skillId === 'kanban') {
+  if (skillId === 'agent-hub-kanban') {
     if (THIRD_PARTY_KANBAN_RE.test(message) && !/\bagent hub\b/i.test(message)) return null;
     if (
       /\b(kanban|board|cards?|backlog|sprint|epic|move card|track work|task tracking|work items?)\b/i.test(
@@ -112,7 +117,7 @@ function builtInScore(
     return null;
   }
 
-  if (skillId === 'wiki-search') {
+  if (skillId === 'agent-hub-wiki') {
     if (THIRD_PARTY_WIKI_RE.test(message) && !/\bagent hub\b/i.test(message)) return null;
     if (
       /\b(wiki|documentation|docs|architecture|conventions|search wiki|check wiki|project docs)\b/i.test(

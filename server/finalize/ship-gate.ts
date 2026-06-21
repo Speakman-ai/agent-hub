@@ -2,8 +2,8 @@
  * ship-gate.ts — gate direct `gh pr create` when Finalize is configured.
  *
  * Card-linked sessions whose worktree contains `.agent-hub/ci.yaml` must
- * ship through **Finalize Code Changes** instead of the legacy
- * create-ticket-and-pr / ship-pr skill path.
+ * ship through **Finalize Code Changes** instead of the direct
+ * `create-ticket-and-pr` skill push path.
  */
 import { access } from 'fs/promises';
 import path from 'path';
