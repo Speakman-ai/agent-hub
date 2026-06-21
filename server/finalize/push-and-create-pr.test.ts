@@ -242,6 +242,11 @@ describe('createPushAndCreatePr', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          // Push-target lock reads origin first; matches the project repo.
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
         if (cmd === 'git' && args[0] === 'ls-remote') {
           cb(null, {
             stdout: '1111111111111111111111111111111111111111\trefs/heads/feature/x\n',
@@ -290,14 +295,19 @@ describe('createPushAndCreatePr', () => {
     });
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/7' });
 
-    // Six execFile calls: git ls-remote (lease pin), git push, gh pr list,
-    // git log, git diff, then gh pr create.
-    expect(mockExecFile).toHaveBeenCalledTimes(6);
-    const lsRemoteArgs = mockExecFile.mock.calls[0]!;
+    // Seven execFile calls: git remote get-url (push-target lock), git
+    // ls-remote (lease pin), git push, gh pr list, git log, git diff, then
+    // gh pr create.
+    expect(mockExecFile).toHaveBeenCalledTimes(7);
+    const originArgs = mockExecFile.mock.calls[0]!;
+    expect(originArgs[0]).toBe('git');
+    expect(originArgs[1]).toEqual(['remote', 'get-url', 'origin']);
+
+    const lsRemoteArgs = mockExecFile.mock.calls[1]!;
     expect(lsRemoteArgs[0]).toBe('git');
     expect(lsRemoteArgs[1]).toEqual(['ls-remote', 'origin', 'refs/heads/feature/x']);
 
-    const firstArgs = mockExecFile.mock.calls[1]!;
+    const firstArgs = mockExecFile.mock.calls[2]!;
     expect(firstArgs[0]).toBe('git');
     // Lease is pinned to the ls-remote SHA, not bare — this is what keeps the
     // push from being rejected as `(stale info)` on a non-`main` branch.
@@ -312,7 +322,7 @@ describe('createPushAndCreatePr', () => {
     expect(firstOpts.cwd).toBe('/tmp/wt');
     expect(firstOpts.env.GH_TOKEN).toBe('ghs_fake_token');
 
-    const secondArgs = mockExecFile.mock.calls[2]!;
+    const secondArgs = mockExecFile.mock.calls[3]!;
     expect(secondArgs[0]).toBe('gh');
     expect(secondArgs[1]).toEqual([
       'pr',
@@ -325,15 +335,15 @@ describe('createPushAndCreatePr', () => {
       '1',
     ]);
 
-    const thirdArgs = mockExecFile.mock.calls[3]!;
+    const thirdArgs = mockExecFile.mock.calls[4]!;
     expect(thirdArgs[0]).toBe('git');
     expect(thirdArgs[1]).toEqual(['log', 'main..HEAD', '-z', '--format=%s%n%b']);
 
-    const fourthArgs = mockExecFile.mock.calls[4]!;
+    const fourthArgs = mockExecFile.mock.calls[5]!;
     expect(fourthArgs[0]).toBe('git');
     expect(fourthArgs[1]).toEqual(['diff', '--stat', 'main...HEAD']);
 
-    const fifthArgs = mockExecFile.mock.calls[5]!;
+    const fifthArgs = mockExecFile.mock.calls[6]!;
     expect(fifthArgs[0]).toBe('gh');
     expect(fifthArgs[1]).toEqual([
       'pr',
@@ -364,6 +374,10 @@ describe('createPushAndCreatePr', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
         if (cmd === 'git' && args[0] === 'ls-remote') {
           cb(null, {
             stdout:
@@ -397,21 +411,22 @@ describe('createPushAndCreatePr', () => {
     });
 
     expect(result).toEqual({ prUrl: 'https://github.com/acme/proj/pull/1241' });
-    // ls-remote (lease pin) → git push → gh pr list.
-    expect(mockExecFile).toHaveBeenCalledTimes(3);
-    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+    // git remote get-url (lock) → ls-remote (lease pin) → git push → gh pr list.
+    expect(mockExecFile).toHaveBeenCalledTimes(4);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual(['remote', 'get-url', 'origin']);
+    expect(mockExecFile.mock.calls[1]![1]).toEqual([
       'ls-remote',
       'origin',
       'refs/heads/feature/fix-reviewer-initial-reply-routing',
     ]);
-    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+    expect(mockExecFile.mock.calls[2]![1]).toEqual([
       'push',
       '--force-with-lease=feature/fix-reviewer-initial-reply-routing:2222222222222222222222222222222222222222',
       '-u',
       'origin',
       'feature/fix-reviewer-initial-reply-routing',
     ]);
-    expect(mockExecFile.mock.calls[2]![1]).toEqual([
+    expect(mockExecFile.mock.calls[3]![1]).toEqual([
       'pr',
       'list',
       '--head',
@@ -423,6 +438,43 @@ describe('createPushAndCreatePr', () => {
     ]);
   });
 
+  it('refuses to push when the worktree origin is not the project repo (push-target lock)', async () => {
+    // Regression: a session clone whose origin points at another repo must not
+    // be able to ship commits/PRs there. The guard reads origin first and
+    // aborts BEFORE any ls-remote / push / gh call mutates a remote.
+    mockExecFile.mockImplementation(
+      (
+        cmd,
+        args,
+        _opts,
+        cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
+      ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/attacker/evil.git\n', stderr: '' });
+          return;
+        }
+        cb(null, { stdout: '', stderr: '' });
+      },
+    );
+    const push = createPushAndCreatePr({
+      config: { personalOAuth: null, githubApp: null } as never,
+    });
+    await expect(
+      push({
+        runId: 'run-evil',
+        worktreePath: '/tmp/wt',
+        branch: 'feature/x',
+        baseBranch: 'main',
+        headSha: 'deadbeef',
+        card: mkCard(),
+        project: mkProject(), // githubRepo: 'acme/proj'
+      }),
+    ).rejects.toThrow(/push refused/);
+    // Only the origin read ran — no ls-remote, no push, no gh.
+    expect(mockExecFile).toHaveBeenCalledTimes(1);
+    expect(mockExecFile.mock.calls[0]![1]).toEqual(['remote', 'get-url', 'origin']);
+  });
+
   it('throws when gh emits no parseable URL', async () => {
     mockExecFile.mockImplementation(
       (
@@ -431,6 +483,10 @@ describe('createPushAndCreatePr', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
         if (cmd === 'gh' && args[1] === 'list') {
           cb(null, { stdout: '[]\n', stderr: '' });
           return;
@@ -499,6 +555,10 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
         if (cmd === 'git' && args[0] === 'ls-remote') {
           cb(null, {
             stdout: 'cafef00dcafef00dcafef00dcafef00dcafef00d\trefs/heads/fix/pr-head\n',
@@ -527,13 +587,15 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
       project: mkProject(),
     });
 
-    // calls[0] = ls-remote (lease pin), calls[1] = git push.
-    expect(mockExecFile.mock.calls[0]![1]).toEqual([
+    // calls[0] = git remote get-url (lock), calls[1] = ls-remote (lease pin),
+    // calls[2] = git push.
+    expect(mockExecFile.mock.calls[0]![1]).toEqual(['remote', 'get-url', 'origin']);
+    expect(mockExecFile.mock.calls[1]![1]).toEqual([
       'ls-remote',
       'origin',
       'refs/heads/fix/pr-head',
     ]);
-    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+    expect(mockExecFile.mock.calls[2]![1]).toEqual([
       'push',
       '--force-with-lease=fix/pr-head:cafef00dcafef00dcafef00dcafef00dcafef00d',
       '-u',
@@ -550,6 +612,10 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
         if (cmd === 'git' && args[0] === 'ls-remote') {
           // Empty output = branch not yet on origin (brand-new session branch).
           cb(null, { stdout: '', stderr: '' });
@@ -576,7 +642,8 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
       project: mkProject(),
     });
 
-    expect(mockExecFile.mock.calls[1]![1]).toEqual([
+    // calls[0] = git remote get-url (lock), calls[1] = ls-remote, calls[2] = push.
+    expect(mockExecFile.mock.calls[2]![1]).toEqual([
       'push',
       '--force-with-lease',
       '-u',
@@ -605,6 +672,10 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
         _opts,
         cb: (err: Error | null, out: { stdout: string; stderr: string }) => void,
       ) => {
+        if (cmd === 'git' && args[0] === 'remote') {
+          cb(null, { stdout: 'https://github.com/acme/proj.git\n', stderr: '' });
+          return;
+        }
         if (cmd === 'gh' && args[1] === 'list') {
           cb(null, { stdout: '[{"url":"https://github.com/acme/proj/pull/9"}]\n', stderr: '' });
           return;
@@ -612,6 +683,15 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
         cb(null, { stdout: '', stderr: '' });
       },
     );
+  }
+
+  /** Locate the `git push` execFile call to assert which token it ran with. */
+  function pushCallEnv(): NodeJS.ProcessEnv {
+    const call = mockExecFile.mock.calls.find(
+      (c) => c[0] === 'git' && Array.isArray(c[1]) && c[1][0] === 'push',
+    );
+    if (!call) throw new Error('expected a git push execFile call');
+    return (call[2] as { env: NodeJS.ProcessEnv }).env;
   }
 
   beforeEach(() => {
@@ -646,8 +726,7 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
     // ...and the org-owner token is never consulted when a session token exists.
     expect(mockResolveOrgOwnerGithubToken).not.toHaveBeenCalled();
     // The git push runs with Kevin's token, so GitHub attributes it to Kevin.
-    const pushOpts = mockExecFile.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
-    expect(pushOpts.env.GH_TOKEN).toBe('ghs_kevin_token');
+    expect(pushCallEnv().GH_TOKEN).toBe('ghs_kevin_token');
   });
 
   it('falls back to the org owner token when the session owner has no usable token', async () => {
@@ -669,8 +748,7 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
 
     expect(mockResolveAutoGitGithubToken).toHaveBeenCalledWith('sess-no-token', expect.anything());
     expect(mockResolveOrgOwnerGithubToken).toHaveBeenCalledTimes(1);
-    const pushOpts = mockExecFile.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
-    expect(pushOpts.env.GH_TOKEN).toBe('ghs_org_owner_token');
+    expect(pushCallEnv().GH_TOKEN).toBe('ghs_org_owner_token');
   });
 
   it('uses the org owner token when there is no session scope at all', async () => {
@@ -691,7 +769,6 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
     // No session scope → don't even attempt per-user resolution.
     expect(mockResolveAutoGitGithubToken).not.toHaveBeenCalled();
     expect(mockResolveOrgOwnerGithubToken).toHaveBeenCalledTimes(1);
-    const pushOpts = mockExecFile.mock.calls[0]![2] as { env: NodeJS.ProcessEnv };
-    expect(pushOpts.env.GH_TOKEN).toBe('ghs_org_owner_token');
+    expect(pushCallEnv().GH_TOKEN).toBe('ghs_org_owner_token');
   });
 });

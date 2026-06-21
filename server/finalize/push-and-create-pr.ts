@@ -28,6 +28,7 @@ import {
 } from '../auto-git.js';
 import type { NativePrService } from '../native-pr/service.js';
 import { pushAndCreateNativePr } from './push-and-create-pr-agenthub.js';
+import { assertWorktreeOriginMatchesProject } from './origin-guard.js';
 import { generateLlmPrSummary } from './pr-summary-llm.js';
 import type {
   PushAndCreatePrArgs,
@@ -407,6 +408,18 @@ export function createPushAndCreatePr(deps: {
       sessionToken ??
       (await resolveOrgOwnerGithubToken(deps.config, args.project.githubRepo ?? null));
     const env = autoGitChildEnv(token);
+
+    // Push-target lock: refuse to push unless the worktree origin is the
+    // project's OWN repo. A session clone inherits its origin from the
+    // project checkout, so a tampered / stale / mis-pointed origin would
+    // otherwise ship commits + a PR to an arbitrary repo. This is the
+    // GitHub-path symmetry to the agenthub path's hosted-repo guard
+    // (push-and-create-pr-agenthub.ts). The expected repo is resolved from
+    // project config, falling back to the project checkout's origin; a
+    // project with no verifiable target is HARD-REFUSED (no fail-open).
+    // Runs BEFORE the push so a bad origin never mutates a remote.
+    const guard = await assertWorktreeOriginMatchesProject(args.project, args.worktreePath, env);
+    console.log(`[finalize-push] ${guard.summary}`);
 
     // git push --force-with-lease=<branch>:<sha> -u origin <branch> — the lease
     // is pinned to an explicit ls-remote SHA so it does not depend on origin's
