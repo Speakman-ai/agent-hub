@@ -241,6 +241,15 @@ export const PatchSessionRequestSchema = z.object({
   name: z.string().optional(),
   max_turns: z.number().int().min(0).optional(),
   finalize_automation: z.enum(['manual', 'review', 'push', 'merge']).optional(),
+  // Session-control axes folded into one atomic PATCH so the session-mode
+  // picker (Design/Ask/Build/…) can change several axes in a single
+  // transaction. Persisting `session_mode` + `ask_mode` + `finalize_automation`
+  // together avoids partial commits: e.g. entering Design from `merge` must
+  // both switch the mode AND reset ship intent, all-or-nothing. A `design`
+  // request without a usable worktree rejects the WHOLE patch (400), so no
+  // other axis is mutated.
+  session_mode: z.enum(['chat', 'design']).optional(),
+  ask_mode: z.boolean().optional(),
 });
 
 export const AddSessionAgentRequestSchema = z.object({

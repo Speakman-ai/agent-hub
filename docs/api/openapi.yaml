@@ -11018,6 +11018,13 @@ paths:
                     - review
                     - push
                     - merge
+                session_mode:
+                  type: string
+                  enum:
+                    - chat
+                    - design
+                ask_mode:
+                  type: boolean
       responses:
         "200":
           description: Updated session.

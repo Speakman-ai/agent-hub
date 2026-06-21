@@ -20,11 +20,12 @@ import {
 import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import SessionModePicker from './SessionModePicker';
 import SessionSummarySheet from './SessionSummarySheet';
 import {
-  FINALIZE_AUTOMATION_OPTIONS,
-  finalizeAutomationLabel,
+  SESSION_CONTROL_OPTIONS,
+  sessionControlValue,
+  sessionControlLabel,
+  sessionControlPatch,
   deriveSessionFinalizeMode,
 } from '../utils/finalizeAutomation';
 import { deriveFinalizeButton, canPush, isFullyValidated } from '../utils/finalizeView';
@@ -82,37 +83,14 @@ export default function FinalizeBar({
   }, [sessionId, session?.finalize_automation, session?.ask_mode, session?.session_mode]);
 
   const canDesignMode = !!session?.can_design_mode;
-  const [modeBusy, setModeBusy] = useState(false);
-
-  const selectMode = useCallback(
-    async (next) => {
-      if (!sessionId || modeBusy || next === mode) return;
-      const prev = mode;
-      setMode(next); // optimistic
-      setModeBusy(true);
-      try {
-        await api.setSessionMode(sessionId, next);
-        // The server broadcasts `session-updated`; the context row + the
-        // design-files panel update from that. Also nudge the finalize poll.
-        onChanged?.();
-      } catch (err) {
-        setMode(prev); // revert on failure
-        reportError(err?.message || 'Failed to switch session mode');
-      } finally {
-        setModeBusy(false);
-      }
-    },
-    // reportError is defined below; stable via useCallback. Listed to satisfy lint.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionId, mode, modeBusy, onChanged],
-  );
 
   const fullyValidated = isFullyValidated(phases);
   const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
   const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
   const pushLabel = 'Push';
 
-  const dropdownLabel = askMode ? 'Ask' : finalizeAutomationLabel(automation);
+  const selectedValue = sessionControlValue({ sessionMode: mode, askMode, automation });
+  const dropdownLabel = sessionControlLabel(selectedValue);
 
   const reportError = useCallback(
     (msg) => {
@@ -125,26 +103,31 @@ export default function FinalizeBar({
   const selectAutomation = useCallback(
     async (value) => {
       setMenuOpen(false);
-      const current = askMode ? 'ask' : automation;
-      if (!sessionId || value === current) return;
+      if (value === 'design' && !canDesignMode) return;
+      // Collapse the (possibly multi-axis) change into ONE atomic PATCH. Applying
+      // the axes as separate calls risked a partial commit — e.g. clearing ship
+      // intent succeeds but the mode switch then fails its worktree check — and
+      // the old per-step revert could even desync local state from a server that
+      // already changed one axis. A single transactional call is all-or-nothing.
+      const patch = sessionControlPatch({ sessionMode: mode, askMode, automation }, value);
+      if (!sessionId || patch === null) return;
+      // Snapshot for revert; the server applies the patch atomically, so on
+      // failure nothing changed server-side and we restore every local axis.
+      const prev = { mode, askMode, automation };
+      if (patch.session_mode !== undefined) setMode(patch.session_mode); // optimistic
+      if (patch.ask_mode !== undefined) setAskMode(patch.ask_mode);
+      if (patch.finalize_automation !== undefined) setAutomation(patch.finalize_automation);
       try {
-        if (value === 'ask') {
-          await api.setSessionAskMode(sessionId, true);
-          setAskMode(true);
-        } else {
-          if (askMode) {
-            await api.setSessionAskMode(sessionId, false);
-            setAskMode(false);
-          }
-          await api.updateSession(sessionId, { finalize_automation: value });
-          setAutomation(value);
-        }
+        await api.updateSession(sessionId, patch);
         onChanged?.();
       } catch (err) {
+        setMode(prev.mode);
+        setAskMode(prev.askMode);
+        setAutomation(prev.automation);
         reportError(err?.message || 'Failed to update session mode');
       }
     },
-    [sessionId, automation, askMode, onChanged, reportError],
+    [sessionId, mode, automation, askMode, canDesignMode, onChanged, reportError],
   );
 
   const handleFinalize = useCallback(async () => {
@@ -206,15 +189,6 @@ export default function FinalizeBar({
         contentContainerStyle={styles.row}
         keyboardShouldPersistTaps="handled"
       >
-        {sessionId ? (
-          <SessionModePicker
-            mode={mode}
-            canDesign={canDesignMode}
-            disabled={modeBusy}
-            onChange={selectMode}
-          />
-        ) : null}
-
         <TouchableOpacity
           style={styles.outlineBtn}
           onPress={() => setShowSummary(true)}
@@ -315,23 +289,29 @@ export default function FinalizeBar({
         <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
           <View style={styles.menu}>
             <ScrollView>
-              {[{ value: 'ask', label: 'Ask', description: 'Read-only planning mode' }, ...FINALIZE_AUTOMATION_OPTIONS].map(
-                (opt) => {
-                  const active = askMode ? opt.value === 'ask' : opt.value === automation;
-                  return (
-                    <TouchableOpacity
-                      key={opt.value}
-                      style={[styles.menuItem, active && styles.menuItemActive]}
-                      onPress={() => selectAutomation(opt.value)}
-                    >
-                      <Text style={[styles.menuItemLabel, active && styles.menuItemLabelActive]}>
-                        {opt.label}
-                      </Text>
-                      <Text style={styles.menuItemDesc}>{opt.description}</Text>
-                    </TouchableOpacity>
-                  );
-                },
-              )}
+              {SESSION_CONTROL_OPTIONS.map((opt) => {
+                const active = opt.value === selectedValue;
+                const optDisabled = opt.value === 'design' && !canDesignMode;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    style={[
+                      styles.menuItem,
+                      active && styles.menuItemActive,
+                      optDisabled && styles.menuItemDisabled,
+                    ]}
+                    disabled={optDisabled}
+                    onPress={() => selectAutomation(opt.value)}
+                  >
+                    <Text style={[styles.menuItemLabel, active && styles.menuItemLabelActive]}>
+                      {opt.label}
+                    </Text>
+                    <Text style={styles.menuItemDesc}>
+                      {optDisabled ? 'Needs a session with an isolated worktree' : opt.description}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           </View>
         </Pressable>
@@ -458,6 +438,9 @@ const styles = StyleSheet.create({
   },
   menuItemActive: {
     backgroundColor: 'rgba(99,102,241,0.18)',
+  },
+  menuItemDisabled: {
+    opacity: 0.4,
   },
   menuItemLabel: {
     fontSize: 14,

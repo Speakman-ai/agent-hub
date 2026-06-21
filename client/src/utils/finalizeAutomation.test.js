@@ -2,10 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   FINALIZE_AUTOMATION_LEVELS,
   parseFinalizeAutomation,
-  finalizeAutomationFromSession,
   finalizeAutomationLabel,
-  deriveSessionFinalizeMode,
   SESSION_CONTROL_OPTIONS,
+  DESIGN_AUTOMATION_OPTION,
   sessionControlValue,
   sessionControlLabel,
   planSessionControlChange,
@@ -13,67 +12,17 @@ import {
 } from './finalizeAutomation.js';
 
 describe('parseFinalizeAutomation', () => {
-  it('passes through known levels', () => {
+  it('passes through known levels and defaults to manual', () => {
     for (const lvl of FINALIZE_AUTOMATION_LEVELS) {
       expect(parseFinalizeAutomation(lvl)).toBe(lvl);
     }
-  });
-
-  it('falls back to manual for unknown / missing values', () => {
     expect(parseFinalizeAutomation('bogus')).toBe('manual');
     expect(parseFinalizeAutomation(undefined)).toBe('manual');
-    expect(parseFinalizeAutomation(null)).toBe('manual');
-  });
-});
-
-describe('finalizeAutomationLabel', () => {
-  it('maps level → label and defaults to Build', () => {
-    expect(finalizeAutomationLabel('manual')).toBe('Build');
-    expect(finalizeAutomationLabel('review')).toBe('Build and Review');
-    expect(finalizeAutomationLabel('merge')).toBe('Auto Merge');
-    expect(finalizeAutomationLabel('bogus')).toBe('Build');
-  });
-});
-
-describe('deriveSessionFinalizeMode', () => {
-  it('defaults to manual / not-ask when the session is null or missing fields', () => {
-    expect(deriveSessionFinalizeMode(null)).toEqual({ automation: 'manual', askMode: false });
-    expect(deriveSessionFinalizeMode(undefined)).toEqual({ automation: 'manual', askMode: false });
-    expect(deriveSessionFinalizeMode({})).toEqual({ automation: 'manual', askMode: false });
-  });
-
-  it('reads the automation level and ask-mode flag from the session', () => {
-    expect(deriveSessionFinalizeMode({ finalize_automation: 'merge', ask_mode: false })).toEqual({
-      automation: 'merge',
-      askMode: false,
-    });
-    expect(deriveSessionFinalizeMode({ finalize_automation: 'review', ask_mode: true })).toEqual({
-      automation: 'review',
-      askMode: true,
-    });
-  });
-
-  it('validates the automation level (unknown collapses to manual)', () => {
-    expect(deriveSessionFinalizeMode({ finalize_automation: 'bogus' }).automation).toBe('manual');
-  });
-
-  it('coerces ask_mode to a real boolean', () => {
-    // SQLite persists booleans as 0/1; a truthy 1 must surface as `true` so the
-    // bar disables Ask mode on the server when switching to a non-ask level.
-    expect(deriveSessionFinalizeMode({ ask_mode: 1 }).askMode).toBe(true);
-    expect(deriveSessionFinalizeMode({ ask_mode: 0 }).askMode).toBe(false);
-  });
-
-  it('agrees with finalizeAutomationFromSession for the automation half', () => {
-    const session = { finalize_automation: 'push', ask_mode: 1 };
-    expect(deriveSessionFinalizeMode(session).automation).toBe(
-      finalizeAutomationFromSession(session),
-    );
   });
 });
 
 describe('SESSION_CONTROL_OPTIONS', () => {
-  it('lists Design first, then Ask, then the four finalize levels', () => {
+  it('folds Design + Ask + the four finalize levels into one ordered list', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o) => o.value)).toEqual([
       'design',
       'ask',
@@ -83,34 +32,39 @@ describe('SESSION_CONTROL_OPTIONS', () => {
       'merge',
     ]);
   });
+
+  it('puts Design first as the no-ship option', () => {
+    expect(SESSION_CONTROL_OPTIONS[0]).toBe(DESIGN_AUTOMATION_OPTION);
+    expect(DESIGN_AUTOMATION_OPTION.label).toBe('Design');
+  });
 });
 
 describe('sessionControlValue', () => {
-  it('returns design when session_mode is design, regardless of ask/automation', () => {
+  it('design takes precedence over ask and automation', () => {
     expect(sessionControlValue({ sessionMode: 'design', askMode: true, automation: 'merge' })).toBe(
       'design',
     );
   });
 
-  it('returns ask when not in design and ask_mode is on', () => {
-    expect(sessionControlValue({ sessionMode: 'chat', askMode: true, automation: 'merge' })).toBe(
+  it('ask takes precedence over the automation level when not in design', () => {
+    expect(sessionControlValue({ sessionMode: 'chat', askMode: true, automation: 'push' })).toBe(
       'ask',
     );
   });
 
-  it('falls through to the finalize automation level', () => {
-    expect(sessionControlValue({ sessionMode: 'chat', askMode: false, automation: 'push' })).toBe(
-      'push',
+  it('falls through to the finalize automation level (default manual)', () => {
+    expect(sessionControlValue({ sessionMode: 'chat', askMode: false, automation: 'review' })).toBe(
+      'review',
     );
     expect(sessionControlValue({})).toBe('manual');
   });
 });
 
 describe('sessionControlLabel', () => {
-  it('maps the folded values to labels', () => {
+  it('agrees with finalizeAutomationLabel for ship levels and adds Design/Ask', () => {
     expect(sessionControlLabel('design')).toBe('Design');
     expect(sessionControlLabel('ask')).toBe('Ask');
-    expect(sessionControlLabel('merge')).toBe('Auto Merge');
+    expect(sessionControlLabel('merge')).toBe(finalizeAutomationLabel('merge'));
     expect(sessionControlLabel('bogus')).toBe('Build');
   });
 });
@@ -126,17 +80,20 @@ describe('planSessionControlChange', () => {
         'design',
       ),
     ).toEqual([]);
+    expect(
+      planSessionControlChange({ sessionMode: 'chat', askMode: true, automation: 'push' }, 'ask'),
+    ).toEqual([]);
   });
 
   it('Ask -> Design clears ask mode before entering design (regression)', () => {
-    // Guards the mobile state leak: choosing Design must call setSessionAskMode(false)
-    // so the session is not left read-only ask underneath the Design label.
-    expect(
-      planSessionControlChange(
-        { sessionMode: 'chat', askMode: true, automation: 'manual' },
-        'design',
-      ),
-    ).toEqual([
+    // The bug: Design would win display precedence while ask_mode stayed on,
+    // leaving the session read-only underneath so design prompts never write
+    // artifacts. The plan must clear ask first.
+    const steps = planSessionControlChange(
+      { sessionMode: 'chat', askMode: true, automation: 'manual' },
+      'design',
+    );
+    expect(steps).toEqual([
       { type: 'ask', value: false },
       { type: 'mode', value: 'design' },
     ]);
@@ -151,9 +108,9 @@ describe('planSessionControlChange', () => {
     ).toEqual([{ type: 'mode', value: 'design' }]);
   });
 
-  it('ship level -> Design resets automation to manual (regression)', () => {
-    // Mobile parity: entering Design from push/merge must clear ship intent so
-    // it cannot resurface when leaving Design.
+  it('ship level -> Design resets automation to manual before entering design (regression)', () => {
+    // The bug: entering Design from push/merge left the ship intent stored
+    // underneath, resurfacing when later leaving Design.
     expect(
       planSessionControlChange(
         { sessionMode: 'chat', askMode: false, automation: 'merge' },
@@ -190,6 +147,18 @@ describe('planSessionControlChange', () => {
     ]);
   });
 
+  it('Design -> Ask resets to chat then enables ask', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'design', askMode: false, automation: 'manual' },
+        'ask',
+      ),
+    ).toEqual([
+      { type: 'mode', value: 'chat' },
+      { type: 'ask', value: true },
+    ]);
+  });
+
   it('Ask -> a ship level clears ask then sets the level', () => {
     expect(
       planSessionControlChange(
@@ -201,6 +170,15 @@ describe('planSessionControlChange', () => {
       { type: 'automation', value: 'review' },
     ]);
   });
+
+  it('Build -> Ask just enables ask', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: false, automation: 'manual' },
+        'ask',
+      ),
+    ).toEqual([{ type: 'ask', value: true }]);
+  });
 });
 
 describe('sessionControlPatch', () => {
@@ -208,6 +186,15 @@ describe('sessionControlPatch', () => {
     expect(
       sessionControlPatch({ sessionMode: 'chat', askMode: false, automation: 'push' }, 'push'),
     ).toBeNull();
+  });
+
+  it('collapses a single-axis change to one key', () => {
+    expect(
+      sessionControlPatch({ sessionMode: 'chat', askMode: false, automation: 'manual' }, 'merge'),
+    ).toEqual({ finalize_automation: 'merge' });
+    expect(
+      sessionControlPatch({ sessionMode: 'chat', askMode: false, automation: 'manual' }, 'ask'),
+    ).toEqual({ ask_mode: true });
   });
 
   it('collapses Design-from-merge into one atomic patch (mode + ship reset)', () => {

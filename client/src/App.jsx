@@ -282,9 +282,6 @@ export default function App({ initialView } = {}) {
   const [sessionDesignReloadToken, setSessionDesignReloadToken] = useState(0);
   // Controls the "Link a design" picker modal for the active chat session.
   const [showLinkDesign, setShowLinkDesign] = useState(false);
-  // True while a `session_mode` switch (chat ↔ design) is in flight, so the
-  // mode picker disables itself until the server confirms.
-  const [sessionModeBusy, setSessionModeBusy] = useState(false);
   // Manual-refresh counter for the design-mode canvas pane. Combined with the
   // per-session `code_changed` tick so the canvas reloads both on agent file
   // writes and on an explicit user reload click.
@@ -3752,16 +3749,6 @@ export default function App({ initialView } = {}) {
     }
   };
 
-  const handleAskModeChange = async (enabled) => {
-    setSessionAskMode(enabled);
-    if (activeSessionId) {
-      const updated = await api.setSessionAskMode(activeSessionId, enabled);
-      setSessions((prev) =>
-        prev.map((s) => (s.id === updated.id ? { ...s, ask_mode: updated.ask_mode } : s)),
-      );
-    }
-  };
-
   const handleDeleteSession = async (sessionId) => {
     setDeletingSessionIds((prev) => new Set(prev).add(sessionId));
     tearDownSessionPreview(sessionId);
@@ -4069,23 +4056,29 @@ export default function App({ initialView } = {}) {
   // gate) rather than reimplementing the worktree check here, so the picker
   // offers Design exactly when the server would accept it and can't drift.
   const sessionMode = activeSession?.session_mode === 'design' ? 'design' : 'chat';
-  const canDesignMode = !!activeSession?.can_design_mode;
   const designModeActive = sessionMode === 'design';
 
-  const handleSessionModeChange = useCallback(
-    async (nextMode) => {
+  // Atomic multi-axis session-control change for the Finalize automation picker
+  // (Design / Ask / Build / …). The picker can change session_mode + ask_mode +
+  // finalize_automation at once; we send them as ONE PATCH so the server applies
+  // them in a single transaction. Optimistic `sessionAskMode` is tracked
+  // separately from the session row, so it is updated here and reverted if the
+  // (atomic) call fails — the server changed nothing, so neither should we.
+  const handleSessionControlChange = useCallback(
+    async (patch) => {
       if (!activeSessionId) return;
-      setSessionModeBusy(true);
+      const prevAsk = sessionAskMode;
+      if (patch.ask_mode !== undefined) setSessionAskMode(patch.ask_mode);
       try {
-        const updated = await api.setSessionMode(activeSessionId, nextMode);
+        const updated = await api.updateSession(activeSessionId, patch);
         setSessions((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)));
+        if (patch.ask_mode !== undefined) setSessionAskMode(isSessionAskModeEnabled(updated));
       } catch (err) {
-        showToast(err?.message || 'Failed to change session mode', 'error', 6000);
-      } finally {
-        setSessionModeBusy(false);
+        if (patch.ask_mode !== undefined) setSessionAskMode(prevAsk);
+        throw err;
       }
     },
-    [activeSessionId, showToast],
+    [activeSessionId, sessionAskMode],
   );
 
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
@@ -4675,10 +4668,6 @@ export default function App({ initialView } = {}) {
                     onOpenLinkDesign={() => setShowLinkDesign(true)}
                     canLinkDesign={!!activeSessionId}
                     linkedDesignActive={!!linkedDesign}
-                    sessionMode={sessionMode}
-                    canDesignMode={canDesignMode}
-                    onSessionModeChange={handleSessionModeChange}
-                    sessionModeBusy={sessionModeBusy}
                   />
 
                   <SessionSummarySidebar
@@ -5483,7 +5472,7 @@ export default function App({ initialView } = {}) {
                                   session={activeSession}
                                   disabled={!connected}
                                   askMode={sessionAskMode}
-                                  onAskModeChange={handleAskModeChange}
+                                  onControlChange={handleSessionControlChange}
                                   onError={(msg) => showToast(msg, 'error', 8000)}
                                 />
                                 <FinalizeButton

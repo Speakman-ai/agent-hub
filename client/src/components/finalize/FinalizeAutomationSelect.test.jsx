@@ -4,12 +4,13 @@ import FinalizeAutomationSelect from './FinalizeAutomationSelect.jsx';
 
 vi.mock('../../utils/api.js', () => ({
   api: {
-    setSessionAskMode: vi.fn(),
     updateSession: vi.fn(),
   },
 }));
 
 import { api } from '../../utils/api.js';
+
+const sid = 'sess-1';
 
 describe('FinalizeAutomationSelect', () => {
   beforeEach(() => {
@@ -17,50 +18,33 @@ describe('FinalizeAutomationSelect', () => {
   });
 
   it('renders current session automation level', () => {
-    render(
-      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'push' }} />,
-    );
+    render(<FinalizeAutomationSelect sessionId={sid} session={{ finalize_automation: 'push' }} />);
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Build and Push');
   });
 
   it('renders the "review" option as "Build and Review"', () => {
     render(
-      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'review' }} />,
+      <FinalizeAutomationSelect sessionId={sid} session={{ finalize_automation: 'review' }} />,
     );
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Build and Review');
   });
 
   it('reflects a session automation level changed live mid-session', () => {
-    // Simulate the App-level flow: a `session-updated` WS event swaps the
-    // `session` prop; the select must re-render the new level without a
-    // remount (the user switched modes while coding).
     const { rerender } = render(
-      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'manual' }} />,
+      <FinalizeAutomationSelect sessionId={sid} session={{ finalize_automation: 'manual' }} />,
     );
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Build');
 
     rerender(
-      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'merge' }} />,
+      <FinalizeAutomationSelect sessionId={sid} session={{ finalize_automation: 'merge' }} />,
     );
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Auto Merge');
-  });
-
-  it('persists a new level via PATCH session', async () => {
-    api.updateSession.mockResolvedValueOnce({});
-    render(
-      <FinalizeAutomationSelect sessionId="sess-1" session={{ finalize_automation: 'manual' }} />,
-    );
-    fireEvent.click(screen.getByTestId('finalize-automation-select'));
-    fireEvent.click(screen.getByTestId('finalize-automation-option-merge'));
-    await waitFor(() => {
-      expect(api.updateSession).toHaveBeenCalledWith('sess-1', { finalize_automation: 'merge' });
-    });
   });
 
   it('renders Ask when session ask mode is active', () => {
     render(
       <FinalizeAutomationSelect
-        sessionId="sess-1"
+        sessionId={sid}
         session={{ finalize_automation: 'push' }}
         askMode={true}
       />,
@@ -68,58 +52,204 @@ describe('FinalizeAutomationSelect', () => {
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Ask');
   });
 
-  it('enables ask mode from the build selector', async () => {
-    const onAskModeChange = vi.fn();
-    render(
-      <FinalizeAutomationSelect
-        sessionId="sess-1"
-        session={{ finalize_automation: 'manual' }}
-        askMode={false}
-        onAskModeChange={onAskModeChange}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('finalize-automation-select'));
-    fireEvent.click(screen.getByTestId('finalize-automation-option-ask'));
-    await waitFor(() => {
-      expect(onAskModeChange).toHaveBeenCalledWith(true);
+  describe('atomic single-patch contract', () => {
+    it('sends one patch with the new automation level via onControlChange', async () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ finalize_automation: 'manual' }}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-merge'));
+      await waitFor(() =>
+        expect(onControlChange).toHaveBeenCalledWith({ finalize_automation: 'merge' }),
+      );
     });
-    expect(api.setSessionAskMode).not.toHaveBeenCalled();
-    expect(api.updateSession).not.toHaveBeenCalled();
+
+    it('selecting Ask sends a single { ask_mode: true } patch', async () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ finalize_automation: 'manual' }}
+          askMode={false}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-ask'));
+      await waitFor(() => expect(onControlChange).toHaveBeenCalledWith({ ask_mode: true }));
+    });
+
+    it('Ask -> a ship level clears ask AND sets the level in ONE patch', async () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ finalize_automation: 'manual' }}
+          askMode={true}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-review'));
+      await waitFor(() =>
+        expect(onControlChange).toHaveBeenCalledWith({
+          ask_mode: false,
+          finalize_automation: 'review',
+        }),
+      );
+      // Exactly one call — no separate per-axis round-trips that could partially commit.
+      expect(onControlChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to api.updateSession when no onControlChange handler is provided', async () => {
+      api.updateSession.mockResolvedValueOnce({});
+      render(
+        <FinalizeAutomationSelect sessionId={sid} session={{ finalize_automation: 'manual' }} />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-push'));
+      await waitFor(() =>
+        expect(api.updateSession).toHaveBeenCalledWith(sid, { finalize_automation: 'push' }),
+      );
+    });
   });
 
-  it('clears ask mode before selecting a build automation level', async () => {
-    const onAskModeChange = vi.fn();
-    api.updateSession.mockResolvedValueOnce({});
-    render(
-      <FinalizeAutomationSelect
-        sessionId="sess-1"
-        session={{ finalize_automation: 'manual' }}
-        askMode={true}
-        onAskModeChange={onAskModeChange}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('finalize-automation-select'));
-    fireEvent.click(screen.getByTestId('finalize-automation-option-review'));
-    await waitFor(() => {
-      expect(onAskModeChange).toHaveBeenCalledWith(false);
+  describe('Design folded into the dropdown', () => {
+    it('renders Design and Ask alongside the ship levels', () => {
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'chat', can_design_mode: true, finalize_automation: 'manual' }}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      expect(screen.getByTestId('finalize-automation-option-design')).toBeInTheDocument();
+      expect(screen.getByTestId('finalize-automation-option-ask')).toBeInTheDocument();
+      expect(screen.getByTestId('finalize-automation-option-merge')).toBeInTheDocument();
     });
-    expect(api.setSessionAskMode).not.toHaveBeenCalled();
-    expect(api.updateSession).toHaveBeenCalledWith('sess-1', { finalize_automation: 'review' });
-  });
 
-  it('falls back to the ask-mode API when no parent handler is provided', async () => {
-    api.setSessionAskMode.mockResolvedValueOnce({ id: 'sess-1', ask_mode: 1 });
-    render(
-      <FinalizeAutomationSelect
-        sessionId="sess-1"
-        session={{ finalize_automation: 'manual' }}
-        askMode={false}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('finalize-automation-select'));
-    fireEvent.click(screen.getByTestId('finalize-automation-option-ask'));
-    await waitFor(() => {
-      expect(api.setSessionAskMode).toHaveBeenCalledWith('sess-1', true);
+    it('shows the Design label when the session is in design mode', () => {
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'design', can_design_mode: true, finalize_automation: 'merge' }}
+        />,
+      );
+      expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Design');
+    });
+
+    it('selecting Design sends a single { session_mode: design } patch', async () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'chat', can_design_mode: true, finalize_automation: 'manual' }}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-design'));
+      await waitFor(() => expect(onControlChange).toHaveBeenCalledWith({ session_mode: 'design' }));
+    });
+
+    it('Design from a ship level clears ship intent in the SAME atomic patch (regression)', async () => {
+      // The bug: ship intent could be cleared and then the mode switch fail,
+      // dropping the merge/push intent. One atomic patch makes it all-or-nothing.
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'chat', can_design_mode: true, finalize_automation: 'merge' }}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-design'));
+      await waitFor(() =>
+        expect(onControlChange).toHaveBeenCalledWith({
+          session_mode: 'design',
+          finalize_automation: 'manual',
+        }),
+      );
+      expect(onControlChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('Ask + ship -> Design clears both axes in the SAME atomic patch (regression)', async () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'chat', can_design_mode: true, finalize_automation: 'push' }}
+          askMode={true}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-design'));
+      await waitFor(() =>
+        expect(onControlChange).toHaveBeenCalledWith({
+          session_mode: 'design',
+          ask_mode: false,
+          finalize_automation: 'manual',
+        }),
+      );
+      expect(onControlChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('selecting a ship level while in design resets to chat in the same patch', async () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'design', can_design_mode: true, finalize_automation: 'manual' }}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-push'));
+      await waitFor(() =>
+        expect(onControlChange).toHaveBeenCalledWith({
+          session_mode: 'chat',
+          finalize_automation: 'push',
+        }),
+      );
+    });
+
+    it('surfaces an error and does not crash when the atomic call rejects', async () => {
+      const onControlChange = vi.fn().mockRejectedValue(new Error('design_mode_requires_worktree'));
+      const onError = vi.fn();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'chat', can_design_mode: true, finalize_automation: 'merge' }}
+          onControlChange={onControlChange}
+          onError={onError}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-design'));
+      await waitFor(() => expect(onError).toHaveBeenCalledWith('design_mode_requires_worktree'));
+    });
+
+    it('disables Design and does not fire a change when the session has no worktree', () => {
+      const onControlChange = vi.fn().mockResolvedValue();
+      render(
+        <FinalizeAutomationSelect
+          sessionId={sid}
+          session={{ session_mode: 'chat', can_design_mode: false, finalize_automation: 'manual' }}
+          onControlChange={onControlChange}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('finalize-automation-select'));
+      const design = screen.getByTestId('finalize-automation-option-design');
+      expect(design).toBeDisabled();
+      fireEvent.click(design);
+      expect(onControlChange).not.toHaveBeenCalled();
     });
   });
 });

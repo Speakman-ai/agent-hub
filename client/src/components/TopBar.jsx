@@ -8,7 +8,6 @@ import {
 import { Palette } from 'lucide-react';
 import { api } from '../utils/api.js';
 import SessionStateIcon from './SessionStateIcon.jsx';
-import SessionModePicker from './SessionModePicker.jsx';
 
 function truncateSessionId(id, tailLen = 8) {
   if (!id || id.length <= tailLen) return id;
@@ -86,10 +85,6 @@ export default function TopBar({
   onOpenLinkDesign,
   canLinkDesign,
   linkedDesignActive,
-  sessionMode,
-  canDesignMode,
-  onSessionModeChange,
-  sessionModeBusy,
 }) {
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
@@ -274,16 +269,6 @@ export default function TopBar({
               )}
             </div>
           </div>
-        )}
-
-        {/* Desktop: Session mode picker (Chat | Design) */}
-        {agent && activeSessionId && (
-          <SessionModePicker
-            mode={sessionMode}
-            canDesign={!!canDesignMode}
-            disabled={!!sessionModeBusy}
-            onChange={onSessionModeChange}
-          />
         )}
 
         {/* Desktop: Model Selector */}

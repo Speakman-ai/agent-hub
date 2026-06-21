@@ -16,7 +16,11 @@ import {
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
 } from './sessions.openapi.js';
-import { normalizeSessionMode, sessionHasUsableWorktree } from '../session-mode.js';
+import {
+  normalizeSessionMode,
+  sessionHasUsableWorktree,
+  type SessionMode,
+} from '../session-mode.js';
 import { listSessionDesignFiles } from '../session-design-files.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { markSessionTermination } from '../process-termination.js';
@@ -1129,18 +1133,52 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const parsed = parseBody(PatchSessionRequestSchema, req, res);
     if (!parsed) return;
     const sessionId = String(req.params.sessionId);
-    if (parsed.name) {
-      stmts.updateSessionName.run(parsed.name, sessionId);
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+
+    // Validate the design-mode precondition BEFORE any write so the whole patch
+    // is atomic. The session-mode picker can change several axes at once (e.g.
+    // entering Design from `merge` resets ask_mode + finalize_automation and
+    // switches session_mode); applying them as separate calls risked a partial
+    // commit where, say, ship intent was cleared but the mode switch then failed
+    // its worktree check — leaving the user in chat with their merge/push intent
+    // silently dropped. Rejecting the entire request here, then applying every
+    // field in one transaction below, makes it all-or-nothing.
+    let nextMode: SessionMode | undefined;
+    if (parsed.session_mode !== undefined) {
+      nextMode = normalizeSessionMode(parsed.session_mode);
+      if (nextMode === 'design' && !sessionHasUsableWorktree(existing)) {
+        return res.status(400).json({
+          error: 'design_mode_requires_worktree',
+          message:
+            'Design mode requires a session with an isolated worktree. This session has no ' +
+            'worktree, so design artifacts cannot be produced.',
+        });
+      }
     }
-    if (parsed.max_turns !== undefined) {
-      stmts.updateSessionMaxTurns.run(parsed.max_turns, sessionId);
-    }
-    if (parsed.finalize_automation !== undefined) {
-      // Persist the chosen level only. Changing the dropdown must NOT start a
-      // Finalize run on its own — the level is honored at the next end-of-turn
-      // auto-commit (see maybeAutoStartFinalizeForSession via auto-git.ts).
-      stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
-    }
+
+    getDb().transaction(() => {
+      if (parsed.name) {
+        stmts.updateSessionName.run(parsed.name, sessionId);
+      }
+      if (parsed.max_turns !== undefined) {
+        stmts.updateSessionMaxTurns.run(parsed.max_turns, sessionId);
+      }
+      if (parsed.finalize_automation !== undefined) {
+        // Persist the chosen level only. Changing the dropdown must NOT start a
+        // Finalize run on its own — the level is honored at the next
+        // end-of-turn auto-commit (see maybeAutoStartFinalizeForSession via
+        // auto-git.ts).
+        stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
+      }
+      if (parsed.ask_mode !== undefined) {
+        stmts.updateSessionAskMode.run(parsed.ask_mode ? 1 : 0, sessionId);
+      }
+      if (nextMode !== undefined) {
+        stmts.updateSessionMode.run(nextMode, sessionId);
+      }
+    })();
+
     const session = stmts.getSession.get(sessionId) as SessionRow;
     const enriched = enrichSessionWithAgents(session, stmts, getEnrichedAgent);
     deps.broadcast({ type: 'session-updated', session: enriched });
