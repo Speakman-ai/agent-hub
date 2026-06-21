@@ -66,6 +66,26 @@ export const SECURITY_AUDIT_SCHEMA = `
     ON security_suppressions(project_id, advisory_id, package_name);
 `;
 
+/**
+ * Heal installs whose `security_findings` table predates the `last_scan_id`
+ * column. `CREATE TABLE IF NOT EXISTS` in {@link SECURITY_AUDIT_SCHEMA} never
+ * adds columns to an existing table, so a DB created before `last_scan_id`
+ * existed would throw `SqliteError: table security_findings has no column named
+ * last_scan_id` on the very first scan store (insert/update both reference it).
+ *
+ * Idempotent: the probe SELECT succeeds once the column is present, so the
+ * ALTER only runs on legacy tables. Safe to call on every boot after exec'ing
+ * the schema. No-op when the table doesn't exist yet (the schema just created
+ * it with the column).
+ */
+export function migrateSecurityFindingsAddLastScanId(db: Database.Database): void {
+  try {
+    db.prepare('SELECT last_scan_id FROM security_findings LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE security_findings ADD COLUMN last_scan_id TEXT');
+  }
+}
+
 export type FindingStatus = 'open' | 'fixed' | 'dismissed';
 
 export interface SecurityFindingRow {

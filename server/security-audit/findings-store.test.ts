@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   SECURITY_AUDIT_SCHEMA,
   createSecurityAuditStore,
+  migrateSecurityFindingsAddLastScanId,
   type SecurityAuditStore,
 } from './findings-store.js';
 import type { DependencyFinding, Severity } from './types.js';
@@ -407,5 +408,83 @@ describe('dismissFinding', () => {
     });
     expect(s3.newFindings).toHaveLength(1);
     expect(s3.newFindings[0].status).toBe('open');
+  });
+});
+
+describe('migrateSecurityFindingsAddLastScanId', () => {
+  // Reproduces the prod failure: a security_findings table created before the
+  // last_scan_id column existed. Without the heal migration, the store's
+  // INSERT/UPDATE (which both bind @last_scan_id) throw
+  // `SqliteError: table security_findings has no column named last_scan_id`.
+  const LEGACY_SCHEMA = `
+    CREATE TABLE security_findings (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      ecosystem TEXT NOT NULL,
+      package_name TEXT NOT NULL,
+      package_version TEXT NOT NULL,
+      advisory_id TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'unknown',
+      summary TEXT NOT NULL DEFAULT '',
+      fixed_version TEXT,
+      advisory_url TEXT NOT NULL DEFAULT '',
+      manifest_path TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open',
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      scan_ref TEXT
+    );
+    CREATE TABLE security_suppressions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      advisory_id TEXT NOT NULL,
+      package_name TEXT NOT NULL DEFAULT '',
+      reason TEXT,
+      created_by TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_security_suppressions_key
+      ON security_suppressions(project_id, advisory_id, package_name);
+  `;
+
+  function legacyHasLastScanId(legacyDb: Database.Database): boolean {
+    const cols = legacyDb.prepare(`PRAGMA table_info('security_findings')`).all() as Array<{
+      name: string;
+    }>;
+    return cols.some((c) => c.name === 'last_scan_id');
+  }
+
+  it('records a scan on a legacy table after the migration adds the column', () => {
+    const legacy = new Database(':memory:');
+    legacy.exec(LEGACY_SCHEMA);
+    expect(legacyHasLastScanId(legacy)).toBe(false);
+
+    migrateSecurityFindingsAddLastScanId(legacy);
+    expect(legacyHasLastScanId(legacy)).toBe(true);
+
+    // The bug: without the column, this store call throws on the insert.
+    const legacyStore = createSecurityAuditStore(legacy);
+    const summary = legacyStore.recordScanResults({
+      projectId: 'p1',
+      findings: [finding('lodash', '4.17.11', 'GHSA-a', 'critical', '4.17.21')],
+      scannedManifests: ['package-lock.json'],
+      presentManifests: ['package-lock.json'],
+      ref: 'main',
+      now: 1000,
+    });
+    expect(summary.newFindings).toHaveLength(1);
+    expect(legacyStore.getFinding('p1', summary.newFindings[0].id)?.last_scan_id).toBeTruthy();
+    legacy.close();
+  });
+
+  it('is idempotent — a no-op when the column already exists', () => {
+    const fresh = new Database(':memory:');
+    fresh.exec(SECURITY_AUDIT_SCHEMA);
+    expect(legacyHasLastScanId(fresh)).toBe(true);
+    // Calling again must not throw (duplicate-column ALTER is swallowed).
+    expect(() => migrateSecurityFindingsAddLastScanId(fresh)).not.toThrow();
+    expect(() => migrateSecurityFindingsAddLastScanId(fresh)).not.toThrow();
+    expect(legacyHasLastScanId(fresh)).toBe(true);
+    fresh.close();
   });
 });

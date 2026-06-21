@@ -10,7 +10,10 @@ import {
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
-import { SECURITY_AUDIT_SCHEMA } from './security-audit/findings-store.js';
+import {
+  SECURITY_AUDIT_SCHEMA,
+  migrateSecurityFindingsAddLastScanId,
+} from './security-audit/findings-store.js';
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
 import {
   deriveCardPrefix,
@@ -951,6 +954,10 @@ function initDb(dataDir: string): void {
   // Dependency security audit — vulnerable-dependency findings + operator
   // suppressions for Hub-hosted repos. See `server/security-audit/`.
   db.exec(SECURITY_AUDIT_SCHEMA);
+  // Heal installs whose security_findings table predates the last_scan_id
+  // column — CREATE TABLE IF NOT EXISTS never adds it, so legacy DBs threw
+  // `no column named last_scan_id` on every scan store. Idempotent.
+  migrateSecurityFindingsAddLastScanId(db);
 
   // Native pull requests — DB-backed PRs for Agent Hub-hosted projects
   // (Project.gitHost === 'agenthub'). The PR's git side (diff, files,
