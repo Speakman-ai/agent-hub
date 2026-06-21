@@ -5059,8 +5059,15 @@ export default function App({ initialView } = {}) {
                       <div
                         ref={scrollContainerRef}
                         onScroll={handleScrollEvent}
+                        data-testid="chat-scroll-container"
                         className="flex-1 overflow-y-auto p-3 md:p-6 relative border-t-2"
-                        style={{ borderTopColor: chatAccentColor }}
+                        // `overflowAnchor: none` hands scroll-position ownership entirely to
+                        // the JS in this component (auto-follow tail-pin + manual prepend
+                        // restore). Left at the browser default `auto`, native scroll
+                        // anchoring *also* shifts scrollTop when an older page is prepended
+                        // above the viewport — fighting `restoredScrollTop` across frames and
+                        // producing the rapid back-and-forth scroll jitter on load-older.
+                        style={{ borderTopColor: chatAccentColor, overflowAnchor: 'none' }}
                       >
                         <div className="mx-auto" ref={messagesColumnRef}>
                           {/* Reverse-infinite-scroll: spinner shown at the top
