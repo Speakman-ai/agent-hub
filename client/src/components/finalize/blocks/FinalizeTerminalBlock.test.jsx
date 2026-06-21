@@ -52,6 +52,27 @@ describe('FinalizeTerminalBlock', () => {
     expect(screen.queryByTestId('finalize-terminal-pr-link')).not.toBeInTheDocument();
   });
 
+  it('pairs a failure reason code with a human explanation', () => {
+    renderTerminal({ status: 'failed', failureReason: 'fix_no_progress' });
+    // The bare code stays for operators who know the vocabulary...
+    expect(screen.getByText('Failed (fix_no_progress)')).toBeInTheDocument();
+    // ...and a plain-English line explains it so it does not read as
+    // "the run just stopped".
+    const explanation = screen.getByTestId('finalize-terminal-explanation');
+    expect(explanation).toHaveTextContent(/did not land a new commit/i);
+  });
+
+  it('omits the explanation line for an unknown failure reason', () => {
+    renderTerminal({ status: 'failed', failureReason: 'totally_made_up' });
+    expect(screen.getByText('Failed (totally_made_up)')).toBeInTheDocument();
+    expect(screen.queryByTestId('finalize-terminal-explanation')).not.toBeInTheDocument();
+  });
+
+  it('does not show a failure explanation on a successful push', () => {
+    renderTerminal({ status: 'pushed', failureReason: 'fix_no_progress' });
+    expect(screen.queryByTestId('finalize-terminal-explanation')).not.toBeInTheDocument();
+  });
+
   it('returns null for non-finalize metadata', () => {
     const { container } = render(
       <FinalizeTerminalBlock message={{ metadata: JSON.stringify({ kind: 'pr_created' }) }} />,

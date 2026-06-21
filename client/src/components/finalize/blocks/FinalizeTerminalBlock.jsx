@@ -1,5 +1,6 @@
 import { CheckCircle2, XCircle, AlertTriangle, GitPullRequest } from 'lucide-react';
 import { parseFinalizeTerminalMetadata } from '../../../utils/finalizeTimeline.js';
+import { describeFinalizeFailureReason } from '../../../utils/finalizeFailureReason.js';
 import { prNumberFromUrl } from '../../../utils/prFormatting.js';
 import { relativeTime } from '../../../utils/time.js';
 
@@ -54,6 +55,12 @@ export default function FinalizeTerminalBlock({ message, hosted = false }) {
     ? 'text-amber-300 hover:text-amber-200'
     : 'text-emerald-300 hover:text-emerald-200';
 
+  // For a failure, pair the bare reason code (`Failed (fix_no_progress)`) with a
+  // plain-English explanation so the run does not read as "it just stopped".
+  // Skip it for the bypassed-push warning, which already has its own sub-line.
+  const failureExplanation =
+    !isSuccess && !bypassedPush ? describeFinalizeFailureReason(meta.failureReason) : null;
+
   return (
     <div className="flex justify-center mb-4" data-testid="finalize-terminal-block">
       <div className={`max-w-[95%] sm:max-w-[80%] w-full border rounded-xl px-4 py-3 ${border}`}>
@@ -68,6 +75,14 @@ export default function FinalizeTerminalBlock({ message, hosted = false }) {
         {bypassedPush ? (
           <p className="text-[12px] text-amber-200/70 mt-1">
             Review and checks did not both pass before this push.
+          </p>
+        ) : null}
+        {failureExplanation ? (
+          <p
+            className="text-[12px] text-red-200/70 mt-1"
+            data-testid="finalize-terminal-explanation"
+          >
+            {failureExplanation}
           </p>
         ) : null}
         {prUrl ? (

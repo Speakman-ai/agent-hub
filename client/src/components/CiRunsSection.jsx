@@ -24,6 +24,7 @@ import {
 import { api } from '../utils/api.js';
 import { relativePrTime } from '../utils/prFormatting.js';
 import { resourceBadgeText, jobResourceKey } from '../utils/formatResources.js';
+import { describeFinalizeFailureReason } from '../utils/finalizeFailureReason.js';
 
 const TERMINAL_STATUSES = new Set([
   'ready_to_push',
@@ -156,7 +157,12 @@ function RunRow({ projectId, run, onRerun = null }) {
           </code>
         </span>
         {run.failure_reason && (
-          <span className="text-[11px] text-red-400/80 truncate">{run.failure_reason}</span>
+          <span
+            className="text-[11px] text-red-400/80 truncate"
+            title={describeFinalizeFailureReason(run.failure_reason) || undefined}
+          >
+            {run.failure_reason}
+          </span>
         )}
         <span className="ml-auto flex items-center gap-3 flex-shrink-0 text-xs text-gray-600 tabular-nums">
           <span className={cls.replace(' animate-spin', '')}>{label}</span>
