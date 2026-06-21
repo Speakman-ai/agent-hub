@@ -6,10 +6,8 @@ import { api } from '../utils/api.js';
 vi.mock('../utils/api.js', () => ({
   api: {
     startFinalizeWizard: vi.fn(),
-    // Pulled in by the embedded <ProjectDefaultAutomationSection>; resolve to
-    // "no preference" so its mount effect doesn't throw.
-    getProjectUserSettings: vi.fn().mockResolvedValue({ defaultFinalizeAutomation: null }),
-    updateProjectUserSettings: vi.fn().mockResolvedValue({ defaultFinalizeAutomation: null }),
+    getFinalizeEnvironmentDraft: vi.fn().mockResolvedValue({ draft: null }),
+    getProjectSecrets: vi.fn().mockResolvedValue({ secrets: [] }),
   },
 }));
 
@@ -32,6 +30,11 @@ describe('FinalizeSettingsSection', () => {
     render(<FinalizeSettingsSection projects={projects} />);
     expect(screen.getByRole('heading', { name: 'Runner' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Set up Runner/i })).toBeInTheDocument();
+  });
+
+  it('no longer renders the default-automation panel (moved to project settings)', () => {
+    render(<FinalizeSettingsSection projects={projects} />);
+    expect(screen.queryByText('Your default automation')).not.toBeInTheDocument();
   });
 
   it('calls startFinalizeWizard and opens the session on success', async () => {

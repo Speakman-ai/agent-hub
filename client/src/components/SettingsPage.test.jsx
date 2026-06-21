@@ -19,6 +19,11 @@ vi.mock('../utils/api.js', () => ({
     getAgents: vi.fn(),
     updateAgent: vi.fn(),
     getProjectSecrets: vi.fn().mockResolvedValue({ secrets: {} }),
+    // Pulled in by the embedded <ProjectDefaultAutomationSection> now mounted
+    // on the project settings page; resolve to "no preference" so its mount
+    // effect doesn't throw.
+    getProjectUserSettings: vi.fn().mockResolvedValue({ defaultFinalizeAutomation: null }),
+    updateProjectUserSettings: vi.fn().mockResolvedValue({ defaultFinalizeAutomation: null }),
     getMyAgentModelOverrides: vi.fn().mockResolvedValue({ agentModelOverrides: {} }),
     putMyAgentModelOverride: vi.fn((id, body) =>
       Promise.resolve({ agentModelOverrides: { [id]: body.model } }),
@@ -532,11 +537,23 @@ describe('SettingsPage — sidebar navigation', () => {
     expect(queryByText(/GitHub Repository/)).toBeNull();
     expect(queryByText(/Clone URL/)).toBeNull();
     // Removed PR automation controls (Hub runs its own review/CI cycle).
+    // NOTE: "Auto Merge" / "Build and Review" intentionally render here now —
+    // they are radio labels of the per-user default-automation panel, a
+    // different surface from the old per-project PR toggles.
     expect(queryByText('Auto Review')).toBeNull();
-    expect(queryByText('Auto Merge')).toBeNull();
     expect(queryByText('Wait for CI')).toBeNull();
     expect(queryByText('Wait for Resolved Comments')).toBeNull();
     expect(queryByText('PR review model')).toBeNull();
+  });
+
+  it('renders the per-user default automation panel on the project settings page', async () => {
+    const projects = [
+      { id: 'p1', name: 'Acme', color: '#ff0000', cwd: '/tmp/a', githubRepo: '', agents: [] },
+    ];
+    const { findByText } = render(<ProjectsSection projects={projects} projectId="p1" />);
+    expect(await findByText('Your default automation')).toBeTruthy();
+    // The Finalize automation levels are selectable here now.
+    expect(await findByText('Auto Merge')).toBeTruthy();
   });
 
   it('exposes an AWS enable toggle that defaults off and persists via updateProject', async () => {

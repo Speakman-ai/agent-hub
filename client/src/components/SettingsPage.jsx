@@ -19,6 +19,7 @@ import PerUserEngineSelect from './PerUserEngineSelect.jsx';
 import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOverride.js';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import GitHostSettingsSection from './GitHostSettingsSection.jsx';
+import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection.jsx';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar.js';
 import { isWorkflowProject } from '../utils/projectMode.js';
 import {
@@ -1132,6 +1133,10 @@ export function ProjectsSection({
   const projectSettingsBody = (p) => (
     <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
       <ProjectSecretsEditor projectId={p.id} />
+
+      {/* Per-user default Finalize automation level for new sessions in this
+          project. Scoped to the signed-in user. */}
+      <ProjectDefaultAutomationSection projectId={p.id} />
 
       {/* Agent Hub git hosting — host the repo on the Hub itself; GitHub
           becomes an optional downstream mirror. Self-contained: fetches

@@ -12,7 +12,6 @@ import { api } from '../utils/api.js';
 import { envRowsFromDraftAndSecrets } from '../utils/projectEnvRows.js';
 import ProjectSecretsEditor from './ProjectSecretsEditor.jsx';
 import CiRunsSection from './CiRunsSection.jsx';
-import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection.jsx';
 
 export default function FinalizeSettingsSection({
   projects = [],
@@ -121,10 +120,6 @@ export default function FinalizeSettingsSection({
           read AWS keys, database creds, and other env vars at run time.
         </p>
       </div>
-
-      {/* Per-user default Finalize automation level for new sessions in this
-          project. Scoped to the signed-in user. */}
-      {projectId && <ProjectDefaultAutomationSection projectId={projectId} />}
 
       {/* Run history + CI-on-push config — GHA-style view of every CI
           execution (Finalize and push-triggered) for this project. */}
