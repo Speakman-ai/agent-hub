@@ -40,6 +40,7 @@ import {
   type HealthFetchFn as ComposeHealthFetchFn,
   type ComposePreviewNotifyStatusFn,
 } from './preview-compose-runtime.js';
+import { probePreviewHealth } from './preview-health-fetch.js';
 import { loadProjectEnvForSpawn } from './preview-secrets-store.js';
 import { reclaimFailedPortsInRange } from './preview-port-reclaim.js';
 import { DEFAULT_PREVIEW_PORT_RANGE } from './preview-schema.js';
@@ -236,6 +237,20 @@ export function createPreviewRuntimes(
     return { ok: res.ok, status: res.status };
   };
 
+  // Compose previews probe via the host-published port — when the Hub runs
+  // in Docker that hostname is `host.docker.internal` (see
+  // AGENT_HUB_PREVIEW_HEALTH_HOST). Vite/Angular dev servers reject that
+  // `Host` with a 403 (their allowedHosts gate), so the probe must send
+  // `Host: localhost`. undici's `fetch` IGNORES a manual Host override
+  // (verified — it still sends the URL's hostname), so the undici-backed
+  // `sharedFetch` permanently 403s and the preview never flips to `ready`.
+  // `probePreviewHealth` uses Node's `http.get`, which honors the Host
+  // override, so route compose health checks through it.
+  const composeHealthFetch: ComposeHealthFetchFn = async (url) => {
+    const { ok, statusCode } = await probePreviewHealth(url);
+    return { ok, status: statusCode ?? 0 };
+  };
+
   const previewRuntime = new PreviewRuntime({
     db: deps.db,
     spawn: childSpawn,
@@ -250,7 +265,7 @@ export function createPreviewRuntimes(
   const previewComposeRuntime = new PreviewComposeRuntime({
     db: deps.db,
     spawn: childSpawn,
-    fetch: sharedFetch,
+    fetch: composeHealthFetch,
     writeOverrideFile,
     deleteOverrideFile,
     notifyLog: deps.notifyLog,
