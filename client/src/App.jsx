@@ -86,7 +86,11 @@ import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck.js';
 import { api } from './utils/api.js';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate.js';
 import { coalescePromiseByKey } from './utils/coalesceInFlight.js';
-import { isNearBottom, forcePinChatTailScroll } from './utils/chatScroll.js';
+import {
+  isNearBottom,
+  forcePinChatTailScroll,
+  shouldFollowTailAfterScroll,
+} from './utils/chatScroll.js';
 import {
   MESSAGES_PAGE_SIZE,
   inferHasMore,
@@ -747,6 +751,13 @@ export default function App({ initialView } = {}) {
   // Stops auto-scrolling when the user scrolls away from the bottom past the threshold.
   const initialScrollRef = useRef(true);
   const isNearBottomRef = useRef(true);
+  // Last scrollTop seen by the scroll handler — lets it detect upward scrolls so
+  // a deliberate scroll-up breaks tail-follow even inside the near-bottom band
+  // (otherwise a live-growing block like the Finalize "Checks" block re-pins to
+  // the bottom on every poll and the user can't scroll up past it). Kept in sync
+  // after each programmatic pin so the next user scroll compares against the
+  // real resting position.
+  const lastScrollTopRef = useRef(0);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   // Tracks whether a programmatic scroll is in progress so we don't
@@ -819,8 +830,19 @@ export default function App({ initialView } = {}) {
       loadOlderMessages();
     }
     const nearBottom = checkNearBottom();
-    isNearBottomRef.current = nearBottom;
-    setShowScrollBtn(!nearBottom);
+    // An upward user scroll breaks follow immediately — even within the
+    // near-bottom band — so a live-growing block (Finalize CI checks) can't
+    // yank the viewport back to the tail while the user reads earlier messages.
+    const following = el
+      ? shouldFollowTailAfterScroll({
+          prevScrollTop: lastScrollTopRef.current,
+          scrollTop: el.scrollTop,
+          nearBottom,
+        })
+      : nearBottom;
+    if (el) lastScrollTopRef.current = el.scrollTop;
+    isNearBottomRef.current = following;
+    setShowScrollBtn(!following);
   }, [checkNearBottom, loadOlderMessages]);
 
   /** Snap to the tail. Always instant — smooth scroll cannot keep up with streaming tokens. */
@@ -829,6 +851,7 @@ export default function App({ initialView } = {}) {
     if (!el) return;
     programmaticScrollRef.current = true;
     el.scrollTop = el.scrollHeight;
+    lastScrollTopRef.current = el.scrollTop;
     requestAnimationFrame(() => {
       programmaticScrollRef.current = false;
       isNearBottomRef.current = true;
@@ -847,6 +870,7 @@ export default function App({ initialView } = {}) {
     forcePinChatTailScroll(el, (container) => {
       programmaticScrollRef.current = true;
       container.scrollTop = container.scrollHeight;
+      lastScrollTopRef.current = container.scrollTop;
       requestAnimationFrame(() => {
         programmaticScrollRef.current = false;
       });
@@ -864,6 +888,7 @@ export default function App({ initialView } = {}) {
   useLayoutEffect(() => {
     initialScrollRef.current = true;
     isNearBottomRef.current = true;
+    lastScrollTopRef.current = 0;
     setShowScrollBtn(false);
   }, [activeSessionId]);
 
@@ -907,6 +932,7 @@ export default function App({ initialView } = {}) {
       prevScrollHeight: restore.prevScrollHeight,
       newScrollHeight: el.scrollHeight,
     });
+    lastScrollTopRef.current = el.scrollTop;
     requestAnimationFrame(() => {
       programmaticScrollRef.current = false;
     });
@@ -924,6 +950,7 @@ export default function App({ initialView } = {}) {
       pinScroll: () => {
         programmaticScrollRef.current = true;
         el.scrollTop = el.scrollHeight;
+        lastScrollTopRef.current = el.scrollTop;
         requestAnimationFrame(() => {
           programmaticScrollRef.current = false;
           isNearBottomRef.current = true;
