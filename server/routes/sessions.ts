@@ -102,7 +102,8 @@ import type {
   PreviewComposeRuntimeSync,
   PreviewRuntimeActiveLookup,
 } from '../preview/preview-runtime-lookup.js';
-import { triggerSessionShip } from '../session-ship.js';
+import { triggerSessionShip, markSessionFinalizeAutomation } from '../session-ship.js';
+import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
 import {
   enrichSessionForClient,
   engineSupportsCheckpointRewind,
@@ -476,7 +477,20 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
     const askMode = parsed.ask_mode ? 1 : 0;
     stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
-    setSessionOwner(id, resolveOwnerUserId(req as AuthenticatedRequest));
+    setSessionOwner(id, ownerUid);
+    // Apply this user's per-project default Finalize automation level (if any)
+    // to the new ad-hoc session. No stored preference → leave NULL, which the
+    // session resolves to the global default ('manual'). Board-assigned and
+    // autonomous-dispatch sessions are created elsewhere and keep their own
+    // escalation rules (see assignedFinalizeAutomationLevel).
+    if (found?.project?.id) {
+      const userDefault = getUserProjectDefaultFinalizeAutomation(
+        stmts,
+        ownerUid,
+        found.project.id,
+      );
+      if (userDefault) markSessionFinalizeAutomation(stmts, id, userDefault);
+    }
     const session = stmts.getSession.get(id) as SessionRow;
     const sessionWire = enrichSessionForClient(session, stmts);
     deps.broadcast({ type: 'session_created', agentId: req.params.agentId, session: sessionWire });

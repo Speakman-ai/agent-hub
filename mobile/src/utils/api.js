@@ -189,6 +189,13 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Per-user, project-scoped settings (e.g. default Finalize automation level).
+  getProjectUserSettings: (projectId) => fetchJSON(`/projects/${projectId}/user-settings`),
+  updateProjectUserSettings: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/user-settings`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   deleteProject: (projectId) =>
     fetch(`${getApiBaseUrl()}/projects/${projectId}`, {
       method: 'DELETE',

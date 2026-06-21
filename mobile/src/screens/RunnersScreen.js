@@ -13,6 +13,7 @@ import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import FinalizeSection from '../components/FinalizeSection';
+import ProjectDefaultAutomationSection from '../components/settings/ProjectDefaultAutomationSection';
 
 const STATUS_COLOR = {
   success: colors.emerald400,
@@ -73,6 +74,8 @@ export default function RunnersScreen({ route, navigation }) {
       <ProjectScreenHeader title="Runners" project={project} onBack={() => navigation.goBack()} />
       <ScrollView contentContainerStyle={styles.content}>
         <FinalizeSection navigation={navigation} fixedProjectId={projectId} />
+
+        <ProjectDefaultAutomationSection projectId={projectId} />
 
         <View style={styles.ciSection}>
           <View style={styles.ciHeader}>

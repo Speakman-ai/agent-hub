@@ -45,6 +45,14 @@ import {
 } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
+import {
+  FINALIZE_AUTOMATION_LEVELS,
+  type FinalizeAutomationLevel,
+} from '../finalize/automation.js';
+import {
+  getUserProjectDefaultFinalizeAutomation,
+  setUserProjectDefaultFinalizeAutomation,
+} from '../user-project-settings.js';
 import { archiveHostedRepo, refreshBranchProtection } from '../git-host/repo-store.js';
 
 const execAsync = promisify(exec);
@@ -1681,6 +1689,70 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // in the project settings panel.
     const webhookConfigured = computeWebhookConfigured(project);
     res.json({ ...project, webhookConfigured });
+  });
+
+  // ─── Per-user, project-scoped settings ───────────────────────────
+  //
+  // Each user picks their own default Finalize automation level for a
+  // project; new ad-hoc sessions they create inherit it (see the manual
+  // session-creation path in server/routes/sessions.ts). Scoped strictly to
+  // the requesting user — there is no way to read or write another user's
+  // preference through these routes.
+
+  router.get('/api/projects/:projectId/user-settings', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    // 404 (not 403) for projects the caller can't see, matching the rest of
+    // the project surface — don't leak the existence of a private project.
+    if (!project || !canViewProject(project, resolveVisibilityCaller(req))) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    const userId = (req as AuthenticatedRequest).authUserId ?? null;
+    res.json({
+      projectId: project.id,
+      defaultFinalizeAutomation: getUserProjectDefaultFinalizeAutomation(stmts, userId, project.id),
+    });
+  });
+
+  router.put('/api/projects/:projectId/user-settings', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project || !canViewProject(project, resolveVisibilityCaller(req))) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    // Body must be a JSON object. Express parses primitives ("x", 5) and
+    // arrays as valid JSON too; a primitive RHS would throw on the `in` check
+    // below, so reject anything that isn't a plain object up front (400, not
+    // an unhandled 500). A missing body (`{}`) is allowed — it's a no-op.
+    const rawBody = req.body ?? {};
+    if (typeof rawBody !== 'object' || rawBody === null || Array.isArray(rawBody)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object.' });
+    }
+    const body = rawBody as Record<string, unknown>;
+    const userId = (req as AuthenticatedRequest).authUserId ?? null;
+    // Partial update: `defaultFinalizeAutomation` accepts a known level (set)
+    // or null (clear). Omitting the key entirely is "no change requested" — we
+    // must NOT persist in that case, or a `PUT {}` would silently clear an
+    // existing preference.
+    if ('defaultFinalizeAutomation' in body) {
+      const raw = body.defaultFinalizeAutomation;
+      let level: FinalizeAutomationLevel | null;
+      if (raw === null) {
+        level = null;
+      } else if (
+        typeof raw === 'string' &&
+        (FINALIZE_AUTOMATION_LEVELS as readonly string[]).includes(raw)
+      ) {
+        level = raw as FinalizeAutomationLevel;
+      } else {
+        return res.status(400).json({
+          error: `defaultFinalizeAutomation must be null or one of: ${FINALIZE_AUTOMATION_LEVELS.join(', ')}`,
+        });
+      }
+      setUserProjectDefaultFinalizeAutomation(stmts, userId, project.id, level);
+    }
+    res.json({
+      projectId: project.id,
+      defaultFinalizeAutomation: getUserProjectDefaultFinalizeAutomation(stmts, userId, project.id),
+    });
   });
 
   // ─── Re-detect preview defaults from the project's checkout ──────

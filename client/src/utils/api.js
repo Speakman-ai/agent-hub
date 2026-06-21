@@ -91,6 +91,13 @@ export const api = {
   createProject: (data) => fetchJSON('/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (projectId, data) =>
     fetchJSON(`/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // Per-user, project-scoped settings (e.g. default Finalize automation level).
+  getProjectUserSettings: (projectId) => fetchJSON(`/projects/${projectId}/user-settings`),
+  updateProjectUserSettings: (projectId, data) =>
+    fetchJSON(`/projects/${projectId}/user-settings`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   // Agent Hub-hosted git (gitHost: 'agenthub') — see server/routes/git-host.ts
   getGitHostStatus: (projectId) => fetchJSON(`/projects/${projectId}/git-host`),
   enableGitHost: (projectId, importFrom) =>

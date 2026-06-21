@@ -278,3 +278,96 @@ registerPath({
     },
   },
 });
+
+// ─── Per-user project settings ──────────────────────────────────────
+
+const FinalizeAutomationLevelSchema = z.enum(['manual', 'review', 'push', 'merge']).openapi({
+  description:
+    'Finalize automation level: `manual` (Build), `review` (Build and Review), `push` (Build and Push), `merge` (Auto Merge).',
+});
+
+export const UserProjectSettingsComponent = registerComponent(
+  'UserProjectSettings',
+  z
+    .object({
+      projectId: z.string().openapi({ description: 'Project slug.' }),
+      defaultFinalizeAutomation: FinalizeAutomationLevelSchema.nullable().openapi({
+        description:
+          "The requesting user's default Finalize automation level for new ad-hoc sessions in this project, or null when they have set no preference (the session falls back to the global default `manual`).",
+      }),
+    })
+    .openapi({
+      description:
+        'Per-user, project-scoped settings for the authenticated caller. Scoped strictly to the requesting user.',
+    }),
+);
+
+export const UserProjectSettingsRequestSchema = z
+  .object({
+    defaultFinalizeAutomation: FinalizeAutomationLevelSchema.nullable().optional().openapi({
+      description:
+        'The default Finalize automation level to store for the requesting user in this project. A known level sets it; `null` clears it; omitting the key leaves the existing value unchanged.',
+    }),
+  })
+  .openapi({ description: 'Body for PUT /api/projects/{projectId}/user-settings.' });
+
+export const UserProjectSettingsErrorComponent = registerComponent(
+  'UserProjectSettingsErrorResponse',
+  z.object({ error: z.string() }).openapi({
+    description:
+      'Error envelope: 404 when the project is missing or not visible to the caller; 400 when the body is malformed.',
+  }),
+);
+
+const userSettingsParams = z.object({
+  projectId: z.string().openapi({ description: 'Project slug (e.g. `agent-hub`).' }),
+});
+
+// GET /api/projects/:projectId/user-settings
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/user-settings',
+  tags: ['Projects'],
+  summary: "Read the caller's per-project settings",
+  description:
+    "Returns the authenticated caller's per-project settings — currently their default Finalize automation level for new ad-hoc sessions. Scoped to the requesting user; never exposes another user's preference.",
+  request: { params: userSettingsParams },
+  responses: {
+    200: {
+      description: 'Per-user project settings.',
+      content: jsonContent(UserProjectSettingsComponent),
+    },
+    404: {
+      description: 'No project with this slug, or the caller cannot see it.',
+      content: jsonContent(UserProjectSettingsErrorComponent),
+    },
+  },
+});
+
+// PUT /api/projects/:projectId/user-settings
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/user-settings',
+  tags: ['Projects'],
+  summary: "Update the caller's per-project settings",
+  description:
+    "Upserts the authenticated caller's per-project settings. Send `defaultFinalizeAutomation` as a known level to set it, `null` to clear it, or omit the key to leave it unchanged. Returns the resulting settings.",
+  request: {
+    params: userSettingsParams,
+    body: { content: jsonContent(UserProjectSettingsRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated per-user project settings.',
+      content: jsonContent(UserProjectSettingsComponent),
+    },
+    400: {
+      description: 'Malformed body.',
+      content: jsonContent(UserProjectSettingsErrorComponent),
+    },
+    404: {
+      description: 'No project with this slug, or the caller cannot see it.',
+      content: jsonContent(UserProjectSettingsErrorComponent),
+    },
+  },
+});

@@ -6,6 +6,10 @@ import { api } from '../utils/api.js';
 vi.mock('../utils/api.js', () => ({
   api: {
     startFinalizeWizard: vi.fn(),
+    // Pulled in by the embedded <ProjectDefaultAutomationSection>; resolve to
+    // "no preference" so its mount effect doesn't throw.
+    getProjectUserSettings: vi.fn().mockResolvedValue({ defaultFinalizeAutomation: null }),
+    updateProjectUserSettings: vi.fn().mockResolvedValue({ defaultFinalizeAutomation: null }),
   },
 }));
 

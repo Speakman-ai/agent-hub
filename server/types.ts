@@ -541,6 +541,19 @@ export interface DeviceTokenRow {
   enabled_events: string | null;
 }
 
+/**
+ * Per-user, project-scoped settings row (`user_project_settings`).
+ * `user_id` is the JWT-resolved user id, or `'__local__'` in single-tenant
+ * local mode. `default_finalize_automation` is one of the Finalize automation
+ * levels (`manual` | `review` | `push` | `merge`), or NULL for "no preference".
+ */
+export interface UserProjectSettingsRow {
+  user_id: string;
+  project_id: string;
+  default_finalize_automation: string | null;
+  updated_at: string;
+}
+
 export interface SessionEventRow {
   id: number;
   parent_kind: 'message' | 'heartbeat' | 'cron';
@@ -1361,6 +1374,8 @@ export interface Stmts {
   updateSessionPendingSkillContext: Stmt;
   updateSessionAutoShipOnComplete: Stmt;
   updateSessionFinalizeAutomation: Stmt;
+  getUserProjectSettings: Stmt;
+  upsertUserProjectDefaultFinalizeAutomation: Stmt;
   updateSessionState: Stmt;
   updateSessionLastTurnError: Stmt;
   incrementSessionResumeAttempts: Stmt;

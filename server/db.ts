@@ -2203,6 +2203,20 @@ function initDb(dataDir: string): void {
       tracks_json TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Per-user, project-scoped settings. Keyed on (user_id, project_id).
+    -- Today the only field is the user's preferred default Finalize
+    -- automation level for new ad-hoc sessions they create in the project.
+    -- user_id is the JWT-resolved user id, or '__local__' for single-tenant
+    -- local mode (no authUserId). NULL default_finalize_automation means
+    -- "no preference" → fall back to the global default ('manual').
+    CREATE TABLE IF NOT EXISTS user_project_settings (
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      default_finalize_automation TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, project_id)
+    );
   `);
 
   // Migration: designs gained org_id for multi-org scoping.
@@ -2928,6 +2942,16 @@ function initDb(dataDir: string): void {
     ),
     updateSessionFinalizeAutomation: db.prepare(
       "UPDATE sessions SET finalize_automation = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    getUserProjectSettings: db.prepare(
+      'SELECT * FROM user_project_settings WHERE user_id = ? AND project_id = ?',
+    ),
+    upsertUserProjectDefaultFinalizeAutomation: db.prepare(
+      `INSERT INTO user_project_settings (user_id, project_id, default_finalize_automation, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(user_id, project_id) DO UPDATE SET
+         default_finalize_automation = excluded.default_finalize_automation,
+         updated_at = datetime('now')`,
     ),
     // Derived state cache — intentionally does NOT touch `updated_at` so that
     // frequent signal-boundary recomputes don't churn the session sort order.

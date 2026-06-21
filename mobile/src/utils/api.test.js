@@ -568,3 +568,26 @@ describe('api kanban pagination helpers — URL parity with web client', () => {
     expect(url).toBe('https://example.test/api/projects/agent-hub/board/columns/col-1/cards');
   });
 });
+
+describe('api per-user project settings helpers — URL + method parity', () => {
+  it('getProjectUserSettings(projectId) → GET /projects/:id/user-settings', async () => {
+    await api.getProjectUserSettings('agent-hub');
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/user-settings');
+    expect(init?.method).toBeUndefined();
+  });
+
+  it('updateProjectUserSettings(projectId, data) → PUT with JSON body', async () => {
+    await api.updateProjectUserSettings('agent-hub', { defaultFinalizeAutomation: 'push' });
+    const [url, init] = lastCall();
+    expect(url).toBe('https://example.test/api/projects/agent-hub/user-settings');
+    expect(init?.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ defaultFinalizeAutomation: 'push' });
+  });
+
+  it('updateProjectUserSettings forwards a null clear', async () => {
+    await api.updateProjectUserSettings('agent-hub', { defaultFinalizeAutomation: null });
+    const [, init] = lastCall();
+    expect(JSON.parse(init.body)).toEqual({ defaultFinalizeAutomation: null });
+  });
+});

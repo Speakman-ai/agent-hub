@@ -4940,6 +4940,34 @@ components:
       required:
         - error
       description: Error envelope. `existingConfigId` is set on 409 conflicts to point the UI at the row already in place.
+    UserProjectSettings:
+      type: object
+      properties:
+        projectId:
+          type: string
+          description: Project slug.
+        defaultFinalizeAutomation:
+          type: string
+          nullable: true
+          enum:
+            - manual
+            - review
+            - push
+            - merge
+            - null
+          description: The requesting user's default Finalize automation level for new ad-hoc sessions in this project, or null when they have set no preference (the session falls back to the global default `manual`).
+      required:
+        - projectId
+        - defaultFinalizeAutomation
+      description: Per-user, project-scoped settings for the authenticated caller. Scoped strictly to the requesting user.
+    UserProjectSettingsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: "Error envelope: 404 when the project is missing or not visible to the caller; 400 when the body is malformed."
     UserFacingRelease:
       type: object
       properties:
@@ -17646,6 +17674,82 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WebhookAutoConfigureErrorResponse"
+  /api/projects/{projectId}/user-settings:
+    get:
+      tags:
+        - Projects
+      summary: Read the caller's per-project settings
+      description: Returns the authenticated caller's per-project settings — currently their default Finalize automation level for new ad-hoc sessions. Scoped to the requesting user; never exposes another user's preference.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Per-user project settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProjectSettings"
+        "404":
+          description: No project with this slug, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProjectSettingsErrorResponse"
+    put:
+      tags:
+        - Projects
+      summary: Update the caller's per-project settings
+      description: Upserts the authenticated caller's per-project settings. Send `defaultFinalizeAutomation` as a known level to set it, `null` to clear it, or omit the key to leave it unchanged. Returns the resulting settings.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug (e.g. `agent-hub`).
+          required: true
+          description: Project slug (e.g. `agent-hub`).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                defaultFinalizeAutomation:
+                  type: string
+                  nullable: true
+                  enum:
+                    - manual
+                    - review
+                    - push
+                    - merge
+                    - null
+                  description: The default Finalize automation level to store for the requesting user in this project. A known level sets it; `null` clears it; omitting the key leaves the existing value unchanged.
+              description: Body for PUT /api/projects/{projectId}/user-settings.
+      responses:
+        "200":
+          description: Updated per-user project settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProjectSettings"
+        "400":
+          description: Malformed body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProjectSettingsErrorResponse"
+        "404":
+          description: No project with this slug, or the caller cannot see it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProjectSettingsErrorResponse"
   /api/projects/provision/suggest:
     post:
       tags:
