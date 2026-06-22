@@ -31,7 +31,7 @@ const { initOrgsDb, setOrgsDbPathForTests, createOrg, updateOrg } = await import
 const { getUserByUsername } = await import('../users-store.js');
 const { createMembership, getMembershipRole } = await import('../memberships-store.js');
 
-function buildApp() {
+function buildApp(overrides: Record<string, unknown> = {}) {
   // Minimal RouteDeps stub. The switch handler reaches into most of these,
   // but we only need no-ops that don't throw — the gate rejects before
   // any of them are called for the failure cases we're testing, and
@@ -46,6 +46,8 @@ function buildApp() {
     restoreAutonomousCrons: () => {},
     setActiveDataDir: () => {},
     scheduleAll: () => {},
+    ensureSkillBuilderAgents: () => {},
+    ...overrides,
   } as unknown as Parameters<typeof createOrgRoutes>[0];
 
   const app = express();
@@ -180,6 +182,46 @@ describe('POST /api/orgs/:id/switch — membership gating', () => {
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ ok: true, orgId: 'home' });
+  });
+
+  it('still switches (200) when the Skill Builder backfill throws', async () => {
+    // The backfill is best-effort: a seeding/marker-write failure inside
+    // performOrgSwitch must NOT 500 the switch (the UI switches to the active
+    // org on every connect). Force the backfill to throw and assert the
+    // switch still succeeds.
+    const app = buildApp({
+      ensureSkillBuilderAgents: () => {
+        throw new Error('backfill boom');
+      },
+    });
+    const ownerToken = await seedOwnerAndLogin(app);
+    const owner = getUserByUsername('owner')!;
+    createOrg({ id: 'resilient', name: 'Resilient' });
+    createMembership(owner.id, 'resilient', 'Owner');
+
+    const res = await supertest(app)
+      .post('/api/orgs/resilient/switch')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, orgId: 'resilient' });
+  });
+
+  it('still switches (200) when ensureSkillBuilderAgents dep is missing', async () => {
+    // Exact reproduction of the original CI failure: a deps object that does
+    // not supply ensureSkillBuilderAgents (undefined → "is not a function"
+    // when the backfill invokes it). performOrgSwitch must swallow it and
+    // return 200, not 500.
+    const app = buildApp({ ensureSkillBuilderAgents: undefined });
+    const ownerToken = await seedOwnerAndLogin(app);
+    const owner = getUserByUsername('owner')!;
+    createOrg({ id: 'no-dep', name: 'No Dep' });
+    createMembership(owner.id, 'no-dep', 'Owner');
+
+    const res = await supertest(app)
+      .post('/api/orgs/no-dep/switch')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, orgId: 'no-dep' });
   });
 });
 

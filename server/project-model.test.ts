@@ -474,4 +474,54 @@ describe('ensureSkillBuilderAgents', () => {
     // The pre-existing project must be untouched — no backfill.
     expect(findProject(otherId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
   });
+
+  it('backfills ALL existing projects with agents when called with no projectId', async () => {
+    // Regression for the one-time backfill migration: the no-arg / iterate-all
+    // shape must seed a coach into EVERY project that has agents but lacks one,
+    // which is what gives pre-feature projects the web "Build a skill" button.
+    const aId = `skillbuilder-backfill-a-${Date.now()}`;
+    const bId = `skillbuilder-backfill-b-${Date.now()}`;
+    await createProjectWithAgent(aId, 'Backfill A', '#a1a');
+    await createProjectWithAgent(bId, 'Backfill B', '#b2b');
+
+    // Model two pre-feature projects: agents present, but no builder yet.
+    for (const id of [aId, bId]) {
+      const p = findProject(id)!;
+      p.agents = (p.agents || []).filter((agent) => agent.role !== 'skill-builder');
+    }
+    saveProjects();
+    expect(findProject(aId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+    expect(findProject(bId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+
+    // No projectId → backfill every loaded project.
+    ensureSkillBuilderAgents();
+
+    expect(findProject(aId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(true);
+    expect(findProject(bId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(true);
+  });
+
+  it('backfill leaves an agentless project without a builder', async () => {
+    // The iterate-all backfill must not invent a roster for an empty project;
+    // a coach with no project agents to assist makes no sense.
+    const emptyId = `skillbuilder-backfill-empty-${Date.now()}`;
+    const request = await getRequest();
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: emptyId, name: 'Backfill Empty', cwd: '/tmp', color: '#ccc' })
+      .expect(201);
+    createdProjectIds.push(emptyId);
+    const project = findProject(emptyId)!;
+    project.agents = [];
+    saveProjects();
+
+    ensureSkillBuilderAgents();
+
+    expect(findProject(emptyId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+  });
 });

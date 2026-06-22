@@ -49,6 +49,7 @@ import {
   ensureReviewerAgents,
   ensureContextFiles,
 } from './project-model.js';
+import { backfillSkillBuilderAgents } from './migrations/backfill-skill-builder-agents.js';
 import {
   scheduleAll,
   rescheduleCron,
@@ -316,6 +317,25 @@ ensureContextFiles();
 // Reviewer (Finalize review phase + native PR reviews), and hosting can
 // be enabled at any time — seed any hosted project that is missing one.
 ensureReviewerAgents({ onlyHosted: true });
+
+// One-time (per-org) backfill of the per-project Skill Builder coach into
+// projects that predate the feature, so the web Skills page's "Build a skill"
+// button appears for them. Marker-guarded — runs once and never resurrects a
+// coach a user later deletes. The org-switch path runs the same backfill for
+// every other org the first time it becomes active. See
+// migrations/backfill-skill-builder-agents.ts.
+try {
+  backfillSkillBuilderAgents({
+    dataDir: _activeDataDir,
+    ensureSkillBuilderAgents: () => ensureSkillBuilderAgents(),
+  });
+} catch (err) {
+  // Best-effort migration — never let a seeding/marker hiccup crash boot.
+  console.warn(
+    '[Skill Builder] startup backfill skipped:',
+    err instanceof Error ? err.message : String(err),
+  );
+}
 
 // Pre-create the empty `GH_CONFIG_DIR` reviewer spawns are routed to.
 // `applyReviewerSpawnIsolation` resolves the same path; doing the mkdir

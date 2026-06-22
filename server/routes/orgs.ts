@@ -13,6 +13,7 @@ import { createMembership, getMembershipRole, listMembersForOrg } from '../membe
 import type { AuthenticatedRequest } from '../auth.js';
 import { getAuthRecord } from '../auth-store.js';
 import config from '../config.js';
+import { backfillSkillBuilderAgents } from '../migrations/backfill-skill-builder-agents.js';
 import type { RouteDeps } from '../types.js';
 
 /**
@@ -35,6 +36,10 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     restoreAutonomousCrons,
     setActiveDataDir,
     scheduleAll,
+    // Required RouteDeps members (see server/types.ts `RouteDeps`). Both are
+    // consumed by performOrgSwitch below; the production object is wired in
+    // server/index.ts `routeDeps`. test/orgs-switch.test.ts pins the wiring.
+    ensureSkillBuilderAgents,
   } = deps;
   const router = Router();
 
@@ -49,6 +54,22 @@ export default function createOrgRoutes(deps: RouteDeps): Router {
     setActiveOrgId(orgId);
 
     reloadProjects(dataDir);
+    // First time this org becomes active, backfill the per-project Skill
+    // Builder coach into any pre-feature projects (marker-guarded, once).
+    // Best-effort: a seeding/marker-write hiccup must never break the org
+    // switch itself (the UI switches to the active org on every connect),
+    // so swallow-and-log. An unwritten marker just means a retry next time.
+    try {
+      backfillSkillBuilderAgents({
+        dataDir,
+        ensureSkillBuilderAgents: () => ensureSkillBuilderAgents(),
+      });
+    } catch (err) {
+      console.warn(
+        `[Skill Builder] backfill skipped for org switch (${orgId}):`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     scheduleAll(allAgents());
 
     for (const [_key, task] of autonomousCrons) {
