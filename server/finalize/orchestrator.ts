@@ -91,6 +91,7 @@ import {
   isInfraFailureReason,
   openInfraRetryRun,
   postInfraTerminalMessage,
+  resolveRetryGenerationCap,
 } from './infra-retry.js';
 import {
   recordFixDispatchCount,
@@ -1790,132 +1791,146 @@ export async function runFinalize(
     );
   }; // end driveAttempt
 
-  // ─── §10: drive original attempt + optional one infra retry ─────────
+  // ─── §10: drive original attempt + generation-aware infra-retry chain ─
   // The first attempt receives the trigger-time session/worktree (which
   // may be null when the card has no live session — in that case the
   // attempt's session-resolution block spawns one and persists the
-  // resolved values onto the row). The retry attempt inherits whatever
-  // the original resolved, so spawnSession is NOT re-fired on the
+  // resolved values onto the row). Each retry attempt inherits whatever
+  // the previous one resolved, so spawnSession is NOT re-fired on the
   // retry path.
-  const attempt1 = await driveAttempt(
-    runId,
-    opts.retryOfRunId ?? null,
-    opts.sessionId ?? opts.card.session_id ?? null,
-    opts.worktreePath ?? null,
+  //
+  // Generation-aware infra-retry chain. Each infra-class terminal may open
+  // ONE more retry generation, up to the per-class cap enforced inside
+  // `openInfraRetryRun` (generic infra survives one extra reclaim; a known
+  // `spot_reclaimed` survives more). This replaces the historical hardcoded
+  // single retry so a run that loses its driving agent to BACK-TO-BACK Spot
+  // reclaims still recovers instead of terminating green code as infra_error.
+  //
+  // The metrics `isFamilyTerminal` flag is true only for the attempt that does
+  // NOT spawn a further retry — that attempt carries the single
+  // `finalize_fix_dispatch_count` sample (§14).
+  let currentRunId = runId;
+  let currentRetryOf: string | null = opts.retryOfRunId ?? null;
+  let attemptSessionId: string | null = opts.sessionId ?? opts.card.session_id ?? null;
+  let attemptWorktreePath: string | null = opts.worktreePath ?? null;
+  let attempt = await driveAttempt(
+    currentRunId,
+    currentRetryOf,
+    attemptSessionId,
+    attemptWorktreePath,
   );
-  // §14 metric: terminal counters + histograms for the original attempt.
-  // Whether attempt1 is the FAMILY terminal (and therefore gets the
-  // single `finalize_fix_dispatch_count` sample) is determined by the
-  // same gate that drives the retry decision below — copied here so the
-  // `if (!isFirstAttempt || !isInfraTerminal)` early-return below still
-  // reads naturally without an extra flag.
-  const attempt1IsFirst = !opts.retryOfRunId;
-  const attempt1IsInfraTerminal =
-    attempt1.kind === 'failed' &&
-    attempt1.status === 'infra_error' &&
-    isInfraFailureReason(attempt1.failureReason);
-  const attempt1IsFamilyTerminal = !(attempt1IsFirst && attempt1IsInfraTerminal);
-  writeTerminalMetrics(runId, statusFromOutcome(attempt1), attempt1IsFamilyTerminal);
 
-  // Retry gate: only the ORIGINAL attempt can spawn a retry. If this
-  // run was itself opened as a retry by an upstream caller (e.g. a
-  // future cron resumes a finalize_runs row directly), we do not
-  // escalate further — §10 caps at one auto-retry. The classifier rules
-  // — `isInfraFailureReason` returns true only for the explicit §10
-  // infra whitelist; an unknown failure_reason is never auto-retried.
-  if (attempt1IsFamilyTerminal) {
-    return attempt1;
-  }
+  // Hard backstop on the chain length. `openInfraRetryRun` already enforces a
+  // finite per-class generation cap, so under normal operation the natural
+  // `!retry` exit below fires first. This bound is pure defense against a
+  // cyclic `retry_of_run_id` chain or a cap-logic bug — and it is DERIVED from
+  // the live caps (+1) rather than a fixed constant, so an intentionally-raised
+  // env cap is never silently truncated below what the operator configured.
+  //
+  // Crucially, when the backstop is reached we DO NOT just break: we stop
+  // opening retries so the current attempt falls through the terminal path
+  // below. That guarantees the last-driven attempt always gets its terminal
+  // metrics + infra message — the previous fixed-bound loop could open and
+  // drive a final retry, then exit the loop without finalizing it.
+  const chainBackstop =
+    Math.max(
+      resolveRetryGenerationCap('container_unavailable'),
+      resolveRetryGenerationCap('spot_reclaimed'),
+    ) + 1;
+  for (let i = 0; ; i++) {
+    const isInfraTerminal =
+      attempt.kind === 'failed' &&
+      attempt.status === 'infra_error' &&
+      isInfraFailureReason(attempt.failureReason);
 
-  // Open the one infra-retry row. `openInfraRetryRun` mirrors the
-  // parent's identifying tuple onto the retry row and broadcasts a
-  // fresh `finalize_run_created` so subscribers see the retry pop into
-  // existence. If the helper returns null (parent missing, would-be a
-  // retry-of-retry, insert raced) we surface the original terminal
-  // as-is — better to leave the original failure visible than to
-  // crash the orchestrator on a retry attempt that could not even be
-  // recorded.
-  const retry = openInfraRetryRun(
-    {
-      stmts: deps.stmts,
-      broadcast: deps.broadcast,
-      newId,
-      now,
-      log,
-    },
-    { parentRunId: runId, triggerSource: opts.triggerSource },
-  );
-  if (!retry) {
-    return attempt1;
-  }
+    // Only an infra-class terminal under the hard backstop is eligible for
+    // another generation. `openInfraRetryRun` enforces the per-class generation
+    // cap (and refuses on a missing parent / raced insert), returning null when
+    // no retry should run — in which case this attempt is the family terminal.
+    const retry =
+      i < chainBackstop && isInfraTerminal && attempt.kind === 'failed'
+        ? openInfraRetryRun(
+            { stmts: deps.stmts, broadcast: deps.broadcast, newId, now, log },
+            {
+              parentRunId: currentRunId,
+              triggerSource: opts.triggerSource,
+              parentFailureReason: attempt.failureReason,
+            },
+          )
+        : null;
 
-  // The original row may have learned a session_id / worktree_path
-  // mid-attempt (spawnSession ran). Read it back here so the retry
-  // inherits those values rather than re-spawning a second session.
-  let retryInitialSessionId: string | null = null;
-  let retryInitialWorktreePath: string | null = null;
-  try {
-    const origRow = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
-    retryInitialSessionId = origRow?.session_id ?? null;
-    retryInitialWorktreePath = origRow?.worktree_path ?? null;
-  } catch (err) {
-    log(
-      `[finalize-orchestrator] reading original row=${runId} for retry inheritance threw: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
+    // §14 metric: terminal counters + histograms. Family-terminal iff no
+    // further retry will run.
+    writeTerminalMetrics(currentRunId, statusFromOutcome(attempt), /* isFamilyTerminal */ !retry);
 
-  // §14 metric: the retry is a NEW finalize_runs row — record its start
-  // so `count(finalize_run_started)` matches `count(finalize_run_completed)`
-  // per attempt-row (a retried family logs 2 starteds + 2 completeds; an
-  // un-retried family logs 1 + 1).
-  recordRunStarted(
-    { stmts: deps.stmts, now, log },
-    { projectId: opts.project.id, runId: retry.runId, triggerSource: opts.triggerSource },
-  );
-  const attempt2 = await driveAttempt(
-    retry.runId,
-    runId,
-    retryInitialSessionId,
-    retryInitialWorktreePath,
-  );
-  // §14 metric: terminal counters + histograms for the retry attempt.
-  // The retry is ALWAYS the family terminal (§10 caps at one auto-retry),
-  // so it carries the single `finalize_fix_dispatch_count` sample.
-  writeTerminalMetrics(retry.runId, statusFromOutcome(attempt2), /* isFamilyTerminal */ true);
-
-  // §10 terminal: a second infra failure surfaces as `infra_error` AND
-  // posts a system message into the originating session naming the
-  // machine code, the error string, and the escalation hint. No GitHub
-  // surfaces touched — Finalize runs entirely pre-PR.
-  const retryIsInfraTerminal =
-    attempt2.kind === 'failed' &&
-    attempt2.status === 'infra_error' &&
-    isInfraFailureReason(attempt2.failureReason);
-  if (retryIsInfraTerminal && attempt2.kind === 'failed') {
-    let terminalSessionId: string | null = retryInitialSessionId;
-    try {
-      const retryRow = deps.stmts.getFinalizeRun.get(retry.runId) as FinalizeRunRow | undefined;
-      terminalSessionId = retryRow?.session_id ?? terminalSessionId;
-    } catch {
-      /* fall back to retryInitialSessionId */
+    if (!retry) {
+      // §10 terminal: an infra failure that exhausted the retry budget
+      // surfaces as `infra_error` AND posts a system message into the
+      // originating session naming the machine code + escalation hint. No
+      // GitHub surfaces touched — Finalize runs entirely pre-PR.
+      if (isInfraTerminal && attempt.kind === 'failed') {
+        let terminalSessionId: string | null = attemptSessionId;
+        try {
+          const finalRow = deps.stmts.getFinalizeRun.get(currentRunId) as
+            | FinalizeRunRow
+            | undefined;
+          terminalSessionId = finalRow?.session_id ?? terminalSessionId;
+        } catch {
+          /* fall back to attemptSessionId */
+        }
+        postInfraTerminalMessage(
+          { stmts: deps.stmts, broadcast: deps.broadcast, log, newId },
+          {
+            parentRunId: currentRetryOf ?? currentRunId,
+            retryRunId: currentRunId,
+            sessionId: terminalSessionId,
+            cardId: opts.card.id,
+            projectId: opts.project.id,
+            failureReason: attempt.failureReason,
+            detail: attempt.detail,
+          },
+        );
+      }
+      return attempt;
     }
-    postInfraTerminalMessage(
-      { stmts: deps.stmts, broadcast: deps.broadcast, log, newId },
-      {
-        parentRunId: runId,
-        retryRunId: retry.runId,
-        sessionId: terminalSessionId,
-        cardId: opts.card.id,
-        projectId: opts.project.id,
-        failureReason: attempt2.failureReason,
-        detail: attempt2.detail,
-      },
+
+    // A retry opened. Inherit whatever the parent resolved mid-attempt
+    // (session_id / worktree_path) so spawnSession does NOT re-fire — the
+    // session owns the worktree per §6.
+    let inheritSessionId: string | null = attemptSessionId;
+    let inheritWorktreePath: string | null = attemptWorktreePath;
+    try {
+      const parentRow = deps.stmts.getFinalizeRun.get(currentRunId) as FinalizeRunRow | undefined;
+      inheritSessionId = parentRow?.session_id ?? inheritSessionId;
+      inheritWorktreePath = parentRow?.worktree_path ?? inheritWorktreePath;
+    } catch (err) {
+      log(
+        `[finalize-orchestrator] reading parent row=${currentRunId} for retry inheritance threw: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // §14 metric: the retry is a NEW finalize_runs row — record its start so
+    // `count(finalize_run_started)` matches `count(finalize_run_completed)`.
+    recordRunStarted(
+      { stmts: deps.stmts, now, log },
+      { projectId: opts.project.id, runId: retry.runId, triggerSource: opts.triggerSource },
+    );
+
+    currentRetryOf = currentRunId;
+    currentRunId = retry.runId;
+    attemptSessionId = inheritSessionId;
+    attemptWorktreePath = inheritWorktreePath;
+    attempt = await driveAttempt(
+      currentRunId,
+      currentRetryOf,
+      attemptSessionId,
+      attemptWorktreePath,
     );
   }
-
-  return attempt2;
+  // Unreachable: the `for (;;)` loop only exits via the `return attempt` in the
+  // terminal (`!retry`) branch, which the backstop guarantees is always taken.
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────

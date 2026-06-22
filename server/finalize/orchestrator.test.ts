@@ -454,10 +454,18 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
 
 beforeEach(() => {
   vi.useRealTimers();
+  // The §10/§14 retry tests in this file were written against the historical
+  // single-auto-retry contract. The generation cap now defaults to 2 (generic
+  // infra) so a run survives a double reclaim; pin it back to 1 here for
+  // deterministic single-retry mechanics. The raised-cap behavior has its own
+  // dedicated coverage (see "double-reclaim survival" below + infra-retry.test).
+  process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS = '1';
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS;
+  delete process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────
@@ -2276,27 +2284,26 @@ describe('runFinalize — §10 retry inherits the family active-time budget', ()
     expect(familyTotal).not.toBeGreaterThan(3600);
   });
 
-  it('retry attempt that DOES enter the main loop sees the family-shared budget guard trip', async () => {
-    // This time the original fails infra inside the main loop (rebase
-    // throws AFTER consuming budget). The retry then enters the loop
-    // with the family budget already at the cap; the top-of-loop guard
-    // trips and surfaces as timed_out — NOT infra_error — because the
-    // budget guard is the §13 timeout path.
+  it('does NOT trip the budget on the retry when the parent burned it via an infra failure', async () => {
+    // Hardening (#4): the original fails infra inside the main loop (rebase
+    // throws AFTER consuming the ENTIRE budget). Previously the retry's
+    // top-of-loop budget guard tripped immediately (family total ≥ cap) and
+    // surfaced `timed_out` — a reclaim masquerading as a CI timeout. Now the
+    // parent's infra-wasted time is non-billable, so the family total resets
+    // to ~0 for the retry: the retry MUST actually enter its rebase (call 2)
+    // instead of being pre-empted, and the outcome is the genuine infra
+    // terminal (cap pinned to 1 here), NOT a timeout.
     let rebaseCallCount = 0;
     const rebase = vi.fn(async (depArg: { stmts: OrchestratorDeps['stmts'] }) => {
       rebaseCallCount += 1;
       if (rebaseCallCount === 1) {
-        // Original attempt's first rebase pass: consume the entire
-        // budget, then throw.
+        // Original attempt: consume the entire budget, then throw infra.
         depArg.stmts.updateFinalizeRunActiveSeconds.run(3600, 'run-1');
         throw new Error('worktree wedged');
       }
-      // Retry attempt's first rebase: would normally consume more, but
-      // we should never reach this point — the budget guard at the top
-      // of the loop should trip first because the family total is
-      // already at the cap.
-      depArg.stmts.updateFinalizeRunActiveSeconds.run(100, 'run-2');
-      return REBASE_OK;
+      // Retry attempt: reached because the forgiven budget did not pre-empt
+      // it. Throw infra again so the (cap-1) family terminates deterministically.
+      throw new Error('worktree wedged again');
     });
 
     const { deps, stmts } = makeDeps({
@@ -2306,16 +2313,16 @@ describe('runFinalize — §10 retry inherits the family active-time budget', ()
     const result = await runFinalize(deps, baseOpts());
     expect(result.kind).toBe('failed');
     if (result.kind === 'failed') {
-      // The retry tripped the §13 budget guard on its top-of-loop
-      // check (family total ≥ cap), surfacing timed_out — NOT
-      // infra_error.
-      expect(result.status).toBe('timed_out');
-      expect(result.failureReason).toBe('timeout');
+      // The forgiven budget means the retry is NOT timed out — it runs and
+      // surfaces the genuine infra terminal.
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('container_unavailable');
     }
-    // Rebase was called once on the original (which threw); the retry
-    // tripped the budget guard BEFORE calling rebase.
-    expect(rebaseCallCount).toBe(1);
-    // Family total stays at the cap; the retry's own bill is 0.
+    // Proof the guard did NOT pre-empt the retry: rebase ran a SECOND time.
+    expect(rebaseCallCount).toBe(2);
+    // Parent kept its (forgiven) seconds on its own row; the retry's own
+    // bill is 0. The family total the guard sees for the retry excludes the
+    // parent → no spurious timeout.
     const rows = Array.from(stmts.rows.values());
     const parent = rows.find((r) => !r.retry_of_run_id)!;
     const retry = rows.find((r) => r.retry_of_run_id)!;
@@ -2381,6 +2388,105 @@ describe('runFinalize — §10 retry broadcasts and lifecycle', () => {
       expect(e.failure_reason).toBe('container_unavailable');
     }
   });
+});
+
+describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', () => {
+  // The headline hardening: with the generation cap raised above 1, a run that
+  // loses its driving agent to back-to-back Spot reclaims (each surfacing as
+  // `container_unavailable`) RECOVERS instead of terminating green code as
+  // infra_error. These would have failed under the historical single-retry cap.
+  it('recovers on the 3rd attempt when the first two fail infra (cap=2)', async () => {
+    process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS = '2';
+    let rebaseCalls = 0;
+    const rebase = vi.fn(async () => {
+      rebaseCalls += 1;
+      if (rebaseCalls <= 2) throw new Error('agent reclaimed'); // container_unavailable ×2
+      return REBASE_OK;
+    });
+    const { deps, stmts } = makeDeps({ runRebasePhase: rebase as never });
+    const result = await runFinalize(deps, baseOpts());
+    // Two reclaims survived → the third attempt completes the pipeline.
+    expect(result.kind).toBe('ready_to_push');
+    expect(rebaseCalls).toBe(3);
+    // Three rows: original + 2 retries, chained generation 0 → 1 → 2.
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(3);
+    const rows = Array.from(stmts.rows.values());
+    expect(rows).toHaveLength(3);
+    const gen0 = rows.find((r) => !r.retry_of_run_id)!;
+    const gen1 = rows.find((r) => r.retry_of_run_id === gen0.id)!;
+    const gen2 = rows.find((r) => r.retry_of_run_id === gen1.id)!;
+    expect(gen0).toBeDefined();
+    expect(gen1).toBeDefined();
+    expect(gen2).toBeDefined();
+  });
+
+  it('still terminates infra_error if EVERY attempt up to the cap fails (cap=2 → 3 attempts)', async () => {
+    process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS = '2';
+    const rebase = vi.fn().mockRejectedValue(new Error('agent reclaimed'));
+    const { deps, stmts } = makeDeps({ runRebasePhase: rebase as never });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('container_unavailable');
+    }
+    // original + 2 retries = exactly 3 attempts at cap 2 (no runaway).
+    expect(rebase).toHaveBeenCalledTimes(3);
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(3);
+  });
+
+  it('finalizes the LAST attempt even when the env cap exceeds the loop backstop (no dropped terminal)', async () => {
+    // Regression for the review finding: the loop previously had a FIXED bound
+    // of 8 and finalized each attempt on the NEXT iteration's top, so with an
+    // env cap > 8 the last-opened retry was driven but never had its terminal
+    // metrics / infra message run. The backstop is now DERIVED from the live
+    // cap, and the backstop routes through the terminal path — so every run,
+    // including the highest generation, is finalized.
+    process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS = '10';
+    const rebase = vi.fn().mockRejectedValue(new Error('agent reclaimed'));
+    const { deps, stmts, broadcast } = makeDeps({ runRebasePhase: rebase as never });
+    const result = await runFinalize(deps, baseOpts());
+
+    // The genuine infra terminal is surfaced — NOT a raw, unfinalized attempt.
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('container_unavailable');
+    }
+
+    // cap 10 → original + 10 retries = 11 attempts, all driven, all infra.
+    expect(rebase).toHaveBeenCalledTimes(11);
+    expect(Array.from(stmts.rows.values())).toHaveLength(11);
+
+    // EVERY run row is finalized — a finalize_run_completed per attempt,
+    // including the highest generation. Under the old fixed-8 bound the runs
+    // past generation 8 would be driven but never finalized (< 11 events).
+    const completedEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_completed');
+    expect(completedEvents).toHaveLength(11);
+
+    // The terminal infra session message fires exactly once, for the final run.
+    const terminalMsgs = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => {
+        const raw = c[7] as string | null;
+        try {
+          return raw
+            ? (JSON.parse(raw) as { kind?: string }).kind === 'finalize_infra_terminal'
+            : false;
+        } catch {
+          return false;
+        }
+      },
+    );
+    expect(terminalMsgs).toHaveLength(1);
+  });
+
+  // NOTE: the reclaim-class (`spot_reclaimed`) generous-cap behavior is proven
+  // at the unit level in infra-retry.test.ts (openInfraRetryRun honours the
+  // reclaim cap). Wiring an actual `spot_reclaimed` *terminal* into the
+  // orchestrator depends on the reclaim-detection follow-up (lease-expiry /
+  // IMDS 2-min notice → spot_reclaimed), tracked separately.
 });
 
 // ─── §14 metric emission contract ─────────────────────────────────────

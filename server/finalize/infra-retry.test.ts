@@ -20,13 +20,19 @@ import type { BroadcastFn, FinalizeRunRow, Stmts } from '../types.js';
 import {
   CI_FAILURE_REASONS,
   INFRA_FAILURE_REASONS,
+  RECLAIM_FAILURE_REASONS,
   INFRA_TERMINAL_HEADER,
+  MAX_INFRA_RETRY_GENERATIONS,
+  MAX_RECLAIM_RETRY_GENERATIONS,
   classifyFailureReason,
   composeInfraTerminalMessageBody,
   computeRetryIdempotencyKey,
+  getRetryGenerationDepth,
   isInfraFailureReason,
+  isReclaimFailureReason,
   openInfraRetryRun,
   postInfraTerminalMessage,
+  resolveRetryGenerationCap,
 } from './infra-retry.js';
 import { computeIdempotencyKey } from './orchestrator.js';
 
@@ -226,14 +232,25 @@ describe('classifyFailureReason', () => {
     expect(classifyFailureReason(' container_unavailable')).toBe('unknown');
   });
 
-  it('INFRA list is exactly the §10 trio — no more, no less', () => {
+  it('INFRA list is the §10 trio plus the reclaim class — no more, no less', () => {
     // Locks the whitelist to prevent accidental drift. If §10 ever
-    // gains a fourth infra code, update both the wiki and this test.
+    // gains another infra code, update both the wiki and this test.
     expect([...INFRA_FAILURE_REASONS]).toEqual([
       'worktree_create_failed',
       'container_unavailable',
       'github_push_5xx',
+      'spot_reclaimed',
     ]);
+  });
+
+  it('spot_reclaimed classifies as infra and as a reclaim', () => {
+    expect(classifyFailureReason('spot_reclaimed')).toBe('infra');
+    expect(isReclaimFailureReason('spot_reclaimed')).toBe(true);
+    // Other infra codes are NOT reclaims (they get the conservative cap).
+    expect(isReclaimFailureReason('container_unavailable')).toBe(false);
+    expect(isReclaimFailureReason('github_push_5xx')).toBe(false);
+    expect(isReclaimFailureReason(null)).toBe(false);
+    expect([...RECLAIM_FAILURE_REASONS]).toEqual(['spot_reclaimed']);
   });
 
   it('INFRA and CI lists are disjoint', () => {
@@ -367,25 +384,97 @@ describe('openInfraRetryRun', () => {
     expect(log).toHaveBeenCalled();
   });
 
-  it('refuses a retry-of-a-retry (parent already has retry_of_run_id)', () => {
-    const grandParent = fakeParentRow({
-      id: 'grandparent',
-      idempotency_key: 'gp-key',
-    });
-    const parent = fakeParentRow({
-      id: 'parent-run',
-      idempotency_key: 'p-key',
-      retry_of_run_id: 'grandparent',
-    });
-    const { stmts } = makeStmts({ grandparent: grandParent, 'parent-run': parent });
+  // ── Generation-aware retry cap (double-reclaim hardening) ──────────
+  // Build a retry chain g0 → g1 → g2 → … so we can assert that
+  // openInfraRetryRun keeps opening generations up to the per-class cap
+  // and refuses beyond it. Each link carries a distinct idempotency key.
+  function chainRows(depth: number): Record<string, Partial<FinalizeRunRow>> {
+    const rows: Record<string, Partial<FinalizeRunRow>> = {};
+    for (let g = 0; g <= depth; g++) {
+      rows[`g${g}`] = fakeParentRow({
+        id: `g${g}`,
+        idempotency_key: `g${g}-key`,
+        retry_of_run_id: g === 0 ? null : `g${g - 1}`,
+      });
+    }
+    return rows;
+  }
+
+  it('default generic-infra cap is 2 and reclaim cap is 3', () => {
+    expect(MAX_INFRA_RETRY_GENERATIONS).toBe(2);
+    expect(MAX_RECLAIM_RETRY_GENERATIONS).toBe(3);
+    expect(resolveRetryGenerationCap('container_unavailable')).toBe(2);
+    expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(3);
+    expect(resolveRetryGenerationCap(undefined)).toBe(2);
+  });
+
+  it('getRetryGenerationDepth counts the retry_of_run_id chain', () => {
+    const { stmts } = makeStmts(chainRows(2));
+    expect(getRetryGenerationDepth(stmts, 'g0')).toBe(0);
+    expect(getRetryGenerationDepth(stmts, 'g1')).toBe(1);
+    expect(getRetryGenerationDepth(stmts, 'g2')).toBe(2);
+  });
+
+  it('generic infra ALLOWS a retry-of-a-retry up to the cap (survives a double reclaim)', () => {
+    // Parent is itself a retry (generation 1); opening generation 2 is at the
+    // cap (2) → allowed. This is the core double-reclaim hardening: the second
+    // consecutive infra failure no longer terminates an otherwise-green run.
+    const { stmts, rowMap } = makeStmts(chainRows(1));
+    const { broadcast, calls } = makeBroadcast();
+    const result = openInfraRetryRun(
+      { stmts, broadcast, newId: () => 'retry-g2', now: () => 0, log: vi.fn() },
+      {
+        parentRunId: 'g1',
+        triggerSource: 'ui_button',
+        parentFailureReason: 'container_unavailable',
+      },
+    );
+    expect(result).toEqual({ runId: 'retry-g2' });
+    expect(rowMap.get('retry-g2')!.retry_of_run_id).toBe('g1');
+    expect(calls.find((c) => c.type === 'finalize_run_created')).toBeDefined();
+  });
+
+  it('generic infra REFUSES once the generation cap is reached', () => {
+    // Parent is generation 2; opening generation 3 exceeds the generic cap (2).
+    const { stmts } = makeStmts(chainRows(2));
     const { broadcast, calls } = makeBroadcast();
     const log = vi.fn();
     const result = openInfraRetryRun(
       { stmts, broadcast, newId: () => 'retry-x', now: () => 0, log },
-      { parentRunId: 'parent-run', triggerSource: 'ui_button' },
+      {
+        parentRunId: 'g2',
+        triggerSource: 'ui_button',
+        parentFailureReason: 'container_unavailable',
+      },
     );
     expect(result).toBeNull();
     expect(calls).toHaveLength(0);
+    expect(log).toHaveBeenCalled();
+  });
+
+  it('reclaim-class gets a more generous cap than generic infra', () => {
+    // At generation 2, generic infra refuses (above) but a known spot_reclaimed
+    // is still allowed (cap 3) — a reclaim is known-transient.
+    const { stmts, rowMap } = makeStmts(chainRows(2));
+    const { broadcast } = makeBroadcast();
+    const result = openInfraRetryRun(
+      { stmts, broadcast, newId: () => 'retry-g3', now: () => 0, log: vi.fn() },
+      { parentRunId: 'g2', triggerSource: 'ui_button', parentFailureReason: 'spot_reclaimed' },
+    );
+    expect(result).toEqual({ runId: 'retry-g3' });
+    expect(rowMap.get('retry-g3')!.retry_of_run_id).toBe('g2');
+  });
+
+  it('reclaim-class still REFUSES past its own cap', () => {
+    // Generation 3 → opening 4 exceeds the reclaim cap (3).
+    const { stmts } = makeStmts(chainRows(3));
+    const { broadcast } = makeBroadcast();
+    const log = vi.fn();
+    const result = openInfraRetryRun(
+      { stmts, broadcast, newId: () => 'retry-x', now: () => 0, log },
+      { parentRunId: 'g3', triggerSource: 'ui_button', parentFailureReason: 'spot_reclaimed' },
+    );
+    expect(result).toBeNull();
     expect(log).toHaveBeenCalled();
   });
 

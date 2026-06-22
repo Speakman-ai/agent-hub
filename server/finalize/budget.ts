@@ -41,6 +41,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, FinalizeRunRow, FinalizeRunStatus, Stmts } from '../types.js';
+import { classifyFailureReason } from './infra-retry.js';
 
 /** Hard ceiling on the active-time budget (seconds). 4 hours at v0. */
 export const FINALIZE_BUDGET_HARD_CEILING_SECONDS = 4 * 60 * 60;
@@ -188,13 +189,27 @@ export function broadcastActiveSeconds(
 }
 
 /**
- * Sum the active seconds for a run and its retry parent (if any). The
- * §13 contract is explicit: "the cap is shared across the original run
- * and its one infra retry — the retry does NOT get a fresh budget."
+ * Hard ceiling on the `retry_of_run_id` chain walk — bounds the lookup
+ * against a cyclic / corrupt column. Generation caps keep real chains short.
+ */
+const MAX_BUDGET_CHAIN_WALK = 32;
+
+/**
+ * Sum the active seconds the current run's family has spent against the shared
+ * cap. The §13 contract: "the cap is shared across the original run and its
+ * infra retries — a retry does NOT get a fresh budget."
  *
- * Walks at most ONE link via `retry_of_run_id`. There is no transitive
- * chain at v0; a retry of a retry is not a v0 surface, but if the column
- * ever points at a chain we still cap the walk to keep the lookup O(1).
+ * **Reclaim/infra-wasted time is non-billable.** An ancestor exists in the
+ * chain only because it failed with an infra-class reason (a Spot reclaim or
+ * other environment loss). That attempt restarted the job from scratch through
+ * no fault of the change set, so charging its consumed seconds to the shared
+ * budget would let back-to-back reclaims trip the CI-class `timeout` and read
+ * as a code failure. We therefore EXCLUDE any *ancestor* whose `failure_reason`
+ * classifies as infra. The run being queried always counts its own seconds —
+ * only upstream infra-aborted attempts are forgiven.
+ *
+ * Walks the full chain (depth-bounded) rather than a single link, since the
+ * generation-aware retry policy can now produce a chain longer than one.
  */
 export function getRunFamilyActiveSeconds(
   stmts: Pick<BudgetStmts, 'getFinalizeRun'>,
@@ -202,12 +217,22 @@ export function getRunFamilyActiveSeconds(
 ): number {
   const row = stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
   if (!row) return 0;
+  // The queried run's own time always counts.
   let total = row.active_seconds_consumed ?? 0;
-  if (row.retry_of_run_id) {
-    const parent = stmts.getFinalizeRun.get(row.retry_of_run_id) as FinalizeRunRow | undefined;
-    if (parent) {
-      total += parent.active_seconds_consumed ?? 0;
+  let cursor: string | null = row.retry_of_run_id ?? null;
+  const seen = new Set<string>([runId]);
+  for (let i = 0; i < MAX_BUDGET_CHAIN_WALK && cursor; i++) {
+    if (seen.has(cursor)) break; // cycle guard
+    seen.add(cursor);
+    const ancestor = stmts.getFinalizeRun.get(cursor) as FinalizeRunRow | undefined;
+    if (!ancestor) break;
+    // Forgive an ancestor's seconds when it ended in an infra-class failure
+    // (the only reason a retry of it exists): that compute was reclaim/infra
+    // waste, not budget the change set should pay for.
+    if (classifyFailureReason(ancestor.failure_reason) !== 'infra') {
+      total += ancestor.active_seconds_consumed ?? 0;
     }
+    cursor = ancestor.retry_of_run_id ?? null;
   }
   return total;
 }

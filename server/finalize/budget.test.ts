@@ -280,6 +280,110 @@ describe('getRunFamilyActiveSeconds / isBudgetExhausted — shared cap with retr
   });
 });
 
+describe('getRunFamilyActiveSeconds — infra/reclaim-wasted time is non-billable', () => {
+  it('EXCLUDES an infra-failed ancestor’s seconds from the family total', () => {
+    // The parent only exists because it failed infra (a Spot reclaim). Its
+    // consumed time was reclaim waste through no fault of the change set, so it
+    // must NOT count against the shared cap — otherwise back-to-back reclaims
+    // trip the CI-class timeout and read as a code failure.
+    const { stmts } = makeStmts({
+      'parent-run': {
+        id: 'parent-run',
+        active_seconds_consumed: 3500, // 58 min of reclaim-wasted work
+        failure_reason: 'spot_reclaimed',
+        retry_of_run_id: null,
+      } as Partial<FinalizeRunRow>,
+      'retry-run': {
+        id: 'retry-run',
+        active_seconds_consumed: 120,
+        failure_reason: null,
+        retry_of_run_id: 'parent-run',
+      } as Partial<FinalizeRunRow>,
+    });
+    // Only the retry's own 120s counts; the reclaim-aborted parent is forgiven.
+    expect(getRunFamilyActiveSeconds(stmts, 'retry-run')).toBe(120);
+    // So a near-exhausted reclaim history no longer trips a 1-hour cap.
+    expect(isBudgetExhausted(stmts, 'retry-run', 3600)).toBe(false);
+  });
+
+  it('also forgives a generic container_unavailable ancestor', () => {
+    const { stmts } = makeStmts({
+      'parent-run': {
+        id: 'parent-run',
+        active_seconds_consumed: 1000,
+        failure_reason: 'container_unavailable',
+        retry_of_run_id: null,
+      } as Partial<FinalizeRunRow>,
+      'retry-run': {
+        id: 'retry-run',
+        active_seconds_consumed: 200,
+        retry_of_run_id: 'parent-run',
+      } as Partial<FinalizeRunRow>,
+    });
+    expect(getRunFamilyActiveSeconds(stmts, 'retry-run')).toBe(200);
+  });
+
+  it('still COUNTS a non-infra (e.g. CI-class) ancestor’s seconds', () => {
+    // Defensive: a retry whose parent failed CI-class is not a real surface
+    // today, but if it ever happened the parent’s time IS the change set’s
+    // cost and must count.
+    const { stmts } = makeStmts({
+      'parent-run': {
+        id: 'parent-run',
+        active_seconds_consumed: 800,
+        failure_reason: 'step_failed',
+        retry_of_run_id: null,
+      } as Partial<FinalizeRunRow>,
+      'retry-run': {
+        id: 'retry-run',
+        active_seconds_consumed: 100,
+        retry_of_run_id: 'parent-run',
+      } as Partial<FinalizeRunRow>,
+    });
+    expect(getRunFamilyActiveSeconds(stmts, 'retry-run')).toBe(900);
+  });
+
+  it('walks a multi-generation chain, forgiving each infra-failed ancestor', () => {
+    // g0 (reclaim, 1800) → g1 (reclaim, 1700) → g2 (current, 300).
+    // Only g2’s own 300s should count; both reclaim ancestors are forgiven.
+    const { stmts } = makeStmts({
+      g0: {
+        id: 'g0',
+        active_seconds_consumed: 1800,
+        failure_reason: 'spot_reclaimed',
+        retry_of_run_id: null,
+      } as Partial<FinalizeRunRow>,
+      g1: {
+        id: 'g1',
+        active_seconds_consumed: 1700,
+        failure_reason: 'spot_reclaimed',
+        retry_of_run_id: 'g0',
+      } as Partial<FinalizeRunRow>,
+      g2: {
+        id: 'g2',
+        active_seconds_consumed: 300,
+        failure_reason: null,
+        retry_of_run_id: 'g1',
+      } as Partial<FinalizeRunRow>,
+    });
+    expect(getRunFamilyActiveSeconds(stmts, 'g2')).toBe(300);
+    expect(isBudgetExhausted(stmts, 'g2', 3600)).toBe(false);
+  });
+
+  it('the queried run’s OWN seconds always count, even if it failed infra', () => {
+    // Forgiveness applies only to ancestors — a run pays for its own time.
+    const { stmts } = makeStmts({
+      'solo-run': {
+        id: 'solo-run',
+        active_seconds_consumed: 500,
+        failure_reason: 'spot_reclaimed',
+        retry_of_run_id: null,
+      } as Partial<FinalizeRunRow>,
+    });
+    expect(getRunFamilyActiveSeconds(stmts, 'solo-run')).toBe(500);
+  });
+});
+
 describe('getActiveFinalizeRunForSession', () => {
   it('returns the in-flight row when one exists', () => {
     const { stmts } = makeStmts({

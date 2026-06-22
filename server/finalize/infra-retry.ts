@@ -34,7 +34,7 @@
  */
 import { createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import type { BroadcastFn, FinalizeRunRow, FinalizeRunStatus, Stmts } from '../types.js';
+import type { BroadcastFn, FinalizeRunRow, Stmts } from '../types.js';
 
 // ─── Classifier ───────────────────────────────────────────────────────
 
@@ -117,10 +117,88 @@ export const INFRA_FAILURE_REASONS = [
   'worktree_create_failed',
   'container_unavailable',
   'github_push_5xx',
+  // A known-transient Spot reclaim: the runner instance was interrupted by
+  // EC2 (2-minute notice → instance killed → lease expired → reaper marks
+  // the job lost). Distinct from `container_unavailable` (which may be a
+  // deterministic environment failure) so reclaims can earn a more generous
+  // retry-generation allowance — see {@link resolveRetryGenerationCap}.
+  'spot_reclaimed',
 ] as const;
+
+/**
+ * The subset of infra-class reasons that are KNOWN-transient reclaims (EC2
+ * Spot interruption). These are the safest to retry aggressively because the
+ * cause is external capacity reclamation, not anything about the change set or
+ * a deterministic environment fault. They get the higher generation cap.
+ */
+export const RECLAIM_FAILURE_REASONS = ['spot_reclaimed'] as const;
 
 export type CiFailureReason = (typeof CI_FAILURE_REASONS)[number];
 export type InfraFailureReason = (typeof INFRA_FAILURE_REASONS)[number];
+export type ReclaimFailureReason = (typeof RECLAIM_FAILURE_REASONS)[number];
+
+/**
+ * Is this failure_reason a known-transient Spot reclaim? Used by the
+ * orchestrator's retry-generation policy and by budget.ts to decide that a
+ * reclaim-aborted attempt's active time is non-billable.
+ */
+export function isReclaimFailureReason(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return (RECLAIM_FAILURE_REASONS as readonly string[]).includes(reason);
+}
+
+/**
+ * Max retry generations (chained infra retries) by failure class. A
+ * "generation" is the depth of the `retry_of_run_id` chain: the original run
+ * is generation 0, its first retry generation 1, and so on. The cap is the
+ * highest generation we will OPEN.
+ *
+ *   - Generic infra-class (`container_unavailable`, `worktree_create_failed`,
+ *     `github_push_5xx`) → {@link MAX_INFRA_RETRY_GENERATIONS}. Raised from the
+ *     historical hard cap of 1 to **2** so a run that loses its driving agent
+ *     to back-to-back Spot reclaims (each surfacing as `container_unavailable`)
+ *     still recovers instead of terminating green-code as `infra_error`.
+ *   - Reclaim-class (`spot_reclaimed`) → {@link MAX_RECLAIM_RETRY_GENERATIONS}.
+ *     Known-transient, so a more generous **3**.
+ *
+ * Both are env-overridable for ops tuning. The env is read at CALL time (not
+ * module load) so a deploy — or a test — can tune the cap without re-importing.
+ * Values below 1 are coerced to 1 (always allow at least the historical single
+ * retry); a non-finite/empty env falls back to the default.
+ */
+export const DEFAULT_MAX_INFRA_RETRY_GENERATIONS = 2;
+export const DEFAULT_MAX_RECLAIM_RETRY_GENERATIONS = 3;
+
+/** Back-compat aliases for the default caps (dashboards / tests reference these). */
+export const MAX_INFRA_RETRY_GENERATIONS = DEFAULT_MAX_INFRA_RETRY_GENERATIONS;
+export const MAX_RECLAIM_RETRY_GENERATIONS = DEFAULT_MAX_RECLAIM_RETRY_GENERATIONS;
+
+function readGenerationCap(envName: string, dflt: number): number {
+  const raw = process.env[envName]?.trim();
+  if (!raw) return dflt;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.max(1, n);
+}
+
+/**
+ * The generation cap that applies to a given parent failure reason. Reclaims
+ * get the generous cap; every other infra-class reason gets the conservative
+ * one. (CI-class reasons never reach this — the orchestrator only calls the
+ * retry path for infra-class terminals.) Reads the env live so ops/tests can
+ * override without a re-import.
+ */
+export function resolveRetryGenerationCap(parentFailureReason: string | null | undefined): number {
+  return isReclaimFailureReason(parentFailureReason)
+    ? readGenerationCap(
+        'FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS',
+        DEFAULT_MAX_RECLAIM_RETRY_GENERATIONS,
+      )
+    : readGenerationCap(
+        'FINALIZE_MAX_INFRA_RETRY_GENERATIONS',
+        DEFAULT_MAX_INFRA_RETRY_GENERATIONS,
+      );
+}
 
 /**
  * Classification result. `'unknown'` is reserved for codes that escaped
@@ -192,6 +270,38 @@ export function computeRetryIdempotencyKey(args: {
 }
 
 /**
+ * Hard ceiling on the `retry_of_run_id` chain walk. The generation caps are
+ * small (2–3) so a healthy chain is short; this only bounds the walk against a
+ * cyclic / corrupt `retry_of_run_id` column so the lookup can never spin.
+ */
+const MAX_RETRY_CHAIN_WALK = 32;
+
+/**
+ * Depth of a run in its `retry_of_run_id` chain: the original run is generation
+ * 0, its first retry 1, and so on. Walks parents until it reaches a run with no
+ * `retry_of_run_id` (or the safety bound). Defensive against a missing row
+ * (treats it as chain end) so a half-written retry row never throws here.
+ */
+export function getRetryGenerationDepth(
+  stmts: Pick<InfraRetryStmts, 'getFinalizeRun'>,
+  runId: string,
+): number {
+  let depth = 0;
+  let cursor: string | null = runId;
+  const seen = new Set<string>();
+  for (let i = 0; i < MAX_RETRY_CHAIN_WALK && cursor; i++) {
+    if (seen.has(cursor)) break; // cycle guard
+    seen.add(cursor);
+    const row = stmts.getFinalizeRun.get(cursor) as FinalizeRunRow | undefined;
+    const parentId = row?.retry_of_run_id ?? null;
+    if (!parentId) break;
+    depth++;
+    cursor = parentId;
+  }
+  return depth;
+}
+
+/**
  * Statements the infra-retry module needs. A subset of {@link Stmts} so
  * callers can pass narrow dep bundles in tests.
  */
@@ -239,6 +349,13 @@ export function openInfraRetryRun(
      * "retry" trigger.
      */
     triggerSource: 'ui_button' | 'agent_block';
+    /**
+     * The infra-class failure_reason of the parent attempt. Selects the
+     * generation cap: reclaim-class (`spot_reclaimed`) earns the generous cap,
+     * every other infra-class reason the conservative one. Optional for back-
+     * compat; when omitted the conservative cap applies.
+     */
+    parentFailureReason?: string | null;
   },
 ): { runId: string } | null {
   const log = deps.log ?? ((m: string) => console.warn(m));
@@ -259,12 +376,18 @@ export function openInfraRetryRun(
     log(`[finalize-infra-retry] parent run ${args.parentRunId} not found — refusing retry`);
     return null;
   }
-  // A retry of a retry is not a v0 surface (§10 caps at one retry). If
-  // the parent itself is already a retry, refuse the second escalation
-  // — the orchestrator surfaces the original terminal infra_error.
-  if (parent.retry_of_run_id) {
+  // Generation cap. The parent sits at generation `g` in the retry chain;
+  // the retry we would open is generation `g + 1`. Refuse once that would
+  // exceed the cap for the parent's failure class — reclaim-class earns a
+  // more generous cap than generic infra. (At the default caps this means
+  // generic infra survives one extra reclaim — two retries instead of the
+  // historical one — and a known Spot reclaim survives two.)
+  const parentGeneration = getRetryGenerationDepth(deps.stmts, args.parentRunId);
+  const cap = resolveRetryGenerationCap(args.parentFailureReason);
+  if (parentGeneration + 1 > cap) {
     log(
-      `[finalize-infra-retry] parent run ${args.parentRunId} is already a retry — refusing second escalation`,
+      `[finalize-infra-retry] parent run ${args.parentRunId} at generation ${parentGeneration} ` +
+        `is at the retry cap (${cap}) for reason=${args.parentFailureReason ?? 'unknown'} — refusing further escalation`,
     );
     return null;
   }
@@ -496,5 +619,8 @@ export type KnownCiFailureReason = CiFailureReason;
 export const __test = {
   CI_FAILURE_REASONS,
   INFRA_FAILURE_REASONS,
+  RECLAIM_FAILURE_REASONS,
   INFRA_TERMINAL_HEADER,
+  MAX_INFRA_RETRY_GENERATIONS,
+  MAX_RECLAIM_RETRY_GENERATIONS,
 };
