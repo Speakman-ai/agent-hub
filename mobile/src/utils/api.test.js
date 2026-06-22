@@ -425,6 +425,28 @@ describe('api.assignCard — engine/model opts parity with web client', () => {
     const [, init] = lastCall();
     expect(JSON.parse(init.body)).toEqual({ agentId: 'agent-a' });
   });
+
+  it('forwards autoMerge=true and a trimmed comment', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', {
+      autoMerge: true,
+      comment: '  do the thing  ',
+    });
+    expect(JSON.parse(lastCall()[1].body)).toEqual({
+      agentId: 'agent-a',
+      autoMerge: true,
+      comment: 'do the thing',
+    });
+  });
+
+  it('forwards autoMerge=false', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', { autoMerge: false });
+    expect(JSON.parse(lastCall()[1].body)).toEqual({ agentId: 'agent-a', autoMerge: false });
+  });
+
+  it('omits autoMerge when not a boolean and drops a blank comment', async () => {
+    await api.assignCard('p1', 'card-1', 'agent-a', { autoMerge: null, comment: '   ' });
+    expect(JSON.parse(lastCall()[1].body)).toEqual({ agentId: 'agent-a' });
+  });
 });
 
 describe('api.unassignCard — parity with web client', () => {
@@ -504,6 +526,15 @@ describe('api support-ticket helpers — URL + method parity with web client', (
     const [url, init] = lastCall();
     expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-2/convert');
     expect(init?.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({});
+  });
+
+  it('convertSupportTicketToCard forwards autoMerge + a trimmed comment', async () => {
+    await api.convertSupportTicketToCard('agent-hub', 'tkt-3', {
+      autoMerge: true,
+      comment: '  ship it  ',
+    });
+    expect(JSON.parse(lastCall()[1].body)).toEqual({ autoMerge: true, comment: 'ship it' });
   });
 
   it('getSupportUnreadCount(projectId) → GET /…/support-tickets/unread-count', async () => {

@@ -471,8 +471,9 @@ describe('CustomerSupportPage — ticket detail view', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /convert to card/i }));
 
+    // Auto-merge left untouched → the field is omitted (use project default).
     await waitFor(() =>
-      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1'),
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1', {}),
     );
     // Clicking an action must not also trigger the full-card open button.
     expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull();
@@ -495,7 +496,7 @@ describe('CustomerSupportPage — convert removes the ticket + optional agent as
     fireEvent.click(screen.getByRole('button', { name: /convert to card/i }));
 
     await waitFor(() =>
-      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1'),
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1', {}),
     );
     // The ticket is dropped locally without waiting on the WebSocket echo.
     await waitFor(() => expect(screen.queryByText('Promote me')).toBeNull());
@@ -524,11 +525,93 @@ describe('CustomerSupportPage — convert removes the ticket + optional agent as
     fireEvent.click(screen.getByRole('button', { name: /convert & assign/i }));
 
     await waitFor(() =>
-      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1'),
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1', {}),
     );
-    // The freshly-created card is assigned to the chosen agent.
-    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1'));
+    // The freshly-created card is assigned to the chosen agent (auto-merge
+    // untouched → omitted so the server uses the project default).
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1', {}),
+    );
     await waitFor(() => expect(screen.queryByText('Assign on convert')).toBeNull());
+  });
+
+  it('routes the note to /assign (not convert) when an agent is selected', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Note to assignee' })]);
+    api.convertSupportTicketToCard.mockResolvedValue({
+      card: { id: 'card-9' },
+      ticketId: 't1',
+      deleted: true,
+    });
+    api.assignCard.mockResolvedValue({ sessionId: 's1', card: { id: 'card-9' } });
+
+    render(
+      <CustomerSupportPage projectId="proj-1" agents={[{ id: 'agent-1', name: 'Builder' }]} />,
+    );
+    await waitFor(() => expect(screen.getByText('Note to assignee')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('convert-assign-agent'), { target: { value: 'agent-1' } });
+    fireEvent.change(screen.getByTestId('convert-comment'), {
+      target: { value: '  start with the API  ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /convert & assign/i }));
+
+    // Convert omits the note (no assignee yet) and the untouched auto-merge.
+    await waitFor(() =>
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1', {}),
+    );
+    // The trimmed note rides the /assign call so it reaches the chosen agent.
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1', {
+        comment: 'start with the API',
+      }),
+    );
+  });
+
+  it('persists the note as a card note via convert when no agent is selected', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Card note only' })]);
+    api.convertSupportTicketToCard.mockResolvedValue({
+      card: { id: 'card-9' },
+      ticketId: 't1',
+      deleted: true,
+    });
+
+    render(
+      <CustomerSupportPage projectId="proj-1" agents={[{ id: 'agent-1', name: 'Builder' }]} />,
+    );
+    await waitFor(() => expect(screen.getByText('Card note only')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('convert-comment'), {
+      target: { value: 'context for later' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /convert to card/i }));
+
+    await waitFor(() =>
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1', {
+        comment: 'context for later',
+      }),
+    );
+    expect(api.assignCard).not.toHaveBeenCalled();
+  });
+
+  it('sends an explicit autoMerge:true once the Auto-merge box is checked', async () => {
+    api.getSupportTickets.mockResolvedValue([ticket({ id: 't1', subject: 'Force merge' })]);
+    api.convertSupportTicketToCard.mockResolvedValue({
+      card: { id: 'card-9' },
+      ticketId: 't1',
+      deleted: true,
+    });
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Force merge')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('convert-auto-merge'));
+    fireEvent.click(screen.getByRole('button', { name: /convert to card/i }));
+
+    await waitFor(() =>
+      expect(api.convertSupportTicketToCard).toHaveBeenCalledWith('proj-1', 't1', {
+        autoMerge: true,
+      }),
+    );
   });
 
   it('surfaces a durable warning and keeps the ticket when the agent assignment fails', async () => {
@@ -555,7 +638,9 @@ describe('CustomerSupportPage — convert removes the ticket + optional agent as
     });
     fireEvent.click(screen.getByRole('button', { name: /convert & assign/i }));
 
-    await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1'));
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('proj-1', 'card-9', 'agent-1', {}),
+    );
     // A durable warning is raised (it can't be swallowed by the row vanishing).
     await waitFor(() =>
       expect(onNotify).toHaveBeenCalledWith(

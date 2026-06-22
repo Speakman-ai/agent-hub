@@ -1001,6 +1001,15 @@ export default function KanbanBoard({
       github_issue_url: card.github_issue_url || '',
       pr_url: card.pr_url || '',
       epic_id: card.epic_id || '',
+      // Pre-populate the auto-merge checkbox from the card's stored preference
+      // (e.g. carried over from a converted support ticket). The checkbox shows
+      // a boolean, but `auto_merge_touched` tracks whether the card has an
+      // EXPLICIT preference (1/0). A null/absent preference leaves the box
+      // unchecked AND untouched, so assign omits the field and the server falls
+      // back to the project's auto-merge default rather than forcing `push`.
+      auto_merge: card.auto_merge === 1,
+      auto_merge_touched: card.auto_merge === 1 || card.auto_merge === 0,
+      assign_comment: '',
     });
     setConfirmDelete(false);
     setNewComment('');
@@ -1986,6 +1995,41 @@ export default function KanbanBoard({
                             );
                           })()}
                         {detailForm.assignee && (
+                          <label
+                            className="mt-2 inline-flex items-center gap-2 text-xs text-gray-300 cursor-pointer select-none"
+                            title="Leave as-is to use the project's auto-merge default. Check to run the spawned session at Auto Merge — build, review, test, push, and auto-merge once gates pass."
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!detailForm.auto_merge}
+                              onChange={(e) =>
+                                setDetailForm((f) => ({
+                                  ...f,
+                                  auto_merge: e.target.checked,
+                                  auto_merge_touched: true,
+                                }))
+                              }
+                              data-testid="card-auto-merge-new"
+                              className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 accent-indigo-500"
+                            />
+                            Auto-merge
+                          </label>
+                        )}
+                        {detailForm.assignee && (
+                          <textarea
+                            value={detailForm.assign_comment || ''}
+                            onChange={(e) =>
+                              setDetailForm((f) => ({ ...f, assign_comment: e.target.value }))
+                            }
+                            rows={2}
+                            maxLength={4000}
+                            placeholder="Comments / instructions for the agent (optional)"
+                            aria-label="Comments for the assignee"
+                            data-testid="card-assign-comment"
+                            className="w-full text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-gray-500 resize-y"
+                          />
+                        )}
+                        {detailForm.assignee && (
                           <button
                             onClick={async () => {
                               const agent = agents.find((a) => a.name === detailForm.assignee);
@@ -1993,10 +2037,19 @@ export default function KanbanBoard({
                               setAssigning(true);
                               try {
                                 const assignOpts = {};
+                                // Only send an explicit auto-merge override when
+                                // the user has actually set the checkbox. An
+                                // untouched (null-preference) card omits the
+                                // field so the server falls back to the project
+                                // auto-merge default.
+                                if (detailForm.auto_merge_touched)
+                                  assignOpts.autoMerge = !!detailForm.auto_merge;
                                 if (detailForm.assign_model?.trim())
                                   assignOpts.model = detailForm.assign_model.trim();
                                 if (detailForm.assign_engine?.trim())
                                   assignOpts.engine = detailForm.assign_engine.trim();
+                                if (detailForm.assign_comment?.trim())
+                                  assignOpts.comment = detailForm.assign_comment.trim();
                                 const result = await api.assignCard(
                                   projectId,
                                   selectedCard.id,

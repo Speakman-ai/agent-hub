@@ -8,7 +8,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
-import { KanbanCardComponent } from './board.openapi.js';
+import { KanbanCardComponent, MAX_ASSIGNMENT_COMMENT_LEN } from './board.openapi.js';
 
 const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as const;
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -256,14 +256,40 @@ const ConvertSupportTicketResponse = registerComponent(
     }),
 );
 
+export const ConvertSupportTicketRequestSchema = z
+  .object({
+    autoMerge: z.boolean().nullable().optional().openapi({
+      description:
+        'Per-card auto-merge preference to stamp on the new card. true → the card (and any session later assigned to it) defaults to "Auto Merge"; false → "Build and Push". Carried over to the board so the assign UI pre-populates the checkbox. Omit to leave the card with no explicit preference (project default).',
+    }),
+    comment: z
+      .string()
+      .max(
+        MAX_ASSIGNMENT_COMMENT_LEN,
+        `comment must be ${MAX_ASSIGNMENT_COMMENT_LEN} characters or fewer`,
+      )
+      .nullable()
+      .optional()
+      .openapi({
+        description: `Optional note (max ${MAX_ASSIGNMENT_COMMENT_LEN} characters) recorded as a comment on the new card (e.g. context for whoever picks it up).`,
+      }),
+  })
+  .openapi({ description: 'Optional auto-merge preference and note to attach to the new card.' });
+
 registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/support-tickets/{id}/convert',
   tags: ['Support'],
   summary: 'Convert a support ticket into a To Do kanban card',
   description:
-    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), then flags the source ticket `converted` and marks it read (it is retained, not deleted). Re-converting an already-converted ticket 409s rather than creating a duplicate card.',
-  request: { params: ticketParams },
+    'Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), then flags the source ticket `converted` and marks it read (it is retained, not deleted). Re-converting an already-converted ticket 409s rather than creating a duplicate card. An optional body carries an auto-merge preference and a note onto the new card.',
+  request: {
+    params: ticketParams,
+    body: {
+      required: false,
+      content: jsonContent(ConvertSupportTicketRequestSchema),
+    },
+  },
   responses: {
     201: {
       description: 'Ticket converted to a new card; the source ticket is retained as converted.',

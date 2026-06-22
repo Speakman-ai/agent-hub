@@ -2017,6 +2017,19 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN orphaned_at TEXT DEFAULT NULL');
   }
 
+  // Per-card auto-merge preference, captured when assigning an agent (either
+  // when converting a support ticket or directly on the board). NULL = "no
+  // explicit preference, use the project's githubWorkflow.autoMerge default";
+  // 1 = force auto-merge ("Auto Merge"); 0 = explicitly off ("Build and
+  // Push"). Carries over from a converted support ticket to the board so the
+  // assign UI can pre-populate the checkbox. Consumed at assign time to pick
+  // the session's finalize automation level (merge vs push).
+  try {
+    db.prepare('SELECT auto_merge FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN auto_merge INTEGER DEFAULT NULL');
+  }
+
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
   } catch {
@@ -3548,6 +3561,13 @@ function initDb(dataDir: string): void {
     ),
     markCardDocumented: db.prepare(
       "UPDATE kanban_cards SET documented = 1, updated_at = datetime('now') WHERE id = ?",
+    ),
+    // Set/clear the per-card auto-merge preference (1 = on, 0 = off, NULL =
+    // use project default). Scoped to just this column so neither the assign
+    // path nor the support-ticket convert path has to round-trip the whole
+    // updateKanbanCard signature.
+    setKanbanCardAutoMerge: db.prepare(
+      "UPDATE kanban_cards SET auto_merge = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     deleteKanbanCard: db.prepare('DELETE FROM kanban_cards WHERE id = ?'),
     // Flag a card as orphaned (its working session was closed but the card had

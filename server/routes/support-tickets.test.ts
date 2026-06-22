@@ -188,6 +188,64 @@ describe('support-tickets routes', () => {
     expect(openList.body.find((t: { id: string }) => t.id === ticketId)).toBeUndefined();
   });
 
+  it('stamps the auto-merge preference + a note onto the converted card', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'auto-merge this one', severity: 'high', type: 'bug' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .send({ autoMerge: true, comment: 'Ship behind a flag.' })
+      .expect(201);
+
+    // The new card carries the auto-merge preference so the board assign UI
+    // pre-populates the checkbox.
+    expect((convert.body.card as { auto_merge?: number | null }).auto_merge).toBe(1);
+
+    // The note is recorded as a card comment.
+    const comments = await request
+      .get(`/api/projects/${projectId}/board/cards/${convert.body.card.id}/comments`)
+      .expect(200);
+    expect((comments.body as Array<{ content: string }>).map((c) => c.content)).toContain(
+      'Ship behind a flag.',
+    );
+  });
+
+  it('rejects an over-long convert comment (> 4000 chars) with 400', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'too long a note', severity: 'low', type: 'question' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .send({ comment: 'y'.repeat(4001) })
+      .expect(400);
+
+    // The ticket is NOT converted (still in the open queue).
+    const openList = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(openList.body.find((t: { id: string }) => t.id === ticketId)?.status).toBe('new');
+  });
+
+  it('convert with no body leaves the card auto_merge unset (project default)', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'no preference', severity: 'low', type: 'question' })
+      .expect(201);
+    const ticketId = created.body.id as string;
+
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${ticketId}/convert`)
+      .expect(201);
+    expect((convert.body.card as { auto_merge?: number | null }).auto_merge ?? null).toBeNull();
+  });
+
   it('retains the ticket after converting — re-converting the same id 409s', async () => {
     const projectId = await newProjectId();
     const created = await request

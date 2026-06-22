@@ -794,7 +794,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const parsedAssign = parseBody(AssignCardRequestSchema, req, res);
       if (!parsedAssign) return;
-      const { agentId, model: modelBody, engine: engineBody } = parsedAssign;
+      const {
+        agentId,
+        model: modelBody,
+        engine: engineBody,
+        autoMerge: autoMergeBody,
+        comment: commentBody,
+      } = parsedAssign;
 
       const found = findAgent(agentId);
       if (!found) return res.status(404).json({ error: 'Agent not found' });
@@ -841,15 +847,33 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         const v = validateKanbanAssignModelForEngine(trimmedOverride, engine, config);
         if (!v.ok) return res.status(400).json({ error: v.error });
       }
+      // Resolve the auto-merge preference for this assignment. An explicit
+      // boolean in the request body wins; otherwise fall back to whatever the
+      // card already carries (e.g. carried over from a converted support
+      // ticket — 1/0), and finally to the project default via
+      // `resolveShouldAutoMerge`. `undefined` means "no override → use project
+      // default".
+      const autoMergeOverride: boolean | undefined =
+        typeof autoMergeBody === 'boolean'
+          ? autoMergeBody
+          : card.auto_merge === 1
+            ? true
+            : card.auto_merge === 0
+              ? false
+              : undefined;
+
       const wt = defaultSessionUseWorktreeFlag(project);
       stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
       markSessionAutoShipOnComplete(stmts, sessionId);
-      // Assigned cards run at least "Build and Push"; they escalate to "Send
-      // It" (auto-merge) only when the project's auto-merge is enabled.
+      // Assigned cards run at least "Build and Push"; they escalate to "Auto
+      // Merge" when the per-card override (or, absent one, the project's
+      // auto-merge setting) opts in.
       markSessionFinalizeAutomation(
         stmts,
         sessionId,
-        assignedFinalizeAutomationLevel(resolveShouldAutoMerge(undefined, project.githubWorkflow)),
+        assignedFinalizeAutomationLevel(
+          resolveShouldAutoMerge(autoMergeOverride, project.githubWorkflow),
+        ),
       );
       // Reuse the owner uid resolved above; no need to walk req.user twice
       // in the same handler.
@@ -880,11 +904,30 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       );
       stmts.moveKanbanCard.run(inProgressColumnId, 0, req.params.cardId);
 
+      // Persist an explicit auto-merge override on the card so it stays visible
+      // in the assign UI and survives reassignment. Only an explicit boolean
+      // mutates the stored value; a fallback to the card's existing preference
+      // (or project default) leaves it untouched.
+      if (typeof autoMergeBody === 'boolean') {
+        stmts.setKanbanCardAutoMerge.run(autoMergeBody ? 1 : 0, req.params.cardId);
+      }
+
+      // Record an optional assignment note as a card comment so it's part of
+      // the card's audit trail (it's also threaded into the agent's task
+      // context below).
+      const assignmentNote = typeof commentBody === 'string' ? commentBody.trim() : '';
+      if (assignmentNote) {
+        stmts.createKanbanCardComment.run(uuidv4(), req.params.cardId, agent.name, assignmentNote);
+      }
+
       const contextLines = [`# Task: ${card.title}`];
       if (card.description) contextLines.push(`\n## Description\n${card.description}`);
       if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
       if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
       if (card.github_issue_url) contextLines.push(`**GitHub:** ${card.github_issue_url}`);
+      if (assignmentNote) {
+        contextLines.push(`\n## Assignment Note\n${assignmentNote}`);
+      }
 
       if (agent.role === 'intake') {
         contextLines.push(

@@ -339,8 +339,17 @@ function ConvertControl({
   onNotify,
 }) {
   const [agentId, setAgentId] = useState('');
+  // Tri-state auto-merge: the checkbox shows a boolean, but we only send an
+  // explicit preference once the user actually toggles it. Left untouched, the
+  // field is omitted so the server falls back to the project's auto-merge
+  // default (per the API contract) instead of stamping an explicit `false`.
+  const [autoMerge, setAutoMerge] = useState(false);
+  const [autoMergeTouched, setAutoMergeTouched] = useState(false);
+  const [comment, setComment] = useState('');
   const [converting, setConverting] = useState(false);
   const [error, setError] = useState(null);
+  // undefined → omit (use project default); boolean → explicit override.
+  const autoMergePref = autoMergeTouched ? autoMerge : undefined;
   const pe = stretched ? 'pointer-events-auto relative' : '';
   const btnPad = size === 'md' ? 'px-2.5 py-1.5' : 'px-2 py-1';
 
@@ -349,9 +358,22 @@ function ConvertControl({
     setConverting(true);
     setError(null);
 
+    const trimmedComment = comment.trim();
+    // The comment is *assignment instructions* for the agent. Where it's
+    // attached depends on whether an agent is being assigned now:
+    //   - Agent selected → attach it to the /assign call only, so it reaches
+    //     the assignee (threaded into their task context + recorded as a card
+    //     comment by the assign handler). If /assign fails, the note is never
+    //     persisted, so it can't sit on an unassigned card masquerading as
+    //     instructions that already reached someone.
+    //   - No agent → there's no assignee yet, so persist it as a plain card
+    //     note via convert for whoever picks the card up later.
     let result;
     try {
-      result = await api.convertSupportTicketToCard(projectId, ticketId);
+      result = await api.convertSupportTicketToCard(projectId, ticketId, {
+        autoMerge: autoMergePref,
+        comment: agentId ? undefined : trimmedComment || undefined,
+      });
     } catch (err) {
       setError(err.message || 'Failed to convert');
       setConverting(false);
@@ -361,14 +383,21 @@ function ConvertControl({
     const cardId = result?.card?.id;
     if (agentId && cardId) {
       try {
-        await api.assignCard(projectId, cardId, agentId);
+        // Pass autoMerge so the spawned session's finalize automation level is
+        // correct even if it raced the card stamp, and the comment so it lands
+        // as an assignment note threaded into the agent's task context.
+        await api.assignCard(projectId, cardId, agentId, {
+          autoMerge: autoMergePref,
+          comment: trimmedComment || undefined,
+        });
       } catch (err) {
-        // Conversion landed the card, but the agent assignment failed. Surface
-        // a durable warning and DON'T remove the ticket optimistically — leave
-        // the inline error up so the user sees it (and can assign on the board).
+        // Conversion landed the card, but the agent assignment failed. The note
+        // was carried in the /assign call, so it was NOT persisted — surface a
+        // durable warning telling the user to re-assign (with their note) on
+        // the board. DON'T remove the ticket optimistically.
         const msg = `Converted to a card, but assigning the agent failed: ${
           err.message || 'unknown error'
-        }. You can assign it on the board.`;
+        }. You can assign it (and re-add your note) on the board.`;
         setError(msg);
         setConverting(false);
         onNotify?.(msg, 'warning');
@@ -382,38 +411,68 @@ function ConvertControl({
   };
 
   return (
-    <span className={`${pe} inline-flex items-center gap-2 flex-wrap`}>
-      {agents.length > 0 ? (
-        <select
-          value={agentId}
-          onChange={(e) => setAgentId(e.target.value)}
+    <span className={`${pe} inline-flex flex-col gap-1.5 items-start`}>
+      <span className="inline-flex items-center gap-2 flex-wrap">
+        {agents.length > 0 ? (
+          <select
+            value={agentId}
+            onChange={(e) => setAgentId(e.target.value)}
+            disabled={converting}
+            aria-label="Assign an agent to the new card"
+            title="Optionally assign an agent to the new card"
+            data-testid="convert-assign-agent"
+            className={`${pe} text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50`}
+          >
+            <option value="">No agent</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name || a.id}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <button
+          onClick={handleConvert}
           disabled={converting}
-          aria-label="Assign an agent to the new card"
-          title="Optionally assign an agent to the new card"
-          data-testid="convert-assign-agent"
-          className={`${pe} text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50`}
+          title={
+            agentId
+              ? 'Create a To Do card and assign the chosen agent'
+              : 'Create a To Do kanban card from this ticket'
+          }
+          className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
         >
-          <option value="">No agent</option>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name || a.id}
-            </option>
-          ))}
-        </select>
-      ) : null}
-      <button
-        onClick={handleConvert}
-        disabled={converting}
-        title={
-          agentId
-            ? 'Create a To Do card and assign the chosen agent'
-            : 'Create a To Do kanban card from this ticket'
-        }
-        className={`${pe} inline-flex items-center gap-1.5 text-xs ${btnPad} rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:border-gray-600 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+          <SquareKanban size={13} />
+          {converting ? 'Converting…' : agentId ? 'Convert & assign' : 'Convert to card'}
+        </button>
+      </span>
+      <label
+        className={`${pe} inline-flex items-center gap-1.5 text-[11px] text-gray-400 cursor-pointer select-none`}
+        title="Leave unchecked to use the project's auto-merge default. Check to force Auto Merge on the new card — build, review, test, push, and auto-merge."
       >
-        <SquareKanban size={13} />
-        {converting ? 'Converting…' : agentId ? 'Convert & assign' : 'Convert to card'}
-      </button>
+        <input
+          type="checkbox"
+          checked={autoMerge}
+          onChange={(e) => {
+            setAutoMerge(e.target.checked);
+            setAutoMergeTouched(true);
+          }}
+          disabled={converting}
+          data-testid="convert-auto-merge"
+          className={`${pe} h-3 w-3 rounded border-gray-600 bg-gray-950 accent-indigo-500`}
+        />
+        Auto-merge
+      </label>
+      <textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        disabled={converting}
+        rows={2}
+        maxLength={4000}
+        placeholder="Comments / instructions (optional)"
+        aria-label="Comments for the new card"
+        data-testid="convert-comment"
+        className={`${pe} w-full min-w-[12rem] text-xs bg-gray-950 border border-gray-700 rounded px-1.5 py-1 text-gray-300 placeholder-gray-600 focus:outline-none focus:border-gray-600 disabled:opacity-50 resize-y`}
+      />
       {error ? <span className="text-[11px] text-red-400">{error}</span> : null}
     </span>
   );

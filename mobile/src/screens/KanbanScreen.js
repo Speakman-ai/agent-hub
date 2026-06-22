@@ -172,6 +172,14 @@ export default function KanbanScreen({ route, navigation }) {
   const [editAssignEngine, setEditAssignEngine] = useState('');
   const [showAssignEnginePicker, setShowAssignEnginePicker] = useState(false);
   const [modelConfig, setModelConfig] = useState(null);
+  // Per-card auto-merge preference + assignment note for the spawn. Mirrors the
+  // web client's `detailForm.auto_merge` / `detailForm.assign_comment`. The
+  // switch shows a boolean, but `editAutoMergeTouched` tracks whether the card
+  // has an EXPLICIT preference (1/0); a null preference stays untouched so
+  // assign omits the field and the server uses the project auto-merge default.
+  const [editAutoMerge, setEditAutoMerge] = useState(false);
+  const [editAutoMergeTouched, setEditAutoMergeTouched] = useState(false);
+  const [editAssignComment, setEditAssignComment] = useState('');
 
   // Blocker picker state
   const [showBlockerPicker, setShowBlockerPicker] = useState(false);
@@ -496,6 +504,13 @@ export default function KanbanScreen({ route, navigation }) {
       );
       setEditGithubUrl(card.github_issue_url || '');
       setEditEpicId(card.epic_id || '');
+      // Pre-populate the auto-merge toggle from the card's stored preference
+      // (e.g. carried over from a converted support ticket). A null/absent
+      // preference stays untouched so assign omits the field and the server
+      // falls back to the project default.
+      setEditAutoMerge(card.auto_merge === 1);
+      setEditAutoMergeTouched(card.auto_merge === 1 || card.auto_merge === 0);
+      setEditAssignComment('');
       setShowReassign(false);
       // Load comments
       try {
@@ -625,8 +640,13 @@ export default function KanbanScreen({ route, navigation }) {
     setAssigning(true);
     try {
       const assignOpts = {};
+      // Only send an explicit auto-merge override when the user set the switch;
+      // an untouched (null-preference) card omits it so the server falls back
+      // to the project auto-merge default.
+      if (editAutoMergeTouched) assignOpts.autoMerge = !!editAutoMerge;
       if (editAssignModel.trim()) assignOpts.model = editAssignModel.trim();
       if (editAssignEngine.trim()) assignOpts.engine = editAssignEngine.trim();
+      if (editAssignComment.trim()) assignOpts.comment = editAssignComment.trim();
       const result = await api.assignCard(projectId, selectedCard.id, agent.id, assignOpts);
       setSelectedCard(null);
       setShowReassign(false);
@@ -1230,6 +1250,31 @@ export default function KanbanScreen({ route, navigation }) {
                     </TouchableOpacity>
                   )}
                 {!!editAssignee && (
+                  <View style={styles.autoMergeRow}>
+                    <Text style={styles.autoMergeLabel}>Auto-merge</Text>
+                    <Switch
+                      value={editAutoMerge}
+                      onValueChange={(v) => {
+                        setEditAutoMerge(v);
+                        setEditAutoMergeTouched(true);
+                      }}
+                      testID="card-auto-merge-new"
+                    />
+                  </View>
+                )}
+                {!!editAssignee && (
+                  <TextInput
+                    style={[styles.fieldInput, styles.multilineInput, { marginTop: 8 }]}
+                    value={editAssignComment}
+                    onChangeText={setEditAssignComment}
+                    placeholder="Comments / instructions for the agent (optional)"
+                    placeholderTextColor="#6b7280"
+                    multiline
+                    maxLength={4000}
+                    testID="card-assign-comment"
+                  />
+                )}
+                {!!editAssignee && (
                   <TouchableOpacity
                     style={[
                       styles.assignStartBtn,
@@ -1255,6 +1300,11 @@ export default function KanbanScreen({ route, navigation }) {
                       setEditAssignee(selectedCard.assignee || '');
                       setEditAssignModel(selectedCard.assign_model || '');
                       setEditAssignEngine(selectedCard.assign_engine || '');
+                      setEditAutoMerge(selectedCard.auto_merge === 1);
+                      setEditAutoMergeTouched(
+                        selectedCard.auto_merge === 1 || selectedCard.auto_merge === 0,
+                      );
+                      setEditAssignComment('');
                     }}
                   >
                     <Text style={styles.reassignBtnText}>Cancel</Text>
@@ -2319,6 +2369,11 @@ const styles = StyleSheet.create({
     color: colors.white, fontSize: 14, borderWidth: 1, borderColor: colors.gray700,
   },
   multilineInput: { minHeight: 80, textAlignVertical: 'top' },
+  autoMergeRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: 12,
+  },
+  autoMergeLabel: { fontSize: 13, color: colors.gray300 },
   priorityRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
   priorityBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,

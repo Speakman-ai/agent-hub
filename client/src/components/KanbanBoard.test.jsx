@@ -398,6 +398,8 @@ describe('KanbanBoard reassign active session', () => {
     // Clicking it fires the assignCard API with the new agent id.
     api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-2' });
     fireEvent.click(within(modal).getByRole('button', { name: /Reassign & Start/i }));
+    // The card has no explicit auto_merge preference, so the assign omits the
+    // field — letting the server fall back to the project auto-merge default.
     await waitFor(() => expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-b', {}));
   });
 
@@ -819,6 +821,72 @@ describe('KanbanBoard Session engine dropdown', () => {
         model: 'gpt-5.3-codex',
         engine: 'codex-cli',
       }),
+    );
+  });
+
+  it('pre-checks Auto-merge and sends autoMerge:true for a card with auto_merge=1', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'Prefers merge', column_id: 'col-todo', position: 0, auto_merge: 1 },
+      ]),
+    );
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Prefers merge')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Prefers merge'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    const assigneeSelect = within(modal)
+      .getAllByRole('combobox')
+      .find((c) => Array.from(c.options).some((o) => o.textContent === 'Unassigned'));
+    fireEvent.change(assigneeSelect, { target: { value: 'AgentA' } });
+
+    // The card's stored preference pre-checks the box.
+    expect(within(modal).getByTestId('card-auto-merge-new').checked).toBe(true);
+
+    api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-m' });
+    fireEvent.click(within(modal).getByRole('button', { name: /Assign & Start/i }));
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', { autoMerge: true }),
+    );
+  });
+
+  it('toggling Auto-merge on a null-preference card sends an explicit override', async () => {
+    api.getBoard.mockResolvedValue(
+      makeBoard([{ id: 'card-1', title: 'No pref', column_id: 'col-todo', position: 0 }]),
+    );
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('No pref')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('No pref'));
+    const modal = await screen.findByTestId('card-detail-modal');
+
+    const assigneeSelect = within(modal)
+      .getAllByRole('combobox')
+      .find((c) => Array.from(c.options).some((o) => o.textContent === 'Unassigned'));
+    fireEvent.change(assigneeSelect, { target: { value: 'AgentA' } });
+
+    // Unchecked by default (no explicit preference). Tick it → explicit true.
+    const box = within(modal).getByTestId('card-auto-merge-new');
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+
+    api.assignCard.mockResolvedValueOnce({ sessionId: 'sess-t' });
+    fireEvent.click(within(modal).getByRole('button', { name: /Assign & Start/i }));
+    await waitFor(() =>
+      expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', { autoMerge: true }),
     );
   });
 

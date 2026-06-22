@@ -411,6 +411,16 @@ export const LinkEpicRequestSchema = z.object({
   epicId: z.string().nullable().optional(),
 });
 
+/**
+ * Upper bound for free-text assignment notes / card comments captured at
+ * assign / support-ticket-convert time. These strings are persisted as card
+ * comments AND injected into the spawned agent's task-context prompt, so an
+ * unbounded value would create oversized DB rows and very large prompts. 4000
+ * chars comfortably fits a paragraph of instructions while capping the blast
+ * radius. Shared by the convert schema (support-tickets.openapi.ts).
+ */
+export const MAX_ASSIGNMENT_COMMENT_LEN = 4000;
+
 export const AssignCardRequestSchema = z.object({
   agentId: z.string({ error: 'agentId is required' }).min(1, 'agentId is required'),
   model: z.string().nullable().optional(),
@@ -418,6 +428,21 @@ export const AssignCardRequestSchema = z.object({
     description:
       'Optional engine override. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, the spawned session uses this engine instead of the assignee agent\'s shared engine. Validated against the server\'s engineValidModels — unknown engines yield 400.',
   }),
+  autoMerge: z.boolean().nullable().optional().openapi({
+    description:
+      'Per-card auto-merge override. true → the spawned session runs at "Auto Merge" (build/review/test/push + GitHub auto-merge); false → "Build and Push" (no auto-merge). Persisted on the card. When omitted, falls back to the card\'s stored preference (e.g. carried over from a converted support ticket), then the project\'s githubWorkflow.autoMerge default.',
+  }),
+  comment: z
+    .string()
+    .max(
+      MAX_ASSIGNMENT_COMMENT_LEN,
+      `comment must be ${MAX_ASSIGNMENT_COMMENT_LEN} characters or fewer`,
+    )
+    .nullable()
+    .optional()
+    .openapi({
+      description: `Optional assignment note (max ${MAX_ASSIGNMENT_COMMENT_LEN} characters). Recorded as a comment on the card and prepended to the agent's task context so the assignee sees the instructions.`,
+    }),
 });
 
 // ─── OpenAPI path registrations ───────────────────────────────────

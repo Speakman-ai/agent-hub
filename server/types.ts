@@ -638,6 +638,12 @@ export interface KanbanCardRow {
    *  the card had progressed too far to garbage-collect as an abandoned stub.
    *  NULL for live cards. See `server/card-orphan-cleanup.ts`. */
   orphaned_at?: string | null;
+  /** Per-card auto-merge preference captured at assign / support-ticket-convert
+   *  time. 1 = force auto-merge ("Auto Merge"), 0 = explicitly off ("Build and
+   *  Push"), NULL/absent = no explicit preference (fall back to the project's
+   *  `githubWorkflow.autoMerge`). Carries over from a converted support ticket
+   *  so the board assign UI can pre-populate the checkbox. */
+  auto_merge?: number | null;
   /** Optional model id chosen at assign time; null/absent means use agent + engine defaults. */
   assign_model?: string | null;
   /** Optional engine override chosen at assign time. When set, the spawn engine
@@ -1551,6 +1557,7 @@ export interface Stmts {
   markCardDocumented: Stmt;
   deleteKanbanCard: Stmt;
   markKanbanCardOrphaned: Stmt;
+  setKanbanCardAutoMerge: Stmt;
 
   // Kanban card comments
   getKanbanCardComments: Stmt;

@@ -12,6 +12,7 @@ import {
   Alert,
   Modal,
   TextInput,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -82,6 +83,12 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
 
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState(null);
+  // Tri-state auto-merge: only send an explicit preference once the user
+  // toggles the switch. Untouched → omit so the server uses the project default
+  // (per the API contract) instead of stamping an explicit `false`.
+  const [convertAutoMerge, setConvertAutoMerge] = useState(false);
+  const [convertAutoMergeTouched, setConvertAutoMergeTouched] = useState(false);
+  const [convertComment, setConvertComment] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
 
@@ -90,7 +97,10 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
     setConverting(true);
     setConvertError(null);
     try {
-      await api.convertSupportTicketToCard(projectId, item.id);
+      await api.convertSupportTicketToCard(projectId, item.id, {
+        autoMerge: convertAutoMergeTouched ? convertAutoMerge : undefined,
+        comment: convertComment.trim() || undefined,
+      });
       // The support_ticket_updated WebSocket event re-renders this card as
       // converted; no local state mutation needed.
     } catch (err) {
@@ -186,6 +196,34 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
         <TouchableOpacity onPress={() => onOpenReplay(item.replay_ref)}>
           <Text style={styles.replayLink}>{'▶'} View session replay</Text>
         </TouchableOpacity>
+      ) : null}
+
+      {!isConverted ? (
+        <View style={styles.convertOptions}>
+          <View style={styles.autoMergeRow}>
+            <Text style={styles.autoMergeLabel}>Auto-merge</Text>
+            <Switch
+              value={convertAutoMerge}
+              onValueChange={(v) => {
+                setConvertAutoMerge(v);
+                setConvertAutoMergeTouched(true);
+              }}
+              disabled={converting}
+              testID="convert-auto-merge"
+            />
+          </View>
+          <TextInput
+            style={styles.convertComment}
+            value={convertComment}
+            onChangeText={setConvertComment}
+            placeholder="Comments / instructions (optional)"
+            placeholderTextColor={colors.gray500}
+            editable={!converting}
+            multiline
+            maxLength={4000}
+            testID="convert-comment"
+          />
+        </View>
       ) : null}
 
       <View style={styles.actionRow}>
@@ -702,6 +740,25 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     marginTop: 10,
+  },
+  convertOptions: { marginTop: 10, gap: 8 },
+  autoMergeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  autoMergeLabel: { fontSize: 13, color: colors.gray300 },
+  convertComment: {
+    backgroundColor: colors.gray800,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: colors.white,
+    fontSize: 13,
+    minHeight: 56,
+    textAlignVertical: 'top',
   },
   convertButton: {
     paddingHorizontal: 10,

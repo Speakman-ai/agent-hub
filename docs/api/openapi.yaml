@@ -10154,6 +10154,15 @@ paths:
                   type: string
                   nullable: true
                   description: Optional engine override. One of "claude-code", "cursor-agent", "gemini-cli", or "codex-cli". When set, the spawned session uses this engine instead of the assignee agent's shared engine. Validated against the server's engineValidModels — unknown engines yield 400.
+                autoMerge:
+                  type: boolean
+                  nullable: true
+                  description: Per-card auto-merge override. true → the spawned session runs at "Auto Merge" (build/review/test/push + GitHub auto-merge); false → "Build and Push" (no auto-merge). Persisted on the card. When omitted, falls back to the card's stored preference (e.g. carried over from a converted support ticket), then the project's githubWorkflow.autoMerge default.
+                comment:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Optional assignment note (max 4000 characters). Recorded as a comment on the card and prepended to the agent's task context so the assignee sees the instructions.
               required:
                 - agentId
       responses:
@@ -20482,7 +20491,7 @@ paths:
       tags:
         - Support
       summary: Convert a support ticket into a To Do kanban card
-      description: Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), then flags the source ticket `converted` and marks it read (it is retained, not deleted). Re-converting an already-converted ticket 409s rather than creating a duplicate card.
+      description: Creates a To Do card from the ticket (title/description, severity→priority, support,<type> labels), then flags the source ticket `converted` and marks it read (it is retained, not deleted). Re-converting an already-converted ticket 409s rather than creating a duplicate card. An optional body carries an auto-merge preference and a note onto the new card.
       parameters:
         - schema:
             type: string
@@ -20498,6 +20507,23 @@ paths:
           description: Support ticket id.
           name: id
           in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                autoMerge:
+                  type: boolean
+                  nullable: true
+                  description: Per-card auto-merge preference to stamp on the new card. true → the card (and any session later assigned to it) defaults to "Auto Merge"; false → "Build and Push". Carried over to the board so the assign UI pre-populates the checkbox. Omit to leave the card with no explicit preference (project default).
+                comment:
+                  type: string
+                  nullable: true
+                  maxLength: 4000
+                  description: Optional note (max 4000 characters) recorded as a comment on the new card (e.g. context for whoever picks it up).
+              description: Optional auto-merge preference and note to attach to the new card.
       responses:
         "201":
           description: Ticket converted to a new card; the source ticket is retained as converted.

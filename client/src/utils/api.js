@@ -1092,6 +1092,9 @@ export const api = {
     const body = { agentId };
     if (opts.model != null && String(opts.model).trim()) body.model = String(opts.model).trim();
     if (opts.engine != null && String(opts.engine).trim()) body.engine = String(opts.engine).trim();
+    if (typeof opts.autoMerge === 'boolean') body.autoMerge = opts.autoMerge;
+    if (opts.comment != null && String(opts.comment).trim())
+      body.comment = String(opts.comment).trim();
     return fetchJSON(`/projects/${projectId}/board/cards/${cardId}/assign`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -1169,8 +1172,16 @@ export const api = {
   // RETAINED and flagged `converted` (it leaves the default open queue but is
   // not deleted). Returns { card, ticket, ticketId, converted: true }.
   // Re-converting an already-converted ticket 409s.
-  convertSupportTicketToCard: (projectId, id) =>
-    fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, { method: 'POST' }),
+  convertSupportTicketToCard: (projectId, id, opts = {}) => {
+    const body = {};
+    if (typeof opts.autoMerge === 'boolean') body.autoMerge = opts.autoMerge;
+    if (opts.comment != null && String(opts.comment).trim())
+      body.comment = String(opts.comment).trim();
+    return fetchJSON(`/projects/${projectId}/support-tickets/${id}/convert`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
   // Permanently delete a support ticket. The server emits a
   // support_ticket_deleted WebSocket event so open clients drop the row.
   deleteSupportTicket: (projectId, id) =>

@@ -271,6 +271,115 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
   });
 });
 
+describe('POST /assign — per-card auto-merge override + assignment comment', () => {
+  it('autoMerge:true → session runs "merge" and the card stores auto_merge=1', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'Auto-merge on' });
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, autoMerge: true })
+      .expect(200);
+
+    expect((res.body.card as { auto_merge?: number | null }).auto_merge).toBe(1);
+    const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
+    expect(sessionRes.body.finalize_automation).toBe('merge');
+  });
+
+  it('autoMerge:false → session runs "push" and the card stores auto_merge=0', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'Auto-merge off' });
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, autoMerge: false })
+      .expect(200);
+
+    expect((res.body.card as { auto_merge?: number | null }).auto_merge).toBe(0);
+    const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
+    expect(sessionRes.body.finalize_automation).toBe('push');
+  });
+
+  it('no override → falls back to the project default (push) and leaves auto_merge null', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'No override' });
+
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect((res.body.card as { auto_merge?: number | null }).auto_merge ?? null).toBeNull();
+    const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
+    expect(sessionRes.body.finalize_automation).toBe('push');
+  });
+
+  it('carries over a previously-stored card auto_merge=1 when the assign body omits the flag', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'Carry-over' });
+
+    // First assign stamps auto_merge=1 on the card.
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, autoMerge: true })
+      .expect(200);
+    // Re-assign with no flag → should fall back to the stored preference.
+    const res = await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect((res.body.card as { auto_merge?: number | null }).auto_merge).toBe(1);
+    const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
+    expect(sessionRes.body.finalize_automation).toBe('merge');
+  });
+
+  it('records an assignment comment on the card', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'Commented assign' });
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, comment: 'Focus on the mobile layout first.' })
+      .expect(200);
+
+    const comments = await request
+      .get(`/api/projects/${projectId}/board/cards/${card.id}/comments`)
+      .expect(200);
+    const bodies = (comments.body as Array<{ content: string }>).map((c) => c.content);
+    expect(bodies).toContain('Focus on the mobile layout first.');
+  });
+
+  it('rejects an over-long comment (> 4000 chars) with 400 and does not assign', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const agent = await createAgent({ projectId });
+    const card = await createCard(projectId, { title: 'Oversized comment' });
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id, comment: 'x'.repeat(4001) })
+      .expect(400);
+
+    // No session spawned, card untouched.
+    const after = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const onBoard = (after.body.cards as Array<{ id: string; session_id: string | null }>).find(
+      (c) => c.id === card.id,
+    );
+    expect(onBoard?.session_id ?? null).toBeNull();
+  });
+});
+
 describe('POST /api/projects/:projectId/board/cards/:cardId/unassign', () => {
   it('clears assignee and session_id after a prior /assign', async () => {
     const project = await createProject();

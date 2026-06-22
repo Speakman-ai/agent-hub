@@ -28,6 +28,7 @@ import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
 import { getOrCreateBoard } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
+import { ConvertSupportTicketRequestSchema } from './support-tickets.openapi.js';
 
 /**
  * Best-effort attribution of a session replay (referenced by `replayRef`) to a
@@ -419,6 +420,19 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(409).json({ error: 'Support ticket already converted' });
       }
 
+      // Optional body: per-card auto-merge preference + a note. Tolerate a
+      // missing/empty body (the common case) but reject a malformed one.
+      const parsedConvert = ConvertSupportTicketRequestSchema.safeParse(req.body ?? {});
+      if (!parsedConvert.success) {
+        return res.status(400).json({ error: 'Invalid request body' });
+      }
+      const autoMergePref =
+        typeof parsedConvert.data.autoMerge === 'boolean'
+          ? parsedConvert.data.autoMerge
+          : undefined;
+      const convertNote =
+        typeof parsedConvert.data.comment === 'string' ? parsedConvert.data.comment.trim() : '';
+
       const { board, columns } = getOrCreateBoard(stmts, project.id);
       // Prefer the canonical "To Do" column; fall back to the left-most column
       // so a board with renamed columns still gets a sensible landing spot.
@@ -461,6 +475,16 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
             null, // assign_model
             maxPos,
           );
+          // Stamp the auto-merge preference (if the operator set one) so it
+          // carries over to the board's assign UI and the eventual session's
+          // finalize automation level.
+          if (autoMergePref !== undefined) {
+            stmts.setKanbanCardAutoMerge.run(autoMergePref ? 1 : 0, cardId);
+          }
+          // Attach the optional assignment note as a card comment.
+          if (convertNote) {
+            stmts.createKanbanCardComment.run(uuidv4(), cardId, 'support-ticket', convertNote);
+          }
           // Flag the ticket converted (records converted_card_id) and mark it
           // read so a converted ticket no longer counts toward the unread badge.
           convertSupportTicketToCard(ticket.id, cardId);
