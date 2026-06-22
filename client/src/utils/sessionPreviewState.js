@@ -330,6 +330,34 @@ export function paneWidthStorageKey(sessionId) {
   return `previewPaneWidth:${sessionId}`;
 }
 
+/**
+ * localStorage key for the in-session design pane width (px). Scoped per
+ * session like the preview pane so each session keeps its own preferred
+ * width. `variant` separates the two design surfaces — a linked Design
+ * Studio canvas (`'linked'`) vs a design-mode worktree canvas (`'mode'`) —
+ * so flipping a session between them doesn't share one width.
+ */
+export function designPaneWidthStorageKey(sessionId, variant = 'linked') {
+  if (!sessionId) return null;
+  return `designPaneWidth:${variant}:${sessionId}`;
+}
+
+/** Default width (px) for the in-session design panes. */
+export const DEFAULT_DESIGN_PANE_WIDTH = 520;
+
+/** Minimum width (px) for the in-session design panes. */
+export const MIN_DESIGN_PANE_WIDTH = 320;
+
+/**
+ * Absolute maximum width (px) for the in-session design panes — the ceiling
+ * for the *stored* preference. The rendered/operable width is additionally
+ * capped to a fraction of the viewport by `useResizablePaneWidth`, so a width
+ * persisted on a wide monitor can't overflow or crush the chat on a narrower
+ * laptop/tablet. Keep this as the upper bound; the responsive cap lives in the
+ * hook.
+ */
+export const MAX_DESIGN_PANE_WIDTH = 1200;
+
 /** Best-effort preview id from a stored `agenthub_preview` WS payload. */
 export function previewIdFromEvent(event) {
   if (!event || typeof event !== 'object') return '';
@@ -345,6 +373,10 @@ export function clearSessionPreviewStorage(sessionId) {
     const widthKey = paneWidthStorageKey(sessionId);
     if (openKey) window.localStorage.removeItem(openKey);
     if (widthKey) window.localStorage.removeItem(widthKey);
+    for (const variant of ['linked', 'mode']) {
+      const designKey = designPaneWidthStorageKey(sessionId, variant);
+      if (designKey) window.localStorage.removeItem(designKey);
+    }
   } catch {
     /* storage unavailable */
   }

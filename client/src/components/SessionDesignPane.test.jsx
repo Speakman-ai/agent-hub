@@ -11,6 +11,10 @@ import SessionDesignPane from './SessionDesignPane.jsx';
  */
 describe('SessionDesignPane', () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    // Wide viewport so the hook's viewport-aware cap doesn't clip these
+    // width assertions; the cap has dedicated coverage below + in the hook.
+    window.innerWidth = 3000;
     globalThis.fetch = vi.fn(() =>
       Promise.resolve({
         ok: true,
@@ -49,5 +53,50 @@ describe('SessionDesignPane', () => {
     render(<SessionDesignPane design={{ id: 'd1', name: 'X' }} />);
     expect(screen.queryByTestId('session-design-unlink')).toBeNull();
     expect(screen.queryByTestId('session-design-open-studio')).toBeNull();
+  });
+
+  it('renders a resize handle and applies the default width', () => {
+    const { container } = render(
+      <SessionDesignPane sessionId="s-1" design={{ id: 'd1', name: 'X' }} />,
+    );
+    const pane = container.querySelector('[data-testid="session-design-pane"]');
+    expect(pane.style.width).toBe('520px');
+    expect(screen.getByTestId('session-design-pane-resize-handle')).toBeInTheDocument();
+  });
+
+  it('reads a persisted width from localStorage on mount', () => {
+    window.localStorage.setItem('designPaneWidth:linked:s-1', '760');
+    const { container } = render(
+      <SessionDesignPane sessionId="s-1" design={{ id: 'd1', name: 'X' }} />,
+    );
+    const pane = container.querySelector('[data-testid="session-design-pane"]');
+    expect(pane.style.width).toBe('760px');
+  });
+
+  it('widens and persists when the resize handle is dragged left', () => {
+    const { container } = render(
+      <SessionDesignPane sessionId="s-1" design={{ id: 'd1', name: 'X' }} />,
+    );
+    const pane = container.querySelector('[data-testid="session-design-pane"]');
+    const handle = screen.getByTestId('session-design-pane-resize-handle');
+    fireEvent.pointerDown(handle, { clientX: 600, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    // 520 + (600 - 500) = 620
+    expect(pane.style.width).toBe('620px');
+    expect(window.localStorage.getItem('designPaneWidth:linked:s-1')).toBe('620');
+  });
+
+  it('caps a wide persisted width to the viewport on a narrow screen', () => {
+    // A width persisted on a big monitor must not overflow a laptop viewport.
+    window.localStorage.setItem('designPaneWidth:linked:s-1', '1100');
+    window.innerWidth = 1100; // 1100 * 0.6 = 660 effective cap
+    const { container } = render(
+      <SessionDesignPane sessionId="s-1" design={{ id: 'd1', name: 'X' }} />,
+    );
+    const pane = container.querySelector('[data-testid="session-design-pane"]');
+    expect(pane.style.width).toBe('660px');
+    // Preference preserved for when the user returns to a wide monitor.
+    expect(window.localStorage.getItem('designPaneWidth:linked:s-1')).toBe('1100');
   });
 });

@@ -1,8 +1,15 @@
 import { useCallback, useState } from 'react';
-import { Palette, Download } from 'lucide-react';
+import { Palette, Download, GripVertical } from 'lucide-react';
 import { DesignCanvas } from './DesignView.jsx';
 import { exportDesignPdf } from '../utils/exportDesignPdf.js';
 import { getServerBase } from '../utils/connection.js';
+import { useResizablePaneWidth } from '../hooks/useResizablePaneWidth.js';
+import {
+  designPaneWidthStorageKey,
+  DEFAULT_DESIGN_PANE_WIDTH,
+  MIN_DESIGN_PANE_WIDTH,
+  MAX_DESIGN_PANE_WIDTH,
+} from '../utils/sessionPreviewState.js';
 
 /**
  * SessionDesignModePane — live canvas for a session running in `session_mode =
@@ -38,6 +45,13 @@ export default function SessionDesignModePane({
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState(null);
 
+  const { width, isResizing, handleProps } = useResizablePaneWidth({
+    storageKey: designPaneWidthStorageKey(sessionId, 'mode'),
+    defaultWidth: DEFAULT_DESIGN_PANE_WIDTH,
+    min: MIN_DESIGN_PANE_WIDTH,
+    max: MAX_DESIGN_PANE_WIDTH,
+  });
+
   const handleDownloadPdf = useCallback(async () => {
     if (!sessionId || exporting || busy) return;
     setExporting(true);
@@ -63,9 +77,27 @@ export default function SessionDesignModePane({
 
   return (
     <div
-      className="hidden lg:flex flex-col w-[42%] max-w-[640px] min-w-[320px] border-l border-gray-800 bg-gray-950"
+      className={`hidden lg:flex flex-col shrink-0 border-l border-gray-800 bg-gray-950 relative ${
+        isResizing ? 'select-none' : ''
+      }`}
+      style={{ width: `${width}px` }}
       data-testid="session-design-mode-pane"
     >
+      <div
+        {...handleProps}
+        aria-label="Resize design pane"
+        title="Drag to resize design pane"
+        className={`absolute top-0 left-0 z-20 flex h-full w-3 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center transition-colors focus:outline-none focus-visible:bg-sky-500/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 ${
+          isResizing ? 'bg-sky-500/50' : 'bg-gray-800/80 hover:bg-sky-500/35'
+        }`}
+        data-testid="session-design-mode-pane-resize-handle"
+      >
+        <GripVertical
+          size={14}
+          className={`text-gray-500 ${isResizing ? 'text-sky-200' : 'hover:text-sky-300'}`}
+          aria-hidden
+        />
+      </div>
       <div className="border-b border-gray-800 px-3 py-2 flex items-center justify-between flex-shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <Palette size={15} className="text-purple-400 flex-shrink-0" />

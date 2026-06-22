@@ -5592,6 +5592,7 @@ export default function App({ initialView } = {}) {
                     )}
                     {linkedDesign && (
                       <SessionDesignPane
+                        sessionId={activeSessionId}
                         design={linkedDesign}
                         reloadToken={sessionDesignReloadToken}
                         onUnlink={handleUnlinkSessionDesign}

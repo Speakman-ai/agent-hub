@@ -22,6 +22,10 @@ vi.mock('../utils/connection.js', () => ({
  */
 describe('SessionDesignModePane', () => {
   beforeEach(() => {
+    window.localStorage.clear();
+    // Wide viewport so the hook's viewport-aware cap doesn't clip these
+    // width assertions; the cap is covered in the hook's own suite.
+    window.innerWidth = 3000;
     exportDesignPdfMock.mockReset();
     exportDesignPdfMock.mockResolvedValue(undefined);
     globalThis.fetch = vi.fn(() =>
@@ -96,5 +100,25 @@ describe('SessionDesignModePane', () => {
     render(<SessionDesignModePane sessionId="sess-1" />);
     fireEvent.click(screen.getByTestId('session-design-export-pdf'));
     await waitFor(() => expect(screen.getByText('disk full')).toBeInTheDocument());
+  });
+
+  it('renders a resize handle at the default width and persists drags', () => {
+    const { container } = render(<SessionDesignModePane sessionId="sess-1" />);
+    const pane = container.querySelector('[data-testid="session-design-mode-pane"]');
+    expect(pane.style.width).toBe('520px');
+    const handle = screen.getByTestId('session-design-mode-pane-resize-handle');
+    fireEvent.pointerDown(handle, { clientX: 600, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    // 520 + (600 - 500) = 620
+    expect(pane.style.width).toBe('620px');
+    expect(window.localStorage.getItem('designPaneWidth:mode:sess-1')).toBe('620');
+  });
+
+  it('reads a persisted width from localStorage on mount', () => {
+    window.localStorage.setItem('designPaneWidth:mode:sess-1', '880');
+    const { container } = render(<SessionDesignModePane sessionId="sess-1" />);
+    const pane = container.querySelector('[data-testid="session-design-mode-pane"]');
+    expect(pane.style.width).toBe('880px');
   });
 });
