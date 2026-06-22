@@ -300,6 +300,12 @@ function makeStmts(): {
     upsertFinalizeRunStep: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunStep'],
+    beginFinalizeRunStepAttempt: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['beginFinalizeRunStepAttempt'],
+    attachFinalizeRunStepLog: {
+      run: vi.fn(),
+    } as unknown as OrchestratorDeps['stmts']['attachFinalizeRunStepLog'],
     listFinalizeRunStepsForRun: {
       all: vi.fn(() => []),
     } as unknown as OrchestratorDeps['stmts']['listFinalizeRunStepsForRun'],

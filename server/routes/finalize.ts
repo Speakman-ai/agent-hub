@@ -44,6 +44,7 @@ import type {
   FinalizeRunMode,
   FinalizeRunRow,
   FinalizeRunStatus,
+  FinalizeRunStepRow,
   KanbanBoardRow,
   KanbanCardRow,
   ReviewerThreadRow,
@@ -59,6 +60,7 @@ import { runFinalizePush, runSessionPushToGithub } from '../finalize/push-run.js
 import { evaluateFinalizeShipGate, type FinalizeShipGateAction } from '../finalize/ship-gate.js';
 import { resolveSessionPrUrl } from '../session-title-pr.js';
 import { listFinalizeRunSteps, loadFinalizeStepOutput } from '../finalize/step-output.js';
+import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { parseFlakeGate } from '../finalize/flake-recovery.js';
 import {
   aggregateMetrics,
@@ -149,6 +151,7 @@ function summarizeFinalizePhase(run: FinalizeRunRow | undefined): FinalizePhaseS
 
 export default function createFinalizeRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
+  const stepLogStore = createFinalizeStepLogStore(deps.config);
   const router = Router();
 
   // ───────────────────────────────────────────────────────────────
@@ -483,7 +486,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
   // ───────────────────────────────────────────────────────────────
   router.get(
     '/api/projects/:projectId/finalize/:runId/steps/:stepIndex/output',
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const projectId = req.params.projectId as string;
       const runId = req.params.runId as string;
       const stepIndex = Number.parseInt(String(req.params.stepIndex), 10);
@@ -500,21 +503,45 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       }
 
       const sessionId = run.session_id;
-      if (!sessionId) {
-        return res.json({ run_id: runId, step_index: stepIndex, lines: [] });
-      }
       // Push-CI runs (trigger_source 'git_push') log under a sentinel
       // session with no owner — authorize via project access (this route
       // sits behind the project visibility gate) instead of session
       // ownership, which would 404 for everyone.
       if (
+        sessionId &&
         run.trigger_source !== 'git_push' &&
         !userCanReadSession(req as AuthenticatedRequest, sessionId)
       ) {
         return res.status(404).json({ error: 'Session not found' });
       }
 
-      const lines = loadFinalizeStepOutput(stmts, { sessionId, runId, stepIndex });
+      // Preferred path: the step's output was written ONCE to the log store
+      // (S3/local) and the location stamped on the step row. Lazy-load that
+      // blob on demand instead of streaming every line into the session.
+      const stepRow = stmts.getFinalizeRunStep.get(runId, stepIndex) as
+        | FinalizeRunStepRow
+        | undefined;
+      if (stepRow?.log_key) {
+        const stored = await stepLogStore.read({
+          storage_kind: stepRow.log_storage_kind,
+          storage_bucket: stepRow.log_storage_bucket,
+          storage_region: stepRow.log_storage_region,
+          key: stepRow.log_key,
+        });
+        if (stored) {
+          return res.json({
+            run_id: runId,
+            step_index: stepIndex,
+            lines: stored,
+            truncated: !!stepRow.log_truncated,
+            total_lines: stepRow.log_lines ?? stored.length,
+          });
+        }
+      }
+
+      // Legacy fallback: runs predating the log store streamed output into
+      // `messages`. Scan those so historical runs still render their logs.
+      const lines = sessionId ? loadFinalizeStepOutput(stmts, { sessionId, runId, stepIndex }) : [];
       return res.json({ run_id: runId, step_index: stepIndex, lines });
     },
   );

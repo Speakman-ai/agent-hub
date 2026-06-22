@@ -1013,6 +1013,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FinalizeStepOutputLine"
+        truncated:
+          type: boolean
+        total_lines:
+          type: integer
       required:
         - run_id
         - step_index

@@ -18,6 +18,8 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
 import { getDb, getStmts } from '../db.js';
+import type { AppConfig, FinalizeRunStepRow } from '../types.js';
+import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 
 let request: supertest.Agent;
 
@@ -548,6 +550,117 @@ describe('GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output',
       .expect(200);
     expect(res.body.lines).toHaveLength(1);
     expect(res.body.lines[0].text).toBe('command not found');
+  });
+
+  it('serves step output from the log store when the step row records a blob', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    seedSession(sessionId, projectId);
+    const runId = seedFinalizeRun({ projectId, sessionId });
+    const stmts = getStmts();
+
+    // Write the blob through the SAME local store the route reads from (keyed
+    // by dataDir, which the test harness pins to AGENT_HUB_DATA_DIR).
+    const config = {
+      dataDir: process.env.AGENT_HUB_DATA_DIR as string,
+      artifactsBucket: null,
+      artifactsBucketRegion: null,
+    } as unknown as AppConfig;
+    const attempt = 'attempt-nonce-1';
+    const persisted = await createFinalizeStepLogStore(config).write(
+      runId,
+      2,
+      {
+        truncated: true,
+        totalLines: 9000,
+        lines: [
+          { stream: 'stdout', text: 'compiling…' },
+          { stream: 'stderr', text: 'warning: deprecated API' },
+        ],
+      },
+      attempt,
+    );
+
+    // Seed the step row + attach the location exactly as the runner does:
+    // terminal state via the upsert, then the nonce (begin) + guarded attach.
+    stmts.upsertFinalizeRunStep.run(runId, 2, 'E2E', 'passed', 0, 1000, 2000, 'e2e', null);
+    stmts.beginFinalizeRunStepAttempt.run(attempt, runId, 2);
+    stmts.attachFinalizeRunStepLog.run(
+      persisted.storage_kind,
+      persisted.storage_bucket,
+      persisted.storage_region,
+      persisted.key,
+      persisted.lines,
+      persisted.truncated ? 1 : 0,
+      runId,
+      2,
+      attempt,
+    );
+
+    const res = await request
+      .get(`/api/projects/${projectId}/finalize/${runId}/steps/2/output`)
+      .expect(200);
+    expect(res.body.lines.map((l: { text: string }) => l.text)).toEqual([
+      'compiling…',
+      'warning: deprecated API',
+    ]);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total_lines).toBe(9000);
+  });
+});
+
+describe('finalize_run_steps log-location lifecycle', () => {
+  it('a stale attempt nonce cannot clobber a newer execution; the current nonce updates in place', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    seedSession(sessionId, projectId);
+    const runId = seedFinalizeRun({ projectId, sessionId });
+    const stmts = getStmts();
+
+    // Step 1 ran once (attempt A) and its log was attached.
+    stmts.upsertFinalizeRunStep.run(runId, 1, 'E2E', 'passed', 0, 1000, 2000, 'e2e', null);
+    stmts.beginFinalizeRunStepAttempt.run('attempt-A', runId, 1);
+    stmts.attachFinalizeRunStepLog.run(
+      'local',
+      null,
+      null,
+      `finalize-logs/${runId}/1-attempt-A.json.gz`,
+      5,
+      0,
+      runId,
+      1,
+      'attempt-A',
+    );
+
+    // Step 1 is RE-EXECUTED (attempt B): begin clears the prior location + sets
+    // the new nonce. While B's upload is pending the row shows NO stale log.
+    stmts.beginFinalizeRunStepAttempt.run('attempt-B', runId, 1);
+    let row = stmts.getFinalizeRunStep.get(runId, 1) as FinalizeRunStepRow;
+    expect(row.log_attempt).toBe('attempt-B');
+    expect(row.log_key).toBeNull();
+
+    // A's slow upload finally completes and tries to attach with its OLD nonce —
+    // it must match no row (B owns the slot now).
+    stmts.attachFinalizeRunStepLog.run(
+      'local',
+      null,
+      null,
+      `finalize-logs/${runId}/1-attempt-A.json.gz`,
+      5,
+      0,
+      runId,
+      1,
+      'attempt-A',
+    );
+    row = stmts.getFinalizeRunStep.get(runId, 1) as FinalizeRunStepRow;
+    expect(row.log_key).toBeNull(); // A could not clobber B
+
+    // B's upload completes and attaches against the current nonce.
+    const bKey = `finalize-logs/${runId}/1-attempt-B.json.gz`;
+    stmts.attachFinalizeRunStepLog.run('local', null, null, bKey, 7, 0, runId, 1, 'attempt-B');
+    row = stmts.getFinalizeRunStep.get(runId, 1) as FinalizeRunStepRow;
+    expect(row.log_key).toBe(bKey);
+    expect(row.log_lines).toBe(7);
   });
 });
 

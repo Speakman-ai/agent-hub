@@ -946,6 +946,15 @@ function initDb(dataDir: string): void {
       exit_code INTEGER,
       started_at INTEGER,
       ended_at INTEGER,
+      job_id TEXT,
+      matrix_key TEXT,
+      log_storage_kind TEXT,
+      log_storage_bucket TEXT,
+      log_storage_region TEXT,
+      log_key TEXT,
+      log_lines INTEGER,
+      log_truncated INTEGER,
+      log_attempt TEXT,
       PRIMARY KEY (run_id, step_index)
     );
     CREATE INDEX IF NOT EXISTS finalize_run_steps_run
@@ -1114,6 +1123,32 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE finalize_run_steps ADD COLUMN job_id TEXT');
     db.exec('ALTER TABLE finalize_run_steps ADD COLUMN matrix_key TEXT');
+  }
+
+  // Per-step CI output is stored as a single blob in the finalize log store
+  // (S3 or local dir) rather than streamed into the session message log. These
+  // columns record where each step's blob lives so reads resolve the original
+  // backend even after the Hub's storage config changes. NULL for legacy rows
+  // whose output still lives in `messages` (the route falls back to scanning).
+  try {
+    db.prepare('SELECT log_key FROM finalize_run_steps LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_storage_kind TEXT');
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_storage_bucket TEXT');
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_storage_region TEXT');
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_key TEXT');
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_lines INTEGER');
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_truncated INTEGER');
+  }
+
+  // Per-execution nonce: a unique token stamped when each step execution
+  // starts, used as the blob-key attempt segment and the attach guard so a
+  // re-run of the same (run_id, step_index) can't be clobbered by a stale
+  // upload. (ms `ended_at` is not collision-safe for same-millisecond reruns.)
+  try {
+    db.prepare('SELECT log_attempt FROM finalize_run_steps LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE finalize_run_steps ADD COLUMN log_attempt TEXT');
   }
 
   db.exec(`
@@ -4595,6 +4630,15 @@ function initDb(dataDir: string): void {
     // Presence = orchestrator-pushed (internal); absence triggers the
     // PR-body-marker fallback. See `server/finalize/provenance.ts`.
     getFinalizeRunByPrUrl: db.prepare('SELECT * FROM finalize_runs WHERE pr_url = ? LIMIT 1'),
+    // NOTE: the log-location columns (log_storage_*, log_key, log_lines,
+    // log_truncated, log_attempt) are deliberately NOT written here. Their
+    // lifecycle is owned exclusively by `beginFinalizeRunStepAttempt` (clears
+    // them + stamps a fresh attempt nonce when an execution STARTS) and
+    // `attachFinalizeRunStepLog` (sets them when the upload finishes). Leaving
+    // them out of this upsert means a normal state transition (queued →
+    // running → passed/failed) never resurrects a previous execution's stale
+    // location — and there is no COALESCE that could preserve it across a
+    // re-run.
     upsertFinalizeRunStep: db.prepare(
       `INSERT INTO finalize_run_steps (
         run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key
@@ -4609,10 +4653,44 @@ function initDb(dataDir: string): void {
         matrix_key = excluded.matrix_key`,
     ),
     listFinalizeRunStepsForRun: db.prepare(
-      `SELECT run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key
+      `SELECT run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key,
+              log_storage_kind, log_storage_bucket, log_storage_region, log_key, log_lines, log_truncated,
+              log_attempt
          FROM finalize_run_steps
         WHERE run_id = ?
         ORDER BY step_index ASC`,
+    ),
+    getFinalizeRunStep: db.prepare(
+      `SELECT run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key,
+              log_storage_kind, log_storage_bucket, log_storage_region, log_key, log_lines, log_truncated,
+              log_attempt
+         FROM finalize_run_steps
+        WHERE run_id = ? AND step_index = ?`,
+    ),
+    // Begin a new execution of a step: stamp a fresh per-execution nonce and
+    // CLEAR any prior log location. This is what guarantees a re-run/retry of
+    // the same (run_id, step_index) never shows the previous attempt's blob —
+    // including the case where the new best-effort upload later fails or times
+    // out (the row simply has no location, rather than a stale one).
+    beginFinalizeRunStepAttempt: db.prepare(
+      `UPDATE finalize_run_steps
+          SET log_attempt = ?,
+              log_storage_kind = NULL, log_storage_bucket = NULL, log_storage_region = NULL,
+              log_key = NULL, log_lines = NULL, log_truncated = NULL
+        WHERE run_id = ? AND step_index = ?`,
+    ),
+    // Attach a step's log-store location AFTER its terminal state is persisted,
+    // so a slow/hung upload never holds the step row in `running`. Only the log
+    // columns are touched — state/timing are left intact. Guarded on the
+    // per-execution `log_attempt` nonce: a stale upload from an earlier attempt
+    // carries that attempt's nonce, so once the step is re-executed (new nonce
+    // via beginFinalizeRunStepAttempt) the stale attach matches zero rows and
+    // cannot clobber the newer execution's location.
+    attachFinalizeRunStepLog: db.prepare(
+      `UPDATE finalize_run_steps
+          SET log_storage_kind = ?, log_storage_bucket = ?, log_storage_region = ?,
+              log_key = ?, log_lines = ?, log_truncated = ?
+        WHERE run_id = ? AND step_index = ? AND log_attempt = ?`,
     ),
     upsertFinalizeRunJob: db.prepare(
       `INSERT INTO finalize_run_jobs (

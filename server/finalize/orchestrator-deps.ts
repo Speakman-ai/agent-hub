@@ -12,6 +12,7 @@ import { createInSessionReviewer } from './in-session-reviewer.js';
 import { finalizeTurnEndSubscriber } from './turn-end.js';
 import { createSpawnFinalizeFixTurn } from './spawn-fix-turn.js';
 import { buildEnrichedPrompt } from '../chat.js';
+import { createFinalizeStepLogStore } from './finalize-log-store.js';
 import type { OrchestratorDeps } from './orchestrator.js';
 import type { EnrichedAgent, KanbanCardRow, RouteDeps } from '../types.js';
 
@@ -92,6 +93,7 @@ export function buildOrchestratorDeps(
     config: routeDeps.config,
     stmts: routeDeps.stmts,
     broadcast: routeDeps.broadcast,
+    logStore: createFinalizeStepLogStore(routeDeps.config),
     transactional: <T>(fn: () => T): T => getDb().transaction(fn)(),
     runReviewer,
     turnEnd: finalizeTurnEndSubscriber,

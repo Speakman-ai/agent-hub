@@ -1146,6 +1146,25 @@ export interface FinalizeRunStepRow {
   ended_at: number | null;
   job_id: string | null;
   matrix_key: string | null;
+  /**
+   * Where this step's CI output blob lives in the finalize log store. NULL for
+   * legacy rows whose output was streamed into `messages` (the step-output
+   * route falls back to scanning session messages for those).
+   */
+  log_storage_kind: string | null;
+  log_storage_bucket: string | null;
+  log_storage_region: string | null;
+  log_key: string | null;
+  /** Total lines the step emitted (may exceed the stored slice). */
+  log_lines: number | null;
+  /** 1 when stored output was truncated at the byte cap, else 0/NULL. */
+  log_truncated: number | null;
+  /**
+   * Per-execution nonce stamped when this step's current execution started.
+   * Woven into the blob key and used to guard the attach UPDATE so a stale
+   * upload from an earlier attempt can't reattach onto a re-executed row.
+   */
+  log_attempt: string | null;
 }
 
 /** v2 job/matrix shard state for parallel container jobs. */
@@ -1929,6 +1948,9 @@ export interface Stmts {
   getFinalizeRunByPrUrl: Stmt;
   upsertFinalizeRunStep: Stmt;
   listFinalizeRunStepsForRun: Stmt;
+  getFinalizeRunStep: Stmt;
+  beginFinalizeRunStepAttempt: Stmt;
+  attachFinalizeRunStepLog: Stmt;
   upsertFinalizeRunJob: Stmt;
   listFinalizeRunJobsForRun: Stmt;
   upsertFinalizeRunJobAttempt: Stmt;

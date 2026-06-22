@@ -20,11 +20,12 @@
  *   - Execute each step as a single `bash -euo pipefail -c <run>`
  *     invocation. The shell prefix is locked at parse time
  *     ({@link FINALIZE_STEP_SHELL}); there is no `shell:` override at v1.
- *   - Stream stdout AND stderr to the session message log line-by-line
- *     using the existing `addMessage` infra (role = 'system'). Each line
- *     gets its own message row so the chat UI scrolls naturally and the
- *     transcript stays grep-friendly. Broadcasts `message` events so live
- *     subscribers see output without reloading.
+ *   - Capture stdout AND stderr and write each step's output ONCE to the
+ *     finalize log store (S3 or local dir) as a single blob — NOT into the
+ *     session message log. Per-line `messages` rows + `message` broadcasts
+ *     used to flood the live session window and bloat SQLite (a verbose
+ *     step could emit >1M rows). The step-log viewer lazy-loads the blob on
+ *     click. Only the per-round checks SUMMARY (one message) reaches chat.
  *   - Capture every step's exit code. A non-zero exit short-circuits the
  *     remaining steps — there is no `continue-on-error:` directive at v0,
  *     matching ci.yaml v1's hard-fail-on-first-failure contract.
@@ -34,22 +35,23 @@
  *   - Return a result the orchestrator can map directly to the design's
  *     §10 failure-classification table (`step_failed` / `timeout`).
  *
- * Output streaming model:
+ * Output capture model:
  *
  *   Each chunk emitted by the child's `stdout` / `stderr` is split on
- *   newlines. Complete lines are persisted/broadcast immediately so the
- *   live log mirrors what `tail -f` would show. A trailing fragment with
- *   no newline is held in a per-stream buffer until either more data
- *   arrives or the process exits — on exit, any remaining buffered
- *   fragment is flushed as a final line. This matters because some
- *   commands (e.g. progress bars, anything writing without a terminating
- *   `\n`) would otherwise drop their last partial line on the floor.
+ *   newlines. Complete lines feed (a) a bounded trailing tail + failure
+ *   excerpt for the §7 fix-dispatch body and (b) a byte-capped
+ *   {@link StepLogAccumulator} that becomes the stored blob. A trailing
+ *   fragment with no newline is held in a per-stream buffer until either
+ *   more data arrives or the process exits — on exit, any remaining
+ *   buffered fragment is flushed as a final line. This matters because
+ *   some commands (e.g. progress bars, anything writing without a
+ *   terminating `\n`) would otherwise drop their last partial line.
  *
- *   Lines are tagged with the source stream (`stdout` / `stderr`) in the
- *   message `metadata` JSON so the UI can render stderr distinctly
- *   (red / italic / whatever). The body itself is the raw line text,
- *   prefixed with a tiny `[stdout]` / `[stderr]` marker so transcripts
- *   read sensibly in tools that don't render metadata.
+ *   Each stored line keeps its source stream (`stdout` / `stderr`) so the
+ *   viewer can render stderr distinctly. The blob's location (backend kind
+ *   + bucket/region + key) is stamped on the `finalize_run_steps` row so
+ *   reads resolve the original backend even after the storage config
+ *   changes. See `finalize-log-store.ts`.
  *
  * Result object (mirrors acceptance criteria):
  *
@@ -71,19 +73,24 @@
  */
 
 import { spawn } from 'child_process';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import type { ChildProcess } from 'child_process';
 import type {
   BroadcastFn,
   FinalizeRunPhase,
   FinalizeRunRow,
   FinalizeRunStatus,
-  MessageRow,
   Stmts,
 } from '../types.js';
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
 import type { CiConfig, CiStep } from './ci-config.js';
 import { listFinalizeRunSteps } from './step-output.js';
+import {
+  StepLogAccumulator,
+  type FinalizeStepLogStore,
+  type StepLogPersist,
+  type StepLogSnapshot,
+} from './finalize-log-store.js';
 import {
   readFinalizeLoopRound,
   writeFinalizeChecksRoundTimeline,
@@ -120,8 +127,8 @@ export const STEP_SPAWN_HARD_TIMEOUT_MS = 60 * 60 * 1_000;
 /**
  * How many trailing lines of mixed stdout/stderr we keep for the §7
  * fix-dispatch body. Mirrors the "Last output (40 lines)" wording in the
- * design doc. Lines beyond the tail still land in the session log via
- * the streaming inserts — the tail is purely for the structured handoff.
+ * design doc. The full output is captured in the stored log blob — the
+ * tail is purely for the structured handoff.
  */
 export const STEP_OUTPUT_TAIL_LINES = 40;
 
@@ -140,24 +147,6 @@ export const STEP_OUTPUT_TAIL_LINES = 40;
 export const STEP_FAILURE_EXCERPT_CONTEXT_BEFORE = 8;
 export const STEP_FAILURE_EXCERPT_CONTEXT_AFTER = 30;
 export const STEP_FAILURE_EXCERPT_MAX_LINES = 160;
-
-/**
- * Hard cap on how many output lines a single step persists as `system`
- * chat messages (via {@link announceLine}). Verbose CI steps — Cypress E2E,
- * webpack/tsc with ANSI progress spam, DB migration chatter — can emit
- * hundreds of thousands to millions of lines. Persisting one `messages` row
- * per line previously bloated the SQLite DB into the multi-GB range (a single
- * E2E run produced >1M rows), which in turn blew the WAL up and triggered
- * checkpoint I/O storms that froze the server's event loop. The full output
- * is still captured in-memory for the result (`tail` + failure `excerpt`,
- * both already bounded), so capping the *persisted* lines costs nothing for
- * triage while making the row count per step bounded. Override with
- * `FINALIZE_STEP_MAX_PERSISTED_LINES` if needed.
- */
-export const STEP_MAX_PERSISTED_LINES = (() => {
-  const n = Number.parseInt(process.env.FINALIZE_STEP_MAX_PERSISTED_LINES ?? '', 10);
-  return Number.isFinite(n) && n > 0 ? n : 2000;
-})();
 
 /**
  * Lines that mark a real test/build failure. Deliberately case-sensitive on
@@ -301,15 +290,28 @@ export interface StepRunnerDeps {
     | 'updateFinalizeRunPhase'
     | 'updateFinalizeRunActiveSeconds'
     | 'failFinalizeRun'
-    | 'addMessage'
-    | 'touchSession'
-    | 'getMessageById'
     | 'upsertFinalizeRunStep'
+    | 'beginFinalizeRunStepAttempt'
+    | 'attachFinalizeRunStepLog'
     | 'listFinalizeRunStepsForRun'
     | 'upsertFinalizeRunJob'
     | 'listFinalizeRunJobsForRun'
+    // Used only by the per-round checks-summary timeline message (a single
+    // message per round) — NOT per output line. Per-line output goes to the
+    // log store, not the message stream.
+    | 'addMessage'
+    | 'touchSession'
+    | 'getMessageById'
   >;
   broadcast: BroadcastFn;
+  /**
+   * Store for per-step CI output blobs (S3 or local dir). When set, each
+   * step's output is written here ONCE and the location is persisted on the
+   * step row; nothing is streamed into the session message log. When omitted
+   * (some tests), output is simply not persisted — the bounded tail / failure
+   * excerpt still flow through the result for triage.
+   */
+  logStore?: FinalizeStepLogStore;
   /**
    * Override the child-process spawn. Tests inject a fake; production
    * uses {@link defaultSpawnStep}.
@@ -482,8 +484,9 @@ export async function runStepsSequence(
     const stepForRun = { ...step, name: displayName };
     const remainingBudgetMs = budgetMs - (now() - startedAt);
     if (remainingBudgetMs <= 0) {
+      // Step never ran (budget exhausted before spawn) → no output to store.
+      // The timeout detail still reaches the §7 fix dispatch via outputTail.
       const tail = ['[timeout] pipeline budget exhausted before step started'];
-      announceLine(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, 'stderr', tail[0]);
       return finishStepSequence(
         deps,
         opts,
@@ -510,7 +513,17 @@ export async function runStepsSequence(
     }
 
     const stepHardTimeoutMs = Math.min(remainingBudgetMs, spawnHardTimeoutMs);
-    announceStepStart(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, persistMeta);
+    // announceStepStart mints this execution's log nonce and clears any prior
+    // log location; thread it to the (detached) upload so its blob key + guarded
+    // attach are tied to THIS execution.
+    const attempt = announceStepStart(
+      deps,
+      opts.sessionId,
+      opts.runId,
+      stepIndex,
+      stepForRun,
+      persistMeta,
+    );
 
     const runOutcome = await runSingleStep({
       step: stepForRun,
@@ -530,8 +543,18 @@ export async function runStepsSequence(
 
     stepResults.push(runOutcome.result);
 
+    // Persist the TERMINAL step state first so the UI/state machine flips the
+    // step out of `running` the moment the child exits. The log upload is then
+    // fired as fully-detached background work (`void` — never awaited anywhere)
+    // so blob-storage latency is entirely off the critical path: the next step
+    // starts, a failed step dispatches its fix context, AND the phase returns
+    // success without ever waiting on the upload. uploadAndAttachStepLog never
+    // rejects (it logs + swallows its own errors), so the detached promise is
+    // safe to leave unhandled; the attach is an idempotent best-effort UPDATE
+    // that lands a moment later in the long-lived Hub process.
     if (runOutcome.kind === 'success') {
       announceStepEnd(deps, opts.sessionId, opts.runId, stepIndex, stepForRun, 0, persistMeta);
+      void uploadAndAttachStepLog(deps, opts.runId, stepIndex, runOutcome.logSnapshot, attempt);
       continue;
     }
 
@@ -544,6 +567,7 @@ export async function runStepsSequence(
       runOutcome.result.exitCode,
       persistMeta,
     );
+    void uploadAndAttachStepLog(deps, opts.runId, stepIndex, runOutcome.logSnapshot, attempt);
 
     const failedStep = {
       index: stepIndex,
@@ -609,6 +633,10 @@ export async function runStepsSequence(
     );
   }
 
+  // Every step passed. The phase returns immediately — step-log uploads are
+  // fully detached background work (fired above) and must never delay finalize
+  // completion, status updates, or the downstream ship/push flow. Per the
+  // contract, storage trouble cannot affect step/run success.
   return finishStepSequence(deps, opts, {
     status: 'success',
     stepResults,
@@ -671,17 +699,23 @@ function finishStepPhase(
   return result;
 }
 
+interface SingleStepOutcomeBase {
+  result: StepResult;
+  outputTail: string[];
+  failureExcerpt: string[];
+  /**
+   * The step's full(-ish) output, ready to upload to the log store. Always
+   * present even on spawn-error so the viewer can show what little was
+   * captured. `null` only for steps that never ran (pre-step budget timeout).
+   */
+  logSnapshot: StepLogSnapshot;
+}
+
 type SingleStepOutcome =
-  | { kind: 'success'; result: StepResult; outputTail: string[]; failureExcerpt: string[] }
-  | { kind: 'non-zero-exit'; result: StepResult; outputTail: string[]; failureExcerpt: string[] }
-  | { kind: 'timeout'; result: StepResult; outputTail: string[]; failureExcerpt: string[] }
-  | {
-      kind: 'spawn-error';
-      result: StepResult;
-      outputTail: string[];
-      failureExcerpt: string[];
-      detail: string;
-    };
+  | ({ kind: 'success' } & SingleStepOutcomeBase)
+  | ({ kind: 'non-zero-exit' } & SingleStepOutcomeBase)
+  | ({ kind: 'timeout' } & SingleStepOutcomeBase)
+  | ({ kind: 'spawn-error'; detail: string } & SingleStepOutcomeBase);
 
 interface RunSingleStepArgs {
   step: CiStep;
@@ -702,7 +736,10 @@ interface RunSingleStepArgs {
  * becomes a tagged {@link SingleStepOutcome}.
  */
 function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
-  const { step, stepIndex, sessionId, runId, deps, now, spawnStep, hardTimeoutMs } = args;
+  // Output no longer flows into the session message log, so this function
+  // doesn't need sessionId/runId/deps — the caller (runStepPhase) owns the
+  // log-store upload + step-row persistence once the step resolves.
+  const { step, stepIndex, now, spawnStep, hardTimeoutMs } = args;
 
   return new Promise<SingleStepOutcome>((resolve) => {
     const startedAt = now();
@@ -712,45 +749,24 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       STEP_FAILURE_EXCERPT_CONTEXT_AFTER,
       STEP_FAILURE_EXCERPT_MAX_LINES,
     );
-    // Every line that lands in the trailing tail also feeds the excerpt
-    // collector. Keeping the two in lock-step via one helper means a future
-    // emit site can't accidentally update one and forget the other.
-    const record = (line: string): void => {
+    // Accumulate the step's output for the log store (byte-capped). This
+    // REPLACES the old per-line `messages` rows + `message` WebSocket
+    // broadcasts that flooded the session window and bloated the messages
+    // table (a single verbose CI step could write >1M rows). `emit()` also
+    // feeds the bounded tail + failure excerpt so triage context is preserved
+    // in the result regardless of the store.
+    const logAcc = new StepLogAccumulator();
+    const emit = (stream: 'stdout' | 'stderr', line: string): void => {
       tail.push(line);
       excerpt.push(line);
+      logAcc.push(stream, line);
     };
     let stdoutLines = 0;
     let stderrLines = 0;
-    let persistedLines = 0;
-    let outputTruncationNoticed = false;
     let stdoutBuffer = '';
     let stderrBuffer = '';
     let settled = false;
     let timedOut = false;
-
-    // Cap per-step output persisted as chat messages. `record()` still feeds
-    // the bounded tail/excerpt (full triage context preserved); this only
-    // stops the unbounded per-line DB writes + broadcasts that previously let
-    // a single verbose CI step write >1M `messages` rows. See
-    // STEP_MAX_PERSISTED_LINES.
-    const persistLine = (stream: 'stdout' | 'stderr', line: string): void => {
-      if (persistedLines < STEP_MAX_PERSISTED_LINES) {
-        persistedLines += 1;
-        announceLine(deps, sessionId, runId, stepIndex, step, stream, line);
-      } else if (!outputTruncationNoticed) {
-        outputTruncationNoticed = true;
-        announceLine(
-          deps,
-          sessionId,
-          runId,
-          stepIndex,
-          step,
-          'stderr',
-          `[output truncated] step exceeded ${STEP_MAX_PERSISTED_LINES} persisted lines; ` +
-            `further output is captured in the failure excerpt and run logs but not stored as chat messages`,
-        );
-      }
-    };
 
     let child: SpawnedStep;
     try {
@@ -763,8 +779,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const line = `[spawn-error] ${detail}`;
-      record(line);
-      announceLine(deps, sessionId, runId, stepIndex, step, 'stderr', line);
+      emit('stderr', line);
       resolve({
         kind: 'spawn-error',
         detail,
@@ -779,6 +794,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         },
         outputTail: tail.snapshot(),
         failureExcerpt: excerpt.snapshot(),
+        logSnapshot: logAcc.snapshot(),
       });
       return;
     }
@@ -817,19 +833,17 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       const trailing = lines.pop() ?? '';
       for (const raw of lines) {
         const line = stripCarriageReturn(raw);
-        record(line);
         if (stream === 'stdout') stdoutLines += 1;
         else stderrLines += 1;
-        persistLine(stream, line);
+        emit(stream, line);
       }
       // Flush the partial buffer if it has grown too large — protects
       // against a step that streams forever without a newline.
       if (trailing.length >= STEP_PARTIAL_LINE_FLUSH_BYTES) {
         const line = stripCarriageReturn(trailing);
-        record(line);
         if (stream === 'stdout') stdoutLines += 1;
         else stderrLines += 1;
-        persistLine(stream, line);
+        emit(stream, line);
         if (stream === 'stdout') stdoutBuffer = '';
         else stderrBuffer = '';
       } else if (stream === 'stdout') {
@@ -845,16 +859,14 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     const flushTrailingFragments = (): void => {
       if (stdoutBuffer.length > 0) {
         const line = stripCarriageReturn(stdoutBuffer);
-        record(line);
         stdoutLines += 1;
-        persistLine('stdout', line);
+        emit('stdout', line);
         stdoutBuffer = '';
       }
       if (stderrBuffer.length > 0) {
         const line = stripCarriageReturn(stderrBuffer);
-        record(line);
         stderrLines += 1;
-        persistLine('stderr', line);
+        emit('stderr', line);
         stderrBuffer = '';
       }
     };
@@ -865,9 +877,8 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       clearTimeout(timer);
       const detail = err.message || String(err);
       const line = `[spawn-error] ${detail}`;
-      record(line);
       stderrLines += 1;
-      announceLine(deps, sessionId, runId, stepIndex, step, 'stderr', line);
+      emit('stderr', line);
       flushTrailingFragments();
       resolve({
         kind: 'spawn-error',
@@ -883,6 +894,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         },
         outputTail: tail.snapshot(),
         failureExcerpt: excerpt.snapshot(),
+        logSnapshot: logAcc.snapshot(),
       });
     });
 
@@ -902,12 +914,14 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         stdoutLines,
         stderrLines,
       };
+      const logSnapshot = logAcc.snapshot();
       if (timedOut) {
         resolve({
           kind: 'timeout',
           result,
           outputTail: tail.snapshot(),
           failureExcerpt: excerpt.snapshot(),
+          logSnapshot,
         });
         return;
       }
@@ -917,6 +931,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
           result,
           outputTail: tail.snapshot(),
           failureExcerpt: excerpt.snapshot(),
+          logSnapshot,
         });
         return;
       }
@@ -925,75 +940,114 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         result,
         outputTail: tail.snapshot(),
         failureExcerpt: excerpt.snapshot(),
+        logSnapshot,
       });
     });
   });
 }
 
 /**
- * Persist + broadcast a single output line. Best-effort — a DB or socket
- * failure logs and continues so a hiccup in chat infra can't kill a
- * step.
+ * Bounded wall-clock for the best-effort step-log upload. The terminal step
+ * state is ALWAYS persisted before this runs (see runStepPhase), so even a
+ * fully hung backend can only delay attaching the log location by this much —
+ * never the step's running→passed/failed transition. Override with
+ * `FINALIZE_STEP_LOG_UPLOAD_TIMEOUT_MS`.
  */
-function announceLine(
+export const STEP_LOG_UPLOAD_TIMEOUT_MS = (() => {
+  const n = Number.parseInt(process.env.FINALIZE_STEP_LOG_UPLOAD_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 30_000;
+})();
+
+/**
+ * Upload one step's accumulated output to the log store, then attach its
+ * location to the (already-terminal) step row. Fully best-effort, fully
+ * detached, and bounded:
+ *   - returns immediately when no store is wired (tests) or the step produced
+ *     nothing;
+ *   - YIELDS a microtask before doing any work, so the CPU-heavy serialization
+ *     + compression inside `logStore.write` (JSON.stringify + gzip over up to
+ *     STEP_MAX_LOG_BYTES) runs OFF the step critical path — the next step's
+ *     spawn and a failed step's fix dispatch are never blocked by it;
+ *   - a store error or a write that exceeds {@link STEP_LOG_UPLOAD_TIMEOUT_MS}
+ *     is swallowed (logged) so blob-storage trouble can never fail a green step
+ *     — the viewer simply shows no stored output.
+ *
+ * `attempt` is this execution's nonce (the step row's `log_attempt`, minted at
+ * announceStepStart). It is woven into the blob key (unique per execution) AND
+ * used to GUARD the attach UPDATE: if the same (runId, stepIndex) was
+ * re-executed (e.g. a v2 job retried within the run), the row carries a NEW
+ * nonce, so a stale earlier upload's attach matches zero rows and cannot
+ * clobber the newer execution's location.
+ */
+async function uploadAndAttachStepLog(
   deps: StepRunnerDeps,
-  sessionId: string,
   runId: string,
   stepIndex: number,
-  step: CiStep,
-  stream: 'stdout' | 'stderr',
-  text: string,
-): void {
-  const { stmts, broadcast } = deps;
-  const prefix = stream === 'stdout' ? '[stdout]' : '[stderr]';
-  const body = `${prefix} ${text}`;
-  const metadata = JSON.stringify({
-    kind: 'finalize_step_output',
-    runId,
-    stepIndex,
-    stepName: step.name,
-    stream,
-  });
-  const msgId = uuidv4();
+  snapshot: StepLogSnapshot | null,
+  attempt: string,
+): Promise<void> {
+  if (!deps.logStore || !snapshot || snapshot.totalLines === 0) return;
+  // Hand control back to the caller before any encode/compress/upload work.
+  await Promise.resolve();
+  let log: StepLogPersist;
   try {
-    stmts.addMessage.run(
-      msgId,
-      sessionId,
-      'system',
-      body,
-      null,
-      null,
-      null,
-      metadata,
-      null,
-      null,
-      null,
+    log = await withTimeout(
+      deps.logStore.write(runId, stepIndex, snapshot, attempt),
+      STEP_LOG_UPLOAD_TIMEOUT_MS,
     );
   } catch (err) {
     console.warn(
-      `[finalize-step-runner] addMessage failed for session=${sessionId} step=${stepIndex}: ${
+      `[finalize-step-runner] step-log upload failed run=${runId} step=${stepIndex}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
     return;
   }
   try {
-    stmts.touchSession.run(sessionId);
-  } catch {
-    /* best-effort */
-  }
-  try {
-    const inserted = stmts.getMessageById.get(msgId) as MessageRow | undefined;
-    if (inserted) {
-      broadcast({ type: 'message', sessionId, message: inserted });
-    }
+    // Guarded on (run_id, step_index, log_attempt): a stale attempt's attach
+    // matches no row once the step has been re-executed with a new nonce.
+    deps.stmts.attachFinalizeRunStepLog.run(
+      log.storage_kind,
+      log.storage_bucket,
+      log.storage_region,
+      log.key,
+      log.lines,
+      log.truncated ? 1 : 0,
+      runId,
+      stepIndex,
+      attempt,
+    );
   } catch (err) {
     console.warn(
-      `[finalize-step-runner] message broadcast failed for session=${sessionId}: ${
+      `[finalize-step-runner] attach step-log location failed run=${runId} step=${stepIndex}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
   }
+}
+
+/**
+ * Resolve `p` or reject with a timeout error after `ms`. The underlying
+ * promise is left to settle on its own (a hung S3 put can't be cancelled) —
+ * we just stop waiting on it so the step loop proceeds.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${ms}ms`));
+    }, ms);
+    timer.unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**
@@ -1009,7 +1063,7 @@ function announceStepStart(
   stepIndex: number,
   step: CiStep,
   meta?: StepPersistMeta,
-): void {
+): string {
   const startedAt = Date.now();
   persistFinalizeRunStep(
     deps.stmts,
@@ -1022,6 +1076,20 @@ function announceStepStart(
     null,
     meta,
   );
+  // Mint a fresh per-execution nonce and CLEAR any prior log location. This is
+  // what makes a re-run/retry never display the previous attempt's blob (even
+  // if this attempt's upload later fails). The nonce flows to the upload + the
+  // guarded attach so a stale earlier upload can't reattach onto this row.
+  const attempt = randomUUID();
+  try {
+    deps.stmts.beginFinalizeRunStepAttempt.run(attempt, runId, stepIndex);
+  } catch (err) {
+    console.warn(
+      `[finalize-step-runner] begin step attempt failed run=${runId} step=${stepIndex}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
   try {
     deps.broadcast({
       type: 'finalize_run_step_state',
@@ -1040,8 +1108,15 @@ function announceStepStart(
       }`,
     );
   }
+  return attempt;
 }
 
+/**
+ * Persist the terminal step state + broadcast it. Terminal state only — the log
+ * location is attached separately, AFTER this, via the per-execution nonce
+ * minted at {@link announceStepStart}, so a slow upload can't hold the step in
+ * `running` (see uploadAndAttachStepLog).
+ */
 function announceStepEnd(
   deps: StepRunnerDeps,
   sessionId: string,
@@ -1114,6 +1189,10 @@ function persistFinalizeRunStep(
   meta?: StepPersistMeta,
 ): void {
   try {
+    // The upsert intentionally does NOT touch the log-location columns — those
+    // are owned by beginFinalizeRunStepAttempt (clear + nonce on start) and
+    // attachFinalizeRunStepLog (set on upload). A state transition can never
+    // resurrect a prior execution's stale location.
     stmts.upsertFinalizeRunStep.run(
       runId,
       stepIndex,
@@ -1312,6 +1391,7 @@ export const __test = {
   FailureExcerptCollector,
   FAILURE_SIGNAL_RE,
   stripCarriageReturn,
+  withTimeout,
   STEP_ACTIVE_SECONDS_PER_STEP,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
 };

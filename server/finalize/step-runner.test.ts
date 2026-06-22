@@ -16,7 +16,6 @@ import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
-  STEP_MAX_PERSISTED_LINES,
   __test,
   defaultSpawnStep,
   runStepPhase,
@@ -24,6 +23,36 @@ import {
   type SpawnedStep,
   type StepRunnerDeps,
 } from './step-runner.js';
+import type {
+  FinalizeStepLogStore,
+  StepLogPersist,
+  StepLogSnapshot,
+} from './finalize-log-store.js';
+
+// ─── Fake log store ─────────────────────────────────────────────────
+// Captures what each step would upload so tests assert on the blob the store
+// receives instead of on per-line chat messages (the old contract).
+function makeLogStore(): {
+  store: FinalizeStepLogStore;
+  writes: Array<{ runId: string; stepIndex: number; snapshot: StepLogSnapshot }>;
+} {
+  const writes: Array<{ runId: string; stepIndex: number; snapshot: StepLogSnapshot }> = [];
+  const store: FinalizeStepLogStore = {
+    write: vi.fn(async (runId: string, stepIndex: number, snapshot: StepLogSnapshot) => {
+      writes.push({ runId, stepIndex, snapshot });
+      return {
+        storage_kind: 'local',
+        storage_bucket: null,
+        storage_region: null,
+        key: `finalize-logs/${runId}/${stepIndex}.json.gz`,
+        lines: snapshot.totalLines,
+        truncated: snapshot.truncated,
+      };
+    }),
+    read: vi.fn(async () => null),
+  };
+  return { store, writes };
+}
 
 // ─── Fakes ──────────────────────────────────────────────────────────
 
@@ -36,6 +65,8 @@ interface FakeStmts {
   touchSession: { run: ReturnType<typeof vi.fn> };
   getMessageById: { get: ReturnType<typeof vi.fn> };
   upsertFinalizeRunStep: { run: ReturnType<typeof vi.fn> };
+  beginFinalizeRunStepAttempt: { run: ReturnType<typeof vi.fn> };
+  attachFinalizeRunStepLog: { run: ReturnType<typeof vi.fn> };
   listFinalizeRunStepsForRun: { all: ReturnType<typeof vi.fn> };
 }
 
@@ -80,6 +111,8 @@ function makeStmts(): FakeStmts {
         },
       ),
     },
+    beginFinalizeRunStepAttempt: { run: vi.fn() },
+    attachFinalizeRunStepLog: { run: vi.fn() },
     listFinalizeRunStepsForRun: {
       all: vi.fn(() => [...steps].sort((a, b) => a.step_index - b.step_index)),
     },
@@ -151,10 +184,12 @@ describe('runStepPhase — happy path', () => {
       return f.child;
     };
 
+    const { store: logStore, writes: logWrites } = makeLogStore();
     const deps: StepRunnerDeps = {
       stmts: stmts as never,
       broadcast,
       spawnStep,
+      logStore,
       now: makeMonoClock(),
     };
     const config = makeConfig([
@@ -216,21 +251,9 @@ describe('runStepPhase — happy path', () => {
       }),
     );
 
-    // 6 output lines + 1 checks-round summary message.
-    expect(stmts.addMessage.run).toHaveBeenCalledTimes(7);
-    const firstCall = stmts.addMessage.run.mock.calls[0];
-    expect(firstCall[2]).toBe('system'); // role
-    expect(firstCall[3]).toBe('[stdout] hello'); // content
-    expect(typeof firstCall[7]).toBe('string');
-    const meta = JSON.parse(firstCall[7] as string);
-    expect(meta).toMatchObject({
-      kind: 'finalize_step_output',
-      runId: RUN_ID,
-      stepIndex: 1,
-      stepName: 'Install',
-      stream: 'stdout',
-    });
-
+    // Output is NO LONGER streamed into the session as per-line messages.
+    // The only message is the single checks-round summary.
+    expect(stmts.addMessage.run).toHaveBeenCalledTimes(1);
     const checksRoundCall = stmts.addMessage.run.mock.calls.find((call) => {
       const m = JSON.parse(call[7] as string);
       return m.kind === 'finalize_checks_round';
@@ -242,18 +265,34 @@ describe('runStepPhase — happy path', () => {
       round: 1,
     });
 
-    // Warn line from step 2 is recorded as stderr.
-    const warnCall = stmts.addMessage.run.mock.calls.find(
-      (c: unknown[]) => c[3] === '[stderr] warn',
-    );
-    expect(warnCall).toBeDefined();
-    expect(JSON.parse(warnCall![7] as string).stream).toBe('stderr');
+    // Each step minted a fresh per-execution nonce + cleared any prior log
+    // location on start (beginFinalizeRunStepAttempt), and the upload carried
+    // that same nonce through to write().
+    expect(stmts.beginFinalizeRunStepAttempt.run).toHaveBeenCalledTimes(2);
+    const step1Nonce = stmts.beginFinalizeRunStepAttempt.run.mock.calls[0][0];
+    const step2Nonce = stmts.beginFinalizeRunStepAttempt.run.mock.calls[1][0];
+    expect(step1Nonce).toEqual(expect.any(String));
+    expect(step1Nonce).not.toBe(step2Nonce);
 
-    // `message` broadcasts one per addMessage.
+    // Each step's output went to the log store ONCE (not the chat stream),
+    // keyed by its execution nonce (the write's 4th arg).
+    expect(logStore.write).toHaveBeenCalledTimes(2);
+    expect(logStore.write).toHaveBeenNthCalledWith(1, RUN_ID, 1, expect.anything(), step1Nonce);
+    expect(logWrites[0]).toMatchObject({ runId: RUN_ID, stepIndex: 1 });
+    expect(logWrites[0].snapshot.lines).toEqual([
+      { stream: 'stdout', text: 'hello' },
+      { stream: 'stdout', text: 'world' },
+      { stream: 'stdout', text: 'final' },
+    ]);
+    expect(logWrites[0].snapshot.totalLines).toBe(3);
+    // Step 2's stderr warn line is captured in its blob, tagged stderr.
+    expect(logWrites[1].snapshot.lines).toContainEqual({ stream: 'stderr', text: 'warn' });
+
+    // Only the checks-round summary broadcasts a `message` — no output flood.
     const messageBroadcasts = broadcast.mock.calls.filter(
       (c: unknown[]) => (c[0] as { type?: string }).type === 'message',
     );
-    expect(messageBroadcasts).toHaveLength(7);
+    expect(messageBroadcasts).toHaveLength(1);
 
     // step_state events: 2 starts + 2 passes = 4
     const stepStates = broadcast.mock.calls.filter(
@@ -685,13 +724,8 @@ describe('runStepPhase — guard rails', () => {
     expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
   });
 
-  it('addMessage hiccup does not abort the step', async () => {
+  it('log store write failure does not abort the step', async () => {
     const stmts = makeStmts();
-    let callCount = 0;
-    stmts.addMessage.run.mockImplementation(() => {
-      callCount += 1;
-      if (callCount === 1) throw new Error('disk full');
-    });
     const broadcast = vi.fn();
     const fakes: ReturnType<typeof makeFakeChild>[] = [];
     const spawnStep: SpawnStepFn = () => {
@@ -699,10 +733,17 @@ describe('runStepPhase — guard rails', () => {
       fakes.push(f);
       return f.child;
     };
+    const logStore: FinalizeStepLogStore = {
+      write: vi.fn(async () => {
+        throw new Error('s3 unavailable');
+      }),
+      read: vi.fn(async () => null),
+    };
     const deps: StepRunnerDeps = {
       stmts: stmts as never,
       broadcast,
       spawnStep,
+      logStore,
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'step 1', run: 'echo hi' }]);
@@ -717,9 +758,9 @@ describe('runStepPhase — guard rails', () => {
     await microtaskTick();
     fakes[0].emitter.emit('close', 0);
     const result = await resultP;
+    // A storage hiccup must not fail an otherwise-green step.
     expect(result.status).toBe('success');
-    // Two lines attempted; first threw, second succeeded.
-    expect(stmts.addMessage.run).toHaveBeenCalledTimes(3);
+    expect(logStore.write).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -769,10 +810,12 @@ describe('runStepPhase — output tail capping', () => {
       fakes.push(f);
       return f.child;
     };
+    const { store: logStore, writes: logWrites } = makeLogStore();
     const deps: StepRunnerDeps = {
       stmts: stmts as never,
       broadcast: vi.fn(),
       spawnStep,
+      logStore,
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'step 1', run: 'no-newline' }]);
@@ -789,11 +832,11 @@ describe('runStepPhase — output tail capping', () => {
     const result = await resultP;
     expect(result.status).toBe('success');
     expect(result.stepResults[0].stdoutLines).toBe(1);
-    // The fragment should land as a message.
-    const stdoutCall = stmts.addMessage.run.mock.calls.find(
-      (c: unknown[]) => (c[3] as string) === '[stdout] only fragment, no newline',
-    );
-    expect(stdoutCall).toBeDefined();
+    // The trailing fragment should land in the stored log blob.
+    expect(logWrites[0].snapshot.lines).toContainEqual({
+      stream: 'stdout',
+      text: 'only fragment, no newline',
+    });
   });
 });
 
@@ -1045,16 +1088,16 @@ function stripPrefixForTail(s: string): string {
   return s.replace(/^\[stdout\] |^\[stderr\] /, '');
 }
 
-// ─── Output flood cap (regression) ──────────────────────────────────
+// ─── Output flood regression ────────────────────────────────────────
 //
 // A single verbose CI step (Cypress E2E, tsc/webpack ANSI spam, DB migration
-// chatter) once wrote one `messages` row per output line. A real run produced
-// >1M rows, bloating the SQLite DB to multi-GB, exploding the WAL, and freezing
-// the server's event loop via checkpoint I/O storms. STEP_MAX_PERSISTED_LINES
-// bounds the per-step rows; every line is still counted + fed to the tail/
-// excerpt for triage.
-describe('runStepPhase — persisted-output cap', () => {
-  it('caps persisted system messages per step but still counts every line', async () => {
+// chatter) once wrote one `messages` row + one `message` WebSocket broadcast
+// per output line. A real run produced >1M rows, bloating SQLite to multi-GB,
+// exploding the WAL, freezing the event loop, and flooding the live session
+// window. Output now goes to the log store as a SINGLE blob per step — never
+// the message stream — so a million-line step writes zero output messages.
+describe('runStepPhase — output never floods the message stream', () => {
+  it('writes the step output ONCE to the log store, with no per-line messages', async () => {
     const stmts = makeStmts();
     const broadcast = vi.fn();
     const fakes: ReturnType<typeof makeFakeChild>[] = [];
@@ -1063,10 +1106,12 @@ describe('runStepPhase — persisted-output cap', () => {
       fakes.push(f);
       return f.child;
     };
+    const { store: logStore, writes: logWrites } = makeLogStore();
     const deps: StepRunnerDeps = {
       stmts: stmts as never,
       broadcast,
       spawnStep,
+      logStore,
       now: makeMonoClock(),
     };
     const config = makeConfig([{ name: 'E2E', run: 'npm run e2e' }]);
@@ -1079,7 +1124,7 @@ describe('runStepPhase — persisted-output cap', () => {
     });
 
     await microtaskTick();
-    const N = STEP_MAX_PERSISTED_LINES + 500;
+    const N = 5000;
     let buf = '';
     for (let i = 0; i < N; i++) buf += `noise line ${i}\n`;
     fakes[0].stdout.push(buf);
@@ -1088,16 +1133,242 @@ describe('runStepPhase — persisted-output cap', () => {
 
     const result = await resultP;
     expect(result.status).toBe('success');
-    // Every line is still processed/counted (full triage context preserved)…
+    // Every line is still counted (full triage context preserved)…
     expect(result.stepResults[0].stdoutLines).toBe(N);
-    // …but persisted rows are bounded — NOT one per line.
-    const persisted = stmts.addMessage.run.mock.calls.length;
-    expect(persisted).toBeLessThanOrEqual(STEP_MAX_PERSISTED_LINES + 2);
-    expect(persisted).toBeGreaterThanOrEqual(STEP_MAX_PERSISTED_LINES);
-    // …and a one-time truncation notice is persisted.
-    const bodies = stmts.addMessage.run.mock.calls.map((c) => c[3] as string);
-    expect(bodies.some((b) => typeof b === 'string' && b.includes('[output truncated]'))).toBe(
-      true,
+    // …the store receives exactly one blob carrying the full line count…
+    expect(logStore.write).toHaveBeenCalledTimes(1);
+    expect(logWrites[0].snapshot.totalLines).toBe(N);
+    // …and NO output is streamed into the session: the only message is the
+    // single checks-round summary, and no `message` broadcast per line.
+    expect(stmts.addMessage.run.mock.calls.length).toBeLessThanOrEqual(1);
+    const messageBroadcasts = broadcast.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { type?: string }).type === 'message',
     );
+    expect(messageBroadcasts.length).toBeLessThanOrEqual(1);
+  });
+});
+
+// ─── Terminal state must not block on the log upload (regression) ────
+//
+// The store write is best-effort. If announceStepEnd is awaited BEHIND the
+// upload (the original bug), a slow/hung S3 or local backend keeps the step
+// row in `running` after the child has already exited — distorting the UI,
+// cancellation, and active-time accounting. The terminal state must be
+// persisted + broadcast FIRST; the log location is attached afterward.
+describe('runStepPhase — terminal step state precedes the log upload', () => {
+  it('returns success while the upload is pending, then attaches the log in the background', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+
+    // A write that stays pending until we explicitly resolve it — simulating a
+    // slow backend.
+    let resolveWrite!: (v: StepLogPersist) => void;
+    const writeP = new Promise<StepLogPersist>((r) => {
+      resolveWrite = r;
+    });
+    const logStore: FinalizeStepLogStore = {
+      write: vi.fn(() => writeP),
+      read: vi.fn(async () => null),
+    };
+
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      logStore,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Build', run: 'npm run build' }]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    fakes[0].stdout.push('compiling\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+
+    // The phase returns success WHILE the upload is still pending — finalize
+    // completion is never blocked by blob-storage latency.
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    expect(logStore.write).toHaveBeenCalledTimes(1);
+    // The step was broadcast passed…
+    const passedState = broadcast.mock.calls.find(
+      (c: unknown[]) =>
+        (c[0] as { type?: string; state?: string }).type === 'finalize_run_step_state' &&
+        (c[0] as { state?: string }).state === 'passed',
+    );
+    expect(passedState).toBeTruthy();
+    // …but the log location has NOT been attached yet (write still pending).
+    expect(stmts.attachFinalizeRunStepLog.run).not.toHaveBeenCalled();
+
+    // The detached upload finishes later and attaches the location in the
+    // background, after the run has already completed.
+    resolveWrite({
+      storage_kind: 'local',
+      storage_bucket: null,
+      storage_region: null,
+      key: `finalize-logs/${RUN_ID}/1.json.gz`,
+      lines: 1,
+      truncated: false,
+    });
+    await microtaskTick();
+    expect(stmts.attachFinalizeRunStepLog.run).toHaveBeenCalledTimes(1);
+    const attachArgs = stmts.attachFinalizeRunStepLog.run.mock.calls[0];
+    expect(attachArgs[3]).toBe(`finalize-logs/${RUN_ID}/1.json.gz`); // log_key
+    expect(attachArgs[6]).toBe(RUN_ID); // run_id
+    expect(attachArgs[7]).toBe(1); // step_index
+  });
+
+  it('starts the next step without waiting for the prior step upload', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+
+    // Every upload stays pending until we drain the resolvers, simulating a
+    // hung backend across the whole run.
+    const writeResolvers: Array<() => void> = [];
+    const logStore: FinalizeStepLogStore = {
+      write: vi.fn(
+        (runId: string, stepIndex: number) =>
+          new Promise<StepLogPersist>((res) => {
+            writeResolvers.push(() =>
+              res({
+                storage_kind: 'local',
+                storage_bucket: null,
+                storage_region: null,
+                key: `finalize-logs/${runId}/${stepIndex}.json.gz`,
+                lines: 1,
+                truncated: false,
+              }),
+            );
+          }),
+      ),
+      read: vi.fn(async () => null),
+    };
+
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      logStore,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([
+      { name: 'Install', run: 'npm ci' },
+      { name: 'Test', run: 'npm test' },
+    ]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    // Drive step 1 to completion — its upload is now pending (hung backend).
+    await microtaskTick();
+    fakes[0].stdout.push('installing\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    await microtaskTick();
+
+    // Step 2 has ALREADY been spawned + broadcast running, even though step 1's
+    // upload is still in flight — storage latency is off the critical path.
+    expect(fakes).toHaveLength(2);
+    expect(logStore.write).toHaveBeenCalledTimes(1);
+    const step2Running = broadcast.mock.calls.find(
+      (c: unknown[]) =>
+        (c[0] as { type?: string; step_index?: number; state?: string }).type ===
+          'finalize_run_step_state' &&
+        (c[0] as { step_index?: number }).step_index === 2 &&
+        (c[0] as { state?: string }).state === 'running',
+    );
+    expect(step2Running).toBeTruthy();
+
+    // Finish step 2. The phase returns success even though BOTH uploads are
+    // still pending — completion is never blocked by the detached uploads.
+    fakes[1].stdout.push('testing\n');
+    await microtaskTick();
+    fakes[1].emitter.emit('close', 0);
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    expect(logStore.write).toHaveBeenCalledTimes(2);
+    expect(stmts.attachFinalizeRunStepLog.run).not.toHaveBeenCalled();
+
+    // The detached uploads attach their locations in the background afterward.
+    writeResolvers.forEach((r) => r());
+    await microtaskTick();
+    expect(stmts.attachFinalizeRunStepLog.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a step failure without waiting for its log upload', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+
+    // A never-resolving upload: if the failure path awaited it, the run would
+    // hang and this test would time out.
+    const logStore: FinalizeStepLogStore = {
+      write: vi.fn(() => new Promise<StepLogPersist>(() => {})),
+      read: vi.fn(async () => null),
+    };
+
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      logStore,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Test', run: 'npm test' }]);
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    fakes[0].stderr.push('boom\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    // Resolves promptly despite the upload never settling — fix dispatch /
+    // finalize recovery is never blocked by the log upload.
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(result.failedStep?.index).toBe(1);
+    expect(logStore.write).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('withTimeout', () => {
+  it('resolves when the promise settles before the deadline', async () => {
+    await expect(__test.withTimeout(Promise.resolve('ok'), 1_000)).resolves.toBe('ok');
+  });
+
+  it('rejects when the promise outlives the deadline', async () => {
+    const never = new Promise<string>(() => {});
+    await expect(__test.withTimeout(never, 5)).rejects.toThrow(/timed out/);
   });
 });

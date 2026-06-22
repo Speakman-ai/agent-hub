@@ -69,6 +69,7 @@ import type {
 import { runStepPhase } from './step-runner.js';
 import type { StepRunResult } from './step-runner.js';
 import { runJobPhase } from './job-runner.js';
+import type { FinalizeStepLogStore } from './finalize-log-store.js';
 import { dispatchFixMessage, type SpawnFixTurnFn } from './fix-dispatch.js';
 import type {
   CancelSignal,
@@ -240,6 +241,8 @@ export interface OrchestratorDeps {
     | 'touchSession'
     | 'getMessageById'
     | 'upsertFinalizeRunStep'
+    | 'beginFinalizeRunStepAttempt'
+    | 'attachFinalizeRunStepLog'
     | 'listFinalizeRunStepsForRun'
     | 'upsertFinalizeRunJob'
     | 'listFinalizeRunJobsForRun'
@@ -252,6 +255,13 @@ export interface OrchestratorDeps {
     | 'insertFinalizeMetric'
   >;
   broadcast: BroadcastFn;
+  /**
+   * Store for per-step CI output blobs (S3 or local dir). Forwarded into the
+   * step / job phases so output is written here instead of streamed into the
+   * session message log. Optional: when omitted, step output is not persisted
+   * (the bounded tail / failure excerpt still drive triage + fix dispatch).
+   */
+  logStore?: FinalizeStepLogStore;
   /**
    * Wrap a synchronous body in a `better-sqlite3` transaction. Production
    * threads `db.transaction(...)` through here; tests pass an identity
@@ -1203,6 +1213,7 @@ export async function runFinalize(
               {
                 stmts: deps.stmts,
                 broadcast: deps.broadcast,
+                logStore: deps.logStore,
               },
               {
                 runId,
@@ -1221,6 +1232,7 @@ export async function runFinalize(
               {
                 stmts: deps.stmts,
                 broadcast: deps.broadcast,
+                logStore: deps.logStore,
               },
               {
                 runId,

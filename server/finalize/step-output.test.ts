@@ -19,6 +19,13 @@ describe('step-output', () => {
         ended_at: 2000,
         job_id: 'e2e',
         matrix_key: 'Profiles_Tasks',
+        log_storage_kind: 'local',
+        log_storage_bucket: null,
+        log_storage_region: null,
+        log_key: 'finalize-logs/run-1/2-att.json.gz',
+        log_lines: 42,
+        log_truncated: 0,
+        log_attempt: 'att',
       }),
     ).toEqual({
       index: 2,

@@ -425,6 +425,11 @@ const FinalizeStepOutputResponse = registerComponent(
     run_id: z.string(),
     step_index: z.number().int(),
     lines: z.array(FinalizeStepOutputLine),
+    // Present when output was served from the finalize log store. `truncated`
+    // is true if the stored slice was capped at the byte limit; `total_lines`
+    // is the full line count the step emitted.
+    truncated: z.boolean().optional(),
+    total_lines: z.number().int().optional(),
   }),
 );
 
