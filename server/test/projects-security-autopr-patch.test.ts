@@ -64,4 +64,68 @@ describe('PATCH /api/projects/:projectId — securityAutoPr', () => {
       /securityAutoPr.enabled must be a boolean/,
     );
   });
+
+  // ── auto-merge + actor user (unattended automation identity) ──────────
+  // The harness runs auth-disabled, so getMembershipRole is null and actor
+  // eligibility falls back to isKnownHubUserId, which accepts any non-sentinel
+  // string in no-auth mode. That's enough to exercise persistence + coupling.
+
+  it('persists autoMerge + actorUserId together', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ securityAutoPr: { enabled: true, autoMerge: true, actorUserId: 'user-1' } })
+      .expect(200);
+    expect((res.body as { securityAutoPr?: Record<string, unknown> }).securityAutoPr).toEqual({
+      enabled: true,
+      autoMerge: true,
+      actorUserId: 'user-1',
+    });
+  });
+
+  it('rejects autoMerge:true without an actorUserId (fail-safe coupling)', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ securityAutoPr: { autoMerge: true } })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/autoMerge requires.*actorUserId/);
+  });
+
+  it('clearing the actorUserId while autoMerge is on is rejected', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ securityAutoPr: { autoMerge: true, actorUserId: 'user-1' } })
+      .expect(200);
+    // Now try to null the actor without turning autoMerge off — must 400.
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ securityAutoPr: { actorUserId: null } })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/autoMerge requires.*actorUserId/);
+  });
+
+  it('rejects a non-string actorUserId with 400', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ securityAutoPr: { actorUserId: 42 } })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/actorUserId must be a user id string/);
+  });
+
+  it('rejects a non-boolean autoMerge with 400', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({ securityAutoPr: { autoMerge: 'yes' } })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/securityAutoPr.autoMerge must be/);
+  });
 });

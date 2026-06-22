@@ -35,6 +35,7 @@ import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import { isEligibleSecurityActor } from '../security-audit/actor-user.js';
 import {
   canViewProject,
   canDeleteProject,
@@ -2339,14 +2340,58 @@ This workspace has no git repo and no PR automation — your job is planning, or
       } else if (typeof rawSec !== 'object' || Array.isArray(rawSec)) {
         return res.status(400).json({ error: 'securityAutoPr must be an object or null' });
       } else {
-        const enabled = (rawSec as Record<string, unknown>).enabled;
+        const sec = rawSec as Record<string, unknown>;
+        const enabled = sec.enabled;
         if (enabled !== undefined && typeof enabled !== 'boolean') {
           return res.status(400).json({ error: 'securityAutoPr.enabled must be a boolean' });
         }
-        (project as Record<string, unknown>).securityAutoPr = {
+        const autoMerge = sec.autoMerge;
+        if (autoMerge !== undefined && typeof autoMerge !== 'boolean') {
+          return res.status(400).json({ error: 'securityAutoPr.autoMerge must be a boolean' });
+        }
+        // actorUserId: null/'' clears it; a string must reference an Admin/Owner
+        // member of the caller's org (unattended automation acts as this user
+        // and must hold merge rights).
+        const hasActor = Object.prototype.hasOwnProperty.call(sec, 'actorUserId');
+        let actorUserId: string | null | undefined;
+        if (hasActor) {
+          const raw = sec.actorUserId;
+          if (raw === null || raw === '') {
+            actorUserId = null;
+          } else if (typeof raw !== 'string') {
+            return res
+              .status(400)
+              .json({ error: 'securityAutoPr.actorUserId must be a user id string or null' });
+          } else {
+            // Auth-enabled → require Admin/Owner membership in the caller's
+            // org; a known-but-non-member user is rejected. No-auth/local mode
+            // falls back to the "known Hub user" bar. See isEligibleSecurityActor.
+            const orgId = (req as AuthenticatedRequest).authOrgId;
+            if (!isEligibleSecurityActor(raw, orgId)) {
+              return res.status(400).json({
+                error: 'securityAutoPr.actorUserId must be an Admin or Owner member of the org',
+              });
+            }
+            actorUserId = raw;
+          }
+        }
+        const nextSec: Record<string, unknown> = {
           ...(project.securityAutoPr ?? {}),
           ...(enabled !== undefined ? { enabled } : {}),
+          ...(autoMerge !== undefined ? { autoMerge } : {}),
         };
+        if (hasActor) {
+          if (actorUserId === null) delete nextSec.actorUserId;
+          else nextSec.actorUserId = actorUserId;
+        }
+        // Fail-safe coupling: auto-merge cannot be on without a configured actor
+        // — unattended automation would have no one to attribute the PR/merge to.
+        if (nextSec.autoMerge === true && !nextSec.actorUserId) {
+          return res.status(400).json({
+            error: 'securityAutoPr.autoMerge requires securityAutoPr.actorUserId to be set',
+          });
+        }
+        (project as Record<string, unknown>).securityAutoPr = nextSec;
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'securityScan')) {

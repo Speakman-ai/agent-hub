@@ -140,6 +140,16 @@ export const ScanRequestSchema = z
       .boolean()
       .optional()
       .openapi({ description: 'Open a card for new findings (default true).' }),
+    autoPr: z
+      .boolean()
+      .optional()
+      .openapi({
+        description:
+          'Force-open Dependabot-style bump PRs for fixable findings, even when the ' +
+          'project has not set securityAutoPr.enabled. An explicit Autofix click is its ' +
+          'own opt-in. Still requires gitHost: agenthub and a wired native PR service; ' +
+          'ignored otherwise.',
+      }),
   })
   .strict();
 

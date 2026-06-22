@@ -2528,8 +2528,20 @@ export interface Project {
    * version in `package-lock.json` (+ the sibling `package.json` range).
    * Open bump PRs are de-duped by deterministic branch name. Default off.
    * See `server/security-audit/auto-pr.ts`.
+   *
+   * - `autoMerge`: after a bump PR is opened, carry it through Finalize (a
+   *   resolve-PR session at automation level `merge`) and auto-merge it when
+   *   the `.agent-hub/ci.yaml` gate passes. Default off. Requires `actorUserId`
+   *   to be set — unattended scans (scheduled / on-push) have no human to
+   *   attribute the PR + session + merge to, so auto-merge stays OFF until one
+   *   is configured. See `server/security-audit/actor-user.ts`.
+   * - `actorUserId`: the Hub user that UNATTENDED security automation acts as —
+   *   it authors the bump PR, owns the resolve-PR session, and triggers
+   *   Finalize/merge. Must be an Admin/Owner member of the project's org
+   *   (merge rights). A manual Autofix click still attributes to the clicking
+   *   user regardless of this field.
    */
-  securityAutoPr?: { enabled?: boolean };
+  securityAutoPr?: { enabled?: boolean; autoMerge?: boolean; actorUserId?: string };
   /**
    * Automatic triggers for the dependency security audit (Agent Hub-hosted
    * projects only). Both default off — the audit otherwise only runs from the

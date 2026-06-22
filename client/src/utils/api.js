@@ -1220,6 +1220,15 @@ export const api = {
     const qs = status ? `?status=${encodeURIComponent(status)}` : '';
     return fetchJSON(`/projects/${projectId}/security-audit/findings${qs}`);
   },
+  // Run a dependency security scan now. Admin-only, Hub-hosted projects only.
+  // Pass { autoPr: true } (the "Autofix" action) to also force-open
+  // Dependabot-style bump PRs for fixable findings regardless of the project's
+  // securityAutoPr.enabled setting. Returns the scan summary (incl. autoPr).
+  runSecurityScan: (projectId, { autoPr } = {}) =>
+    fetchJSON(`/projects/${projectId}/security-audit/scan`, {
+      method: 'POST',
+      body: JSON.stringify(autoPr ? { autoPr: true } : {}),
+    }),
   // Dismiss (and, unless suppress:false, suppress on future re-scans) a single
   // finding. Requires the Admin role server-side. Returns the updated finding.
   dismissSecurityFinding: (projectId, id, { reason, suppress } = {}) =>

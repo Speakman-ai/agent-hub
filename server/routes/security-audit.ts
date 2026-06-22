@@ -145,8 +145,13 @@ export default function createSecurityAuditRoutes(
       // reusing the findings it just computed. Author resolution / git failures
       // are swallowed by run.ts so they never fail the scan.
       const nativePr = deps.nativePr;
-      const autoPrEnabled =
-        project.gitHost === 'agenthub' && project.securityAutoPr?.enabled === true && !!nativePr;
+      // Auto-PR fires when EITHER the project opted in (securityAutoPr.enabled)
+      // OR this request explicitly asked for it (the "Autofix" button passes
+      // autoPr:true — an explicit click is its own opt-in). Both still require a
+      // Hub-hosted repo and a wired native PR service.
+      const autoPrRequested =
+        parsed.data.autoPr === true || project.securityAutoPr?.enabled === true;
+      const autoPrEnabled = project.gitHost === 'agenthub' && autoPrRequested && !!nativePr;
       const openBumpPrs = autoPrEnabled
         ? async (ctx: {
             project: Project;

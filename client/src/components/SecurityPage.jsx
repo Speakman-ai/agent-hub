@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { ShieldAlert, ShieldCheck, AlertCircle, ExternalLink, ArrowUpCircle } from 'lucide-react';
+import {
+  ShieldAlert,
+  ShieldCheck,
+  AlertCircle,
+  ExternalLink,
+  ArrowUpCircle,
+  RefreshCw,
+  Wrench,
+} from 'lucide-react';
 import { api } from '../utils/api.js';
 
 function relativeTime(ms) {
@@ -274,6 +282,39 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
     load();
   };
 
+  // Rescan / Autofix share one in-flight flag so the two buttons can't fire
+  // concurrently (both POST the same scan endpoint). `scanMode` tracks which is
+  // running so each button shows its own pending label.
+  const [scanMode, setScanMode] = useState(null); // null | 'rescan' | 'autofix'
+
+  const runScan = async (mode) => {
+    if (scanMode) return;
+    setScanMode(mode);
+    try {
+      const result = await api.runSecurityScan(projectId, { autoPr: mode === 'autofix' });
+      const opened = result?.autoPr?.opened?.length ?? 0;
+      if (mode === 'autofix') {
+        onNotify?.(
+          opened > 0
+            ? `Autofix: opened ${opened} bump PR${opened === 1 ? '' : 's'}`
+            : 'Autofix: no fixable findings to open PRs for',
+          opened > 0 ? 'success' : 'info',
+        );
+      } else {
+        const next = (result?.newFindings ?? 0) + (result?.reopened ?? 0);
+        onNotify?.(
+          next > 0 ? `Rescan complete: ${next} new/reopened finding(s)` : 'Rescan complete',
+          'success',
+        );
+      }
+      await load();
+    } catch (err) {
+      onNotify?.(err.message || `Failed to ${mode === 'autofix' ? 'autofix' : 'rescan'}`, 'error');
+    } finally {
+      setScanMode(null);
+    }
+  };
+
   const visible =
     severityFilter === 'all' ? findings : findings.filter((f) => f.severity === severityFilter);
 
@@ -293,6 +334,27 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
           </span>
         ) : null}
         <div className="flex items-center gap-1 ml-auto flex-wrap justify-end">
+          <button
+            onClick={() => runScan('autofix')}
+            disabled={!!scanMode}
+            data-testid="security-autofix"
+            title="Open Dependabot-style bump PRs for every fixable finding"
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Wrench size={12} className={scanMode === 'autofix' ? 'animate-pulse' : ''} />
+            {scanMode === 'autofix' ? 'Fixing…' : 'Autofix'}
+          </button>
+          <button
+            onClick={() => runScan('rescan')}
+            disabled={!!scanMode}
+            data-testid="security-rescan"
+            title="Re-run the dependency security scan now"
+            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-gray-300 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <RefreshCw size={12} className={scanMode === 'rescan' ? 'animate-spin' : ''} />
+            {scanMode === 'rescan' ? 'Scanning…' : 'Rescan'}
+          </button>
+          <span className="w-px h-4 bg-gray-700 mx-1" />
           {STATUS_FILTERS.map((f) => (
             <button
               key={f.key}

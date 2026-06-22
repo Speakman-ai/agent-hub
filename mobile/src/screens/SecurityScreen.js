@@ -179,6 +179,38 @@ export default function SecurityScreen({ route }) {
     [load],
   );
 
+  // Rescan / Autofix share one in-flight flag (both POST the same scan
+  // endpoint). `scanMode` tracks which is running for per-button labels.
+  const [scanMode, setScanMode] = useState(null); // null | 'rescan' | 'autofix'
+
+  const runScan = useCallback(
+    async (mode) => {
+      if (scanMode || !projectId) return;
+      setScanMode(mode);
+      try {
+        const result = await api.runSecurityScan(projectId, { autoPr: mode === 'autofix' });
+        if (mode === 'autofix') {
+          const opened = result?.autoPr?.opened?.length ?? 0;
+          Alert.alert(
+            'Autofix',
+            opened > 0
+              ? `Opened ${opened} bump PR${opened === 1 ? '' : 's'} for fixable findings.`
+              : 'No fixable findings to open PRs for.',
+          );
+        }
+        await load();
+      } catch (err) {
+        Alert.alert(
+          mode === 'autofix' ? 'Autofix failed' : 'Rescan failed',
+          err?.message || 'Scan request failed',
+        );
+      } finally {
+        setScanMode(null);
+      }
+    },
+    [scanMode, projectId, load],
+  );
+
   const renderItem = ({ item }) => (
     <FindingCard item={item} projectId={projectId} onDismissed={handleDismissed} />
   );
@@ -195,6 +227,27 @@ export default function SecurityScreen({ route }) {
             {project.name}
           </Text>
         )}
+      </View>
+
+      <View style={styles.actionRow}>
+        <TouchableOpacity
+          testID="security-autofix"
+          onPress={() => runScan('autofix')}
+          disabled={!!scanMode}
+          style={[styles.actionButton, styles.autofixButton, !!scanMode && styles.actionDisabled]}
+        >
+          <Text style={[styles.actionText, styles.autofixText]}>
+            {scanMode === 'autofix' ? 'Fixing…' : 'Autofix'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="security-rescan"
+          onPress={() => runScan('rescan')}
+          disabled={!!scanMode}
+          style={[styles.actionButton, !!scanMode && styles.actionDisabled]}
+        >
+          <Text style={styles.actionText}>{scanMode === 'rescan' ? 'Scanning…' : 'Rescan'}</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.filterRow}>
@@ -254,6 +307,22 @@ const styles = StyleSheet.create({
   menuIcon: { fontSize: 22, color: colors.gray400 },
   title: { fontSize: 17, fontWeight: '600', color: colors.white, flexShrink: 1 },
   projectLabel: { marginLeft: 'auto', fontSize: 12, color: colors.gray500, maxWidth: 120 },
+  actionRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    gap: 8,
+  },
+  actionButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: colors.gray800,
+  },
+  autofixButton: { backgroundColor: 'rgba(16,185,129,0.12)' },
+  actionDisabled: { opacity: 0.5 },
+  actionText: { fontSize: 12, color: colors.gray200, fontWeight: '600' },
+  autofixText: { color: colors.emerald400 || '#6ee7b7' },
   filterRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

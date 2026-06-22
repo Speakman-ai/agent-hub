@@ -19251,6 +19251,9 @@ paths:
                 generateCard:
                   type: boolean
                   description: Open a card for new findings (default true).
+                autoPr:
+                  type: boolean
+                  description: "Force-open Dependabot-style bump PRs for fixable findings, even when the project has not set securityAutoPr.enabled. An explicit Autofix click is its own opt-in. Still requires gitHost: agenthub and a wired native PR service; ignored otherwise."
               additionalProperties: false
       responses:
         "200":

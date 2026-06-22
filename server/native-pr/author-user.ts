@@ -29,9 +29,15 @@ function isAuthDisabled(): boolean {
 /**
  * True when the deployment runs without per-user attribution: a no-auth
  * fresh install, or the local bundled (Electron) server. In these modes a
- * PR may be attributed to the synthetic `local` Owner.
+ * PR may be attributed to the synthetic `local` Owner, and membership-role
+ * gates (which have no rows to resolve against) fall back to "any known id".
+ *
+ * Exported so role-gated config (e.g. the security automation actor) can tell
+ * a genuine no-auth/local deployment apart from an auth-enabled deployment
+ * where a lookup simply found no membership — only the former may relax the
+ * Admin/Owner requirement.
  */
-function attributionOptional(): boolean {
+export function attributionOptional(): boolean {
   return isAuthDisabled() || isLocalBundledServer();
 }
 

@@ -8,6 +8,7 @@ vi.mock('../utils/api.js', () => ({
   api: {
     getSecurityFindings: vi.fn(),
     dismissSecurityFinding: vi.fn(),
+    runSecurityScan: vi.fn(),
   },
 }));
 
@@ -186,5 +187,53 @@ describe('SecurityPage', () => {
     api.getSecurityFindings.mockResolvedValue({ findings: [], openCounts: counts() });
     render(<SecurityPage projectId="proj-1" refreshNonce={0} />);
     await waitFor(() => expect(screen.getByText('No security findings')).toBeInTheDocument());
+  });
+
+  it('Rescan triggers a plain scan (autoPr:false) and refetches findings', async () => {
+    api.getSecurityFindings.mockResolvedValue({ findings: [], openCounts: counts() });
+    api.runSecurityScan.mockResolvedValue({ newFindings: 0, reopened: 0, autoPr: null });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-rescan'));
+    });
+
+    expect(api.runSecurityScan).toHaveBeenCalledWith('proj-1', { autoPr: false });
+    // Refetched after the scan resolved.
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalledTimes(2));
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Rescan complete'), 'success');
+  });
+
+  it('Autofix triggers a scan with autoPr:true and reports the opened PR count', async () => {
+    api.getSecurityFindings.mockResolvedValue({ findings: [], openCounts: counts() });
+    api.runSecurityScan.mockResolvedValue({
+      autoPr: { opened: [{ prNumber: 7 }, { prNumber: 8 }], skipped: [] },
+    });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-autofix'));
+    });
+
+    expect(api.runSecurityScan).toHaveBeenCalledWith('proj-1', { autoPr: true });
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('opened 2 bump PRs'), 'success');
+  });
+
+  it('surfaces a scan failure via onNotify', async () => {
+    api.getSecurityFindings.mockResolvedValue({ findings: [], openCounts: counts() });
+    api.runSecurityScan.mockRejectedValue(new Error('not hosted'));
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-rescan'));
+    });
+
+    expect(onNotify).toHaveBeenCalledWith('not hosted', 'error');
   });
 });

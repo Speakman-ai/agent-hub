@@ -122,4 +122,66 @@ describe('POST /security-audit/scan — auto-PR gate', () => {
     await request(app).post('/api/projects/p1/security-audit/scan').send({}).expect(200);
     expect(captured.openBumpPrs).toBeUndefined();
   });
+
+  // The "Autofix" button passes { autoPr: true } as its own opt-in — it must
+  // open bump PRs even when the project never set securityAutoPr.enabled.
+  it('passes openBumpPrs when the request body sets autoPr:true, even with the setting unset', async () => {
+    let captured: { openBumpPrs?: unknown } = {};
+    const app = makeApp({
+      project: project({}), // no securityAutoPr at all
+      nativePr: fakeNativePr(),
+      onDeps: (d) => {
+        captured = d as { openBumpPrs?: unknown };
+      },
+    });
+    await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true })
+      .expect(200);
+    expect(typeof captured.openBumpPrs).toBe('function');
+  });
+
+  it('autoPr:true still does NOT open PRs for a non-Hub-hosted project', async () => {
+    let captured: { openBumpPrs?: unknown } = {};
+    const app = makeApp({
+      project: project({ gitHost: 'github' }),
+      nativePr: fakeNativePr(),
+      onDeps: (d) => {
+        captured = d as { openBumpPrs?: unknown };
+      },
+    });
+    await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true })
+      .expect(200);
+    expect(captured.openBumpPrs).toBeUndefined();
+  });
+
+  it('autoPr:true still does NOT open PRs when no native PR service is wired', async () => {
+    let captured: { openBumpPrs?: unknown } = {};
+    const app = makeApp({
+      project: project({}),
+      nativePr: undefined,
+      onDeps: (d) => {
+        captured = d as { openBumpPrs?: unknown };
+      },
+    });
+    await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: true })
+      .expect(200);
+    expect(captured.openBumpPrs).toBeUndefined();
+  });
+
+  it('rejects a non-boolean autoPr with 400 (strict schema)', async () => {
+    const app = makeApp({
+      project: project({}),
+      nativePr: fakeNativePr(),
+      onDeps: () => {},
+    });
+    await request(app)
+      .post('/api/projects/p1/security-audit/scan')
+      .send({ autoPr: 'yes' })
+      .expect(400);
+  });
 });
