@@ -38,6 +38,9 @@ import {
   pickReviewerAgentId,
   composeReviewerSystemPrompt,
 } from './in-session-reviewer.js';
+import { initOrgsDb } from '../orgs.js';
+import { createUser } from '../users-store.js';
+import { replaceUserPreferencesJson } from '../user-preferences-store.js';
 import type { AppConfig, EnrichedAgent, KanbanCardRow, Project, SessionRow } from '../types.js';
 
 // ─── Fixtures ────────────────────────────────────────────────────────
@@ -103,6 +106,19 @@ const fakeConfig: AppConfig = {
   port: 3051,
   defaultCwd: '/tmp',
   conferenceTimeoutMs: 60_000,
+  defaultModel: 'claude-opus-4-8',
+  engineValidModels: {
+    'claude-code': ['claude-opus-4-8'],
+    'codex-cli': ['gpt-5.4'],
+    'cursor-agent': ['composer-2.5'],
+    'gemini-cli': ['gemini-2.5-pro'],
+  },
+  engineDefaultModels: {
+    'claude-code': 'claude-opus-4-8',
+    'codex-cli': 'gpt-5.4',
+    'cursor-agent': 'composer-2.5',
+    'gemini-cli': 'gemini-2.5-pro',
+  },
   codexDangerBypass: true,
   codexProfile: null,
 } as unknown as AppConfig;
@@ -149,6 +165,28 @@ function makeSpawnFake(assistantText: string): {
         'data',
         Buffer.from(JSON.stringify({ type: 'result', is_error: false }) + '\n'),
       );
+      proc.emit('close', 0);
+    });
+    return proc as unknown as ChildProcess;
+  }) as unknown as typeof import('child_process').spawn;
+  return { spawnFn, capturedArgs: captured };
+}
+
+function makeCodexSpawnFake(assistantText: string): {
+  spawnFn: typeof import('child_process').spawn;
+  capturedArgs: Array<{ bin: string; args: string[] }>;
+} {
+  const captured: Array<{ bin: string; args: string[] }> = [];
+  const spawnFn = ((bin: string, args: string[]) => {
+    captured.push({ bin, args });
+    const proc = new FakeProc();
+    setImmediate(() => {
+      const payload = JSON.stringify({
+        type: 'item.completed',
+        item: { id: 'msg-1', type: 'agent_message', text: assistantText },
+      });
+      proc.stdout.emit('data', Buffer.from(payload + '\n'));
+      proc.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'turn.completed' }) + '\n'));
       proc.emit('close', 0);
     });
     return proc as unknown as ChildProcess;
@@ -310,6 +348,43 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.content).toBe('Looks fine.');
     expect(messages[0]?.agentId).toBe('rev-1');
+  });
+
+  it('honors the session owner reviewer engine override when spawning finalize review', async () => {
+    const ownerId = 'codex-review-owner';
+    initOrgsDb();
+    createUser({ id: ownerId, username: 'codex-review-owner', passwordHash: 'x' });
+    replaceUserPreferencesJson(ownerId, {
+      agentEngineOverrides: { 'rev-1': { engine: 'codex-cli' } },
+    });
+
+    const assistantText = `Looks fine.
+
+<agenthub:review-verdict>
+{"verdict":"approved","threads":[]}
+</agenthub:review-verdict>`;
+    const { spawnFn, capturedArgs } = makeCodexSpawnFake(assistantText);
+    const { deps } = makeDeps(spawnFn);
+    const getSession = (
+      deps as unknown as { stmts: { getSession: { get: ReturnType<typeof vi.fn> } } }
+    ).stmts.getSession.get;
+    getSession.mockReturnValue({ ...fakeSession, owner_user_id: ownerId });
+
+    const result = await runReviewerTurn(deps, {
+      runId: 'run-codex-reviewer',
+      worktreePath: '/tmp/wt',
+      card: fakeCard,
+      project: fakeProject,
+      inputs: fakeInputs,
+      sessionId: 'sess-1',
+    });
+
+    expect(result.verdict).toBe('approved');
+    expect(capturedArgs).toHaveLength(1);
+    expect(capturedArgs[0]?.bin).toBe('/fake/codex');
+    expect(capturedArgs[0]?.args).toContain('exec');
+    expect(capturedArgs[0]?.args).toContain('--model');
+    expect(capturedArgs[0]?.args).toContain('gpt-5.4');
   });
 
   it('accepts bare trailing fenced JSON when agenthub tags are omitted', async () => {
