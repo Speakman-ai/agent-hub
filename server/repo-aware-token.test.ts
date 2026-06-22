@@ -31,7 +31,6 @@ vi.mock('./config.js', () => ({
       return TMP_DIR;
     },
     personalOAuth: null,
-    githubApp: null,
   },
 }));
 

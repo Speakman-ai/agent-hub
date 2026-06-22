@@ -75,18 +75,12 @@ export const AppConfigComponent = registerComponent(
         configured: z.boolean(),
         clientId: z.string().nullable(),
       }),
-      botGithubToken: z.string(),
-      botGithubTokenSet: z.boolean(),
-      botGithubUser: z.string().nullable(),
       anthropicApiKey: z.string(),
       anthropicApiKeySet: z.boolean(),
       codexDangerBypass: z.boolean().optional(),
       codexProfile: z.string().nullable().optional().openapi({
         description:
           'Optional Codex CLI profile name forwarded as `--profile <name>` on every codex spawn (chat, room, design, delegation, slack one-shot). Null / empty = no flag. Configurable via `codexProfile` in config.json, `PATCH /api/config`, or env `CODEX_PROFILE`.',
-      }),
-      lanMode: z.boolean().optional().openapi({
-        description: 'Vestigial flag retained for client compatibility.',
       }),
       _file: z.object({
         claudeBin: z.string().nullable(),
@@ -196,7 +190,6 @@ export const ProjectExportEnvelopeComponent = registerComponent(
       project: z.object({}).passthrough().optional(),
       crons: z.array(z.object({}).passthrough()).optional(),
       rooms: z.array(z.object({}).passthrough()).optional(),
-      webhooks: z.array(z.object({}).passthrough()).optional(),
       wiki: z.array(z.object({}).passthrough()).optional(),
       kanban: z.object({}).passthrough().nullable().optional(),
     })
@@ -266,13 +259,11 @@ export const PatchConfigRequestSchema = z
         'Voice-transcription provider for /api/transcribe. Must be `openai` or `gemini`; any other value returns 400.',
     }),
     publicUrl: z.string().optional(),
-    botGithubToken: z.string().nullable().optional(),
     codexDangerBypass: z.boolean().optional(),
     codexProfile: z.string().nullable().optional().openapi({
       description:
         'Codex CLI profile name. Pass null / empty string to clear. Forwarded as `--profile <name>` on every codex spawn.',
     }),
-    lanMode: z.boolean().optional(),
   })
   .passthrough()
   .openapi({
@@ -348,7 +339,7 @@ registerPath({
   tags: ['Config'],
   summary: 'Update one or more config fields',
   description:
-    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `botGithubToken`, `codexDangerBypass`, `codexProfile`, `lanMode`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
+    'Allowed keys: `claudeBin`, `cursorBin`, `geminiBin`, `codexBin`, `grokBin`, `defaultModel`, `defaultCwd`, `port`, `apiKey`, `openaiApiKey`, `publicUrl`, `codexDangerBypass`, `codexProfile`. Unknown keys are silently dropped. Returns the updated subset (with secrets masked).',
   request: { body: { content: jsonContent(PatchConfigRequestSchema) } },
   responses: {
     200: {
@@ -485,9 +476,9 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/export',
   tags: ['Projects'],
-  summary: 'Export a project (project + crons + rooms + webhooks + wiki + kanban)',
+  summary: 'Export a project (project + crons + rooms + wiki + kanban)',
   description:
-    'Returns a V3 export envelope as a downloadable JSON attachment. Webhook secrets are redacted; session-id linkages on kanban cards are stripped.',
+    'Returns a V3 export envelope as a downloadable JSON attachment. Session-id linkages on kanban cards are stripped.',
   request: { params: projectIdParams },
   responses: {
     200: {

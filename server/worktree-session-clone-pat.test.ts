@@ -27,7 +27,7 @@ import type { SessionRow } from './types.js';
 
 // ── Config mock ──────────────────────────────────────────────────────────────
 vi.mock('./config.js', () => ({
-  default: { defaultCwd: '/tmp', githubApp: null },
+  default: { defaultCwd: '/tmp' },
 }));
 
 // ── skill-credentials-github mock ────────────────────────────────────────────

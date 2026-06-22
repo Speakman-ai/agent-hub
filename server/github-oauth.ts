@@ -1,24 +1,14 @@
 /**
  * github-oauth.ts — GitHub user-to-server OAuth for "Sign in with GitHub".
  *
- * This is the user-identity half of GitHub auth, separate from the bot
- * identity in `github-app.ts`:
- *   - `github-app.ts` issues *installation* tokens (bot acts on repos it is
- *     installed on) — used for formal PR reviews.
- *   - `github-oauth.ts` issues *user* tokens (acts as the individual human
- *     that signed in) — used for list/merge/close/comment as `@user`.
+ * Issues user tokens for push, PR list, merge, and comment flows. PAT
+ * connect is an alternative that does not require OAuth App credentials.
  *
- * Both reuse the *same* GitHub App registration — GitHub Apps can issue
- * user-to-server tokens via the OAuth endpoints without the App being
- * installed anywhere. The `clientId`/`clientSecret` come from the App's
- * OAuth credentials (stored in `AppConfig.githubApp`).
+ * OAuth credentials come from `AppConfig.personalOAuth`.
  *
- * Tokens expire in 8 hours by default; refresh tokens in 6 months.
- * Callers refresh transparently via `github-connections-store`.
- *
- * Docs (verified 2026-04-20):
- *   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
- *   https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens
+ * Tokens expire in 8 hours by default; refresh tokens in 6 months when
+ * enabled on the OAuth App. Callers refresh transparently via
+ * `github-connections-store`.
  */
 
 export interface GitHubOAuthCredentials {

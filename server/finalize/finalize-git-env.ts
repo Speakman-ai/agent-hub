@@ -13,7 +13,7 @@ import type { AppConfig, Project } from '../types.js';
 export async function mergeFinalizeGitSpawnEnv(
   spawnEnv: NodeJS.ProcessEnv,
   args: {
-    config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+    config: Pick<AppConfig, 'personalOAuth'>;
     project: Pick<Project, 'githubRepo'>;
     sessionId?: string | null;
   },

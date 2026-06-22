@@ -119,17 +119,11 @@ export function normalizePrSummary(raw: Record<string, unknown>): Record<string,
 export async function resolveUserToken(req: Request, config: AppConfig): Promise<string | null> {
   const areq = req as AuthenticatedRequest;
   if (!areq.authUserId) return null;
-  // Prefer the standalone OAuth App; fall back to the GitHub App's
-  // OAuth credentials for back-compat with installs that completed the
-  // App-manifest flow before the personal/reviewer split.
   const personal = config.personalOAuth;
-  const app = config.githubApp;
   const creds =
     personal?.clientId && personal?.clientSecret
       ? { clientId: personal.clientId, clientSecret: personal.clientSecret }
-      : app?.clientId && app?.clientSecret
-        ? { clientId: app.clientId, clientSecret: app.clientSecret }
-        : null;
+      : null;
   return getActiveAccessToken(areq.authUserId, creds);
 }
 

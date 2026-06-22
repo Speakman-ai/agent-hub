@@ -54,7 +54,7 @@ vi.mock('util', async (importOriginal) => {
 function buildApp(): Promise<express.Express> {
   return import('./pr-actions.js').then(({ default: createPrActionRoutes }) => {
     const mockDeps = {
-      config: { port: 3051, dataDir: '/tmp', botGithubToken: null, githubApp: null },
+      config: { port: 3051, dataDir: '/tmp', botGithubToken: null },
       stmts: {},
       broadcast: vi.fn() as unknown,
       findProject: vi.fn(),

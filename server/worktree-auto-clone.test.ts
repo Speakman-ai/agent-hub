@@ -5,7 +5,7 @@ import path from 'path';
 import os from 'os';
 
 vi.mock('./config.js', () => ({
-  default: { defaultCwd: '/tmp', githubApp: null },
+  default: { defaultCwd: '/tmp' },
 }));
 
 const { ensureProjectRepoCloned, isGitRepo } = await import('./worktree.js');

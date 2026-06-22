@@ -111,7 +111,7 @@ function makeApp() {
     broadcast,
     findProject,
     activeProcesses,
-    config: { personalOAuth: null, githubApp: null },
+    config: { personalOAuth: null },
   } as unknown as RouteDeps;
   app.use(createFinalizeRoutes(deps));
   return { app, stmts, broadcast, findProject, activeProcesses };

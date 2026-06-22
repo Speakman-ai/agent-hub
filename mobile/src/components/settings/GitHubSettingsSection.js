@@ -54,7 +54,7 @@ export default function GitHubSettingsSection() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>GitHub</Text>
-      <Text style={styles.hint}>Connect the Hub to GitHub for PRs, repo access, and webhooks.</Text>
+      <Text style={styles.hint}>Connect the Hub to GitHub for PRs, repo access, and mirroring.</Text>
       <View style={styles.card}>
         <Text style={styles.statusLabel}>Status</Text>
         <Text style={[styles.statusValue, connected ? styles.connected : styles.disconnected]}>

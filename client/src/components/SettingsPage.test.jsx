@@ -82,9 +82,6 @@ describe('SettingsPage — tab labels', () => {
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
-      githubApp: null,
-      botGithubTokenSet: false,
-      botGithubUser: null,
       anthropicApiKeySet: false,
       _file: {},
     });
@@ -214,7 +211,7 @@ describe('SettingsPage — Gemini API Key tab role gating', () => {
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
-      githubApp: null,
+
       _file: {},
     });
     api.get.mockResolvedValue({});
@@ -329,7 +326,7 @@ describe('GeneralSection — CLI binary paths', () => {
       port: 3051,
       defaultCwd: '/tmp',
       publicUrl: '',
-      githubApp: null,
+
       _file: {},
     });
     api.updateConfig.mockResolvedValue({ ok: true });
@@ -410,7 +407,7 @@ describe('SettingsPage — sidebar navigation', () => {
       defaultCwd: '/tmp',
       port: 3051,
       publicUrl: '',
-      githubApp: null,
+
       _file: {},
     });
     api.get.mockResolvedValue({});

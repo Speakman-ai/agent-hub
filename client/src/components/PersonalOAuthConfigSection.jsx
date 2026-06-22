@@ -5,10 +5,8 @@ import { getAuthHeaders, getApiBase } from '../utils/connection.js';
 /**
  * PersonalOAuthConfigSection — server-level OAuth App credentials.
  *
- * This is the **OAuth App** registration (separate from the GitHub App that
- * powers reviewer-bot reviews). Once a clientId + clientSecret are configured
- * here, end users can use the "Sign in with GitHub" button on
- * GithubConnectionSection without falling back to the PAT path.
+ * Optional OAuth App registration for "Sign in with GitHub". PAT connect in
+ * GithubConnectionSection works without this.
  *
  * Calls:
  *   GET    /api/config/personal-oauth   — { configured, clientId }
@@ -110,7 +108,7 @@ export default function PersonalOAuthConfigSection() {
         </h4>
         <p className="text-xs text-gray-500 mt-1 leading-relaxed">
           Server-wide OAuth App credentials so users can <strong>Sign in with GitHub</strong>{' '}
-          without pasting a token. Separate from the GitHub App below — register one at{' '}
+          without pasting a token. Register one at{' '}
           <a
             href="https://github.com/settings/applications/new"
             target="_blank"

@@ -215,7 +215,7 @@ export interface SpawnedSession {
 export type SpawnSessionFn = (args: SpawnSessionArgs) => Promise<SpawnedSession | null>;
 
 export interface OrchestratorDeps {
-  config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+  config: Pick<AppConfig, 'personalOAuth'>;
   stmts: Pick<
     Stmts,
     | 'getFinalizeRun'

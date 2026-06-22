@@ -379,7 +379,7 @@ export function buildPrDetails(
  * byte-for-byte.
  */
 export function createPushAndCreatePr(deps: {
-  config: Pick<AppConfig, 'personalOAuth' | 'githubApp' | 'openaiApiKey'>;
+  config: Pick<AppConfig, 'personalOAuth' | 'openaiApiKey'>;
   /** Required when any project opts into `gitHost: 'agenthub'`. */
   nativePr?: NativePrService;
 }): PushAndCreatePrFn {

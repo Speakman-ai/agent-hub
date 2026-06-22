@@ -25,7 +25,7 @@ describe('mergeFinalizeGitSpawnEnv', () => {
     vi.mocked(resolveOrgOwnerGithubToken).mockResolvedValue('ghs_org');
     const env: NodeJS.ProcessEnv = { FOO: 'bar' };
     await mergeFinalizeGitSpawnEnv(env, {
-      config: { personalOAuth: null, githubApp: null },
+      config: { personalOAuth: null },
       project: { githubRepo: 'acme/widgets' },
       sessionId: 'sess-1',
     });
@@ -41,7 +41,7 @@ describe('mergeFinalizeGitSpawnEnv', () => {
     vi.mocked(resolveOrgOwnerGithubToken).mockResolvedValue('ghs_org');
     const env: NodeJS.ProcessEnv = {};
     await mergeFinalizeGitSpawnEnv(env, {
-      config: { personalOAuth: null, githubApp: null },
+      config: { personalOAuth: null },
       project: { githubRepo: 'acme/widgets' },
       sessionId: 'sess-1',
     });

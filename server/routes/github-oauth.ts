@@ -16,11 +16,11 @@
  *   callback that links their GitHub account to someone else's hub user.
  *
  * Config requirements:
- *   `config.githubApp.clientId` and `config.githubApp.clientSecret` must
- *   be set. These are the OAuth credentials on the GitHub App
- *   registration — already present in `GitHubAppConfig`. When missing,
- *   `/start` returns 503 so the UI can surface "GitHub sign-in not
- *   configured" instead of hanging the user on a broken redirect.
+ *   `config.personalOAuth.clientId` and `config.personalOAuth.clientSecret`
+ *   must be set. When missing, `/start` returns 503 so the UI can surface
+ *   "GitHub sign-in not configured" instead of hanging the user on a broken
+ *   redirect. PAT connect via `/api/auth/github/connect-token` works without
+ *   server-side OAuth credentials.
  */
 import { Router, Request, Response } from 'express';
 import type { RouteDeps, AppConfig } from '../types.js';
@@ -512,7 +512,7 @@ export default function createGithubOAuthRoutes(deps: RouteDeps): Router {
   });
 
   // ── PAT (Personal Access Token) sign-in ─────────────────────────
-  // Alternative to OAuth for installs that don't have githubApp.clientId
+  // Alternative to OAuth when personalOAuth is not configured.
   // configured (no public URL, local-only Electron, fresh setup wizard
   // before any GitHub App exists). The user generates a fine-grained or
   // classic PAT at github.com/settings/tokens, pastes it, we validate it

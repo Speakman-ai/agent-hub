@@ -1,15 +1,29 @@
 import { getRequest } from './test/helpers.js';
 import config from './config.js';
-import { stmts } from './db.js';
+import { getDb } from './db.js';
 import {
-  migrateWebhookRepoToProject,
   findProject,
   getProjects,
   saveProjects,
+  migrateWebhookRepoToProject,
   ensureReviewerAgents,
   ensureSkillBuilderAgents,
 } from './project-model.js';
-import type { Stmts, Project } from './types.js';
+import type { Project } from './types.js';
+
+/**
+ * Insert a legacy `webhook_configs` row directly. The webhook DB layer
+ * (prepared statements) was removed with the GitHub App / webhook feature
+ * (PR #149); only the table itself is retained so the one-shot
+ * `migrateWebhookRepoToProject` upgrade path has something to read.
+ */
+function insertLegacyWebhookConfig(projectId: string, repoUrl: string): void {
+  getDb()
+    .prepare(
+      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled, author_allowlist) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    .run(projectId, repoUrl, 'secret', '["pull_request.opened"]', 1, '[]');
+}
 
 let originalApiKey: string | null;
 const createdProjectIds: string[] = [];
@@ -31,17 +45,14 @@ afterAll(async () => {
 });
 
 describe('migrateWebhookRepoToProject', () => {
-  it('sets githubRepo on a project from webhook config repo_url', async () => {
+  it('sets githubRepo on a project from a legacy webhook config repo_url', async () => {
     const request = await getRequest();
-
     const projId = `migrate-test-${Date.now()}`;
     createdProjectIds.push(projId);
-    const res = await (
+    await (
       request as {
         post(url: string): {
-          send(body: Record<string, unknown>): {
-            expect(code: number): Promise<{ body: Record<string, unknown> }>;
-          };
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
         };
       }
     )
@@ -53,24 +64,14 @@ describe('migrateWebhookRepoToProject', () => {
     expect(project).toBeTruthy();
     expect(project!.githubRepo).toBeUndefined();
 
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/test-org/test-repo',
-      'secret123',
-      '["pull_request.opened"]',
-      1,
-      '[]',
-    );
-
+    insertLegacyWebhookConfig(projId, 'https://github.com/test-org/test-repo');
     migrateWebhookRepoToProject();
 
-    const updated = findProject(projId);
-    expect(updated!.githubRepo).toBe('test-org/test-repo');
+    expect(findProject(projId)!.githubRepo).toBe('test-org/test-repo');
   });
 
-  it('does not overwrite existing githubRepo', async () => {
+  it('does not overwrite an existing githubRepo', async () => {
     const request = await getRequest();
-
     const projId = `migrate-noop-${Date.now()}`;
     createdProjectIds.push(projId);
     await (
@@ -88,25 +89,16 @@ describe('migrateWebhookRepoToProject', () => {
     project!.githubRepo = 'existing/repo';
     saveProjects();
 
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/other-org/other-repo',
-      'secret456',
-      '["push"]',
-      1,
-      '[]',
-    );
-
+    insertLegacyWebhookConfig(projId, 'https://github.com/other-org/other-repo');
     migrateWebhookRepoToProject();
 
-    const updated = findProject(projId);
-    expect(updated!.githubRepo).toBe('existing/repo');
+    expect(findProject(projId)!.githubRepo).toBe('existing/repo');
   });
 
-  it('only captures owner/repo, ignoring trailing path segments', async () => {
+  it('captures only owner/repo, ignoring trailing path segments', async () => {
     const request = await getRequest();
-
     const projId = `migrate-trailing-${Date.now()}`;
+    createdProjectIds.push(projId);
     await (
       request as {
         post(url: string): {
@@ -118,19 +110,47 @@ describe('migrateWebhookRepoToProject', () => {
       .send({ id: projId, name: 'Trailing Path Test', cwd: '/tmp', color: '#222' })
       .expect(201);
 
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/some-org/some-repo/tree/main/extra',
-      'secret789',
-      '["push"]',
-      1,
-      '[]',
-    );
-
+    insertLegacyWebhookConfig(projId, 'https://github.com/some-org/some-repo/tree/main/extra');
     migrateWebhookRepoToProject();
 
-    const updated = findProject(projId);
-    expect(updated!.githubRepo).toBe('some-org/some-repo');
+    expect(findProject(projId)!.githubRepo).toBe('some-org/some-repo');
+  });
+
+  it('normalizes clone-style URLs to owner/repo, stripping a trailing .git', async () => {
+    // Regression: clone URLs (HTTPS .git and SSH scp-style) must migrate to a
+    // normalized owner/repo. Leaving ".git" attached (acme/widgets.git) breaks
+    // downstream GitHub calls and the project UI, which expect owner/repo.
+    const cases: Array<{ label: string; url: string; expected: string }> = [
+      { label: 'https-git', url: 'https://github.com/acme/widgets.git', expected: 'acme/widgets' },
+      { label: 'ssh-git', url: 'git@github.com:acme/widgets.git', expected: 'acme/widgets' },
+      { label: 'ssh-plain', url: 'git@github.com:acme/widgets', expected: 'acme/widgets' },
+      {
+        label: 'https-git-trailing-slash',
+        url: 'https://github.com/acme/widgets.git/',
+        expected: 'acme/widgets',
+      },
+    ];
+
+    const request = await getRequest();
+    for (const c of cases) {
+      const projId = `migrate-clone-${c.label}-${Date.now()}`;
+      createdProjectIds.push(projId);
+      await (
+        request as {
+          post(url: string): {
+            send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+          };
+        }
+      )
+        .post('/api/projects')
+        .send({ id: projId, name: `Clone ${c.label}`, cwd: '/tmp', color: '#333' })
+        .expect(201);
+
+      insertLegacyWebhookConfig(projId, c.url);
+      migrateWebhookRepoToProject();
+
+      expect(findProject(projId)!.githubRepo, `${c.label} (${c.url})`).toBe(c.expected);
+    }
   });
 });
 
@@ -187,7 +207,7 @@ describe('ensureReviewerAgents', () => {
     expect(reviewer!.canReview).toBe(true);
   });
 
-  it('does NOT seed a reviewer when project has neither githubRepo nor enabled webhook', async () => {
+  it('does NOT seed a reviewer when project has no githubRepo and is not hosted', async () => {
     const projId = `reviewer-noseed-${Date.now()}`;
     await createProjectWithAgent(projId, 'No Reviewer Seed', '#555');
 
@@ -209,25 +229,6 @@ describe('ensureReviewerAgents', () => {
     const updated = findProject(projId);
     const reviewers = (updated!.agents || []).filter((a) => a.role === 'reviewer');
     expect(reviewers).toHaveLength(1);
-  });
-
-  it('seeds reviewer when project has an enabled webhook config but no githubRepo', async () => {
-    const projId = `reviewer-webhook-${Date.now()}`;
-    await createProjectWithAgent(projId, 'Webhook Only Reviewer', '#777');
-
-    (stmts as Stmts).createWebhookConfig.run(
-      projId,
-      'https://github.com/whonly/repo',
-      'sec',
-      '["pull_request.opened"]',
-      1,
-      '[]',
-    );
-
-    ensureReviewerAgents();
-
-    const updated = findProject(projId);
-    expect(updated!.agents?.some((a) => a.role === 'reviewer')).toBe(true);
   });
 
   it('seeds a reviewer whose system prompt has a balanced decision tree (no approve-bias) and an in-session verdict contract', async () => {

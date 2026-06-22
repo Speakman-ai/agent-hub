@@ -23,7 +23,6 @@ vi.mock('./config.js', () => ({
       return TMP_DIR;
     },
     personalOAuth: null,
-    githubApp: null,
   },
 }));
 
@@ -77,7 +76,7 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
     globalThis.fetch = fetchImpl as unknown as typeof fetch;
 
     const token = await resolveOrgOwnerGithubToken(
-      { personalOAuth: null, githubApp: null },
+      { personalOAuth: null },
       'Speakman-ai/agent-hub',
     );
     expect(token).toBe(`tok-${second.id}`);
@@ -91,10 +90,7 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
       async () => new Response('', { status: 404 }),
     ) as unknown as typeof fetch;
 
-    const token = await resolveOrgOwnerGithubToken(
-      { personalOAuth: null, githubApp: null },
-      'foo/bar',
-    );
+    const token = await resolveOrgOwnerGithubToken({ personalOAuth: null }, 'foo/bar');
     expect(token).toBeNull();
   });
 
@@ -108,7 +104,7 @@ describe('resolveOrgOwnerGithubToken(config, githubRepo)', () => {
       return new Response('', { status: 200 });
     }) as unknown as typeof fetch;
 
-    const token = await resolveOrgOwnerGithubToken({ personalOAuth: null, githubApp: null });
+    const token = await resolveOrgOwnerGithubToken({ personalOAuth: null });
     expect(token).toBeNull();
     // No probe happens — the repo-aware path is skipped entirely.
     expect(probes).toBe(0);

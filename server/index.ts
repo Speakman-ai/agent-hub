@@ -60,7 +60,6 @@ import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
-import { warnIfLegacyBotGithubToken } from './github-auth-policy.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
@@ -256,8 +255,6 @@ execAsync('gh api user --jq ".login"')
   .catch(() => {
     console.warn('[GitHub] Could not detect gh CLI user');
   });
-
-warnIfLegacyBotGithubToken(config);
 
 let _activeDataDir: string = config.dataDir;
 

@@ -179,7 +179,7 @@ export interface EnsureOperatorBaseBranchOptions {
    * piggy-back on this probe. The only effect of omitting this option is
    * that no per-user token gets injected — git then runs unauthenticated.
    */
-  config?: Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+  config?: Pick<AppConfig, 'personalOAuth'>;
   /**
    * Test seam. When supplied, used in place of
    * `resolveOrgOwnerGithubToken(config)`. Lets tests inject a fake token

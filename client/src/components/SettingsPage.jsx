@@ -2517,7 +2517,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
   );
 }
 
-/* WebhookSection removed — webhooks are now auto-managed when saving project repos */
+/* WebhookSection removed — GitHub webhooks are no longer used */
 
 // ─── Slack Setup Wizard ───────────────────────────────────────────────────────
 
@@ -6410,9 +6410,9 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
     <div>
       <h3 className="text-lg font-semibold mb-4">Export / Import Project</h3>
       <p className="text-sm text-gray-400 mb-6">
-        Export a project with its agents, kanban board, wiki, crons, rooms, and webhooks. Import
-        creates the project on a new instance — or merge into an existing project to layer the
-        export's data on top.
+        Export a project with its agents, kanban board, wiki, crons, and rooms. Import creates the
+        project on a new instance — or merge into an existing project to layer the export's data on
+        top.
       </p>
 
       {/* Export */}
@@ -6447,7 +6447,7 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
         <p className="text-sm text-gray-400 mb-3">
           Upload a project export file. By default the export creates a brand-new project with all
           its data. Switch to “Merge into existing” to layer the export onto a project that already
-          exists — agents and settings are overwritten; crons, rooms, wiki, and webhooks are merged.
+          exists — agents and settings are overwritten; crons, rooms, and wiki are merged.
         </p>
 
         {!preview && (
@@ -6479,8 +6479,6 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
                 <span className="text-white">{preview.crons?.length || 0}</span>
                 <span>Rooms:</span>
                 <span className="text-white">{preview.rooms?.length || 0}</span>
-                <span>Webhooks:</span>
-                <span className="text-white">{preview.webhooks?.length || 0}</span>
                 {preview.exportedAt && (
                   <>
                     <span>Exported:</span>
@@ -6523,7 +6521,7 @@ function ConfigBackupSection({ projects = [], onAgentsChange }) {
                   <span>
                     <span className="block">Merge into an existing project</span>
                     <span className="block text-xs text-gray-500">
-                      Overwrites agents/settings; merges crons, rooms, wiki, webhooks.
+                      Overwrites agents/settings; merges crons, rooms, and wiki.
                     </span>
                   </span>
                 </label>

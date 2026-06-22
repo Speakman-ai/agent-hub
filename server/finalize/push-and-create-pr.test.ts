@@ -282,7 +282,7 @@ describe('createPushAndCreatePr', () => {
     );
 
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     const result = await push({
       runId: 'run-1',
@@ -398,7 +398,7 @@ describe('createPushAndCreatePr', () => {
     );
 
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     const result = await push({
       runId: 'run-1241',
@@ -457,7 +457,7 @@ describe('createPushAndCreatePr', () => {
       },
     );
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await expect(
       push({
@@ -495,7 +495,7 @@ describe('createPushAndCreatePr', () => {
       },
     );
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await expect(
       push({
@@ -575,7 +575,7 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
     );
 
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await push({
       runId: 'run-lease',
@@ -630,7 +630,7 @@ describe('createPushAndCreatePr — force-with-lease pinning', () => {
     );
 
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await push({
       runId: 'run-lease-new',
@@ -708,7 +708,7 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
     mockResolveAutoGitGithubToken.mockResolvedValue('ghs_kevin_token');
 
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await push({
       runId: 'run-kevin',
@@ -733,7 +733,7 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
     mockResolveAutoGitGithubToken.mockResolvedValue(null);
 
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await push({
       runId: 'run-fallback',
@@ -753,7 +753,7 @@ describe('createPushAndCreatePr — GitHub identity attribution', () => {
 
   it('uses the org owner token when there is no session scope at all', async () => {
     const push = createPushAndCreatePr({
-      config: { personalOAuth: null, githubApp: null } as never,
+      config: { personalOAuth: null } as never,
     });
     await push({
       runId: 'run-no-session',

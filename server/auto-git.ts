@@ -216,7 +216,7 @@ export function autoGitChildEnv(githubToken?: string | null): NodeJS.ProcessEnv 
  */
 export async function resolveAutoGitGithubToken(
   sessionId: string,
-  config: Pick<import('./types.js').AppConfig, 'personalOAuth' | 'githubApp'>,
+  config: Pick<import('./types.js').AppConfig, 'personalOAuth'>,
 ): Promise<string | null> {
   try {
     const ownerId = getSessionOwner(sessionId);
@@ -255,7 +255,7 @@ export async function resolveAutoGitGithubToken(
  * auto-commit push path does it.
  */
 export async function resolveOrgOwnerGithubToken(
-  config: Pick<import('./types.js').AppConfig, 'personalOAuth' | 'githubApp'>,
+  config: Pick<import('./types.js').AppConfig, 'personalOAuth'>,
   githubRepo?: string | null,
 ): Promise<string | null> {
   try {

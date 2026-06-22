@@ -426,7 +426,7 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): {
   let counter = 0;
 
   const deps: OrchestratorDeps = {
-    config: { personalOAuth: null, githubApp: null },
+    config: { personalOAuth: null },
     stmts: stmts.stmts,
     broadcast,
     runReviewer: vi.fn() as never,

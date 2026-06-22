@@ -1,19 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import { promisify } from 'util';
-import { exec, execFile } from 'child_process';
+import { execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { localDateStr } from '../memory.js';
-import crypto from 'crypto';
-import type {
-  RouteDeps,
-  AppConfig,
-  GitHubAppConfig,
-  PersonalOAuthConfig,
-  Project,
-  Stmts,
-} from '../types.js';
+import type { RouteDeps, PersonalOAuthConfig, Project } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
@@ -35,7 +27,6 @@ interface FileConfig {
   geminiBin?: string;
   codexBin?: string;
   grokBin?: string;
-  githubApp?: GitHubAppConfig;
   personalOAuth?: PersonalOAuthConfig;
   [key: string]: unknown;
 }
@@ -85,14 +76,6 @@ function cronImportSkillPrincipal(raw: unknown, project: Project | null): string
     console.warn('[config import] Ignoring invalid skill_principal_agent_id field on cron row');
     return null;
   }
-}
-
-interface WebhookImportData {
-  repo_url: string;
-  secret?: string;
-  events?: string;
-  enabled?: boolean | number;
-  author_allowlist?: string;
 }
 
 interface WikiImportData {
@@ -157,7 +140,6 @@ interface ProjectExportData {
     [key: string]: unknown;
   };
   crons?: CronImportData[];
-  webhooks?: WebhookImportData[];
   wiki?: WikiImportData[];
   kanban?: KanbanImportData;
 }
@@ -252,11 +234,8 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             clientId: config.personalOAuth.clientId || null,
           }
         : { configured: false, clientId: null },
-      /** @deprecated Ignored at runtime — use Settings → GitHub account. */
-      botGithubTokenDeprecated: !!config.botGithubToken,
       codexDangerBypass: !!config.codexDangerBypass,
       codexProfile: config.codexProfile || null,
-      lanMode: !!config.lanMode,
       _file: {
         claudeBin: fileConfig.claudeBin || null,
         cursorBin: fileConfig.cursorBin || null,
@@ -320,7 +299,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       'publicUrl',
       'codexDangerBypass',
       'codexProfile',
-      'lanMode',
     ] as const;
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
@@ -377,12 +355,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       } else {
         delete updates.codexProfile;
       }
-    }
-    if (updates.lanMode !== undefined) {
-      // Accept boolean or common string forms ("true"/"on"/"1") so the
-      // settings page can post the value as either a checkbox boolean or
-      // the JSON-stringified version of one.
-      updates.lanMode = coerceConfigBooleanLoose(updates.lanMode, false);
     }
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No valid config fields provided' });
@@ -668,12 +640,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           }) => rest,
         );
 
-      const webhooks = (
-        stmts.getWebhookConfigsByProject.all(project.id) as Array<
-          Record<string, unknown> & { secret: string }
-        >
-      ).map(({ secret: _secret, ...rest }) => ({ ...rest, secret: '***REDACTED***' }));
-
       const wikiPages = (
         stmts.getWikiPages.all(project.id) as Array<Record<string, unknown> & { slug: string }>
       ).map((page) => {
@@ -707,7 +673,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         exportedAt: new Date().toISOString(),
         project,
         crons: projectCrons,
-        webhooks,
         wiki: wikiPages,
         kanban,
       };
@@ -745,7 +710,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
     const results: Record<string, string | boolean> = {
       project: false,
       crons: false,
-      webhooks: false,
       wiki: false,
       kanban: false,
     };
@@ -839,31 +803,6 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       });
     }
 
-    if (Array.isArray(data.webhooks)) {
-      const webhooks = data.webhooks;
-      runSection('webhooks', () => {
-        const existing = stmts.getWebhookConfigsByProject.all(targetProjectId) as Array<{
-          repo_url: string;
-        }>;
-        const existingRepos = new Set(existing.map((w) => w.repo_url));
-        let imported = 0;
-        for (const w of webhooks) {
-          if (existingRepos.has(w.repo_url)) continue;
-          const secret = w.secret && !w.secret.includes('REDACTED') ? w.secret : uuidv4();
-          stmts.createWebhookConfig.run(
-            targetProjectId,
-            w.repo_url,
-            secret,
-            w.events || '{}',
-            w.enabled ? 1 : 0,
-            typeof w.author_allowlist === 'string' ? w.author_allowlist : '[]',
-          );
-          imported++;
-        }
-        results.webhooks = `${imported} new, ${webhooks.length - imported} skipped`;
-      });
-    }
-
     if (Array.isArray(data.wiki)) {
       const wiki = data.wiki;
       runSection('wiki', () => {
@@ -877,7 +816,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           // no fallback, so a single malformed export row (missing or
           // undefined title/slug) blew up the whole import with
           // `RangeError: Too few parameter values were provided` — the user
-          // lost crons, rooms, kanban, and webhooks too. Now: validate up
+          // lost crons, rooms, kanban, and wiki too. Now: validate up
           // front, skip the bad row with a console.warn, keep the rest of
           // the section running. See card
           // `project-import-500-wiki-section-throws-rangeerror`.

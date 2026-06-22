@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import type TestAgent from 'supertest/lib/agent.js';
-import type { GitHubAppConfig, PersonalOAuthConfig } from '../types.js';
+import type { PersonalOAuthConfig } from '../types.js';
 
 // Avoid touching the real filesystem when the routes write the config back.
 vi.mock('fs', async () => {
@@ -20,20 +20,17 @@ import config from '../config.js';
 
 let request: TestAgent;
 let originalPersonalOAuth: PersonalOAuthConfig | null;
-let originalGithubApp: GitHubAppConfig | null;
 let originalApiKey: string | null;
 
 beforeAll(async () => {
   request = await getRequest();
   originalPersonalOAuth = config.personalOAuth;
-  originalGithubApp = config.githubApp;
   originalApiKey = config.apiKey;
   config.apiKey = null;
 });
 
 afterAll(() => {
   config.personalOAuth = originalPersonalOAuth;
-  config.githubApp = originalGithubApp;
   config.apiKey = originalApiKey;
 });
 

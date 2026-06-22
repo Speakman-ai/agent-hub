@@ -119,9 +119,6 @@ gh api graphql -f query='{ viewer { login }}'
   flows: open PR, review + merge, issue triage, release cut, workflow rerun
 - **[references/api-escape-hatch.md](references/api-escape-hatch.md)** — when
   to drop to `gh api`; REST vs GraphQL; pagination; rate limits
-- **[references/webhooks.md](references/webhooks.md)** — GitHub webhook events,
-  payloads, and pointer to the Agent Hub webhook wiki pages
-
 ## Guardrails
 
 - **Never log or surface the token** in chat, daily notes, card descriptions,

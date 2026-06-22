@@ -12,7 +12,7 @@ import os from 'os';
 import { homedir } from 'os';
 
 vi.mock('./config.js', () => ({
-  default: { defaultCwd: '/tmp', githubApp: null },
+  default: { defaultCwd: '/tmp' },
 }));
 
 const mockResolveOwnerWithRepoAccess = vi.fn(async (_repo: string) => 'repo-owner-1');

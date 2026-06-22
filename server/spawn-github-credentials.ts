@@ -48,28 +48,15 @@ export interface ResolvedOAuthAppCredentials {
  * user tokens. Mirrors `getOAuthCredentials` in `routes/github-oauth.ts`
  * so refresh behaves the same regardless of caller.
  *
- * Precedence:
- *   1. `config.personalOAuth` — the standalone "Sign in with GitHub"
- *      OAuth App registration (decoupled from the reviewer GitHub App).
- *   2. `config.githubApp` — back-compat for installs that completed the
- *      App-manifest flow before the personal/reviewer split, where the
- *      same App registration was used for both.
- *   3. `null` — no OAuth credentials configured. Stored tokens within
- *      the refresh safety window will return `null` from
- *      `getActiveAccessToken` since refresh is impossible. PATs (which
- *      have a sentinel ~100-year expiry) keep working — they never
- *      reach the refresh path.
+ * Returns `config.personalOAuth` when both clientId and clientSecret are
+ * set; otherwise `null`. PAT connections do not need OAuth credentials.
  */
 export function resolveOAuthAppCredentials(
-  config: Pick<AppConfig, 'personalOAuth' | 'githubApp'>,
+  config: Pick<AppConfig, 'personalOAuth'>,
 ): ResolvedOAuthAppCredentials | null {
   const personal = config.personalOAuth;
   if (personal?.clientId && personal?.clientSecret) {
     return { clientId: personal.clientId, clientSecret: personal.clientSecret };
-  }
-  const app = config.githubApp;
-  if (app?.clientId && app?.clientSecret) {
-    return { clientId: app.clientId, clientSecret: app.clientSecret };
   }
   return null;
 }

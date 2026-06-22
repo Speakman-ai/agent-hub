@@ -25,7 +25,7 @@
  *  rendered as 'pending' until a `{type:'phase', status:'started'}` lands. */
 export const PROVISIONING_PHASES = [
   { id: 'validate', label: 'Validate request' },
-  { id: 'mint-token', label: 'Authorize GitHub App', gh: true },
+  { id: 'mint-token', label: 'Authorize GitHub', gh: true },
   { id: 'copy-template', label: 'Copy starter template' },
   { id: 'rewrite-pkg', label: 'Configure package metadata' },
   { id: 'wire-tests', label: 'Wire tests' },
@@ -154,7 +154,7 @@ export function classifyError(error) {
 function hintForCode(code) {
   switch (code) {
     case -2:
-      return 'Pre-flight failed — check the GitHub App installation and the request payload.';
+      return 'Pre-flight failed — check the GitHub token and the request payload.';
     case -1:
       return 'Scaffold timed out. Try again; if it persists, the container host may be overloaded.';
     case 2:
@@ -164,7 +164,7 @@ function hintForCode(code) {
     case 4:
       return 'Git init/commit failed. Check that the container has a writable /work mount.';
     case 5:
-      return 'GitHub operation failed. Verify the App installation has "administration: write" and the owner is correct.';
+      return 'GitHub operation failed. Verify the token has repo access and the owner is correct.';
     default:
       return 'Unknown failure. See the log tail above for details.';
   }

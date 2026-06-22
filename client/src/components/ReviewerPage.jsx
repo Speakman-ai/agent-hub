@@ -215,7 +215,7 @@ export default function ReviewerPage({ projectId, projects = [], onAgentsChange 
         {!project ? (
           <EmptyState message="Project not found." />
         ) : !reviewerAgent ? (
-          <EmptyState message="This project has no reviewer yet. The reviewer agent is created automatically once the project has GitHub integration (a connected repo or an enabled webhook)." />
+          <EmptyState message="This project has no reviewer yet. The reviewer agent is created automatically once the project has GitHub integration (a connected repo or Agent Hub git hosting)." />
         ) : (
           <div className="space-y-4">
             <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">

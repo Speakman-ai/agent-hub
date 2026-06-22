@@ -1386,15 +1386,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json({ cloneId, repoName, clonePath });
   });
 
-  /**
-   * GitHub webhooks were removed; there is no per-project webhook to
-   * configure. Retained as a stable `null` so existing API consumers that
-   * still read `webhookConfigured` don't break.
-   */
-  function computeWebhookConfigured(_project: Project): boolean | null {
-    return null;
-  }
-
   router.get('/api/projects', (req: Request, res: Response) => {
     const caller = resolveVisibilityCaller(req);
     // Visibility gate: shared projects always pass; private projects only
@@ -1404,7 +1395,6 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     const projects = filterVisibleProjects(getProjects(), caller);
     const enriched = projects.map((p) => ({
       ...p,
-      webhookConfigured: computeWebhookConfigured(p),
       agents: p.agents.map((a) => {
         const sessions = stmts.getSessions.all(a.id) as Array<{ id: string; updated_at: string }>;
         let lastActivity: string | null = null;
@@ -1679,16 +1669,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    // `webhookConfigured` tells the operator at a glance whether this
-    // project will see PR events from GitHub. Projects without a
-    // `githubRepo` set (non-GitHub remotes, scratch projects) report
-    // `null` — N/A, no webhook is even meaningful. Projects with a
-    // `githubRepo` but zero enabled `webhook_configs` rows report
-    // `false` — the reviewer pipeline will never fire because GitHub
-    // can't reach us. This drives the missing-webhook nudge surfaced
-    // in the project settings panel.
-    const webhookConfigured = computeWebhookConfigured(project);
-    res.json({ ...project, webhookConfigured });
+    res.json(project);
   });
 
   // ─── Per-user, project-scoped settings ───────────────────────────

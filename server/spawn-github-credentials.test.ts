@@ -13,73 +13,33 @@ import {
 } from './spawn-github-credentials.js';
 import type { AppConfig } from './types.js';
 
-type CredsConfig = Pick<AppConfig, 'personalOAuth' | 'githubApp'>;
+type CredsConfig = Pick<AppConfig, 'personalOAuth'>;
 
 function makeConfig(over: Partial<CredsConfig> = {}): CredsConfig {
   return {
     personalOAuth: null,
-    githubApp: null,
+
     ...over,
   };
 }
 
 describe('resolveOAuthAppCredentials', () => {
-  it('returns null when neither personalOAuth nor githubApp has both fields', () => {
+  it('returns null when personalOAuth is missing or incomplete', () => {
     expect(resolveOAuthAppCredentials(makeConfig())).toBeNull();
+    expect(
+      resolveOAuthAppCredentials(
+        makeConfig({ personalOAuth: { clientId: 'id-only', clientSecret: '' } }),
+      ),
+    ).toBeNull();
   });
 
-  it('prefers personalOAuth over githubApp when both are configured', () => {
+  it('returns personalOAuth credentials when both fields are set', () => {
     const creds = resolveOAuthAppCredentials(
       makeConfig({
         personalOAuth: { clientId: 'personal-id', clientSecret: 'personal-secret' },
-        // Cast: GitHubAppConfig has many other required fields that aren't
-        // exercised here; resolveOAuthAppCredentials only inspects clientId
-        // and clientSecret, so the partial shape is enough.
-        githubApp: {
-          clientId: 'app-id',
-          clientSecret: 'app-secret',
-        } as unknown as AppConfig['githubApp'],
       }),
     );
     expect(creds).toEqual({ clientId: 'personal-id', clientSecret: 'personal-secret' });
-  });
-
-  it('falls back to githubApp when personalOAuth is missing', () => {
-    const creds = resolveOAuthAppCredentials(
-      makeConfig({
-        githubApp: {
-          clientId: 'app-id',
-          clientSecret: 'app-secret',
-        } as unknown as AppConfig['githubApp'],
-      }),
-    );
-    expect(creds).toEqual({ clientId: 'app-id', clientSecret: 'app-secret' });
-  });
-
-  it('treats partial personalOAuth (missing clientSecret) as not configured', () => {
-    const creds = resolveOAuthAppCredentials(
-      makeConfig({
-        personalOAuth: { clientId: 'personal-id', clientSecret: '' },
-        githubApp: {
-          clientId: 'app-id',
-          clientSecret: 'app-secret',
-        } as unknown as AppConfig['githubApp'],
-      }),
-    );
-    // Empty string is falsy → falls through to githubApp.
-    expect(creds).toEqual({ clientId: 'app-id', clientSecret: 'app-secret' });
-  });
-
-  it('treats partial githubApp (missing clientId) as not configured', () => {
-    const creds = resolveOAuthAppCredentials(
-      makeConfig({
-        githubApp: {
-          clientId: '',
-          clientSecret: 'app-secret',
-        } as unknown as AppConfig['githubApp'],
-      }),
-    );
-    expect(creds).toBeNull();
   });
 });
 

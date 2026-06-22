@@ -792,62 +792,6 @@ export interface KanbanEpicRow {
   updated_at: string;
 }
 
-export interface WebhookConfigRow {
-  id: number;
-  project_id: string;
-  repo_url: string;
-  secret: string;
-  events: string;
-  enabled: number;
-  // JSON array of GitHub logins. Empty array = review-all (backwards compatible).
-  // When non-empty, only PRs whose pull_request.user.login matches (case-insensitive)
-  // trigger the reviewer dispatch. See shouldReviewPrAuthor() in routes/webhooks.ts.
-  author_allowlist: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WebhookLogRow {
-  id: number;
-  webhook_config_id: number;
-  event_type: string;
-  action: string | null;
-  delivery_id: string | null;
-  status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
-  result: string | null;
-  duration_ms: number | null;
-  created_at: string;
-}
-
-export interface WebhookEventRow {
-  id: number;
-  webhook_config_id: number;
-  delivery_id: string | null;
-  event_type: string;
-  action: string | null;
-  payload: string; // JSON-stringified GitHubWebhookPayload
-  signature: string | null;
-  status: 'pending' | 'processing' | 'done' | 'error' | 'skipped';
-  started_at: string | null;
-  completed_at: string | null;
-  error_message: string | null;
-  attempts: number;
-  created_at: string;
-  // Coalescing key for events scoped to a PR — `<repo_full_name>:<pr_number>`
-  // for events that target a specific PR, NULL otherwise. Two webhook_events
-  // rows with the same `pr_key` are never processed concurrently (per-PR
-  // serialization) and within a (event_type, action, pr_key) cohort, older
-  // pending rows are coalesced into 'skipped' when a newer row arrives.
-  pr_key: string | null;
-  // Persistent debounce: when set, the worker will not claim this row until
-  // `deferred_until <= datetime('now')`. Replaces the in-memory
-  // reviewerDebounceTimers map so debounce state survives restart.
-  deferred_until: string | null;
-  // For coalesced rows (status='skipped'), the id of the newer row that
-  // superseded this one. Lets the queue audit trail record the chain.
-  superseded_by: number | null;
-}
-
 export interface SkillRegistryRow {
   id: string;
   name: string;
@@ -1636,39 +1580,6 @@ export interface Stmts {
   getEligibleAutonomousCards: Stmt;
   markCardDispatchedByAutonomous: Stmt;
 
-  // Webhook configs
-  getWebhookConfigs: Stmt;
-  getWebhookConfigsByProject: Stmt;
-  getWebhookConfig: Stmt;
-  createWebhookConfig: Stmt;
-  updateWebhookConfig: Stmt;
-  deleteWebhookConfig: Stmt;
-  getWebhookConfigByProjectAndRepo: Stmt;
-  addWebhookLog: Stmt;
-  updateWebhookLog: Stmt;
-  getWebhookLogs: Stmt;
-  getRecentWebhookLogs: Stmt;
-
-  // Webhook events queue (fast-ack + background worker)
-  insertWebhookEvent: Stmt;
-  getWebhookEventByDelivery: Stmt;
-  getWebhookEventById: Stmt;
-  claimPendingWebhookEvent: Stmt;
-  markWebhookEventDone: Stmt;
-  markWebhookEventError: Stmt;
-  resetStaleWebhookEvents: Stmt;
-  countWebhookEventsByStatus: Stmt;
-  // Coalescing — mark older pending rows that share (event_type, action,
-  // pr_key) with a newer row as 'skipped'. Run at insert time so the worker
-  // claim path stays a single atomic UPDATE.
-  coalescePendingForKey: Stmt;
-  // Per-key concurrency / persistent-debounce introspection.
-  countPendingForPrKey: Stmt;
-  hasDeferredPendingForPrKey: Stmt;
-  // Evaluate `datetime('now', ?)` for a SQLite modifier string. Used to
-  // compute `deferred_until` at enqueue time on the DB clock.
-  evalDatetimeOffset: Stmt;
-
   // Wiki pages
   getWikiPages: Stmt;
   getWikiPage: Stmt;
@@ -2250,9 +2161,8 @@ export type ProjectVisibility = 'shared' | 'private';
  *   5. Wire host port from the pool → `internalPort` via nginx; sticky-comment
  *      the URL on the PR.
  *
- * GitHub App credentials reuse the Reviewer App (`AppConfig.githubApp`) — no
- * separate App registration. Host-level fields (preview host, base URL, port
- * range, Route 53 zone) live on the singleton `pr_env_config` row.
+ * Host-level fields (preview host, base URL, port range, Route 53 zone) live
+ * on the singleton `pr_env_config` row.
  */
 export interface PrEnvProjectConfig {
   enabled: boolean;
@@ -2771,40 +2681,9 @@ export interface AgentLookup {
 
 // ─── Config Type ─────────────────────────────────────────────────
 
-export interface GitHubAppConfig {
-  appId: string;
-  appSlug?: string;
-  privateKey: string;
-  webhookSecret?: string;
-  /**
-   * @deprecated Prefer `AppConfig.personalOAuth` for user-to-server OAuth.
-   * GitHub Apps can issue user tokens via these credentials, but the App
-   * is conceptually the *reviewer-bot* identity (installable on repos),
-   * not the personal-sign-in identity. Older installs that completed the
-   * App-manifest flow before the split keep working: github-oauth.ts
-   * falls back to `githubApp.clientId/Secret` when `personalOAuth` is
-   * unset. New installs should register a standalone OAuth App at
-   * github.com/settings/applications/new and put its credentials under
-   * `personalOAuth` instead.
-   */
-  clientId?: string;
-  /** @deprecated See clientId. */
-  clientSecret?: string;
-  installationId?: number;
-  installations?: Array<{ id: number; account: string; accountType: string }>;
-}
-
 /**
- * Standalone GitHub OAuth App credentials — the personal-sign-in identity.
- *
- * Distinct from `GitHubAppConfig` (which is for the installable reviewer
- * bot). A user does NOT need to create or install a GitHub App to sign
- * in with their GitHub account — they only need a `client_id`/`client_secret`
- * from a plain OAuth App registration at github.com/settings/applications/new.
- *
- * The reviewer feature is the only thing that genuinely needs a GitHub
- * App; everything else (PR list, push, comment, merge, open PR) is
- * user-to-server and goes through this OAuth App.
+ * Standalone GitHub OAuth App credentials — optional server-wide OAuth for
+ * "Sign in with GitHub". PAT connect works without this.
  */
 export interface PersonalOAuthConfig {
   clientId: string;
@@ -2844,20 +2723,6 @@ export interface AppConfig {
   slackTimeoutMs: number;
   conferenceTimeoutMs: number;
   /**
-   * Fallback timeout (ms) for webhook-dispatched Claude runs. Falls back to
-   * `defaultTimeoutMs` when unset. Use `webhookEventTimeoutMs` to override
-   * per-event (e.g. `pull_request_review.submitted` typically needs longer
-   * than a 5-minute push autofix).
-   */
-  webhookTimeoutMs: number;
-  /**
-   * Per-event timeout (ms) overrides for webhook-dispatched Claude runs.
-   * Keys are either the bare event name (e.g. `pull_request_review`) or
-   * `event.action` (e.g. `pull_request_review.submitted`); the more specific
-   * key wins. See `resolveWebhookTimeoutMs` in `routes/webhooks.ts`.
-   */
-  webhookEventTimeoutMs: Record<string, number>;
-  /**
    * Server-wide default for compose preview health polling (ms). Overridden
    * per project via `prEnv.preview.compose.readyTimeoutMs`. Env:
    * `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`; config.json:
@@ -2877,14 +2742,9 @@ export interface AppConfig {
   previewSubdomainBase: string | null;
   publicUrl: string | null;
   defaultReviewer: string | null;
-  botGithubToken: string | null;
-  githubApp: GitHubAppConfig | null;
   /**
-   * Standalone OAuth App credentials for personal "Sign in with GitHub".
-   * Decoupled from `githubApp` so users can link their GitHub identity
-   * without creating or installing the reviewer-bot App. When unset,
-   * `github-oauth.ts` falls back to `githubApp.clientId/Secret` for
-   * back-compat with installs that completed the manifest flow first.
+   * Optional standalone OAuth App credentials for personal "Sign in with GitHub".
+   * PAT connect in Settings works without this.
    */
   personalOAuth: PersonalOAuthConfig | null;
   apiKey: string | null;
@@ -2944,31 +2804,12 @@ export interface AppConfig {
    */
   codexDangerBypass: boolean;
   /**
-   * LAN / air-gapped mode. When true, Agent Hub assumes GitHub webhooks
-   * cannot reach this host (no public URL, no tunnel) and:
-   *
-   *   • `POST /api/webhooks` with `autoRegister: true` short-circuits with
-   *     `{ ok: true, skipped: true, reason: 'lan_mode' }` instead of calling
-   *     GitHub's hook-create API — no inbound webhook is provisioned.
-   *
-   * NOTE: the GitHub review/CI polling fallback was removed — reviews and CI
-   * are now handled purely by inbound webhooks. A LAN-mode deployment that
-   * GitHub cannot reach therefore no longer gets automated reviewer dispatch,
-   * PR-merge → Done reconciliation, or `changes_requested` follow-ups. Use a
-   * publicly reachable Hub (or a tunnel) if you need autonomous PR handling.
-   *
-   * Configure via `lanMode` in config.json or `PATCH /api/config`. Defaults to
-   * false (webhook-driven behavior unchanged for cloud deployments).
-   */
-  lanMode: boolean;
-  /**
    * When true (the default), a successful push to GitHub moves the linked
    * kanban card straight to the board's **Done** column instead of parking
    * it in **Review**. This overrides the §15 Finalize default (push → Review,
    * GitHub merge → Done): operators who treat "pushed = shipped" want the card
-   * marked Done the moment the branch lands on GitHub, without waiting for the
-   * PR-merge webhook. Set false to restore the merge-gated Review-then-Done
-   * flow. Configure via `cardDoneOnPush` in config.json or env
+   * marked Done the moment the branch lands on GitHub, without waiting for merge.
+   * Set false to restore the merge-gated Review-then-Done flow. Configure via
    * `AGENT_HUB_CARD_DONE_ON_PUSH` (`false` / `0` / `off` to disable).
    */
   cardDoneOnPush: boolean;

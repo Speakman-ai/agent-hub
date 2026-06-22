@@ -3,15 +3,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
-import { stmts } from './db.js';
-import type {
-  Project,
-  Agent,
-  EnrichedAgent,
-  AgentLookup,
-  WebhookConfigRow,
-  Stmts,
-} from './types.js';
+import { getDb } from './db.js';
+import type { Project, Agent, EnrichedAgent, AgentLookup } from './types.js';
 
 // ─── Mutable state ──────────────────────────────────────────────────
 let PROJECTS_PATH: string = path.join(config.dataDir, 'projects.json');
@@ -145,28 +138,63 @@ function migrateAhwDirectories(): void {
   }
 }
 
+/**
+ * One-shot upgrade migration: copy a project's GitHub repo association out of
+ * the legacy `webhook_configs.repo_url` column into `project.githubRepo`.
+ *
+ * GitHub App + inbound-webhook infrastructure was removed (PR #149). Before
+ * that, a project's GitHub repo could live ONLY in `webhook_configs` (set when
+ * the operator registered an inbound webhook and never mirrored to
+ * `project.githubRepo`). The webhook read path is gone, so an instance
+ * upgrading from a webhook-era config would otherwise silently lose its repo
+ * association — and with it reviewer seeding, since `ensureReviewerAgents`
+ * keys off `project.githubRepo`.
+ *
+ * The legacy `webhook_configs` table is intentionally retained in the DB
+ * bootstrap (see server/db.ts) precisely so this migration has something to
+ * read on upgrade. We read it raw here rather than via a prepared statement
+ * because the rest of the webhook DB layer was deleted with the feature.
+ *
+ * Runs on every boot but is idempotent: it never overwrites an existing
+ * `project.githubRepo`, so once a project has the field the migration is a
+ * no-op. Resilient to the table being absent on a brand-new install.
+ */
 function migrateWebhookRepoToProject(): void {
-  const webhooks = (stmts as Stmts).getWebhookConfigs.all() as WebhookConfigRow[];
-  let migrated = false;
+  let rows: Array<{ project_id: string; repo_url: string | null }> = [];
+  try {
+    rows = getDb()
+      .prepare('SELECT project_id, repo_url FROM webhook_configs ORDER BY created_at DESC')
+      .all() as Array<{ project_id: string; repo_url: string | null }>;
+  } catch {
+    // Legacy table missing (fresh install) — nothing to migrate.
+    return;
+  }
 
-  for (const wh of webhooks) {
+  let migrated = false;
+  for (const wh of rows) {
     const project = findProject(wh.project_id);
     if (!project) continue;
     if (project.githubRepo) continue;
 
-    const match = wh.repo_url?.match(/github\.com\/([^/]+\/[^/]+)/);
+    // Accept both web/HTTPS (github.com/owner/repo) and SSH
+    // (git@github.com:owner/repo) URL shapes, with an optional `.git` clone
+    // suffix. Downstream GitHub calls + project UI expect a normalized
+    // `owner/repo`, so strip a trailing `.git` rather than letting it leak
+    // into `project.githubRepo` (e.g. a clone URL like
+    // https://github.com/acme/widgets.git must migrate to "acme/widgets").
+    const match = wh.repo_url?.match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?(?:[/?#]|$)/);
     if (!match) continue;
 
     project.githubRepo = match[1];
     migrated = true;
     console.log(
-      `[Migration] Set githubRepo="${project.githubRepo}" on project "${project.id}" from webhook config`,
+      `[Migration] Set githubRepo="${project.githubRepo}" on project "${project.id}" from legacy webhook config`,
     );
   }
 
   if (migrated) {
     saveProjects();
-    console.log('[Migration] ✓ Migrated webhook repo URLs to project.githubRepo');
+    console.log('[Migration] ✓ Migrated legacy webhook repo URLs to project.githubRepo');
   }
 }
 
@@ -485,7 +513,6 @@ Be concise and practical. The user should walk away with a working, well-describ
  * is deliberately decoupled from autonomous-mode dispatch.
  */
 function ensureReviewerAgents(opts: { onlyHosted?: boolean } = {}): boolean {
-  const typedStmts = stmts as Stmts;
   let changed = false;
 
   for (const project of projects) {
@@ -496,19 +523,12 @@ function ensureReviewerAgents(opts: { onlyHosted?: boolean } = {}): boolean {
     if (!project.agents || project.agents.length === 0) continue;
     if (project.agents.some((a) => a.role === 'reviewer')) continue;
 
-    // Seed for projects with a review surface: GitHub integration, a
-    // webhook, or Agent Hub git hosting (the Finalize review phase and
-    // native PR reviews both need the project Reviewer).
+    // Seed for projects with a review surface: GitHub integration or Agent Hub
+    // git hosting (the Finalize review phase and native PR reviews both need
+    // the project Reviewer).
     const hasGithubRepo = Boolean(project.githubRepo);
     const hostedOnHub = project.gitHost === 'agenthub';
-    let hasWebhook = false;
-    try {
-      const configs = typedStmts.getWebhookConfigsByProject.all(project.id) as WebhookConfigRow[];
-      hasWebhook = configs.some((c) => Boolean(c.enabled));
-    } catch {
-      // table might not exist on a brand-new install — ignore
-    }
-    if (!hasGithubRepo && !hasWebhook && !hostedOnHub) continue;
+    if (!hasGithubRepo && !hostedOnHub) continue;
 
     const reviewerId = `${project.id}-reviewer`;
     if (findAgent(reviewerId)) continue;

@@ -563,6 +563,17 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_kanban_card_blockers_blocked_by
       ON kanban_card_blockers(blocked_by_card_id);
 
+    -- Legacy webhook tables (webhook_configs / webhook_logs / webhook_events).
+    -- The GitHub App + inbound-webhook feature was removed in PR #149; the
+    -- webhook DB layer (prepared statements, worker, routes) is gone. These
+    -- tables are deliberately RETAINED, not dropped, for two reasons:
+    --   1. migrateWebhookRepoToProject (server/project-model.ts) reads
+    --      webhook_configs.repo_url on boot to recover a project's GitHub
+    --      repo association on upgrade. Dropping the table would erase that
+    --      upgrade path before every install has run the migration.
+    --   2. They preserve historical webhook delivery/audit rows for backups.
+    -- Safe to remove in a future migration once all installs have upgraded
+    -- past the webhook era and run the repo migration at least once.
     CREATE TABLE IF NOT EXISTS webhook_configs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id TEXT NOT NULL,
@@ -3760,146 +3771,6 @@ function initDb(dataDir: string): void {
     // `triaged_at`, `triaged_by`, and `suggested_assignee` columns remain
     // on `kanban_cards` for backward-compat with existing rows, but the
     // dispatch path no longer reads or writes them. See server/routing.ts.
-
-    // Webhook configs
-    getWebhookConfigs: db.prepare('SELECT * FROM webhook_configs ORDER BY created_at DESC'),
-    getWebhookConfigsByProject: db.prepare(
-      'SELECT * FROM webhook_configs WHERE project_id = ? ORDER BY created_at DESC',
-    ),
-    getWebhookConfig: db.prepare('SELECT * FROM webhook_configs WHERE id = ?'),
-    createWebhookConfig: db.prepare(
-      'INSERT INTO webhook_configs (project_id, repo_url, secret, events, enabled, author_allowlist) VALUES (?, ?, ?, ?, ?, ?)',
-    ),
-    updateWebhookConfig: db.prepare(
-      "UPDATE webhook_configs SET repo_url = ?, events = ?, enabled = ?, author_allowlist = ?, updated_at = datetime('now') WHERE id = ?",
-    ),
-    deleteWebhookConfig: db.prepare('DELETE FROM webhook_configs WHERE id = ?'),
-    getWebhookConfigByProjectAndRepo: db.prepare(
-      'SELECT * FROM webhook_configs WHERE project_id = ? AND repo_url = ?',
-    ),
-    addWebhookLog: db.prepare(
-      'INSERT INTO webhook_logs (webhook_config_id, event_type, action, delivery_id, status) VALUES (?, ?, ?, ?, ?)',
-    ),
-    updateWebhookLog: db.prepare(
-      'UPDATE webhook_logs SET status = ?, result = ?, duration_ms = ? WHERE id = ?',
-    ),
-    getWebhookLogs: db.prepare(
-      'SELECT * FROM webhook_logs WHERE webhook_config_id = ? ORDER BY created_at DESC LIMIT ?',
-    ),
-    getRecentWebhookLogs: db.prepare(
-      'SELECT wl.*, wc.repo_url FROM webhook_logs wl JOIN webhook_configs wc ON wl.webhook_config_id = wc.id ORDER BY wl.created_at DESC LIMIT ?',
-    ),
-
-    // Webhook events queue (fast-ack + background worker)
-    insertWebhookEvent: db.prepare(
-      `INSERT INTO webhook_events
-         (webhook_config_id, delivery_id, event_type, action, payload, signature, pr_key, deferred_until)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ),
-    getWebhookEventByDelivery: db.prepare(
-      'SELECT id FROM webhook_events WHERE delivery_id = ? LIMIT 1',
-    ),
-    getWebhookEventById: db.prepare('SELECT * FROM webhook_events WHERE id = ?'),
-    // Atomic claim: picks the oldest eligible pending row and flips it to
-    // 'processing' in a single UPDATE, returning the row. Safe under WAL
-    // because better-sqlite3 is single-threaded per connection — no other
-    // writer can interleave inside this statement.
-    //
-    // P1 contract (card 2c4a0d06):
-    //   * deferred_until — skip rows whose persistent debounce window
-    //     hasn't elapsed yet. Replaces the in-memory reviewerDebounceTimers.
-    //   * pr_key NOT IN (… processing …) — never claim two rows for the
-    //     same PR concurrently. The webhook handler may dispatch git ops
-    //     against the PR worktree; serializing per-PR is what keeps a
-    //     reviewer race or autofix race from clobbering itself.
-    claimPendingWebhookEvent: db.prepare(`
-      UPDATE webhook_events
-      SET status = 'processing',
-          started_at = datetime('now'),
-          attempts = attempts + 1
-      WHERE id = (
-        SELECT id FROM webhook_events e1
-        WHERE e1.status = 'pending'
-          AND (e1.deferred_until IS NULL OR e1.deferred_until <= datetime('now'))
-          AND (
-            e1.pr_key IS NULL
-            OR NOT EXISTS (
-              SELECT 1 FROM webhook_events e2
-              WHERE e2.status = 'processing'
-                AND e2.pr_key IS NOT NULL
-                AND e2.pr_key = e1.pr_key
-            )
-          )
-        ORDER BY e1.created_at ASC, e1.id ASC
-        LIMIT 1
-      )
-      RETURNING *
-    `),
-    markWebhookEventDone: db.prepare(
-      "UPDATE webhook_events SET status = 'done', completed_at = datetime('now') WHERE id = ?",
-    ),
-    markWebhookEventError: db.prepare(
-      "UPDATE webhook_events SET status = 'error', completed_at = datetime('now'), error_message = ? WHERE id = ?",
-    ),
-    // Stale-claim recovery: reset rows stuck in 'processing' back to 'pending'
-    // on server boot. Safe because the worker hasn't started yet.
-    resetStaleWebhookEvents: db.prepare(
-      "UPDATE webhook_events SET status = 'pending', started_at = NULL WHERE status = 'processing'",
-    ),
-    countWebhookEventsByStatus: db.prepare(
-      'SELECT status, COUNT(*) AS n FROM webhook_events GROUP BY status',
-    ),
-    // Insert-time coalescing: when a new row arrives with non-null pr_key,
-    // mark every OLDER pending row sharing (event_type, action, pr_key) as
-    // 'skipped' with `superseded_by` pointing at the new row. Run inside the
-    // same insert path so the worker's claim query stays a single atomic
-    // UPDATE — there's no separate sweep tick to lose races against.
-    //
-    // Bound parameters:
-    //   1. superseded_by id (the newer row's id)
-    //   2. event_type
-    //   3. action (NULL-safe via IS, see action-or-null treatment below)
-    //   4. pr_key
-    //   5. id of the new row (so we don't supersede ourselves)
-    //
-    // `action IS ?` is intentional — synchronize/opened/closed all live
-    // under event_type='pull_request' with distinct `action` values. We
-    // coalesce within the same action (so a synchronize doesn't supersede
-    // a closed event for the same PR).
-    coalescePendingForKey: db.prepare(`
-      UPDATE webhook_events
-      SET status = 'skipped',
-          completed_at = datetime('now'),
-          superseded_by = ?
-      WHERE status = 'pending'
-        AND event_type = ?
-        AND action IS ?
-        AND pr_key = ?
-        AND id != ?
-    `),
-    countPendingForPrKey: db.prepare(
-      "SELECT COUNT(*) AS n FROM webhook_events WHERE pr_key = ? AND status IN ('pending','processing')",
-    ),
-    // Used by isReviewerDispatchPending: returns 1 if any pending row exists
-    // for this pr_key whose deferred_until is still in the future (or whose
-    // event_type is one of the reviewer-triggering kinds and is still
-    // pending). Exact match on pr_key — caller passes `<repo>:<prNumber>`.
-    hasDeferredPendingForPrKey: db.prepare(`
-      SELECT 1 AS found
-      FROM webhook_events
-      WHERE pr_key = ?
-        AND status = 'pending'
-        AND event_type = 'pull_request'
-        AND action IN ('opened','synchronize')
-      LIMIT 1
-    `),
-    // Evaluate a SQLite datetime modifier string (e.g. '+30 seconds') against
-    // 'now' under the DB clock. Used by the webhook enqueue path so the
-    // resulting `deferred_until` value is comparable to the worker's
-    // `claimPendingWebhookEvent` predicate (which uses `datetime('now')`).
-    // Pulled out as a prepared statement to keep the SQLite expression on the
-    // DB side (no JS Date math) and to make the eval cacheable.
-    evalDatetimeOffset: db.prepare("SELECT datetime('now', ?) AS ts"),
 
     // Wiki pages
     getWikiPages: db.prepare(

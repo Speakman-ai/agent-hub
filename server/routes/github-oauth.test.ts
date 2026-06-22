@@ -64,9 +64,7 @@ function buildDeps(overrides: Record<string, unknown> = {}): RouteDeps {
     config: {
       port: 3051,
       publicUrl: 'https://hub.example.com',
-      githubApp: {
-        appId: '1',
-        privateKey: 'x',
+      personalOAuth: {
         clientId: 'Iv1.abc',
         clientSecret: 'shh',
       },
@@ -129,7 +127,7 @@ describe('GET /api/auth/github/start', () => {
 
   it('503s when GitHub OAuth credentials are missing', async () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
-    const app = makeApp(buildDeps({ config: { githubApp: null } }), {
+    const app = makeApp(buildDeps({ config: { personalOAuth: null } }), {
       authUserId: user.id,
     });
     const res = await request(app).get('/api/auth/github/start');
@@ -422,7 +420,7 @@ describe('GET /api/auth/github/status', () => {
 
   it('reports serverConfigured=false when OAuth creds are missing', async () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
-    const app = makeApp(buildDeps({ config: { githubApp: null } }), {
+    const app = makeApp(buildDeps({ config: { personalOAuth: null } }), {
       authUserId: user.id,
     });
     const res = await request(app).get('/api/auth/github/status');
@@ -586,8 +584,8 @@ describe('POST /api/auth/github/connect-token', () => {
       avatar_url: null,
       email: null,
     });
-    // No githubApp configured — OAuth flow would 503 here, but PAT flow works.
-    const app = makeApp(buildDeps({ config: { githubApp: null } }), {
+    // No personalOAuth configured — OAuth flow would 503 here, but PAT flow works.
+    const app = makeApp(buildDeps({ config: { personalOAuth: null } }), {
       authUserId: user.id,
     });
     const res = await request(app)
