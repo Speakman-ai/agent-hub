@@ -30,6 +30,8 @@ import {
   RRWEB_META,
   REPLAY_INGEST_ENDPOINT,
   gzipString,
+  UPLOAD_TIMEOUT_MS,
+  FLUSH_TIMEOUT_MS,
 } from './sessionReplay.js';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
@@ -525,6 +527,52 @@ describe('submitReplay', () => {
   it('throws when there are no events to submit', async () => {
     await expect(submitReplay({ events: [] })).rejects.toThrow(/no replay events/i);
   });
+
+  // Regression: heavy replays (mask-all full snapshots gzip into the multi-MB
+  // range) were silently aborted by a 4 s upload ceiling, so the capture
+  // recorded fine but the upload never finished and the bug report landed with
+  // NO replay attached. The default upload deadline must be generous enough for
+  // real payloads and is the value driving the fetch's AbortSignal.
+  it('uses the generous default upload deadline for the fetch AbortSignal', async () => {
+    const timeoutSpy = vi.fn(() => undefined);
+    vi.stubGlobal('AbortSignal', { timeout: timeoutSpy });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ replayId: 'r3', replayRef: '/uploads/replay-r3.json' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    await submitReplay({ events: [snap(1)] }, '/api/replays');
+    expect(timeoutSpy).toHaveBeenCalledWith(UPLOAD_TIMEOUT_MS);
+    expect(UPLOAD_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it('honors an explicit upload timeout for the fetch AbortSignal', async () => {
+    const timeoutSpy = vi.fn(() => undefined);
+    vi.stubGlobal('AbortSignal', { timeout: timeoutSpy });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ replayId: 'r4', replayRef: '/uploads/replay-r4.json' }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+
+    await submitReplay({ events: [snap(1)] }, '/api/replays', 25_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(25_000);
+  });
+
+  it('keeps the flush backstop strictly above the upload deadline', () => {
+    // The backstop race must never fire before the fetch's own (clean,
+    // null-resolving) abort, or a slow-but-succeeding upload is dropped.
+    expect(FLUSH_TIMEOUT_MS).toBeGreaterThan(UPLOAD_TIMEOUT_MS);
+  });
 });
 
 describe('SessionReplayRecorder', () => {
@@ -571,6 +619,30 @@ describe('SessionReplayRecorder', () => {
     expect(out.replayRef).toBe('/uploads/replay-r9.json');
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit.mock.calls[0][0].meta).toEqual({ trigger: 'bug-report' });
+  });
+
+  // Regression: the flush budget must drive the upload's fetch-abort deadline so
+  // a heavy capture's upload isn't silently capped. With the default budget the
+  // forwarded upload deadline is the generous UPLOAD_TIMEOUT_MS; a caller's
+  // larger override extends it further rather than being clamped.
+  it('forwards an upload timeout derived from the flush budget to submit', async () => {
+    const { record, calls } = fakeRecord();
+    const submit = vi
+      .fn()
+      .mockResolvedValue({ replayId: 'r10', replayRef: '/uploads/replay-r10.json' });
+    const rec = new SessionReplayRecorder({ now: () => 1000, submit });
+    rec.start(record);
+    calls.emit(meta(1));
+    calls.emit(snap(2));
+
+    await rec.flush({ trigger: 'bug-report' });
+    // Default flush backstop is FLUSH_TIMEOUT_MS; the forwarded upload deadline
+    // sits one margin below it, which equals UPLOAD_TIMEOUT_MS.
+    expect(submit.mock.calls[0][1]).toBe(UPLOAD_TIMEOUT_MS);
+
+    submit.mockClear();
+    await rec.flush({ trigger: 'bug-report' }, { timeoutMs: 30_000 });
+    expect(submit.mock.calls[0][1]).toBeGreaterThan(UPLOAD_TIMEOUT_MS);
   });
 
   it('forceFullSnapshot emits a fresh checkout into the buffer', () => {

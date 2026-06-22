@@ -42,13 +42,27 @@ const MOUNT_NODE_THRESHOLD = 50;
 const ERROR_FLUSH_THROTTLE_MS = 30_000;
 // Hard ceiling on how long the ingest upload may run before it's aborted, so a
 // slow/stalled `/api/replays` can never wedge a flush.
-const UPLOAD_TIMEOUT_MS = 4_000;
+//
+// This is the REAL upload deadline (the fetch's own AbortSignal), so it must be
+// sized for actual replay payloads, not a token few seconds. A mask-all full
+// snapshot of a populated Agent Hub page routinely gzips to hundreds of KB and,
+// for a heavy board / long session, into the multi-MB range (observed up to
+// ~7 MB gzipped). At a typical home/office uplink (a few Mbps) a 4 s ceiling
+// aborts any capture past ~1.5 MB mid-flight — the upload silently fails, the
+// flush returns null, and the bug report lands with NO replay attached. That is
+// exactly the "replays are not attaching" failure: the capture records fine, the
+// upload just never finishes in time. 10 s covers the bulk of real captures
+// while still bounding a genuinely stalled endpoint.
+export const UPLOAD_TIMEOUT_MS = 10_000;
+// Small margin between the upload deadline and the flush backstop below, so the
+// fetch's own (clean, null-resolving) abort wins the race ahead of the backstop.
+const BACKSTOP_MARGIN_MS = 2_000;
 // Backstop bound applied *inside* flush(). Strictly larger than the upload
 // timeout so the fetch's own abort normally wins; this only fires if something
 // upstream of the fetch hangs (serialization, a custom transport). Because it
 // lives inside flush(), the `finally` always runs and `_flushing` is cleared
 // even when the underlying submit never settles.
-const FLUSH_TIMEOUT_MS = 5_000;
+export const FLUSH_TIMEOUT_MS = UPLOAD_TIMEOUT_MS + BACKSTOP_MARGIN_MS;
 
 // Resolved by the internal flush timeout; distinct from a real (possibly null)
 // submit result so we never cache a timeout as `lastResult`.
@@ -453,8 +467,13 @@ export async function submitReplay(
  */
 export class SessionReplayRecorder {
   constructor({
+    // Wrap `submitReplay` so the recorder can drive the upload's fetch-abort
+    // deadline from the active flush budget (see `_runFlush`). Calling
+    // `submitReplay` directly would put the timeout in the `endpoint` slot, so
+    // the wrapper keeps the default endpoint and forwards only the timeout.
+    submit = (payload, uploadTimeoutMs) =>
+      submitReplay(payload, REPLAY_INGEST_ENDPOINT, uploadTimeoutMs),
     record = null,
-    submit = submitReplay,
     now = () => Date.now(),
     windowMs = DEFAULT_WINDOW_MS,
     maxEvents = DEFAULT_MAX_EVENTS,
@@ -655,9 +674,18 @@ export class SessionReplayRecorder {
   async _runFlush(events, meta, timeoutMs) {
     let timer;
     try {
+      // Drive the upload's own fetch-abort from the flush budget so a caller's
+      // generous timeout actually extends the upload instead of being silently
+      // capped by submitReplay's own default. Kept a margin below the backstop
+      // race so the fetch's clean (null-resolving) abort wins first. When no
+      // backstop is set, fall back to submitReplay's default deadline.
+      const uploadTimeoutMs =
+        timeoutMs > 0 ? Math.max(1_000, timeoutMs - BACKSTOP_MARGIN_MS) : undefined;
       // Bound the whole submit here, not in an outer race: if the submit hangs
       // upstream of its own AbortSignal, this timeout still settles the race.
-      const submitPromise = Promise.resolve().then(() => this._submit({ events, meta }));
+      const submitPromise = Promise.resolve().then(() =>
+        this._submit({ events, meta }, uploadTimeoutMs),
+      );
       // Swallow a late rejection (after the timeout already won) so it never
       // surfaces as an unhandledrejection.
       submitPromise.catch(() => {});
