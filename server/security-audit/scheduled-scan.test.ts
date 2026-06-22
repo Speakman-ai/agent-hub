@@ -1,7 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   runScheduledSecurityScans,
   startScheduledSecurityScanner,
+  resolveEffectiveSchedule,
+  getDefaultSecurityScanSchedule,
   SCHEDULE_INTERVALS_MS,
   type ScheduledSecurityScanDeps,
 } from './scheduled-scan.js';
@@ -47,6 +49,10 @@ function baseDeps(
     runScan,
     now: () => 1_000_000,
     lastRunAt: new Map(),
+    // Pin the unset-project fallback to 'off' by default so explicit-schedule
+    // tests are deterministic regardless of the SECURITY_SCAN_DEFAULT_SCHEDULE
+    // env var; the default-behavior tests override this explicitly.
+    defaultSchedule: 'off',
     log: () => {},
     ...over,
   };
@@ -66,14 +72,46 @@ describe('runScheduledSecurityScans', () => {
     expect(runScan.mock.calls[0]?.[1]).toMatchObject({ generateCard: true, createdBy: null });
   });
 
-  it('skips projects with schedule off / unset', async () => {
+  it('skips projects with an explicit schedule of off, even when the default is on', async () => {
+    const runScan = vi.fn().mockResolvedValue(fakeResult());
+    const projects = [fakeProject({ id: 'a', securityScan: { schedule: 'off' } })];
+    // Default is 'weekly', but the explicit per-project 'off' must still win.
+    const dispatched = await runScheduledSecurityScans(
+      baseDeps(projects, runScan, { defaultSchedule: 'weekly' }),
+    );
+    expect(dispatched).toBe(0);
+    expect(runScan).not.toHaveBeenCalled();
+  });
+
+  it('defaults unset Hub-hosted projects to the configured cadence', async () => {
     const runScan = vi.fn().mockResolvedValue(fakeResult());
     const projects = [
-      fakeProject({ id: 'a', securityScan: { schedule: 'off' } }),
-      fakeProject({ id: 'b' }),
+      fakeProject({ id: 'b' }), // no securityScan at all
       fakeProject({ id: 'c', securityScan: { onPush: true } }), // onPush only, no schedule
     ];
-    const dispatched = await runScheduledSecurityScans(baseDeps(projects, runScan));
+    const dispatched = await runScheduledSecurityScans(
+      baseDeps(projects, runScan, { defaultSchedule: 'weekly' }),
+    );
+    expect(dispatched).toBe(2);
+    expect(runScan).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves unset projects unscanned when the default itself is off', async () => {
+    const runScan = vi.fn().mockResolvedValue(fakeResult());
+    const projects = [fakeProject({ id: 'b' })];
+    const dispatched = await runScheduledSecurityScans(
+      baseDeps(projects, runScan, { defaultSchedule: 'off' }),
+    );
+    expect(dispatched).toBe(0);
+    expect(runScan).not.toHaveBeenCalled();
+  });
+
+  it('still skips a non-Hub-hosted project whose schedule is unset (no default applies)', async () => {
+    const runScan = vi.fn().mockResolvedValue(fakeResult());
+    const projects = [fakeProject({ id: 'gh', gitHost: 'github' })];
+    const dispatched = await runScheduledSecurityScans(
+      baseDeps(projects, runScan, { defaultSchedule: 'weekly' }),
+    );
     expect(dispatched).toBe(0);
     expect(runScan).not.toHaveBeenCalled();
   });
@@ -141,6 +179,59 @@ describe('runScheduledSecurityScans', () => {
     const deps = baseDeps(projects, runScan, { lastRunAt });
     await runScheduledSecurityScans(deps);
     expect(lastRunAt.get('a')).toBe(1_000_000);
+  });
+});
+
+describe('resolveEffectiveSchedule', () => {
+  it('lets an explicit per-project schedule win over the default', () => {
+    expect(
+      resolveEffectiveSchedule(fakeProject({ securityScan: { schedule: 'daily' } }), 'weekly'),
+    ).toBe('daily');
+    expect(
+      resolveEffectiveSchedule(fakeProject({ securityScan: { schedule: 'weekly' } }), 'off'),
+    ).toBe('weekly');
+  });
+
+  it('treats an explicit off as opt-out regardless of the default', () => {
+    expect(
+      resolveEffectiveSchedule(fakeProject({ securityScan: { schedule: 'off' } }), 'weekly'),
+    ).toBeNull();
+  });
+
+  it('falls back to the default when the schedule is unset', () => {
+    expect(resolveEffectiveSchedule(fakeProject({}), 'weekly')).toBe('weekly');
+    expect(resolveEffectiveSchedule(fakeProject({ securityScan: { onPush: true } }), 'daily')).toBe(
+      'daily',
+    );
+  });
+
+  it('returns null when an unset project falls back to an off default', () => {
+    expect(resolveEffectiveSchedule(fakeProject({}), 'off')).toBeNull();
+  });
+});
+
+describe('getDefaultSecurityScanSchedule', () => {
+  const original = process.env.SECURITY_SCAN_DEFAULT_SCHEDULE;
+  afterEach(() => {
+    if (original === undefined) delete process.env.SECURITY_SCAN_DEFAULT_SCHEDULE;
+    else process.env.SECURITY_SCAN_DEFAULT_SCHEDULE = original;
+  });
+
+  it('defaults to weekly when the env var is unset', () => {
+    delete process.env.SECURITY_SCAN_DEFAULT_SCHEDULE;
+    expect(getDefaultSecurityScanSchedule()).toBe('weekly');
+  });
+
+  it('honours a valid env override (case/space-insensitive)', () => {
+    process.env.SECURITY_SCAN_DEFAULT_SCHEDULE = '  Off ';
+    expect(getDefaultSecurityScanSchedule()).toBe('off');
+    process.env.SECURITY_SCAN_DEFAULT_SCHEDULE = 'daily';
+    expect(getDefaultSecurityScanSchedule()).toBe('daily');
+  });
+
+  it('falls back to weekly on an unrecognised env value', () => {
+    process.env.SECURITY_SCAN_DEFAULT_SCHEDULE = 'hourly';
+    expect(getDefaultSecurityScanSchedule()).toBe('weekly');
   });
 });
 

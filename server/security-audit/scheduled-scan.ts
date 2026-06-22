@@ -2,8 +2,11 @@
  * scheduled-scan.ts — periodic dependency security re-scan for Hub-hosted
  * projects, modelled on stale-pr-check.ts.
  *
- * Opt-in per project via `Project.securityScan.schedule` (`daily` | `weekly`;
- * `off`/unset = no scheduled scan). A single low-frequency ticker wakes every
+ * Enrollment per project via `Project.securityScan.schedule` (`daily` |
+ * `weekly` | `off`). When the field is UNSET, a Hub-hosted project falls back
+ * to {@link getDefaultSecurityScanSchedule} (default `weekly`) so the Security
+ * page populates on its own without an operator toggling anything; an explicit
+ * `off` opts the project out. A single low-frequency ticker wakes every
  * {@link SCHEDULED_SCAN_TICK_MS} and, for each enrolled project whose last
  * scheduled scan is older than its cadence, runs `runSecurityScan` against the
  * default-branch tip.
@@ -35,6 +38,38 @@ export const SCHEDULE_INTERVALS_MS: Record<Exclude<SecurityScanSchedule, 'off'>,
 /** How often the ticker wakes to look for due projects (hourly). */
 export const SCHEDULED_SCAN_TICK_MS = 60 * 60 * 1000;
 
+/**
+ * Fallback cadence for a Hub-hosted project whose `securityScan.schedule` is
+ * UNSET. Defaults to `weekly` so security findings appear without an operator
+ * opting each project in; an explicit per-project `off` still wins. Operators
+ * can change the global baseline (including disabling it entirely) via the
+ * `SECURITY_SCAN_DEFAULT_SCHEDULE` env var (`off` | `daily` | `weekly`). An
+ * unrecognised value falls back to `weekly`. Read at call time (not import
+ * time) so tests and live `PATCH /api/config`-style restarts pick it up.
+ */
+export function getDefaultSecurityScanSchedule(): SecurityScanSchedule {
+  const raw = process.env.SECURITY_SCAN_DEFAULT_SCHEDULE?.trim().toLowerCase();
+  if (raw === 'off' || raw === 'daily' || raw === 'weekly') return raw;
+  return 'weekly';
+}
+
+/**
+ * Resolve the cadence a project actually runs at. An explicit per-project
+ * setting always wins (including `off`, which opts out); an unset field falls
+ * back to `defaultSchedule`. Returns `null` when the project should NOT be
+ * scheduled (`off`, or a default of `off`).
+ */
+export function resolveEffectiveSchedule(
+  project: Project,
+  defaultSchedule: SecurityScanSchedule,
+): Exclude<SecurityScanSchedule, 'off'> | null {
+  const raw = project.securityScan?.schedule;
+  if (raw === 'off') return null;
+  if (raw === 'daily' || raw === 'weekly') return raw;
+  // Unset (or any unexpected value) → the configured baseline.
+  return normalizeSchedule(defaultSchedule);
+}
+
 /** Module-level last-run state, shared across ticks. Tests inject their own. */
 const moduleLastRunAt = new Map<string, number>();
 
@@ -51,6 +86,12 @@ export interface ScheduledSecurityScanDeps {
   now?: () => number;
   /** Last-run state. Defaults to a shared module-level map. */
   lastRunAt?: Map<string, number>;
+  /**
+   * Fallback cadence for projects with no explicit `securityScan.schedule`.
+   * Defaults to {@link getDefaultSecurityScanSchedule} (env-driven, `weekly`).
+   * Injected by tests for determinism.
+   */
+  defaultSchedule?: SecurityScanSchedule;
   dataDir?: string;
   /** Override for tests to silence console noise. */
   log?: (msg: string) => void;
@@ -83,11 +124,16 @@ export async function runScheduledSecurityScans(deps: ScheduledSecurityScanDeps)
   // it per project) and reuse it across every scan this pass.
   const advisorySource = deps.advisorySource ?? new OsvAdvisorySource();
 
+  // The scanner only has an OSV/bare-repo path for Hub-hosted projects, so the
+  // default-on baseline applies to those alone — a default for a GitHub-only
+  // project would just log not_hosted failures every sweep.
+  const defaultSchedule = deps.defaultSchedule ?? getDefaultSecurityScanSchedule();
+
   let dispatched = 0;
   for (const project of projects) {
-    const schedule = normalizeSchedule(project.securityScan?.schedule);
-    if (!schedule) continue;
     if (project.gitHost !== 'agenthub') continue;
+    const schedule = resolveEffectiveSchedule(project, defaultSchedule);
+    if (!schedule) continue;
 
     const cadence = SCHEDULE_INTERVALS_MS[schedule];
     const last = lastRunAt.get(project.id);
