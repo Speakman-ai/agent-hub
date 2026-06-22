@@ -72,6 +72,11 @@ services:
       # *.preview.<base> session subdomains) instead of allowing any Host.
       # Inherited from the Hub process; empty in path-prefix/local setups.
       - AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=${AGENT_HUB_PREVIEW_SUBDOMAIN_BASE:-}
+      # The internal host the Hub's readiness probe AND preview proxy use to
+      # reach this dev server. vite.config.js adds it to server.allowedHosts so
+      # proxied iframe requests (which forward this Host) aren't 403'd by Vite —
+      # the subdomain base above only covers the public Host, not this upstream.
+      - AGENT_HUB_PREVIEW_HEALTH_HOST=${AGENT_HUB_PREVIEW_HEALTH_HOST:-host.docker.internal}
     depends_on:
       server:
         condition: service_healthy

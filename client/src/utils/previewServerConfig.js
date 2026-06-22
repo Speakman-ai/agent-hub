@@ -15,6 +15,16 @@ export function isPreviewMode(env) {
 }
 
 /**
+ * The fixed internal hostname the Hub reaches the dev server over — both the
+ * readiness probe and the preview proxy connect via
+ * `AGENT_HUB_PREVIEW_HEALTH_HOST` (default `host.docker.internal` in the
+ * DinD deployment), never the public subdomain. Vite MUST allow it.
+ */
+export function resolvePreviewUpstreamAllowedHost(env) {
+  return (env.AGENT_HUB_PREVIEW_HEALTH_HOST || 'host.docker.internal').trim();
+}
+
+/**
  * Resolve Vite's `server.allowedHosts` for preview mode without resorting to a
  * blanket `true`. Order of precedence:
  *   1. AGENT_HUB_PREVIEW_ALLOWED_HOSTS — explicit override. `*`/`all` is an
@@ -22,23 +32,41 @@ export function isPreviewMode(env) {
  *   2. AGENT_HUB_PREVIEW_SUBDOMAIN_BASE — derive `.<base>`, which allows the
  *      base host and every `<id>.preview.<base>` session subdomain (Vite treats
  *      a leading-dot entry as "this host + all subdomains").
- *   3. Neither set — return [] (most restrictive). Vite still always allows
- *      localhost / loopback, so the Hub's `Host: localhost` health probe works;
- *      unknown external Hosts are rejected until an operator opts in.
+ *   3. Neither set — most restrictive. Vite still always allows localhost /
+ *      loopback; unknown external Hosts are rejected until an operator opts in.
+ *
+ * In ALL non-`true` cases the upstream host (see
+ * {@link resolvePreviewUpstreamAllowedHost}) is appended. The subdomain-base
+ * entry only allows the *public* Host; but the Hub's preview proxy forwards the
+ * *internal* upstream Host (`host.docker.internal`) it connects over. Vite 5
+ * rejects any non-allow-listed Host with a 403 ("Blocked request. This host is
+ * not allowed."). The readiness probe hides this by faking `Host: localhost`,
+ * so the preview shows "ready" while every proxied iframe request 403s. Always
+ * allowing the upstream host keeps the proxy path working too.
+ *
  * Returns `true` only when explicitly requested.
  */
 export function resolvePreviewAllowedHosts(env) {
+  const upstreamHost = resolvePreviewUpstreamAllowedHost(env);
+  const withUpstream = (hosts) => {
+    if (upstreamHost && !hosts.includes(upstreamHost)) hosts.push(upstreamHost);
+    return hosts;
+  };
+
   const explicit = (env.AGENT_HUB_PREVIEW_ALLOWED_HOSTS || '').trim();
   if (explicit) {
     if (explicit === '*' || explicit === 'all') return true;
-    return explicit
-      .split(',')
-      .map((h) => h.trim())
-      .filter(Boolean);
+    return withUpstream(
+      explicit
+        .split(',')
+        .map((h) => h.trim())
+        .filter(Boolean),
+    );
   }
   const base = (env.AGENT_HUB_PREVIEW_SUBDOMAIN_BASE || '').trim().replace(/^\.+/, '');
-  if (base) return [`.${base}`];
-  return [];
+  const hosts = [];
+  if (base) hosts.push(`.${base}`);
+  return withUpstream(hosts);
 }
 
 /**
@@ -75,6 +103,11 @@ export function buildPreviewServerConfig(env) {
       '/api': apiTarget,
       '/uploads': apiTarget,
       '/design-files': apiTarget,
+      // The nested app opens a same-origin WebSocket at `/ws` for live chat
+      // streaming and real-time updates. Without `ws: true` Vite would not
+      // upgrade it to the compose `server` service, so the preview would load
+      // but never stream. Distinct from Vite's own HMR socket (config above).
+      '/ws': { target: apiTarget, ws: true },
     },
   };
 }
