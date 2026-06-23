@@ -33,15 +33,23 @@ export function escapeForScript(text: string) {
 }
 
 // In-iframe controller. Accumulates streamed event chunks and, on `end`,
-// instantiates rrweb-player against them. Kept as a plain string so it can be
-// inlined verbatim — it must not reference anything from the parent scope.
-const IFRAME_BOOTSTRAP = `(function () {
+// instantiates rrweb-player against them.
+//
+// CRITICAL: this is a string of *raw JavaScript* inlined verbatim into the
+// sandboxed iframe's <script>. It is NOT type-checked or transpiled — the
+// browser parses it as-is. Do NOT add TypeScript syntax (type annotations,
+// `as`, generics) here: a `: any` on a param or catch binding makes the inline
+// script a SyntaxError, the bootstrap never runs, and the player silently never
+// renders (stuck "Streaming events …" spinner). The `replayPlayer.test.ts`
+// "is valid JavaScript" test guards this. It must not reference anything from
+// the parent scope either.
+export const IFRAME_BOOTSTRAP = `(function () {
   var CH = ${JSON.stringify(REPLAY_CHANNEL)};
   var events = [];
   var built = false;
   var acked = false;
-  function post(msg: any) {
-    try { parent.postMessage(Object.assign({ ch: CH }, msg), '*'); } catch (e: any) {}
+  function post(msg) {
+    try { parent.postMessage(Object.assign({ ch: CH }, msg), '*'); } catch (e) {}
   }
   function build() {
     if (built) return;
@@ -60,7 +68,7 @@ const IFRAME_BOOTSTRAP = `(function () {
         props: { events: events, width: width, height: height, autoPlay: true, showController: true },
       });
       post({ type: 'playing', eventCount: events.length });
-    } catch (e: any) {
+    } catch (e) {
       post({ type: 'error', message: (e && e.message) || String(e) });
     }
   }

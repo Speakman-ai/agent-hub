@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   REPLAY_CHANNEL,
   PLAYER_CSP,
+  IFRAME_BOOTSTRAP,
   parseReplayIdFromRef,
   escapeForScript,
   buildReplayPlayerSrcDoc,
@@ -86,6 +87,20 @@ describe('buildReplayPlayerSrcDoc', () => {
     expect(PLAYER_CSP!).toMatch(/frame-src 'self' blob: data:/);
     expect(PLAYER_CSP!).toMatch(/child-src 'self' blob: data:/);
     expect(PLAYER_CSP!).not.toMatch(/frame-src[^;]*https?:/);
+  });
+
+  it('inlines a bootstrap that is valid JavaScript (no leaked TS syntax)', () => {
+    // The bootstrap is shipped as raw JS into a sandboxed <script> — it is never
+    // transpiled. A JS->TS migration once leaked `: any` annotations into it,
+    // which made the inline script a SyntaxError: the browser silently dropped
+    // it, the message listener never registered, and the player never rendered
+    // (stuck "Streaming events …" spinner). `new Function` parses the body
+    // without executing it, so it fails loudly on any non-JS syntax.
+    expect(() => new Function(IFRAME_BOOTSTRAP)).not.toThrow();
+    // Guard the specific regression: no `: any`-style param/catch annotations.
+    expect(IFRAME_BOOTSTRAP).not.toMatch(/\)\s*:\s*\w/);
+    expect(IFRAME_BOOTSTRAP).not.toMatch(/\(\s*\w+\s*:\s*\w/);
+    expect(IFRAME_BOOTSTRAP).not.toMatch(/catch\s*\(\s*\w+\s*:/);
   });
 
   it('re-announces readiness until acknowledged (resilient handshake)', () => {
