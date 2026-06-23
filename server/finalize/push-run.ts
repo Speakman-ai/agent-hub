@@ -29,6 +29,7 @@ import { resolveFinalizeBaseBranchForCard } from './resolve-base-branch.js';
 import { readFinalizeLoopRound, writeFinalizeRunTerminalTimeline } from './timeline-message.js';
 import type { ReviewerVerdict } from './reviewer-dispatch.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
+import { postFinalizeApprovalReview } from './post-finalize-approval-review.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -322,6 +323,18 @@ async function executePush(args: {
   } catch {
     /* cosmetic */
   }
+
+  // Mirror a passing Finalize review onto the native PR as an `approved`
+  // review so a PR that was sitting at `changes_requested` (e.g. a Resolve PR
+  // session) reflects that it passed review. Best-effort, never throws.
+  postFinalizeApprovalReview({
+    deps,
+    project,
+    run,
+    session,
+    prUrl: pushResult.prUrl,
+    bypassedGates,
+  });
 
   return { ok: true, prUrl: pushResult.prUrl };
 }

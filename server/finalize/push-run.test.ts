@@ -391,6 +391,68 @@ describe('bypassed-gates timeline', () => {
     expect(meta?.bypassedGates).toBe(false);
   });
 
+  it('posts an approved native-PR review after a gated push to a hosted PR (regression)', async () => {
+    // Regression: a Resolve-PR session that fixes a `changes_requested` PR and
+    // passes Finalize review used to leave the PR stuck at CHANGES_REQUESTED —
+    // the approval was never mirrored onto the native PR. A gated (non-forced)
+    // push to a native PR must now post an `approved` review.
+    const { deps } = makeDeps();
+    const submitReview = vi.fn((_arg: Record<string, unknown>) => ({ review: {} }));
+    (deps.stmts as Record<string, unknown>).listReviewerThreadsForRun = { all: vi.fn(() => []) };
+    (deps as Record<string, unknown>).nativePr = { submitReview };
+    const hostedProject = {
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      agents: [{ id: 'rev', name: 'Proj Reviewer', role: 'reviewer' }],
+    } as unknown as Project;
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: '/projects/proj-1/pulls/7' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project: hostedProject,
+      run: baseRun(), // ready_to_push, reviewer approved
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(submitReview).toHaveBeenCalledTimes(1);
+    expect(submitReview.mock.calls[0]![0]).toMatchObject({
+      number: 7,
+      state: 'approved',
+      reviewer: 'Proj Reviewer',
+    });
+  });
+
+  it('does not post an approved review on a forced (gate-bypassed) push', async () => {
+    const { deps } = makeDeps();
+    const submitReview = vi.fn((_arg: Record<string, unknown>) => ({ review: {} }));
+    (deps.stmts as Record<string, unknown>).listReviewerThreadsForRun = { all: vi.fn(() => []) };
+    (deps as Record<string, unknown>).nativePr = { submitReview };
+    const hostedProject = {
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      agents: [{ id: 'rev', name: 'Proj Reviewer', role: 'reviewer' }],
+    } as unknown as Project;
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: '/projects/proj-1/pulls/8' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project: hostedProject,
+      run: { ...baseRun(), status: 'dispatching' as const },
+      card,
+      session,
+      force: true,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(submitReview).not.toHaveBeenCalled();
+  });
+
   it('marks a session push (no finalize run) with bypassedGates=true', async () => {
     const { deps, addMessage } = makeDeps();
     const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/3' });
