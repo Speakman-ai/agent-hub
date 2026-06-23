@@ -21,3 +21,21 @@ export function openCriticalHigh(openCounts: any) {
         return 0;
     return (openCounts.critical || 0) + (openCounts.high || 0);
 }
+/**
+ * Tally findings into per-severity buckets plus an `all` total. Counts the
+ * currently-loaded list, so it tracks the active status filter rather than the
+ * always-open server `openCounts`. Unrecognised severities fall into `unknown`.
+ */
+export function countBySeverity(list: any): Record<string, any> {
+    const counts: Record<string, any> = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0, all: 0 };
+    if (!Array.isArray(list))
+        return counts;
+    for (const f of list) {
+        counts.all += 1;
+        if (counts[f?.severity] === undefined)
+            counts.unknown += 1;
+        else
+            counts[f.severity] += 1;
+    }
+    return counts;
+}

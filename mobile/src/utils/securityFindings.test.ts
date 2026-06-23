@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { sortFindings, openCriticalHigh, SEVERITY_RANK } from './securityFindings';
+import { sortFindings, openCriticalHigh, countBySeverity, SEVERITY_RANK } from './securityFindings';
 function finding(o: any) {
     return { id: o.id, severity: o.severity, last_seen_at: o.last_seen_at };
 }
@@ -32,5 +32,28 @@ describe('openCriticalHigh', () => {
     it('tolerates null / missing fields', () => {
         expect(openCriticalHigh(null)).toBe(0);
         expect(openCriticalHigh({ high: 4 })).toBe(4);
+    });
+});
+describe('countBySeverity', () => {
+    it('tallies each severity category plus an all total, bucketing unknowns', () => {
+        const counts = countBySeverity([
+            finding({ id: 'c', severity: 'critical' }),
+            finding({ id: 'h1', severity: 'high' }),
+            finding({ id: 'h2', severity: 'high' }),
+            finding({ id: 'l', severity: 'low' }),
+            finding({ id: 'w', severity: 'weird' }),
+            finding({ id: 'u', severity: undefined }),
+        ]);
+        expect(counts).toEqual({ critical: 1, high: 2, medium: 0, low: 1, unknown: 2, all: 6 });
+    });
+    it('returns a zeroed map for a non-array', () => {
+        expect(countBySeverity(null)).toEqual({
+            critical: 0,
+            high: 0,
+            medium: 0,
+            low: 0,
+            unknown: 0,
+            all: 0,
+        });
     });
 });

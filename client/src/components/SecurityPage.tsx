@@ -79,6 +79,24 @@ export function openCriticalHigh(openCounts: any) {
   return (openCounts.critical || 0) + (openCounts.high || 0);
 }
 
+// Tally findings into per-severity buckets plus an `all` total. Counts the
+// currently-loaded list, so it tracks the active status filter (Open / Fixed /
+// Dismissed / All) rather than the always-open server `openCounts`. Severities
+// the buckets don't recognise fall into `unknown`.
+export function countBySeverity(list: any) {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0, all: 0 } as Record<
+    string,
+    any
+  >;
+  if (!Array.isArray(list)) return counts;
+  for (const f of list) {
+    counts.all += 1;
+    if (counts[f?.severity] === undefined) counts.unknown += 1;
+    else counts[f.severity] += 1;
+  }
+  return counts;
+}
+
 const EMPTY_COUNTS = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 } as Record<string, any>;
 
 // Two-step dismiss control: the first click arms a Confirm/Cancel pair so a
@@ -384,6 +402,9 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
       : findings.filter((f: any) => f.severity === severityFilter);
 
   const totalCriticalHigh = openCriticalHigh(openCounts);
+  // Per-severity tally of the loaded list, shown on the severity filter chips so
+  // each category's size is visible at a glance (tracks the active status filter).
+  const severityCounts = countBySeverity(findings);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -444,13 +465,23 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
             key={f.key}
             onClick={() => setSeverityFilter(f.key)}
             data-testid={`severity-filter-${f.key}`}
-            className={`text-[11px] px-2 py-1 rounded transition-colors ${
+            className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded transition-colors ${
               severityFilter === f.key
                 ? 'bg-gray-700 text-gray-200'
                 : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'
             }`}
           >
             {f.label}
+            <span
+              data-testid={`severity-count-${f.key}`}
+              className={`text-[10px] font-semibold px-1 rounded-full min-w-[1rem] text-center ${
+                severityFilter === f.key
+                  ? 'bg-gray-900/60 text-gray-200'
+                  : 'bg-gray-800 text-gray-500'
+              }`}
+            >
+              {severityCounts[f.key] ?? 0}
+            </span>
           </button>
         ))}
       </div>

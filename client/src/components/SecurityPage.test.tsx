@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useState } from 'react';
 import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react';
-import SecurityPage, { sortFindings, openCriticalHigh } from './SecurityPage';
+import SecurityPage, { sortFindings, openCriticalHigh, countBySeverity } from './SecurityPage';
 import { api } from '../utils/api';
 
 (vi as any).mock('../utils/api.js', () => ({
@@ -68,7 +68,53 @@ describe('openCriticalHigh', () => {
   });
 });
 
+describe('countBySeverity', () => {
+  it('tallies each severity category plus an all total, bucketing unknowns', () => {
+    const counts = countBySeverity([
+      finding({ severity: 'critical' }),
+      finding({ severity: 'high' }),
+      finding({ severity: 'high' }),
+      finding({ severity: 'low' }),
+      finding({ severity: 'weird' }),
+      finding({ severity: undefined }),
+    ]);
+    expect(counts).toEqual({ critical: 1, high: 2, medium: 0, low: 1, unknown: 2, all: 6 });
+  });
+
+  it('returns a zeroed map for a non-array', () => {
+    expect(countBySeverity(null)).toEqual({
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      unknown: 0,
+      all: 0,
+    });
+  });
+});
+
 describe('SecurityPage', () => {
+  it('shows a per-severity count on each severity filter chip', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({
+      findings: [
+        finding({ id: 'c', severity: 'critical' }),
+        finding({ id: 'h1', severity: 'high' }),
+        finding({ id: 'h2', severity: 'high' }),
+        finding({ id: 'l', severity: 'low' }),
+      ],
+      openCounts: counts({ critical: 1, high: 2, low: 1 }),
+    });
+
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} />);
+    await waitFor(() => expect(screen.getAllByTestId('security-finding-card')).toHaveLength(4));
+
+    expect(screen.getByTestId('severity-count-all')).toHaveTextContent('4');
+    expect(screen.getByTestId('severity-count-critical')).toHaveTextContent('1');
+    expect(screen.getByTestId('severity-count-high')).toHaveTextContent('2');
+    expect(screen.getByTestId('severity-count-medium')).toHaveTextContent('0');
+    expect(screen.getByTestId('severity-count-low')).toHaveTextContent('1');
+  });
+
   it('renders findings severity-first with package@version, advisory link and fix', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({
       findings: [

@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
-import { sortFindings } from '../utils/securityFindings';
+import { sortFindings, countBySeverity } from '../utils/securityFindings';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
     high: colors.red400,
@@ -14,6 +14,14 @@ const SEVERITY_COLOR: Record<string, any> = {
     unknown: colors.gray500,
 };
 const STATUS_LABEL: Record<string, any> = { open: 'Open', fixed: 'Fixed', dismissed: 'Dismissed' };
+// Severity categories shown in the per-severity count breakdown, most severe first.
+const SEVERITY_ORDER: { key: string; label: string }[] = [
+    { key: 'critical', label: 'Critical' },
+    { key: 'high', label: 'High' },
+    { key: 'medium', label: 'Medium' },
+    { key: 'low', label: 'Low' },
+    { key: 'unknown', label: 'Unknown' },
+];
 // Server lifecycle statuses → the single-value `status` query the findings
 // endpoint accepts (omit for "All").
 const STATUS_FILTERS = [
@@ -208,6 +216,9 @@ export default function SecurityScreen({ route }: any) {
         }
     }, [scanMode, projectId, load]);
     const renderItem = ({ item }: any) => (<FindingCard item={item} projectId={projectId} onDismissed={handleDismissed} onFixed={load}/>);
+    // Per-severity tally of the loaded list, surfaced as a breakdown row so each
+    // category's size is visible at a glance (tracks the active status filter).
+    const severityCounts = countBySeverity(findings);
     return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.topBar}>
         <TouchableOpacity onPress={openSidebar} style={styles.menuButton}>
@@ -247,6 +258,15 @@ export default function SecurityScreen({ route }: any) {
             </Text>
           </TouchableOpacity>))}
       </View>
+
+      {severityCounts.all > 0 ? (<View style={styles.severityRow} testID="severity-breakdown">
+          {SEVERITY_ORDER.filter((s) => severityCounts[s.key] > 0).map((s) => (<View key={s.key} testID={`severity-count-${s.key}`} style={[styles.severityChip, { borderColor: SEVERITY_COLOR[s.key] || colors.gray500 }]}>
+              <Text style={[styles.severityChipLabel, { color: SEVERITY_COLOR[s.key] || colors.gray500 }]}>
+                {s.label}
+              </Text>
+              <Text style={styles.severityChipCount}>{severityCounts[s.key]}</Text>
+            </View>))}
+        </View>) : null}
 
       {loading ? (<View style={styles.centerState}>
           <ActivityIndicator size="small" color={colors.gray400}/>
@@ -307,6 +327,24 @@ const styles = StyleSheet.create({
     filterButtonActive: { backgroundColor: colors.gray700 },
     filterText: { fontSize: 12, color: colors.gray500 },
     filterTextActive: { color: colors.gray200, fontWeight: '600' },
+    severityRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        paddingHorizontal: 12,
+        paddingBottom: 8,
+        gap: 6,
+    },
+    severityChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+        borderWidth: 1,
+    },
+    severityChipLabel: { fontSize: 11, fontWeight: '600' },
+    severityChipCount: { fontSize: 11, fontWeight: '700', color: colors.gray200 },
     centerState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
     emptyTitle: { fontSize: 16, fontWeight: '600', color: colors.gray400, marginBottom: 6 },
     emptyDesc: { fontSize: 13, color: colors.gray600, textAlign: 'center', lineHeight: 18 },
