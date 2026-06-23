@@ -13,4 +13,14 @@ const config = getDefaultConfig(projectRoot);
 // lookup is left at Metro's default so `expo`'s nested transitive deps still resolve.
 config.watchFolders = [repoRoot];
 
+const sharedRoot = path.join(repoRoot, 'shared');
+
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName.startsWith('@shared/')) {
+    const subpath = moduleName.slice('@shared/'.length);
+    return context.resolveRequest(context, path.join(sharedRoot, subpath), platform);
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
+
 module.exports = config;

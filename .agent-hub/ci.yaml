@@ -38,14 +38,18 @@ jobs:
         run: cd client && npm ci --include=dev
       - name: Install server dependencies
         run: cd server && npm ci --include=dev
+      - name: Install shared dependencies
+        run: cd shared && npm ci --include=dev
+      - name: Install mobile dependencies
+        run: cd mobile && npm ci --include=dev
       - name: Build client
         run: npm run build
-      - name: Server typecheck (tsc --noEmit)
-        run: cd server && npx tsc --noEmit
+      - name: Typecheck (all packages)
+        run: npm run typecheck
 
-  # ── GHA `test` job (matrix): server 1/3, 2/3, 3/3, client ───────────
-  # GHA expands this matrix into four independent job instances; v2
-  # `matrix.include` does the same — four concurrent runners. v2 steps
+  # ── GHA `test` job (matrix): server 1/3, 2/3, 3/3, client, electron, mobile
+  # GHA expands this matrix into independent job instances; v2
+  # `matrix.include` does the same — concurrent runners. v2 steps
   # have no `if:`, so the per-suite branch lives in the run script,
   # keyed off the injected FINALIZE_MATRIX_* env vars.
   test:
@@ -57,6 +61,8 @@ jobs:
         - { suite: server, shard: '2', shards: '3', label: 'server 2/3' }
         - { suite: server, shard: '3', shards: '3', label: 'server 3/3' }
         - { suite: client, label: 'client' }
+        - { suite: electron, label: 'electron' }
+        - { suite: mobile, label: 'mobile' }
     steps:
       - name: Tests (${FINALIZE_MATRIX_LABEL})
         run: |
@@ -65,9 +71,17 @@ jobs:
             npm rebuild better-sqlite3
             (cd server && npm ci --include=dev)
             (cd server && npx vitest run --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS")
-          else
+          elif [ "$FINALIZE_MATRIX_SUITE" = "client" ]; then
+            (cd shared && npm ci --include=dev)
             (cd client && npm ci --include=dev)
             (cd client && npm test)
+          elif [ "$FINALIZE_MATRIX_SUITE" = "electron" ]; then
+            (cd shared && npm ci --include=dev)
+            npm run test:electron
+          elif [ "$FINALIZE_MATRIX_SUITE" = "mobile" ]; then
+            (cd shared && npm ci --include=dev)
+            (cd mobile && npm ci --include=dev)
+            npm run test:mobile
           fi
 
   # ── GHA `lint` gate (main-checks.yml) ───────────────────────────────

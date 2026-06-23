@@ -60,11 +60,29 @@ jobs:
           done
           exit 1
 
+      - name: Install shared dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            (cd shared && npm ci --include=dev) && exit 0
+            echo "npm ci (shared) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
+      - name: Install mobile dependencies
+        run: |
+          for attempt in 1 2 3 4; do
+            (cd mobile && npm ci --include=dev) && exit 0
+            echo "npm ci (mobile) failed attempt $attempt/4; retry in 15s..."
+            sleep 15
+          done
+          exit 1
+
       - name: Build client
         run: npm run build
 
-      - name: Server typecheck (tsc --noEmit)
-        run: cd server && npx tsc --noEmit
+      - name: Typecheck (all packages)
+        run: npm run typecheck
 
   ci:
     # Single required status check. Aggregates the always-on jobs above.

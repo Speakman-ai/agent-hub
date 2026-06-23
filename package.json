@@ -10,7 +10,7 @@
     "dev:client": "cd client && npx vite --port 3050",
     "build": "cd client && npx vite build",
     "start": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "install:all": "npm install --include=dev && cd server && npm install --include=dev && cd ../client && npm install --include=dev && cd ../mobile && npm install --include=dev",
+    "install:all": "npm install --include=dev && cd server && npm install --include=dev && cd ../shared && npm install --include=dev && cd ../client && npm install --include=dev && cd ../mobile && npm install --include=dev",
     "pretest": "node scripts/verify-test-prerequisites.mjs",
     "test": "npm run test:client && npm run test:server && npm run test:electron && npm run test:mobile",
     "test:client": "cd client && npm test",
@@ -24,14 +24,21 @@
     "electron:start": "npx electron .",
     "electron:pack": "npm run build && npx electron-builder --dir",
     "release:mac": "node electron/release-mac.mjs",
-    "rebuild:native": "npm rebuild better-sqlite3",
+    "rebuild:native": "npm rebuild better-sqlite3 && cd server && npm rebuild better-sqlite3",
+    "predev": "node scripts/verify-node-version.mjs",
     "postinstall": "npm rebuild better-sqlite3",
     "test:watch": "cd server && npx vitest",
     "lint": "node scripts/run-eslint.mjs .",
     "lint:fix": "node scripts/run-eslint.mjs . --fix",
-    "typecheck": "cd server && npm run typecheck",
-    "format": "prettier --write 'server/**/*.ts' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
-    "format:check": "prettier --check 'server/**/*.ts' 'client/src/**/*.{js,jsx}' 'electron/**/*.{js,cjs}'",
+    "typecheck": "npm run typecheck:server && npm run typecheck:shared && npm run typecheck:client && npm run typecheck:mobile && npm run typecheck:electron && npm run typecheck:e2e",
+    "typecheck:server": "cd server && npm run typecheck",
+    "typecheck:shared": "cd shared && npm run typecheck",
+    "typecheck:client": "cd client && npm run typecheck",
+    "typecheck:mobile": "cd mobile && npm run typecheck",
+    "typecheck:electron": "cd electron && npx tsc --noEmit",
+    "typecheck:e2e": "cd e2e && npx tsc --noEmit",
+    "format": "prettier --write 'server/**/*.ts' 'client/src/**/*.{ts,tsx}' 'mobile/src/**/*.{ts,tsx}' 'shared/**/*.ts' 'electron/**/*.{ts,cjs}' 'e2e/**/*.ts'",
+    "format:check": "prettier --check 'server/**/*.ts' 'client/src/**/*.{ts,tsx}' 'mobile/src/**/*.{ts,tsx}' 'shared/**/*.ts' 'electron/**/*.{ts,cjs}' 'e2e/**/*.ts'",
     "prepare": "husky",
     "test:e2e": "cd e2e && npx playwright test",
     "test:e2e:ui": "cd e2e && npx playwright test --ui",
@@ -95,7 +102,23 @@
       "node scripts/run-eslint.mjs --fix",
       "prettier --write"
     ],
-    "client/src/**/*.{js,jsx}": [
+    "client/src/**/*.{ts,tsx}": [
+      "node scripts/run-eslint.mjs --fix",
+      "prettier --write"
+    ],
+    "mobile/src/**/*.{ts,tsx}": [
+      "node scripts/run-eslint.mjs --fix",
+      "prettier --write"
+    ],
+    "shared/**/*.ts": [
+      "node scripts/run-eslint.mjs --fix",
+      "prettier --write"
+    ],
+    "electron/**/*.ts": [
+      "node scripts/run-eslint.mjs --fix",
+      "prettier --write"
+    ],
+    "e2e/**/*.ts": [
       "node scripts/run-eslint.mjs --fix",
       "prettier --write"
     ]
@@ -118,6 +141,7 @@
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.3",
     "supertest": "^7.2.2",
+    "typescript": "^5.9.3",
     "typescript-eslint": "^8.58.2",
     "vitest": "^4.1.4",
     "yaml": "^2.9.0"

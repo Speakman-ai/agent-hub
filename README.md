@@ -214,8 +214,8 @@ browser.
 ### Mode 2: Self-hosted server + Electron remote client
 
 Run the server as in Mode 1, then on each desktop install the Electron
-app and configure it to talk to the remote hub. `electron/main.js`
-reads a `connConfig` and branches on its `mode`:
+app and configure it to talk to the remote hub. `electron/main.js` (shim)
+loads `electron/main.ts` via tsx. The main process reads a `connConfig` and branches on its `mode`:
 
 - `local` — fork the bundled server in-process, load `http://localhost:<port>`.
 - `remote` — `mainWindow.loadURL(connConfig.remoteUrl)`, inject auth
@@ -332,16 +332,11 @@ Configuration resolves in priority order: **environment variables** >
 
 ```
 agent-hub/
-├── client/                 # React + Vite web frontend
+├── client/                 # React + Vite web frontend (TypeScript)
 │   └── src/
-│       ├── App.jsx         # Root component with all state management
-│       ├── components/     # 18 UI components
-│       │   ├── Sidebar.jsx
-│       │   ├── KanbanBoard.jsx
-│       │   ├── WikiBrowser.jsx
-│       │   ├── SettingsPage.jsx
-│       │   └── ...
-│       ├── hooks/          # useWebSocket.js for real-time connection
+│       ├── App.tsx         # Root component with all state management
+│       ├── components/     # UI components (.tsx)
+│       ├── hooks/          # useWebSocket.ts for real-time connection
 │       └── utils/          # API client, time formatting, exports
 ├── server/                 # Express.js backend (TypeScript, ESM)
 │   ├── index.ts            # Express + WebSocket bootstrap
@@ -355,12 +350,15 @@ agent-hub/
 │   ├── stream-parser.ts    # CLI output stream parsing
 │   ├── worktree.ts         # Git worktree management
 │   └── project-paths.ts    # Workspace path resolution
-├── mobile/                 # React Native + Expo mobile app
-│   ├── App.js              # Entry point with navigation
-│   └── src/                # Screens, components, utils
-├── electron/               # Electron desktop wrapper
-│   ├── main.js             # Main process
-│   └── preload.cjs         # Preload script
+├── mobile/                 # React Native + Expo mobile app (TypeScript)
+│   ├── index.ts            # Entry point with navigation
+│   └── src/                # Screens, components, utils (.ts/.tsx)
+├── shared/                 # Cross-package utilities (strict TypeScript)
+├── electron/               # Electron desktop wrapper (TypeScript)
+│   ├── main.js             # JS entry shim (loads main.ts via tsx)
+│   ├── main.ts             # Main process
+│   └── preload.cjs         # Preload script (CommonJS)
+├── e2e/                    # Playwright E2E tests (TypeScript)
 ├── CLAUDE.md               # Developer documentation (for AI agents)
 └── package.json            # Root scripts and Electron build config
 ```
@@ -552,7 +550,7 @@ Never commit directly to `main`. Never push to `main` for feature work.
 ### Code Conventions
 
 - **ES Modules** throughout (`import`/`export`, no `require`)
-- **TypeScript on the server** (`server/`) — strict mode, run with `tsx`; **client and mobile** stay **JavaScript** with JSX
+- **TypeScript everywhere** — strict mode in `server/`, `client/`, `mobile/`, `shared/`, `electron/`, and `e2e/`; run `npm run typecheck` before opening a PR
 - **PascalCase** for React components, **camelCase** for functions/variables, **kebab-case** for file names
 - **Tailwind CSS** utility classes, dark theme by default
 - **Raw SQL** with prepared statements via better-sqlite3 (no ORM)

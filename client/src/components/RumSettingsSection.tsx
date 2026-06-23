@@ -1,0 +1,678 @@
+/**
+ * RumSettingsSection — AI RUM (real user monitoring) setup panel
+ * (per-project sidebar route `rum:<projectId>`).
+ *
+ * Mirrors FinalizeSettingsSection / PreviewSection: a read-only repo scan
+ * (`rum/setup-draft`) that surfaces the detected framework, injection
+ * target, and CSP locations; a "Set up RUM" button that spawns the
+ * worktree-backed `[RUM Setup]` wizard session and opens it in chat; and an
+ * ingest-client manager that mints / lists / revokes the per-project
+ * `X-RUM-Token` credentials a vendor site uses to upload replays.
+ */
+import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Activity,
+  Loader2,
+  AlertCircle,
+  Sparkles,
+  Key,
+  Plus,
+  Trash2,
+  Check,
+  Copy,
+  ShieldCheck,
+  Video,
+} from 'lucide-react';
+import { api } from '../utils/api';
+import { copyToClipboard } from '../utils/export';
+import { relativeTime } from '../utils/time';
+import {
+  isSessionReplayEnabled,
+  setSessionReplayEnabled,
+  isMaskAllEnabled,
+  setReplayMaskingMode,
+} from '../utils/sessionReplay';
+
+/**
+ * Format an ingest client's `lastUsedAt` for display. Returns "never used"
+ * when the token has never authenticated an upload, otherwise a relative
+ * timestamp ("2m ago") via the shared `relativeTime` helper (which parses
+ * SQLite no-TZ datetimes as UTC). Falls back to "never used" if the helper
+ * cannot parse the value, so we never render a raw backend timestamp.
+ */
+export function formatLastUsed(lastUsedAt: any) {
+  if (!lastUsedAt) return 'never used';
+  const rel = relativeTime(lastUsedAt);
+  return rel ? `last used ${rel}` : 'never used';
+}
+
+const FRAMEWORK_LABELS = {
+  next: 'Next.js',
+  nuxt: 'Nuxt',
+  sveltekit: 'SvelteKit',
+  remix: 'Remix',
+  astro: 'Astro',
+  vue: 'Vue',
+  angular: 'Angular',
+  react: 'React',
+  vanilla: 'Vanilla / static HTML',
+  unknown: 'Unknown',
+} as Record<string, any>;
+
+const INJECTION_STYLE_LABELS = {
+  'module-init': 'Module init (import + start call)',
+  'client-component': 'Client component (Next app-router layout)',
+  'script-tag': 'Inline <script> tag',
+} as Record<string, any>;
+
+export default function RumSettingsSection({ projects = [], onOpenSession, showToast }: any) {
+  const [projectId, setProjectId] = useState(projects[0]?.id || '');
+
+  // Draft scan state
+  const [draft, setDraft] = useState<any>(null);
+  const [loadingDraft, setLoadingDraft] = useState(false);
+  const [draftError, setDraftError] = useState<any>(null);
+
+  // Wizard spawn state
+  const [wizardStarting, setWizardStarting] = useState(false);
+  const [wizardError, setWizardError] = useState<any>(null);
+  const [lastSessionId, setLastSessionId] = useState<any>(null);
+  // Masking policy baked into the recorder the wizard injects into THIS target
+  // app (distinct from the Hub's own self-recording toggle above). Default
+  // false = mask passwords + PII only, record other content — matches
+  // rum/mask.js DEFAULT_MASK_OPTIONS and suits most third-party apps.
+  const [injectMaskAllText, setInjectMaskAllText] = useState(false);
+
+  // Session-replay recorder on/off (global to this Hub, persisted in
+  // localStorage via setSessionReplayEnabled — not per-project).
+  const [replayOn, setReplayOn] = useState(() => isSessionReplayEnabled());
+  const [replayToggling, setReplayToggling] = useState(false);
+  const [maskAll, setMaskAll] = useState(() => isMaskAllEnabled());
+  const [maskToggling, setMaskToggling] = useState(false);
+
+  // Ingest-client state
+  const [clients, setClients] = useState<any[]>([]);
+  const [loadingClients, setLoadingClients] = useState(false);
+  const [clientsError, setClientsError] = useState<any>(null);
+  const [newClientName, setNewClientName] = useState('');
+  const [minting, setMinting] = useState(false);
+  const [freshToken, setFreshToken] = useState<any>(null);
+  const [copied, setCopied] = useState(false);
+  const [revokingId, setRevokingId] = useState<any>(null);
+
+  // The project the UI currently belongs to. Async loads capture the `pid`
+  // they were started for and only commit state when it still matches this
+  // ref — otherwise a slow response for project A could overwrite project
+  // B's scan / token list after the user switched (and, worse, surface or
+  // act on another project's ingest credentials). The ref is set
+  // synchronously in the project-change effect before any load starts.
+  const activePidRef = useRef('');
+
+  useEffect(() => {
+    if (!projects.length) {
+      setProjectId('');
+      return;
+    }
+    if (!projects.find((p: any) => p.id === projectId)) {
+      setProjectId(projects[0].id);
+    }
+  }, [projects, projectId]);
+
+  const reloadDraft = useCallback(async (pid: any) => {
+    if (!pid) return;
+    setLoadingDraft(true);
+    setDraftError(null);
+    try {
+      const res = await api.getRumSetupDraft(pid);
+      if (activePidRef.current !== pid) return; // stale — project changed
+      setDraft(res?.draft || null);
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setDraftError(err?.message || 'Failed to scan project');
+      setDraft(null);
+    } finally {
+      if (activePidRef.current === pid) setLoadingDraft(false);
+    }
+  }, []);
+
+  const reloadClients = useCallback(async (pid: any) => {
+    if (!pid) return;
+    setLoadingClients(true);
+    setClientsError(null);
+    try {
+      const res = await api.getRumClients(pid);
+      if (activePidRef.current !== pid) return; // stale — project changed
+      setClients(res?.clients || []);
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setClientsError(err?.message || 'Failed to load ingest clients');
+      setClients([]);
+    } finally {
+      if (activePidRef.current === pid) setLoadingClients(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    // Mark this project active BEFORE any async load so in-flight responses
+    // for the previous project are discarded when they resolve.
+    activePidRef.current = projectId;
+    // Reset transient + data state so the previous project's scan / tokens
+    // never linger on screen while the new project's loads are in flight.
+    setFreshToken(null);
+    setCopied(false);
+    setWizardError(null);
+    setLastSessionId(null);
+    setDraft(null);
+    setClients([]);
+    // Clear transient mutation flags too: a guarded wizard/mint/revoke for
+    // the previous project skips its own reset (correctly), so reset here to
+    // avoid a button stuck disabled after the switch.
+    setWizardStarting(false);
+    setMinting(false);
+    setRevokingId(null);
+    setClientsError(null);
+    void reloadDraft(projectId);
+    void reloadClients(projectId);
+  }, [projectId, reloadDraft, reloadClients]);
+
+  const project = projects.find((p: any) => p.id === projectId) || null;
+
+  const handleToggleReplay = useCallback(async () => {
+    if (replayToggling) return;
+    const next = !replayOn;
+    setReplayToggling(true);
+    // Optimistic — the recorder start/stop is best-effort and never throws.
+    setReplayOn(next);
+    try {
+      await setSessionReplayEnabled(next);
+      if (showToast) {
+        showToast(
+          next ? 'Session replay recording enabled.' : 'Session replay recording disabled.',
+          'success',
+          3000,
+        );
+      }
+    } finally {
+      setReplayToggling(false);
+    }
+  }, [replayOn, replayToggling, showToast]);
+
+  const handleToggleMaskAll = useCallback(async () => {
+    if (maskToggling) return;
+    const next = !maskAll;
+    setMaskToggling(true);
+    // Optimistic — setReplayMaskingMode is best-effort and never throws.
+    setMaskAll(next);
+    try {
+      await setReplayMaskingMode(next);
+      if (showToast) {
+        showToast(
+          next
+            ? 'Masking all text & inputs.'
+            : 'Masking password fields only — other content is recorded.',
+          next ? 'success' : 'info',
+          3500,
+        );
+      }
+    } finally {
+      setMaskToggling(false);
+    }
+  }, [maskAll, maskToggling, showToast]);
+
+  const handleStartWizard = useCallback(async () => {
+    if (!project || wizardStarting) return;
+    // Capture the project this spawn belongs to. A late response must not
+    // set lastSessionId/wizardError or focus a session from the now-active
+    // project's view (same stale guard as the load/mint paths).
+    const pid = project.id;
+    setWizardStarting(true);
+    setWizardError(null);
+    try {
+      const res = await api.startRumWizard(pid, { maskAllText: injectMaskAllText });
+      if (activePidRef.current !== pid) return; // switched projects — drop result
+      if (!res?.sessionId) {
+        setWizardError('Server did not return a wizard session id');
+        return;
+      }
+      setLastSessionId(res.sessionId);
+      if (typeof onOpenSession === 'function') {
+        onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+      } else {
+        setWizardError(
+          `Wizard started (session ${res.sessionId}) — open it from the agent session list.`,
+        );
+      }
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setWizardError(err?.message || 'Failed to start the RUM setup wizard');
+    } finally {
+      if (activePidRef.current === pid) setWizardStarting(false);
+    }
+  }, [project, wizardStarting, onOpenSession, injectMaskAllText]);
+
+  const handleMint = useCallback(async () => {
+    const name = newClientName.trim();
+    if (!project || minting || !name) return;
+    // Capture the project this mint belongs to. If the user navigates away
+    // before the request resolves, the one-time plaintext token must NOT be
+    // revealed in (or attributed to) the now-active project — same stale
+    // guard as reloadDraft/reloadClients.
+    const pid = project.id;
+    setMinting(true);
+    setClientsError(null);
+    try {
+      const minted = await api.createRumClient(pid, name);
+      if (activePidRef.current !== pid) return; // switched projects — drop the secret
+      setFreshToken(minted?.token || null);
+      setCopied(false);
+      setNewClientName('');
+      await reloadClients(pid);
+      if (showToast) {
+        showToast('Ingest token created — copy it now. It is not shown again.', 'success', 6000);
+      }
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setClientsError(err?.message || 'Failed to mint ingest token');
+    } finally {
+      if (activePidRef.current === pid) setMinting(false);
+    }
+  }, [project, minting, newClientName, reloadClients, showToast]);
+
+  const handleCopyToken = useCallback(async () => {
+    if (!freshToken) return;
+    await copyToClipboard(freshToken);
+    setCopied(true);
+    if (showToast) showToast('Token copied to clipboard.', 'success', 2500);
+  }, [freshToken, showToast]);
+
+  const handleRevoke = useCallback(
+    async (clientId: any) => {
+      if (!project || revokingId) return;
+      if (!window.confirm('Revoke this ingest token? Uploads using it will be rejected.')) {
+        return;
+      }
+      // Capture the project this revoke belongs to. If the user switches
+      // mid-DELETE, don't surface Alpha's success toast / error / spinner
+      // reset in Beta's view (same stale guard as the load/mint paths).
+      const pid = project.id;
+      setRevokingId(clientId);
+      setClientsError(null);
+      try {
+        await api.revokeRumClient(pid, clientId);
+        if (activePidRef.current !== pid) return; // switched projects — drop result
+        await reloadClients(pid);
+        if (showToast) showToast('Ingest token revoked.', 'success', 3000);
+      } catch (err: any) {
+        if (activePidRef.current !== pid) return;
+        setClientsError(err?.message || 'Failed to revoke token');
+      } finally {
+        if (activePidRef.current === pid) setRevokingId(null);
+      }
+    },
+    [project, revokingId, reloadClients, showToast],
+  );
+
+  if (!projects.length) {
+    return <p className="text-sm text-gray-500">No projects yet.</p>;
+  }
+
+  const plan = draft?.plan || null;
+  const alreadyInstrumented = !!plan?.alreadyInstrumented;
+
+  return (
+    <div className="space-y-6 pb-28">
+      <div>
+        <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
+          <Activity size={18} className="text-fuchsia-400" />
+          RUM (Real User Monitoring)
+        </h3>
+        <p className="text-xs text-gray-500 max-w-2xl">
+          Instrument this project&apos;s frontend with the rrweb session-replay recorder. Click{' '}
+          <strong className="text-gray-300">Set up RUM</strong> to scan the repo and walk through a
+          guided injection in chat, then mint a per-project ingest token for the recorder to
+          authenticate replay uploads.
+        </p>
+      </div>
+
+      {/* ── Session replay recording (global on/off) ────────────── */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+        <div className="flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-semibold text-gray-200 mb-1 flex items-center gap-2">
+              <Video size={14} className="text-fuchsia-400" />
+              Session replay recording
+            </h4>
+            <p className="text-xs text-gray-500 max-w-2xl">
+              Records a privacy-masked rrweb replay of this Hub&apos;s own UI and attaches it to bug
+              reports so the intake agent can see what happened. On by default; turn it off to stop
+              recording entirely. Applies to this browser and persists across reloads.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleToggleReplay}
+            disabled={replayToggling}
+            role="switch"
+            aria-checked={replayOn}
+            aria-label="Toggle session replay recording"
+            data-testid="rum-replay-toggle"
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+              replayOn ? 'bg-fuchsia-600' : 'bg-gray-600'
+            }`}
+          >
+            <span
+              className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                replayOn ? 'translate-x-4' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Masking strictness */}
+        <div className="mt-4 pt-4 border-t border-gray-700/70">
+          <div className="flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <h5 className="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2">
+                <ShieldCheck size={13} className="text-fuchsia-400" />
+                Mask all text &amp; inputs
+              </h5>
+              <p className="text-xs text-gray-500 max-w-2xl">
+                On (recommended for Agent Hub): redact every input value and all visible text — only
+                structure, layout and interaction timing are recorded. Turn off to mask{' '}
+                <strong className="text-gray-300">only password fields</strong> and record
+                everything else verbatim — appropriate when instrumenting other apps that don&apos;t
+                show secrets as text.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleMaskAll}
+              disabled={maskToggling}
+              role="switch"
+              aria-checked={maskAll}
+              aria-label="Toggle masking of all text and inputs"
+              data-testid="rum-mask-all-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+                maskAll ? 'bg-fuchsia-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  maskAll ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+          {!maskAll && (
+            <div
+              className="mt-3 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5"
+              data-testid="rum-mask-all-warning"
+            >
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+              <span>
+                Passwords-only masking records all other input values and visible text in replays
+                uploaded to the hub. Don&apos;t use this on surfaces that show chat, terminal
+                output, tokens, or API keys.
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Repo scan summary ───────────────────────────────────── */}
+      <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4">
+        <h4 className="text-sm font-semibold text-gray-300 mb-3">Repo scan</h4>
+        {loadingDraft && (
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <Loader2 size={12} className="animate-spin" />
+            Scanning project for framework, injection target, and CSP…
+          </div>
+        )}
+        {draftError && (
+          <p className="text-xs text-red-400 flex items-center gap-1">
+            <AlertCircle size={12} />
+            {draftError}
+          </p>
+        )}
+        {!loadingDraft && !draftError && draft && (
+          <div className="space-y-3" data-testid="rum-draft-summary">
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs">
+              <dt className="text-gray-500">Framework</dt>
+              <dd className="text-gray-300">
+                {FRAMEWORK_LABELS[draft.framework] || draft.framework}
+                {draft.typescript ? ' · TypeScript' : ''}
+                {draft.packageManager ? ` · ${draft.packageManager}` : ''}
+              </dd>
+
+              <dt className="text-gray-500">Injection target</dt>
+              <dd className="text-gray-300">
+                {plan?.targetFile ? (
+                  <code className="text-fuchsia-300">{plan.targetFile}</code>
+                ) : (
+                  <span className="text-amber-300">none detected — the wizard will ask</span>
+                )}
+              </dd>
+
+              <dt className="text-gray-500">Injection style</dt>
+              <dd className="text-gray-300">
+                {plan?.injectionStyle
+                  ? INJECTION_STYLE_LABELS[plan.injectionStyle] || plan.injectionStyle
+                  : '—'}
+              </dd>
+
+              <dt className="text-gray-500">CSP locations</dt>
+              <dd className="text-gray-300">
+                {draft.cspHits?.length ? (
+                  <span className="font-mono">
+                    {draft.cspHits.map((h: any) => h.path).join(', ')}
+                  </span>
+                ) : (
+                  <span className="text-gray-500">none found</span>
+                )}
+              </dd>
+
+              <dt className="text-gray-500">Recorder</dt>
+              <dd>
+                {alreadyInstrumented ? (
+                  <span className="text-emerald-400 flex items-center gap-1">
+                    <ShieldCheck size={12} /> already instrumented
+                  </span>
+                ) : draft.recorder?.dependencyPresent ? (
+                  <span className="text-amber-300">dependency present, init not wired</span>
+                ) : (
+                  <span className="text-gray-500">not instrumented</span>
+                )}
+              </dd>
+            </dl>
+            {alreadyInstrumented && (
+              <p className="text-xs text-emerald-400/90 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2">
+                This project already has a wired recorder — re-running the wizard may
+                double-instrument. Confirm in chat before applying edits.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Guided setup ────────────────────────────────────────── */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-200 mb-1 flex items-center gap-2">
+              <Sparkles size={14} className="text-fuchsia-400" />
+              Guided setup walkthrough
+            </h4>
+            <p className="text-xs text-gray-500 max-w-xl">
+              Spawns a worktree-backed session loaded with the{' '}
+              <code className="text-gray-300">rum-setup</code> skill. It injects the rrweb recorder
+              init into the detected target file, extends any Content-Security-Policy{' '}
+              <code className="text-gray-300">connect-src</code> with the ingest origin, commits,
+              and lets Finalize Code Changes open a PR for review.
+            </p>
+            {lastSessionId && (
+              <p className="text-xs text-fuchsia-400 mt-2">
+                Last wizard session: <code className="text-fuchsia-300">{lastSessionId}</code>
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={handleStartWizard}
+            disabled={!project || wizardStarting}
+            className="flex items-center gap-2 bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors flex-shrink-0"
+          >
+            {wizardStarting ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Sparkles size={14} />
+            )}
+            {wizardStarting ? 'Starting…' : 'Set up RUM'}
+          </button>
+        </div>
+
+        {/* Per-app masking policy baked into the injected recorder */}
+        <div className="mt-3 pt-3 border-t border-gray-700/70">
+          <label
+            htmlFor="rum-inject-mask-mode"
+            className="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2"
+          >
+            <ShieldCheck size={13} className="text-fuchsia-400" />
+            Recorder masking for this app
+          </label>
+          <select
+            id="rum-inject-mask-mode"
+            data-testid="rum-inject-mask-select"
+            value={injectMaskAllText ? 'mask-all' : 'passwords-only'}
+            onChange={(e: any) => setInjectMaskAllText(e.target.value === 'mask-all')}
+            disabled={wizardStarting}
+            className="w-full max-w-md bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+          >
+            <option value="passwords-only">
+              Mask passwords &amp; PII only — record other content
+            </option>
+            <option value="mask-all">Mask all text &amp; inputs — strictest</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1 max-w-xl">
+            Baked into the recorder the wizard injects into{' '}
+            <strong className="text-gray-300">this target app</strong> — independent of Agent
+            Hub&apos;s own session-replay setting above. Default masks only password/PII fields so
+            replays stay readable; choose strict masking for apps that show secrets as text.
+          </p>
+        </div>
+
+        {wizardError && (
+          <div className="mt-3 flex items-start gap-2 text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+            <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+            <span>{wizardError}</span>
+          </div>
+        )}
+      </div>
+
+      {/* ── Ingest tokens ───────────────────────────────────────── */}
+      <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4 space-y-4">
+        <div>
+          <h4 className="text-sm font-semibold text-gray-300 mb-1 flex items-center gap-2">
+            <Key size={14} className="text-amber-400" />
+            Ingest tokens
+          </h4>
+          <p className="text-xs text-gray-500 max-w-2xl">
+            Per-project credentials the recorder sends as an{' '}
+            <code className="text-gray-300">X-RUM-Token</code> header when uploading replays to{' '}
+            <code className="text-gray-300">/api/replays</code>. The token is shown once at creation
+            — copy it into the recorder config. Revoke any token to immediately reject its uploads.
+          </p>
+        </div>
+
+        {/* One-time token reveal */}
+        {freshToken && (
+          <div
+            className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
+            data-testid="rum-fresh-token"
+          >
+            <div className="font-medium text-amber-200 mb-1">New ingest token (copy now)</div>
+            <code className="block break-all font-mono text-amber-50/95">{freshToken}</code>
+            <button
+              type="button"
+              onClick={handleCopyToken}
+              className="mt-2 inline-flex items-center gap-1 text-sky-300 hover:text-sky-200"
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+              {copied ? 'Copied' : 'Copy token'}
+            </button>
+            <p className="mt-1 text-amber-200/70">
+              This token will not be shown again. Store it securely.
+            </p>
+          </div>
+        )}
+
+        {/* Mint form */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={newClientName}
+            onChange={(e: any) => setNewClientName(e.target.value)}
+            onKeyDown={(e: any) => {
+              if (e.key === 'Enter') void handleMint();
+            }}
+            placeholder="Token name (e.g. production-web)"
+            maxLength={100}
+            className="flex-1 bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-fuchsia-500"
+          />
+          <button
+            type="button"
+            onClick={handleMint}
+            disabled={!project || minting || !newClientName.trim()}
+            className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-gray-100 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"
+          >
+            {minting ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+            Create token
+          </button>
+        </div>
+
+        {clientsError && (
+          <p className="text-xs text-red-400 flex items-center gap-1">
+            <AlertCircle size={12} />
+            {clientsError}
+          </p>
+        )}
+
+        {/* Client list */}
+        {loadingClients ? (
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <Loader2 size={12} className="animate-spin" />
+            Loading ingest tokens…
+          </div>
+        ) : clients.length === 0 ? (
+          <p className="text-xs text-gray-600 italic">No ingest tokens yet.</p>
+        ) : (
+          <ul className="divide-y divide-gray-800/80" data-testid="rum-client-list">
+            {clients.map((c: any) => (
+              <li key={c.id} className="flex items-center justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-200 truncate">{c.name}</p>
+                  <p className="text-[11px] text-gray-500 font-mono truncate">
+                    {c.prefix}… · {formatLastUsed(c.lastUsedAt)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRevoke(c.id)}
+                  disabled={revokingId === c.id}
+                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 disabled:text-gray-600 flex-shrink-0"
+                >
+                  {revokingId === c.id ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={12} />
+                  )}
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}

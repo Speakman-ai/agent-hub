@@ -20,7 +20,6 @@ ignore:
   # the build job succeeded. Nothing to mirror.
   - ci.yml:ci
   # main-checks.yml jobs that are not code gates Finalize stands in for:
-  - main-checks.yml:terraform # infra fmt/init/validate
   - main-checks.yml:skill-coupling # push-range changed-file coupling check
 
 # ci.yaml job id → mirror ref. A ref is a GitHub `<file>:<jobId>` (optionally

@@ -177,7 +177,7 @@ export interface FinalizeTerminatedChatTurnParams {
  * cancel system message has been written.
  */
 export function finalizeChatRunAfterTermination(params: FinalizeTerminatedChatTurnParams): void {
-  const partialContent = stripAssistantControlBlocks(params.assembled).trim();
+  const partialContent = (stripAssistantControlBlocks(params.assembled) ?? '').trim();
   if (!partialContent) return;
 
   const {

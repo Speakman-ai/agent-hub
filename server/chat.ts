@@ -4730,7 +4730,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           console.error('[assistant-context] Unexpected error:', (err as Error).message);
         }
 
-        finalContent = stripAssistantControlBlocks(finalContent);
+        finalContent = stripAssistantControlBlocks(finalContent) ?? finalContent;
         if (!finalContent.trim()) {
           finalContent = continuationContextAdded
             ? 'Loaded requested context for continuation.'

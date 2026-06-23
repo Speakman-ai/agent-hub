@@ -12,12 +12,10 @@ export default [
       'node_modules/',
       'client/dist/',
       'release/',
-      'mobile/',
-      'electron/',
       '.claude/',
       '.husky/',
       '.worktrees/',
-      'client/vite.config.js',
+      'client/vite.config.ts',
       '**/*.cjs',
       // Starter template payloads — these are scaffolding source trees
       // copied into newly-provisioned projects, not first-party server code.
@@ -60,16 +58,18 @@ export default [
     },
   },
 
-  // Client files — React + JSX
+  // Client files — React + TypeScript
   {
-    files: ['client/src/**/*.{js,jsx}'],
+    files: ['client/src/**/*.{ts,tsx}'],
     plugins: {
       react: reactPlugin,
       'react-hooks': reactHooksPlugin,
+      '@typescript-eslint': tseslint.plugin,
     },
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
+      parser: tseslint.parser,
       parserOptions: {
         ecmaFeatures: { jsx: true },
       },
@@ -81,10 +81,12 @@ export default [
       react: { version: 'detect' },
     },
     rules: {
-      'no-unused-vars': [
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
         'warn',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
+      'no-undef': 'off',
       'no-console': 'off',
       'no-constant-condition': 'warn',
       'no-empty': ['warn', { allowEmptyCatch: true }],
@@ -100,9 +102,118 @@ export default [
     },
   },
 
+  // Mobile — React Native + TypeScript
+  {
+    files: ['mobile/src/**/*.{ts,tsx}'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parser: tseslint.parser,
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+      globals: {
+        ...globals.browser,
+        ...globals.node,
+      },
+    },
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+      'react-hooks': reactHooksPlugin,
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+      'no-undef': 'off',
+      'no-console': 'off',
+      'no-constant-condition': 'warn',
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-prototype-builtins': 'off',
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
+  },
+
+  // Mobile native build config — CommonJS. Babel and Metro load these files
+  // as CommonJS (module.exports / require / __dirname), so they can't be ESM or
+  // TypeScript. Give them a Node + CommonJS environment so the base no-undef
+  // rule doesn't flag the CJS globals.
+  {
+    files: ['mobile/babel.config.js', 'mobile/metro.config.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-unused-vars': 'off',
+    },
+  },
+
+  // Shared utilities — strict TypeScript
+  {
+    files: ['shared/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parser: tseslint.parser,
+      globals: {
+        ...globals.node,
+      },
+    },
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+      'no-undef': 'off',
+      'no-console': 'off',
+      'no-constant-condition': 'warn',
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-prototype-builtins': 'off',
+    },
+  },
+
+  // Electron main process — Node.js TypeScript
+  {
+    files: ['electron/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parser: tseslint.parser,
+      globals: {
+        ...globals.node,
+      },
+    },
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+    },
+    rules: {
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+      'no-undef': 'off',
+      'no-console': 'off',
+      'no-constant-condition': 'warn',
+      'no-empty': ['warn', { allowEmptyCatch: true }],
+      'no-prototype-builtins': 'off',
+    },
+  },
+
   // Test files — relaxed rules
   {
-    files: ['**/*.test.{js,ts}', '**/__tests__/**/*.{js,ts}', '**/test/**/*.{js,ts}'],
+    files: ['**/*.test.{js,ts,tsx}', '**/__tests__/**/*.{js,ts,tsx}', '**/test/**/*.{js,ts,tsx}'],
     languageOptions: {
       globals: {
         ...globals.node,
@@ -113,12 +224,13 @@ export default [
     },
   },
 
-  // E2E test files — Playwright + Node.js
+  // E2E test files — Playwright + Node.js TypeScript
   {
-    files: ['e2e/**/*.js'],
+    files: ['e2e/**/*.ts'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
+      parser: tseslint.parser,
       globals: {
         ...globals.node,
         // Playwright `page.evaluate(...)` callbacks run in the browser context,

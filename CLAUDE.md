@@ -18,15 +18,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Server**: `cd server && npm start` (Express server on port 3051, uses `tsx`)
 - **Mobile**: `npm run mobile` or `cd mobile && expo start` (Expo dev server)
 
-### TypeScript (Server)
-- `npm run typecheck` (repo root) or `cd server && npm run typecheck` — Run `tsc --noEmit` on the server. Requires `server/node_modules` with devDependencies (use `npm run install:all` or `cd server && npm ci --include=dev`). Running `tsc` without installing `server/` first can make resolution walk up to the root `node_modules` and fail with missing `express` / `uuid` / `@types/*`.
-- `cd server && npx tsc --noEmit` - Same as above, directly
-- The server uses `tsx` for runtime (no build step) and `tsc --noEmit` for type checking only
+### TypeScript
+- `npm run typecheck` (repo root) — runs `tsc --noEmit` across server, shared, client, mobile, electron, and e2e
+- Per-package: `cd server && npm run typecheck`, `cd shared && npm run typecheck`, `cd client && npm run typecheck`, `cd mobile && npm run typecheck`, `cd electron && npx tsc --noEmit`, `cd e2e && npx tsc --noEmit`
+- Requires each package's `node_modules` with devDependencies (use `npm run install:all` or `npm ci --include=dev` per package)
+- Server uses `tsx` for runtime (no build step); client/mobile use Vite/Metro bundlers
 
 ### Lint & Format
 - `npm run lint` - Run ESLint across the repo
 - `npm run lint:fix` - Run ESLint with `--fix` to auto-correct where possible
-- `npm run format` - Format `server/`, `client/src/`, and `electron/` with Prettier
+- `npm run format` - Format `server/`, `client/src/`, `mobile/src/`, `shared/`, `electron/`, and `e2e/` with Prettier
 - `npm run format:check` - Check formatting without writing (used in CI/pre-commit)
 
 ## Architecture Overview
@@ -50,7 +51,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Slack integration** - Multi-agent Slack bot support
 
 **Client (`/client`)**
-- **React + Vite** frontend with Tailwind CSS
+- **React + Vite** frontend with Tailwind CSS (**TypeScript**, strict mode)
 - **WebSocket connection** for real-time chat streaming
 - **Agent selection** and configuration interface
 - **Session management** with persistent chat history
@@ -59,7 +60,7 @@ This is a full-stack Agent Hub application that manages and interfaces with AI a
 - **Memory interface** - View and edit agent memory files
 
 **Mobile (`/mobile`)**
-- **React Native + Expo** mobile app (iOS & Android)
+- **React Native + Expo** mobile app (iOS & Android) (**TypeScript**, strict mode)
 - **1:1 feature parity** with the web client
 - **Drawer navigation** for agent/session sidebar (swipe to open)
 - **Real-time chat** via WebSocket with streaming responses
@@ -282,6 +283,8 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 
 **Every feature, bugfix, and refactor should include at least one test.** PRs without tests for new logic will be flagged in review.
 
+**CI split:** We have retired most GitHub Actions workflows for **testing** — PRs only run build + typecheck in `.github/workflows/ci.yml`. **Deployments** (ECR publish, dev/prod rollout, releases) still run on GitHub. The **full test suite** runs on **Agent Hub Finalize CI runners** via `.agent-hub/ci.yaml`; when changing what CI executes, update that file (and `npm run check:workflow-drift`) rather than restoring old GHA test jobs.
+
 ### Framework
 - **Vitest** for all unit/integration tests
 - **Playwright** for E2E tests (in `e2e/`)
@@ -296,8 +299,10 @@ The Claude Code CLI binary appends a hidden `<system-reminder>` after every Read
 
 ### Where Tests Go
 - **Server**: Co-located as `server/<module>.test.ts` (e.g., `stream-parser.test.ts`) or in `server/test/` for API integration tests
-- **Client**: Co-located as `client/src/**/*.test.js` (e.g., `utils/humanCron.test.js`)
-- **E2E**: In `e2e/tests/*.spec.js`
+- **Client**: Co-located as `client/src/**/*.test.ts` (e.g., `utils/humanCron.test.ts`)
+- **Mobile**: Co-located as `mobile/src/**/*.test.ts`
+- **Shared / Electron**: Co-located `*.test.ts` beside source
+- **E2E**: In `e2e/tests/*.spec.ts`
 
 ### Test Patterns
 - Use `describe`, `it`, `expect` from Vitest (globals enabled)
@@ -361,6 +366,7 @@ Wiki page with full context: `openapi-coverage-enforcement-zod-schema-lint`.
 ## Development Notes
 
 - The server is **TypeScript** (strict mode) running via `tsx` — no build/dist step needed
+- Client, mobile, shared, electron, and e2e also use **strict TypeScript** (`tsc --noEmit` via `npm run typecheck`)
 - All server source files are `.ts`; imports use `.js` extensions per ESM convention (TypeScript resolves `.js` → `.ts`)
 - Core types live in `server/types.ts` (DB row types, `Stmts`, `RouteDeps`, `Project`, `Agent`, stream events, etc.)
 - The server runs as an ES module (`"type": "module"`)
