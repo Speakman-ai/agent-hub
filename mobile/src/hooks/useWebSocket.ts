@@ -1,5 +1,6 @@
 import { useRef, useCallback, useEffect, useState } from 'react';
 import { getWsUrl } from '../utils/config';
+import { pingTickAction } from '../utils/websocketLiveness';
 const RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const PING_INTERVAL = 30000;
@@ -8,6 +9,13 @@ export function useWebSocket(onMessage: any) {
     const reconnectDelay = useRef(RECONNECT_DELAY);
     const reconnectTimer = useRef<any>(null);
     const pingTimer = useRef<any>(null);
+    // Pong-liveness watchdog — set true when a ping is sent, cleared on any
+    // inbound frame. If still true at the next ping tick the link is half-open
+    // (TCP silently dropped on sleep / network switch with no close reaching
+    // the app, so `readyState` is stuck OPEN and `onclose` never fires). Force
+    // a close so the reconnect path runs; otherwise streamed state (e.g. the
+    // finalize checks block) goes stale forever. Mirrors the web client.
+    const awaitingPongRef = useRef(false);
     const [connected, setConnected] = useState(false);
     const [reconnecting, setReconnecting] = useState(false);
     const onMessageRef = useRef(onMessage);
@@ -30,15 +38,27 @@ export function useWebSocket(onMessage: any) {
             setConnected(true);
             setReconnecting(false);
             reconnectDelay.current = RECONNECT_DELAY;
-            // Start ping interval for keepalive
+            // Start ping interval for keepalive + half-open detection.
+            awaitingPongRef.current = false;
             clearInterval(pingTimer.current);
             pingTimer.current = setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'ping' }));
+                const action = pingTickAction(ws.readyState === WebSocket.OPEN, awaitingPongRef.current);
+                if (action === 'noop')
+                    return;
+                if (action === 'close') {
+                    // Previous ping unanswered — connection is dead but unnoticed.
+                    // Force-close so onclose fires and the reconnect path runs.
+                    console.warn('WebSocket pong timeout — forcing reconnect');
+                    ws.close();
+                    return;
                 }
+                awaitingPongRef.current = true;
+                ws.send(JSON.stringify({ type: 'ping' }));
             }, PING_INTERVAL);
         };
         ws.onmessage = (event: any) => {
+            // Any inbound frame proves the link is alive — clear the watchdog.
+            awaitingPongRef.current = false;
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === 'pong')
@@ -53,6 +73,7 @@ export function useWebSocket(onMessage: any) {
             console.log('WebSocket disconnected');
             setConnected(false);
             wsRef.current = null;
+            awaitingPongRef.current = false;
             clearInterval(pingTimer.current);
             // Reconnect with exponential backoff
             setReconnecting(true);

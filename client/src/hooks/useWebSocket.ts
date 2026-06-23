@@ -10,6 +10,16 @@ export function useWebSocket(onMessage: any) {
   const reconnectDelay = useRef(RECONNECT_DELAY);
   const reconnectTimer = useRef<any>(null);
   const pingTimer = useRef<any>(null);
+  // Pong-liveness watchdog. Set true when a ping is sent and cleared on any
+  // inbound frame (a pong, or any other server message — both prove the link
+  // is alive). If it is still true at the next ping tick, the previous ping
+  // went unanswered: the socket is half-open (TCP silently dropped on sleep /
+  // Wi-Fi switch / NAT rebind / idle proxy kill, with no FIN/RST reaching the
+  // browser, so `readyState` is stuck OPEN and `onclose` never fires). Without
+  // this, `connected` stays true forever, no reconnect happens, the
+  // `agenthub:ws_reconnected` self-heal never fires, and every finalize step
+  // event during the dead window is lost — the "tests don't show" report.
+  const awaitingPongRef = useRef(false);
   const [connected, setConnected] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const onMessageRef = useRef(onMessage);
@@ -28,16 +38,30 @@ export function useWebSocket(onMessage: any) {
       setReconnecting(false);
       reconnectDelay.current = RECONNECT_DELAY;
 
-      // Start ping interval for keepalive
+      // Start ping interval for keepalive + half-open detection.
+      awaitingPongRef.current = false;
       clearInterval(pingTimer.current);
       pingTimer.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
+        if (ws.readyState !== WebSocket.OPEN) return;
+        if (awaitingPongRef.current) {
+          // The previous ping was never answered (no pong, no other frame) —
+          // the connection is dead but the browser hasn't noticed. Force-close
+          // so `onclose` fires, which flips `connected` false→true on the next
+          // successful open and drives the `agenthub:ws_reconnected` refetch.
+          console.warn('WebSocket pong timeout — forcing reconnect');
+          ws.close();
+          return;
         }
+        awaitingPongRef.current = true;
+        ws.send(JSON.stringify({ type: 'ping' }));
       }, PING_INTERVAL);
     };
 
     ws.onmessage = (event: any) => {
+      // Any inbound frame proves the link is alive — clear the pong watchdog
+      // before doing anything else (a pong is the explicit ack, but ordinary
+      // traffic counts too, so a busy socket is never falsely reaped).
+      awaitingPongRef.current = false;
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'pong') return; // keepalive response
@@ -51,6 +75,7 @@ export function useWebSocket(onMessage: any) {
       console.log('WebSocket disconnected');
       setConnected(false);
       wsRef.current = null;
+      awaitingPongRef.current = false;
       clearInterval(pingTimer.current);
 
       // Reconnect with exponential backoff
