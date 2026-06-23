@@ -38,7 +38,9 @@ import {
 import { gitRepoFileReader, type RepoFileReader } from '../security-audit/scanner.js';
 import { revParse } from '../native-pr/git-read.js';
 import type { DependencyFinding, Ecosystem } from '../security-audit/types.js';
+import { isAtOrAboveSeverity } from '../security-audit/severity.js';
 import {
+  BatchFixRequestSchema,
   DismissRequestSchema,
   FindingsQuerySchema,
   ScanRequestSchema,
@@ -156,6 +158,50 @@ export default function createSecurityAuditRoutes(
     },
     makeReader: (repoPath: string) => gitRepoFileReader(repoPath),
     commitFiles: commitFilesToBareBranch,
+  };
+
+  // Open/refresh the single rolling security bump PR from a pre-filtered group
+  // of dependency findings. Shared by the per-finding Fix route and the batch
+  // "fix all by severity" route so both converge on the SAME branch/PR
+  // (SECURITY_BUMP_BRANCH) with identical commit/PR wiring — the only thing that
+  // differs between callers is which findings end up in `group`. Never throws:
+  // openSecurityBumpPrs records per-plan failures in `skipped`.
+  const openBumpPrsForGroup = (
+    project: Project,
+    repo: FixRepoBase,
+    author: string,
+    group: DependencyFinding[],
+  ) => {
+    const nativePr = deps.nativePr;
+    // Callers gate on this before resolving the repo; assert so the closure is
+    // total even though it's never reached with a null service.
+    if (!nativePr) throw new Error('native PR service unavailable');
+    const reader = fixDeps.makeReader(repo.repoPath);
+    return openSecurityBumpPrs(group, {
+      fetchDistMetadata: (name, version, registryUrl) =>
+        fetchNpmDistMetadata(name, version, { registryUrl }),
+      readFile: (p) => reader.readFile(repo.baseSha, p),
+      commitFiles: ({ branch, files, message }) =>
+        fixDeps.commitFiles({
+          repoPath: repo.repoPath,
+          baseSha: repo.baseSha,
+          branch,
+          files,
+          message,
+        }),
+      createOrGetOpenPr: ({ headBranch, headSha, title, body }) => {
+        const r = nativePr.createOrGetOpenPr({
+          project,
+          headBranch,
+          baseBranch: repo.baseBranch,
+          headSha,
+          title,
+          body,
+          author,
+        });
+        return { prNumber: r.row.number, prUrl: r.prUrl, prCreated: r.created };
+      },
+    });
   };
 
   // Project ACCESS (view) is enforced upstream by the project-visibility gate
@@ -360,33 +406,65 @@ export default function createSecurityAuditRoutes(
 
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
       const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
-      const reader = fixDeps.makeReader(repo.repoPath);
       try {
-        const result = await openSecurityBumpPrs(group, {
-          fetchDistMetadata: (name, version, registryUrl) =>
-            fetchNpmDistMetadata(name, version, { registryUrl }),
-          readFile: (p) => reader.readFile(repo.baseSha, p),
-          commitFiles: ({ branch, files, message }) =>
-            fixDeps.commitFiles({
-              repoPath: repo.repoPath,
-              baseSha: repo.baseSha,
-              branch,
-              files,
-              message,
-            }),
-          createOrGetOpenPr: ({ headBranch, headSha, title, body }) => {
-            const r = nativePr.createOrGetOpenPr({
-              project,
-              headBranch,
-              baseBranch: repo.baseBranch,
-              headSha,
-              title,
-              body,
-              author,
-            });
-            return { prNumber: r.row.number, prUrl: r.prUrl, prCreated: r.created };
-          },
+        const result = await openBumpPrsForGroup(project, repo, author, group);
+        res.json({ opened: result.opened, skipped: result.skipped });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: `Fix failed: ${msg.split('\n')[0]}` });
+      }
+    },
+  );
+
+  // Batch "fix all by severity": open/refresh the single rolling bump PR from
+  // EVERY open fixable finding, optionally narrowed to a severity threshold.
+  //
+  //   {}                      → fix all fixable findings (any severity)
+  //   { minSeverity: 'high' } → fix critical AND high (threshold, not exact)
+  //
+  // Threshold (vs. exact-severity) semantics are deliberate: you would never
+  // want to fix all high while leaving the more-urgent criticals stranded, and
+  // because all bumps share ONE rolling branch, each call SETS the PR contents
+  // to its scope (a narrower threshold narrows the PR; a wider one widens it).
+  // Same Admin / Hub-hosted / native-PR gate as the per-finding Fix route.
+  router.post(
+    '/api/projects/:projectId/security-audit/fix',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = findProjectOr404(req, res);
+      if (!project) return;
+      const nativePr = deps.nativePr;
+      if (project.gitHost !== 'agenthub' || !nativePr) {
+        return res.status(409).json({
+          error: 'Project is not Agent Hub-hosted or native pull requests are unavailable.',
         });
+      }
+      const parsed = BatchFixRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+      const repo = await fixDeps.resolveRepo(project);
+      if (!repo) {
+        return res
+          .status(409)
+          .json({ error: 'Hosted repository is unavailable; cannot open a bump PR.' });
+      }
+
+      // Same SUPPORTED filter as the per-finding route — npm ecosystem AND a
+      // published fixed_version — then the optional severity threshold. The
+      // planner groups survivors by (manifest, package) and picks the MAX fixed
+      // version per group (Dependabot semantics).
+      const minSeverity = parsed.data.minSeverity;
+      const group = store()
+        .listFindings(project.id, { status: 'open' })
+        .filter((r) => r.ecosystem === 'npm' && r.fixed_version != null)
+        .filter((r) => (minSeverity ? isAtOrAboveSeverity(r.severity, minSeverity) : true))
+        .map(findingRowToDependencyFinding);
+
+      const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
+      const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
+      try {
+        const result = await openBumpPrsForGroup(project, repo, author, group);
         res.json({ opened: result.opened, skipped: result.skipped });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

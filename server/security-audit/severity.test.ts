@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   cvssV3BaseScore,
+  isAtOrAboveSeverity,
   resolveSeverity,
   severityFromCvssScore,
   severityFromCvssVector,
@@ -91,5 +92,33 @@ describe('severityRank', () => {
     const order = ['critical', 'high', 'medium', 'low', 'unknown'] as const;
     const ranks = order.map(severityRank);
     expect(ranks).toEqual([...ranks].sort((a, b) => b - a));
+  });
+});
+
+describe('isAtOrAboveSeverity', () => {
+  it('treats minSeverity as a threshold: high includes critical AND high', () => {
+    expect(isAtOrAboveSeverity('critical', 'high')).toBe(true);
+    expect(isAtOrAboveSeverity('high', 'high')).toBe(true);
+    expect(isAtOrAboveSeverity('medium', 'high')).toBe(false);
+    expect(isAtOrAboveSeverity('low', 'high')).toBe(false);
+  });
+
+  it('critical threshold matches only critical', () => {
+    expect(isAtOrAboveSeverity('critical', 'critical')).toBe(true);
+    expect(isAtOrAboveSeverity('high', 'critical')).toBe(false);
+  });
+
+  it('low threshold matches every known severity but not unknown', () => {
+    for (const s of ['critical', 'high', 'medium', 'low']) {
+      expect(isAtOrAboveSeverity(s, 'low')).toBe(true);
+    }
+    expect(isAtOrAboveSeverity('unknown', 'low')).toBe(false);
+  });
+
+  it('never targets unknown-severity findings for any threshold', () => {
+    for (const min of ['critical', 'high', 'medium', 'low'] as const) {
+      expect(isAtOrAboveSeverity('unknown', min)).toBe(false);
+      expect(isAtOrAboveSeverity('bogus', min)).toBe(false);
+    }
   });
 });

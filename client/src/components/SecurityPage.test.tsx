@@ -10,6 +10,7 @@ import { api } from '../utils/api';
     dismissSecurityFinding: vi.fn(),
     runSecurityScan: vi.fn(),
     fixSecurityFinding: vi.fn(),
+    fixAllSecurityFindings: vi.fn(),
   },
 }));
 
@@ -350,5 +351,81 @@ describe('SecurityPage', () => {
     render(<SecurityPage projectId="proj-1" refreshNonce={0} />);
     await waitFor(() => expect(screen.getByTestId('security-finding-card')).toBeInTheDocument());
     expect(screen.queryByTestId('finding-fix-button')).not.toBeInTheDocument();
+  });
+
+  it('Fix all menu is collapsed until clicked, then shows the severity options', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('security-fixall-menu')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('security-fixall'));
+    expect(screen.getByTestId('security-fixall-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('security-fixall-critical')).toBeInTheDocument();
+    expect(screen.getByTestId('security-fixall-high')).toBeInTheDocument();
+    expect(screen.getByTestId('security-fixall-medium')).toBeInTheDocument();
+    expect(screen.getByTestId('security-fixall-all')).toBeInTheDocument();
+  });
+
+  it('Fix all → Critical & High calls fixAllSecurityFindings with minSeverity:high', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+    (api.fixAllSecurityFindings as any).mockResolvedValue({
+      opened: [{ prNumber: 9, prCreated: true }],
+      skipped: [],
+    });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('security-fixall'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-fixall-high'));
+    });
+
+    expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: 'high' });
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Opened PR #9'), 'success');
+    // The menu closes after a pick.
+    expect(screen.queryByTestId('security-fixall-menu')).not.toBeInTheDocument();
+  });
+
+  it('Fix all → All severities calls fixAllSecurityFindings with no minSeverity', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+    (api.fixAllSecurityFindings as any).mockResolvedValue({
+      opened: [
+        { prNumber: 5, prCreated: false },
+        { prNumber: 5, prCreated: false },
+      ],
+      skipped: [],
+    });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('security-fixall'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-fixall-all'));
+    });
+
+    expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: null });
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining('Updated PR #5: bump 2 dependencies'),
+      'success',
+    );
+  });
+
+  it('Fix all reports "no fixable findings" when nothing matched the threshold', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+    (api.fixAllSecurityFindings as any).mockResolvedValue({ opened: [], skipped: [] });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(api.getSecurityFindings).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId('security-fixall'));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('security-fixall-critical'));
+    });
+
+    expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: 'critical' });
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('No fixable'), 'info');
   });
 });

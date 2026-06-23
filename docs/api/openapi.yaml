@@ -19906,6 +19906,173 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/security-audit/fix:
+    post:
+      tags:
+        - Projects
+      summary: Open a Dependabot-style bump PR for all fixable findings, optionally by severity
+      description: "Opens (or refreshes) the single rolling native bump PR carrying every open fixable npm finding for the project. Pass `minSeverity` to narrow to a severity threshold (`high` = critical AND high); omit it to fix every fixable finding. All bumps share one rolling branch, so each call sets the PR contents to its scope. Requires gitHost: agenthub, a wired native PR service, and the Admin role. Idempotent."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minSeverity:
+                  type: string
+                  enum:
+                    - critical
+                    - high
+                    - medium
+                    - low
+                  description: "Only fix findings at or above this severity (threshold, not exact): `high` fixes critical AND high. Omit to fix every fixable finding regardless of severity."
+              additionalProperties: false
+      responses:
+        "200":
+          description: Bump PR opened/refreshed, or skips with reasons (empty when nothing matched).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  opened:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        branch:
+                          type: string
+                        manifestPath:
+                          type: string
+                        packageName:
+                          type: string
+                        fromVersions:
+                          type: array
+                          items:
+                            type: string
+                        toVersion:
+                          type: string
+                        advisoryIds:
+                          type: array
+                          items:
+                            type: string
+                        severity:
+                          type: string
+                          enum:
+                            - critical
+                            - high
+                            - medium
+                            - low
+                            - unknown
+                        prNumber:
+                          type: number
+                        prUrl:
+                          type: string
+                        prCreated:
+                          type: boolean
+                        branchUpdated:
+                          type: boolean
+                      required:
+                        - branch
+                        - manifestPath
+                        - packageName
+                        - fromVersions
+                        - toVersion
+                        - advisoryIds
+                        - severity
+                        - prNumber
+                        - prUrl
+                        - prCreated
+                        - branchUpdated
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        manifestPath:
+                          type: string
+                        packageName:
+                          type: string
+                        toVersion:
+                          type: string
+                        reason:
+                          type: string
+                          enum:
+                            - lockfile_missing
+                            - lockfile_unchanged
+                            - error
+                        detail:
+                          type: string
+                      required:
+                        - manifestPath
+                        - packageName
+                        - toVersion
+                        - reason
+                required:
+                  - opened
+                  - skipped
+        "400":
+          description: Invalid request body (e.g. an unknown key or bad minSeverity).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Caller lacks the Admin role.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Project is not Hub-hosted, native PRs are unavailable, or the repo is empty.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Fix failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/security-audit/findings/{id}/dismiss:
     post:
       tags:

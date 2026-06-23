@@ -7,6 +7,7 @@ import {
   ArrowUpCircle,
   RefreshCw,
   Wrench,
+  ChevronDown,
 } from 'lucide-react';
 import { api } from '../utils/api';
 
@@ -61,6 +62,16 @@ const SEVERITY_FILTERS = [
   { key: 'medium', label: 'Medium' },
   { key: 'low', label: 'Low' },
 ];
+
+// "Fix all" menu options. `minSeverity` is a threshold the server applies to the
+// batch fix (null = every fixable finding). High includes critical, etc., so a
+// fix never strands a more-urgent advisory than the one you picked.
+const FIX_ALL_OPTIONS = [
+  { key: 'critical', label: 'Critical only', minSeverity: 'critical' },
+  { key: 'high', label: 'Critical & High', minSeverity: 'high' },
+  { key: 'medium', label: 'Medium & up', minSeverity: 'medium' },
+  { key: 'all', label: 'All severities', minSeverity: null },
+] as Array<{ key: string; label: string; minSeverity: string | null }>;
 
 // Sort findings most-urgent first, then most-recently-seen within a severity.
 export function sortFindings(list: any) {
@@ -305,6 +316,61 @@ function FindingCard({ finding, projectId, onDismissed, onFixed, onNotify }: any
   );
 }
 
+// "Fix all ▾" split control: opens (or refreshes) the single rolling security
+// bump PR scoped to a chosen severity threshold. Distinct from Autofix, which
+// rescans first then fixes everything; this fixes the CURRENT findings without a
+// rescan. The menu closes on pick or outside click; `busy` disables it while a
+// fix is in flight, `disabled` while any scan/fix is running.
+function FixAllMenu({ disabled, busy, onPick }: any) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<any>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: any) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled}
+        data-testid="security-fixall"
+        title="Open a bump PR for all fixable findings, optionally by severity"
+        className="flex items-center gap-1 text-[11px] px-2 py-1 rounded text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        <Wrench size={12} className={busy ? 'animate-pulse' : ''} />
+        {busy ? 'Fixing…' : 'Fix all'}
+        <ChevronDown size={12} />
+      </button>
+      {open ? (
+        <div
+          data-testid="security-fixall-menu"
+          className="absolute right-0 mt-1 z-10 min-w-[10rem] rounded-md border border-gray-700 bg-gray-900 shadow-lg py-1"
+        >
+          {FIX_ALL_OPTIONS.map((opt: any) => (
+            <button
+              key={opt.key}
+              onClick={() => {
+                setOpen(false);
+                onPick(opt.minSeverity);
+              }}
+              data-testid={`security-fixall-${opt.key}`}
+              className="block w-full text-left text-[11px] px-3 py-1.5 text-gray-300 hover:bg-gray-800 hover:text-gray-100 transition-colors"
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // Per-project Security view. Renders GET /security-audit/findings: a severity
 // ordered, severity-coloured list with package@version, advisory link, suggested
 // fix, status, and a Dismiss action on open findings. Re-fetches when
@@ -404,6 +470,36 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
     }
   };
 
+  // Batch "fix all by severity": open/refresh the rolling bump PR scoped to a
+  // threshold (null = all fixable). Shares the `scanMode` mutex so it can't run
+  // alongside a rescan/autofix. Reports the combined PR like Autofix does.
+  const fixAll = async (minSeverity: any) => {
+    if (scanMode) return;
+    setScanMode('fixall');
+    try {
+      const result = await api.fixAllSecurityFindings(projectId, { minSeverity });
+      const openedBumps = result?.opened ?? [];
+      const bumps = openedBumps.length;
+      const opened = openedBumps[0];
+      const scope = minSeverity ? `${minSeverity}+ ` : '';
+      if (opened) {
+        const verb = opened.prCreated ? 'Opened' : 'Updated';
+        onNotify?.(
+          `${verb} PR #${opened.prNumber}: bump ${bumps} ${scope}` +
+            `dependenc${bumps === 1 ? 'y' : 'ies'}`,
+          'success',
+        );
+      } else {
+        onNotify?.(`No fixable ${scope || ''}findings to open a PR for`, 'info');
+      }
+      await load();
+    } catch (err: any) {
+      onNotify?.(err.message || 'Failed to open fix PR', 'error');
+    } finally {
+      setScanMode(null);
+    }
+  };
+
   const visible =
     severityFilter === 'all'
       ? findings
@@ -428,6 +524,11 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
           </span>
         ) : null}
         <div className="flex items-center gap-1 ml-auto flex-wrap justify-end">
+          <FixAllMenu
+            disabled={!!scanMode}
+            busy={scanMode === 'fixall'}
+            onPick={(minSeverity: any) => fixAll(minSeverity)}
+          />
           <button
             onClick={() => runScan('autofix')}
             disabled={!!scanMode}

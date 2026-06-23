@@ -115,6 +115,39 @@ export const FixFindingResultSchema = z.object({
   ),
 });
 
+/**
+ * Result of the batch "fix all by severity" action. Identical shape to
+ * {@link FixFindingResultSchema} (one rolling bump PR; `opened` carries one
+ * entry per bumped package, all sharing the same PR number) — kept as its own
+ * named schema so the endpoint documents its own response component.
+ */
+export const BatchFixResultSchema = z.object({
+  opened: z.array(
+    z.object({
+      branch: z.string(),
+      manifestPath: z.string(),
+      packageName: z.string(),
+      fromVersions: z.array(z.string()),
+      toVersion: z.string(),
+      advisoryIds: z.array(z.string()),
+      severity: SeveritySchema,
+      prNumber: z.number(),
+      prUrl: z.string(),
+      prCreated: z.boolean(),
+      branchUpdated: z.boolean(),
+    }),
+  ),
+  skipped: z.array(
+    z.object({
+      manifestPath: z.string(),
+      packageName: z.string(),
+      toVersion: z.string(),
+      reason: z.enum(['lockfile_missing', 'lockfile_unchanged', 'error']),
+      detail: z.string().optional(),
+    }),
+  ),
+});
+
 export const ScanResultSchema = z.object({
   ref: z.string(),
   dryRun: z.boolean().openapi({
@@ -161,6 +194,22 @@ export const DismissRequestSchema = z
 export const FindingsQuerySchema = z.object({
   status: z.enum(['open', 'fixed', 'dismissed']).optional(),
 });
+
+// Severity threshold a batch fix may target. Excludes `unknown` — there is no
+// "fix everything at or above unknown"; the unscoped fix-all (omit minSeverity)
+// is what sweeps unknown-severity findings in too.
+export const FixThresholdSchema = z.enum(['critical', 'high', 'medium', 'low']);
+
+export const BatchFixRequestSchema = z
+  .object({
+    minSeverity: FixThresholdSchema.optional().openapi({
+      description:
+        'Only fix findings at or above this severity (threshold, not exact): ' +
+        '`high` fixes critical AND high. Omit to fix every fixable finding ' +
+        'regardless of severity.',
+    }),
+  })
+  .strict();
 
 export const ScanRequestSchema = z
   .object({
@@ -254,6 +303,36 @@ registerPath({
     409: {
       description:
         'Project is not Hub-hosted, native PRs are unavailable, the finding is not open, has no published fix, or is not an npm dependency.',
+      content: jsonContent(ErrorResponse),
+    },
+    500: { description: 'Fix failed.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/security-audit/fix',
+  tags: ['Projects'],
+  summary: 'Open a Dependabot-style bump PR for all fixable findings, optionally by severity',
+  description:
+    'Opens (or refreshes) the single rolling native bump PR carrying every open fixable npm finding for the project. Pass `minSeverity` to narrow to a severity threshold (`high` = critical AND high); omit it to fix every fixable finding. All bumps share one rolling branch, so each call sets the PR contents to its scope. Requires gitHost: agenthub, a wired native PR service, and the Admin role. Idempotent.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    body: { required: false, content: jsonContent(BatchFixRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Bump PR opened/refreshed, or skips with reasons (empty when nothing matched).',
+      content: jsonContent(BatchFixResultSchema),
+    },
+    400: {
+      description: 'Invalid request body (e.g. an unknown key or bad minSeverity).',
+      content: jsonContent(ErrorResponse),
+    },
+    403: { description: 'Caller lacks the Admin role.', content: jsonContent(ErrorResponse) },
+    404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
+    409: {
+      description: 'Project is not Hub-hosted, native PRs are unavailable, or the repo is empty.',
       content: jsonContent(ErrorResponse),
     },
     500: { description: 'Fix failed.', content: jsonContent(ErrorResponse) },

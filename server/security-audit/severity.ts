@@ -135,3 +135,24 @@ export function severityRank(severity: Severity): number {
       return 0;
   }
 }
+
+/**
+ * Severities a caller may threshold a batch fix on. Excludes `unknown`: you
+ * cannot meaningfully say "fix everything at or above unknown" — the unscoped
+ * fix-all (no threshold) is the action that sweeps unknown-severity findings in
+ * too.
+ */
+export const FIXABLE_SEVERITY_THRESHOLDS = ['critical', 'high', 'medium', 'low'] as const;
+
+export type FixableSeverityThreshold = (typeof FIXABLE_SEVERITY_THRESHOLDS)[number];
+
+/**
+ * True when `severity` is at least as urgent as `min` (threshold semantics:
+ * `min: 'high'` matches critical AND high). Uses {@link severityRank} where a
+ * higher rank is more urgent, so the test is rank(severity) >= rank(min). An
+ * unrecognised severity ranks as `unknown` (0), so a severity-scoped fix never
+ * targets unknown-severity findings — use the unscoped fix-all for those.
+ */
+export function isAtOrAboveSeverity(severity: string, min: FixableSeverityThreshold): boolean {
+  return severityRank(severity as Severity) >= severityRank(min);
+}

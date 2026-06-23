@@ -668,6 +668,15 @@ export const api = {
         fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/fix`, {
             method: 'POST',
         }),
+    // Open (or refresh) the single rolling bump PR for ALL open fixable findings,
+    // optionally scoped to a severity threshold. `minSeverity` is a threshold, not
+    // an exact match: 'high' fixes critical AND high. Omit it to fix everything.
+    // Admin-only, Hub-hosted projects only. Returns { opened: [...], skipped: [...] }.
+    fixAllSecurityFindings: (projectId: any, { minSeverity }: any = {}) =>
+        fetchJSON(`/projects/${projectId}/security-audit/fix`, {
+            method: 'POST',
+            body: JSON.stringify(minSeverity ? { minSeverity } : {}),
+        }),
     // Dismiss (and, unless suppress:false, suppress on future re-scans) a finding.
     // Requires Admin server-side. Returns the updated finding.
     dismissSecurityFinding: (projectId: any, id: any, { reason, suppress }: any = {}) => fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/dismiss`, {

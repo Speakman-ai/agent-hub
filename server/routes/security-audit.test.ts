@@ -677,6 +677,195 @@ describe('POST /security-audit/findings/:id/fix', () => {
   });
 });
 
+describe('POST /security-audit/fix (batch, by severity)', () => {
+  // A lockfile carrying three distinct packages installed at one vulnerable
+  // version each — one per severity tier we want to threshold on.
+  const LOCK = JSON.stringify(
+    {
+      name: 'fixture',
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'fixture', version: '1.0.0' },
+        'node_modules/critpkg': { version: '1.0.0', integrity: 'sha512-C' },
+        'node_modules/highpkg': { version: '1.0.0', integrity: 'sha512-H' },
+        'node_modules/medpkg': { version: '1.0.0', integrity: 'sha512-M' },
+      },
+    },
+    null,
+    2,
+  );
+
+  /** Seed one open fixable finding per severity (critical/high/medium). */
+  function seedTiers(s: SecurityAuditStore): void {
+    const mk = (name: string, severity: string, id: string) => ({
+      dependency: {
+        ecosystem: 'npm' as const,
+        name,
+        version: '1.0.0',
+        manifestPath: 'package-lock.json',
+      },
+      advisory: {
+        id,
+        summary: severity,
+        severity: severity as any,
+        aliases: [],
+        fixedVersion: '2.0.0',
+        url: '',
+      },
+    });
+    s.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: [
+        mk('critpkg', 'critical', 'GHSA-crit'),
+        mk('highpkg', 'high', 'GHSA-high'),
+        mk('medpkg', 'medium', 'GHSA-med'),
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+  }
+
+  function fakeFixDeps(files: Record<string, string | null>) {
+    const commitFiles = vi.fn(
+      async (_args: { branch: string; files: Record<string, string>; message: string }) => ({
+        headSha: 'deadbeef',
+        created: true,
+      }),
+    );
+    return {
+      fixDeps: {
+        resolveRepo: vi.fn(async () => ({
+          repoPath: '/bare/p1.git',
+          baseBranch: 'main',
+          baseSha: 'basesha',
+        })),
+        makeReader: () => ({
+          readFile: async (_ref: string, p: string) => (p in files ? files[p] : null),
+        }),
+        commitFiles,
+      } as unknown as Parameters<typeof makeApp>[0]['fixDeps'],
+      commitFiles,
+    };
+  }
+
+  function fakeNativePr() {
+    return {
+      createOrGetOpenPr: vi.fn((_args: Record<string, unknown>) => ({
+        row: { number: 77 },
+        prUrl: '/projects/p1/pulls/77',
+        created: true,
+      })),
+    };
+  }
+
+  it('fixes every fixable finding when no minSeverity is given', async () => {
+    seedTiers(store);
+    const nativePr = fakeNativePr();
+    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(200);
+    const names = res.body.opened.map((o: any) => o.packageName).sort();
+    expect(names).toEqual(['critpkg', 'highpkg', 'medpkg']);
+    // One combined PR (one createOrGetOpenPr) regardless of package count.
+    expect(nativePr.createOrGetOpenPr).toHaveBeenCalledOnce();
+  });
+
+  it('minSeverity:high fixes critical AND high but not medium (threshold, not exact)', async () => {
+    seedTiers(store);
+    const nativePr = fakeNativePr();
+    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/fix')
+      .send({ minSeverity: 'high' })
+      .expect(200);
+    const names = res.body.opened.map((o: any) => o.packageName).sort();
+    expect(names).toEqual(['critpkg', 'highpkg']);
+  });
+
+  it('minSeverity:critical fixes only the critical finding', async () => {
+    seedTiers(store);
+    const nativePr = fakeNativePr();
+    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/fix')
+      .send({ minSeverity: 'critical' })
+      .expect(200);
+    expect(res.body.opened.map((o: any) => o.packageName)).toEqual(['critpkg']);
+  });
+
+  it('returns empty opened (no PR) when no finding meets the threshold', async () => {
+    seedTiers(store); // highest is critical; nothing is below "low" missing, but medpkg is medium
+    // Dismiss every tier except medium, then threshold at critical → nothing.
+    const open = store.listFindings('p1', { status: 'open' });
+    for (const f of open) {
+      if (f.severity !== 'medium') {
+        store.dismissFinding({
+          projectId: 'p1',
+          id: f.id,
+          reason: null,
+          createdBy: null,
+          suppress: true,
+        });
+      }
+    }
+    const nativePr = fakeNativePr();
+    const { fixDeps } = fakeFixDeps({ 'package-lock.json': LOCK });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post('/api/projects/p1/security-audit/fix')
+      .send({ minSeverity: 'critical' })
+      .expect(200);
+    expect(res.body.opened).toEqual([]);
+    expect(res.body.skipped).toEqual([]);
+    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
+  });
+
+  it('400s on an invalid minSeverity', async () => {
+    seedTiers(store);
+    const app = makeApp({ store, nativePr: fakeNativePr() });
+    await request(app)
+      .post('/api/projects/p1/security-audit/fix')
+      .send({ minSeverity: 'bogus' })
+      .expect(400);
+  });
+
+  it('400s on an unknown body key (strict schema)', async () => {
+    const app = makeApp({ store, nativePr: fakeNativePr() });
+    await request(app)
+      .post('/api/projects/p1/security-audit/fix')
+      .send({ severity: 'high' })
+      .expect(400);
+  });
+
+  it('409s when the project is not Hub-hosted', async () => {
+    seedTiers(store);
+    const app = makeApp({ store, nativePr: fakeNativePr(), gitHost: 'github' });
+    await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(409);
+  });
+
+  it('409s when no native PR service is wired', async () => {
+    seedTiers(store);
+    const app = makeApp({ store }); // no nativePr
+    await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(409);
+  });
+
+  it('404s for an unknown project', async () => {
+    const app = makeApp({ store, nativePr: fakeNativePr() });
+    await request(app).post('/api/projects/nope/security-audit/fix').send({}).expect(404);
+  });
+
+  it('requires the Admin role: a User is 403 and no PR is opened', async () => {
+    seedTiers(store);
+    const nativePr = fakeNativePr();
+    const app = makeApp({ store, nativePr, role: 'User' });
+    await request(app).post('/api/projects/p1/security-audit/fix').send({}).expect(403);
+    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /security-audit/findings/:id/dismiss', () => {
   it('dismisses a finding and records a suppression by default', async () => {
     const s = store.recordScanResults({

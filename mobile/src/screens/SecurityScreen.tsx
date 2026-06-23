@@ -30,6 +30,15 @@ const STATUS_FILTERS = [
     { key: 'dismissed', label: 'Dismissed', status: 'dismissed' },
     { key: 'all', label: 'All', status: undefined },
 ];
+// "Fix all" options. `minSeverity` is a threshold the server applies to the
+// batch fix (null = every fixable finding). High includes critical, etc., so a
+// fix never strands a more-urgent advisory than the one picked.
+const FIX_ALL_OPTIONS: { key: string; label: string; minSeverity: string | null }[] = [
+    { key: 'critical', label: 'Critical', minSeverity: 'critical' },
+    { key: 'high', label: 'Crit & High', minSeverity: 'high' },
+    { key: 'medium', label: 'Med & up', minSeverity: 'medium' },
+    { key: 'all', label: 'All', minSeverity: null },
+];
 function relativeTime(ms: any) {
     if (!ms)
         return '';
@@ -215,6 +224,32 @@ export default function SecurityScreen({ route }: any) {
             setScanMode(null);
         }
     }, [scanMode, projectId, load]);
+    // "Fix all by severity": open/refresh the rolling bump PR scoped to a
+    // threshold (null = all fixable). Shares the `scanMode` mutex so it can't run
+    // alongside a rescan/autofix. The web dropdown is a toggled button row here.
+    const [fixMenuOpen, setFixMenuOpen] = useState(false);
+    const fixAll = useCallback(async (minSeverity: any) => {
+        if (scanMode || !projectId)
+            return;
+        setFixMenuOpen(false);
+        setScanMode('fixall');
+        try {
+            const result: any = await api.fixAllSecurityFindings(projectId, { minSeverity });
+            const bumps = result?.opened?.length ?? 0;
+            const prNumber = result?.opened?.[0]?.prNumber;
+            const scope = minSeverity ? `${minSeverity}+ ` : '';
+            Alert.alert('Fix all', bumps > 0
+                ? `${prNumber ? `PR #${prNumber}` : 'Opened a PR'}: bump ${bumps} ${scope}dependenc${bumps === 1 ? 'y' : 'ies'}.`
+                : `No fixable ${scope}findings to open a PR for.`);
+            await load();
+        }
+        catch (err: any) {
+            Alert.alert('Fix all failed', err?.message || 'Failed to open fix PR');
+        }
+        finally {
+            setScanMode(null);
+        }
+    }, [scanMode, projectId, load]);
     const renderItem = ({ item }: any) => (<FindingCard item={item} projectId={projectId} onDismissed={handleDismissed} onFixed={load}/>);
     // Per-severity tally of the loaded list, surfaced as a breakdown row so each
     // category's size is visible at a glance (tracks the active status filter).
@@ -231,6 +266,16 @@ export default function SecurityScreen({ route }: any) {
       </View>
 
       <View style={styles.actionRow}>
+        <TouchableOpacity
+          testID="security-fixall"
+          onPress={() => setFixMenuOpen((v) => !v)}
+          disabled={!!scanMode}
+          style={[styles.actionButton, styles.autofixButton, !!scanMode && styles.actionDisabled]}
+        >
+          <Text style={[styles.actionText, styles.autofixText]}>
+            {scanMode === 'fixall' ? 'Fixing…' : 'Fix all ▾'}
+          </Text>
+        </TouchableOpacity>
         <TouchableOpacity
           testID="security-autofix"
           onPress={() => runScan('autofix')}
@@ -250,6 +295,22 @@ export default function SecurityScreen({ route }: any) {
           <Text style={styles.actionText}>{scanMode === 'rescan' ? 'Scanning…' : 'Rescan'}</Text>
         </TouchableOpacity>
       </View>
+
+      {fixMenuOpen ? (
+        <View style={styles.fixMenuRow} testID="security-fixall-menu">
+          {FIX_ALL_OPTIONS.map((opt: any) => (
+            <TouchableOpacity
+              key={opt.key}
+              testID={`security-fixall-${opt.key}`}
+              onPress={() => fixAll(opt.minSeverity)}
+              disabled={!!scanMode}
+              style={[styles.fixMenuButton, !!scanMode && styles.actionDisabled]}
+            >
+              <Text style={styles.fixMenuText}>{opt.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
 
       <View style={styles.filterRow}>
         {STATUS_FILTERS.map((f: any) => (<TouchableOpacity key={f.key} testID={`status-filter-${f.key}`} onPress={() => setStatusFilter(f.key)} style={[styles.filterButton, statusFilter === f.key && styles.filterButtonActive]}>
@@ -311,6 +372,22 @@ const styles = StyleSheet.create({
     actionDisabled: { opacity: 0.5 },
     actionText: { fontSize: 12, color: colors.gray200, fontWeight: '600' },
     autofixText: { color: colors.emerald400 || '#6ee7b7' },
+    fixMenuRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        paddingHorizontal: 12,
+        paddingTop: 8,
+        gap: 8,
+    },
+    fixMenuButton: {
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(16,185,129,0.4)',
+        backgroundColor: 'rgba(16,185,129,0.08)',
+    },
+    fixMenuText: { fontSize: 12, color: colors.emerald400 || '#6ee7b7', fontWeight: '600' },
     filterRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
