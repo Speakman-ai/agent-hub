@@ -78,6 +78,7 @@ import ShortcutsHelpModal from './components/ShortcutsHelpModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
 import ReleasesView from './components/ReleasesView';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useWsReconnectBroadcast } from './hooks/useWsReconnectBroadcast';
 import { useVisibleIntervalRefresh } from './hooks/useVisibleIntervalRefresh';
 import { useDesktopNotifications } from './hooks/useDesktopNotifications';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -2765,6 +2766,10 @@ export default function App({ initialView }: any = {}) {
   );
 
   const { send, connected, reconnecting, wsRef } = useWebSocket(handleWsMessage);
+
+  // Reconcile streamed-only state (e.g. the finalize run in `useFinalizeRun`)
+  // after a mid-session WS drop by fanning out `agenthub:ws_reconnected`.
+  useWsReconnectBroadcast(connected);
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {

@@ -628,6 +628,69 @@ describe('useFinalizeRun — created and completed events', () => {
   });
 });
 
+describe('useFinalizeRun — WebSocket reconnect self-heal', () => {
+  // Regression for "Tests are either not showing or not running sometimes":
+  // a WS drop during a run makes the client miss every finalize_run_* event
+  // in the gap (the live checks block never appears, the button/panel go
+  // stale). On `agenthub:ws_reconnected` the hook must refetch and converge
+  // to the server's current truth.
+  it('refetches the latest run on agenthub:ws_reconnected', async () => {
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'reviewing', phase: 'review' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.status).toBe('reviewing'));
+
+    // While the socket was down the run advanced to running checks (with a
+    // queued step) — events the client never saw. The reconnect refetch
+    // must surface that state.
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'running', phase: 'tasks' }),
+      steps: [{ step_index: 1, name: 'e2e', state: 'running', started_at: 1, ended_at: null }],
+    });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agenthub:ws_reconnected'));
+    });
+
+    await waitFor(() => expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(ref.current?.status).toBe('running'));
+    expect(ref.current?.phase).toBe('tasks');
+    expect(ref.current?.steps?.[0]?.state).toBe('running');
+  });
+
+  it('surfaces a run that started entirely during the WS gap (mount saw none)', async () => {
+    // No run on mount — the user opened the session, then the socket dropped
+    // and a full run ran start-to-finish while disconnected.
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({ run: null });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(api.getLatestFinalizeRunForSession).toHaveBeenCalledTimes(1));
+    expect(ref.current?.run).toBe(null);
+
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ id: 'run-gap', status: 'ready_to_push', phase: null, ended_at: Date.now() }),
+    });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agenthub:ws_reconnected'));
+    });
+
+    await waitFor(() => expect(ref.current?.run?.id).toBe('run-gap'));
+    expect(ref.current?.status).toBe('ready_to_push');
+  });
+
+  it('does not fetch on reconnect when there is no session', async () => {
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: null }} capture={ref} />);
+    expect(api.getLatestFinalizeRunForSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agenthub:ws_reconnected'));
+    });
+    expect(api.getLatestFinalizeRunForSession).not.toHaveBeenCalled();
+  });
+});
+
 describe('useFinalizeRun — helpers', () => {
   it('isFinalizeBlocked is true for in-flight statuses, false for terminal + null', () => {
     for (const s of ['queued', 'rebasing', 'reviewing', 'running', 'dispatching', 'pushing']) {

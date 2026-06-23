@@ -390,6 +390,25 @@ export function useFinalizeRun({
       refetchRun(signal);
     };
 
+    // WebSocket reconnect self-heal. `useWebSocket` starts disconnected and
+    // reconnects with a 2s–30s backoff, and the server replays connect
+    // snapshots for active-tasks / awaiting-input / preview but NOT for
+    // finalize runs. So every `finalize_run_*` event that fired while the
+    // socket was down is lost — including events in the gap between this
+    // hook's mount-time fetch and the FIRST socket open: the live checks
+    // block never appears, the button status goes stale, and the steps panel
+    // stays empty (the "tests are either not showing or not running
+    // sometimes" report). App.tsx (via useWsReconnectBroadcast) dispatches
+    // `agenthub:ws_reconnected` on the first connection after a disconnected
+    // window and on every reconnect; refetch the latest run + steps + phases
+    // so the panel converges to the server's truth regardless of which events
+    // were missed.
+    const onReconnected = () => {
+      if (!sessionIdRef.current) return;
+      const signal = abortRef.current?.signal;
+      refetchRun(signal);
+    };
+
     const onCompleted = (event: any) => {
       const detail = event?.detail || {};
       if (!matchesRun(detail)) return;
@@ -419,12 +438,14 @@ export function useFinalizeRun({
     window.addEventListener('finalize_run_active_seconds', onActiveSeconds);
     window.addEventListener('finalize_run_created', onCreated);
     window.addEventListener('finalize_run_completed', onCompleted);
+    window.addEventListener('agenthub:ws_reconnected', onReconnected);
     return () => {
       window.removeEventListener('finalize_run_phase_changed', onPhaseChanged);
       window.removeEventListener('finalize_run_step_state', onStepState);
       window.removeEventListener('finalize_run_active_seconds', onActiveSeconds);
       window.removeEventListener('finalize_run_created', onCreated);
       window.removeEventListener('finalize_run_completed', onCompleted);
+      window.removeEventListener('agenthub:ws_reconnected', onReconnected);
     };
   }, [enabled, sessionId, refetchRun]);
 
