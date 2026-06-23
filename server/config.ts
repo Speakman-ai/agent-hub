@@ -490,6 +490,13 @@ const config: AppConfig = {
     null,
   ),
 
+  // Session-replay retention in days. 0 (default) disables the retention
+  // sweeper entirely (off/opt-in posture). Negative values are clamped to 0.
+  replayRetentionDays: Math.max(
+    0,
+    resolveInt('AGENT_HUB_REPLAY_RETENTION_DAYS', 'replayRetentionDays', 0),
+  ),
+
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();

@@ -49,6 +49,7 @@ function makeConfig(): AppConfig {
     browserBlockAdsTrackers: true,
     artifactsBucket: null,
     artifactsBucketRegion: null,
+    replayRetentionDays: 0,
     previewComposeReadyTimeoutMs: 600_000,
     previewSubdomainBase: null,
     get allValidModels() {

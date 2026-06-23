@@ -2878,6 +2878,19 @@ function initDb(dataDir: string): void {
           AND card_id IS NULL`,
     ),
     deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
+    // Retention GC: oldest-first batch of expired, UNLINKED replays. Linked
+    // captures (support_ticket_id / card_id set) are intentional triage
+    // artifacts and are excluded so retention never deletes investigation
+    // history. Oldest-first so a bounded batch chips away at the longest-lived
+    // backlog each sweep.
+    getExpiredUnlinkedSessionReplays: db.prepare(
+      `SELECT * FROM session_replays
+        WHERE created_at < ?
+          AND support_ticket_id IS NULL
+          AND card_id IS NULL
+        ORDER BY created_at ASC
+        LIMIT ?`,
+    ),
     // Per-project RUM ingest clients (rum-clients-store.ts)
     insertRumClient: db.prepare(
       `INSERT INTO project_rum_clients (id, project_id, name, token_hash, prefix, created_by)

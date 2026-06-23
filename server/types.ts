@@ -1312,6 +1312,8 @@ export interface Stmts {
   updateSessionReplayStats: Stmt;
   updateSessionReplayStatsIfUnfinalized: Stmt;
   deleteSessionReplay: Stmt;
+  /** Select expired, UNLINKED replays (created_at < cutoff) for retention GC. */
+  getExpiredUnlinkedSessionReplays: Stmt;
   // Per-project RUM ingest clients
   insertRumClient: Stmt;
   getRumClient: Stmt;
@@ -2877,6 +2879,18 @@ export interface AppConfig {
    * `AGENT_HUB_ARTIFACTS_BUCKET_REGION`; config.json: `artifactsBucketRegion`.
    */
   artifactsBucketRegion: string | null;
+  /**
+   * Session-replay retention window in DAYS. When > 0, a background sweeper
+   * (server/replays/replay-retention-sweeper.ts) deletes UNLINKED replays whose
+   * `created_at` is older than this many days, reclaiming their blobs. Linked
+   * captures (attached to a support ticket or kanban card) are intentional
+   * triage artifacts and are never expired. `0` (the default) disables retention
+   * entirely — nothing is ever swept, matching the off/opt-in posture. This is a
+   * hard prerequisite for continuous (Datadog-parity) capture, which would
+   * otherwise grow storage without bound. Env:
+   * `AGENT_HUB_REPLAY_RETENTION_DAYS`; config.json: `replayRetentionDays`.
+   */
+  replayRetentionDays: number;
   readonly allValidModels: string[];
 }
 

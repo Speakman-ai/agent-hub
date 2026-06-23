@@ -59,6 +59,7 @@ import {
 } from './heartbeat.js';
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
+import { startReplayRetentionSweeper } from './replays/replay-retention-sweeper.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
@@ -1681,6 +1682,12 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         broadcast,
         getProjects,
       });
+
+      // Session-replay retention GC. No-op unless `replayRetentionDays > 0`;
+      // when enabled, periodically deletes expired UNLINKED replays so capture
+      // storage can't grow without bound (a prerequisite for continuous
+      // capture). Linked (ticket/card) replays are never expired.
+      startReplayRetentionSweeper({ stmts: stmts!, config });
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
