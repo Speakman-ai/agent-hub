@@ -15,7 +15,7 @@ import { ALL_OWNERS, ownerKeyForUser, defaultOwnerFilter, buildOwnerOptions, fil
 import { getAuthRecord } from '../utils/auth';
 import { api } from '../utils/api';
 import { openPrDashboardStatusBadge } from '../utils/prFormatting';
-import { activityLabel, filterActivity, countByType, ACTIVITY_TYPE_KEYS, sortSupportBySeverity, SUPPORT_STATUS_FILTERS, SUPPORT_SEVERITY_DOT, PR_PRIORITY_DOT, resolveActivityTarget, activityIsActionable, resolveOpenPrTarget, openPrIsActionable, } from '../utils/dashboard';
+import { activityLabel, filterActivity, countByType, ACTIVITY_TYPE_KEYS, sortSupportBySeverity, SUPPORT_SEVERITY_DOT, PR_PRIORITY_DOT, resolveActivityTarget, activityIsActionable, resolveOpenPrTarget, openPrIsActionable, } from '../utils/dashboard';
 const ACTIVITY_DOT: Record<string, any> = {
     card_created: colors.emerald400,
     card_updated: colors.amber400,
@@ -34,7 +34,6 @@ export default function DashboardScreen() {
     const [supportTickets, setSupportTickets] = useState<any[]>([]);
     const [supportLoading, setSupportLoading] = useState(true);
     const [supportError, setSupportError] = useState<any>(null);
-    const [supportStatusFilter, setSupportStatusFilter] = useState('all');
     const [activeTypes, setActiveTypes] = useState(() => new Set());
     const currentUser = getAuthRecord()?.user || null;
     const accountName = currentUser?.username || 'Account';
@@ -161,7 +160,7 @@ export default function DashboardScreen() {
         setSupportLoading(true);
         setSupportError(null);
         try {
-            const payload = await api.getAllSupportTickets(supportStatusFilter === 'all' ? undefined : supportStatusFilter);
+            const payload = await api.getAllSupportTickets({ status: 'new', unread: true });
             setSupportTickets(Array.isArray(payload?.tickets) ? payload.tickets : []);
         }
         catch (err: any) {
@@ -171,7 +170,7 @@ export default function DashboardScreen() {
         finally {
             setSupportLoading(false);
         }
-    }, [supportStatusFilter]);
+    }, []);
     useEffect(() => {
         load();
     }, [load]);
@@ -321,21 +320,11 @@ export default function DashboardScreen() {
             }))}
             </View>
 
-            <SectionHeader title="Support issues"/>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow} testID="support-issues-filter">
-              {SUPPORT_STATUS_FILTERS.map((f: any) => {
-                const active = supportStatusFilter === f.key;
-                return (<TouchableOpacity key={f.key} onPress={() => setSupportStatusFilter(f.key)} style={[styles.filterChip, active && styles.filterChipActive]} accessibilityState={{ selected: active }}>
-                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
-                      {f.label}
-                    </Text>
-                  </TouchableOpacity>);
-            })}
-            </ScrollView>
+            <SectionHeader title="New support issues"/>
             <View style={styles.card} testID="support-issues">
               {supportError ? (<Text style={styles.errorInline}>
                   Failed to load support issues: {supportError}
-                </Text>) : supportLoading ? (<Text style={styles.muted}>Loading support issues…</Text>) : sortedSupport.length === 0 ? (<Text style={styles.muted}>No support issues. Everything is triaged.</Text>) : (sortedSupport.map((ticket: any) => {
+                </Text>) : supportLoading ? (<Text style={styles.muted}>Loading support issues…</Text>) : sortedSupport.length === 0 ? (<Text style={styles.muted}>No new support issues. Everything is triaged.</Text>) : (sortedSupport.map((ticket: any) => {
                 const actionable = Boolean(ticket.project_id);
                 const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
                 const dot = SUPPORT_SEVERITY_DOT[ticket.severity] || SUPPORT_SEVERITY_DOT.low;

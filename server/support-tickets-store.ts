@@ -178,13 +178,20 @@ const SEVERITY_ORDER_SQL = `CASE severity
 /**
  * List support tickets across ALL projects, ordered by severity (critical →
  * low) then newest. Powers the cross-project support overview. Pass `projectId`
- * to scope to a single project and/or `status` to filter to one lifecycle
- * state — both are optional and compose. The query is built dynamically (rather
- * than via a prepared statement) because the optional filters yield four
- * combinations; the severity ordering is identical to the per-project queries.
+ * to scope to a single project, `status` to filter to one lifecycle state,
+ * and/or `unread: true` to keep only tickets a human hasn't viewed yet
+ * (`read_at IS NULL`) — all optional and compose. The query is built
+ * dynamically (rather than via a prepared statement) because the optional
+ * filters multiply out; the severity ordering is identical to the per-project
+ * queries.
  */
 export function listAllSupportTickets(
-  opts: { projectId?: string; statuses?: SupportTicketStatus[]; type?: SupportTicketType } = {},
+  opts: {
+    projectId?: string;
+    statuses?: SupportTicketStatus[];
+    type?: SupportTicketType;
+    unread?: boolean;
+  } = {},
 ): SupportTicketRow[] {
   const where: string[] = [];
   const params: unknown[] = [];
@@ -201,6 +208,9 @@ export function listAllSupportTickets(
     }
     where.push(`status IN (${statuses.map(() => '?').join(',')})`);
     params.push(...statuses);
+  }
+  if (opts.unread) {
+    where.push('read_at IS NULL');
   }
   if (opts.type !== undefined) {
     if (!isType(opts.type)) {

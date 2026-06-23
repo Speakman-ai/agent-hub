@@ -59,7 +59,7 @@ registerPath({
   tags: ['Support'],
   summary: 'List support tickets across all projects, ordered by severity',
   description:
-    'Aggregates every project’s support tickets into one severity-ordered list (critical → low, then newest). Optional `status` and `projectId` query filters compose and are applied server-side.',
+    'Aggregates every project’s support tickets into one severity-ordered list (critical → low, then newest). Optional `status`, `projectId`, and `unread` query filters compose and are applied server-side.',
   request: {
     query: z.object({
       status: z
@@ -70,6 +70,10 @@ registerPath({
         .string()
         .optional()
         .openapi({ description: 'Scope to a single project (404 if unknown).' }),
+      unread: z.enum(['true', '1', 'false', '0']).optional().openapi({
+        description:
+          'When `true`/`1`, keep only unread tickets (read_at IS NULL) — the dashboard "needs triage" view.',
+      }),
     }),
   },
   responses: {
@@ -78,7 +82,10 @@ registerPath({
         'Tickets (each with project_name) ordered by severity, plus project filter options.',
       content: jsonContent(SupportOverviewResponse),
     },
-    400: { description: 'Invalid status filter.', content: jsonContent(ErrorResponse) },
+    400: {
+      description: 'Invalid status or unread filter value.',
+      content: jsonContent(ErrorResponse),
+    },
     404: { description: 'Project not found.', content: jsonContent(ErrorResponse) },
   },
 });

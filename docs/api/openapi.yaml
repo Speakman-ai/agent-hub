@@ -21180,7 +21180,7 @@ paths:
       tags:
         - Support
       summary: List support tickets across all projects, ordered by severity
-      description: Aggregates every project’s support tickets into one severity-ordered list (critical → low, then newest). Optional `status` and `projectId` query filters compose and are applied server-side.
+      description: Aggregates every project’s support tickets into one severity-ordered list (critical → low, then newest). Optional `status`, `projectId`, and `unread` query filters compose and are applied server-side.
       parameters:
         - schema:
             type: string
@@ -21203,6 +21203,18 @@ paths:
           description: Scope to a single project (404 if unknown).
           name: projectId
           in: query
+        - schema:
+            type: string
+            enum:
+              - "0"
+              - "1"
+              - "true"
+              - "false"
+            description: When `true`/`1`, keep only unread tickets (read_at IS NULL) — the dashboard "needs triage" view.
+          required: false
+          description: When `true`/`1`, keep only unread tickets (read_at IS NULL) — the dashboard "needs triage" view.
+          name: unread
+          in: query
       responses:
         "200":
           description: Tickets (each with project_name) ordered by severity, plus project filter options.
@@ -21211,7 +21223,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SupportOverviewResponse"
         "400":
-          description: Invalid status filter.
+          description: Invalid status or unread filter value.
           content:
             application/json:
               schema:

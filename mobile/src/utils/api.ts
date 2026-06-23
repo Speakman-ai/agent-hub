@@ -610,10 +610,18 @@ export const api = {
         const qs = params.toString() ? `?${params}` : '';
         return fetchJSON(`/projects/${projectId}/support-tickets${qs}`);
     },
-    // Cross-project support overview for the org dashboard.
-    getAllSupportTickets: (status: any) => {
-        const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-        return fetchJSON(`/support-tickets${qs}`);
+    // Cross-project support overview for the org dashboard. Accepts either a
+    // bare status string (legacy) or an options object; `unread: true` keeps
+    // only tickets a human hasn't viewed yet (read_at IS NULL).
+    getAllSupportTickets: (opts?: any) => {
+        const { status, unread } = typeof opts === 'string' || opts == null ? { status: opts, unread: false } : opts;
+        const params = new URLSearchParams();
+        if (status)
+            params.set('status', String(status));
+        if (unread)
+            params.set('unread', 'true');
+        const qs = params.toString();
+        return fetchJSON(`/support-tickets${qs ? `?${qs}` : ''}`);
     },
     getSupportTicket: (projectId: any, id: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
     // Change a ticket's lifecycle status. Pass `wontDoReason` (required by the

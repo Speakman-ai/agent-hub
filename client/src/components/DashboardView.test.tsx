@@ -142,7 +142,7 @@ const SUPPORT_SAMPLE = {
     {
       id: 'tkt-critical',
       severity: 'critical',
-      status: 'investigating',
+      status: 'new',
       subject: 'Login is down for everyone',
       project_id: 'proj-dash',
       project_name: 'Hub Web',
@@ -773,7 +773,7 @@ describe('DashboardView — Support issues panel', () => {
     expect(rows[2]).toHaveTextContent('Typo in footer');
     // Project name + status surface on each row.
     expect(rows[0]).toHaveTextContent('Hub Web');
-    expect(rows[0]).toHaveTextContent('investigating');
+    expect(rows[0]).toHaveTextContent('new');
   });
 
   it('deep-links a row into that project support queue', async () => {
@@ -788,24 +788,23 @@ describe('DashboardView — Support issues panel', () => {
     expect(onOpenProjectSupport!).toHaveBeenCalledWith('proj-dash');
   });
 
-  it('refetches /support-tickets with the chosen status filter', async () => {
+  it('fetches only new, unread tickets (the needs-triage inbox)', async () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
       expect(screen.getAllByTestId('support-issue-row')).toHaveLength(3);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Investigating' } as any) as any);
-
-    await waitFor(() => {
-      const statusCall = (fetch as any).mock.calls.find((c: any) =>
-        /\/support-tickets\?status=investigating$/.test(String(c[0])),
-      );
-      expect(statusCall!).toBeTruthy();
-    });
+    const supportCall = (fetch as any).mock.calls.find((c: any) =>
+      String(c[0]).includes('/support-tickets'),
+    );
+    expect(supportCall!).toBeTruthy();
+    const url = String(supportCall[0]);
+    expect(url).toContain('status=new');
+    expect(url).toContain('unread=true');
   });
 
-  it('does not offer converted or closed status filters', async () => {
+  it('renders no status filter buttons (panel is strictly new+unread)', async () => {
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
@@ -813,16 +812,17 @@ describe('DashboardView — Support issues panel', () => {
     });
 
     const panel = screen.getByLabelText('Support issues');
-    expect(within(panel).queryByRole('button', { name: 'Converted' })).not.toBeInTheDocument();
-    expect(within(panel).queryByRole('button', { name: 'Closed' })).not.toBeInTheDocument();
+    for (const label of ['All', 'New', 'Investigating', 'Converted', 'Closed']) {
+      expect(within(panel).queryByRole('button', { name: label })).not.toBeInTheDocument();
+    }
   });
 
-  it('shows an empty state when there are no tickets', async () => {
+  it('shows an empty state when there are no new unread tickets', async () => {
     vi.stubGlobal('fetch', routedFetch(SAMPLE, { tickets: [], projects: [] }));
     render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
-      expect(screen.getByText(/No support issues/i)).toBeInTheDocument();
+      expect(screen.getByText(/No new support issues/i)).toBeInTheDocument();
     });
     expect(screen.queryAllByTestId('support-issue-row')).toHaveLength(0);
   });

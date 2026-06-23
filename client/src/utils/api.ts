@@ -1212,10 +1212,17 @@ export const api = {
   // severity-ordered list (critical → low). Returns { tickets, projects } where
   // each ticket carries a `project_name` and `projects` is the full set of
   // projects-with-tickets (for a stable filter, independent of the active
-  // filter). Optional `status` filters lifecycle state server-side.
-  getAllSupportTickets: (status: any) => {
-    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-    return fetchJSON(`/support-tickets${qs}`);
+  // filter). Optional `status` filters lifecycle state and `unread` keeps only
+  // tickets a human hasn't viewed yet (read_at IS NULL) — both server-side.
+  // Accepts either a bare status string (legacy) or an options object.
+  getAllSupportTickets: (opts?: any) => {
+    const { status, unread } =
+      typeof opts === 'string' || opts == null ? { status: opts, unread: false } : opts;
+    const params = new URLSearchParams();
+    if (status) params.set('status', String(status));
+    if (unread) params.set('unread', 'true');
+    const qs = params.toString();
+    return fetchJSON(`/support-tickets${qs ? `?${qs}` : ''}`);
   },
 
   // Security audit — Dependabot-style dependency findings for a Hub-hosted repo.

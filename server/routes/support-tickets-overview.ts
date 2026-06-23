@@ -14,11 +14,19 @@ import type { SupportTicketStatus } from '../types.js';
  * set of projects that currently have tickets so the client can build a stable
  * project filter regardless of which `projectId` filter is active.
  *
- * Optional query params (both compose, both applied server-side):
+ * Optional query params (all compose, all applied server-side):
  *   - `status`    — filter to one lifecycle state (new | investigating |
  *                   converted | closed)
  *   - `projectId` — scope to a single project (404 if the project is unknown)
+ *   - `unread`    — when `true`/`1`, keep only tickets a human hasn't viewed
+ *                   yet (`read_at IS NULL`). Powers the dashboard's
+ *                   "needs triage" view.
  */
+// Accepted truthy/falsy spellings for the `unread` query param. Mirrors the
+// OpenAPI enum in support-tickets-overview.openapi.ts; an out-of-set value is a
+// 400 (same contract as `status`) rather than a silent fall-through to false.
+const UNREAD_PARAM_VALUES = ['true', '1', 'false', '0'] as const;
+
 export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Router {
   const { getProjects, findProject } = deps;
   const router = Router();
@@ -39,11 +47,23 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
       resolvedProjectId = project.id;
     }
 
+    const unreadParam = req.query.unread as string | undefined;
+    if (
+      unreadParam !== undefined &&
+      !(UNREAD_PARAM_VALUES as readonly string[]).includes(unreadParam)
+    ) {
+      return res
+        .status(400)
+        .json({ error: `unread must be one of: ${UNREAD_PARAM_VALUES.join(', ')}` });
+    }
+    const unread = unreadParam === 'true' || unreadParam === '1';
+
     const projectNameById = new Map(getProjects().map((p) => [p.id, p.name]));
 
     const tickets = listAllSupportTickets({
       projectId: resolvedProjectId,
       statuses: status ? [status as SupportTicketStatus] : undefined,
+      unread,
     }).map((t: SupportTicketRow) => ({
       ...t,
       project_name: projectNameById.get(t.project_id) ?? t.project_id,
@@ -53,7 +73,7 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
     // `projectId`/`status` filter, so derive them from an unfiltered scan of
     // distinct projects-with-tickets rather than from the (possibly filtered)
     // `tickets` above. Ordered by descending ticket count, then name.
-    const allRows = resolvedProjectId || status ? listAllSupportTickets() : tickets;
+    const allRows = resolvedProjectId || status || unread ? listAllSupportTickets() : tickets;
     const countByProject = new Map<string, number>();
     for (const t of allRows) {
       countByProject.set(t.project_id, (countByProject.get(t.project_id) ?? 0) + 1);

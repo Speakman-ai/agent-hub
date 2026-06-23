@@ -106,8 +106,62 @@ describe('support-tickets overview (cross-project)', () => {
     expect(body.tickets.length).toBe(1);
   });
 
-  it('400s on an invalid status and 404s on an unknown project', async () => {
+  it('filters to unread tickets when unread=true', async () => {
+    const a = await createProject();
+    const readId = await seedTicket(a.id as string, 'critical', 'new');
+    const unreadId = await seedTicket(a.id as string, 'high', 'new');
+
+    // Mark one ticket read (stamps read_at) — it should drop out of unread=true.
+    await request.post(`/api/projects/${a.id}/support-tickets/${readId}/read`).expect(200);
+
+    const res = await request.get(`/api/support-tickets?projectId=${a.id}&unread=true`).expect(200);
+    const body = res.body as OverviewBody;
+    const ids = body.tickets.map((t) => t.id);
+    expect(ids).toContain(unreadId);
+    expect(ids).not.toContain(readId);
+
+    // Project filter options stay the FULL unfiltered set (both tickets count).
+    const opt = body.projects.find((p) => p.id === a.id);
+    expect(opt?.count).toBe(2);
+  });
+
+  it('composes unread=true with a status filter', async () => {
+    const a = await createProject();
+    const newUnread = await seedTicket(a.id as string, 'critical', 'new');
+    // An investigating ticket is unread but not status=new — excluded by status.
+    await seedTicket(a.id as string, 'high', 'investigating');
+
+    const res = await request
+      .get(`/api/support-tickets?projectId=${a.id}&status=new&unread=true`)
+      .expect(200);
+    const body = res.body as OverviewBody;
+    expect(body.tickets.map((t) => t.id)).toEqual([newUnread]);
+    expect(body.tickets.every((t) => t.status === 'new')).toBe(true);
+  });
+
+  it('unread=false / absent returns read and unread tickets alike', async () => {
+    const a = await createProject();
+    const readId = await seedTicket(a.id as string, 'critical', 'new');
+    await request.post(`/api/projects/${a.id}/support-tickets/${readId}/read`).expect(200);
+
+    // Both the absent param and an explicit falsy spelling keep read rows.
+    for (const qs of [
+      `projectId=${a.id}`,
+      `projectId=${a.id}&unread=false`,
+      `projectId=${a.id}&unread=0`,
+    ]) {
+      const res = await request.get(`/api/support-tickets?${qs}`).expect(200);
+      const body = res.body as OverviewBody;
+      expect(body.tickets.map((t) => t.id)).toContain(readId);
+    }
+  });
+
+  it('400s on an invalid status, an invalid unread, and 404s on an unknown project', async () => {
     await request.get('/api/support-tickets?status=bogus').expect(400);
+    // An out-of-set unread value (e.g. a typo) is rejected, not silently
+    // treated as false — matches the OpenAPI enum and the status contract.
+    const res = await request.get('/api/support-tickets?unread=treu').expect(400);
+    expect(String(res.body.error)).toMatch(/unread must be one of/);
     await request.get('/api/support-tickets?projectId=does-not-exist').expect(404);
   });
 });

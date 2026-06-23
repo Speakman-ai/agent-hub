@@ -440,12 +440,6 @@ const SUPPORT_SEVERITY_DOT = {
   low: 'bg-gray-500',
 } as Record<string, any>;
 
-const SUPPORT_STATUS_FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'new', label: 'New' },
-  { key: 'investigating', label: 'Investigating' },
-];
-
 // Severity-first, newest-within-severity. Exported for unit testing.
 function sortSupportBySeverity(list: any) {
   return [...list].sort((a: any, b: any) => {
@@ -458,8 +452,10 @@ function sortSupportBySeverity(list: any) {
 
 /**
  * Org-wide support issues, consolidated on the dashboard. Aggregates every
- * project's support tickets into one severity-ordered list (critical → low)
- * via `GET /support-tickets`, with a status filter. Each row deep-links into
+ * project's *new, unread* support tickets into one severity-ordered list
+ * (critical → low) via `GET /support-tickets?status=new&unread=true`. This is a
+ * "needs triage" inbox: once an operator opens a ticket (stamping `read_at`) or
+ * moves it past `new`, it drops off the dashboard. Each row deep-links into
  * that project's support queue through `onOpenProjectSupport`.
  *
  * This is the single consolidated support surface — it replaces the former
@@ -472,14 +468,13 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
-  const [statusFilter, setStatusFilter] = useState('all');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     api
-      .getAllSupportTickets(statusFilter === 'all' ? undefined : statusFilter)
+      .getAllSupportTickets({ status: 'new', unread: true })
       .then((data: any) => {
         if (cancelled) return;
         setTickets(Array.isArray(data?.tickets) ? data.tickets : []);
@@ -493,7 +488,7 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
     return () => {
       cancelled = true;
     };
-  }, [statusFilter]);
+  }, []);
 
   const sorted = useMemo(() => sortSupportBySeverity(tickets), [tickets]);
 
@@ -502,25 +497,8 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
       <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
         <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
           <LifeBuoy size={14} className="text-blue-400" />
-          Support issues
+          New support issues
         </h2>
-        <div className="flex items-center gap-1 flex-wrap justify-end">
-          {SUPPORT_STATUS_FILTERS.map((f: any) => (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setStatusFilter(f.key)}
-              aria-pressed={statusFilter === f.key}
-              className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
-                statusFilter === f.key
-                  ? 'bg-blue-500/20 border-blue-500/60 text-blue-200'
-                  : 'bg-gray-900 border-gray-800 text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
       </div>
       <div
         data-testid="support-issues"
@@ -534,7 +512,7 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
           <div className="px-4 py-6 text-center text-xs text-gray-600">Loading support issues…</div>
         ) : sorted.length === 0 ? (
           <div className="px-4 py-6 text-center text-xs text-gray-600">
-            No support issues. Everything is triaged.
+            No new support issues. Everything is triaged.
           </div>
         ) : (
           sorted.map((t: any) => (

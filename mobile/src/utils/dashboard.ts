@@ -132,11 +132,6 @@ export const SUPPORT_SEVERITY_DOT: Record<string, any> = {
     medium: colors.amber400,
     low: colors.gray500,
 };
-export const SUPPORT_STATUS_FILTERS = [
-    { key: 'all', label: 'All' },
-    { key: 'new', label: 'New' },
-    { key: 'investigating', label: 'Investigating' },
-];
 /** Severity-first, newest-within-severity. Mirrors web `DashboardView`. */
 export function sortSupportBySeverity(list: any) {
     return [...list].sort((a: any, b: any) => {

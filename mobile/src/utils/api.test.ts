@@ -498,6 +498,26 @@ describe('api support-ticket helpers — URL + method parity with web client', (
         expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/read-all');
         expect(init?.method).toBe('POST');
     });
+    it('getAllSupportTickets() with no args → GET /support-tickets (unfiltered)', async () => {
+        await api.getAllSupportTickets();
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/support-tickets');
+    });
+    it('getAllSupportTickets(status) legacy string → GET /support-tickets?status=', async () => {
+        await api.getAllSupportTickets('investigating');
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/support-tickets?status=investigating');
+    });
+    it('getAllSupportTickets({status, unread}) → composes status + unread query', async () => {
+        await api.getAllSupportTickets({ status: 'new', unread: true });
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/support-tickets?status=new&unread=true');
+    });
+    it('getAllSupportTickets({unread:false}) omits the unread param', async () => {
+        await api.getAllSupportTickets({ status: 'new', unread: false });
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/support-tickets?status=new');
+    });
 });
 describe('api kanban pagination helpers — URL parity with web client', () => {
     it('getProjectBoard(projectId) without opts → GET /projects/:id/board', async () => {
