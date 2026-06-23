@@ -9,7 +9,6 @@
 import { Router, Request, Response } from 'express';
 import { requireRole } from '../roles.js';
 import type { RouteDeps, Project } from '../types.js';
-import type { AuthenticatedRequest } from '../auth.js';
 import config, { buildSpawnEnv } from '../config.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import {
@@ -20,6 +19,7 @@ import {
 import { writeProjectAwsConfigFile } from '../project-aws-config-file.js';
 import { getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
 import { checkAwsSsoStatusAcrossHomes, spawnAwsSsoLogin } from '../aws-sso-identity.js';
+import { resolveAwsProbeUserId } from '../aws-sso-caller-identity.js';
 import { extractAwsSsoLoginUrl } from '../aws-sso-login-parse.js';
 import {
   getActiveAwsSsoLogin,
@@ -55,7 +55,7 @@ function awsSpawnEnv(userId: string | null, configPath: string): NodeJS.ProcessE
 // route stack.
 
 export default function createProjectAwsRoutes(deps: RouteDeps): Router {
-  const { findProject, saveProjects } = deps;
+  const { findProject, saveProjects, stmts, findAgent } = deps;
   const router = Router();
 
   router.get(
@@ -119,7 +119,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       }
       try {
         const profile = resolveProfileName(project, req.query.profile);
-        const userId = (req as AuthenticatedRequest).authUserId ?? null;
+        const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
         const configPath = writeProjectAwsConfigFile(project.id, profiles);
         const out = await checkAwsSsoStatusAcrossHomes({ userId, configPath, profile });
         if (out.ok) {
@@ -190,7 +190,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         clearActiveAwsSsoLogin();
       }
 
-      const userId = (req as AuthenticatedRequest).authUserId ?? null;
+      const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
       const configPath = writeProjectAwsConfigFile(project.id, profiles);
       const env = awsSpawnEnv(userId, configPath);
       const loginId = Date.now().toString(36);
