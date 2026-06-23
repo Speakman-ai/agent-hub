@@ -30,6 +30,7 @@ import {
   GitBranch,
   StickyNote,
   LifeBuoy,
+  MonitorPlay,
   ShieldAlert,
   PanelLeftClose,
 } from 'lucide-react';
@@ -86,6 +87,7 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   supportProjectId,
+  replaysProjectId,
   securityProjectId,
   wikiProjectId,
   pullsProjectId,
@@ -1099,6 +1101,17 @@ export default function Sidebar({
                                   : unreadTicketCounts[project.id]}
                               </span>
                             )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('replays', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView === 'replays' && replaysProjectId === project.id,
+                            )}
+                          >
+                            <MonitorPlay size={14} className="flex-shrink-0" />
+                            <span className="truncate">Replays</span>
                           </button>
 
                           {(() => {

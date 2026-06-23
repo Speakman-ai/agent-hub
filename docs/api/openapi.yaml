@@ -5050,6 +5050,149 @@ components:
         - selected
         - releases
       description: Release history for the Agent Hub repo.
+    ReplaysDashboardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    ReplayListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+          nullable: true
+        orphaned:
+          type: boolean
+          description: True when the capture is unattributed (project_id IS NULL).
+        createdAt:
+          type: string
+        durationMs:
+          type: integer
+          minimum: 0
+        eventCount:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 0
+          description: Compressed blob size (bytes).
+        uncompressedSize:
+          type: integer
+          minimum: 0
+        supportTicketId:
+          type: string
+          nullable: true
+        cardId:
+          type: string
+          nullable: true
+        pageUrl:
+          type: string
+          nullable: true
+          description: Recorder-stamped page URL, if any.
+        trigger:
+          type: string
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+        meta:
+          type: object
+          nullable: true
+          additionalProperties:
+            nullable: true
+        eventsUrl:
+          type: string
+          description: Path to the paginated rrweb events endpoint.
+        replayRef:
+          type: string
+          description: The /uploads/replay-<id>.json ref.
+        ticket:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            subject:
+              type: string
+              nullable: true
+            status:
+              type: string
+              nullable: true
+          required:
+            - id
+            - subject
+            - status
+      required:
+        - id
+        - projectId
+        - orphaned
+        - createdAt
+        - durationMs
+        - eventCount
+        - size
+        - uncompressedSize
+        - supportTicketId
+        - cardId
+        - pageUrl
+        - trigger
+        - errorMessage
+        - meta
+        - eventsUrl
+        - replayRef
+        - ticket
+      description: A session replay enriched with its linked support ticket (if any).
+    ReplayListResponse:
+      type: object
+      properties:
+        replays:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayListItem"
+        total:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+        offset:
+          type: integer
+          minimum: 0
+        hasMore:
+          type: boolean
+        filter:
+          type: string
+          enum:
+            - all
+            - linked
+            - unlinked
+            - orphans
+        canViewOrphans:
+          type: boolean
+          description: Whether the caller may enumerate the global orphan (unattributed) set.
+      required:
+        - replays
+        - total
+        - limit
+        - offset
+        - hasMore
+        - filter
+        - canViewOrphans
+      description: A page of replays for the dashboard table.
+    LinkReplayRequest:
+      type: object
+      properties:
+        supportTicketId:
+          type: string
+          description: Id of a support ticket in the same project to attach to.
+      required:
+        - supportTicketId
+      description: Body for attaching a replay to a support ticket.
     ReplayIngestErrorResponse:
       type: object
       properties:
@@ -18571,6 +18714,161 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/replays:
+    get:
+      tags:
+        - Replays
+      summary: List session replays for the Replays Explorer dashboard
+      description: Paginated, filterable table of a project’s session replays, each row enriched with its linked support ticket. `filter=orphans` lists global unattributed captures and is restricted to privileged callers.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - all
+              - linked
+              - unlinked
+              - orphans
+            description: Default `all`.
+          required: false
+          description: Default `all`.
+          name: filter
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: A page of replays.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayListResponse"
+        "400":
+          description: Invalid filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
+        "403":
+          description: Not authorized to view unattributed replays.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
+  /api/projects/{projectId}/replays/{id}/link:
+    post:
+      tags:
+        - Replays
+      summary: Attach a replay to one of the project’s support tickets
+      description: "Links a replay to a support ticket using the first-write attribution guard: the replay is attached only if it is unattributed or already owned by this project. Linking to the same ticket is idempotent. A replay already linked to a different ticket — or a ticket already linked to a different replay — is a 409 (unlink first). A capture owned by ANOTHER project is masked as 404 (no cross-project existence probe)."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LinkReplayRequest"
+      responses:
+        "200":
+          description: Linked. Returns the updated replay row and ticket.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replay:
+                    $ref: "#/components/schemas/ReplayListItem"
+                  ticket:
+                    type: object
+                    additionalProperties:
+                      nullable: true
+                required:
+                  - replay
+                  - ticket
+        "400":
+          description: Missing supportTicketId.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
+        "404":
+          description: Project, replay, or ticket not found. A replay owned by another project is masked as 404 (not 409) to avoid a cross-project existence probe.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
+        "409":
+          description: Replay is already linked to a different ticket, the ticket is already linked to a different replay, or the replay could not be attributed to this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
+    delete:
+      tags:
+        - Replays
+      summary: Detach a replay from its support ticket
+      description: Clears the support-ticket link on a replay (and the ticket’s replay_ref). The replay stays attributed to the project.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Unlinked. Returns the updated replay row.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replay:
+                    $ref: "#/components/schemas/ReplayListItem"
+                required:
+                  - replay
+        "404":
+          description: Project or replay not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplaysDashboardErrorResponse"
   /api/replays:
     options:
       tags:

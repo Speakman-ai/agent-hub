@@ -1272,6 +1272,33 @@ export const api = {
   getCardReplay: (projectId: any, cardId: any) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/replay`),
 
+  // Replays Explorer dashboard — paginated, filterable table of a project's
+  // session replays, each row enriched with its linked support ticket. `filter`
+  // is one of all | linked | unlinked | orphans (orphans = global unattributed
+  // captures, privileged-only). Returns { replays, total, limit, offset,
+  // hasMore, filter, canViewOrphans }.
+  listReplays: (projectId: any, { filter, limit, offset }: any = {}) => {
+    const params = new URLSearchParams();
+    if (filter) params.set('filter', filter);
+    if (limit != null) params.set('limit', String(limit));
+    if (offset) params.set('offset', String(offset));
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/replays${qs ? `?${qs}` : ''}`);
+  },
+  // Attach a replay to one of the project's support tickets (the inverse of the
+  // ticket-first flow). Claims an orphan into the project via the first-write
+  // guard. 409s if the replay belongs to another project. Returns
+  // { replay, ticket }.
+  linkReplayToTicket: (projectId: any, replayId: any, supportTicketId: any) =>
+    fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, {
+      method: 'POST',
+      body: JSON.stringify({ supportTicketId }),
+    }),
+  // Detach a replay from its support ticket (keeps the project attribution).
+  // Returns { replay }.
+  unlinkReplay: (projectId: any, replayId: any) =>
+    fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, { method: 'DELETE' }),
+
   // Threads
   getThreads: (projectId: any, type: any) => {
     const qs = type ? `?type=${type}` : '';

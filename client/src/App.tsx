@@ -63,6 +63,7 @@ import WikiBrowser from './components/WikiBrowser';
 import ThreadList from './components/ThreadList';
 import ThreadView from './components/ThreadView';
 import CustomerSupportPage from './components/CustomerSupportPage';
+import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
 import NotesEditor from './components/NotesEditor';
 import PullRequestsPage from './components/PullRequestsPage';
@@ -415,6 +416,7 @@ export default function App({ initialView }: any = {}) {
   const threadViewRef = useRef<any>(null);
   // Customer Support page state
   const [supportProjectId, setSupportProjectId] = useState<any>(null);
+  const [replaysProjectId, setReplaysProjectId] = useState<any>(null);
   // Ref to push WebSocket support_ticket_* updates into CustomerSupportPage
   const supportListRef = useRef<any>(null);
   // Unread support-ticket counts per project: { [projectId]: number }. Seeded
@@ -4352,6 +4354,7 @@ export default function App({ initialView }: any = {}) {
     if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
     if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
     if (currentView === 'support' && supportProjectId) return supportProjectId;
+    if (currentView === 'replays' && replaysProjectId) return replaysProjectId;
     if (currentView === 'security' && securityProjectId) return securityProjectId;
     const byAgent = projects.find((p: any) => p.agents?.some((a: any) => a.id === activeAgentId));
     return byAgent?.id || projects[0]?.id || null;
@@ -4364,6 +4367,7 @@ export default function App({ initialView }: any = {}) {
     pullsProjectId,
     threadsProjectId,
     supportProjectId,
+    replaysProjectId,
     securityProjectId,
     projects,
     activeAgentId,
@@ -4635,6 +4639,7 @@ export default function App({ initialView }: any = {}) {
                 });
               }
               if (view === 'support' && extra) setSupportProjectId(extra);
+              if (view === 'replays' && extra) setReplaysProjectId(extra);
               if (view === 'security' && extra) setSecurityProjectId(extra);
               setSidebarOpen(false);
             }}
@@ -4653,6 +4658,7 @@ export default function App({ initialView }: any = {}) {
             reviewerProjectId={reviewerProjectId}
             threadsProjectId={threadsProjectId}
             supportProjectId={supportProjectId}
+            replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
             pullsProjectId={pullsProjectId}
             workflowBadgeByProject={workflowSidebarBadgeByProject}
@@ -4971,6 +4977,11 @@ export default function App({ initialView }: any = {}) {
                   ref={supportListRef}
                   projectId={supportProjectId}
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
+                  onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
+                />
+              ) : currentView === 'replays' && replaysProjectId ? (
+                <ReplaysDashboardPage
+                  projectId={replaysProjectId}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
                 />
               ) : currentView === 'security' && securityProjectId ? (
