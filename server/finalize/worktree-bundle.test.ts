@@ -5,7 +5,9 @@ import os from 'os';
 import path from 'path';
 import {
   LocalDirBundleStore,
+  bundleRevArgs,
   createWorktreeBundle,
+  isWorktreeBundleFailureMessage,
   materializeWorktree,
   worktreeBundleKey,
 } from './worktree-bundle.js';
@@ -85,6 +87,50 @@ describe('worktree-bundle', () => {
         destPath: path.join(base, 'ws-none'),
       }),
     ).rejects.toThrow(/no getUrl and no store/);
+  });
+
+  // Regression: Finalize pins the bundle to the validated FINALIZE_HEAD_SHA by
+  // passing a RAW commit SHA as `rev`. `git bundle create <file> <bare-oid>`
+  // aborts with "fatal: Refusing to create empty bundle" because a bundle needs
+  // a ref — which broke EVERY remote-fleet Finalize run and was misreported as a
+  // transient `container_unavailable`. This bundles by raw SHA and asserts it
+  // succeeds and round-trips to the exact commit.
+  it('bundles by a RAW commit SHA without "Refusing to create empty bundle"', async () => {
+    const store = new LocalDirBundleStore(storeDir);
+    const key = worktreeBundleKey('orgA', 'run-rawsha', headSha);
+
+    // rev = the bare 40-char OID, exactly what runner-backend-remote passes.
+    const ref = await createWorktreeBundle({ worktreePath: srcRepo, key, store, rev: headSha });
+    expect(ref.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(ref.sizeBytes).toBeGreaterThan(0);
+
+    const dest = path.join(base, 'ws-rawsha');
+    await materializeWorktree({ ref, store, destPath: dest, rev: headSha });
+    expect(readFileSync(path.join(dest, 'hello.txt'), 'utf8')).toBe('world\n');
+    const gotSha = execFileSync('git', ['-C', dest, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    expect(gotSha).toBe(headSha);
+  });
+
+  it('bundleRevArgs: raw OID gets a ref (HEAD) appended; symbolic refs pass through', () => {
+    expect(bundleRevArgs(undefined)).toEqual(['HEAD']);
+    expect(bundleRevArgs('HEAD')).toEqual(['HEAD']);
+    expect(bundleRevArgs('main')).toEqual(['main']);
+    expect(bundleRevArgs('a'.repeat(40))).toEqual(['a'.repeat(40), 'HEAD']);
+    expect(bundleRevArgs('0123abc')).toEqual(['0123abc', 'HEAD']); // short OID
+  });
+
+  it('isWorktreeBundleFailureMessage detects deterministic git-bundle fatals', () => {
+    expect(
+      isWorktreeBundleFailureMessage(
+        'Command failed: git -C /wt bundle create /tmp/x.bundle 73f1bbe4 fatal: Refusing to create empty bundle.',
+      ),
+    ).toBe(true);
+    expect(isWorktreeBundleFailureMessage('Refusing to create empty bundle')).toBe(true);
+    expect(isWorktreeBundleFailureMessage('container_unavailable: out of pids')).toBe(false);
+    expect(isWorktreeBundleFailureMessage('')).toBe(false);
+    expect(isWorktreeBundleFailureMessage(undefined)).toBe(false);
   });
 
   it('rejects a tampered/mismatched bundle (sha256 guard)', async () => {

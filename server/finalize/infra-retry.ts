@@ -69,6 +69,12 @@ export const CI_FAILURE_REASONS = [
   'fix_no_progress',
   'combined_gate_invariant_violated',
   'cancelled',
+  // A `git bundle` failure while shipping the worktree to a remote runner (e.g.
+  // "Refusing to create empty bundle"). DETERMINISTIC — it recurs identically on
+  // retry, so it is classified CI-class (non-retryable) rather than the
+  // transient `container_unavailable`. Auto-retrying it would livelock the
+  // remote fleet, re-running the same broken bundle forever.
+  'worktree_bundle_failed',
 ] as const;
 
 /**

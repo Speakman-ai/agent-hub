@@ -30,6 +30,8 @@ import {
   type SpawnStepFn,
 } from './step-runner.js';
 import type { CiStep } from './ci-config.js';
+import { classifyFailureReason } from './infra-retry.js';
+import { isWorktreeBundleFailureMessage } from './worktree-bundle.js';
 
 /** Default max parallel job shards (override with FINALIZE_MAX_PARALLEL_JOBS). */
 export const DEFAULT_MAX_PARALLEL_JOBS = 4;
@@ -85,7 +87,12 @@ export async function runInstanceWithInfraRetry(
   let outcome!: JobInstanceOutcome;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     outcome = await runOnce();
-    if (outcome.result.status === 'infra_error' && attempt < maxAttempts) {
+    // Only re-run TRANSIENT infra failures. A deterministic reason (e.g.
+    // `worktree_bundle_failed`, which classifies CI-class) recurs identically on
+    // a fresh agent, so retrying just burns attempts — break out immediately.
+    const reason = outcome.result.failureReason;
+    const isDeterministic = !!reason && classifyFailureReason(reason) !== 'infra';
+    if (outcome.result.status === 'infra_error' && !isDeterministic && attempt < maxAttempts) {
       onRetry?.(attempt, outcome.result.infraErrorDetail);
       continue;
     }
@@ -414,6 +421,15 @@ async function runJobInstance(
           jobStartedAt,
           endedAt,
         );
+        // A `git bundle` failure (e.g. "Refusing to create empty bundle") is
+        // DETERMINISTIC — re-acquiring on a fresh agent re-runs the same broken
+        // bundle. Tag it with the non-infra `worktree_bundle_failed` reason so
+        // neither the per-instance retry below nor the orchestrator's infra
+        // auto-retry livelocks on it. Generic acquire failures (no reason) stay
+        // infra-retryable as before.
+        const failureReason = isWorktreeBundleFailureMessage(msg)
+          ? 'worktree_bundle_failed'
+          : undefined;
         return {
           instance,
           result: {
@@ -421,6 +437,7 @@ async function runJobInstance(
             stepResults: [],
             activeSecondsBilled: 0,
             infraErrorDetail: msg,
+            ...(failureReason ? { failureReason } : {}),
           },
         };
       }

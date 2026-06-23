@@ -81,6 +81,40 @@ async function sha256File(filePath: string): Promise<{ hex: string; size: number
 }
 
 /**
+ * Build the rev arguments for `git bundle create`. A git bundle must contain at
+ * least one *ref*; a bare commit OID has none, so `git bundle create <file>
+ * <sha>` aborts with "fatal: Refusing to create empty bundle" even when the
+ * commit is perfectly real (this is exactly what broke every remote-fleet
+ * Finalize run once the bundle was pinned to FINALIZE_HEAD_SHA). When the caller
+ * pins to a raw SHA, append `HEAD` so the bundle records a ref: the SHA's
+ * objects are still packaged (they're reachable from the positional rev) and the
+ * agent checks out the SHA after clone, so the bundle content stays provably
+ * pinned to the validated commit. A symbolic rev (HEAD, a branch name) already
+ * carries a ref and is passed through unchanged.
+ */
+export function bundleRevArgs(rev?: string): string[] {
+  if (!rev) return ['HEAD'];
+  return /^[0-9a-f]{7,40}$/i.test(rev) ? [rev, 'HEAD'] : [rev];
+}
+
+/**
+ * Does this error message describe a *deterministic* `git bundle` failure (e.g.
+ * "Refusing to create empty bundle")? Such a failure recurs identically on
+ * retry, so the orchestrator must classify it as deterministic rather than the
+ * transient `container_unavailable` — otherwise the one-auto-retry path
+ * livelocks, re-running the same broken bundle "until infrastructure recovers"
+ * when nothing infrastructural is wrong.
+ */
+export function isWorktreeBundleFailureMessage(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return (
+    m.includes('refusing to create empty bundle') ||
+    (m.includes('bundle') && m.includes('create') && m.includes('fatal'))
+  );
+}
+
+/**
  * Produce a git bundle of the worktree's committed history (default HEAD) and
  * upload it under `key`. Returns the ref to embed in the job's wire spec.
  */
@@ -93,14 +127,15 @@ export async function createWorktreeBundle(args: {
   const tmp = path.join(os.tmpdir(), `finalize-bundle-${process.pid}-${Date.now()}.bundle`);
   try {
     // `git bundle create <file> <rev>` captures <rev> plus the history to reach
-    // it — the agent reconstructs a real repo via `git clone`.
+    // it — the agent reconstructs a real repo via `git clone`. The rev args MUST
+    // include a ref (see bundleRevArgs) or git refuses to create the bundle.
     await execFileAsync('git', [
       '-C',
       args.worktreePath,
       'bundle',
       'create',
       tmp,
-      args.rev ?? 'HEAD',
+      ...bundleRevArgs(args.rev),
     ]);
     const { hex, size } = await sha256File(tmp);
     await args.store.put(args.key, tmp);

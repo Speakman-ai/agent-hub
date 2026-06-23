@@ -2,8 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { runInstanceWithInfraRetry, MAX_INSTANCE_INFRA_ATTEMPTS } from './job-runner.js';
 import type { StepRunStatus } from './step-runner.js';
 
-// Minimal JobInstanceOutcome — the helper only reads result.status + infraErrorDetail.
-function outcome(status: StepRunStatus, detail?: string) {
+// Minimal JobInstanceOutcome — the helper reads result.status, infraErrorDetail,
+// and (for deterministic-failure short-circuit) result.failureReason.
+function outcome(status: StepRunStatus, detail?: string, failureReason?: string) {
   return {
     instance: {} as never,
     result: {
@@ -11,6 +12,7 @@ function outcome(status: StepRunStatus, detail?: string) {
       stepResults: [],
       activeSecondsBilled: 0,
       ...(detail ? { infraErrorDetail: detail } : {}),
+      ...(failureReason ? { failureReason } : {}),
     },
   } as never;
 }
@@ -34,6 +36,33 @@ describe('runInstanceWithInfraRetry', () => {
     const res = await runInstanceWithInfraRetry(runOnce, 3);
     expect((res as { result: { status: string } }).result.status).toBe('infra_error');
     expect(runOnce).toHaveBeenCalledTimes(3);
+  });
+
+  it('does NOT retry a DETERMINISTIC infra_error (e.g. worktree_bundle_failed)', async () => {
+    // A `git bundle` failure recurs identically on a fresh agent. Even though
+    // the status is infra_error, the deterministic (CI-class) failureReason must
+    // short-circuit the per-instance retry so it can't burn all attempts.
+    const runOnce = vi
+      .fn()
+      .mockResolvedValue(
+        outcome('infra_error', 'Refusing to create empty bundle', 'worktree_bundle_failed'),
+      );
+    const onRetry = vi.fn();
+    const res = await runInstanceWithInfraRetry(runOnce, 3, onRetry);
+    expect((res as { result: { status: string } }).result.status).toBe('infra_error');
+    expect(runOnce).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it('STILL retries a generic infra_error that carries no failureReason', async () => {
+    // Spot reclaim / lost agent (no deterministic reason) keeps the retry path.
+    const runOnce = vi
+      .fn()
+      .mockResolvedValueOnce(outcome('infra_error', 'lease expired'))
+      .mockResolvedValueOnce(outcome('success'));
+    const res = await runInstanceWithInfraRetry(runOnce, 3);
+    expect((res as { result: { status: string } }).result.status).toBe('success');
+    expect(runOnce).toHaveBeenCalledTimes(2);
   });
 
   it('does NOT retry a real test failure', async () => {

@@ -243,6 +243,18 @@ describe('classifyFailureReason', () => {
     ]);
   });
 
+  it('worktree_bundle_failed is CI-class (deterministic) — never auto-retried', () => {
+    // A `git bundle` failure recurs identically on retry, so it must NOT be
+    // infra-class. If this regresses, the remote fleet livelocks re-running the
+    // same broken bundle as a "transient" container_unavailable.
+    expect(classifyFailureReason('worktree_bundle_failed')).toBe('ci');
+    expect(isInfraFailureReason('worktree_bundle_failed')).toBe(false);
+    expect((CI_FAILURE_REASONS as readonly string[]).includes('worktree_bundle_failed')).toBe(true);
+    expect((INFRA_FAILURE_REASONS as readonly string[]).includes('worktree_bundle_failed')).toBe(
+      false,
+    );
+  });
+
   it('spot_reclaimed classifies as infra and as a reclaim', () => {
     expect(classifyFailureReason('spot_reclaimed')).toBe('infra');
     expect(isReclaimFailureReason('spot_reclaimed')).toBe(true);
