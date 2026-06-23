@@ -254,6 +254,25 @@ export function runnerQueueDepth(orgId?: string): number {
   return row.n;
 }
 
+/**
+ * In-flight count (claimed + running only) — jobs that currently OWN an agent
+ * and would LOSE work if that agent were terminated. Distinct from queued work,
+ * which has no agent yet and only drives scale-UP. The dynamic scale-down path
+ * uses this as the floor it must never shrink below; `runnerQueueDepth()` (which
+ * also counts `queued`) still drives scale-up so a backlog isn't starved.
+ * Pass orgId for a per-tenant metric; omit for the aggregate.
+ */
+export function runnerInflightCount(orgId?: string): number {
+  const where = orgId ? 'AND org_id=@orgId' : '';
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM runner_jobs
+        WHERE state IN ('claimed','running') ${where}`,
+    )
+    .get({ orgId: orgId ?? null }) as { n: number };
+  return row.n;
+}
+
 /** A job marked `lost` by the reaper, plus whether it was a known Spot reclaim. */
 export interface ReapedRunnerJob {
   id: string;
