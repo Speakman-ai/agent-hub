@@ -158,8 +158,14 @@ export async function materializeWorktree(args: {
   }
 }
 
-/** Stable per-run bundle key (one bundle shared by all the run's shards). */
-export function worktreeBundleKey(orgId: string, runId: string): string {
+/**
+ * Per-run bundle key. One bundle is shared by all the run's matrix shards, but
+ * when `headSha` is supplied it's folded into the key so a fix-dispatch round
+ * that advances HEAD writes a DISTINCT object instead of overwriting the prior
+ * round's bundle. Omitting `headSha` keeps the legacy key (back-compat).
+ */
+export function worktreeBundleKey(orgId: string, runId: string, headSha?: string): string {
   const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-');
-  return `worktrees/${safe(orgId || 'default')}/${safe(runId)}.bundle`;
+  const rev = headSha ? `-${safe(headSha).slice(0, 40)}` : '';
+  return `worktrees/${safe(orgId || 'default')}/${safe(runId)}${rev}.bundle`;
 }

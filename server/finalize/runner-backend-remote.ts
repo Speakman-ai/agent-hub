@@ -66,31 +66,48 @@ export function createRemoteRunnerBackend(opts?: {
   store?: BundleStore | null;
   acquireTimeoutMs?: number;
   now?: () => number;
+  /** Injectable for tests; defaults to the real git-bundle producer. */
+  createBundle?: typeof createWorktreeBundle;
 }): RunnerBackend {
   const now = opts?.now ?? Date.now;
   const acquireTimeoutMs =
     opts?.acquireTimeoutMs ?? envAcquireTimeoutMs() ?? DEFAULT_ACQUIRE_TIMEOUT_MS;
   const store = opts?.store ?? null;
-  // One worktree bundle per run, shared by all its matrix shards.
-  const bundleByRun = new Map<string, Promise<WorktreeRef>>();
+  const createBundle = opts?.createBundle ?? createWorktreeBundle;
+  // One worktree bundle per (run, head SHA): all of a round's matrix shards
+  // share it, but a fix-dispatch round that advances HEAD BUSTS the entry so the
+  // fleet rebuilds against the new commit. Keying by runId alone caused a silent
+  // stale-code livelock — the runId is stable across rounds, so the fleet kept
+  // re-testing round 1's code while FINALIZE_HEAD_SHA and the reviewer advanced,
+  // failing the gate forever (this backend is a process singleton). Storing one
+  // entry per runId (replaced on SHA change) also bounds growth within a run.
+  const bundleByRun = new Map<string, { sha: string; pending: Promise<WorktreeRef> }>();
 
   return {
     kind: 'remote',
     async acquire(spec: JobClaimSpec): Promise<RunnerLease> {
       let worktreeRef: WorktreeRef | null = null;
       if (store) {
-        // Upload one bundle per run (memoized); presign per-acquire so each
-        // matrix shard gets a fresh-TTL credential-free download URL.
-        let pending = bundleByRun.get(spec.runId);
-        if (!pending) {
-          pending = createWorktreeBundle({
+        // Bundle once per (run, head SHA) — memoized so a round's shards share
+        // it, busted when a new fix-round advances HEAD. Presign per-acquire so
+        // each matrix shard gets a fresh-TTL credential-free download URL.
+        const headSha = (spec.env?.FINALIZE_HEAD_SHA ?? spec.env?.GIT_COMMIT_SHA ?? '')
+          .toString()
+          .trim();
+        let entry = bundleByRun.get(spec.runId);
+        if (!entry || entry.sha !== headSha) {
+          const pending = createBundle({
             worktreePath: spec.worktreePath,
-            key: worktreeBundleKey(spec.orgId, spec.runId),
+            key: worktreeBundleKey(spec.orgId, spec.runId, headSha || undefined),
             store,
+            // Pin the bundle to the validated commit so its content provably
+            // matches FINALIZE_HEAD_SHA (not just "whatever HEAD is right now").
+            rev: headSha || undefined,
           });
-          bundleByRun.set(spec.runId, pending);
+          entry = { sha: headSha, pending };
+          bundleByRun.set(spec.runId, entry); // replaces any stale prior-round entry
         }
-        const baseRef = await pending;
+        const baseRef = await entry.pending;
         const getUrl = store.presignGet ? await store.presignGet(baseRef.key) : null;
         worktreeRef = getUrl ? { ...baseRef, getUrl } : baseRef;
       }

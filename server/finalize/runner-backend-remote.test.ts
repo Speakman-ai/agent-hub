@@ -6,6 +6,7 @@ import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import { claimRunnerJob } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
+import type { BundleStore } from './worktree-bundle.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -79,6 +80,69 @@ describe('createRemoteRunnerBackend', () => {
     await lease.release();
     expect(await finishP).toEqual({ type: 'finish' });
     expect(getJobChannel(claimed!.id)).toBeUndefined();
+  });
+
+  it('rebundles when a fix-round advances HEAD, but shares one bundle within a round', async () => {
+    // Regression for the stale-code livelock: the bundle was memoized by runId
+    // alone, so across fix-dispatch rounds (stable runId) the fleet re-tested the
+    // first round's code forever while FINALIZE_HEAD_SHA + the reviewer advanced.
+    const calls: Array<{ key: string; rev?: string }> = [];
+    const fakeCreate = (async (args: { key: string; rev?: string }) => {
+      calls.push({ key: args.key, rev: args.rev });
+      return { key: args.key, sha256: 'deadbeef', sizeBytes: 1 };
+    }) as any;
+    const store: BundleStore = {
+      put: async () => {},
+      get: async () => {},
+      presignGet: async (key: string) => `https://example.test/${key}`,
+    };
+    const backend = createRemoteRunnerBackend({
+      acquireTimeoutMs: 2000,
+      store,
+      createBundle: fakeCreate,
+    });
+
+    const runAcquire = async (env: Record<string, string>) => {
+      const acquireP = backend.acquire({
+        orgId: 'orgA',
+        projectId: 'p1',
+        runId: 'r1', // same run across all rounds (the livelock precondition)
+        jobId: 'e2e',
+        matrixKey: '',
+        image: 'img:latest',
+        worktreePath: '/tmp/wt',
+        composeProjectName: 'cp',
+        env,
+        labels: {},
+      });
+      // With a store, acquire awaits the bundle before enqueuing — poll until the
+      // job is claimable rather than claiming synchronously.
+      let claimed: { id: string } | null = null;
+      for (let i = 0; i < 100 && !claimed; i++) {
+        claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
+        if (!claimed) await tick();
+      }
+      expect(claimed).not.toBeNull();
+      const channel = getJobChannel(claimed!.id)!;
+      const pollP = channel.nextDirective(1000);
+      const lease = await acquireP;
+      await pollP;
+      await lease.release();
+    };
+
+    // Round 1: two matrix shards at the same HEAD share a single bundle.
+    await runAcquire({ FINALIZE_HEAD_SHA: 'sha-aaaaaa' });
+    await runAcquire({ FINALIZE_HEAD_SHA: 'sha-aaaaaa' });
+    expect(calls).toHaveLength(1);
+
+    // Round 2: a fix advanced HEAD → the cached bundle is busted, fresh build.
+    await runAcquire({ FINALIZE_HEAD_SHA: 'sha-bbbbbb' });
+    expect(calls).toHaveLength(2);
+
+    // Each bundle is pinned to its own commit and written under a distinct key.
+    expect(calls[0].rev).toBe('sha-aaaaaa');
+    expect(calls[1].rev).toBe('sha-bbbbbb');
+    expect(calls[0].key).not.toBe(calls[1].key);
   });
 
   it('throws (→ infra_error) when no agent claims within the timeout', async () => {
