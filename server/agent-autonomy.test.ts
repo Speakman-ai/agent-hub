@@ -15,10 +15,13 @@ describe('agent-autonomy — lock detection', () => {
     expect(isAutonomyLockedOn({ role: undefined })).toBe(false);
   });
 
-  it('locks OFF for out-of-band roles (docs/intake/reviewer)', () => {
+  it('locks OFF for out-of-band roles (docs/intake/reviewer/skill-builder)', () => {
     expect(isAutonomyLockedOff({ role: 'docs' })).toBe(true);
     expect(isAutonomyLockedOff({ role: 'intake' })).toBe(true);
     expect(isAutonomyLockedOff({ role: 'reviewer' })).toBe(true);
+    // Regression: the Skill Builder coach must not default to Dev-on.
+    expect(isAutonomyLockedOff({ role: 'skill-builder' })).toBe(true);
+    expect(isAutonomyLockedOff({ role: 'SKILL-BUILDER' })).toBe(true); // case-insensitive
     expect(isAutonomyLockedOff({ role: 'dev' })).toBe(false);
   });
 
@@ -42,6 +45,10 @@ describe('agent-autonomy — effective eligibility', () => {
     expect(agentAcceptsAutonomousTickets({ role: 'docs', isDev: true })).toBe(false);
     expect(agentAcceptsAutonomousTickets({ role: 'intake', isDev: true })).toBe(false);
     expect(agentAcceptsAutonomousTickets({ role: 'reviewer', isDev: true })).toBe(false);
+    // Regression: skill-builder is a coach, never an autonomous-ticket recipient,
+    // even when its (pre-flag) isDev is undefined or explicitly true.
+    expect(agentAcceptsAutonomousTickets({ role: 'skill-builder', isDev: true })).toBe(false);
+    expect(agentAcceptsAutonomousTickets({ role: 'skill-builder' })).toBe(false);
   });
 
   it('honours explicit isDev for togglable roles', () => {

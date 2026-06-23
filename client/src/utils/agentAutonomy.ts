@@ -4,7 +4,9 @@
 // ON for default Dev roles, OFF for out-of-band roles) and what the editable
 // toggle's current value should be. Keep in sync with the server + mobile.
 
-const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer']);
+// `skill-builder` is a conversational coach (not a code-shipping recipient), so
+// its Dev toggle is locked OFF like docs/intake/reviewer.
+const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer', 'skill-builder']);
 const DEFAULT_DEV_ROLES = new Set(['dev', 'lead']);
 
 function roleOf(agent: any) {

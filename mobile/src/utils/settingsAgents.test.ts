@@ -224,12 +224,14 @@ describe('agent autonomy flag (mobile)', () => {
         expect(isAutonomyLockedOn({ role: 'lead' })).toBe(true);
         expect(isAutonomyLockedOff({ role: 'reviewer' })).toBe(true);
         expect(isAutonomyLockedOff({ role: 'docs' })).toBe(true);
+        expect(isAutonomyLockedOff({ role: 'skill-builder' })).toBe(true); // coach, not Dev
         expect(isAutonomyLocked({ role: 'sub' })).toBe(false);
         expect(isAutonomyLocked({ role: 'frontend' })).toBe(false);
     });
     it('resolves effective eligibility', () => {
         expect(agentAcceptsAutonomousTickets({ role: 'dev', isDev: false })).toBe(true);
         expect(agentAcceptsAutonomousTickets({ role: 'reviewer', isDev: true })).toBe(false);
+        expect(agentAcceptsAutonomousTickets({ role: 'skill-builder' })).toBe(false); // coach, not Dev
         expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: true })).toBe(true);
         expect(agentAcceptsAutonomousTickets({ role: 'sub', isDev: false })).toBe(false);
         expect(agentAcceptsAutonomousTickets({ role: 'sub' })).toBe(true);

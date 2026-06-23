@@ -8,8 +8,14 @@ import type { Agent } from './types.js';
 // togglable. Mirrored (intentionally tiny) in `client/src/utils/agentAutonomy.js`
 // and `mobile/src/utils/settingsAgents.js`; keep the three in sync.
 
-/** Roles that are never autonomously assigned — out-of-band worker roles. */
-const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer']);
+/**
+ * Roles that are never autonomously assigned — out-of-band worker / coach roles.
+ * `skill-builder` is a conversational coach that authors skills interactively; it
+ * is not a code-shipping recipient, so its Dev toggle is locked OFF like
+ * docs/intake/reviewer (otherwise it falls through to the default-eligible branch
+ * and shows as Dev-on).
+ */
+const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer', 'skill-builder']);
 
 /**
  * The project's "default Dev" roles. These always accept autonomous tickets
