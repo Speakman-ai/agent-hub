@@ -11,6 +11,7 @@ A full-stack command center for AI agent orchestration. Manage, monitor, and int
 - **Wiki Knowledge Base** — Full-text searchable documentation per project, injected into agent context
 - **Scheduled Tasks** — Cron jobs and heartbeat check-ins with configurable prompts
 - **GitHub Integration** — Webhook-driven PR lifecycle, automated reviews, and CI monitoring
+- **Finalize Code Changes** — Per-session rebase, in-hub review, and CI gating on isolated runners before push/merge
 - **Slack Bot** — Multi-agent Slack integration for team communication
 - **Cross-Platform** — Web (React), mobile (React Native/Expo), and desktop (Electron) clients
 - **Customer Support** — Per-project support ticket queue with severity ordering and convert-to-card workflow
