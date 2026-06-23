@@ -263,10 +263,11 @@ describe('SecurityPage', () => {
     expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Rescan complete'), 'success');
   });
 
-  it('Autofix triggers a scan with autoPr:true and reports the opened PR count', async () => {
+  it('Autofix triggers a scan with autoPr:true and reports the single combined PR', async () => {
     (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+    // Two bumps both ride the ONE rolling PR (#7) — the combined-PR model.
     (api.runSecurityScan as any).mockResolvedValue({
-      autoPr: { opened: [{ prNumber: 7 }, { prNumber: 8 }], skipped: [] },
+      autoPr: { opened: [{ prNumber: 7 }, { prNumber: 7 }], skipped: [] },
     });
     const onNotify = vi.fn();
     render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
@@ -277,7 +278,10 @@ describe('SecurityPage', () => {
     });
 
     expect(api.runSecurityScan).toHaveBeenCalledWith('proj-1', { autoPr: true });
-    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('opened 2 bump PRs'), 'success');
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining('PR #7 bumping 2 dependencies'),
+      'success',
+    );
   });
 
   it('surfaces a scan failure via onNotify', async () => {

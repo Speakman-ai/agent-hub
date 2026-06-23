@@ -1,18 +1,20 @@
 /**
- * auto-pr.ts — open one native Hub PR per fixable advisory bump.
+ * auto-pr.ts — open ONE native Hub PR carrying every fixable advisory bump.
  *
- * Dependabot-style: for each {@link SecurityBumpPlan} produced from a scan's
- * findings, write the lockfile (+ sibling package.json range) bump onto a
- * deterministic branch in the hosted bare repo and open/refresh a native PR.
- * The deterministic branch name + `createOrGetOpenPullRequest`'s
- * head-branch reuse give two layers of de-dupe against already-open bump PRs.
+ * Dependabot-style grouped update: take the {@link SecurityBumpPlan}s produced
+ * from a scan's findings, accumulate every lockfile (+ sibling package.json
+ * range) bump into a SINGLE commit on one deterministic rolling branch in the
+ * hosted bare repo, and open/refresh a single native PR. A fixed branch name +
+ * `createOrGetOpenPullRequest`'s head-branch reuse keep that one security PR
+ * idempotent across re-scans: the branch is rebuilt from the current open
+ * fixable set each run, so the PR rolls forward as advisories appear/resolve
+ * instead of spawning a separate PR per package.
  *
  * All side-effecting collaborators (file read, branch commit, PR open) are
  * injected so the orchestration is unit-testable without git or the DB.
  */
 
 import path from 'path';
-import { createHash } from 'crypto';
 import type { DependencyFinding, Severity } from './types.js';
 import {
   applyNpmLockfileBump,
@@ -23,7 +25,16 @@ import {
 import type { SecurityBumpPlan } from './bump.js';
 import type { NpmDistMetadata } from './registry-metadata.js';
 
+/**
+ * The single rolling branch every security bump lands on. One PR per project:
+ * both the scan-path auto-PR and the per-finding Fix button rebuild THIS branch
+ * from the full open fixable set, so they converge on one PR rather than racing
+ * each other onto per-package branches.
+ */
+export const SECURITY_BUMP_BRANCH = 'agenthub/security/bumps';
+
 export interface SecurityBumpPrResult {
+  /** Shared rolling branch all bumps in this run land on ({@link SECURITY_BUMP_BRANCH}). */
   branch: string;
   manifestPath: string;
   packageName: string;
@@ -90,57 +101,32 @@ export interface OpenSecurityBumpPrsDeps {
   ) => Promise<NpmDistMetadata | null>;
 }
 
-/** Slugify a name/version into a git-branch-safe token. */
-function slug(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/^@/, '')
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '');
+/** Per-plan edit outcome, accumulated before the single combined commit. */
+interface AppliedBump {
+  plan: SecurityBumpPlan;
+  bumpedPackageJson: boolean;
+  rootDependencyBumped: boolean;
+  lockfilePinned: boolean;
 }
 
-/**
- * Deterministic branch name for a bump. Same (manifestPath, package, target)
- * → same branch every scan, which is what makes the PR idempotent. The slug
- * portion is a human-readable hint only; uniqueness is guaranteed by a short
- * stable hash of the RAW tuple appended at the end.
- *
- * Why the hash: `slug()` is lossy (it lowercases and collapses `@`, `/`, and
- * runs of non-alphanumerics), so distinct tuples like `@scope/pkg` vs
- * `scope-pkg`, or two manifest directories that normalise alike, would
- * otherwise produce the SAME branch. Two such bumps to the same target version
- * would then collide on one branch and the later `commitFiles` (based on the
- * original base SHA) would overwrite the earlier one. The raw-tuple hash makes
- * the branch collision-safe while the slug keeps it readable.
- */
-export function bumpBranchName(plan: SecurityBumpPlan): string {
-  const dir = path.posix.dirname(plan.manifestPath);
-  const dirSlug = dir && dir !== '.' ? `${slug(dir)}-` : '';
-  // Hash the RAW, unambiguous tuple (not the lossy slugs). JSON.stringify gives
-  // an injective, separator-safe encoding of the three strings.
-  const hash = createHash('sha256')
-    .update(JSON.stringify([plan.manifestPath, plan.packageName, plan.toVersion]))
-    .digest('hex')
-    .slice(0, 12);
-  return `agenthub/security/bump-${dirSlug}${slug(plan.packageName)}-${slug(plan.toVersion)}-${hash}`;
+function prTitle(applied: AppliedBump[]): string {
+  if (applied.length === 1) {
+    const { plan } = applied[0]!;
+    const dir = path.posix.dirname(plan.manifestPath);
+    const where = dir && dir !== '.' ? ` in ${dir}` : '';
+    return `security: bump ${plan.packageName} to ${plan.toVersion}${where}`;
+  }
+  return `security: bump ${applied.length} dependencies`;
 }
 
-function prTitle(plan: SecurityBumpPlan): string {
-  const dir = path.posix.dirname(plan.manifestPath);
-  const where = dir && dir !== '.' ? ` in ${dir}` : '';
-  return `security: bump ${plan.packageName} to ${plan.toVersion}${where}`;
-}
-
-function prBody(
-  plan: SecurityBumpPlan,
-  opts: { bumpedPackageJson: boolean; rootDependencyBumped: boolean; lockfilePinned: boolean },
-): string {
+/** Markdown detail block for one bumped package (advisories + lockfile notes). */
+function planSection(applied: AppliedBump): string[] {
+  const { plan, bumpedPackageJson, rootDependencyBumped, lockfilePinned } = applied;
   const lines: string[] = [];
   const fromList = plan.fromVersions.map((v) => `\`${v}\``).join(', ');
   const plural = plan.fromVersions.length > 1 ? 's' : '';
   lines.push(
-    `Automated security bump of \`${plan.packageName}\` from ${fromList} (${plan.fromVersions.length} ` +
+    `Bump of \`${plan.packageName}\` from ${fromList} (${plan.fromVersions.length} ` +
       `installed version${plural}) to \`${plan.toVersion}\` in \`${plan.manifestPath}\`.`,
   );
   lines.push('');
@@ -153,7 +139,7 @@ function prBody(
     lines.push(`- **${adv.severity}** ${link}${summary}`);
   }
   lines.push('');
-  if (!opts.rootDependencyBumped) {
+  if (!rootDependencyBumped) {
     // Transitive: only the nested lockfile entry was bumped; the root manifest
     // range is intentionally left alone.
     lines.push(
@@ -162,13 +148,13 @@ function prBody(
     );
   } else {
     lines.push(
-      opts.bumpedPackageJson
+      bumpedPackageJson
         ? 'Updated the lockfile version and the matching `package.json` range.'
         : 'Updated the lockfile version (no matching `package.json` range to change).',
     );
   }
   lines.push('');
-  if (opts.lockfilePinned) {
+  if (lockfilePinned) {
     lines.push(
       '> The bumped lockfile entry was re-pinned with the registry `resolved` URL and ' +
         '`integrity` hash for the target version, so the lockfile stays fully pinned and ' +
@@ -181,13 +167,39 @@ function prBody(
         '`npm install` to reconcile the lockfile before merging.',
     );
   }
+  return lines;
+}
+
+function prBody(applied: AppliedBump[]): string {
+  // Single bump: keep the body lean (no package subheadings).
+  if (applied.length === 1) return planSection(applied[0]!).join('\n');
+
+  const lines: string[] = [];
+  lines.push(
+    `Automated security bump of ${applied.length} dependencies in a single PR ` +
+      '(grouped Dependabot-style so every fixable advisory lands in one place).',
+  );
+  for (const a of applied) {
+    lines.push('');
+    lines.push(`### \`${a.plan.packageName}\` → \`${a.plan.toVersion}\``);
+    lines.push('');
+    lines.push(...planSection(a));
+  }
   return lines.join('\n');
 }
 
 /**
- * Open/refresh a native bump PR for every fixable advisory in `findings`.
- * Best-effort per plan: one failing bump is recorded in `skipped` and never
- * blocks the others. Returns what was opened and what was skipped (with why).
+ * Open/refresh the single native security bump PR carrying every fixable
+ * advisory in `findings`. All bumps are accumulated into one commit on the
+ * shared {@link SECURITY_BUMP_BRANCH} and surfaced as one PR.
+ *
+ * Best-effort per plan during the edit phase: a plan whose manifest is
+ * missing/unchanged or whose bump throws is recorded in `skipped` and never
+ * blocks the others. If, after accumulation, at least one bump applied, a
+ * single commit + PR is opened; if that final commit/PR step fails, every
+ * applied bump is reported in `skipped` (the function never throws). Returns
+ * what was opened (one entry per package, all sharing the same branch/PR) and
+ * what was skipped (with why).
  */
 export async function openSecurityBumpPrs(
   findings: DependencyFinding[],
@@ -197,9 +209,25 @@ export async function openSecurityBumpPrs(
   const opened: SecurityBumpPrResult[] = [];
   const skipped: SecurityBumpPrSkip[] = [];
 
+  // Accumulate every plan's edits into ONE fileset. Manifest/package.json
+  // content is threaded through a cache so two plans touching the same lockfile
+  // (different packages) both land instead of the second clobbering the first.
+  const files: Record<string, string> = {};
+  // `undefined` = not read yet; `null` = read and absent; string = current text.
+  const fileCache = new Map<string, string | null>();
+  const applied: AppliedBump[] = [];
+
+  const readCached = async (relPath: string): Promise<string | null> => {
+    const cached = fileCache.get(relPath);
+    if (cached !== undefined) return cached;
+    const content = await deps.readFile(relPath);
+    fileCache.set(relPath, content);
+    return content;
+  };
+
   for (const plan of plans) {
     try {
-      const lockContent = await deps.readFile(plan.manifestPath);
+      const lockContent = await readCached(plan.manifestPath);
       if (lockContent === null) {
         skipped.push({
           manifestPath: plan.manifestPath,
@@ -209,13 +237,6 @@ export async function openSecurityBumpPrs(
         });
         continue;
       }
-      // Apply EVERY vulnerable installed version's bump, threading the content
-      // so all copies land in one commit/PR. (A package can be present at
-      // several versions at once — a direct dep + transitive copies.) Skipping
-      // per-version into separate plans/branches would let the later commit,
-      // based on the same baseSha, overwrite the earlier and leave a copy
-      // unbumped. `rootDependencyBumped` is the OR across versions: true if ANY
-      // bumped entry was a top-level (direct) install.
       // Resolve the registry dist metadata ONCE per plan (one target version)
       // so the bumped entry is re-pinned with the new resolved/integrity.
       //
@@ -241,6 +262,11 @@ export async function openSecurityBumpPrs(
         }
       }
 
+      // Apply EVERY vulnerable installed version's bump, threading the content
+      // so all copies land in one commit/PR. (A package can be present at
+      // several versions at once — a direct dep + transitive copies.)
+      // `rootDependencyBumped` is the OR across versions: true if ANY bumped
+      // entry was a top-level (direct) install.
       let lockText = lockContent;
       let anyBumped = false;
       let rootDependencyBumped = false;
@@ -258,7 +284,7 @@ export async function openSecurityBumpPrs(
       }
       if (!anyBumped) {
         // No entry at any expected version — already bumped or absent. Nothing
-        // safe to change, so skip rather than open an empty PR.
+        // safe to change, so skip rather than carry an empty edit.
         skipped.push({
           manifestPath: plan.manifestPath,
           packageName: plan.packageName,
@@ -268,54 +294,35 @@ export async function openSecurityBumpPrs(
         continue;
       }
 
-      const files: Record<string, string> = { [plan.manifestPath]: lockText };
+      // Persist the accumulated lockfile content so a later plan on the same
+      // manifest builds on this edit instead of re-reading the base.
+      fileCache.set(plan.manifestPath, lockText);
+      files[plan.manifestPath] = lockText;
 
       // Only bump the sibling package.json when a bumped install entry is the
       // root project's DIRECT dependency. A transitive/nested bump must not
       // rewrite the root range — that range may belong to an unrelated direct
-      // dependency that happens to share the package name.
+      // dependency that happens to share the package name. Thread package.json
+      // through the same cache so multiple direct-dep bumps in one manifest
+      // accumulate.
       let bumpedPackageJson = false;
       if (rootDependencyBumped) {
         const pkgJsonPath = path.posix.join(path.posix.dirname(plan.manifestPath), 'package.json');
-        const pkgContent = await deps.readFile(pkgJsonPath);
+        const pkgContent = await readCached(pkgJsonPath);
         if (pkgContent !== null) {
           const newPkg = applyPackageJsonRangeBump(pkgContent, {
             packageName: plan.packageName,
             toVersion: plan.toVersion,
           });
           if (newPkg !== null) {
+            fileCache.set(pkgJsonPath, newPkg);
             files[pkgJsonPath] = newPkg;
             bumpedPackageJson = true;
           }
         }
       }
 
-      const branch = bumpBranchName(plan);
-      const commit = await deps.commitFiles({
-        branch,
-        files,
-        message: prTitle(plan),
-      });
-      const pr = deps.createOrGetOpenPr({
-        headBranch: branch,
-        headSha: commit.headSha,
-        title: prTitle(plan),
-        body: prBody(plan, { bumpedPackageJson, rootDependencyBumped, lockfilePinned: !!dist }),
-      });
-
-      opened.push({
-        branch,
-        manifestPath: plan.manifestPath,
-        packageName: plan.packageName,
-        fromVersions: plan.fromVersions,
-        toVersion: plan.toVersion,
-        advisoryIds: plan.advisoryIds,
-        severity: plan.severity,
-        prNumber: pr.prNumber,
-        prUrl: pr.prUrl,
-        prCreated: pr.prCreated,
-        branchUpdated: commit.created,
-      });
+      applied.push({ plan, bumpedPackageJson, rootDependencyBumped, lockfilePinned: !!dist });
     } catch (err: unknown) {
       skipped.push({
         manifestPath: plan.manifestPath,
@@ -323,6 +330,50 @@ export async function openSecurityBumpPrs(
         toVersion: plan.toVersion,
         reason: 'error',
         detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Nothing applied → no commit, no PR. (Either no fixable findings, or every
+  // plan was missing/unchanged/errored — all already recorded in `skipped`.)
+  if (applied.length === 0) return { opened, skipped };
+
+  const branch = SECURITY_BUMP_BRANCH;
+  const title = prTitle(applied);
+  try {
+    const commit = await deps.commitFiles({ branch, files, message: title });
+    const pr = deps.createOrGetOpenPr({
+      headBranch: branch,
+      headSha: commit.headSha,
+      title,
+      body: prBody(applied),
+    });
+    for (const a of applied) {
+      opened.push({
+        branch,
+        manifestPath: a.plan.manifestPath,
+        packageName: a.plan.packageName,
+        fromVersions: a.plan.fromVersions,
+        toVersion: a.plan.toVersion,
+        advisoryIds: a.plan.advisoryIds,
+        severity: a.plan.severity,
+        prNumber: pr.prNumber,
+        prUrl: pr.prUrl,
+        prCreated: pr.prCreated,
+        branchUpdated: commit.created,
+      });
+    }
+  } catch (err: unknown) {
+    // The single commit/PR failed — attribute the failure to every bump that
+    // would have ridden it, so the caller sees nothing silently dropped.
+    const detail = err instanceof Error ? err.message : String(err);
+    for (const a of applied) {
+      skipped.push({
+        manifestPath: a.plan.manifestPath,
+        packageName: a.plan.packageName,
+        toVersion: a.plan.toVersion,
+        reason: 'error',
+        detail,
       });
     }
   }

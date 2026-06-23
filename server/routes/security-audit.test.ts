@@ -501,6 +501,90 @@ describe('POST /security-audit/findings/:id/fix', () => {
     expect(committed.packages['node_modules/b/node_modules/lodash'].version).toBe('4.13.0');
   });
 
+  it('batches ALL open fixable packages into the single PR, not just the clicked one', async () => {
+    // Two distinct fixable packages are open. Clicking Fix on lodash must open
+    // ONE combined PR that also bumps express — the rolling security PR — rather
+    // than a lodash-only PR that would clobber express's bump on the shared
+    // branch.
+    const r = store.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: [
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'lodash',
+            version: '4.17.11',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-a',
+            summary: 'lodash',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: '',
+          },
+        },
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'express',
+            version: '4.17.0',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-b',
+            summary: 'express',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: '4.19.2',
+            url: '',
+          },
+        },
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+    const clicked = r.newFindings.find((f) => f.package_name === 'lodash')!.id;
+    const lock = JSON.stringify(
+      {
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: {
+          '': {
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { lodash: '^4.17.11', express: '^4.17.0' },
+          },
+          'node_modules/lodash': { version: '4.17.11' },
+          'node_modules/express': { version: '4.17.0' },
+        },
+      },
+      null,
+      2,
+    );
+    const nativePr = fakeNativePr();
+    const { fixDeps, commitFiles } = fakeFixDeps({ 'package-lock.json': lock });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${clicked}/fix`)
+      .send()
+      .expect(200);
+
+    // both packages opened in ONE PR (one commit, one createOrGetOpenPr)
+    expect(res.body.opened).toHaveLength(2);
+    expect(res.body.opened.map((o: { packageName: string }) => o.packageName).sort()).toEqual([
+      'express',
+      'lodash',
+    ]);
+    expect(commitFiles).toHaveBeenCalledOnce();
+    expect(nativePr.createOrGetOpenPr).toHaveBeenCalledOnce();
+    const committed = JSON.parse(commitFiles.mock.calls[0][0].files['package-lock.json']);
+    expect(committed.packages['node_modules/lodash'].version).toBe('4.17.21');
+    expect(committed.packages['node_modules/express'].version).toBe('4.19.2');
+  });
+
   it('reports a skip (no PR) when the lockfile is missing, without 500ing', async () => {
     const id = seedFixable(store);
     const nativePr = fakeNativePr();

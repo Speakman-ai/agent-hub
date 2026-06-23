@@ -1,7 +1,10 @@
 import '../test/setup.js';
 import { describe, it, expect, vi } from 'vitest';
-import { bumpBranchName, openSecurityBumpPrs, type OpenSecurityBumpPrsDeps } from './auto-pr.js';
-import type { SecurityBumpPlan } from './bump.js';
+import {
+  openSecurityBumpPrs,
+  SECURITY_BUMP_BRANCH,
+  type OpenSecurityBumpPrsDeps,
+} from './auto-pr.js';
 import type { Advisory, DependencyFinding, ResolvedDependency } from './types.js';
 
 function finding(d: Partial<ResolvedDependency>, a: Partial<Advisory> = {}): DependencyFinding {
@@ -104,84 +107,141 @@ function harness(files: Record<string, string | null>): Harness {
   };
 }
 
-function plan(over: Partial<SecurityBumpPlan>): SecurityBumpPlan {
-  return {
-    manifestPath: 'package-lock.json',
-    packageName: 'lodash',
-    fromVersions: ['4.17.11'],
-    toVersion: '4.17.21',
-    advisoryIds: [],
-    severity: 'high',
-    advisories: [],
-    ...over,
-  };
-}
-
-describe('bumpBranchName', () => {
-  it('is a readable slug + a stable raw-tuple hash suffix', () => {
-    expect(plan({})).toBeDefined();
-    expect(bumpBranchName(plan({}))).toMatch(
-      /^agenthub\/security\/bump-lodash-4\.17\.21-[0-9a-f]{12}$/,
-    );
-    expect(bumpBranchName(plan({ packageName: '@scope/pkg', toVersion: '1.2.3' }))).toMatch(
-      /^agenthub\/security\/bump-scope-pkg-1\.2\.3-[0-9a-f]{12}$/,
-    );
-    // folds in the manifest directory for monorepos
-    expect(bumpBranchName(plan({ manifestPath: 'client/package-lock.json' }))).toMatch(
-      /^agenthub\/security\/bump-client-lodash-4\.17\.21-[0-9a-f]{12}$/,
-    );
-  });
-
-  it('is deterministic for the same tuple', () => {
-    expect(bumpBranchName(plan({}))).toBe(bumpBranchName(plan({})));
-    // fromVersions / advisories do not affect the branch (same target → same branch)
-    expect(bumpBranchName(plan({ fromVersions: ['4.16.0', '4.17.11'] }))).toBe(
-      bumpBranchName(plan({ fromVersions: ['4.17.11'] })),
-    );
-  });
-
-  it('is collision-safe across tuples that slug identically (the reviewer case)', () => {
-    // `@scope/pkg` and `scope-pkg` both slug to `scope-pkg` — the raw-tuple hash
-    // keeps their branches distinct so the later commit cannot overwrite the
-    // earlier one on a shared branch.
-    const a = bumpBranchName(plan({ packageName: '@scope/pkg' }));
-    const b = bumpBranchName(plan({ packageName: 'scope-pkg' }));
-    expect(a).not.toBe(b);
-    // distinct manifests that share a normalised dir also stay distinct
-    const c = bumpBranchName(plan({ manifestPath: 'a.b/package-lock.json' }));
-    const d = bumpBranchName(plan({ manifestPath: 'a-b/package-lock.json' }));
-    expect(c).not.toBe(d);
-    // distinct target versions stay distinct
-    expect(bumpBranchName(plan({ toVersion: '4.17.21' }))).not.toBe(
-      bumpBranchName(plan({ toVersion: '4.17.22' })),
-    );
-  });
-});
-
-describe('openSecurityBumpPrs', () => {
-  it('opens one PR per fixable advisory, bumping lockfile + package.json', async () => {
+describe('openSecurityBumpPrs — single combined PR', () => {
+  it('opens ONE PR carrying the bump, updating lockfile + package.json', async () => {
     const h = harness({ 'package-lock.json': LOCK, 'package.json': PKG });
     const res = await openSecurityBumpPrs([finding({})], h.deps);
 
     expect(res.skipped).toEqual([]);
     expect(res.opened).toHaveLength(1);
     const [opened] = res.opened;
-    expect(opened.branch).toMatch(/^agenthub\/security\/bump-lodash-4\.17\.21-[0-9a-f]{12}$/);
+    expect(opened.branch).toBe(SECURITY_BUMP_BRANCH);
     expect(opened.prNumber).toBe(7);
     expect(opened.toVersion).toBe('4.17.21');
 
+    // exactly one commit + one PR
+    expect(h.commitFiles).toHaveBeenCalledTimes(1);
+    expect(h.createOrGetOpenPr).toHaveBeenCalledTimes(1);
+
     // commit carried BOTH the bumped lockfile and package.json
     const commitArg = h.commitFiles.mock.calls[0][0];
+    expect(commitArg.branch).toBe(SECURITY_BUMP_BRANCH);
     expect(Object.keys(commitArg.files).sort()).toEqual(['package-lock.json', 'package.json']);
     expect(
       JSON.parse(commitArg.files['package-lock.json']).packages['node_modules/lodash'].version,
     ).toBe('4.17.21');
     expect(JSON.parse(commitArg.files['package.json']).dependencies.lodash).toBe('^4.17.21');
 
-    // PR body references the advisory
+    // PR body references the advisory; single-package title is specific
     const prArg = h.createOrGetOpenPr.mock.calls[0][0];
     expect(prArg.title).toContain('bump lodash to 4.17.21');
     expect(prArg.body).toContain('GHSA-aaaa');
+  });
+
+  it('batches multiple packages across manifests into ONE PR/commit', async () => {
+    const expressLock = JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'client', version: '1.0.0', dependencies: { express: '^4.17.0' } },
+          'node_modules/express': { version: '4.17.0' },
+        },
+      },
+      null,
+      2,
+    );
+    const expressPkg = JSON.stringify(
+      { name: 'client', dependencies: { express: '^4.17.0' } },
+      null,
+      2,
+    );
+    const h = harness({
+      'package-lock.json': LOCK,
+      'package.json': PKG,
+      'client/package-lock.json': expressLock,
+      'client/package.json': expressPkg,
+    });
+    const res = await openSecurityBumpPrs(
+      [
+        finding({}),
+        finding(
+          { name: 'express', version: '4.17.0', manifestPath: 'client/package-lock.json' },
+          { id: 'GHSA-exp', fixedVersion: '4.19.2' },
+        ),
+      ],
+      h.deps,
+    );
+
+    // one commit + one PR for both packages
+    expect(h.commitFiles).toHaveBeenCalledTimes(1);
+    expect(h.createOrGetOpenPr).toHaveBeenCalledTimes(1);
+    expect(res.skipped).toEqual([]);
+    expect(res.opened).toHaveLength(2);
+    // every opened entry rides the same rolling branch + PR number
+    expect(res.opened.map((o) => o.branch)).toEqual([SECURITY_BUMP_BRANCH, SECURITY_BUMP_BRANCH]);
+    expect(res.opened.map((o) => o.prNumber)).toEqual([7, 7]);
+    expect(res.opened.map((o) => o.packageName).sort()).toEqual(['express', 'lodash']);
+
+    // all four files committed together
+    const committed = h.commitFiles.mock.calls[0][0].files;
+    expect(Object.keys(committed).sort()).toEqual([
+      'client/package-lock.json',
+      'client/package.json',
+      'package-lock.json',
+      'package.json',
+    ]);
+    expect(JSON.parse(committed['package-lock.json']).packages['node_modules/lodash'].version).toBe(
+      '4.17.21',
+    );
+    expect(
+      JSON.parse(committed['client/package-lock.json']).packages['node_modules/express'].version,
+    ).toBe('4.19.2');
+
+    // multi-package title + body
+    const prArg = h.createOrGetOpenPr.mock.calls[0][0];
+    expect(prArg.title).toBe('security: bump 2 dependencies');
+    expect(prArg.body).toContain('2 dependencies in a single PR');
+    expect(prArg.body).toContain('GHSA-aaaa');
+    expect(prArg.body).toContain('GHSA-exp');
+  });
+
+  it('threads two packages in the SAME lockfile into one commit (no clobber)', async () => {
+    // lodash AND express both live in package-lock.json; both bumps must survive
+    // in the single committed file — the second must build on the first's edit.
+    const sharedLock = JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          '': {
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { lodash: '^4.17.11', express: '^4.17.0' },
+          },
+          'node_modules/lodash': { version: '4.17.11' },
+          'node_modules/express': { version: '4.17.0' },
+        },
+      },
+      null,
+      2,
+    );
+    const h = harness({ 'package-lock.json': sharedLock });
+    const res = await openSecurityBumpPrs(
+      [
+        finding({}),
+        finding({ name: 'express', version: '4.17.0' }, { id: 'GHSA-exp', fixedVersion: '4.19.2' }),
+      ],
+      h.deps,
+    );
+
+    expect(res.opened).toHaveLength(2);
+    expect(h.commitFiles).toHaveBeenCalledTimes(1);
+    // readFile called once for the shared lockfile despite two plans (cache)
+    expect(h.readFile.mock.calls.filter((c) => c[0] === 'package-lock.json')).toHaveLength(1);
+    const committed = JSON.parse(h.commitFiles.mock.calls[0][0].files['package-lock.json']);
+    expect(committed.packages['node_modules/lodash'].version).toBe('4.17.21');
+    expect(committed.packages['node_modules/express'].version).toBe('4.19.2');
+    expect(committed.packages[''].dependencies.lodash).toBe('^4.17.21');
+    expect(committed.packages[''].dependencies.express).toBe('^4.19.2');
   });
 
   it('re-pins the lockfile from fetched dist metadata and drops the reconcile note', async () => {
@@ -282,8 +342,7 @@ describe('openSecurityBumpPrs', () => {
   it('bumps every vulnerable installed version of a package in ONE PR (no overwrite)', async () => {
     // lodash is installed twice: top-level 4.17.11 (direct) and a transitive
     // 4.16.0 under foo — both vulnerable, both fixed by 4.17.21. They must land
-    // in a SINGLE PR with BOTH lockfile entries bumped (the earlier bug left one
-    // unbumped because both plans shared the same branch).
+    // in a SINGLE PR with BOTH lockfile entries bumped.
     const multiLock = JSON.stringify(
       {
         lockfileVersion: 3,
@@ -387,15 +446,10 @@ describe('openSecurityBumpPrs', () => {
     expect(h.createOrGetOpenPr).not.toHaveBeenCalled();
   });
 
-  it('isolates failures: one bad bump is recorded in skipped, others still open', async () => {
+  it('isolates per-plan edit failures: a missing manifest is skipped, others still ride the PR', async () => {
     const h = harness({
       'package-lock.json': LOCK,
-      'client/package-lock.json': LOCK,
-    });
-    // commit throws only for the client manifest's branch
-    h.commitFiles.mockImplementation(async (args: { branch: string }) => {
-      if (args.branch.includes('client')) throw new Error('git boom');
-      return { headSha: 'deadbeef', created: true };
+      // client/package-lock.json intentionally absent → that plan is skipped
     });
     const res = await openSecurityBumpPrs(
       [
@@ -408,9 +462,28 @@ describe('openSecurityBumpPrs', () => {
     expect(res.skipped).toHaveLength(1);
     expect(res.skipped[0]).toMatchObject({
       manifestPath: 'client/package-lock.json',
-      reason: 'error',
-      detail: 'git boom',
+      reason: 'lockfile_missing',
     });
+    // the surviving bump still produced the single PR
+    expect(h.commitFiles).toHaveBeenCalledTimes(1);
+    expect(h.createOrGetOpenPr).toHaveBeenCalledTimes(1);
+  });
+
+  it('attributes a failing commit to every applied bump (best-effort, never throws)', async () => {
+    const h = harness({ 'package-lock.json': LOCK, 'package.json': PKG });
+    h.commitFiles.mockRejectedValueOnce(new Error('git boom'));
+    const res = await openSecurityBumpPrs([finding({})], h.deps);
+    expect(res.opened).toEqual([]);
+    expect(res.skipped).toEqual([
+      {
+        manifestPath: 'package-lock.json',
+        packageName: 'lodash',
+        toVersion: '4.17.21',
+        reason: 'error',
+        detail: 'git boom',
+      },
+    ]);
+    expect(h.createOrGetOpenPr).not.toHaveBeenCalled();
   });
 
   it('collapses multiple advisories on one package into a single PR at the max fix', async () => {
@@ -433,5 +506,6 @@ describe('openSecurityBumpPrs', () => {
     const res = await openSecurityBumpPrs([finding({}, { fixedVersion: null })], h.deps);
     expect(res).toEqual({ opened: [], skipped: [] });
     expect(h.readFile).not.toHaveBeenCalled();
+    expect(h.commitFiles).not.toHaveBeenCalled();
   });
 });

@@ -86,8 +86,9 @@ export interface RunSecurityScanDeps {
   dataDir?: string;
   /**
    * Optional auto-PR opener. When provided AND the scan persisted (i.e. NOT a
-   * dry run on a non-default ref), open/refresh one native Hub PR per fixable
-   * advisory bump, reusing the findings just computed. Best-effort: a failure
+   * dry run on a non-default ref), open/refresh the SINGLE combined native Hub
+   * PR carrying every fixable advisory bump, reusing the findings just
+   * computed. Best-effort: a failure
    * is logged and swallowed so it never fails the scan. The route wires this
    * only when the project opted in (`securityAutoPr.enabled`) and a native PR
    * service is available.

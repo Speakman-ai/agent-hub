@@ -154,9 +154,11 @@ function DismissButton({ projectId, finding, onDismissed, onNotify }: any) {
   );
 }
 
-// Per-finding Fix: opens (or refreshes) a Dependabot-style bump PR for just
-// this finding's package. Single click — the server action is idempotent
-// (re-clicking refreshes the same bump branch/PR rather than duplicating it).
+// Per-finding Fix: opens (or refreshes) the single Dependabot-style rolling
+// security PR. Clicking Fix materializes that one PR from EVERY open fixable
+// finding (not just this row), so all bumps live in one PR. Single click — the
+// server action is idempotent (re-clicking refreshes the same branch/PR rather
+// than duplicating it).
 function FixButton({ projectId, finding, onFixed, onNotify }: any) {
   const [busy, setBusy] = useState(false);
 
@@ -165,14 +167,15 @@ function FixButton({ projectId, finding, onFixed, onNotify }: any) {
     setBusy(true);
     try {
       const result = await api.fixSecurityFinding(projectId, finding.id);
-      const opened = result?.opened?.[0];
+      const openedBumps = result?.opened ?? [];
+      const opened = openedBumps[0];
       const skipped = result?.skipped?.[0];
       if (opened) {
         const verb = opened.prCreated ? 'Opened' : 'Updated';
-        onNotify?.(
-          `${verb} PR #${opened.prNumber}: bump ${opened.packageName} to ${opened.toVersion}`,
-          'success',
-        );
+        const count = openedBumps.length;
+        const summary =
+          count > 1 ? `${count} dependencies` : `${opened.packageName} to ${opened.toVersion}`;
+        onNotify?.(`${verb} PR #${opened.prNumber}: bump ${summary}`, 'success');
       } else if (skipped) {
         const why =
           skipped.reason === 'lockfile_missing'
@@ -373,13 +376,18 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
     setScanMode(mode);
     try {
       const result = await api.runSecurityScan(projectId, { autoPr: mode === 'autofix' });
-      const opened = result?.autoPr?.opened?.length ?? 0;
+      // All fixable bumps land in ONE combined PR; `opened` carries one entry
+      // per bumped dependency, all sharing the same PR number.
+      const openedBumps = result?.autoPr?.opened ?? [];
+      const bumps = openedBumps.length;
+      const prNumber = openedBumps[0]?.prNumber;
       if (mode === 'autofix') {
         onNotify?.(
-          opened > 0
-            ? `Autofix: opened ${opened} bump PR${opened === 1 ? '' : 's'}`
-            : 'Autofix: no fixable findings to open PRs for',
-          opened > 0 ? 'success' : 'info',
+          bumps > 0
+            ? `Autofix: ${prNumber ? `PR #${prNumber}` : 'opened a PR'} bumping ${bumps} ` +
+                `dependenc${bumps === 1 ? 'y' : 'ies'}`
+            : 'Autofix: no fixable findings to open a PR for',
+          bumps > 0 ? 'success' : 'info',
         );
       } else {
         const next = (result?.newFindings ?? 0) + (result?.reopened ?? 0);

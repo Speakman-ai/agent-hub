@@ -336,33 +336,26 @@ export default function createSecurityAuditRoutes(
           .json({ error: 'Hosted repository is unavailable; cannot open a bump PR.' });
       }
 
-      // Bump the WHOLE package group in this manifest, not just the clicked row.
-      // A package can be installed at several vulnerable versions at once (direct
-      // + transitive copies); openSecurityBumpPrs groups by (manifest, package)
-      // onto ONE deterministic branch. Passing only the single clicked finding
-      // would leave sibling copies unbumped and risk a later single-finding fix
-      // overwriting this branch. So gather every OPEN finding for the same
-      // package+manifest.
+      // The security bump PR is a SINGLE rolling PR per project (one branch,
+      // SECURITY_BUMP_BRANCH). The Fix button materializes/refreshes that one PR
+      // from EVERY open fixable finding — not just the clicked package — for two
+      // reasons: (1) it matches the "all fixes in one PR" model the scheduled
+      // scan uses, and (2) committing only the clicked package onto the shared
+      // branch (cut from baseSha) would clobber the other packages' bumps the
+      // scan path already placed there. The clicked finding is validated as
+      // npm + open + fixed (409s above), so it's always included.
       //
-      // Filter the siblings to the SUPPORTED set up front — npm ecosystem AND a
-      // published fixed_version — rather than relying on planSecurityBumps to
-      // silently skip the rest. A sibling advisory with fixed_version: null or a
-      // non-npm ecosystem is not actionable for this bump, and letting it into
-      // the group is misleading (it would just be dropped) and lets an unrelated
-      // advisory influence the planner's chosen target. The clicked finding is
-      // already validated as npm + fixed (409s above), so it always survives.
-      // (The planner still picks the MAX fixed version across the surviving
-      // siblings — intended Dependabot semantics: one bump that resolves every
-      // vulnerable copy of the package at once.)
+      // Filter to the SUPPORTED set up front — npm ecosystem AND a published
+      // fixed_version — rather than relying on planSecurityBumps to silently
+      // skip the rest. A finding with fixed_version: null or a non-npm ecosystem
+      // is not actionable for a bump, and letting it in is misleading (it would
+      // just be dropped). The planner groups the survivors by (manifest,
+      // package) and picks the MAX fixed version per group — Dependabot
+      // semantics: one bump resolves every vulnerable copy of each package, and
+      // every fixable package lands in the one combined PR.
       const group = store()
         .listFindings(project.id, { status: 'open' })
-        .filter(
-          (r) =>
-            r.package_name === finding.package_name &&
-            r.manifest_path === finding.manifest_path &&
-            r.ecosystem === 'npm' &&
-            r.fixed_version != null,
-        )
+        .filter((r) => r.ecosystem === 'npm' && r.fixed_version != null)
         .map(findingRowToDependencyFinding);
 
       const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
