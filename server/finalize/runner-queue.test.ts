@@ -8,6 +8,7 @@ import {
   claimRunnerJob,
   enqueueRunnerJob,
   heartbeatRunnerJob,
+  markRunnerJobSpotInterruption,
   reapExpiredRunnerLeases,
   reportRunnerJob,
   runnerQueueDepth,
@@ -88,9 +89,33 @@ describe('runner-queue', () => {
     );
     // not yet expired at 25_000 (lease now 30_000)
     expect(reapExpiredRunnerLeases(25_000)).toEqual([]);
-    // expired by 40_000
-    expect(reapExpiredRunnerLeases(40_000)).toEqual([c.id]);
+    // expired by 40_000 — generic loss, no spot interruption reported
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([{ id: c.id, spotReclaimed: false }]);
     expect(runnerQueueDepth()).toBe(0); // 'lost' is terminal
+  });
+
+  it('a reported spot interruption makes the reaped lease a known reclaim', () => {
+    enq({ jobId: 'j', now: 1000 });
+    const c = claimRunnerJob({ agentId: 'a', leaseMs: 10_000, now: 2000 })!;
+    // Agent observed an IMDS interruption notice and reported it.
+    expect(markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'a', now: 5000 })).toBe(true);
+    // Re-report is idempotent (sticky) — no second stamp.
+    expect(markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'a', now: 6000 })).toBe(false);
+    // Instance dies → lease expires → reaper classifies it as a reclaim.
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([{ id: c.id, spotReclaimed: true }]);
+    const row = getOrgsDb().prepare('SELECT detail FROM runner_jobs WHERE id=?').get(c.id) as {
+      detail: string;
+    };
+    expect(row.detail).toBe('lease expired after spot interruption notice');
+  });
+
+  it('markRunnerJobSpotInterruption refuses a non-claiming agent', () => {
+    enq({ jobId: 'j', now: 1000 });
+    const c = claimRunnerJob({ agentId: 'a', leaseMs: 10_000, now: 2000 })!;
+    expect(markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'intruder', now: 5000 })).toBe(
+      false,
+    );
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([{ id: c.id, spotReclaimed: false }]);
   });
 
   it('log spool dedupes on (job_id, seq)', () => {

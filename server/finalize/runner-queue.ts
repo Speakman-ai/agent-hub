@@ -148,6 +148,33 @@ export function markRunnerJobRunning(jobId: string, now: number): void {
     .run({ jobId, now });
 }
 
+/**
+ * Record that the agent owning this job observed an EC2 Spot interruption notice
+ * (IMDS `spot/instance-action`). Stamps `spot_interruption_at` once (sticky —
+ * never cleared) so that when the lease later expires (instance gone), the reaper
+ * can classify the lost job as a known reclaim rather than a generic agent crash.
+ *
+ * Scoped to the claiming agent + a live (claimed/running) state so a stale or
+ * spoofed report can't mark someone else's job. Returns true if the row was
+ * stamped (idempotent: re-reporting on an already-stamped job is a no-op that
+ * still returns false because `changes` is 0).
+ */
+export function markRunnerJobSpotInterruption(args: {
+  jobId: string;
+  agentId: string;
+  now: number;
+}): boolean {
+  const res = getOrgsDb()
+    .prepare(
+      `UPDATE runner_jobs
+          SET spot_interruption_at=@now
+        WHERE id=@jobId AND claimed_by=@agentId AND state IN ('claimed','running')
+          AND spot_interruption_at IS NULL`,
+    )
+    .run({ jobId: args.jobId, agentId: args.agentId, now: args.now });
+  return res.changes === 1;
+}
+
 /** Renew a job's lease; returns false if the job is gone or already terminal. */
 export function heartbeatRunnerJob(args: {
   jobId: string;
@@ -227,20 +254,39 @@ export function runnerQueueDepth(orgId?: string): number {
   return row.n;
 }
 
+/** A job marked `lost` by the reaper, plus whether it was a known Spot reclaim. */
+export interface ReapedRunnerJob {
+  id: string;
+  /**
+   * True iff the agent reported an EC2 Spot interruption notice before the lease
+   * expired (`spot_interruption_at` was set). The fleet scaler uses this to fail
+   * the in-process channel with a `spot_reclaimed` marker so step-runner picks
+   * the generous reclaim retry cap instead of `container_unavailable`.
+   */
+  spotReclaimed: boolean;
+}
+
 /**
  * Mark claimed/running jobs whose lease has expired as `lost` (the reaper). The
  * orchestrator's own retry logic decides what to do — we do NOT auto-requeue.
- * Returns the affected job ids.
+ * Returns the affected jobs, each flagged with whether the agent had reported a
+ * Spot interruption notice (so the loss is a known reclaim, not a crash). The
+ * persisted `detail` mirrors that distinction for post-hoc inspection.
  */
-export function reapExpiredRunnerLeases(now: number): string[] {
+export function reapExpiredRunnerLeases(now: number): ReapedRunnerJob[] {
   const rows = getOrgsDb()
     .prepare(
       `UPDATE runner_jobs
-          SET state='lost', ended_at=@now, detail='lease expired'
+          SET state='lost', ended_at=@now,
+              detail = CASE
+                WHEN spot_interruption_at IS NOT NULL
+                  THEN 'lease expired after spot interruption notice'
+                ELSE 'lease expired'
+              END
         WHERE state IN ('claimed','running') AND lease_expires_at IS NOT NULL
           AND lease_expires_at < @now
-        RETURNING id`,
+        RETURNING id, spot_interruption_at`,
     )
-    .all({ now }) as Array<{ id: string }>;
-  return rows.map((r) => r.id);
+    .all({ now }) as Array<{ id: string; spot_interruption_at: number | null }>;
+  return rows.map((r) => ({ id: r.id, spotReclaimed: r.spot_interruption_at != null }));
 }

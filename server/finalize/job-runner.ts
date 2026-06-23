@@ -697,6 +697,10 @@ export async function runJobPhase(
         stepResults: allStepResults,
         activeSecondsBilled,
         infraErrorDetail: failedOutcome.infraErrorDetail,
+        // Carry the instance's machine reason (e.g. `spot_reclaimed` when a
+        // runner lost its EC2 Spot instance) so the orchestrator picks the right
+        // retry-generation cap instead of always assuming `container_unavailable`.
+        ...(failedOutcome.failureReason ? { failureReason: failedOutcome.failureReason } : {}),
         ...(failedStep ? { failedStep } : {}),
       };
     } else if (failedOutcome?.status === 'timeout') {

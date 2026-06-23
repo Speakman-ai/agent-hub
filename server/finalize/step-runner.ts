@@ -96,6 +96,7 @@ import {
   writeFinalizeChecksRoundTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
+import { detailIsSpotReclaim } from './spot-interruption.js';
 
 /**
  * Argv form of {@link FINALIZE_STEP_SHELL}. Parsed once at module load so
@@ -257,6 +258,16 @@ export interface StepRunResult {
    * branch.
    */
   infraErrorDetail?: string;
+  /**
+   * The §10 machine `failure_reason` for a non-success terminal. The
+   * orchestrator does NOT persist `infra_error` itself (it owns the retry
+   * decision), so it reads this to choose the retry-generation cap: a
+   * `spot_reclaimed` (the runner lost its instance to an EC2 Spot reclaim)
+   * earns the generous reclaim cap, every other infra reason the conservative
+   * one. Falls back to `container_unavailable` when absent. Carried for
+   * `failure`/`timeout` too so callers have a single source of truth.
+   */
+  failureReason?: string;
 }
 
 /**
@@ -599,6 +610,16 @@ export async function runStepsSequence(
     }
 
     if (runOutcome.kind === 'spawn-error') {
+      // A remote runner-agent lost to an EC2 Spot reclaim fails the step with the
+      // spot_reclaimed marker (the fleet reaper sets it when the agent reported an
+      // IMDS interruption notice before its lease expired). Classify those as
+      // `spot_reclaimed` so the orchestrator's retry path earns the generous
+      // reclaim generation cap; every other spawn failure stays the conservative
+      // `container_unavailable`. Both are infra-class, so the retry path is the
+      // same — only the cap differs.
+      const failureReason = detailIsSpotReclaim(runOutcome.detail)
+        ? 'spot_reclaimed'
+        : 'container_unavailable';
       return finishStepSequence(
         deps,
         opts,
@@ -606,7 +627,7 @@ export async function runStepsSequence(
           stmts,
           opts.runId,
           'infra_error',
-          'container_unavailable',
+          failureReason,
           `step ${stepIndex} (${displayName}) failed to spawn: ${runOutcome.detail}`,
           activeSecondsBilled,
           stepResults,
@@ -1264,6 +1285,7 @@ function terminate(
     status,
     stepResults,
     activeSecondsBilled,
+    ...(failureReason ? { failureReason } : {}),
     ...(failedStep ? { failedStep } : {}),
     ...(infraErrorDetail ? { infraErrorDetail } : {}),
   };

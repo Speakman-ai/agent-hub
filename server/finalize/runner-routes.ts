@@ -19,6 +19,7 @@ import {
   claimRunnerJob,
   heartbeatRunnerJob,
   markRunnerJobRunning,
+  markRunnerJobSpotInterruption,
 } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
 import type { JobResourceSummary } from './job-resource-sampler.js';
@@ -239,7 +240,17 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
     (req: RunnerReq, res: Response) => {
       const jobId = req.params.jobId as string;
       if (!authorizeJob(req.agent!, jobId, res)) return;
-      heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now: Date.now() });
+      const now = Date.now();
+      heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now });
+      // The agent polls IMDS on its heartbeat tick; when it sees an EC2 Spot
+      // interruption notice it sets `spotInterruption: true` here. Stamp the row
+      // (sticky) so that when the instance dies and the lease expires, the reaper
+      // can classify the lost job as `spot_reclaimed` (generous retry cap) rather
+      // than a generic crash. Honored only from the claiming agent (the queue op
+      // scopes to claimed_by + a live state).
+      if ((req.body as { spotInterruption?: unknown } | undefined)?.spotInterruption === true) {
+        markRunnerJobSpotInterruption({ jobId, agentId: req.agent!.agentId, now });
+      }
       res.status(204).end();
     },
   );

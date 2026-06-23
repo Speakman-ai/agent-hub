@@ -4,7 +4,8 @@ import os from 'os';
 import path from 'path';
 import express, { type Express } from 'express';
 import request from 'supertest';
-import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
+import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
+import { enqueueRunnerJob, reapExpiredRunnerLeases } from './runner-queue.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
 import { getJobChannel } from './runner-job-channel.js';
 import createRunnerRoutes, {
@@ -105,6 +106,71 @@ describe('runner-routes (HTTP control plane)', () => {
     env: { FOO: 'bar' },
     labels: {},
   };
+
+  it('heartbeat with spotInterruption=true stamps the job so a lost lease is a known reclaim', async () => {
+    const token = await register();
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      specJson: '{}',
+      now: Date.now(),
+    });
+    const claim = await request(app)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(claim.status).toBe(200);
+    const jobId = claim.body.jobId as string;
+
+    // End-to-end through express.json() parsing: the real transport body shape.
+    const hb = await request(app)
+      .post(`/api/runners/jobs/${jobId}/heartbeat`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ spotInterruption: true });
+    expect(hb.status).toBe(204);
+
+    const row = getOrgsDb()
+      .prepare('SELECT spot_interruption_at FROM runner_jobs WHERE id=?')
+      .get(jobId) as { spot_interruption_at: number | null };
+    expect(row.spot_interruption_at).not.toBeNull();
+
+    // And the consequence: a later lease expiry is classified as a reclaim.
+    expect(reapExpiredRunnerLeases(Date.now() + 10 * 60_000)).toEqual([
+      { id: jobId, spotReclaimed: true },
+    ]);
+  });
+
+  it('heartbeat without the flag does not stamp a spot interruption', async () => {
+    const token = await register();
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      specJson: '{}',
+      now: Date.now(),
+    });
+    const claim = await request(app)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    const jobId = claim.body.jobId as string;
+    const hb = await request(app)
+      .post(`/api/runners/jobs/${jobId}/heartbeat`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(hb.status).toBe(204);
+    const row = getOrgsDb()
+      .prepare('SELECT spot_interruption_at FROM runner_jobs WHERE id=?')
+      .get(jobId) as { spot_interruption_at: number | null };
+    expect(row.spot_interruption_at).toBeNull();
+  });
 
   it('rejects register with a bad fleet token and claim without an agent token', async () => {
     expect(

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  httpTransport,
   runAgentJob,
   type AgentDocker,
   type AgentLogFrame,
@@ -105,6 +106,74 @@ describe('runAgentJob', () => {
     expect(events).toEqual(['start:/ws/repo', 'stop:c1', 'finish']);
   });
 
+  it('reports a detected spot interruption on the heartbeat', async () => {
+    const hbCalls: Array<boolean | undefined> = [];
+    let releaseStep!: () => void;
+    const stepGate = new Promise<void>((r) => {
+      releaseStep = r;
+    });
+    const { transport, docker } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'slow', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    transport.heartbeat = async (_j, spot) => {
+      hbCalls.push(spot);
+    };
+    // Hold the step open so the background heartbeat timer fires at least once.
+    docker.execStep = async () => {
+      await stepGate;
+      return 0;
+    };
+
+    const jobP = runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      heartbeatMs: 5,
+      checkSpot: async () => true,
+    });
+
+    await vi.waitFor(() => expect(hbCalls.some((s) => s === true)).toBe(true));
+    releaseStep();
+    await jobP;
+  });
+
+  it('heartbeats with no interruption flag off-EC2 (checkSpot false)', async () => {
+    const hbCalls: Array<boolean | undefined> = [];
+    let releaseStep!: () => void;
+    const stepGate = new Promise<void>((r) => {
+      releaseStep = r;
+    });
+    const { transport, docker } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'slow', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    transport.heartbeat = async (_j, spot) => {
+      hbCalls.push(spot);
+    };
+    docker.execStep = async () => {
+      await stepGate;
+      return 0;
+    };
+
+    const jobP = runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      heartbeatMs: 5,
+      checkSpot: async () => false,
+    });
+
+    await vi.waitFor(() => expect(hbCalls.length).toBeGreaterThan(0));
+    releaseStep();
+    await jobP;
+    expect(hbCalls.every((s) => s === false)).toBe(true);
+  });
+
   it('treats a 410/gone poll as teardown', async () => {
     const { transport, docker, events } = fakes([{ type: 'gone' }], () => 0);
     await runAgentJob({ jobId: 'j', spec: wire(), workspaceDir: '/ws', transport, docker });
@@ -203,5 +272,47 @@ describe('runAgentJob', () => {
       },
     });
     expect(materialized).toEqual(['/ws/repo']);
+  });
+});
+
+describe('httpTransport.heartbeat', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the spot flag as JSON with the application/json content type', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return { ok: true, status: 204 } as Response;
+      }),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+
+    await transport.heartbeat('job-1', true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://hub.test/api/runners/jobs/job-1/heartbeat');
+    const headers = calls[0].init.headers as Record<string, string>;
+    // Express's json() parser only populates req.body when the content type is
+    // application/json — this is what makes req.body.spotInterruption land.
+    expect(headers['content-type']).toBe('application/json');
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ spotInterruption: true });
+  });
+
+  it('omits the flag when no interruption is reported', async () => {
+    const calls: Array<{ init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        calls.push({ init });
+        return { ok: true, status: 204 } as Response;
+      }),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+
+    await transport.heartbeat('job-1');
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({});
   });
 });

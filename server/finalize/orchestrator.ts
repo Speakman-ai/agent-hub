@@ -1328,11 +1328,14 @@ export async function runFinalize(
           return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
         }
         if (lastStepOutcome.status === 'infra_error') {
+          // Honor the step result's machine reason so a runner lost to an EC2
+          // Spot reclaim surfaces as `spot_reclaimed` (generous retry cap), not
+          // the conservative `container_unavailable`. Falls back when absent.
           return terminate(
             deps,
             runId,
             'infra_error',
-            'container_unavailable',
+            lastStepOutcome.failureReason ?? 'container_unavailable',
             lastStepOutcome.infraErrorDetail ?? 'step phase reported infra_error',
             log,
           );

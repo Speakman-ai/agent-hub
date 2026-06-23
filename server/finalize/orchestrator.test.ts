@@ -2488,11 +2488,54 @@ describe('runFinalize — §10 double-reclaim survival (generation cap > 1)', ()
     expect(terminalMsgs).toHaveLength(1);
   });
 
-  // NOTE: the reclaim-class (`spot_reclaimed`) generous-cap behavior is proven
-  // at the unit level in infra-retry.test.ts (openInfraRetryRun honours the
-  // reclaim cap). Wiring an actual `spot_reclaimed` *terminal* into the
-  // orchestrator depends on the reclaim-detection follow-up (lease-expiry /
-  // IMDS 2-min notice → spot_reclaimed), tracked separately.
+  // The reclaim-detection follow-up is now wired: a runner lost to an EC2 Spot
+  // reclaim surfaces `spot_reclaimed` from the step phase (step-runner lifts the
+  // fleet reaper's marker), the orchestrator honours it, and it earns the
+  // generous reclaim generation cap rather than the conservative infra cap.
+  const STEP_INFRA_SPOT: StepRunResult = {
+    status: 'infra_error',
+    stepResults: [],
+    activeSecondsBilled: 0,
+    failureReason: 'spot_reclaimed',
+    infraErrorDetail: '[spot_reclaimed] runner agent lost after an EC2 Spot interruption notice',
+  };
+
+  it('a spot_reclaimed step terminal earns the generous reclaim cap (recovers past the generic cap)', async () => {
+    // Generic infra cap = 1 (would give up after 2 attempts); reclaim cap = 3.
+    // The step phase reports `spot_reclaimed` three times then succeeds. If the
+    // reclaim were mis-classified as `container_unavailable` (the pre-fix bug),
+    // the generic cap of 1 would terminate it after 2 attempts. Recovery on the
+    // 4th attempt proves the reclaim cap was applied — the regression guard.
+    process.env.FINALIZE_MAX_INFRA_RETRY_GENERATIONS = '1';
+    process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '3';
+    let calls = 0;
+    const steps = vi.fn(async () => {
+      calls += 1;
+      return calls <= 3 ? STEP_INFRA_SPOT : STEPS_OK;
+    });
+    const { deps, stmts } = makeDeps({ runStepPhase: steps as never });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('ready_to_push');
+    expect(calls).toBe(4); // original + 3 reclaim retries
+    expect(stmts.stmts.insertFinalizeRun.run).toHaveBeenCalledTimes(4);
+  });
+
+  it('terminates as spot_reclaimed (not container_unavailable) when reclaim retries are exhausted', async () => {
+    process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '2';
+    const steps = vi.fn(async () => STEP_INFRA_SPOT);
+    const { deps, stmts } = makeDeps({ runStepPhase: steps as never });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('infra_error');
+      expect(result.failureReason).toBe('spot_reclaimed');
+    }
+    expect(steps).toHaveBeenCalledTimes(3); // original + 2 reclaim retries
+    const rows = Array.from(stmts.rows.values());
+    expect(rows).toHaveLength(3);
+    const retry = rows.find((r) => r.retry_of_run_id)!;
+    expect(retry.failure_reason).toBe('spot_reclaimed');
+  });
 });
 
 // ─── §14 metric emission contract ─────────────────────────────────────

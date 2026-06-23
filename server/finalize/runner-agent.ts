@@ -28,6 +28,7 @@ import {
   noopTaskProtection,
   type TaskProtection,
 } from './ecs-task-protection.js';
+import { checkSpotInterruption } from './spot-interruption.js';
 
 export interface AgentLogFrame {
   seq: number;
@@ -48,8 +49,13 @@ export interface AgentTransport {
     exitCode: number,
     resourceSummary?: JobResourceSummary | null,
   ): Promise<void>;
-  /** Extend the job's lease while it's alive (called on a background timer). */
-  heartbeat(jobId: string): Promise<void>;
+  /**
+   * Extend the job's lease while it's alive (called on a background timer).
+   * `spotInterruption` is set true once the agent's IMDS poll detects a pending
+   * EC2 Spot reclaim, so the Hub can stamp the job and later classify its lost
+   * lease as `spot_reclaimed` rather than a generic crash.
+   */
+  heartbeat(jobId: string, spotInterruption?: boolean): Promise<void>;
 }
 
 export interface AgentDocker {
@@ -83,9 +89,20 @@ export async function runAgentJob(args: {
    * platforms without `/proc` so the agent never crashes off-Linux.
    */
   startSampler?: () => RunningSampler;
+  /**
+   * Probe for a pending EC2 Spot interruption (IMDS). Injectable for tests;
+   * defaults to the real IMDSv2 probe, which is a fast no-op off EC2. Returns
+   * true once a 2-minute reclaim notice is observed.
+   */
+  checkSpot?: () => Promise<boolean>;
 }): Promise<{ stepExits: Array<{ stepIndex: number; exitCode: number | null }> }> {
   const { jobId, spec, transport, docker } = args;
   const protection = args.protection ?? noopTaskProtection();
+  const checkSpot = args.checkSpot ?? (async () => (await checkSpotInterruption()).pending);
+  // Sticky: once IMDS reports a reclaim notice it never un-reports, and the Hub
+  // stamp is one-way, so we keep telling the Hub on every heartbeat until the
+  // instance dies. Avoids a race where one report is lost to a transient blip.
+  let spotInterruption = false;
   // Shield this ECS task from deployment / scale-in termination while it owns the
   // job. A killed agent strands the shard (lease expires → reaper marks it `lost`)
   // and hangs the waiting session; protection makes a rolling deploy wait for the
@@ -97,7 +114,18 @@ export async function runAgentJob(args: {
   // live agent (which would let the reaper mark it lost and the scaler kill it).
   // The same tick re-arms task protection before its bounded expiry lapses.
   const heartbeat = setInterval(() => {
-    void transport.heartbeat(jobId).catch(() => {});
+    // Poll IMDS for a Spot reclaim notice; once seen, flag it on every heartbeat
+    // so the Hub can classify the imminent lease loss as `spot_reclaimed`. The
+    // probe is best-effort and a fast no-op off EC2 — never let it break the
+    // heartbeat (a missed lease renewal would get the agent reaped).
+    void checkSpot()
+      .then((pending) => {
+        if (pending) spotInterruption = true;
+      })
+      .catch(() => {})
+      .finally(() => {
+        void transport.heartbeat(jobId, spotInterruption).catch(() => {});
+      });
     void protection.set(true).catch(() => {});
   }, args.heartbeatMs ?? 30_000);
   if (typeof (heartbeat as { unref?: () => void }).unref === 'function') {
@@ -267,11 +295,11 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
         body: JSON.stringify({ exitCode, resourceSummary: resourceSummary ?? null }),
       });
     },
-    async heartbeat(jobId) {
+    async heartbeat(jobId, spotInterruption) {
       await fetch(`${base}/api/runners/jobs/${jobId}/heartbeat`, {
         method: 'POST',
         headers: auth,
-        body: '{}',
+        body: JSON.stringify(spotInterruption ? { spotInterruption: true } : {}),
       });
     },
   };

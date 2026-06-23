@@ -18,6 +18,7 @@
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
 import { runnerQueueDepth, reapExpiredRunnerLeases } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
+import { spotReclaimDetail } from './spot-interruption.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
 
 interface FleetScalerConfig {
@@ -179,24 +180,36 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
     // Without this, a stranded job would pin the fleet above zero forever.
     const reaped = reapExpiredRunnerLeases(now);
     if (reaped.length) {
-      console.log(`[fleet-scaler] reaped ${reaped.length} expired lease(s)`);
+      const reclaims = reaped.filter((r) => r.spotReclaimed).length;
+      console.log(
+        `[fleet-scaler] reaped ${reaped.length} expired lease(s)` +
+          (reclaims ? ` (${reclaims} after a spot interruption notice)` : ''),
+      );
       // Reaping marks the queue row `lost`, but the orchestrator is still awaiting
       // the in-process channel's in-flight step (the dead agent will never report
       // it). Fail those channels so the step surfaces as infra_error and the
       // job-runner can retry the instance on a fresh agent instead of hanging.
       //
-      // The message states only what we OBSERVED — a missing heartbeat — and does
-      // NOT guess "Spot reclaim" (this fleet runs 100% on-demand; a lease can
-      // expire from an agent crash, an OOM kill, a deploy/scale-in, OR the Hub
-      // being briefly unreachable). A whole batch reaped in one tick points at the
-      // Hub side, not N independent agent deaths.
-      const detail =
+      // For a job whose agent reported an EC2 Spot interruption notice (IMDS)
+      // before its lease expired, we KNOW the loss is capacity reclamation, not a
+      // crash — fail it with the spot_reclaimed marker so step-runner picks the
+      // generous reclaim retry cap. For the rest, the message states only what we
+      // OBSERVED — a missing heartbeat — and does NOT guess "Spot reclaim" (the
+      // lease can expire from an agent crash, an OOM kill, a deploy/scale-in, OR
+      // the Hub being briefly unreachable). A whole batch reaped in one tick
+      // points at the Hub side, not N independent agent deaths.
+      const genericDetail =
         reaped.length > 1
           ? `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
             `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`
           : `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`;
-      for (const jobId of reaped) {
-        getJobChannel(jobId)?.fail(new Error(detail));
+      for (const job of reaped) {
+        const detail = job.spotReclaimed
+          ? spotReclaimDetail(
+              'runner agent lost after an EC2 Spot interruption notice — instance reclaimed',
+            )
+          : genericDetail;
+        getJobChannel(job.id)?.fail(new Error(detail));
       }
     }
     const depth = runnerQueueDepth(); // queued + claimed + running, across all orgs

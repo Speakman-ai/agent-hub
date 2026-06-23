@@ -186,6 +186,18 @@ export function initOrgsDb(): void {
   // Multi-tenant Finalize runner control-plane queue (shared across orgs).
   orgsDb.exec(RUNNER_QUEUE_SCHEMA);
 
+  // Add `spot_interruption_at` to runner_jobs on installs predating EC2 Spot
+  // reclaim detection. Nullable column — the runner agent stamps it when IMDS
+  // reports a 2-minute interruption notice so the lease reaper can classify the
+  // lost job as `spot_reclaimed` (generous retry cap) rather than the generic
+  // `container_unavailable`. CREATE TABLE IF NOT EXISTS above won't add it to an
+  // existing table.
+  try {
+    orgsDb.prepare('SELECT spot_interruption_at FROM runner_jobs LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE runner_jobs ADD COLUMN spot_interruption_at INTEGER');
+  }
+
   // Add `masked_preview` to user_skill_credentials on installs predating the
   // pre-computed mask. Nullable column → backfill happens lazily on the
   // first list/upsert that touches each row. CREATE TABLE IF NOT EXISTS

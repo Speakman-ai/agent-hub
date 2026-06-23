@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS runner_jobs (
   claimed_by       TEXT,                     -- agent id
   lease_expires_at INTEGER,                  -- visibility-timeout deadline (epoch ms)
   heartbeat_at     INTEGER,
+  spot_interruption_at INTEGER,              -- epoch ms the agent reported an EC2 Spot interruption notice (IMDS), else null
   attempt          INTEGER NOT NULL DEFAULT 0,
   exit_code        INTEGER,
   detail           TEXT,                     -- terminal reason (infra_error msg, etc.)

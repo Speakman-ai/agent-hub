@@ -12,6 +12,7 @@ import { EventEmitter, Readable } from 'stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CiConfig, CiStep } from './ci-config.js';
+import { spotReclaimDetail } from './spot-interruption.js';
 import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
@@ -672,6 +673,55 @@ describe('runStepPhase — spawn errors', () => {
     expect(result.stepResults).toHaveLength(2);
     expect(result.stepResults[0]).toMatchObject({ index: 1, name: 'first', exitCode: 0 });
     expect(result.stepResults[1]).toMatchObject({ index: 2, name: 'doomed', exitCode: -1 });
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('classifies a generic spawn-error as container_unavailable', async () => {
+    const stmts = makeStmts();
+    const spawnStep: SpawnStepFn = () => {
+      throw new Error('runner agent lost — lease expired with no heartbeat');
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const result = await runStepPhase(deps, {
+      runId: RUN_ID,
+      config: makeConfig([{ name: 'step 1', run: 'echo hi' }]),
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('container_unavailable');
+  });
+
+  it('classifies a spot-reclaim-marked spawn-error as spot_reclaimed', async () => {
+    // The fleet reaper fails the in-flight step channel with the spot_reclaimed
+    // marker when the runner reported an EC2 Spot interruption before its lease
+    // expired. step-runner must lift that into the spot_reclaimed failure_reason
+    // so the orchestrator earns the generous reclaim retry cap. This is the
+    // regression that would have caught the original mis-classification.
+    const stmts = makeStmts();
+    const spawnStep: SpawnStepFn = () => {
+      throw new Error(spotReclaimDetail('runner agent lost after an EC2 Spot interruption notice'));
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const result = await runStepPhase(deps, {
+      runId: RUN_ID,
+      config: makeConfig([{ name: 'step 1', run: 'echo hi' }]),
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('spot_reclaimed');
+    // Still infra-class: the orchestrator never persists infra_error itself.
     expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
   });
 });
