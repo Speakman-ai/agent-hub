@@ -959,6 +959,61 @@ describe('runFinalize — step phase status mapping', () => {
     }
   });
 
+  // Regression: a CI step that ran past the per-run `timeout_minutes`
+  // wall-clock cap (step execution bills only a flat tick to active time, so
+  // the §13 active-time budget is nowhere near exhausted) was surfaced to the
+  // session with the active-time-budget header — "active-time budget
+  // exhausted. Budget: 3600s. Consumed: 96s." — which made a hung-step
+  // timeout look like the run had used up its 60-min budget. The step-phase
+  // timeout must post the pipeline-step header instead, carrying the CI
+  // timeout_minutes, NOT the active-budget framing.
+  it('posts the pipeline-step timeout header (not the active-budget message) on a step timeout', async () => {
+    const { deps, stmts } = makeDeps({
+      // A step killed by its wall-clock cap; its child can exit 1 on the kill
+      // signal, so a timeout outcome legitimately carries exitCode 1.
+      runStepPhase: fakeRunSteps({
+        status: 'timeout',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        failedStep: {
+          index: 1,
+          name: 'backend / Backend tests',
+          run: 'npm run test:backend',
+          exitCode: 1,
+          outputTail: ['FAIL backend', 'timed out'],
+        },
+      }),
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') expect(result.status).toBe('timed_out');
+
+    const inserts = (stmts.stmts.addMessage.run as ReturnType<typeof vi.fn>).mock.calls;
+    const timeoutInsert = inserts.find((c) => {
+      const metadataRaw = c[7] as string | null;
+      let metadata: Record<string, unknown> | null = null;
+      try {
+        metadata = metadataRaw ? (JSON.parse(metadataRaw) as Record<string, unknown>) : null;
+      } catch {
+        metadata = null;
+      }
+      return metadata?.kind === 'finalize_timeout_dispatch';
+    });
+    expect(timeoutInsert).toBeDefined();
+    const body = timeoutInsert![3] as string;
+    expect(body).toContain('a CI step exceeded the pipeline timeout');
+    // CI_OK pins timeout_minutes: 60 — the message must cite the pipeline cap.
+    expect(body).toContain('Pipeline step timeout: 60min.');
+    expect(body).toContain('Last attempted step: "backend / Backend tests" (exit 1).');
+    // The misleading active-time-budget framing must NOT appear.
+    expect(body).not.toContain('active-time budget exhausted');
+    expect(body).not.toContain('(active time). Consumed:');
+    const metadata = JSON.parse(timeoutInsert![7] as string) as Record<string, unknown>;
+    expect(metadata.timeoutClass).toBe('pipeline_step');
+    expect(metadata.timeoutMinutes).toBe(60);
+  });
+
   it('maps infra_error to infra_error outcome', async () => {
     const { deps, stmts } = makeDeps({
       runStepPhase: fakeRunSteps({

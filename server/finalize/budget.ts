@@ -328,24 +328,66 @@ export const TIMEOUT_DISPATCH_HEADER =
   'Finalize Code Changes: timed out — active-time budget exhausted.';
 
 /**
+ * Header used when a CI **step / pipeline** ran past the per-run
+ * `timeout_minutes` wall-clock cap and was stopped — distinct from the
+ * §13 active-time budget header above.
+ *
+ * Why the split: the active-time budget meters total Hub processing
+ * (rebase + reviewer + agent turns), whereas a step timeout means a
+ * single test/build step hung or ran too slow against the pipeline
+ * wall-clock cap. Surfacing a step timeout with the active-budget header
+ * is actively misleading: it reads "Budget: 3600s. Consumed: 96s." —
+ * making it look like the run stopped despite barely using its budget,
+ * because step execution wall-clock bills only a flat tick to active
+ * time. The two outcomes deserve two different messages.
+ */
+export const STEP_TIMEOUT_DISPATCH_HEADER =
+  'Finalize Code Changes: timed out — a CI step exceeded the pipeline timeout.';
+
+/** Which clock tripped: the §13 active-time budget or a pipeline-step wall-clock cap. */
+export type FinalizeTimeoutClass = 'active_budget' | 'pipeline_step';
+
+/**
  * Compose the body of the timeout message dropped into the session.
  * Pure — exposed for tests and the orchestrator. Mirrors the wording
  * of the §7 fix-dispatch message so the UI / agent can identify the
  * structured handoff.
+ *
+ * `timeoutClass` selects which clock tripped:
+ *   - `'active_budget'` (default) → the §13 active-time budget exhausted;
+ *     surfaced with the budget/consumed summary.
+ *   - `'pipeline_step'` → a single CI step ran past the per-run
+ *     `timeout_minutes` wall-clock cap; surfaced with the step-timeout
+ *     header and the pipeline timeout (NOT the active-time budget, which
+ *     was not exhausted).
  */
 export function composeTimeoutMessageBody(args: {
+  timeoutClass?: FinalizeTimeoutClass;
   budgetSeconds: number;
   activeSecondsConsumed: number;
+  /** Pipeline wall-clock cap (`timeout_minutes`); used for the `pipeline_step` summary. */
+  timeoutMinutes?: number;
   lastOutputTail?: string[];
   lastStepName?: string;
   lastStepExitCode?: number;
 }): string {
+  const timeoutClass: FinalizeTimeoutClass = args.timeoutClass ?? 'active_budget';
   const lines: string[] = [];
-  lines.push(TIMEOUT_DISPATCH_HEADER);
-  lines.push('');
-  lines.push(
-    `Budget: ${args.budgetSeconds}s (active time). Consumed: ${args.activeSecondsConsumed}s.`,
-  );
+  if (timeoutClass === 'pipeline_step') {
+    lines.push(STEP_TIMEOUT_DISPATCH_HEADER);
+    lines.push('');
+    lines.push(
+      typeof args.timeoutMinutes === 'number' && Number.isFinite(args.timeoutMinutes)
+        ? `Pipeline step timeout: ${args.timeoutMinutes}min. A step ran past the per-run wall-clock limit and was stopped.`
+        : 'A CI step ran past the per-run wall-clock limit and was stopped.',
+    );
+  } else {
+    lines.push(TIMEOUT_DISPATCH_HEADER);
+    lines.push('');
+    lines.push(
+      `Budget: ${args.budgetSeconds}s (active time). Consumed: ${args.activeSecondsConsumed}s.`,
+    );
+  }
   if (args.lastStepName) {
     const ec = args.lastStepExitCode ?? null;
     lines.push(`Last attempted step: "${args.lastStepName}"${ec !== null ? ` (exit ${ec})` : ''}.`);
@@ -381,8 +423,12 @@ export function postTimeoutDispatchMessage(
     sessionId: string;
     cardId: string;
     projectId: string;
+    /** Which clock tripped. Defaults to the §13 active-time budget. */
+    timeoutClass?: FinalizeTimeoutClass;
     budgetSeconds: number;
     activeSecondsConsumed: number;
+    /** Pipeline wall-clock cap (`timeout_minutes`); surfaced for `pipeline_step`. */
+    timeoutMinutes?: number;
     lastOutputTail?: string[];
     lastStepName?: string;
     lastStepExitCode?: number;
@@ -390,15 +436,21 @@ export function postTimeoutDispatchMessage(
 ): { messageId: string } | null {
   const log = deps.log ?? ((m: string) => console.warn(m));
   const newId = deps.newId ?? uuidv4;
+  const timeoutClass: FinalizeTimeoutClass = args.timeoutClass ?? 'active_budget';
   const body = composeTimeoutMessageBody(args);
   const messageId = newId();
   const metadata = JSON.stringify({
+    // Keep `kind` stable across both classes so existing consumers that
+    // filter on `finalize_timeout_dispatch` still match; `timeoutClass`
+    // disambiguates the active-time budget from a pipeline-step timeout.
     kind: 'finalize_timeout_dispatch',
+    timeoutClass,
     runId: args.runId,
     cardId: args.cardId,
     projectId: args.projectId,
     budgetSeconds: args.budgetSeconds,
     activeSecondsConsumed: args.activeSecondsConsumed,
+    timeoutMinutes: args.timeoutMinutes ?? null,
     lastStepName: args.lastStepName ?? null,
     lastStepExitCode: args.lastStepExitCode ?? null,
   });

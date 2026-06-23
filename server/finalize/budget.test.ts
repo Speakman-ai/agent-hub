@@ -32,6 +32,7 @@ import {
   isBudgetExhausted,
   postTimeoutDispatchMessage,
   resolveBudgetSeconds,
+  STEP_TIMEOUT_DISPATCH_HEADER,
   TIMEOUT_DISPATCH_HEADER,
 } from './budget.js';
 
@@ -532,6 +533,40 @@ describe('composeTimeoutMessageBody', () => {
     });
     expect(body).not.toContain('Last output');
   });
+
+  // Regression: a pipeline-step wall-clock timeout was mislabeled as the
+  // active-time budget being exhausted — the message read "active-time budget
+  // exhausted. Budget: 3600s. Consumed: 96s." for a run that stopped because a
+  // single step hung, not because it used up its 60-min budget. The
+  // `pipeline_step` class must surface the step-timeout header and the pipeline
+  // wall-clock cap, and must NOT claim the active-time budget was exhausted.
+  it('renders the pipeline-step header (NOT the active-budget summary) for a step timeout', () => {
+    const body = composeTimeoutMessageBody({
+      timeoutClass: 'pipeline_step',
+      budgetSeconds: 3600,
+      activeSecondsConsumed: 96,
+      timeoutMinutes: 60,
+      lastStepName: 'backend / Backend tests',
+      lastStepExitCode: 1,
+    });
+    expect(body).toContain(STEP_TIMEOUT_DISPATCH_HEADER);
+    expect(body).toContain('Pipeline step timeout: 60min.');
+    expect(body).toContain('Last attempted step: "backend / Backend tests" (exit 1).');
+    // The misleading active-budget framing must be gone.
+    expect(body).not.toContain(TIMEOUT_DISPATCH_HEADER);
+    expect(body).not.toContain('Budget: 3600s (active time). Consumed: 96s.');
+  });
+
+  it('falls back to a generic step-timeout line when timeoutMinutes is absent', () => {
+    const body = composeTimeoutMessageBody({
+      timeoutClass: 'pipeline_step',
+      budgetSeconds: 3600,
+      activeSecondsConsumed: 96,
+    });
+    expect(body).toContain(STEP_TIMEOUT_DISPATCH_HEADER);
+    expect(body).toContain('A CI step ran past the per-run wall-clock limit and was stopped.');
+    expect(body).not.toContain('Pipeline step timeout:');
+  });
 });
 
 describe('postTimeoutDispatchMessage', () => {
@@ -568,6 +603,51 @@ describe('postTimeoutDispatchMessage', () => {
     });
     expect(stmts.touchSession.run).toHaveBeenCalledWith('sess-1');
     expect(calls.find((c) => c.type === 'message')).toBeDefined();
+  });
+
+  it('tags pipeline-step timeouts with timeoutClass + timeoutMinutes in metadata', () => {
+    const { stmts, inserted } = makeStmts({});
+    const { broadcast } = makeBroadcast();
+    postTimeoutDispatchMessage(
+      { stmts, broadcast, newId: () => 'msg-step' },
+      {
+        runId: 'run-1',
+        sessionId: 'sess-1',
+        cardId: 'card-1',
+        projectId: 'proj-1',
+        timeoutClass: 'pipeline_step',
+        budgetSeconds: 3600,
+        activeSecondsConsumed: 96,
+        timeoutMinutes: 60,
+        lastStepName: 'backend / Backend tests',
+        lastStepExitCode: 1,
+      },
+    );
+    expect(inserted[0].body).toContain(STEP_TIMEOUT_DISPATCH_HEADER);
+    expect(JSON.parse(inserted[0].metadata as string)).toMatchObject({
+      kind: 'finalize_timeout_dispatch',
+      timeoutClass: 'pipeline_step',
+      timeoutMinutes: 60,
+    });
+  });
+
+  it('defaults to the active_budget class when none is given', () => {
+    const { stmts, inserted } = makeStmts({});
+    const { broadcast } = makeBroadcast();
+    postTimeoutDispatchMessage(
+      { stmts, broadcast, newId: () => 'msg-tt' },
+      {
+        runId: 'run-1',
+        sessionId: 'sess-1',
+        cardId: 'card-1',
+        projectId: 'proj-1',
+        budgetSeconds: 3600,
+        activeSecondsConsumed: 3700,
+      },
+    );
+    expect(JSON.parse(inserted[0].metadata as string)).toMatchObject({
+      timeoutClass: 'active_budget',
+    });
   });
 
   it('returns null when addMessage throws — terminal path still proceeds', () => {

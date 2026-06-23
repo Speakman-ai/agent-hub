@@ -1315,7 +1315,12 @@ export async function runFinalize(
         // `timed_out` to the row for those classes, but NOT for `infra_error`
         // (§10 leaves that to the orchestrator).
         if (lastStepOutcome.status === 'timeout') {
-          // §13: surface with the timeout-class dispatch message.
+          // A step/job ran past the per-run `timeout_minutes` WALL-CLOCK cap
+          // (step execution bills only a flat tick to active time, so the §13
+          // active-time budget is typically nowhere near exhausted here).
+          // Surface it as a pipeline-step timeout — NOT the active-time budget
+          // message, which would misleadingly read "Budget: 3600s. Consumed:
+          // 96s." for a run that stopped because one step hung.
           postBudgetTimeoutMessageIfPossible(
             deps,
             runId,
@@ -1324,6 +1329,7 @@ export async function runFinalize(
             budgetSeconds,
             lastStepOutcome,
             log,
+            { class: 'pipeline_step', timeoutMinutes: parsedCi.timeoutMinutes },
           );
           return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
         }
@@ -2196,6 +2202,11 @@ function postBudgetTimeoutMessageIfPossible(
   budgetSeconds: number,
   lastStepOutcome: StepRunResult | null,
   log: (msg: string) => void,
+  // Which clock tripped. Defaults to the §13 active-time budget. The
+  // step/job phase passes `pipeline_step` so a single CI step running past
+  // the per-run `timeout_minutes` wall-clock cap is NOT mislabeled as the
+  // active-time budget being exhausted (which it was not).
+  timeout?: { class: 'pipeline_step'; timeoutMinutes: number },
 ): void {
   if (!sessionId) return;
   let activeSecondsConsumed = budgetSeconds;
@@ -2212,8 +2223,10 @@ function postBudgetTimeoutMessageIfPossible(
         sessionId,
         cardId: opts.card.id,
         projectId: opts.project.id,
+        timeoutClass: timeout?.class ?? 'active_budget',
         budgetSeconds,
         activeSecondsConsumed,
+        ...(timeout ? { timeoutMinutes: timeout.timeoutMinutes } : {}),
         lastOutputTail: lastStepOutcome?.failedStep?.outputTail,
         lastStepName: lastStepOutcome?.failedStep?.name,
         lastStepExitCode: lastStepOutcome?.failedStep?.exitCode,
