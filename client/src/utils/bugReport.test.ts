@@ -54,6 +54,32 @@ describe('submitBugReport', () => {
     expect((fd as any).get('currentAgentId')).toBe('hub-frontend');
   });
 
+  it('sends replayMissReason (and no replayRef) when the capture was missing', async () => {
+    await submitBugReport({
+      title: 'no replay',
+      description: '',
+      severity: 'medium',
+      replayRef: null,
+      replayMissReason: 'upload-failed',
+    });
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('replayMissReason')).toBe('upload-failed');
+    expect((fd as any).get('replayRef')).toBeNull();
+  });
+
+  it('sends replayRef and omits replayMissReason when a replay attached', async () => {
+    await submitBugReport({
+      title: 'has replay',
+      description: '',
+      severity: 'medium',
+      replayRef: '/uploads/replay-x.json',
+      replayMissReason: 'upload-failed',
+    });
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('replayRef')).toBe('/uploads/replay-x.json');
+    expect((fd as any).get('replayMissReason')).toBeNull();
+  });
+
   it('truncates title to 200 characters for the wire format', async () => {
     const long = 'x'.repeat(250);
     await submitBugReport({ title: long, description: '', severity: 'low' });

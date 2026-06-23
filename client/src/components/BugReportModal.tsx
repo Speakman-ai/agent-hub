@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Bug, Camera, Loader2, X } from 'lucide-react';
 import { captureScreenshot, submitBugReport } from '../utils/bugReport';
-import { flushSessionReplayRef } from '../utils/sessionReplay';
+import { flushSessionReplayRefWithReason } from '../utils/sessionReplay';
 
 const SEVERITIES = [
   { value: 'low', label: 'Low' },
@@ -83,10 +83,17 @@ export default function BugReportModal({
       // the ref so the intake agent can investigate the session. Best-effort —
       // never let a replay failure block the report.
       let replayRef = null;
+      // When no replay attaches, record WHY (recorder-inactive,
+      // buffer-too-small, no-full-snapshot, upload-failed, …) so a recurring
+      // "didn't capture replay" report is self-diagnosing on the ticket.
+      let replayMissReason = null;
       try {
-        replayRef = await flushSessionReplayRef({ trigger: 'bug-report' });
+        const flush = await flushSessionReplayRefWithReason({ trigger: 'bug-report' });
+        replayRef = flush.ref;
+        replayMissReason = flush.reason;
       } catch {
         replayRef = null;
+        replayMissReason = 'upload-failed';
       }
       await submitBugReport({
         title,
@@ -96,6 +103,7 @@ export default function BugReportModal({
         projectId,
         agentId,
         replayRef,
+        replayMissReason,
       });
       if (typeof onToast === 'function') {
         onToast(

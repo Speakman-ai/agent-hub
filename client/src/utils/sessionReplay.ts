@@ -864,6 +864,17 @@ export async function initSessionReplay(opts: any = {}) {
 // Reasons: 'recorder-not-initialized' | 'recorder-inactive' |
 //          'buffer-too-small' | 'no-full-snapshot' | 'upload-failed'
 
+// The closed set of reasons a flush can yield no replay ref. Exported so the
+// bug-report path (and the server's intake validation) share one vocabulary —
+// a "didn't capture replay" ticket records WHICH of these fired.
+export const REPLAY_MISS_REASONS = Object.freeze([
+  'recorder-not-initialized',
+  'recorder-inactive',
+  'buffer-too-small',
+  'no-full-snapshot',
+  'upload-failed',
+]);
+
 function defaultBreadcrumbSink(entry: any) {
   try {
     if (typeof console !== 'undefined' && typeof console.warn === 'function') {
@@ -908,13 +919,26 @@ function reportNullFlush(reason: any, meta: any) {
  * reason, so a "captured the report but no replay" case is never silent.
  */
 export async function flushSessionReplayRef(meta?: any, timeoutMs?: any) {
+  const { ref } = await flushSessionReplayRefWithReason(meta, timeoutMs);
+  return ref;
+}
+
+/**
+ * Like `flushSessionReplayRef`, but returns BOTH the resolved ref and the
+ * miss-reason so a caller (the bug-report modal) can record WHY a replay didn't
+ * attach. On success: `{ ref: '/uploads/replay-…json', reason: null }`. On every
+ * null path: `{ ref: null, reason: <one of REPLAY_MISS_REASONS> }`. The same
+ * breadcrumb still fires, so console/telemetry behaviour is unchanged; this just
+ * surfaces the reason to the caller instead of dropping it on the floor.
+ */
+export async function flushSessionReplayRefWithReason(meta?: any, timeoutMs?: any) {
   if (!_recorder) {
     reportNullFlush('recorder-not-initialized', meta);
-    return null;
+    return { ref: null, reason: 'recorder-not-initialized' };
   }
   if (!_recorder.active) {
     reportNullFlush('recorder-inactive', meta);
-    return null;
+    return { ref: null, reason: 'recorder-inactive' };
   }
   // Pre-classify the no-op cases that `flush()` would otherwise collapse into a
   // silent null, so the breadcrumb can name *why* nothing shipped. These mirror
@@ -922,19 +946,22 @@ export async function flushSessionReplayRef(meta?: any, timeoutMs?: any) {
   const buffered = _recorder.snapshot();
   if (buffered.length < _recorder.minFlushEvents) {
     reportNullFlush('buffer-too-small', meta);
-    return null;
+    return { ref: null, reason: 'buffer-too-small' };
   }
   if (!hasFullSnapshot(buffered)) {
     reportNullFlush('no-full-snapshot', meta);
-    return null;
+    return { ref: null, reason: 'no-full-snapshot' };
   }
   const opts = timeoutMs != null ? { timeoutMs } : undefined;
   const result = await _recorder.flush(meta, opts);
   const ref = result?.replayRef || null;
   // A replayable buffer that still produced no ref means the ingest upload
   // failed, timed out, or was rate-limited.
-  if (!ref) reportNullFlush('upload-failed', meta);
-  return ref;
+  if (!ref) {
+    reportNullFlush('upload-failed', meta);
+    return { ref: null, reason: 'upload-failed' };
+  }
+  return { ref, reason: null };
 }
 
 /** Test-only: reset the module singleton. */

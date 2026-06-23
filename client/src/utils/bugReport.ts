@@ -89,6 +89,7 @@ export async function submitBugReport({
   projectId,
   agentId,
   replayRef,
+  replayMissReason,
 }: any) {
   if (!title || !String(title).trim()) {
     throw new Error('Title is required');
@@ -114,6 +115,9 @@ export async function submitBugReport({
   form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
   if (agentId) form.append('currentAgentId', String(agentId));
   if (replayRef) form.append('replayRef', String(replayRef));
+  // Only meaningful when no replay attached — names why the capture was missing
+  // so the intake agent / operator can diagnose a "didn't capture replay" report.
+  else if (replayMissReason) form.append('replayMissReason', String(replayMissReason));
 
   const res = await fetch(BUG_REPORT_ENDPOINT, {
     method: 'POST',

@@ -39,6 +39,19 @@ export const BugReportFormFieldsComponent = registerComponent(
         description:
           'Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Attributed to the ticket and surfaced to the AI investigation.',
       }),
+      replayMissReason: z
+        .enum([
+          'recorder-not-initialized',
+          'recorder-inactive',
+          'buffer-too-small',
+          'no-full-snapshot',
+          'upload-failed',
+        ])
+        .optional()
+        .openapi({
+          description:
+            'Why no session replay attached, when `replayRef` is absent. Recorded in the ticket Reporter Context so a "didn\'t capture replay" report is self-diagnosing. Ignored if a valid `replayRef` is present.',
+        }),
       screenshot: z.string().optional().openapi({
         description:
           'Optional image part (PNG/JPEG/WebP/GIF, ≤8 MB). Validated by magic-byte signature, persisted under /uploads, and stored as the ticket `screenshot_ref` so it renders inline in the Customer Support queue. A bad/oversize/non-image part is dropped (the report still lands).',

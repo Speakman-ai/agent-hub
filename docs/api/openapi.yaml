@@ -2119,6 +2119,15 @@ components:
         replayRef:
           type: string
           description: Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Attributed to the ticket and surfaced to the AI investigation.
+        replayMissReason:
+          type: string
+          enum:
+            - recorder-not-initialized
+            - recorder-inactive
+            - buffer-too-small
+            - no-full-snapshot
+            - upload-failed
+          description: Why no session replay attached, when `replayRef` is absent. Recorded in the ticket Reporter Context so a "didn't capture replay" report is self-diagnosing. Ignored if a valid `replayRef` is present.
         screenshot:
           type: string
           format: binary

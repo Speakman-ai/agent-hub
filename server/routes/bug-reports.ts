@@ -36,6 +36,17 @@ const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const MAX_MULTIPART_BYTES = 10 * 1024 * 1024;
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const VALID_CLIENT_TYPES = new Set(['web', 'electron', 'mobile']);
+// Closed vocabulary the client recorder reports when a flush yields no replay
+// ref (mirrors REPLAY_MISS_REASONS in client/src/utils/sessionReplay.ts). Used
+// only when no replayRef attached, so a "didn't capture replay" report records
+// its cause on the ticket. An unrecognised value is dropped (untrusted input).
+const VALID_REPLAY_MISS_REASONS = new Set([
+  'recorder-not-initialized',
+  'recorder-inactive',
+  'buffer-too-small',
+  'no-full-snapshot',
+  'upload-failed',
+]);
 const INTAKE_PROJECT_ID = 'agent-hub';
 
 // ─── Rate limit ──────────────────────────────────────────────────
@@ -163,6 +174,22 @@ interface BugReportInput {
   currentProjectId?: string;
   currentAgentId?: string;
   replayRef?: string | null;
+  replayMissReason?: string | null;
+}
+
+/**
+ * Validate the client-reported replay miss-reason against the closed
+ * vocabulary. Returns the reason only when it's a recognised value AND no
+ * replay actually attached (a reason alongside a ref is meaningless). Untrusted
+ * input — anything else is dropped.
+ */
+export function sanitizeReplayMissReason(
+  raw: string | undefined | null,
+  hasReplayRef: boolean,
+): string | null {
+  if (hasReplayRef || !raw) return null;
+  const reason = String(raw).trim();
+  return VALID_REPLAY_MISS_REASONS.has(reason) ? reason : null;
 }
 
 /**
@@ -205,6 +232,8 @@ export function buildBugReportTicketBody(input: BugReportInput): string {
     lines.push(
       `- **Session Replay:** \`${input.replayRef}\` (trailing window of rrweb DOM events captured for this report)`,
     );
+  } else if (input.replayMissReason) {
+    lines.push(`- **Session Replay:** _not captured_ (reason: \`${input.replayMissReason}\`)`);
   }
   return lines.join('\n');
 }
@@ -298,6 +327,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const currentProjectId = (fields.currentProjectId || '').toString();
         const currentAgentId = (fields.currentAgentId || '').toString();
         const replayRef = sanitizeReplayRef(fields.replayRef);
+        const replayMissReason = sanitizeReplayMissReason(fields.replayMissReason, !!replayRef);
 
         // Persist an optional `screenshot` image part so the photo shows inline
         // in the Customer Support queue (stored as the ticket's
@@ -346,6 +376,9 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           clientType: clientTypeRaw,
           currentProjectId,
           currentAgentId,
+          // Rendered only when no replay attaches; `sanitizeReplayMissReason`
+          // already forced it null whenever a replayRef was present.
+          replayMissReason,
         };
 
         const ticket = await intakeSupportTicket(

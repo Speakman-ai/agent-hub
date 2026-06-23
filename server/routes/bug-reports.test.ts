@@ -18,6 +18,7 @@ import createBugReportRoutes, {
   _resetRateLimit,
   buildBugReportTicketBody,
   sanitizeReplayRef,
+  sanitizeReplayMissReason,
 } from './bug-reports.js';
 import { getStmts } from '../db.js';
 import { getSupportTicket, listSupportTickets } from '../support-tickets-store.js';
@@ -91,6 +92,54 @@ describe('buildBugReportTicketBody', () => {
   it('omits the Session Replay line when no replayRef is given', () => {
     const out = buildBugReportTicketBody({ title: 'x', description: 'y', severity: 'medium' });
     expect(out).not.toContain('Session Replay');
+  });
+
+  it('renders a "not captured" Session Replay line with the miss reason when no ref', () => {
+    const out = buildBugReportTicketBody({
+      title: 'x',
+      description: 'y',
+      severity: 'medium',
+      replayMissReason: 'upload-failed',
+    });
+    expect(out).toContain('Session Replay');
+    expect(out).toContain('not captured');
+    expect(out).toContain('upload-failed');
+  });
+
+  it('prefers the replayRef line over the miss reason when both are present', () => {
+    const out = buildBugReportTicketBody({
+      title: 'x',
+      description: 'y',
+      severity: 'medium',
+      replayRef: '/uploads/replay-abc123.json',
+      replayMissReason: 'upload-failed',
+    });
+    expect(out).toContain('/uploads/replay-abc123.json');
+    expect(out).not.toContain('not captured');
+    expect(out).not.toContain('upload-failed');
+  });
+});
+
+describe('sanitizeReplayMissReason', () => {
+  it('accepts a recognised reason when no replay attached', () => {
+    expect(sanitizeReplayMissReason('recorder-inactive', false)).toBe('recorder-inactive');
+    expect(sanitizeReplayMissReason('upload-failed', false)).toBe('upload-failed');
+    expect(sanitizeReplayMissReason('  buffer-too-small  ', false)).toBe('buffer-too-small');
+  });
+
+  it('drops an unrecognised reason', () => {
+    expect(sanitizeReplayMissReason('something-else', false)).toBeNull();
+    expect(sanitizeReplayMissReason('<script>', false)).toBeNull();
+  });
+
+  it('drops the reason when a replay ref attached (meaningless alongside a ref)', () => {
+    expect(sanitizeReplayMissReason('upload-failed', true)).toBeNull();
+  });
+
+  it('returns null for empty / nullish input', () => {
+    expect(sanitizeReplayMissReason(undefined, false)).toBeNull();
+    expect(sanitizeReplayMissReason(null, false)).toBeNull();
+    expect(sanitizeReplayMissReason('', false)).toBeNull();
   });
 });
 
@@ -232,6 +281,36 @@ describe('POST /api/bug-reports', () => {
     // otherwise reach operators and the AI investigation prompt). The body is
     // rebuilt from the persisted (cleared) replay_ref, not the raw input.
     expect(ticket!.body).not.toContain(ghostRef);
+    expect(ticket!.body).not.toContain('Session Replay');
+  });
+
+  it('records the replay miss reason in the ticket body when no replay attached', async () => {
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Didnt capture live replay again')
+      .field('severity', 'medium')
+      .field('replayMissReason', 'upload-failed')
+      .expect(201);
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.replay_ref).toBeNull();
+    // The "didn't capture replay" report is now self-diagnosing: the reason the
+    // flush returned no ref is on the operator-visible body (and AI prompt).
+    expect(ticket!.body).toContain('Session Replay');
+    expect(ticket!.body).toContain('not captured');
+    expect(ticket!.body).toContain('upload-failed');
+  });
+
+  it('drops an unrecognised replay miss reason', async () => {
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'No replay, junk reason')
+      .field('severity', 'medium')
+      .field('replayMissReason', 'totally-made-up')
+      .expect(201);
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.body).not.toContain('totally-made-up');
     expect(ticket!.body).not.toContain('Session Replay');
   });
 
