@@ -26,6 +26,7 @@ import { OsvAdvisorySource } from '../security-audit/osv.js';
 import type { AdvisorySource } from '../security-audit/types.js';
 import { runSecurityScan, SecurityScanError } from '../security-audit/run.js';
 import { openSecurityBumpPrs } from '../security-audit/auto-pr.js';
+import { fetchNpmDistMetadata } from '../security-audit/registry-metadata.js';
 import { commitFilesToBareBranch } from '../security-audit/git-write.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import config from '../config.js';
@@ -231,6 +232,8 @@ export default function createSecurityAuditRoutes(
           }) => {
             const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
             return openSecurityBumpPrs(ctx.findings, {
+              fetchDistMetadata: (name, version, registryUrl) =>
+                fetchNpmDistMetadata(name, version, { registryUrl }),
               readFile: (p) => ctx.reader.readFile(ctx.baseSha, p),
               commitFiles: ({ branch, files, message }) =>
                 commitFilesToBareBranch({
@@ -367,6 +370,8 @@ export default function createSecurityAuditRoutes(
       const reader = fixDeps.makeReader(repo.repoPath);
       try {
         const result = await openSecurityBumpPrs(group, {
+          fetchDistMetadata: (name, version, registryUrl) =>
+            fetchNpmDistMetadata(name, version, { registryUrl }),
           readFile: (p) => reader.readFile(repo.baseSha, p),
           commitFiles: ({ branch, files, message }) =>
             fixDeps.commitFiles({

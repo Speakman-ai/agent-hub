@@ -40,6 +40,44 @@ const LOCK = JSON.stringify(
 
 const PKG = JSON.stringify({ name: 'fixture', dependencies: { lodash: '^4.17.11' } }, null, 2);
 
+/** Like LOCK but the lodash entry carries a public-npm `resolved` URL, so the
+ *  registry can be derived and enrichment is eligible. */
+const LOCK_PINNED = JSON.stringify(
+  {
+    name: 'fixture',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0' },
+      'node_modules/lodash': {
+        version: '4.17.11',
+        resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.11.tgz',
+        integrity: 'sha512-OLD',
+      },
+    },
+  },
+  null,
+  2,
+);
+
+/** Lodash pinned to a PRIVATE registry mirror — enrichment must query THAT
+ *  registry, never rewrite provenance to the public npm one. */
+const LOCK_PRIVATE = JSON.stringify(
+  {
+    name: 'fixture',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0' },
+      'node_modules/lodash': {
+        version: '4.17.11',
+        resolved: 'https://npm.internal.example/lodash/-/lodash-4.17.11.tgz',
+        integrity: 'sha512-OLD',
+      },
+    },
+  },
+  null,
+  2,
+);
+
 interface Harness {
   deps: OpenSecurityBumpPrsDeps;
   readFile: ReturnType<typeof vi.fn>;
@@ -144,6 +182,101 @@ describe('openSecurityBumpPrs', () => {
     const prArg = h.createOrGetOpenPr.mock.calls[0][0];
     expect(prArg.title).toContain('bump lodash to 4.17.21');
     expect(prArg.body).toContain('GHSA-aaaa');
+  });
+
+  it('re-pins the lockfile from fetched dist metadata and drops the reconcile note', async () => {
+    const h = harness({ 'package-lock.json': LOCK_PINNED, 'package.json': PKG });
+    const fetchDistMetadata = vi.fn(async (_n: string, _v: string, _r: string) => ({
+      resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz',
+      integrity: 'sha512-NEW',
+    }));
+    const res = await openSecurityBumpPrs([finding({})], { ...h.deps, fetchDistMetadata });
+
+    expect(res.opened).toHaveLength(1);
+    // fetched once for (package, target version, derived registry base)
+    expect(fetchDistMetadata.mock.calls).toEqual([
+      ['lodash', '4.17.21', 'https://registry.npmjs.org'],
+    ]);
+
+    // the committed lockfile entry is fully pinned, not stripped
+    const entry = JSON.parse(h.commitFiles.mock.calls[0][0].files['package-lock.json']).packages[
+      'node_modules/lodash'
+    ];
+    expect(entry.version).toBe('4.17.21');
+    expect(entry.resolved).toBe('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz');
+    expect(entry.integrity).toBe('sha512-NEW');
+
+    // PR body advertises the pinned lockfile and omits the npm-install reconcile note
+    const body = h.createOrGetOpenPr.mock.calls[0][0].body;
+    expect(body).toContain('re-pinned');
+    expect(body).not.toContain('npm install');
+  });
+
+  it('queries the private registry the lockfile is pinned to, preserving provenance', async () => {
+    const h = harness({ 'package-lock.json': LOCK_PRIVATE, 'package.json': PKG });
+    // The private registry returns a tarball on its OWN host.
+    const fetchDistMetadata = vi.fn(async (_n: string, _v: string, _r: string) => ({
+      resolved: 'https://npm.internal.example/lodash/-/lodash-4.17.21.tgz',
+      integrity: 'sha512-PRIV',
+    }));
+    await openSecurityBumpPrs([finding({})], { ...h.deps, fetchDistMetadata });
+
+    // queried the SAME registry the lockfile already used, not public npm
+    expect(fetchDistMetadata.mock.calls).toEqual([
+      ['lodash', '4.17.21', 'https://npm.internal.example'],
+    ]);
+    const entry = JSON.parse(h.commitFiles.mock.calls[0][0].files['package-lock.json']).packages[
+      'node_modules/lodash'
+    ];
+    expect(entry.resolved).toBe('https://npm.internal.example/lodash/-/lodash-4.17.21.tgz');
+    expect(entry.integrity).toBe('sha512-PRIV');
+  });
+
+  it('skips enrichment (drops fields) when no registry can be derived from the lockfile', async () => {
+    // LOCK has no `resolved` on the lodash entry → registry undeterminable.
+    const h = harness({ 'package-lock.json': LOCK, 'package.json': PKG });
+    const fetchDistMetadata = vi.fn(async (_n: string, _v: string, _r: string) => ({
+      resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz',
+      integrity: 'sha512-NEW',
+    }));
+    const res = await openSecurityBumpPrs([finding({})], { ...h.deps, fetchDistMetadata });
+
+    expect(res.opened).toHaveLength(1);
+    expect(fetchDistMetadata).not.toHaveBeenCalled(); // never guessed a registry
+    const entry = JSON.parse(h.commitFiles.mock.calls[0][0].files['package-lock.json']).packages[
+      'node_modules/lodash'
+    ];
+    expect(entry.version).toBe('4.17.21');
+    expect(entry.resolved).toBeUndefined();
+    expect(entry.integrity).toBeUndefined();
+    expect(h.createOrGetOpenPr.mock.calls[0][0].body).toContain('npm install');
+  });
+
+  it('falls back to dropping resolved/integrity when the dist fetch returns null', async () => {
+    const h = harness({ 'package-lock.json': LOCK_PINNED, 'package.json': PKG });
+    const fetchDistMetadata = vi.fn(async (_n: string, _v: string, _r: string) => null);
+    const res = await openSecurityBumpPrs([finding({})], { ...h.deps, fetchDistMetadata });
+
+    expect(res.opened).toHaveLength(1);
+    expect(fetchDistMetadata).toHaveBeenCalledTimes(1); // registry derivable, fetch attempted
+    const entry = JSON.parse(h.commitFiles.mock.calls[0][0].files['package-lock.json']).packages[
+      'node_modules/lodash'
+    ];
+    expect(entry.version).toBe('4.17.21');
+    expect(entry.integrity).toBeUndefined();
+    expect(h.createOrGetOpenPr.mock.calls[0][0].body).toContain('npm install');
+  });
+
+  it('treats a thrown dist fetch as null and still opens the PR', async () => {
+    const h = harness({ 'package-lock.json': LOCK_PINNED, 'package.json': PKG });
+    const fetchDistMetadata = vi.fn(async (_n: string, _v: string, _r: string) => {
+      throw new Error('network down');
+    });
+    const res = await openSecurityBumpPrs([finding({})], { ...h.deps, fetchDistMetadata });
+
+    expect(res.skipped).toEqual([]);
+    expect(res.opened).toHaveLength(1);
+    expect(h.createOrGetOpenPr.mock.calls[0][0].body).toContain('npm install');
   });
 
   it('bumps every vulnerable installed version of a package in ONE PR (no overwrite)', async () => {

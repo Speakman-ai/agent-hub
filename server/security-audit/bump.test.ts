@@ -5,6 +5,8 @@ import {
   applyPackageJsonRangeBump,
   bumpRange,
   detectJsonIndent,
+  findResolvedUrlForPackage,
+  npmRegistryBaseForPackage,
   planSecurityBumps,
 } from './bump.js';
 import type { Advisory, DependencyFinding, ResolvedDependency, Severity } from './types.js';
@@ -140,6 +142,57 @@ describe('applyNpmLockfileBump', () => {
     expect(parsed.packages['node_modules/lodash'].integrity).toBeUndefined();
     // unrelated package untouched
     expect(parsed.packages['node_modules/express'].version).toBe('4.18.2');
+  });
+
+  it('re-pins resolved/integrity from the supplied registry dist (no drop)', () => {
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'fixture', version: '1.0.0' },
+        'node_modules/lodash': {
+          version: '4.17.11',
+          resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.11.tgz',
+          integrity: 'sha512-OLD',
+        },
+      },
+    });
+    const out = applyNpmLockfileBump(lock, {
+      packageName: 'lodash',
+      fromVersion: '4.17.11',
+      toVersion: '4.17.21',
+      dist: {
+        resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz',
+        integrity: 'sha512-NEW',
+      },
+    });
+    const entry = JSON.parse(out!.content).packages['node_modules/lodash'];
+    expect(entry.version).toBe('4.17.21');
+    expect(entry.resolved).toBe('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz');
+    expect(entry.integrity).toBe('sha512-NEW');
+  });
+
+  it('re-pins a lockfileVersion-1 nested entry from the supplied dist', () => {
+    const lock = JSON.stringify({
+      lockfileVersion: 1,
+      dependencies: {
+        a: {
+          version: '1.0.0',
+          dependencies: {
+            lodash: { version: '4.17.11', resolved: 'https://x/old.tgz', integrity: 'sha512-OLD' },
+          },
+        },
+      },
+    });
+    const out = applyNpmLockfileBump(lock, {
+      packageName: 'lodash',
+      fromVersion: '4.17.11',
+      toVersion: '4.17.21',
+      dist: { resolved: 'https://x/new.tgz', integrity: 'sha512-NEW' },
+    });
+    const entry = JSON.parse(out!.content).dependencies.a.dependencies.lodash;
+    expect(entry.version).toBe('4.17.21');
+    expect(entry.resolved).toBe('https://x/new.tgz');
+    expect(entry.integrity).toBe('sha512-NEW');
   });
 
   it('bumps an aliased install under its real registry name, not the path alias', () => {
@@ -380,5 +433,76 @@ describe('severity coverage', () => {
       const [p] = planSecurityBumps([finding({}, { severity: sev })]);
       expect(p.severity).toBe(sev);
     }
+  });
+});
+
+describe('findResolvedUrlForPackage / npmRegistryBaseForPackage', () => {
+  const v3 = JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0' },
+      'node_modules/lodash': {
+        version: '4.17.11',
+        resolved: 'https://npm.internal.example/lodash/-/lodash-4.17.11.tgz',
+        integrity: 'sha512-OLD',
+      },
+    },
+  });
+
+  it('reads the resolved URL from the packages map and derives its registry', () => {
+    expect(findResolvedUrlForPackage(v3, 'lodash')).toBe(
+      'https://npm.internal.example/lodash/-/lodash-4.17.11.tgz',
+    );
+    expect(npmRegistryBaseForPackage(v3, 'lodash')).toBe('https://npm.internal.example');
+  });
+
+  it('resolves an aliased install under its real registry name', () => {
+    const aliased = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'fixture', version: '1.0.0' },
+        'node_modules/safe-alias': {
+          name: 'lodash',
+          version: '4.17.11',
+          resolved: 'https://registry.npmjs.org/lodash/-/lodash-4.17.11.tgz',
+        },
+      },
+    });
+    expect(npmRegistryBaseForPackage(aliased, 'lodash')).toBe('https://registry.npmjs.org');
+  });
+
+  it('reads from a lockfileVersion-1 nested dependencies tree', () => {
+    const v1 = JSON.stringify({
+      lockfileVersion: 1,
+      dependencies: {
+        a: {
+          version: '1.0.0',
+          dependencies: {
+            lodash: {
+              version: '4.17.11',
+              resolved: 'https://r.example/lodash/-/lodash-4.17.11.tgz',
+            },
+          },
+        },
+      },
+    });
+    expect(npmRegistryBaseForPackage(v1, 'lodash')).toBe('https://r.example');
+  });
+
+  it('returns null when the entry has no resolved URL (registry undeterminable)', () => {
+    const noResolved = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'fixture', version: '1.0.0' },
+        'node_modules/lodash': { version: '4.17.11', integrity: 'sha512-OLD' },
+      },
+    });
+    expect(findResolvedUrlForPackage(noResolved, 'lodash')).toBeNull();
+    expect(npmRegistryBaseForPackage(noResolved, 'lodash')).toBeNull();
+  });
+
+  it('returns null for an unparseable lockfile or absent package', () => {
+    expect(npmRegistryBaseForPackage('{ not json', 'lodash')).toBeNull();
+    expect(npmRegistryBaseForPackage(v3, 'express')).toBeNull();
   });
 });

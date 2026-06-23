@@ -8,15 +8,20 @@
  * disk — so the whole bump surface is unit-testable in isolation. The git
  * write + PR open lives in {@link ./auto-pr.ts}.
  *
- * Honest limitation: bumping a lockfile correctly requires the registry's
- * new `resolved` URL + `integrity` hash, which we cannot compute offline.
- * So a bumped entry has its now-stale `resolved`/`integrity` DROPPED — the
- * resulting lockfile is a *starter*: a follow-up `npm install` (CI, the
- * reviewer, or the human) reconciles it. This mirrors how a Dependabot PR
- * is a proposal, not a finished merge.
+ * Lockfile completeness: a correct npm lockfile entry carries the target
+ * version's `resolved` (tarball URL) + `integrity` (SRI hash). Those can't be
+ * recomputed offline, so callers may pass the registry-fetched `dist` pair
+ * (see {@link ./registry-metadata.ts}) and the bumped entry is rewritten
+ * fully-pinned — nothing left for a reviewer to flag. When `dist` is omitted
+ * (registry unreachable, offline test) the now-stale `resolved`/`integrity`
+ * are DROPPED instead, leaving a *starter* lockfile a follow-up `npm install`
+ * reconciles. Either way the bump itself is a Dependabot-style proposal, not a
+ * finished merge.
  */
 
 import type { DependencyFinding, Severity } from './types.js';
+import type { NpmDistMetadata } from './registry-metadata.js';
+import { registryBaseFromResolvedUrl } from './registry-metadata.js';
 import { compareVersions, isValidVersion } from './version-compare.js';
 
 /** One package bump: raise every vulnerable installed copy of `packageName` to `toVersion`. */
@@ -146,6 +151,22 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * Rewrite a bumped lockfile entry's `resolved`/`integrity` for the new version.
+ * When the registry `dist` pair is known, pin the entry fully (the complete,
+ * reviewer-clean path). When it's not (`undefined`), drop the now-stale fields
+ * so the lockfile is an honest starter rather than carrying a wrong hash.
+ */
+function applyDistFields(entry: Record<string, unknown>, dist: NpmDistMetadata | undefined): void {
+  if (dist) {
+    entry.resolved = dist.resolved;
+    entry.integrity = dist.integrity;
+  } else {
+    delete entry.resolved;
+    delete entry.integrity;
+  }
+}
+
 /** Extract the package name from a `packages` map key (install path). */
 function nameFromPackagePath(pkgPath: string): string | null {
   const idx = pkgPath.lastIndexOf('node_modules/');
@@ -193,6 +214,7 @@ function bumpDependenciesTree(
   fromVersion: string,
   toVersion: string,
   isTopLevel: boolean,
+  dist: NpmDistMetadata | undefined,
 ): TreeBumpResult {
   let any = false;
   let topLevel = false;
@@ -200,8 +222,7 @@ function bumpDependenciesTree(
     if (!isObject(rawEntry)) continue;
     if (name === packageName && rawEntry.version === fromVersion) {
       rawEntry.version = toVersion;
-      delete rawEntry.resolved;
-      delete rawEntry.integrity;
+      applyDistFields(rawEntry, dist);
       any = true;
       if (isTopLevel) topLevel = true;
     }
@@ -212,6 +233,7 @@ function bumpDependenciesTree(
         fromVersion,
         toVersion,
         false,
+        dist,
       );
       any = any || nested.any;
       topLevel = topLevel || nested.topLevel;
@@ -288,8 +310,10 @@ export interface LockfileBumpResult {
  *
  * What gets rewritten:
  *   - the resolved `version` of every matching install entry (packages map +
- *     legacy dependencies tree), top-level OR nested/transitive, with the
- *     now-stale `resolved`/`integrity` dropped (see file header);
+ *     legacy dependencies tree), top-level OR nested/transitive. When the
+ *     registry `dist` pair is supplied the entry is re-pinned with the new
+ *     `resolved`/`integrity`; otherwise those now-stale fields are dropped
+ *     (see file header);
  *   - ONLY when a TOP-LEVEL entry was among them: the root project's declared
  *     ranges in `packages[""].{dependencies,devDependencies,
  *     optionalDependencies,peerDependencies}` (lockfileVersion 2/3). npm
@@ -306,9 +330,20 @@ export interface LockfileBumpResult {
  */
 export function applyNpmLockfileBump(
   content: string,
-  args: { packageName: string; fromVersion: string; toVersion: string },
+  args: {
+    packageName: string;
+    fromVersion: string;
+    toVersion: string;
+    /**
+     * Registry `dist` metadata for `toVersion`. When supplied, every bumped
+     * entry is re-pinned with this `resolved`/`integrity`, producing a complete
+     * lockfile a reviewer has nothing to flag on. Omit to drop the stale fields
+     * (offline fallback).
+     */
+    dist?: NpmDistMetadata;
+  },
 ): LockfileBumpResult | null {
-  const { packageName, fromVersion, toVersion } = args;
+  const { packageName, fromVersion, toVersion, dist } = args;
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
@@ -331,8 +366,7 @@ export function applyNpmLockfileBump(
       if (name !== packageName) continue;
       if (rawEntry.version !== fromVersion) continue;
       rawEntry.version = toVersion;
-      delete rawEntry.resolved;
-      delete rawEntry.integrity;
+      applyDistFields(rawEntry, dist);
       versionChanged = true;
       if (isTopLevelInstallPath(pkgPath)) rootDependencyBumped = true;
     }
@@ -346,6 +380,7 @@ export function applyNpmLockfileBump(
       fromVersion,
       toVersion,
       true,
+      dist,
     );
     versionChanged = versionChanged || treeResult.any;
     rootDependencyBumped = rootDependencyBumped || treeResult.topLevel;
@@ -361,6 +396,72 @@ export function applyNpmLockfileBump(
   }
 
   return { content: serialize(parsed, content), rootDependencyBumped };
+}
+
+/** Depth-first search of a legacy `dependencies` tree for `name`'s `resolved` URL. */
+function findResolvedInTree(tree: Record<string, unknown>, packageName: string): string | null {
+  for (const [name, rawEntry] of Object.entries(tree)) {
+    if (!isObject(rawEntry)) continue;
+    if (name === packageName && typeof rawEntry.resolved === 'string' && rawEntry.resolved) {
+      return rawEntry.resolved;
+    }
+    if (isObject(rawEntry.dependencies)) {
+      const nested = findResolvedInTree(rawEntry.dependencies, packageName);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find the existing `resolved` (tarball) URL recorded for `packageName` anywhere
+ * in an npm lockfile — the `packages` map (v2/3) first, then the legacy
+ * `dependencies` tree (v1). Returns `null` when no entry for the package carries
+ * a `resolved` URL (already-stripped entry, link/workspace, unparseable JSON).
+ *
+ * This is what makes bump enrichment registry-aware: the URL it returns is the
+ * registry the lockfile is ALREADY pinned to, so {@link npmRegistryBaseForPackage}
+ * can re-query that same registry instead of defaulting to the public npm one.
+ */
+export function findResolvedUrlForPackage(content: string, packageName: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!isObject(parsed)) return null;
+
+  if (isObject(parsed.packages)) {
+    for (const [pkgPath, rawEntry] of Object.entries(parsed.packages)) {
+      if (pkgPath === '' || !isObject(rawEntry)) continue;
+      const name =
+        typeof rawEntry.name === 'string' && rawEntry.name.length > 0
+          ? rawEntry.name
+          : nameFromPackagePath(pkgPath);
+      if (name !== packageName) continue;
+      if (typeof rawEntry.resolved === 'string' && rawEntry.resolved) return rawEntry.resolved;
+    }
+  }
+
+  if (isObject(parsed.dependencies)) {
+    const fromTree = findResolvedInTree(parsed.dependencies, packageName);
+    if (fromTree) return fromTree;
+  }
+
+  return null;
+}
+
+/**
+ * Derive the registry base URL the lockfile already pins `packageName` to, by
+ * reading its existing `resolved` tarball URL. Returns `null` when no usable
+ * registry can be determined — the caller then declines to enrich (drops the
+ * stale fields) rather than rewriting `resolved` to a different registry.
+ */
+export function npmRegistryBaseForPackage(content: string, packageName: string): string | null {
+  const resolved = findResolvedUrlForPackage(content, packageName);
+  if (!resolved) return null;
+  return registryBaseFromResolvedUrl(resolved, packageName);
 }
 
 /**

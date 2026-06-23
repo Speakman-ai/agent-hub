@@ -14,8 +14,14 @@
 import path from 'path';
 import { createHash } from 'crypto';
 import type { DependencyFinding, Severity } from './types.js';
-import { applyNpmLockfileBump, applyPackageJsonRangeBump, planSecurityBumps } from './bump.js';
+import {
+  applyNpmLockfileBump,
+  applyPackageJsonRangeBump,
+  npmRegistryBaseForPackage,
+  planSecurityBumps,
+} from './bump.js';
 import type { SecurityBumpPlan } from './bump.js';
+import type { NpmDistMetadata } from './registry-metadata.js';
 
 export interface SecurityBumpPrResult {
   branch: string;
@@ -63,6 +69,25 @@ export interface OpenSecurityBumpPrsDeps {
     title: string;
     body: string;
   }) => { prNumber: number; prUrl: string; prCreated: boolean };
+  /**
+   * Resolve the registry `dist` (tarball + integrity) for `packageName@version`
+   * from `registryUrl` so the bumped lockfile entry can be re-pinned fully
+   * instead of dropping those fields — which is what eliminates the recurring
+   * "lockfile entry is missing resolved/integrity" reviewer comment.
+   *
+   * `registryUrl` is the registry the lockfile ALREADY pins this package to
+   * (derived from the existing `resolved` URL); querying it keeps the rewritten
+   * `resolved` on the same registry/mirror instead of rewriting provenance to
+   * the public npm registry. The orchestrator only calls this when a registry
+   * could be safely derived; an undeterminable registry skips enrichment and
+   * drops the fields. Best-effort: return `null` (or omit the dep) to fall back
+   * to the drop-behavior. A rejection is caught per-plan and treated as `null`.
+   */
+  fetchDistMetadata?: (
+    packageName: string,
+    version: string,
+    registryUrl: string,
+  ) => Promise<NpmDistMetadata | null>;
 }
 
 /** Slugify a name/version into a git-branch-safe token. */
@@ -109,7 +134,7 @@ function prTitle(plan: SecurityBumpPlan): string {
 
 function prBody(
   plan: SecurityBumpPlan,
-  opts: { bumpedPackageJson: boolean; rootDependencyBumped: boolean },
+  opts: { bumpedPackageJson: boolean; rootDependencyBumped: boolean; lockfilePinned: boolean },
 ): string {
   const lines: string[] = [];
   const fromList = plan.fromVersions.map((v) => `\`${v}\``).join(', ');
@@ -143,11 +168,19 @@ function prBody(
     );
   }
   lines.push('');
-  lines.push(
-    '> Note: the bumped lockfile entry has its stale `resolved`/`integrity` dropped ' +
-      'because they cannot be recomputed offline. Run `npm install` to reconcile the ' +
-      'lockfile before merging.',
-  );
+  if (opts.lockfilePinned) {
+    lines.push(
+      '> The bumped lockfile entry was re-pinned with the registry `resolved` URL and ' +
+        '`integrity` hash for the target version, so the lockfile stays fully pinned and ' +
+        'needs no manual reconciliation before merging.',
+    );
+  } else {
+    lines.push(
+      '> Note: the registry `resolved`/`integrity` for the target version could not be ' +
+        'fetched, so the bumped lockfile entry has its now-stale fields dropped. Run ' +
+        '`npm install` to reconcile the lockfile before merging.',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -183,6 +216,31 @@ export async function openSecurityBumpPrs(
       // based on the same baseSha, overwrite the earlier and leave a copy
       // unbumped. `rootDependencyBumped` is the OR across versions: true if ANY
       // bumped entry was a top-level (direct) install.
+      // Resolve the registry dist metadata ONCE per plan (one target version)
+      // so the bumped entry is re-pinned with the new resolved/integrity.
+      //
+      // Registry-aware: query the SAME registry the lockfile already pins this
+      // package to (derived from its existing `resolved` URL) so we never
+      // rewrite a private-registry/mirror `resolved` to the public npm one. When
+      // no registry can be safely derived (entry already lacks `resolved`, a
+      // git/url specifier, unparseable lockfile), skip enrichment and let the
+      // fields be dropped. A null result (registry unreachable, unpublished
+      // version, fetcher not wired) likewise falls back to dropping — the bump
+      // still proceeds.
+      let dist: NpmDistMetadata | undefined;
+      if (deps.fetchDistMetadata) {
+        const registryUrl = npmRegistryBaseForPackage(lockContent, plan.packageName);
+        if (registryUrl) {
+          try {
+            dist =
+              (await deps.fetchDistMetadata(plan.packageName, plan.toVersion, registryUrl)) ??
+              undefined;
+          } catch {
+            dist = undefined;
+          }
+        }
+      }
+
       let lockText = lockContent;
       let anyBumped = false;
       let rootDependencyBumped = false;
@@ -191,6 +249,7 @@ export async function openSecurityBumpPrs(
           packageName: plan.packageName,
           fromVersion,
           toVersion: plan.toVersion,
+          dist,
         });
         if (lockBump === null) continue; // this version already bumped / absent
         lockText = lockBump.content;
@@ -241,7 +300,7 @@ export async function openSecurityBumpPrs(
         headBranch: branch,
         headSha: commit.headSha,
         title: prTitle(plan),
-        body: prBody(plan, { bumpedPackageJson, rootDependencyBumped }),
+        body: prBody(plan, { bumpedPackageJson, rootDependencyBumped, lockfilePinned: !!dist }),
       });
 
       opened.push({
