@@ -155,7 +155,7 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.tags.outputs.docker_tags_multi }}
           cache-from: type=gha,scope=agent-hub-server
-          cache-to: type=gha,mode=max,scope=agent-hub-server
+          cache-to: type=gha,mode=max,scope=agent-hub-server,ignore-error=true
 
       - name: Set up Node (for runner-agent bundle)
         uses: actions/setup-node@v4
@@ -187,7 +187,7 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.tags.outputs.runner_tags_multi }}
           cache-from: type=gha,scope=agent-hub-finalize-runner
-          cache-to: type=gha,mode=max,scope=agent-hub-finalize-runner
+          cache-to: type=gha,mode=max,scope=agent-hub-finalize-runner,ignore-error=true
 
       - name: Summary
         env:
