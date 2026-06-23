@@ -302,11 +302,24 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
         next();
         return;
       }
-      // Invalid / expired / replayed ticket → fall through to the
-      // standard auth chain. If the caller also has a Bearer header
-      // (e.g. Electron), that will still authenticate; otherwise the
-      // tail of the middleware returns 401 so the SPA can re-mint.
-    } else {
+      // Invalid / expired / replayed ticket → do NOT give up yet. Fall
+      // through to the cookie check below: a valid path-scoped cookie
+      // from the first (successful) load may still be riding along.
+      //
+      // This is the iframe-reload case. The iframe's document URL keeps
+      // the `?ticket=` query after the first nav, so any browser-initiated
+      // reload (vite/ng HMR full reload, back/forward) re-requests the SAME
+      // URL with the now-consumed ticket — without React re-minting a fresh
+      // one. Checking the ticket first and the cookie only in an `else`
+      // made that stale ticket shadow the valid cookie and 401 the reload,
+      // white-screening the pane (while pop-out, which carries no ticket,
+      // worked because it hit the cookie path directly).
+    }
+    // Cookie path — covers ticketless sub-resource fetches AND top-level
+    // reloads whose stale ticket failed to consume above. Reached whether
+    // or not a `?ticket=` was present, so a consumed ticket no longer
+    // prevents a valid cookie from authenticating the request.
+    {
       const cookieValue = readPreviewCookie(req, previewSessionId);
       if (cookieValue) {
         const ctx = consumePreviewCookie(cookieValue, previewSessionId);
@@ -318,9 +331,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           next();
           return;
         }
-        // Stale or session-mismatched cookie → fall through. The
-        // browser will keep sending it until Max-Age expires, which is
-        // fine: the standard auth chain runs next.
+        // Stale or session-mismatched cookie → fall through. The browser
+        // will keep sending it until Max-Age expires, which is fine: the
+        // standard auth chain runs next. If the caller also has a Bearer
+        // header (e.g. Electron), that still authenticates; otherwise the
+        // tail of the middleware returns 401 so the SPA can re-mint.
       }
     }
   }

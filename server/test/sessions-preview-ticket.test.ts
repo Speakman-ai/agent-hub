@@ -198,6 +198,35 @@ describe('preview proxy iframe auth', () => {
     expect(second.status).toBe(401);
   });
 
+  it('stale ticket in the URL does not shadow a valid cookie (iframe reload after consume)', async () => {
+    // First load consumes the ticket and mints the path-scoped cookie.
+    const ticket = await mintTicket();
+    const first = await request.get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`);
+    expect(first.status).toBe(503);
+    const cookiePair = extractPreviewCookie(first.headers['set-cookie'], sessionId);
+    expect(cookiePair).toBeDefined();
+
+    // A browser-initiated iframe reload re-requests the SAME document URL,
+    // which still carries the now-consumed ticket, but ALSO sends the
+    // path-scoped cookie. The stale ticket must NOT shadow the valid
+    // cookie: auth must pass via the cookie (503 = past auth), not 401.
+    // Regression for the preview-pane white-screen where pop-out worked
+    // (no ticket → cookie path) but the in-pane iframe 401'd on reload.
+    const reload = await request
+      .get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`)
+      .set('Cookie', cookiePair!);
+    expect(reload.status).toBe(503);
+  });
+
+  it('stale ticket with NO cookie still 401s so the SPA re-mints', async () => {
+    // Guard the other half of the fix: a consumed ticket and no cookie
+    // must still fail closed (401), preserving the SPA's re-mint trigger.
+    const ticket = await mintTicket();
+    await request.get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`).expect(503);
+    const replay = await request.get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`);
+    expect(replay.status).toBe(401);
+  });
+
   it('cookie set on first hit authenticates sub-resource fetches', async () => {
     const ticket = await mintTicket();
     const first = await request.get(`/api/sessions/${sessionId}/preview/proxy/?ticket=${ticket}`);
