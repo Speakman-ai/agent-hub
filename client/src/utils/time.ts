@@ -1,8 +1,14 @@
 /**
  * Parse a date value into a Date object.
  * Handles: ISO strings, SQLite datetime strings (no TZ = UTC), epoch ms numbers.
+ *
+ * Exported because the server stores most timestamps as SQLite `datetime('now')`
+ * strings (e.g. "2026-06-23 04:00:00") which carry no timezone marker. Passing
+ * those straight to `new Date(str)` makes JS interpret them as *local* time, so
+ * the rendered value is wrong by the viewer's UTC offset. Always route a server
+ * timestamp through this (or the format* helpers below) rather than `new Date()`.
  */
-function parseDate(val: any): Date | null {
+export function parseDate(val: any): Date | null {
   if (!val) return null;
   // Numeric timestamp (epoch ms)
   if (typeof val === 'number') return new Date(val);
@@ -11,6 +17,38 @@ function parseDate(val: any): Date | null {
   if (str.includes('T')) return new Date(str);
   // SQLite datetime format (no timezone) — treat as UTC
   return new Date(str + 'Z');
+}
+
+/**
+ * Format a server timestamp as an absolute local date+time string.
+ * UTC-aware (via parseDate) and null-safe — returns '' for falsy/unparseable
+ * input instead of the "Dec 31 1969" / "Invalid Date" that `new Date(null)`
+ * or `new Date('bad')` would produce. Mirrors `Date.prototype.toLocaleString`.
+ */
+export function formatDateTime(val: any, opts?: Intl.DateTimeFormatOptions): string {
+  const d = parseDate(val);
+  if (!d || isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, opts);
+}
+
+/**
+ * Format a server timestamp as an absolute local date (no time).
+ * UTC-aware and null-safe. Mirrors `Date.prototype.toLocaleDateString`.
+ */
+export function formatDate(val: any, opts?: Intl.DateTimeFormatOptions): string {
+  const d = parseDate(val);
+  if (!d || isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, opts);
+}
+
+/**
+ * Format a server timestamp as an absolute local time-of-day.
+ * UTC-aware and null-safe. Mirrors `Date.prototype.toLocaleTimeString`.
+ */
+export function formatTime(val: any, opts?: Intl.DateTimeFormatOptions): string {
+  const d = parseDate(val);
+  if (!d || isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, opts);
 }
 
 /**

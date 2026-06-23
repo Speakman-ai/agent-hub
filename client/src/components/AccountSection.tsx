@@ -24,6 +24,7 @@ import MySkillCredentialSection from './MySkillCredentialSection';
 import { api } from '../utils/api';
 import { getAuthHeaders, getApiBase } from '../utils/connection';
 import { hasRole, getUserRole, logout } from '../utils/auth';
+import { formatDate, parseDate } from '../utils/time';
 
 const ALL_ROLES = ['Owner', 'Admin', 'User'];
 
@@ -814,10 +815,13 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
 
 function formatRelative(iso: any) {
   if (!iso) return null;
-  const t = new Date(iso).getTime();
+  // parseDate is UTC-aware: server timestamps are SQLite naive-datetime strings
+  // (no TZ marker), and bare `new Date(str)` would read them as local time.
+  const d = parseDate(iso);
+  const t = d ? d.getTime() : NaN;
   if (!Number.isFinite(t)) return iso;
   const diff = Date.now() - t;
-  if (diff < 0) return new Date(iso).toLocaleString();
+  if (diff < 0) return d!.toLocaleString();
   const sec = Math.floor(diff / 1000);
   if (sec < 60) return `${sec}s ago`;
   const min = Math.floor(sec / 60);
@@ -826,7 +830,7 @@ function formatRelative(iso: any) {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.floor(hr / 24);
   if (day < 30) return `${day}d ago`;
-  return new Date(iso).toLocaleDateString();
+  return d!.toLocaleDateString();
 }
 
 /**
@@ -940,9 +944,7 @@ export function ApiKeysSection() {
                     <div className="text-[11px] text-gray-500 mt-1 flex flex-wrap gap-x-3">
                       <span>Created {formatRelative(k.createdAt)}</span>
                       <span>Last used {k.lastUsedAt ? formatRelative(k.lastUsedAt) : 'never'}</span>
-                      {k.expiresAt && (
-                        <span>Expires {new Date(k.expiresAt).toLocaleDateString()}</span>
-                      )}
+                      {k.expiresAt && <span>Expires {formatDate(k.expiresAt)}</span>}
                     </div>
                   </div>
                   <button

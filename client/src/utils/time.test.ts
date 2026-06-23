@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { relativeTime, formatElapsed, relativeFuture, daysUntilPurge, shortDate } from './time';
+import {
+  relativeTime,
+  formatElapsed,
+  relativeFuture,
+  daysUntilPurge,
+  shortDate,
+  parseDate,
+  formatDateTime,
+  formatDate,
+  formatTime,
+} from './time';
 
 describe('formatElapsed', () => {
   it('formats seconds under a minute', () => {
@@ -213,5 +223,59 @@ describe('daysUntilPurge', () => {
   it('handles SQLite-style datetime (no T, no TZ → treated as UTC)', () => {
     const r = daysUntilPurge('2025-06-12 12:00:00');
     expect(r!.daysLeft).toBe(4);
+  });
+});
+
+describe('parseDate', () => {
+  it('treats a SQLite naive datetime (no TZ) as UTC, not local', () => {
+    // This is the core bug: bare `new Date("2026-06-23 04:00:00")` reads the
+    // string as *local* time. parseDate must anchor it to UTC instead.
+    const naive = parseDate('2026-06-23 04:00:00');
+    expect(naive).not.toBeNull();
+    expect(naive!.getTime()).toBe(Date.parse('2026-06-23T04:00:00Z'));
+  });
+
+  it('parses an ISO string with a TZ marker unchanged', () => {
+    expect(parseDate('2026-06-23T04:00:00Z')!.getTime()).toBe(Date.parse('2026-06-23T04:00:00Z'));
+  });
+
+  it('passes through epoch-ms numbers', () => {
+    const ms = Date.parse('2026-06-23T04:00:00Z');
+    expect(parseDate(ms)!.getTime()).toBe(ms);
+  });
+
+  it('returns null for falsy input', () => {
+    expect(parseDate(null)).toBeNull();
+    expect(parseDate(undefined)).toBeNull();
+    expect(parseDate('')).toBeNull();
+    expect(parseDate(0)).toBeNull();
+  });
+});
+
+describe('formatDateTime / formatDate / formatTime', () => {
+  it('renders a SQLite naive datetime identically to its UTC-anchored ISO form', () => {
+    // Same instant → same local rendering. Robust across the runner TZ/locale:
+    // we never hardcode an expected wall-clock string, only assert equivalence.
+    const naive = '2026-06-23 04:00:00';
+    const isoZ = '2026-06-23T04:00:00Z';
+    expect(formatDateTime(naive)).toBe(formatDateTime(isoZ));
+    expect(formatDate(naive)).toBe(formatDate(isoZ));
+    expect(formatTime(naive)).toBe(formatTime(isoZ));
+  });
+
+  it('forwards Intl options', () => {
+    const isoZ = '2026-06-23T04:00:00Z';
+    expect(formatDateTime(isoZ, { dateStyle: 'short' })).toBe(
+      new Date(isoZ).toLocaleString(undefined, { dateStyle: 'short' }),
+    );
+  });
+
+  it('returns empty string for falsy or unparseable input (null-safe)', () => {
+    for (const fn of [formatDateTime, formatDate, formatTime]) {
+      expect(fn(null)).toBe('');
+      expect(fn(undefined)).toBe('');
+      expect(fn('')).toBe('');
+      expect(fn('not-a-date')).toBe('');
+    }
   });
 });

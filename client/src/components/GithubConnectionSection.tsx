@@ -8,6 +8,7 @@ import {
   Key,
 } from 'lucide-react';
 import { getAuthHeaders, getApiBase } from '../utils/connection';
+import { formatDate } from '../utils/time';
 
 /**
  * GithubConnectionSection — "Sign in with GitHub" UI.
@@ -203,7 +204,7 @@ export default function GithubConnectionSection({ embedded = false }: any = {}) 
               </div>
               {status.connectedAt && (
                 <div className="text-[11px] text-gray-500">
-                  Connected {new Date(status.connectedAt).toLocaleDateString()}
+                  Connected {formatDate(status.connectedAt)}
                 </div>
               )}
             </div>

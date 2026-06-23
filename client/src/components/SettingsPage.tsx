@@ -5,7 +5,7 @@ import {
   orchestrationFieldsFromProject,
   ORCHESTRATION_FIELD_META,
 } from '../utils/orchestrationBudgets';
-import { relativeTime, relativeFuture } from '../utils/time';
+import { relativeTime, relativeFuture, formatDateTime, formatTime } from '../utils/time';
 import { hasRole, isLocalMode } from '../utils/auth';
 import humanCron from '@shared/utils/humanCron';
 import CronSchedulePicker from './CronSchedulePicker';
@@ -1565,7 +1565,7 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
                         const { label, overdue } = relativeFuture(hb.state.next_run_at);
                         return (
                           <span
-                            title={`Next run: ${new Date(hb.state.next_run_at).toLocaleString()}`}
+                            title={`Next run: ${formatDateTime(hb.state.next_run_at)}`}
                             className={`text-xs px-1.5 py-0.5 rounded font-mono ${
                               overdue
                                 ? 'bg-amber-900/40 text-amber-400'
@@ -2340,7 +2340,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                         const { label, overdue } = relativeFuture(cronJob.next_run_at);
                         return (
                           <span
-                            title={`Next run: ${new Date(cronJob.next_run_at).toLocaleString()}`}
+                            title={`Next run: ${formatDateTime(cronJob.next_run_at)}`}
                             className={`text-xs px-1.5 py-0.5 rounded font-mono ${
                               overdue
                                 ? 'bg-amber-900/40 text-amber-400'
@@ -2387,7 +2387,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                             <button
                               key={log.id}
                               onClick={() => setExpandedLog(isExpanded ? null : key)}
-                              title={`${log.status} — ${new Date(log.timestamp).toLocaleString()}${durationLabel ? ` (${durationLabel})` : ''}`}
+                              title={`${log.status} — ${formatDateTime(log.timestamp)}${durationLabel ? ` (${durationLabel})` : ''}`}
                               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
                                 isExpanded
                                   ? 'bg-gray-700 ring-1 ring-gray-500'
@@ -2433,7 +2433,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                                         : log.status}
                                 </span>
                                 <span className="text-xs text-gray-500">
-                                  {new Date(log.timestamp).toLocaleString()}
+                                  {formatDateTime(log.timestamp)}
                                 </span>
                                 {log.duration_ms != null && (
                                   <span className="text-xs text-gray-500 font-mono">
@@ -6498,9 +6498,7 @@ function ConfigBackupSection({ projects = [], onAgentsChange }: any) {
                 {preview.exportedAt && (
                   <>
                     <span>Exported:</span>
-                    <span className="text-white">
-                      {new Date(preview.exportedAt).toLocaleString()}
-                    </span>
+                    <span className="text-white">{formatDateTime(preview.exportedAt)}</span>
                   </>
                 )}
               </div>
@@ -6721,7 +6719,7 @@ function ServerLogsSection({ wsRef }: any) {
             {filteredLogs.map((entry: any, i: any) => (
               <div key={i} className="hover:bg-gray-900/50 px-1 -mx-1 rounded">
                 <span className={tsColor}>
-                  {new Date(entry.ts).toLocaleTimeString('en-US', {
+                  {formatTime(entry.ts, {
                     hour12: false,
                     hour: '2-digit',
                     minute: '2-digit',

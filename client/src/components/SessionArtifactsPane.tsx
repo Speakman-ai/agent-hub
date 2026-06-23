@@ -12,6 +12,7 @@ import {
 import { api } from '../utils/api';
 import { viewArtifact, downloadArtifact } from '../utils/artifactContent';
 import { formatBytes, isInlineViewable, artifactGlyph } from '../utils/artifactView';
+import { formatDateTime } from '../utils/time';
 
 /**
  * SessionArtifactsPane
@@ -215,9 +216,7 @@ export default function SessionArtifactsPane({
                   </div>
                   <div className="text-[10px] text-gray-500 truncate">
                     {formatBytes(artifact.size)}
-                    {artifact.createdAt
-                      ? ` · ${new Date(artifact.createdAt).toLocaleString()}`
-                      : ''}
+                    {artifact.createdAt ? ` · ${formatDateTime(artifact.createdAt)}` : ''}
                     {artifact.createdBy ? ` · ${artifact.createdBy}` : ''}
                   </div>
                 </div>

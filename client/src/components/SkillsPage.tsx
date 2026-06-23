@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { api } from '../utils/api';
 import { safeHttpHref } from '../utils/safeHttpUrl';
+import { formatDateTime } from '../utils/time';
 import {
   BookOpen,
   Loader2,
@@ -574,7 +575,7 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, i
                           {row?.last_used_at ? (
                             <p className="mt-1 text-[10px] text-gray-600">
                               Last used:{' '}
-                              {new Date(row.last_used_at).toLocaleString(undefined, {
+                              {formatDateTime(row.last_used_at, {
                                 dateStyle: 'short',
                                 timeStyle: 'short',
                               })}

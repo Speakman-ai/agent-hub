@@ -40,7 +40,7 @@ import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { epicFormToUpdateBody } from '../utils/epics';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { cardShortLabel, assigneeInitials, assigneeColorClass } from '../utils/kanbanCard';
-import { shortDate } from '../utils/time';
+import { shortDate, formatDateTime } from '../utils/time';
 import { filterAgentsByProject } from '../utils/kanbanAgents';
 import { MarkdownContent } from './MarkdownRenderer';
 import FinalizeCardBadge from './finalize/CardBadge';
@@ -2336,13 +2336,13 @@ export default function KanbanBoard({
                       {selectedCard?.created_at && (
                         <div>
                           <span className="text-gray-500">Created:</span>{' '}
-                          {new Date(selectedCard.created_at).toLocaleString()}
+                          {formatDateTime(selectedCard.created_at)}
                         </div>
                       )}
                       {selectedCard?.updated_at && (
                         <div>
                           <span className="text-gray-500">Updated:</span>{' '}
-                          {new Date(selectedCard.updated_at).toLocaleString()}
+                          {formatDateTime(selectedCard.updated_at)}
                         </div>
                       )}
                     </div>
@@ -2396,9 +2396,7 @@ export default function KanbanBoard({
                   <div key={c.id} className="bg-gray-800 rounded-lg p-3">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-xs font-medium text-gray-300">{c.author}</span>
-                      <span className="text-xs text-gray-600">
-                        {new Date(c.created_at).toLocaleString()}
-                      </span>
+                      <span className="text-xs text-gray-600">{formatDateTime(c.created_at)}</span>
                     </div>
                     <p className="text-sm text-gray-400 whitespace-pre-wrap">{c.content}</p>
                   </div>
