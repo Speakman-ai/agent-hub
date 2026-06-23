@@ -136,7 +136,59 @@ function DismissButton({ projectId, finding, onDismissed, onNotify }: any) {
   );
 }
 
-function FindingCard({ finding, projectId, onDismissed, onNotify }: any) {
+// Per-finding Fix: opens (or refreshes) a Dependabot-style bump PR for just
+// this finding's package. Single click — the server action is idempotent
+// (re-clicking refreshes the same bump branch/PR rather than duplicating it).
+function FixButton({ projectId, finding, onFixed, onNotify }: any) {
+  const [busy, setBusy] = useState(false);
+
+  const handleFix = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await api.fixSecurityFinding(projectId, finding.id);
+      const opened = result?.opened?.[0];
+      const skipped = result?.skipped?.[0];
+      if (opened) {
+        const verb = opened.prCreated ? 'Opened' : 'Updated';
+        onNotify?.(
+          `${verb} PR #${opened.prNumber}: bump ${opened.packageName} to ${opened.toVersion}`,
+          'success',
+        );
+      } else if (skipped) {
+        const why =
+          skipped.reason === 'lockfile_missing'
+            ? 'lockfile not found'
+            : skipped.reason === 'lockfile_unchanged'
+              ? 'already at the fixed version'
+              : skipped.detail || 'could not apply the bump';
+        onNotify?.(`No PR opened for ${finding.package_name}: ${why}`, 'info');
+      } else {
+        onNotify?.(`No fixable change for ${finding.package_name}`, 'info');
+      }
+      onFixed?.();
+    } catch (err: any) {
+      onNotify?.(err.message || 'Failed to open fix PR', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleFix}
+      disabled={busy}
+      data-testid="finding-fix-button"
+      title="Open a bump PR upgrading this package to its fixed version"
+      className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded border border-emerald-700/60 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+    >
+      <Wrench size={12} className={busy ? 'animate-pulse' : ''} />
+      {busy ? 'Opening PR…' : 'Fix'}
+    </button>
+  );
+}
+
+function FindingCard({ finding, projectId, onDismissed, onFixed, onNotify }: any) {
   const severityClass = SEVERITY_BADGE[finding.severity] || SEVERITY_BADGE.unknown;
   const statusMeta = STATUS_META[finding.status] || STATUS_META.open;
   const advisoryLabel = finding.advisory_id || 'advisory';
@@ -210,7 +262,15 @@ function FindingCard({ finding, projectId, onDismissed, onNotify }: any) {
           {finding.manifest_path}
         </span>
         {finding.status === 'open' ? (
-          <span className="ml-auto">
+          <span className="ml-auto inline-flex items-center gap-2">
+            {finding.fixed_version ? (
+              <FixButton
+                projectId={projectId}
+                finding={finding}
+                onFixed={onFixed}
+                onNotify={onNotify}
+              />
+            ) : null}
             <DismissButton
               projectId={projectId}
               finding={finding}
@@ -423,6 +483,7 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
                 finding={finding}
                 projectId={projectId}
                 onDismissed={handleDismissed}
+                onFixed={load}
                 onNotify={onNotify}
               />
             ))}

@@ -38,9 +38,44 @@ function relativeTime(ms: any) {
         return `${diffDays}d ago`;
     return new Date(ms).toLocaleDateString();
 }
-function FindingCard({ item, projectId, onDismissed }: any) {
+function FindingCard({ item, projectId, onDismissed, onFixed }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
     const [dismissing, setDismissing] = useState(false);
+    const [fixing, setFixing] = useState(false);
+    // Open (or refresh) a bump PR for this finding. Single tap — the server
+    // action is idempotent (re-tapping refreshes the same branch/PR).
+    const handleFix = async () => {
+        if (fixing)
+            return;
+        setFixing(true);
+        try {
+            const result: any = await api.fixSecurityFinding(projectId, item.id);
+            const opened = result?.opened?.[0];
+            const skipped = result?.skipped?.[0];
+            if (opened) {
+                const verb = opened.prCreated ? 'Opened' : 'Updated';
+                Alert.alert('Fix PR', `${verb} PR #${opened.prNumber}: bump ${opened.packageName} to ${opened.toVersion}.`);
+            }
+            else if (skipped) {
+                const why = skipped.reason === 'lockfile_missing'
+                    ? 'lockfile not found'
+                    : skipped.reason === 'lockfile_unchanged'
+                        ? 'already at the fixed version'
+                        : skipped.detail || 'could not apply the bump';
+                Alert.alert('No PR opened', `${item.package_name}: ${why}`);
+            }
+            else {
+                Alert.alert('No PR opened', `No fixable change for ${item.package_name}.`);
+            }
+            onFixed?.();
+        }
+        catch (err: any) {
+            Alert.alert('Fix failed', err?.message || 'Failed to open fix PR');
+        }
+        finally {
+            setFixing(false);
+        }
+    };
     const performDismiss = async () => {
         if (dismissing)
             return;
@@ -89,9 +124,14 @@ function FindingCard({ item, projectId, onDismissed }: any) {
 
       <View style={styles.footerRow}>
         <Text style={styles.manifest}>{item.manifest_path}</Text>
-        {item.status === 'open' ? (<TouchableOpacity onPress={handleDismiss} disabled={dismissing} testID="dismiss-finding" style={[styles.dismissButton, dismissing && styles.dismissButtonDisabled]}>
-            <Text style={styles.dismissText}>{dismissing ? 'Dismissing…' : 'Dismiss'}</Text>
-          </TouchableOpacity>) : null}
+        {item.status === 'open' ? (<View style={styles.footerActions}>
+            {item.fixed_version ? (<TouchableOpacity onPress={handleFix} disabled={fixing} testID="finding-fix-button" style={[styles.fixButton, fixing && styles.dismissButtonDisabled]}>
+                <Text style={styles.fixButtonText}>{fixing ? 'Opening PR…' : 'Fix'}</Text>
+              </TouchableOpacity>) : null}
+            <TouchableOpacity onPress={handleDismiss} disabled={dismissing} testID="dismiss-finding" style={[styles.dismissButton, dismissing && styles.dismissButtonDisabled]}>
+              <Text style={styles.dismissText}>{dismissing ? 'Dismissing…' : 'Dismiss'}</Text>
+            </TouchableOpacity>
+          </View>) : null}
       </View>
     </View>);
 }
@@ -167,7 +207,7 @@ export default function SecurityScreen({ route }: any) {
             setScanMode(null);
         }
     }, [scanMode, projectId, load]);
-    const renderItem = ({ item }: any) => (<FindingCard item={item} projectId={projectId} onDismissed={handleDismissed}/>);
+    const renderItem = ({ item }: any) => (<FindingCard item={item} projectId={projectId} onDismissed={handleDismissed} onFixed={load}/>);
     return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.topBar}>
         <TouchableOpacity onPress={openSidebar} style={styles.menuButton}>
@@ -311,8 +351,17 @@ const styles = StyleSheet.create({
         marginTop: 8,
     },
     manifest: { fontSize: 11, color: colors.gray600, fontFamily: 'monospace', flexShrink: 1 },
+    footerActions: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 8 },
+    fixButton: {
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: 'rgba(16,185,129,0.5)',
+        backgroundColor: 'rgba(16,185,129,0.12)',
+    },
+    fixButtonText: { fontSize: 12, color: colors.emerald400 || '#6ee7b7', fontWeight: '600' },
     dismissButton: {
-        marginLeft: 'auto',
         paddingHorizontal: 10,
         paddingVertical: 6,
         borderRadius: 6,

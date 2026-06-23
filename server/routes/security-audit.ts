@@ -28,11 +28,61 @@ import { runSecurityScan, SecurityScanError } from '../security-audit/run.js';
 import { openSecurityBumpPrs } from '../security-audit/auto-pr.js';
 import { commitFilesToBareBranch } from '../security-audit/git-write.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
+import config from '../config.js';
+import {
+  gitHostRepoPath,
+  hostedRepoDefaultBranch,
+  hostedRepoExists,
+} from '../git-host/repo-store.js';
+import { gitRepoFileReader, type RepoFileReader } from '../security-audit/scanner.js';
+import { revParse } from '../native-pr/git-read.js';
+import type { DependencyFinding, Ecosystem } from '../security-audit/types.js';
 import {
   DismissRequestSchema,
   FindingsQuerySchema,
   ScanRequestSchema,
 } from './security-audit.openapi.js';
+
+/** Resolved base for writing a bump branch into a project's bare hosted repo. */
+interface FixRepoBase {
+  repoPath: string;
+  baseBranch: string;
+  baseSha: string;
+}
+
+/**
+ * Injectable seam for the per-finding Fix route so it is unit-testable without
+ * a real git repo. Production defaults resolve the project's hosted bare repo,
+ * read files from the default-branch tip, and commit to a bare branch.
+ */
+export interface SecurityFixDeps {
+  /** Resolve repo path + default branch + tip SHA; `null` when not available. */
+  resolveRepo: (project: Project) => Promise<FixRepoBase | null>;
+  /** Build a file reader for the bare repo. */
+  makeReader: (repoPath: string) => RepoFileReader;
+  /** Commit `files` onto `branch` based on `baseSha`; returns the new head. */
+  commitFiles: typeof commitFilesToBareBranch;
+}
+
+/** Reconstruct the rich {@link DependencyFinding} a bump plan needs from a stored row. */
+export function findingRowToDependencyFinding(row: SecurityFindingRow): DependencyFinding {
+  return {
+    dependency: {
+      ecosystem: row.ecosystem as Ecosystem,
+      name: row.package_name,
+      version: row.package_version,
+      manifestPath: row.manifest_path,
+    },
+    advisory: {
+      id: row.advisory_id,
+      summary: row.summary,
+      severity: row.severity,
+      aliases: [],
+      fixedVersion: row.fixed_version,
+      url: row.advisory_url,
+    },
+  };
+}
 
 /** Public finding shape: the persisted row minus internal-only columns. */
 export type SecurityFindingDto = Omit<SecurityFindingRow, 'last_scan_id'>;
@@ -72,6 +122,8 @@ export interface SecurityAuditRouteOptions {
   advisorySource?: AdvisorySource;
   /** Override the scan orchestrator (tests). Defaults to {@link runSecurityScan}. */
   runScan?: typeof runSecurityScan;
+  /** Override the per-finding Fix git collaborators (tests). Defaults to git-backed. */
+  fixDeps?: SecurityFixDeps;
 }
 
 export default function createSecurityAuditRoutes(
@@ -88,6 +140,22 @@ export default function createSecurityAuditRoutes(
   };
   const advisorySource: AdvisorySource = opts.advisorySource ?? new OsvAdvisorySource();
   const runScan = opts.runScan ?? runSecurityScan;
+  const fixDeps: SecurityFixDeps = opts.fixDeps ?? {
+    // Resolve the project's bare hosted repo and pin the default-branch tip. The
+    // bump branch is cut from this SHA, matching the scan-path auto-PR base.
+    resolveRepo: async (project: Project): Promise<FixRepoBase | null> => {
+      const dataDir = config.dataDir;
+      if (!hostedRepoExists(project.id, dataDir)) return null;
+      const repoPath = gitHostRepoPath(project.id, dataDir);
+      const defaultBranch = await hostedRepoDefaultBranch(project.id, dataDir);
+      if (!defaultBranch) return null;
+      const baseSha = await revParse(repoPath, defaultBranch);
+      if (!baseSha) return null;
+      return { repoPath, baseBranch: defaultBranch, baseSha };
+    },
+    makeReader: (repoPath: string) => gitRepoFileReader(repoPath),
+    commitFiles: commitFilesToBareBranch,
+  };
 
   // Project ACCESS (view) is enforced upstream by the project-visibility gate
   // mounted at `/api/projects/:projectId` (server/project-visibility-middleware.ts),
@@ -223,6 +291,108 @@ export default function createSecurityAuditRoutes(
         }
         const msg = err instanceof Error ? err.message : String(err);
         res.status(500).json({ error: `Scan failed: ${msg.split('\n')[0]}` });
+      }
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/security-audit/findings/:id/fix',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const project = findProjectOr404(req, res);
+      if (!project) return;
+      const nativePr = deps.nativePr;
+      // Native bump PRs only exist for Hub-hosted repos with the native PR
+      // service wired. Same gate as the scan-path auto-PR — a mirror/GitHub repo
+      // has nowhere to open a native PR.
+      if (project.gitHost !== 'agenthub' || !nativePr) {
+        return res.status(409).json({
+          error: 'Project is not Agent Hub-hosted or native pull requests are unavailable.',
+        });
+      }
+      const finding = store().getFinding(project.id, req.params.id as string);
+      if (!finding) return res.status(404).json({ error: 'Finding not found' });
+      if (finding.status !== 'open') {
+        return res
+          .status(409)
+          .json({ error: `Finding is ${finding.status}; only open findings can be fixed.` });
+      }
+      if (finding.ecosystem !== 'npm') {
+        return res.status(409).json({
+          error: `Automated fix is not supported for ${finding.ecosystem} dependencies yet.`,
+        });
+      }
+      if (!finding.fixed_version) {
+        return res.status(409).json({ error: 'No fix has been published for this advisory yet.' });
+      }
+
+      const repo = await fixDeps.resolveRepo(project);
+      if (!repo) {
+        return res
+          .status(409)
+          .json({ error: 'Hosted repository is unavailable; cannot open a bump PR.' });
+      }
+
+      // Bump the WHOLE package group in this manifest, not just the clicked row.
+      // A package can be installed at several vulnerable versions at once (direct
+      // + transitive copies); openSecurityBumpPrs groups by (manifest, package)
+      // onto ONE deterministic branch. Passing only the single clicked finding
+      // would leave sibling copies unbumped and risk a later single-finding fix
+      // overwriting this branch. So gather every OPEN finding for the same
+      // package+manifest.
+      //
+      // Filter the siblings to the SUPPORTED set up front — npm ecosystem AND a
+      // published fixed_version — rather than relying on planSecurityBumps to
+      // silently skip the rest. A sibling advisory with fixed_version: null or a
+      // non-npm ecosystem is not actionable for this bump, and letting it into
+      // the group is misleading (it would just be dropped) and lets an unrelated
+      // advisory influence the planner's chosen target. The clicked finding is
+      // already validated as npm + fixed (409s above), so it always survives.
+      // (The planner still picks the MAX fixed version across the surviving
+      // siblings — intended Dependabot semantics: one bump that resolves every
+      // vulnerable copy of the package at once.)
+      const group = store()
+        .listFindings(project.id, { status: 'open' })
+        .filter(
+          (r) =>
+            r.package_name === finding.package_name &&
+            r.manifest_path === finding.manifest_path &&
+            r.ecosystem === 'npm' &&
+            r.fixed_version != null,
+        )
+        .map(findingRowToDependencyFinding);
+
+      const createdBy = (req as AuthenticatedRequest).authUserId ?? null;
+      const author = resolveNativePrAuthorUserId({ explicitUserId: createdBy });
+      const reader = fixDeps.makeReader(repo.repoPath);
+      try {
+        const result = await openSecurityBumpPrs(group, {
+          readFile: (p) => reader.readFile(repo.baseSha, p),
+          commitFiles: ({ branch, files, message }) =>
+            fixDeps.commitFiles({
+              repoPath: repo.repoPath,
+              baseSha: repo.baseSha,
+              branch,
+              files,
+              message,
+            }),
+          createOrGetOpenPr: ({ headBranch, headSha, title, body }) => {
+            const r = nativePr.createOrGetOpenPr({
+              project,
+              headBranch,
+              baseBranch: repo.baseBranch,
+              headSha,
+              title,
+              body,
+              author,
+            });
+            return { prNumber: r.row.number, prUrl: r.prUrl, prCreated: r.created };
+          },
+        });
+        res.json({ opened: result.opened, skipped: result.skipped });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(500).json({ error: `Fix failed: ${msg.split('\n')[0]}` });
       }
     },
   );

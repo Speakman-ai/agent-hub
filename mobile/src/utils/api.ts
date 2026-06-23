@@ -661,6 +661,13 @@ export const api = {
             method: 'POST',
             body: JSON.stringify(autoPr ? { autoPr: true } : {}),
         }),
+    // Open (or refresh) a Dependabot-style bump PR for a single finding. Admin-only,
+    // Hub-hosted projects only. Bumps the finding's package to its fixed version in
+    // one native PR. Returns { opened: [...], skipped: [...] }.
+    fixSecurityFinding: (projectId: any, id: any) =>
+        fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/fix`, {
+            method: 'POST',
+        }),
     // Dismiss (and, unless suppress:false, suppress on future re-scans) a finding.
     // Requires Admin server-side. Returns the updated finding.
     dismissSecurityFinding: (projectId: any, id: any, { reason, suppress }: any = {}) => fetchJSON(`/projects/${projectId}/security-audit/findings/${id}/dismiss`, {

@@ -82,6 +82,39 @@ export const AutoPrResultSchema = z
   })
   .nullable();
 
+/**
+ * Result of the per-finding Fix action. Shape mirrors {@link AutoPrResultSchema}
+ * but is never null (the endpoint either opens/refreshes a bump PR or records a
+ * skip reason). Typically a single entry — the finding's package is bumped in
+ * one PR alongside any sibling open findings for the same package/manifest.
+ */
+export const FixFindingResultSchema = z.object({
+  opened: z.array(
+    z.object({
+      branch: z.string(),
+      manifestPath: z.string(),
+      packageName: z.string(),
+      fromVersions: z.array(z.string()),
+      toVersion: z.string(),
+      advisoryIds: z.array(z.string()),
+      severity: SeveritySchema,
+      prNumber: z.number(),
+      prUrl: z.string(),
+      prCreated: z.boolean(),
+      branchUpdated: z.boolean(),
+    }),
+  ),
+  skipped: z.array(
+    z.object({
+      manifestPath: z.string(),
+      packageName: z.string(),
+      toVersion: z.string(),
+      reason: z.enum(['lockfile_missing', 'lockfile_unchanged', 'error']),
+      detail: z.string().optional(),
+    }),
+  ),
+});
+
 export const ScanResultSchema = z.object({
   ref: z.string(),
   dryRun: z.boolean().openapi({
@@ -198,6 +231,32 @@ registerPath({
       content: jsonContent(ErrorResponse),
     },
     500: { description: 'Scan failed.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/security-audit/findings/{id}/fix',
+  tags: ['Projects'],
+  summary: 'Open a Dependabot-style bump PR for a single finding',
+  description:
+    "Opens (or refreshes) one native Hub pull request that bumps the finding's package to its fixed version in the manifest the finding belongs to. Every open finding for the same package+manifest is bumped together in the single PR (so sibling vulnerable versions are not stranded). Requires gitHost: agenthub, a wired native PR service, the Admin role, and a published fixed version; npm lockfiles only. Idempotent: clicking again refreshes the existing bump branch/PR rather than opening a duplicate.",
+  request: {
+    params: z.object({ projectId: z.string(), id: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'Bump PR opened/refreshed, or skipped with a reason.',
+      content: jsonContent(FixFindingResultSchema),
+    },
+    403: { description: 'Caller lacks the Admin role.', content: jsonContent(ErrorResponse) },
+    404: { description: 'Unknown project or finding.', content: jsonContent(ErrorResponse) },
+    409: {
+      description:
+        'Project is not Hub-hosted, native PRs are unavailable, the finding is not open, has no published fix, or is not an npm dependency.',
+      content: jsonContent(ErrorResponse),
+    },
+    500: { description: 'Fix failed.', content: jsonContent(ErrorResponse) },
   },
 });
 

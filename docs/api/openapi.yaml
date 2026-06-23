@@ -19454,6 +19454,151 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/security-audit/findings/{id}/fix:
+    post:
+      tags:
+        - Projects
+      summary: Open a Dependabot-style bump PR for a single finding
+      description: "Opens (or refreshes) one native Hub pull request that bumps the finding's package to its fixed version in the manifest the finding belongs to. Every open finding for the same package+manifest is bumped together in the single PR (so sibling vulnerable versions are not stranded). Requires gitHost: agenthub, a wired native PR service, the Admin role, and a published fixed version; npm lockfiles only. Idempotent: clicking again refreshes the existing bump branch/PR rather than opening a duplicate."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Bump PR opened/refreshed, or skipped with a reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  opened:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        branch:
+                          type: string
+                        manifestPath:
+                          type: string
+                        packageName:
+                          type: string
+                        fromVersions:
+                          type: array
+                          items:
+                            type: string
+                        toVersion:
+                          type: string
+                        advisoryIds:
+                          type: array
+                          items:
+                            type: string
+                        severity:
+                          type: string
+                          enum:
+                            - critical
+                            - high
+                            - medium
+                            - low
+                            - unknown
+                        prNumber:
+                          type: number
+                        prUrl:
+                          type: string
+                        prCreated:
+                          type: boolean
+                        branchUpdated:
+                          type: boolean
+                      required:
+                        - branch
+                        - manifestPath
+                        - packageName
+                        - fromVersions
+                        - toVersion
+                        - advisoryIds
+                        - severity
+                        - prNumber
+                        - prUrl
+                        - prCreated
+                        - branchUpdated
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        manifestPath:
+                          type: string
+                        packageName:
+                          type: string
+                        toVersion:
+                          type: string
+                        reason:
+                          type: string
+                          enum:
+                            - lockfile_missing
+                            - lockfile_unchanged
+                            - error
+                        detail:
+                          type: string
+                      required:
+                        - manifestPath
+                        - packageName
+                        - toVersion
+                        - reason
+                required:
+                  - opened
+                  - skipped
+        "403":
+          description: Caller lacks the Admin role.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown project or finding.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Project is not Hub-hosted, native PRs are unavailable, the finding is not open, has no published fix, or is not an npm dependency.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Fix failed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/security-audit/findings/{id}/dismiss:
     post:
       tags:

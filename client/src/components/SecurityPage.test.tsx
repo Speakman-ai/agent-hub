@@ -9,6 +9,7 @@ import { api } from '../utils/api';
     getSecurityFindings: vi.fn(),
     dismissSecurityFinding: vi.fn(),
     runSecurityScan: vi.fn(),
+    fixSecurityFinding: vi.fn(),
   },
 }));
 
@@ -245,5 +246,59 @@ describe('SecurityPage', () => {
     });
 
     expect(onNotify).toHaveBeenCalledWith('not hosted', 'error');
+  });
+
+  it('per-finding Fix opens a bump PR and reports the opened PR via onNotify', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({
+      findings: [finding({ id: 'f1' })],
+      openCounts: counts({ high: 1 }),
+    });
+    (api.fixSecurityFinding as any).mockResolvedValue({
+      opened: [{ prNumber: 21, packageName: 'lodash', toVersion: '4.17.12', prCreated: true }],
+      skipped: [],
+    });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(screen.getByTestId('security-finding-card')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('finding-fix-button'));
+    });
+
+    expect(api.fixSecurityFinding).toHaveBeenCalledWith('proj-1', 'f1');
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Opened PR #21'), 'success');
+  });
+
+  it('Fix reports a skip (no PR opened) via an info notice', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({
+      findings: [finding({ id: 'f1' })],
+      openCounts: counts({ high: 1 }),
+    });
+    (api.fixSecurityFinding as any).mockResolvedValue({
+      opened: [],
+      skipped: [{ reason: 'lockfile_unchanged' }],
+    });
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    await waitFor(() => expect(screen.getByTestId('security-finding-card')).toBeInTheDocument());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('finding-fix-button'));
+    });
+
+    expect(onNotify).toHaveBeenCalledWith(
+      expect.stringContaining('already at the fixed version'),
+      'info',
+    );
+  });
+
+  it('hides the Fix button when the finding has no published fix', async () => {
+    (api.getSecurityFindings as any).mockResolvedValue({
+      findings: [finding({ id: 'f1', fixed_version: null })],
+      openCounts: counts({ high: 1 }),
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} />);
+    await waitFor(() => expect(screen.getByTestId('security-finding-card')).toBeInTheDocument());
+    expect(screen.queryByTestId('finding-fix-button')).not.toBeInTheDocument();
   });
 });

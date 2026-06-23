@@ -12,22 +12,33 @@ import {
 import { SecurityScanError } from '../security-audit/run.js';
 import type { RouteDeps, Project } from '../types.js';
 
+// NonNullable: the 2nd param is optional (has a default), so Parameters<>[1]
+// includes `undefined`; strip it before indexing so the field types resolve to
+// the real option types rather than `undefined`.
+type RouteOpts = NonNullable<Parameters<typeof createSecurityAuditRoutes>[1]>;
+
 function makeApp(opts: {
   store?: SecurityAuditStore;
-  runScan?: Parameters<typeof createSecurityAuditRoutes>[1] extends infer O
-    ? O extends { runScan?: infer R }
-      ? R
-      : never
-    : never;
+  runScan?: RouteOpts['runScan'];
+  fixDeps?: RouteOpts['fixDeps'];
   findProject?: (id: string) => Project | null;
+  /** Wire a native PR service into the route deps (fix route gate). */
+  nativePr?: unknown;
+  /** Override the project's gitHost (defaults to 'agenthub'). */
+  gitHost?: string;
   /** Role stamped on the request (authMiddleware does this in production). */
   role?: 'Owner' | 'Admin' | 'User' | null;
 }): express.Express {
-  const project = { id: 'p1', name: 'P1', gitHost: 'agenthub' } as unknown as Project;
+  const project = {
+    id: 'p1',
+    name: 'P1',
+    gitHost: opts.gitHost ?? 'agenthub',
+  } as unknown as Project;
   const deps = {
     stmts: {} as RouteDeps['stmts'],
     broadcast: vi.fn(),
     findProject: opts.findProject ?? ((id: string) => (id === 'p1' ? project : null)),
+    nativePr: opts.nativePr,
   } as unknown as RouteDeps;
   const app = express();
   app.use(express.json());
@@ -39,7 +50,13 @@ function makeApp(opts: {
     (req as unknown as { authUserId: string }).authUserId = 'u1';
     next();
   });
-  app.use(createSecurityAuditRoutes(deps, { store: opts.store, runScan: opts.runScan }));
+  app.use(
+    createSecurityAuditRoutes(deps, {
+      store: opts.store,
+      runScan: opts.runScan,
+      fixDeps: opts.fixDeps,
+    }),
+  );
   return app;
 }
 
@@ -280,6 +297,299 @@ describe('POST /security-audit/scan', () => {
       .send({})
       .expect(500);
     expect(res.body.error).toContain('boom');
+  });
+});
+
+describe('POST /security-audit/findings/:id/fix', () => {
+  const LOCK = JSON.stringify(
+    {
+      name: 'fixture',
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'fixture', version: '1.0.0' },
+        'node_modules/lodash': { version: '4.17.11', integrity: 'sha512-OLD' },
+      },
+    },
+    null,
+    2,
+  );
+
+  /** Seed one fixable open lodash finding and return its id. */
+  function seedFixable(s: SecurityAuditStore): string {
+    const r = s.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: [
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'lodash',
+            version: '4.17.11',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-a',
+            summary: 'Prototype pollution',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: 'https://example.test/GHSA-a',
+          },
+        },
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+    return r.newFindings[0].id;
+  }
+
+  function fakeFixDeps(files: Record<string, string | null>) {
+    const commitFiles = vi.fn(
+      async (_args: { branch: string; files: Record<string, string>; message: string }) => ({
+        headSha: 'deadbeef',
+        created: true,
+      }),
+    );
+    return {
+      fixDeps: {
+        resolveRepo: vi.fn(async () => ({
+          repoPath: '/bare/p1.git',
+          baseBranch: 'main',
+          baseSha: 'basesha',
+        })),
+        makeReader: () => ({
+          readFile: async (_ref: string, p: string) => (p in files ? files[p] : null),
+        }),
+        commitFiles,
+      } as unknown as Parameters<typeof makeApp>[0]['fixDeps'],
+      commitFiles,
+    };
+  }
+
+  function fakeNativePr() {
+    return {
+      createOrGetOpenPr: vi.fn((_args: Record<string, unknown>) => ({
+        row: { number: 42 },
+        prUrl: '/projects/p1/pulls/42',
+        created: true,
+      })),
+    };
+  }
+
+  it('opens a native bump PR for the finding and returns the opened entry', async () => {
+    const id = seedFixable(store);
+    const nativePr = fakeNativePr();
+    const { fixDeps, commitFiles } = fakeFixDeps({ 'package-lock.json': LOCK });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(200);
+    expect(res.body.opened).toHaveLength(1);
+    expect(res.body.opened[0]).toMatchObject({
+      packageName: 'lodash',
+      toVersion: '4.17.21',
+      prNumber: 42,
+      prUrl: '/projects/p1/pulls/42',
+      prCreated: true,
+    });
+    expect(res.body.skipped).toEqual([]);
+    expect(commitFiles).toHaveBeenCalledOnce();
+    expect(nativePr.createOrGetOpenPr).toHaveBeenCalledOnce();
+    // The PR is cut from the resolved base branch.
+    expect(nativePr.createOrGetOpenPr.mock.calls[0][0]).toMatchObject({ baseBranch: 'main' });
+  });
+
+  it('only bumps SUPPORTED siblings: a null-fixed advisory on the same package is excluded', async () => {
+    // The package is installed at three vulnerable versions in one manifest. Two
+    // advisories publish a fix (4.16.0 + 4.17.11 → 4.17.21); a third advisory on
+    // 4.13.0 has NO published fix. The per-finding Fix must bump only the two
+    // fixable copies and leave the unfixable one untouched — never letting the
+    // null-fixed sibling into the bump group.
+    const r = store.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: [
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'lodash',
+            version: '4.17.11',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-a',
+            summary: 'fixable',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: '',
+          },
+        },
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'lodash',
+            version: '4.16.0',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-b',
+            summary: 'fixable sibling',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: '4.17.21',
+            url: '',
+          },
+        },
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'lodash',
+            version: '4.13.0',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-c',
+            summary: 'no fix published',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: null,
+            url: '',
+          },
+        },
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+    // Click the first (fixable) finding.
+    const clicked = r.newFindings.find((f) => f.package_version === '4.17.11')!.id;
+    const lock = JSON.stringify(
+      {
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'fixture', version: '1.0.0' },
+          'node_modules/lodash': { version: '4.17.11', integrity: 'sha512-A' },
+          'node_modules/a/node_modules/lodash': { version: '4.16.0', integrity: 'sha512-B' },
+          'node_modules/b/node_modules/lodash': { version: '4.13.0', integrity: 'sha512-C' },
+        },
+      },
+      null,
+      2,
+    );
+    const nativePr = fakeNativePr();
+    const { fixDeps, commitFiles } = fakeFixDeps({ 'package-lock.json': lock });
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${clicked}/fix`)
+      .send()
+      .expect(200);
+
+    expect(res.body.opened).toHaveLength(1);
+    // Only the two FIXABLE versions are in the bump; the null-fixed 4.13.0 is not.
+    expect(res.body.opened[0]).toMatchObject({
+      packageName: 'lodash',
+      fromVersions: ['4.16.0', '4.17.11'],
+      toVersion: '4.17.21',
+    });
+    // The committed lockfile reflects the same: fixable copies bumped, the
+    // unfixable copy left at its original version.
+    const committed = JSON.parse(commitFiles.mock.calls[0][0].files['package-lock.json']);
+    expect(committed.packages['node_modules/lodash'].version).toBe('4.17.21');
+    expect(committed.packages['node_modules/a/node_modules/lodash'].version).toBe('4.17.21');
+    expect(committed.packages['node_modules/b/node_modules/lodash'].version).toBe('4.13.0');
+  });
+
+  it('reports a skip (no PR) when the lockfile is missing, without 500ing', async () => {
+    const id = seedFixable(store);
+    const nativePr = fakeNativePr();
+    const { fixDeps } = fakeFixDeps({}); // reader returns null for every path
+    const app = makeApp({ store, nativePr, fixDeps });
+    const res = await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(200);
+    expect(res.body.opened).toEqual([]);
+    expect(res.body.skipped[0]).toMatchObject({ reason: 'lockfile_missing' });
+    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
+  });
+
+  it('409s when the project is not Hub-hosted', async () => {
+    const id = seedFixable(store);
+    const app = makeApp({ store, nativePr: fakeNativePr(), gitHost: 'github' });
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(409);
+  });
+
+  it('409s when no native PR service is wired', async () => {
+    const id = seedFixable(store);
+    const app = makeApp({ store }); // no nativePr
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(409);
+  });
+
+  it('409s when the advisory has no published fix', async () => {
+    const r = store.recordScanResults({
+      projectId: 'p1',
+      scannedManifests: ['package-lock.json'],
+      findings: [
+        {
+          dependency: {
+            ecosystem: 'npm',
+            name: 'lodash',
+            version: '4.17.11',
+            manifestPath: 'package-lock.json',
+          },
+          advisory: {
+            id: 'GHSA-a',
+            summary: 's',
+            severity: 'high',
+            aliases: [],
+            fixedVersion: null,
+            url: '',
+          },
+        },
+      ],
+      ref: 'main',
+      now: 1000,
+    });
+    const app = makeApp({ store, nativePr: fakeNativePr() });
+    const res = await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${r.newFindings[0].id}/fix`)
+      .send()
+      .expect(409);
+    expect(res.body.error).toMatch(/no fix/i);
+  });
+
+  it('409s when the finding is already dismissed (not open)', async () => {
+    const id = seedFixable(store);
+    store.dismissFinding({ projectId: 'p1', id, reason: null, createdBy: null, suppress: true });
+    const app = makeApp({ store, nativePr: fakeNativePr() });
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(409);
+  });
+
+  it('404s for an unknown finding id', async () => {
+    const app = makeApp({ store, nativePr: fakeNativePr() });
+    await request(app).post('/api/projects/p1/security-audit/findings/nope/fix').send().expect(404);
+  });
+
+  it('requires the Admin role: a User is 403 and no PR is opened', async () => {
+    const id = seedFixable(store);
+    const nativePr = fakeNativePr();
+    const app = makeApp({ store, nativePr, role: 'User' });
+    await request(app)
+      .post(`/api/projects/p1/security-audit/findings/${id}/fix`)
+      .send()
+      .expect(403);
+    expect(nativePr.createOrGetOpenPr).not.toHaveBeenCalled();
   });
 });
 
