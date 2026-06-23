@@ -558,6 +558,8 @@ Never commit directly to `main`. Never push to `main` for feature work.
 
 ## Troubleshooting
 
+Common setup and runtime issues and their fixes:
+
 | Issue                                              | Solution                                                                                                                                                                                                                       |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `EBADENGINE` / Node version mismatch               | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use` in the repo root; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                                            |
