@@ -192,6 +192,10 @@ const ReplayBatchSuccessResponse = z
   .object({
     replayId: z.string(),
     created: z.boolean().openapi({ description: 'True when this chunk created the replay.' }),
+    projectId: z.string().nullable().openapi({
+      description:
+        'Project the capture is attributed to (from a verified X-RUM-Token), or null when anonymous.',
+    }),
     eventCount: z.number().openapi({ description: 'Total events stored after this chunk.' }),
     size: z.number().openapi({ description: 'Compressed (gzip) blob size in bytes.' }),
     durationMs: z.number().openapi({ description: 'Span across all stored events (ms).' }),
@@ -213,9 +217,15 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Public chunked session-replay ingest',
   description:
-    'Unauthenticated, rate-limited (600 / hour per IP). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Once a replay is attributed to a project / ticket / card it is finalized and rejects further chunks (409).',
+    'Rate-limited (600 / hour per IP for anonymous ingest). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Auth is optional and mirrors the one-shot path: with no `X-RUM-Token` the stream is anonymous and the row left unattributed; with a valid per-project token (minted via `POST /api/projects/{projectId}/rum/clients`) the creating chunk attributes the whole stream to that project and the request is rate-limited 6000 / hour per project instead. Every chunk of a stream should carry the same token. A chunk whose project disagrees with an already-attributed capture (anonymous or foreign token) is rejected 403. Once a replay is triage-linked to a support ticket or card it is finalized and rejects all further chunks (409).',
   request: {
     ...replayIdParam,
+    headers: z.object({
+      'x-rum-token': z.string().optional().openapi({
+        description:
+          'Optional per-project RUM ingest token. When present it must be valid, and must match the project of any already-attributed capture.',
+      }),
+    }),
     body: {
       description:
         'Either a raw JSON `ReplayBatchIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).',
@@ -226,9 +236,15 @@ registerPath({
     200: { description: 'Chunk appended.', content: jsonContent(ReplayBatchSuccessResponse) },
     201: { description: 'Replay created.', content: jsonContent(ReplayBatchSuccessResponse) },
     400: errorResponse('Bad id, undecodable body, or validation failure.'),
-    409: errorResponse('Replay is finalized (already attributed) and cannot accept more events.'),
+    401: errorResponse('An X-RUM-Token header was supplied but is invalid or revoked.'),
+    403: errorResponse(
+      'The chunk’s project (anonymous or a different token) disagrees with the capture’s existing attribution.',
+    ),
+    409: errorResponse(
+      'Replay is finalized (triage-linked to a support ticket or card) and cannot accept more events.',
+    ),
     413: errorResponse('Decompressed payload or total event count exceeds its cap.'),
-    429: errorResponse('Per-IP rate limit exceeded.'),
+    429: errorResponse('Per-IP (anonymous) or per-project (token) rate limit exceeded.'),
     503: errorResponse('The replay’s storage backend could not be resolved.'),
   },
 });

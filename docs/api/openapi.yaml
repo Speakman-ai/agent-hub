@@ -19742,7 +19742,7 @@ paths:
       tags:
         - Bug Reports
       summary: Public chunked session-replay ingest
-      description: Unauthenticated, rate-limited (600 / hour per IP). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Once a replay is attributed to a project / ticket / card it is finalized and rejects further chunks (409).
+      description: "Rate-limited (600 / hour per IP for anonymous ingest). Appends one batch of rrweb events to the replay `id`. The first chunk creates the replay and must include a full snapshot (type 2); later chunks append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤2 MB on the wire, ≤16 MB decompressed). A capture is capped at 20,000 total events. Auth is optional and mirrors the one-shot path: with no `X-RUM-Token` the stream is anonymous and the row left unattributed; with a valid per-project token (minted via `POST /api/projects/{projectId}/rum/clients`) the creating chunk attributes the whole stream to that project and the request is rate-limited 6000 / hour per project instead. Every chunk of a stream should carry the same token. A chunk whose project disagrees with an already-attributed capture (anonymous or foreign token) is rejected 403. Once a replay is triage-linked to a support ticket or card it is finalized and rejects all further chunks (409)."
       parameters:
         - schema:
             type: string
@@ -19751,6 +19751,13 @@ paths:
           description: Replay id (uuid).
           name: id
           in: path
+        - schema:
+            type: string
+            description: Optional per-project RUM ingest token. When present it must be valid, and must match the project of any already-attributed capture.
+          required: false
+          description: Optional per-project RUM ingest token. When present it must be valid, and must match the project of any already-attributed capture.
+          name: x-rum-token
+          in: header
       requestBody:
         description: Either a raw JSON `ReplayBatchIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).
         content:
@@ -19775,6 +19782,10 @@ paths:
                   created:
                     type: boolean
                     description: True when this chunk created the replay.
+                  projectId:
+                    type: string
+                    nullable: true
+                    description: Project the capture is attributed to (from a verified X-RUM-Token), or null when anonymous.
                   eventCount:
                     type: number
                     description: Total events stored after this chunk.
@@ -19787,6 +19798,7 @@ paths:
                 required:
                   - replayId
                   - created
+                  - projectId
                   - eventCount
                   - size
                   - durationMs
@@ -19803,6 +19815,10 @@ paths:
                   created:
                     type: boolean
                     description: True when this chunk created the replay.
+                  projectId:
+                    type: string
+                    nullable: true
+                    description: Project the capture is attributed to (from a verified X-RUM-Token), or null when anonymous.
                   eventCount:
                     type: number
                     description: Total events stored after this chunk.
@@ -19815,6 +19831,7 @@ paths:
                 required:
                   - replayId
                   - created
+                  - projectId
                   - eventCount
                   - size
                   - durationMs
@@ -19825,8 +19842,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "401":
+          description: An X-RUM-Token header was supplied but is invalid or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "403":
+          description: The chunk’s project (anonymous or a different token) disagrees with the capture’s existing attribution.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "409":
-          description: Replay is finalized (already attributed) and cannot accept more events.
+          description: Replay is finalized (triage-linked to a support ticket or card) and cannot accept more events.
           content:
             application/json:
               schema:
@@ -19838,7 +19867,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "429":
-          description: Per-IP rate limit exceeded.
+          description: Per-IP (anonymous) or per-project (token) rate limit exceeded.
           content:
             application/json:
               schema:

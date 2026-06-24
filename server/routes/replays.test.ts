@@ -30,6 +30,7 @@ import {
   ReplayEventCapError,
   ReplayFinalizedError,
   ReplayNeedsSnapshotError,
+  ReplayAttributionMismatchError,
 } from '../replays/replay-store.js';
 import {
   resetArtifactStoreCache,
@@ -87,11 +88,14 @@ function makeReplayStmts(): Stmts {
           SET duration_ms = ?, event_count = ?, size = ?, uncompressed_size = ?, meta = ?
         WHERE id = ?`,
     ),
-    updateSessionReplayStatsIfUnfinalized: db.prepare(
+    updateSessionReplayStatsForAppend: db.prepare(
       `UPDATE session_replays
-          SET duration_ms = ?, event_count = ?, size = ?, uncompressed_size = ?, meta = ?
+          SET duration_ms = ?, event_count = ?, size = ?, uncompressed_size = ?, meta = ?,
+              project_id = COALESCE(project_id, ?)
         WHERE id = ?
-          AND project_id IS NULL AND support_ticket_id IS NULL AND card_id IS NULL`,
+          AND support_ticket_id IS NULL
+          AND card_id IS NULL
+          AND (project_id IS NULL OR project_id = ?)`,
     ),
     linkSessionReplay: db.prepare(
       `UPDATE session_replays
@@ -591,6 +595,9 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
 
   beforeEach(() => {
     _resetRateLimit();
+    // Restore the inert default (anonymous): a token test overrides this.
+    (verifyRumToken as Mock).mockReset();
+    (verifyRumToken as Mock).mockReturnValue(null);
     ({ app, serverDir, stmts, config } = makeApp());
   });
 
@@ -661,18 +668,105 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
       .expect(400);
   });
 
-  it('409s a finalized (already-attributed) replay', async () => {
+  it('409s a triage-finalized (ticket-linked) replay', async () => {
     await supertest(app)
       .post(`/api/replays/${ID}/events`)
       .send({ events: [META, SNAPSHOT] })
       .expect(201);
-    // Attribute it to a project (what support-ticket / convert flows do).
-    stmts.linkSessionReplay.run('proj-1', null, null, ID, 'proj-1');
+    // Triage-link it to a support ticket (what support-ticket / convert flows do).
+    // This freezes the capture against further chunks (anti-tamper).
+    stmts.linkSessionReplay.run('proj-1', 'ticket-1', null, ID, 'proj-1');
     const res = await supertest(app)
       .post(`/api/replays/${ID}/events`)
       .send({ events: [INCREMENTAL] })
       .expect(409);
     expect(res.body.error).toMatch(/finalized/);
+  });
+
+  it('attributes the capture to a project from a valid X-RUM-Token (no longer orphaned)', async () => {
+    // The regression: before this fix the chunked path ignored the token, so
+    // every recorder-streamed capture landed unattributed (project_id IS NULL).
+    (verifyRumToken as Mock).mockReturnValue({
+      clientId: 'c1',
+      projectId: 'proj-1',
+      name: 'web',
+    });
+
+    const first = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .set('X-RUM-Token', 'rum_validtoken00000000000000000000000000000000')
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+    expect(first.body.created).toBe(true);
+    expect(first.body.projectId).toBe('proj-1');
+    expect((stmts.getSessionReplay.get(ID) as { project_id: string | null }).project_id).toBe(
+      'proj-1',
+    );
+
+    // A later chunk carrying the SAME token keeps appending — a project
+    // attribution must NOT freeze the still-streaming capture (that was the
+    // subtle break: project_id used to count as "finalized").
+    const second = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .set('X-RUM-Token', 'rum_validtoken00000000000000000000000000000000')
+      .send({ events: [INCREMENTAL] })
+      .expect(200);
+    expect(second.body.created).toBe(false);
+    expect(second.body.eventCount).toBe(3);
+    expect(second.body.projectId).toBe('proj-1');
+  });
+
+  it('401s a chunk bearing an invalid X-RUM-Token (before any body work)', async () => {
+    (verifyRumToken as Mock).mockReturnValue(null);
+    const res = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .set('X-RUM-Token', 'rum_bogus00000000000000000000000000000000000000')
+      .send({ events: [META, SNAPSHOT] })
+      .expect(401);
+    expect(res.body.error).toMatch(/Invalid RUM token/);
+    // Nothing was created.
+    expect(stmts.getSessionReplay.get(ID)).toBeUndefined();
+  });
+
+  it('403s an anonymous chunk into a project-attributed capture (attribution mismatch)', async () => {
+    (verifyRumToken as Mock).mockReturnValue({
+      clientId: 'c1',
+      projectId: 'proj-1',
+      name: 'web',
+    });
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .set('X-RUM-Token', 'rum_validtoken00000000000000000000000000000000')
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+
+    // Same replay id, but now anonymous (no token) — a stranger who learned the
+    // id can't inject events into the attributed capture.
+    const res = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [INCREMENTAL] })
+      .expect(403);
+    expect(res.body.error).toMatch(/different project/);
+    // The injected event was not stored.
+    expect((stmts.getSessionReplay.get(ID) as { event_count: number }).event_count).toBe(2);
+  });
+
+  it('keeps an anonymous (token-less) stream working and unattributed', async () => {
+    // Backward compatibility with the current recorder, which sends no token.
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [INCREMENTAL] })
+      .expect(200);
+    const row = stmts.getSessionReplay.get(ID) as {
+      project_id: string | null;
+      event_count: number;
+    };
+    expect(row.project_id).toBeNull();
+    expect(row.event_count).toBe(3);
   });
 
   it('handles OPTIONS preflight with 204 + CORS headers', async () => {
@@ -767,9 +861,11 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     expect(row.event_count).toBe(4);
   });
 
-  it('enforces the finalized guard INSIDE the lock (rejectIfFinalized)', async () => {
+  it('enforces the finalized guard INSIDE the lock (triage-linked → rejectIfFinalized)', async () => {
     await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
-    stmts.linkSessionReplay.run('proj-1', null, null, ID, 'proj-1');
+    // Triage-link to a support ticket — the anti-tamper freeze. A bare project
+    // attribution does NOT finalize (see the attribution-mismatch test below).
+    stmts.linkSessionReplay.run('proj-1', 'ticket-1', null, ID, 'proj-1');
     await expect(
       appendReplayEvents(
         { stmts, config },
@@ -780,6 +876,70 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     // Nothing appended.
     const row = stmts.getSessionReplay.get(ID) as { event_count: number };
     expect(row.event_count).toBe(2);
+  });
+
+  it('attributes the creating chunk to its project and lets same-project chunks continue', async () => {
+    const first = await appendReplayEvents(
+      { stmts, config },
+      { id: ID, events: [META, SNAPSHOT], projectId: 'proj-1' },
+      { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true, requireSnapshotOnFirstChunk: true },
+    );
+    expect(first.created).toBe(true);
+    expect(first.row.project_id).toBe('proj-1');
+
+    // A bare project attribution must NOT freeze the still-streaming capture.
+    const second = await appendReplayEvents(
+      { stmts, config },
+      { id: ID, events: [INCREMENTAL], projectId: 'proj-1' },
+      { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true },
+    );
+    expect(second.created).toBe(false);
+    expect(second.row.event_count).toBe(3);
+    expect(second.row.project_id).toBe('proj-1');
+  });
+
+  it('rejects a chunk whose project disagrees with the attributed capture (mismatch)', async () => {
+    await appendReplayEvents(
+      { stmts, config },
+      { id: ID, events: [META, SNAPSHOT], projectId: 'proj-1' },
+      { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true, requireSnapshotOnFirstChunk: true },
+    );
+    // Anonymous chunk into an attributed capture.
+    await expect(
+      appendReplayEvents(
+        { stmts, config },
+        { id: ID, events: [INCREMENTAL] },
+        { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true },
+      ),
+    ).rejects.toBeInstanceOf(ReplayAttributionMismatchError);
+    // Foreign-token chunk into the capture.
+    await expect(
+      appendReplayEvents(
+        { stmts, config },
+        { id: ID, events: [INCREMENTAL], projectId: 'proj-2' },
+        { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true },
+      ),
+    ).rejects.toBeInstanceOf(ReplayAttributionMismatchError);
+    // Neither rejected chunk was stored.
+    expect((stmts.getSessionReplay.get(ID) as { event_count: number }).event_count).toBe(2);
+  });
+
+  it('backfills project_id when a token-bearing chunk lands on an anonymous-created row', async () => {
+    // First chunk anonymous (e.g. raced ahead of the token, or a pre-token row).
+    const first = await appendReplayEvents(
+      { stmts, config },
+      { id: ID, events: [META, SNAPSHOT] },
+      { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true, requireSnapshotOnFirstChunk: true },
+    );
+    expect(first.row.project_id).toBeNull();
+
+    const second = await appendReplayEvents(
+      { stmts, config },
+      { id: ID, events: [INCREMENTAL], projectId: 'proj-1' },
+      { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true },
+    );
+    expect(second.row.project_id).toBe('proj-1');
+    expect(second.row.event_count).toBe(3);
   });
 
   it('enforces the first-chunk snapshot requirement INSIDE the lock', async () => {
@@ -793,11 +953,14 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     expect(stmts.getSessionReplay.get(ID)).toBeUndefined();
   });
 
-  it('rejects a chunk when a link finalizes the replay mid-write (DB CAS guard)', async () => {
-    // The append lock does NOT cover linkSessionReplay. Land the attribution
-    // write DURING the append's blob read — after the under-lock finalized read
-    // has already passed, before the guarded restamp — and the guarded UPDATE
-    // must match zero rows so the chunk is rejected and the blob untouched.
+  it('maps a raced re-attribution to a different project to a mismatch (CAS backstop, 403)', async () => {
+    // The append lock does NOT cover linkSessionReplay. A concurrent writer
+    // attributes the row to proj-1 DURING this proj-2 chunk's blob read — after
+    // the under-lock pre-read passed (row still unattributed), before the guarded
+    // restamp. The CAS matches zero rows; the re-read must classify this as an
+    // ATTRIBUTION MISMATCH (-> 403), not collapse it to a finalize (-> 409). This
+    // is the concurrency backstop — the only place a mismatch can surface that the
+    // deterministic pre-read never saw.
     const created = await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
     const store = getArtifactStoreForLocation(created as never, config);
     const origGetBuffer = store.getBuffer.bind(store);
@@ -806,6 +969,7 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
       const buf = await origGetBuffer(k);
       if (!injected) {
         injected = true;
+        // Project-only link (NO ticket) → not triage-finalized, just re-attributed.
         stmts.linkSessionReplay.run('proj-1', null, null, ID, 'proj-1');
       }
       return buf;
@@ -814,7 +978,47 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
       await expect(
         appendReplayEvents(
           { stmts, config },
-          { id: ID, events: [INCREMENTAL] },
+          { id: ID, events: [INCREMENTAL], projectId: 'proj-2' },
+          { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true },
+        ),
+      ).rejects.toBeInstanceOf(ReplayAttributionMismatchError);
+    } finally {
+      (store as { getBuffer: unknown }).getBuffer = origGetBuffer;
+    }
+    // Nothing appended; the racer's attribution stands and the blob is untouched.
+    const row = stmts.getSessionReplay.get(ID) as {
+      event_count: number;
+      project_id: string | null;
+    };
+    expect(row.event_count).toBe(2);
+    expect(row.project_id).toBe('proj-1');
+    const page = await readReplayEventsPage({ stmts, config }, row as never);
+    expect(page.total).toBe(2);
+  });
+
+  it('maps a raced triage link (ticket) mid-write to a finalize (CAS backstop, 409)', async () => {
+    // Same race, but the concurrent writer TRIAGE-links the row (ticket). The
+    // re-read sees a finalized capture → ReplayFinalizedError (409), the
+    // anti-tamper path — distinct from the attribution mismatch above even though
+    // both surface as a zero-row CAS. The chunk here carries the row's own project
+    // (proj-1), so finalize is the ONLY reason for rejection.
+    const created = await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
+    const store = getArtifactStoreForLocation(created as never, config);
+    const origGetBuffer = store.getBuffer.bind(store);
+    let injected = false;
+    (store as { getBuffer: (k: string) => Promise<Buffer> }).getBuffer = async (k: string) => {
+      const buf = await origGetBuffer(k);
+      if (!injected) {
+        injected = true;
+        stmts.linkSessionReplay.run('proj-1', 'ticket-1', null, ID, 'proj-1');
+      }
+      return buf;
+    };
+    try {
+      await expect(
+        appendReplayEvents(
+          { stmts, config },
+          { id: ID, events: [INCREMENTAL], projectId: 'proj-1' },
           { totalEventCap: MAX_TEST_CAP, rejectIfFinalized: true },
         ),
       ).rejects.toBeInstanceOf(ReplayFinalizedError);
@@ -839,7 +1043,12 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     let linkPromise: Promise<unknown> | null = null;
     (store as { getBuffer: (k: string) => Promise<Buffer> }).getBuffer = async (k: string) => {
       const buf = await origGetBuffer(k);
-      linkPromise ??= linkReplay(stmts, `/uploads/replay-${ID}.json`, { projectId: 'proj-1' });
+      // Triage-link (project + ticket): the ticket is what freezes the capture,
+      // so a post-link chunk is rejected by the anti-tamper guard below.
+      linkPromise ??= linkReplay(stmts, `/uploads/replay-${ID}.json`, {
+        projectId: 'proj-1',
+        supportTicketId: 'ticket-1',
+      });
       return buf;
     };
     let appendResult;
@@ -877,13 +1086,38 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     ).rejects.toBeInstanceOf(ReplayFinalizedError);
   });
 
-  it('the guarded restamp (updateSessionReplayStatsIfUnfinalized) is a no-op once finalized', async () => {
+  it('the guarded restamp (updateSessionReplayStatsForAppend) enforces triage + attribution', async () => {
     await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
-    // Unattributed → matches and updates.
-    expect(stmts.updateSessionReplayStatsIfUnfinalized.run(9, 9, 9, 9, null, ID).changes).toBe(1);
-    // Finalize, then the guarded restamp can no longer match.
-    stmts.linkSessionReplay.run('proj-1', null, null, ID, 'proj-1');
-    expect(stmts.updateSessionReplayStatsIfUnfinalized.run(7, 7, 7, 7, null, ID).changes).toBe(0);
+    // Unattributed + anonymous chunk (backfill=null, guard=null) → matches.
+    expect(
+      stmts.updateSessionReplayStatsForAppend.run(9, 9, 9, 9, null, null, ID, null).changes,
+    ).toBe(1);
+    expect((stmts.getSessionReplay.get(ID) as { project_id: string | null }).project_id).toBeNull();
+
+    // A token-bearing chunk backfills project_id on the still-anonymous row.
+    expect(
+      stmts.updateSessionReplayStatsForAppend.run(9, 9, 9, 9, null, 'proj-1', ID, 'proj-1').changes,
+    ).toBe(1);
+    expect((stmts.getSessionReplay.get(ID) as { project_id: string | null }).project_id).toBe(
+      'proj-1',
+    );
+
+    // Same project still matches; an anonymous or foreign chunk no longer does.
+    expect(
+      stmts.updateSessionReplayStatsForAppend.run(9, 9, 9, 9, null, 'proj-1', ID, 'proj-1').changes,
+    ).toBe(1);
+    expect(
+      stmts.updateSessionReplayStatsForAppend.run(9, 9, 9, 9, null, null, ID, null).changes,
+    ).toBe(0);
+    expect(
+      stmts.updateSessionReplayStatsForAppend.run(9, 9, 9, 9, null, 'proj-2', ID, 'proj-2').changes,
+    ).toBe(0);
+
+    // Triage-finalize (ticket): even the owning project can no longer restamp.
+    stmts.linkSessionReplay.run('proj-1', 'ticket-1', null, ID, 'proj-1');
+    expect(
+      stmts.updateSessionReplayStatsForAppend.run(7, 7, 7, 7, null, 'proj-1', ID, 'proj-1').changes,
+    ).toBe(0);
   });
 
   it('does NOT reject a snapshot-less chunk that races behind the creating chunk', async () => {

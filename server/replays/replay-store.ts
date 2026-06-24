@@ -243,18 +243,45 @@ export class ReplayNeedsSnapshotError extends Error {
   }
 }
 
+/**
+ * Thrown by `appendReplayEvents` when a chunk's project attribution disagrees
+ * with the replay it targets: an anonymous (or foreign-token) chunk into a
+ * project-attributed capture, or a token for project B appending to project A's
+ * capture. The route maps this to 403. This is the streaming counterpart of the
+ * one-shot ingest's per-project ownership — a leaked replay id can't be used to
+ * inject events into another project's capture without that project's RUM token.
+ */
+export class ReplayAttributionMismatchError extends Error {
+  constructor() {
+    super('replay belongs to a different project (RUM token mismatch)');
+    this.name = 'ReplayAttributionMismatchError';
+  }
+}
+
 export interface AppendReplayInput {
   /** Caller-supplied replay id (the `:id` path param). The first batch creates
    *  the row under this id; later batches append to it. */
   id: string;
   events: ReplayEvent[];
   meta?: Record<string, unknown> | null;
+  /**
+   * Project this chunk is attributed to, resolved from a verified `X-RUM-Token`
+   * at the route (null = anonymous ingest). The CREATING chunk stamps it on the
+   * row; later chunks must agree with the row's existing attribution. A still-null
+   * row is backfilled the first time an attributed chunk arrives. A chunk whose
+   * project disagrees with an already-attributed row is rejected
+   * (`ReplayAttributionMismatchError`) — the streaming equivalent of the
+   * one-shot's per-project ownership.
+   */
+  projectId?: string | null;
 }
 
 export interface AppendReplayOptions {
   /** Upper bound on the merged event count; exceeding throws ReplayEventCapError. */
   totalEventCap?: number;
-  /** Reject (ReplayFinalizedError) when the under-lock row is already attributed. */
+  /** Reject (ReplayFinalizedError) when the under-lock row is triage-linked to a
+   *  support ticket or card. A bare project attribution does NOT block the
+   *  matching project's chunks — see `isReplayFinalized`. */
   rejectIfFinalized?: boolean;
   /** Reject (ReplayNeedsSnapshotError) when the creating chunk has no snapshot. */
   requireSnapshotOnFirstChunk?: boolean;
@@ -266,12 +293,24 @@ export interface AppendReplayResult {
   created: boolean;
 }
 
-/** A replay is "finalized" once triage has attributed it to a project, support
- *  ticket, or card. Pure — no IO. */
+/**
+ * A replay is "finalized" once triage has linked it to a support ticket or card.
+ * This is the anti-tamper boundary that FREEZES a capture against further
+ * appends: once an investigator is looking at it, no more events can be injected.
+ *
+ * Note `project_id` is deliberately NOT part of this. A `project_id` set at
+ * ingest time from a verified `X-RUM-Token` is *attribution*, not finalization —
+ * the capture is still actively streaming, and the same-project token holder must
+ * be able to keep appending. Attribution integrity (a chunk may only extend a
+ * capture owned by the same project) is enforced separately in
+ * `appendReplayEventsUnlocked` / the guarded restamp, not here. This matches
+ * retention's notion of "linked" (`getExpiredUnlinkedSessionReplays` excludes
+ * ticket/card-linked rows, not merely project-attributed ones). Pure — no IO.
+ */
 export function isReplayFinalized(
-  row: Pick<SessionReplayRow, 'project_id' | 'support_ticket_id' | 'card_id'>,
+  row: Pick<SessionReplayRow, 'support_ticket_id' | 'card_id'>,
 ): boolean {
-  return Boolean(row.project_id || row.support_ticket_id || row.card_id);
+  return Boolean(row.support_ticket_id || row.card_id);
 }
 
 // ── Per-replay critical section ──────────────────────────────────
@@ -331,11 +370,15 @@ function withReplayLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
  *     counts/sizes/duration. Existing `meta` wins (first-write); a still-null
  *     meta is filled from this batch.
  *   - `rejectIfFinalized` → throw `ReplayFinalizedError` when the replay is
- *     attributed to a project / ticket / card. Attribution (`linkSessionReplay`)
- *     does NOT take the append lock, so the check is made authoritative at the
- *     DB via a guarded compare-and-update (see the CAS-before-blob note below),
- *     not just the under-lock read — a link landing during the blob read/write
- *     window still rejects the chunk.
+ *     triage-linked to a support ticket or card. A bare `project_id` (set at
+ *     ingest from a verified RUM token) does NOT finalize — the same-project
+ *     token holder keeps streaming; a foreign / anonymous chunk into an
+ *     attributed capture is rejected with `ReplayAttributionMismatchError`
+ *     instead. Linking (`linkSessionReplay`) does NOT take the append lock, so
+ *     both checks are made authoritative at the DB via a guarded
+ *     compare-and-update (see the CAS-before-blob note below), not just the
+ *     under-lock read — a link / re-attribution landing during the blob
+ *     read/write window still rejects the chunk.
  *
  * `totalEventCap` bounds the merged length — exceeding it throws
  * `ReplayEventCapError` and leaves the stored blob untouched (the cap is checked
@@ -364,6 +407,8 @@ async function appendReplayEventsUnlocked(
     throw new ReplayFinalizedError();
   }
 
+  const incomingProjectId = input.projectId ?? null;
+
   if (!existing) {
     if (
       options.requireSnapshotOnFirstChunk &&
@@ -374,12 +419,25 @@ async function appendReplayEventsUnlocked(
     if (input.events.length > totalEventCap) {
       throw new ReplayEventCapError(input.events.length, totalEventCap);
     }
+    // The creating chunk stamps the verified project (null = anonymous), so a
+    // token-authenticated stream is attributed from its very first batch — the
+    // fix for recorder captures landing as orphans.
     const row = await storeReplay(deps, {
       id: input.id,
       events: input.events,
       meta: input.meta ?? null,
+      projectId: incomingProjectId,
     });
     return { row, created: true };
+  }
+
+  // Attribution integrity: a chunk may only EXTEND a capture owned by the same
+  // project. An attributed row rejects an anonymous or foreign-token chunk before
+  // any blob work. (A still-null row accepts an attributed chunk and is backfilled
+  // by the guarded restamp below.) Decided against the under-lock `existing` read
+  // for a precise 403; the guarded UPDATE is the concurrency backstop.
+  if (existing.project_id && existing.project_id !== incomingProjectId) {
+    throw new ReplayAttributionMismatchError();
   }
 
   const store = getArtifactStoreForLocation(existing, config);
@@ -395,22 +453,45 @@ async function appendReplayEventsUnlocked(
   // CAS-before-blob, a DB-level backstop UNDER the per-id lock. The lock already
   // makes `linkReplay` mutually exclusive with this whole critical section, so
   // attribution cannot interleave with the `getBuffer`/`put` awaits here. As a
-  // second, storage-independent authority we still claim the stats with a
-  // guarded UPDATE that only matches while the row is unattributed: if a finalize
-  // ever lands before this statement (e.g. a future link path that bypasses the
-  // lock), it matches zero rows and we reject WITHOUT having touched the blob.
-  // The blob is overwritten only AFTER a successful claim.
+  // second, storage-independent authority we still claim the stats with a guarded
+  // UPDATE that only matches while the row is (a) not triage-finalized
+  // (ticket/card null) AND (b) unattributed OR owned by this chunk's project. It
+  // also backfills `project_id` from this chunk via COALESCE, so a row created by
+  // an anonymous first chunk is attributed the first time a token-bearing chunk
+  // lands. If a finalize / foreign attribution lands before this statement (e.g.
+  // a link path that bypasses the lock), it matches zero rows and we reject
+  // WITHOUT having touched the blob. The blob is overwritten only AFTER a
+  // successful claim.
   if (options.rejectIfFinalized) {
-    const claimed = stmts.updateSessionReplayStatsIfUnfinalized.run(
+    const claimed = stmts.updateSessionReplayStatsForAppend.run(
       computeDurationMs(mergedEvents),
       mergedEvents.length,
       buffer.length,
       uncompressedSize,
       meta ? JSON.stringify(meta) : null,
+      incomingProjectId, // COALESCE backfill
       input.id,
+      incomingProjectId, // WHERE ownership guard
     );
     if (claimed.changes === 0) {
-      // Finalized (or removed) during our read window — the authoritative reject.
+      // We lost the claim between the under-lock read and the guarded restamp: a
+      // concurrent writer finalized, re-attributed, or removed the row. Re-read it
+      // to map the race to the SAME contract error the deterministic pre-read
+      // path returns, instead of collapsing every cause to 409. The distinction
+      // matters most here — this is the concurrency backstop, the only place a
+      // mismatch can surface without the pre-read having seen it.
+      const current = stmts.getSessionReplay.get(input.id) as SessionReplayRow | undefined;
+      if (
+        current &&
+        !isReplayFinalized(current) &&
+        current.project_id &&
+        current.project_id !== incomingProjectId
+      ) {
+        // Attributed to a different project (not a triage link) → 403, matching
+        // the deterministic mismatch check above.
+        throw new ReplayAttributionMismatchError();
+      }
+      // Triage-linked (ticket/card), deleted, or otherwise un-claimable → 409.
       throw new ReplayFinalizedError();
     }
   } else {

@@ -1354,7 +1354,7 @@ export interface Stmts {
   getSessionReplayByCard: Stmt;
   linkSessionReplay: Stmt;
   updateSessionReplayStats: Stmt;
-  updateSessionReplayStatsIfUnfinalized: Stmt;
+  updateSessionReplayStatsForAppend: Stmt;
   deleteSessionReplay: Stmt;
   /** Select expired, UNLINKED replays (created_at < cutoff) for retention GC. */
   getExpiredUnlinkedSessionReplays: Stmt;

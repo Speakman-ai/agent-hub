@@ -12,6 +12,7 @@ import {
   ReplayEventCapError,
   ReplayFinalizedError,
   ReplayNeedsSnapshotError,
+  ReplayAttributionMismatchError,
   DEFAULT_EVENTS_PAGE,
 } from '../replays/replay-store.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
@@ -70,6 +71,13 @@ const RRWEB_FULL_SNAPSHOT = 2;
 // A streaming client picks an id and flushes batches over the lifetime of a
 // session, so the per-IP budget is far more generous than the one-shot ingest.
 const EVENTS_RATE_LIMIT_MAX = 600; // ~10 batches/min/IP over the hour window
+// Per-project budget for token-authenticated (X-RUM-Token) chunked ingest, the
+// streaming analogue of RUM_PROJECT_RATE_LIMIT_MAX for the one-shot path. A
+// vendor's end users sit behind many IPs, so a per-IP bucket is meaningless for
+// them; the budget is keyed by the token's project instead. Higher than the
+// per-IP events cap because it aggregates a whole site's streaming traffic, but
+// still bounded so one project can't flood the store.
+export const RUM_PROJECT_EVENTS_RATE_LIMIT_MAX = 6000;
 // rrweb batches gzip very well; bound the post-inflation byte count with a hard
 // ceiling that also guards against a gzip bomb (applied by both express's own
 // inflate `limit` and our manual gunzip `maxOutputLength`).
@@ -84,11 +92,14 @@ export const _rateBuckets = new Map<string, { count: number; resetAt: number }>(
 export const _eventsRateBuckets = new Map<string, { count: number; resetAt: number }>();
 // Token-authenticated ingest budget, keyed by project id (not IP).
 export const _projectRateBuckets = new Map<string, { count: number; resetAt: number }>();
+// Token-authenticated CHUNKED ingest budget, keyed by project id (not IP).
+export const _projectEventsRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 export function _resetRateLimit(): void {
   _rateBuckets.clear();
   _eventsRateBuckets.clear();
   _projectRateBuckets.clear();
+  _projectEventsRateBuckets.clear();
 }
 
 function ipFromReq(req: Request): string {
@@ -450,26 +461,79 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
   // A streaming client picks a replay id and POSTs gzipped batches of rrweb
   // events over the lifetime of a capture. The first batch creates the replay
   // (and must carry a full snapshot); later batches append. Public + CORS *,
-  // mirroring the one-shot ingest, but on its own (more generous) per-IP budget.
+  // mirroring the one-shot ingest. Like the one-shot path it honors an optional
+  // `X-RUM-Token`: a valid token attributes the whole stream to its project (the
+  // creating chunk stamps `project_id`) and switches to a per-PROJECT events
+  // budget; without a token the capture stays anonymous on the per-IP budget.
+  // This is what keeps recorder-streamed captures from landing as orphans.
   router.options('/api/replays/:id/events', applyCors, (_req, res) => {
     res.status(204).end();
   });
 
   // Cheap admission gate that runs BEFORE the raw body is read/inflated, so a
-  // rate-limited or malformed-id caller can't force up to 16 MB of body parsing
-  // + gunzip work on a public, unauthenticated endpoint. Both checks here are
-  // O(1) and touch no body bytes.
+  // rate-limited, malformed-id, or bad-token caller can't force up to 16 MB of
+  // body parsing + gunzip work on a public, unauthenticated endpoint. Every check
+  // here is O(1) (plus, for a well-formed token, one indexed lookup) and touches
+  // no body bytes.
+  //
+  // Optional vendor authentication mirrors the one-shot path:
+  //   - VALID token   → attribute the stream to its project, charge a per-PROJECT
+  //                     events budget, and stash the project on res.locals so the
+  //                     handler can pass it to appendReplayEvents.
+  //   - no token      → anonymous ingest on the per-IP events budget (unchanged).
+  //   - INVALID token → charged to the per-IP events budget, then 401.
+  // The per-IP budget is PRECHECKED (without consuming) before verifyRumToken so
+  // an exhausted IP is rejected before the token hash + DB lookup runs.
   function eventsIngestGate(req: Request, res: Response, next: NextFunction): void {
-    const ip = ipFromReq(req);
-    const rl = bucketCheck(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
-    if (!rl.ok) {
-      res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
-      res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
-      return;
-    }
     if (!REPLAY_ID_RE.test(String(req.params.id))) {
       res.status(400).json({ error: 'invalid replay id' });
       return;
+    }
+    const ip = ipFromReq(req);
+    const rawToken = req.headers['x-rum-token'];
+    const presentedToken = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+    const hasToken = presentedToken != null && String(presentedToken).trim() !== '';
+
+    if (hasToken) {
+      const pre = bucketPeek(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+      if (!pre.ok) {
+        res.setHeader('Retry-After', Math.ceil(pre.retryAfterMs / 1000));
+        res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+        return;
+      }
+      const verified = verifyRumToken(String(presentedToken).trim());
+      if (verified) {
+        const rl = bucketCheck(
+          _projectEventsRateBuckets,
+          verified.projectId,
+          RUM_PROJECT_EVENTS_RATE_LIMIT_MAX,
+        );
+        if (!rl.ok) {
+          res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+          res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+          return;
+        }
+        res.locals.rumProjectId = verified.projectId;
+      } else {
+        // Malformed / unknown / revoked token: charge the per-IP budget (so a
+        // bogus header is no cheaper than an anonymous ingest), then 401 — or 429
+        // if that charge tips the IP over its budget.
+        const rl = bucketCheck(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+        if (!rl.ok) {
+          res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+          res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+          return;
+        }
+        res.status(401).json({ error: 'Invalid RUM token' });
+        return;
+      }
+    } else {
+      const rl = bucketCheck(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+      if (!rl.ok) {
+        res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+        res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+        return;
+      }
     }
     next();
   }
@@ -504,11 +568,20 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           return res.status(400).json({ error: parsed.error });
         }
 
+        // Resolved by eventsIngestGate from a verified X-RUM-Token (null =
+        // anonymous). The creating chunk stamps it; later chunks must agree.
+        const attributedProjectId = (res.locals.rumProjectId as string | undefined) ?? null;
+
         let result;
         try {
           result = await appendReplayEvents(
             { stmts, config },
-            { id, events: parsed.value.events, meta: parsed.value.meta ?? null },
+            {
+              id,
+              events: parsed.value.events,
+              meta: parsed.value.meta ?? null,
+              projectId: attributedProjectId,
+            },
             {
               totalEventCap: MAX_EVENTS,
               rejectIfFinalized: true,
@@ -518,6 +591,9 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         } catch (err) {
           if (err instanceof ReplayNeedsSnapshotError) {
             return res.status(400).json({ error: err.message });
+          }
+          if (err instanceof ReplayAttributionMismatchError) {
+            return res.status(403).json({ error: err.message });
           }
           if (err instanceof ReplayFinalizedError) {
             return res.status(409).json({ error: err.message });
@@ -535,6 +611,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         return res.status(created ? 201 : 200).json({
           replayId: row.id,
           created,
+          projectId: row.project_id,
           eventCount: row.event_count,
           size: row.size,
           durationMs: row.duration_ms,

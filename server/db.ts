@@ -2956,22 +2956,32 @@ function initDb(dataDir: string): void {
               meta              = ?
         WHERE id = ?`,
     ),
-    // Same restamp, but only while the replay is still UNATTRIBUTED. This is the
-    // authoritative compare-and-update the chunked-append guard relies on: a
-    // concurrent `linkSessionReplay` (support-ticket / card / project link) that
-    // finalizes the row makes this match zero rows, so a post-finalization chunk
-    // is rejected at the DB level — no append lock can cover the link write.
-    updateSessionReplayStatsIfUnfinalized: db.prepare(
+    // Restamp the blob-derived stats for a chunked append, but only while the
+    // append is still ALLOWED. This is the authoritative compare-and-update the
+    // chunked-append guard relies on; it enforces two things in one statement:
+    //   1. Anti-tamper: the row must not be triage-linked (support_ticket_id /
+    //      card_id null). A concurrent `linkSessionReplay` that finalizes the row
+    //      makes this match zero rows, so a post-finalization chunk is rejected at
+    //      the DB level — no append lock can cover the link write.
+    //   2. Attribution integrity: the row must be unattributed OR owned by this
+    //      chunk's project (`project_id IS NULL OR project_id = ?`). A foreign /
+    //      anonymous chunk into an attributed capture matches zero rows.
+    // `project_id = COALESCE(project_id, ?)` backfills the attribution the first
+    // time a token-bearing chunk lands on an anonymous-created row. The bound
+    // projectId appears twice: once for the COALESCE backfill, once for the WHERE
+    // ownership guard (NULL for an anonymous chunk → only matches a NULL row).
+    updateSessionReplayStatsForAppend: db.prepare(
       `UPDATE session_replays
           SET duration_ms       = ?,
               event_count       = ?,
               size              = ?,
               uncompressed_size = ?,
-              meta              = ?
+              meta              = ?,
+              project_id        = COALESCE(project_id, ?)
         WHERE id = ?
-          AND project_id IS NULL
           AND support_ticket_id IS NULL
-          AND card_id IS NULL`,
+          AND card_id IS NULL
+          AND (project_id IS NULL OR project_id = ?)`,
     ),
     deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
     // Retention GC: oldest-first batch of expired, UNLINKED replays. Linked
