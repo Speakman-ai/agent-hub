@@ -4437,6 +4437,21 @@ function initDb(dataDir: string): void {
            ended_at = COALESCE(ended_at, unixepoch() * 1000)
        WHERE state IN ('queued','running')`,
     ),
+    // After the boot retrigger successfully starts a FRESH run for an interrupted
+    // session, annotate the just-swept (old) run so its terminal bubble no longer
+    // reads as an unresolved infra failure — it now self-describes that a fresh
+    // run was kicked automatically. The exact-match guard on the original sweep
+    // sentence keeps this idempotent (a second boot won't re-append) AND keeps the
+    // 'Finalize run interrupted%' prefix intact so the crash-loop generation
+    // counter (countInterruptedFinalizeRunsForSessionHead) still counts this row.
+    markFinalizeRunSupersededByBootRetrigger: db.prepare(
+      `UPDATE finalize_runs
+          SET failure_reason =
+                'Finalize run interrupted (server restart or crash) — superseded by an automatic re-run'
+        WHERE id = ?
+          AND status = 'infra_error'
+          AND failure_reason = 'Finalize run interrupted (server restart or crash)'`,
+    ),
     getWorkflowStepRun: db.prepare('SELECT * FROM workflow_step_runs WHERE id = ?'),
     getWorkflowRunScoped: db.prepare(
       `SELECT r.* FROM workflow_runs r

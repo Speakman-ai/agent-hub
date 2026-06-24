@@ -199,6 +199,18 @@ export async function retriggerInterruptedFinalizeRunsOnBoot(
       const res = await startOne(deps, item);
       if (res.ok) {
         retriggered++;
+        // Annotate the just-swept run so its terminal bubble self-describes the
+        // auto-recovery ("superseded by an automatic re-run") instead of reading
+        // as an unresolved infra failure. Best-effort: a failure here must never
+        // block boot or undo the successful retrigger.
+        try {
+          deps.stmts.markFinalizeRunSupersededByBootRetrigger.run(item.runId);
+        } catch (e) {
+          console.error(
+            `[finalize-boot-retrigger] supersede mark failed run=${item.runId}: ` +
+              (e as Error).message,
+          );
+        }
         console.log(
           `[finalize-boot-retrigger] re-triggered finalize for session=${item.sessionId} ` +
             `(interrupted run=${item.runId}, new run=${res.runId})`,

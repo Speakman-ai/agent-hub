@@ -219,3 +219,86 @@ describe('failStuckFinalizeRunsOnBoot', () => {
     expect(run.failed_step_exit_code).toBe(2);
   });
 });
+
+describe('markFinalizeRunSupersededByBootRetrigger (SQL contract)', () => {
+  function setupSupersede() {
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE finalize_runs (
+        id TEXT PRIMARY KEY, status TEXT NOT NULL, failure_reason TEXT,
+        session_id TEXT, head_sha TEXT
+      );
+    `);
+    const mark = db.prepare(
+      `UPDATE finalize_runs
+          SET failure_reason =
+                'Finalize run interrupted (server restart or crash) — superseded by an automatic re-run'
+        WHERE id = ?
+          AND status = 'infra_error'
+          AND failure_reason = 'Finalize run interrupted (server restart or crash)'`,
+    );
+    // The crash-loop generation counter the supersede mark must not break.
+    const count = db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND head_sha = ?
+          AND status = 'infra_error'
+          AND failure_reason LIKE 'Finalize run interrupted%'`,
+    );
+    return { db, mark, count };
+  }
+
+  const INTERRUPTED = 'Finalize run interrupted (server restart or crash)';
+
+  it('appends the superseded suffix to an interrupted infra_error run', () => {
+    const { db, mark } = setupSupersede();
+    db.prepare(
+      "INSERT INTO finalize_runs (id,status,failure_reason) VALUES ('r1','infra_error',?)",
+    ).run(INTERRUPTED);
+    const res = mark.run('r1') as { changes: number };
+    expect(res.changes).toBe(1);
+    const r = db.prepare("SELECT failure_reason FROM finalize_runs WHERE id='r1'").get() as {
+      failure_reason: string;
+    };
+    expect(r.failure_reason).toMatch(/superseded by an automatic re-run$/);
+    // Prefix preserved so the crash-loop counter (LIKE 'Finalize run interrupted%') still matches.
+    expect(r.failure_reason.startsWith(INTERRUPTED)).toBe(true);
+  });
+
+  it('keeps the run countable by the crash-loop generation counter after marking', () => {
+    const { db, mark, count } = setupSupersede();
+    db.prepare(
+      "INSERT INTO finalize_runs (id,status,failure_reason,session_id,head_sha) VALUES ('r1','infra_error',?, 's','h')",
+    ).run(INTERRUPTED);
+    mark.run('r1');
+    const n = (count.get('s', 'h') as { n: number }).n;
+    expect(n).toBe(1);
+  });
+
+  it('is idempotent — a second mark does not double-append', () => {
+    const { db, mark } = setupSupersede();
+    db.prepare(
+      "INSERT INTO finalize_runs (id,status,failure_reason) VALUES ('r1','infra_error',?)",
+    ).run(INTERRUPTED);
+    mark.run('r1');
+    const second = mark.run('r1') as { changes: number };
+    expect(second.changes).toBe(0);
+    const r = db.prepare("SELECT failure_reason FROM finalize_runs WHERE id='r1'").get() as {
+      failure_reason: string;
+    };
+    expect((r.failure_reason.match(/superseded/g) || []).length).toBe(1);
+  });
+
+  it('does not touch a genuinely-failed run or a different reason', () => {
+    const { db, mark } = setupSupersede();
+    db.prepare(
+      "INSERT INTO finalize_runs (id,status,failure_reason) VALUES ('failed','failed',?)",
+    ).run(INTERRUPTED);
+    db.prepare(
+      "INSERT INTO finalize_runs (id,status,failure_reason) VALUES ('other','infra_error','container_unavailable')",
+    ).run();
+    expect((mark.run('failed') as { changes: number }).changes).toBe(0);
+    expect((mark.run('other') as { changes: number }).changes).toBe(0);
+  });
+});

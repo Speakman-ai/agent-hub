@@ -75,10 +75,11 @@ describe('planBootRetriggers', () => {
 });
 
 describe('retriggerInterruptedFinalizeRunsOnBoot', () => {
-  function fakeDeps(count: number): RouteDeps {
+  function fakeDeps(count: number, supersede = vi.fn()): RouteDeps {
     return {
       stmts: {
         countInterruptedFinalizeRunsForSessionHead: { get: () => ({ n: count }) },
+        markFinalizeRunSupersededByBootRetrigger: { run: supersede },
       },
     } as unknown as RouteDeps;
   }
@@ -114,6 +115,59 @@ describe('retriggerInterruptedFinalizeRunsOnBoot', () => {
       maxGenerations: 3,
     });
     expect(res).toEqual({ retriggered: 0, skipped: 0 });
+  });
+
+  it('marks each successfully retriggered run as superseded (by old run id)', async () => {
+    const supersede = vi.fn();
+    const start = vi
+      .fn<BootRetriggerStartFn>()
+      .mockResolvedValue({ ok: true, runId: 'new-run', status: 'queued' });
+    await retriggerInterruptedFinalizeRunsOnBoot(
+      fakeDeps(0, supersede),
+      [run({ runId: 'old-a' }), run({ runId: 'old-b' })],
+      { start, maxGenerations: 3 },
+    );
+    expect(supersede).toHaveBeenCalledTimes(2);
+    expect(supersede).toHaveBeenNthCalledWith(1, 'old-a');
+    expect(supersede).toHaveBeenNthCalledWith(2, 'old-b');
+  });
+
+  it('does NOT mark a run superseded when the kickoff was declined', async () => {
+    const supersede = vi.fn();
+    const start = vi
+      .fn<BootRetriggerStartFn>()
+      .mockResolvedValue({ ok: false, error: 'ready_to_push', runId: 'r' });
+    await retriggerInterruptedFinalizeRunsOnBoot(fakeDeps(0, supersede), [run({ runId: 'a' })], {
+      start,
+      maxGenerations: 3,
+    });
+    expect(supersede).not.toHaveBeenCalled();
+  });
+
+  it('does NOT mark a crash-loop-capped run superseded (no retrigger happened)', async () => {
+    const supersede = vi.fn();
+    const start = vi.fn<BootRetriggerStartFn>();
+    await retriggerInterruptedFinalizeRunsOnBoot(fakeDeps(9, supersede), [run({ runId: 'a' })], {
+      start,
+      maxGenerations: 3,
+    });
+    expect(start).not.toHaveBeenCalled();
+    expect(supersede).not.toHaveBeenCalled();
+  });
+
+  it('still counts the retrigger when the supersede mark throws (best-effort)', async () => {
+    const supersede = vi.fn(() => {
+      throw new Error('db locked');
+    });
+    const start = vi
+      .fn<BootRetriggerStartFn>()
+      .mockResolvedValue({ ok: true, runId: 'new-run', status: 'queued' });
+    const res = await retriggerInterruptedFinalizeRunsOnBoot(
+      fakeDeps(0, supersede),
+      [run({ runId: 'a' })],
+      { start, maxGenerations: 3 },
+    );
+    expect(res).toEqual({ retriggered: 1, skipped: 0 });
   });
 
   it('swallows a throwing kickoff and continues to the next session', async () => {
