@@ -133,10 +133,114 @@ describe('runAgentJob', () => {
       transport,
       docker,
       heartbeatMs: 5,
+      spotProbeMs: 5,
       checkSpot: async () => true,
     });
 
     await vi.waitFor(() => expect(hbCalls.some((s) => s === true)).toBe(true));
+    releaseStep();
+    await jobP;
+  });
+
+  it('reports a spot reclaim out-of-band even when the heartbeat cadence is slow', async () => {
+    // Regression: the IMDS probe used to ride the heartbeat tick, so a reclaim
+    // notice could not be reported any sooner than the next (potentially
+    // stretched) heartbeat — frequently too late, misclassifying the lost lease
+    // as generic `lease expired` instead of `spot_reclaimed`. The probe now runs
+    // on its own faster interval and fires an immediate heartbeat on detection.
+    const hbCalls: Array<boolean | undefined> = [];
+    let releaseStep!: () => void;
+    const stepGate = new Promise<void>((r) => {
+      releaseStep = r;
+    });
+    const { transport, docker } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'slow', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    transport.heartbeat = async (_j, spot) => {
+      hbCalls.push(spot);
+    };
+    docker.execStep = async () => {
+      await stepGate;
+      return 0;
+    };
+
+    let probes = 0;
+    const jobP = runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      // Heartbeat far slower than the probe: a reclaim must still be reported
+      // promptly via the probe's own out-of-band heartbeat, not wait on the tick.
+      heartbeatMs: 100_000,
+      spotProbeMs: 5,
+      checkSpot: async () => {
+        probes += 1;
+        return true;
+      },
+    });
+
+    // The first reported heartbeat carries the spot flag — driven by the probe,
+    // not the (100s-away) heartbeat tick.
+    await vi.waitFor(() => expect(hbCalls.some((s) => s === true)).toBe(true));
+    expect(hbCalls[0]).toBe(true);
+    // Sticky: once detected the probe stops firing (it short-circuits), so the
+    // probe count stays bounded rather than hammering IMDS for the whole job.
+    const probesAfterDetect = probes;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(probes).toBe(probesAfterDetect);
+    releaseStep();
+    await jobP;
+  });
+
+  it('does not stack overlapping IMDS probes when the metadata service stalls', async () => {
+    // Regression: with the probe decoupled onto its own fast (5ms here) interval,
+    // a checkSpot() that outlasts spotProbeMs must NOT let ticks pile up unbounded
+    // pending probes. The in-flight guard skips a tick while one is outstanding.
+    let releaseStep!: () => void;
+    const stepGate = new Promise<void>((r) => {
+      releaseStep = r;
+    });
+    const { transport, docker } = fakes(
+      [{ type: 'run_step', stepIndex: 0, run: 'slow', env: {} }, { type: 'finish' }],
+      () => 0,
+    );
+    transport.heartbeat = async () => {};
+    docker.execStep = async () => {
+      await stepGate;
+      return 0;
+    };
+
+    // A probe that hangs until we let it go — far longer than the 5ms tick, so
+    // many ticks fire while the first probe is still pending.
+    let started = 0;
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((r) => {
+      releaseProbe = r;
+    });
+    const jobP = runAgentJob({
+      jobId: 'j',
+      spec: wire(),
+      workspaceDir: '/ws',
+      transport,
+      docker,
+      heartbeatMs: 100_000,
+      spotProbeMs: 5,
+      checkSpot: async () => {
+        started += 1;
+        await probeGate;
+        return false;
+      },
+    });
+
+    // Let the interval fire many times while the single probe is in flight.
+    await new Promise((r) => setTimeout(r, 60));
+    // Exactly one probe should have started despite ~12 ticks elapsing.
+    expect(started).toBe(1);
+
+    releaseProbe();
     releaseStep();
     await jobP;
   });
@@ -166,6 +270,7 @@ describe('runAgentJob', () => {
       transport,
       docker,
       heartbeatMs: 5,
+      spotProbeMs: 5,
       checkSpot: async () => false,
     });
 

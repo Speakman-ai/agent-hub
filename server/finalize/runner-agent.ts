@@ -82,6 +82,15 @@ export async function runAgentJob(args: {
   materialize?: (spec: RunnerJobWireSpec, destPath: string) => Promise<void>;
   logFlushMs?: number;
   heartbeatMs?: number;
+  /**
+   * Cadence of the IMDS Spot-interruption probe. Deliberately faster than the
+   * heartbeat (default 5s vs 30s) so a 2-minute reclaim notice is caught well
+   * within its window even when heavy step-log streaming stretches the slower
+   * heartbeat tick. Runs on its OWN interval — decoupled from lease renewal so a
+   * slow/hung metadata probe can never delay a heartbeat (which would risk the
+   * very `lease expired` reaping this aims to prevent).
+   */
+  spotProbeMs?: number;
   protection?: TaskProtection;
   /**
    * Starts the host resource sampler for this job. Injectable for tests;
@@ -109,28 +118,54 @@ export async function runAgentJob(args: {
   // job instead of SIGKILLing it. Best-effort — protection errors must NEVER fail
   // the job (a non-ECS host returns a no-op; a transient API blip retries below).
   void protection.set(true).catch(() => {});
+  const unref = (t: ReturnType<typeof setInterval>): void => {
+    if (typeof (t as { unref?: () => void }).unref === 'function') {
+      (t as { unref: () => void }).unref();
+    }
+  };
   // Background heartbeat for the WHOLE job — through worktree materialize, DinD
   // startup, and long/silent steps — so the Hub's lease never expires under a
   // live agent (which would let the reaper mark it lost and the scaler kill it).
-  // The same tick re-arms task protection before its bounded expiry lapses.
+  // The same tick re-arms task protection before its bounded expiry lapses. It
+  // reports the latest sticky spot flag but NEVER awaits the IMDS probe: lease
+  // renewal must not ride on a metadata round-trip that could stall and trigger
+  // the spurious reaping this whole path exists to avoid.
   const heartbeat = setInterval(() => {
-    // Poll IMDS for a Spot reclaim notice; once seen, flag it on every heartbeat
-    // so the Hub can classify the imminent lease loss as `spot_reclaimed`. The
-    // probe is best-effort and a fast no-op off EC2 — never let it break the
-    // heartbeat (a missed lease renewal would get the agent reaped).
+    void transport.heartbeat(jobId, spotInterruption).catch(() => {});
+    void protection.set(true).catch(() => {});
+  }, args.heartbeatMs ?? 30_000);
+  unref(heartbeat);
+  // IMDS Spot-interruption probe on its OWN, faster cadence. Decoupling it from
+  // the heartbeat gives many more detection chances inside the 2-minute reclaim
+  // window even when the slower heartbeat tick is stretched by heavy step-log
+  // streaming. On the FIRST detection we set the sticky flag AND fire an
+  // out-of-band heartbeat carrying it, so the Hub stamps `spot_interruption_at`
+  // immediately — and can later classify the lost lease as `spot_reclaimed`
+  // (the generous retry-generation cap) — instead of waiting up to a full
+  // heartbeat interval the reclaimed instance may not have left. Sticky: once
+  // detected we stop probing (the heartbeat keeps re-reporting the flag).
+  //
+  // In-flight guard: a slow or hung IMDS round-trip can outlast `spotProbeMs`,
+  // so skip any tick while a previous probe is still pending. Without this, a
+  // stalled metadata service would let ticks pile up unbounded pending
+  // `checkSpot()` calls for the lifetime of a long job — the exact resource leak
+  // that decoupling the probe from the heartbeat could otherwise introduce.
+  let probeInFlight = false;
+  const spotProbe = setInterval(() => {
+    if (spotInterruption || probeInFlight) return;
+    probeInFlight = true;
     void checkSpot()
       .then((pending) => {
-        if (pending) spotInterruption = true;
+        if (!pending || spotInterruption) return;
+        spotInterruption = true;
+        void transport.heartbeat(jobId, true).catch(() => {});
       })
       .catch(() => {})
       .finally(() => {
-        void transport.heartbeat(jobId, spotInterruption).catch(() => {});
+        probeInFlight = false;
       });
-    void protection.set(true).catch(() => {});
-  }, args.heartbeatMs ?? 30_000);
-  if (typeof (heartbeat as { unref?: () => void }).unref === 'function') {
-    (heartbeat as { unref: () => void }).unref();
-  }
+  }, args.spotProbeMs ?? 5_000);
+  unref(spotProbe);
   // Host resource sampler runs for the WHOLE job (materialize, DinD startup,
   // every step). Because the fleet reserves ~the whole box per task (one job
   // per host), host memory == job memory — see job-resource-sampler.ts.
@@ -182,6 +217,7 @@ export async function runAgentJob(args: {
     // this clears the sampler's timer. Double-stop is harmless.
     sampler.stop();
     clearInterval(heartbeat);
+    clearInterval(spotProbe);
     // Job done (or failed): release protection so deploys / scale-to-zero can
     // replace this now-idle task. Awaited so the next claim can't race a deploy
     // that's waiting on this task to drain. Still best-effort — expiry is the
