@@ -31,6 +31,14 @@ export function phaseProgress(tickets: any[], columnNameById: Record<string, str
   return Math.round((countDoneTickets(tickets, columnNameById) / tickets.length) * 100);
 }
 
+/**
+ * A phase is "complete" when it has at least one ticket and every ticket is in
+ * the Done column. An empty phase is never complete (nothing was finished yet).
+ */
+export function phaseComplete(tickets: any[], columnNameById: Record<string, string>) {
+  return tickets.length > 0 && countDoneTickets(tickets, columnNameById) === tickets.length;
+}
+
 export function epicAutonomousSummary(phases: any[]) {
   const autoCount = phases.filter((p) => p.autonomous === 1).length;
   if (phases.length === 0) return { label: null, autoCount: 0, total: 0 };

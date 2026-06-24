@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { ArrowRight, Ban, Play, Plus, Square, Zap } from 'lucide-react';
+import { ArrowRight, Ban, Check, Play, Plus, Square, Zap } from 'lucide-react';
 import {
   columnDotStyle,
   columnNameById,
   columnStatusStyle,
+  phaseComplete,
   phaseProgress,
   priorityStyle,
   ticketHasBlockers,
@@ -52,6 +53,7 @@ function PhaseColumn({
   const colMap = columnNameById(columns);
   const phaseTickets = ticketsForPhase(tickets, phase.id);
   const progress = phaseProgress(phaseTickets, colMap);
+  const complete = phaseComplete(phaseTickets, colMap);
   const autonomous = !!phaseForm?.autonomous;
   const maxConcurrent = phaseForm?.autonomous_max_concurrent ?? 1;
   const addingTicket = addingTicketPhaseId === phase.id;
@@ -59,17 +61,36 @@ function PhaseColumn({
 
   return (
     <div
-      className="flex shrink-0 w-[260px] flex-col rounded-xl border border-white/[0.08] bg-[#0d1117]/80 overflow-hidden"
+      className={`flex shrink-0 w-[260px] flex-col rounded-xl border overflow-hidden transition-colors ${
+        complete
+          ? 'border-emerald-500/40 bg-emerald-950/40 ring-1 ring-emerald-500/20'
+          : 'border-white/[0.08] bg-[#0d1117]/80'
+      }`}
       data-testid={`phase-column-${phase.id}`}
+      data-complete={complete ? 'true' : 'false'}
     >
-      <div className="px-3 pt-3 pb-2 border-b border-white/[0.06]">
+      <div
+        className={`px-3 pt-3 pb-2 border-b ${
+          complete ? 'border-emerald-500/20' : 'border-white/[0.06]'
+        }`}
+      >
         <div className="flex items-start gap-2">
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-xs font-bold text-gray-300">
-            {index + 1}
+          <span
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-xs font-bold ${
+              complete ? 'bg-emerald-500/20 text-emerald-300' : 'bg-white/[0.06] text-gray-300'
+            }`}
+          >
+            {complete ? <Check size={13} strokeWidth={3} /> : index + 1}
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 flex-wrap">
               <h3 className="text-sm font-semibold text-gray-100 truncate">{phase.name}</h3>
+              {complete && (
+                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300 bg-emerald-500/20 px-1.5 py-0.5 rounded">
+                  <Check size={9} strokeWidth={3} />
+                  Done
+                </span>
+              )}
               {autonomous && (
                 <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase tracking-wide text-emerald-300 bg-emerald-500/15 px-1.5 py-0.5 rounded">
                   <Zap size={9} />
@@ -86,7 +107,9 @@ function PhaseColumn({
         </div>
         <div className="mt-2.5 h-1 rounded-full bg-white/[0.06] overflow-hidden">
           <div
-            className="h-full rounded-full bg-emerald-500/70 transition-all"
+            className={`h-full rounded-full transition-all ${
+              complete ? 'bg-emerald-400' : 'bg-emerald-500/70'
+            }`}
             style={{ width: `${progress}%` }}
           />
         </div>
