@@ -19,6 +19,7 @@ import type { WebSocketDeps, BroadcastFn, MessageQueueRow } from './types.js';
 import { buildActiveTasksSnapshotLenient } from './active-tasks.js';
 import { buildAwaitingInputSnapshotLenient } from './awaiting-input.js';
 import { buildPreviewSnapshotEvents } from './preview/preview-snapshot.js';
+import { buildFinalizeSnapshotEvents } from './finalize/finalize-snapshot.js';
 import { subscribeToJob, isJobFinished } from './provisioning/orchestrator.js';
 
 /**
@@ -240,6 +241,39 @@ export default function createWebSocket(
       // method must never break the rest of the connect handshake.
       console.error(
         '[ws] preview snapshot failed (lenient skip):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    // Finalize snapshot: replay one `finalize_run_phase_changed` per
+    // non-terminal finalize run so a reconnecting client converges its
+    // checks block / button to the server's truth. `useFinalizeRun` mirrors
+    // run state purely from streamed `finalize_run_*` events; every event that
+    // fired while the socket was down (tab sleep, Wi-Fi switch, NAT rebind,
+    // or the mount→first-connect gap) was otherwise lost with no server-side
+    // recovery — the recurring "tests are running but the UI doesn't say they
+    // are" report. Prior fixes were client-side reconnect heuristics; this is
+    // the unconditional server counterpart. The client's `onPhaseChanged`
+    // turns each event into a full REST refetch (run + steps + phases). Each
+    // event is filtered through `shouldDeliverBroadcast` so a user never
+    // receives a snapshot for a session on a project they can't see.
+    try {
+      const finalizeEvents = buildFinalizeSnapshotEvents(stmts);
+      for (const event of finalizeEvents) {
+        if (
+          !shouldDeliverBroadcast(event as unknown as Record<string, unknown>, stamp, {
+            resolveProjectId: resolveProjectIdFromEvent,
+            findProject: findProjectLocal,
+          })
+        ) {
+          continue;
+        }
+        ws.send(JSON.stringify(event));
+      }
+    } catch (err) {
+      // Best-effort — a DB hiccup must never break the connect handshake.
+      console.error(
+        '[ws] finalize snapshot failed (lenient skip):',
         err instanceof Error ? err.message : err,
       );
     }

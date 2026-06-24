@@ -4486,6 +4486,19 @@ function initDb(dataDir: string): void {
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
+    // All non-terminal finalize runs that have a session_id, newest first.
+    // Backs the WS connect-snapshot (server/finalize/finalize-snapshot.ts):
+    // every (re)connection replays one finalize_run_phase_changed per active
+    // run so the client converges regardless of which live events it missed.
+    // Excludes the six terminal statuses but keeps the parked `ready_to_push`
+    // so the sidebar/button reflect that state after a reconnect too.
+    getActiveFinalizeRuns: db.prepare(
+      `SELECT id, session_id, phase, status
+         FROM finalize_runs
+        WHERE session_id IS NOT NULL
+          AND status NOT IN ('pushed', 'failed', 'timed_out', 'infra_error', 'cancelled', 'stalled_no_response')
+        ORDER BY started_at DESC, id DESC`,
+    ),
     getActiveFinalizeRunForSessionBranch: db.prepare(
       `SELECT *
          FROM finalize_runs

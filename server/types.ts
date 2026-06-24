@@ -1893,6 +1893,20 @@ export interface Stmts {
    */
   getActiveFinalizeRunForSession: Stmt;
   /**
+   * All **non-terminal** `finalize_runs` rows that have a `session_id`,
+   * newest first. "Non-terminal" excludes the six terminal statuses
+   * (`pushed`, `failed`, `timed_out`, `infra_error`, `cancelled`,
+   * `stalled_no_response`) but INCLUDES the parked `ready_to_push` state.
+   *
+   * Used by the WebSocket connect handler to build a finalize
+   * connect-snapshot (see `server/finalize/finalize-snapshot.ts`): every
+   * (re)connection re-emits a `finalize_run_phase_changed` event per active
+   * run so the client converges its checks block / button to the server's
+   * truth, independent of which live events were missed while the socket
+   * was down — the server-side counterpart to the client reconnect refetch.
+   */
+  getActiveFinalizeRuns: Stmt;
+  /**
    * Most-recent in-flight `finalize_runs` row for a session + branch +
    * job-filter tuple, regardless of head SHA or mode. Used at kickoff time
    * to prevent review-only, checks-only, and full Finalize cycles from

@@ -14,7 +14,7 @@
  *   - `postInfraTerminalMessage`: insert + touch + broadcast, no-op
  *     when session is null.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import type { BroadcastFn, FinalizeRunRow, Stmts } from '../types.js';
 import {
@@ -337,6 +337,32 @@ describe('computeRetryIdempotencyKey', () => {
 // ─── openInfraRetryRun ──────────────────────────────────────────────
 
 describe('openInfraRetryRun', () => {
+  // The generation caps are read LIVE from the environment
+  // (`resolveRetryGenerationCap` → `FINALIZE_MAX_*_RETRY_GENERATIONS`), so the
+  // Finalize CI runner — which sets these to non-default values for the fleet
+  // — would otherwise leak into the assertions below that expect the built-in
+  // defaults (generic 2 / reclaim 3). Pin the env to "unset" for this block so
+  // the defaults are deterministic regardless of ambient runner config, then
+  // restore whatever the host had.
+  const RETRY_GEN_ENV = [
+    'FINALIZE_MAX_INFRA_RETRY_GENERATIONS',
+    'FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS',
+  ] as const;
+  const savedRetryGenEnv: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const name of RETRY_GEN_ENV) {
+      savedRetryGenEnv[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+  afterEach(() => {
+    for (const name of RETRY_GEN_ENV) {
+      const prev = savedRetryGenEnv[name];
+      if (prev === undefined) delete process.env[name];
+      else process.env[name] = prev;
+    }
+  });
+
   it('inserts a retry row mirroring the parent + sets retry_of_run_id', () => {
     const parent = fakeParentRow();
     const { stmts, rowMap, insertCalls } = makeStmts({ 'parent-run': parent });
