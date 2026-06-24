@@ -37,7 +37,7 @@ const runs = [
       {
         job_id: 'unit',
         matrix_key: 'default',
-        state: 'success',
+        state: 'passed',
         exit_code: 0,
         started_at: 1,
         ended_at: 2,
@@ -79,7 +79,7 @@ beforeEach(() => {
       {
         step_index: 1,
         name: 'unit / default / test',
-        state: 'success',
+        state: 'passed',
         exit_code: 0,
         started_at: 1,
         ended_at: 2,
@@ -130,7 +130,7 @@ describe('CiRunsSection', () => {
         {
           job_id: 'e2e',
           matrix_key: 'shard-1',
-          state: 'success',
+          state: 'passed',
           exit_code: 0,
           started_at: 1,
           ended_at: 2,
@@ -138,7 +138,7 @@ describe('CiRunsSection', () => {
         {
           job_id: 'e2e',
           matrix_key: 'shard-2',
-          state: 'failure',
+          state: 'failed',
           exit_code: 1,
           started_at: 1,
           ended_at: 2,
@@ -152,7 +152,7 @@ describe('CiRunsSection', () => {
         {
           step_index: 1,
           name: 'e2e / shard-1 / cypress',
-          state: 'success',
+          state: 'passed',
           exit_code: 0,
           started_at: 1,
           ended_at: 2,
@@ -162,7 +162,7 @@ describe('CiRunsSection', () => {
         {
           step_index: 2,
           name: 'e2e / shard-2 / cypress',
-          state: 'failure',
+          state: 'failed',
           exit_code: 1,
           started_at: 1,
           ended_at: 2,
@@ -181,6 +181,55 @@ describe('CiRunsSection', () => {
     // distinguishable.
     expect(screen.getByText('shard-1')).toBeInTheDocument();
     expect(screen.getByText('shard-2')).toBeInTheDocument();
+  });
+
+  it('shows a green check for passed jobs/steps and a red X for failed (not the gray "never ran" circle)', async () => {
+    // Regression: the runner writes job/step state as passed|failed|skipped,
+    // but the icon map only knew success/failure, so finished jobs fell
+    // through to the dashed "pending" circle and looked like they never ran.
+    const mixedRun = {
+      ...runs[0],
+      id: 'run-mixed',
+      jobs: [
+        { job_id: 'backend', matrix_key: 'default', state: 'passed', exit_code: 0 },
+        { job_id: 'frontend', matrix_key: 'default', state: 'failed', exit_code: 1 },
+        { job_id: 'e2e', matrix_key: 'default', state: 'running', exit_code: null },
+      ],
+    };
+    (api.getCiRuns as any).mockResolvedValue({ runs: [mixedRun] });
+    (api.getCiRunDetail as any).mockResolvedValue({
+      run: mixedRun,
+      steps: [
+        {
+          step_index: 1,
+          name: 'backend / default / test',
+          state: 'passed',
+          exit_code: 0,
+          job_id: 'backend',
+          matrix_key: 'default',
+        },
+        {
+          step_index: 2,
+          name: 'frontend / default / build',
+          state: 'failed',
+          exit_code: 1,
+          job_id: 'frontend',
+          matrix_key: 'default',
+        },
+      ],
+    });
+    render(<CiRunsSection project={hostedProject} />);
+    fireEvent.click(await screen.findByTestId('ci-run-run-mixed' as any));
+    await waitFor(() => expect(api.getCiRunDetail).toHaveBeenCalledWith('proj-1', 'run-mixed'));
+
+    // Passed job header + its passed step both render the check glyph; failed
+    // both render the X. None render as "pending" (the regression symptom).
+    const passed = await screen.findAllByLabelText('passed');
+    const failed = await screen.findAllByLabelText('failed');
+    expect(passed.length).toBeGreaterThanOrEqual(2); // backend job + its step
+    expect(failed.length).toBeGreaterThanOrEqual(2); // frontend job + its step
+    expect(screen.getByLabelText('running')).toBeInTheDocument(); // e2e job
+    expect(screen.queryByLabelText('pending')).toBeNull();
   });
 
   describe('groupStepsByJob', () => {

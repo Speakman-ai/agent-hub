@@ -121,12 +121,22 @@ export function groupStepsByJob(jobs: any, steps: any) {
   return { groups, orphan };
 }
 
+// Map a job/step `state` to its status glyph. The runner writes states as
+// `queued | running | passed | failed | skipped` (see job-runner.ts /
+// step-runner.ts); `success`/`failure`/`timeout` are accepted as legacy
+// aliases so older rows still render correctly. A passed step shows a green
+// check and a failed one a red X — without this mapping both fell through to
+// the gray dashed circle, making finished jobs look like they never ran.
 function jobStateIcon(state: any) {
-  if (state === 'success') return <CheckCircle2 size={12} className="text-emerald-400" />;
-  if (state === 'failure' || state === 'timeout')
-    return <XCircle size={12} className="text-red-400" />;
-  if (state === 'running') return <Loader2 size={12} className="text-amber-400 animate-spin" />;
-  return <CircleDashed size={12} className="text-gray-500" />;
+  if (state === 'passed' || state === 'success')
+    return <CheckCircle2 size={12} className="text-emerald-400" aria-label="passed" />;
+  if (state === 'failed' || state === 'failure' || state === 'timeout')
+    return <XCircle size={12} className="text-red-400" aria-label="failed" />;
+  if (state === 'running')
+    return <Loader2 size={12} className="text-amber-400 animate-spin" aria-label="running" />;
+  if (state === 'skipped')
+    return <CircleDashed size={12} className="text-gray-500" aria-label="skipped" />;
+  return <CircleDashed size={12} className="text-gray-500" aria-label="pending" />;
 }
 
 function StepLog({ projectId, runId, step }: any) {
