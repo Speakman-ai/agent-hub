@@ -2685,6 +2685,18 @@ export interface Project {
    */
   securityScan?: { onPush?: boolean; schedule?: 'off' | 'daily' | 'weekly' };
   /**
+   * Per-project session-replay policy, server-delivered to recorders and the
+   * admin UI (replaces the legacy per-browser localStorage sample rate so the
+   * policy applies to ALL users on the project, not whoever flipped their own
+   * toggle). See `server/replays/replay-config.ts`.
+   * - `sampleRate`: continuous-tier session sample rate in [0, 1]. Unset =
+   *   the recorder keeps its built-in default (legacy on-error capture stays
+   *   on); a set value is authoritative for every user on the project.
+   * - `continuous`: opt into the continuous-capture tier (default off).
+   *   mask-all is enforced (not merely defaulted) whenever this is on.
+   */
+  replay?: { sampleRate?: number; continuous?: boolean };
+  /**
    * Branch protection for the hosted repo's default branch (Agent
    * Hub-hosted projects only).
    * - `requiredChecks`: PRs into the default branch merge only when the

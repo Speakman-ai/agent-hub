@@ -1329,6 +1329,10 @@ export const api = {
   // Session replays — record-on-error rrweb captures. Metadata + paginated
   // events back the sandboxed rrweb-player playback surface. Reads are
   // authenticated + per-replay authorized server-side.
+  // Server-delivered per-project replay policy (continuous-tier sample rate +
+  // opt-in flag). Public endpoint — no project resolves to the default policy.
+  getReplayConfig: (projectId?: string) =>
+    fetchJSON(`/replays/config${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
   getReplay: (replayId: any) => fetchJSON(`/replays/${replayId}`),
   getReplayEvents: (replayId: any, offset: any = 0, limit: any) => {
     const params = new URLSearchParams();

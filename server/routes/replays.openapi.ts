@@ -233,6 +233,53 @@ registerPath({
   },
 });
 
+const ReplayPolicyResponse = registerComponent(
+  'ResolvedReplayPolicy',
+  z
+    .object({
+      sampleRate: z.number().nullable().openapi({
+        description:
+          'Continuous-tier session sample rate in [0, 1], or null when the project has not set one (the recorder keeps its built-in default rather than treating unset as off).',
+      }),
+      continuous: z.boolean().openapi({
+        description: 'Whether the continuous-capture tier is enabled for the project.',
+      }),
+      maskAllEnforced: z.boolean().openapi({
+        description:
+          'When true the recorder must mask all text + inputs and the UI must not offer a relaxed masking mode — enforced whenever continuous capture is on.',
+      }),
+    })
+    .openapi({ description: 'Server-delivered per-project session-replay policy.' }),
+);
+
+registerPath({
+  method: 'options',
+  path: '/api/replays/config',
+  tags: ['Bug Reports'],
+  summary: 'CORS preflight (returns 204)',
+  responses: { 204: { description: 'CORS preflight OK.' } },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/replays/config',
+  tags: ['Bug Reports'],
+  summary: 'Per-project replay policy (public)',
+  description:
+    'Returns the server-delivered replay policy (sample rate, continuous opt-in, mask-all enforcement) for the project resolved from a valid `X-RUM-Token` header, else the `projectId` query param. No/unknown project resolves to the default policy (sampleRate null, continuous off) so it is not an existence oracle. Public and CORS `*` — the policy carries no secrets.',
+  request: {
+    query: z.object({
+      projectId: z
+        .string()
+        .optional()
+        .openapi({ description: 'Project slug to resolve the policy for (when no RUM token).' }),
+    }),
+  },
+  responses: {
+    200: { description: 'The resolved policy.', content: jsonContent(ReplayPolicyResponse) },
+  },
+});
+
 registerPath({
   method: 'get',
   path: '/api/replays/{id}',

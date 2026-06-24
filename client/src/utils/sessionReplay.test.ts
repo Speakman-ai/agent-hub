@@ -4,6 +4,10 @@ import {
   clampSampleRate,
   shouldSample,
   resolveSampleRate,
+  applyServerReplayConfig,
+  getServerSampleRate,
+  fetchServerReplayConfig,
+  isServerMaskAllEnforced,
   isSessionReplayEnabled,
   setSessionReplayEnabled,
   REPLAY_SAMPLE_RATE_KEY,
@@ -100,7 +104,10 @@ describe('shouldSample', () => {
 });
 
 describe('resolveSampleRate', () => {
-  afterEach(() => localStorage.removeItem('agent-hub-replay-sample-rate'));
+  afterEach(() => {
+    localStorage.removeItem('agent-hub-replay-sample-rate');
+    applyServerReplayConfig(null);
+  });
 
   it('defaults to 1 (on) with no override or env', () => {
     // On by default — replay is the visual context behind bug reports.
@@ -117,6 +124,168 @@ describe('resolveSampleRate', () => {
   it('clamps a localStorage override', () => {
     localStorage.setItem('agent-hub-replay-sample-rate', '5');
     expect(resolveSampleRate()).toBe(1);
+  });
+  it('server-delivered rate wins over a localStorage override', () => {
+    localStorage.setItem('agent-hub-replay-sample-rate', '1');
+    applyServerReplayConfig({ sampleRate: 0 });
+    expect(resolveSampleRate()).toBe(0);
+    applyServerReplayConfig({ sampleRate: 0.4 });
+    expect(resolveSampleRate()).toBe(0.4);
+  });
+  it('falls back to localStorage when the server rate is null (unset)', () => {
+    localStorage.setItem('agent-hub-replay-sample-rate', '0.3');
+    applyServerReplayConfig({ sampleRate: null, continuous: false });
+    expect(resolveSampleRate()).toBe(0.3);
+  });
+});
+
+describe('applyServerReplayConfig / fetchServerReplayConfig', () => {
+  afterEach(() => {
+    applyServerReplayConfig(null);
+    vi.restoreAllMocks();
+  });
+
+  it('clamps and stores a numeric server rate; null clears it', () => {
+    expect(applyServerReplayConfig({ sampleRate: 5 })).toBe(1);
+    expect(getServerSampleRate()).toBe(1);
+    expect(applyServerReplayConfig(null)).toBeNull();
+    expect(getServerSampleRate()).toBeNull();
+  });
+
+  it('treats a missing/non-numeric rate as unset (null)', () => {
+    expect(applyServerReplayConfig({ continuous: true })).toBeNull();
+    expect(applyServerReplayConfig({ sampleRate: 'half' })).toBeNull();
+  });
+
+  it('fetches the policy and applies the rate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ sampleRate: 0.2, continuous: false, maskAllEnforced: false }),
+      }),
+    );
+    const rate = await fetchServerReplayConfig();
+    expect(rate).toBe(0.2);
+    expect(getServerSampleRate()).toBe(0.2);
+  });
+
+  it('appends the passed projectId so a project-specific rate reaches the client', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ sampleRate: 0.3, continuous: false, maskAllEnforced: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await fetchServerReplayConfig({ projectId: 'my-proj', endpoint: '/api/replays/config' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/replays/config?projectId=my-proj',
+      expect.objectContaining({ method: 'GET', headers: {} }),
+    );
+  });
+
+  it('sends the RUM token as X-RUM-Token (main cross-origin instrumentation path)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ sampleRate: 0.5, continuous: true, maskAllEnforced: true }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const rate = await fetchServerReplayConfig({
+      rumToken: 'rum_abc',
+      endpoint: '/api/replays/config',
+    });
+    expect(rate).toBe(0.5);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/replays/config',
+      expect.objectContaining({ method: 'GET', headers: { 'X-RUM-Token': 'rum_abc' } }),
+    );
+  });
+
+  it('sends both the token header and the projectId query when both are given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ sampleRate: 0.2 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await fetchServerReplayConfig({
+      projectId: 'p1',
+      rumToken: 'rum_x',
+      endpoint: '/api/replays/config',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/replays/config?projectId=p1',
+      expect.objectContaining({ method: 'GET', headers: { 'X-RUM-Token': 'rum_x' } }),
+    );
+  });
+
+  it('omits the projectId query and token header when none is resolvable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ sampleRate: 0.1 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await fetchServerReplayConfig({ endpoint: '/api/replays/config' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/replays/config',
+      expect.objectContaining({ method: 'GET', headers: {} }),
+    );
+  });
+
+  it('applies mask-all enforcement from a continuous policy', () => {
+    localStorage.setItem(MASKING_MODE_KEY, MASKING_MODES.PASSWORDS);
+    // Without a server policy the per-browser passwords-only choice is honoured.
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.PASSWORDS);
+    expect(isServerMaskAllEnforced()).toBe(false);
+    // A continuous policy forces mask-all regardless of the local override.
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, maskAllEnforced: true });
+    expect(isServerMaskAllEnforced()).toBe(true);
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.ALL);
+    // Clearing the policy restores the local choice.
+    applyServerReplayConfig(null);
+    expect(isServerMaskAllEnforced()).toBe(false);
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.PASSWORDS);
+    localStorage.removeItem(MASKING_MODE_KEY);
+  });
+
+  it('is best-effort: a failed fetch leaves the client on its default (null)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    expect(await fetchServerReplayConfig()).toBeNull();
+    expect(getServerSampleRate()).toBeNull();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
+    expect(await fetchServerReplayConfig()).toBeNull();
+  });
+
+  it('is hard-bounded: a hung config request resolves to the default within the timeout', async () => {
+    // fetch never settles — the timer must win so the recorder can still start.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise(() => {})),
+    );
+    const result = await fetchServerReplayConfig({
+      endpoint: '/api/replays/config',
+      timeoutMs: 20,
+    });
+    expect(result).toBeNull();
+    expect(getServerSampleRate()).toBeNull();
+  });
+
+  it('a late-resolving fetch past the timeout does not apply the policy', async () => {
+    let resolveFetch: any;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise((r) => {
+            resolveFetch = r;
+          }),
+      ),
+    );
+    const p = fetchServerReplayConfig({ endpoint: '/api/replays/config', timeoutMs: 20 });
+    expect(await p).toBeNull();
+    // The fetch settles only after we've already fallen back — must not apply.
+    resolveFetch({ ok: true, json: async () => ({ sampleRate: 0.9 }) });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getServerSampleRate()).toBeNull();
   });
 });
 

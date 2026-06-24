@@ -5435,6 +5435,24 @@ components:
       required:
         - events
       description: "A chunk of a streamed replay. May be sent as raw JSON or gzip-compressed bytes (`Content-Encoding: gzip` or a gzip-framed body)."
+    ResolvedReplayPolicy:
+      type: object
+      properties:
+        sampleRate:
+          type: number
+          nullable: true
+          description: Continuous-tier session sample rate in [0, 1], or null when the project has not set one (the recorder keeps its built-in default rather than treating unset as off).
+        continuous:
+          type: boolean
+          description: Whether the continuous-capture tier is enabled for the project.
+        maskAllEnforced:
+          type: boolean
+          description: When true the recorder must mask all text + inputs and the UI must not offer a relaxed masking mode — enforced whenever continuous capture is on.
+      required:
+        - sampleRate
+        - continuous
+        - maskAllEnforced
+      description: Server-delivered per-project session-replay policy.
     RumClientErrorResponse:
       type: object
       properties:
@@ -19923,6 +19941,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/config:
+    options:
+      tags:
+        - Bug Reports
+      summary: CORS preflight (returns 204)
+      responses:
+        "204":
+          description: CORS preflight OK.
+    get:
+      tags:
+        - Bug Reports
+      summary: Per-project replay policy (public)
+      description: Returns the server-delivered replay policy (sample rate, continuous opt-in, mask-all enforcement) for the project resolved from a valid `X-RUM-Token` header, else the `projectId` query param. No/unknown project resolves to the default policy (sampleRate null, continuous off) so it is not an existence oracle. Public and CORS `*` — the policy carries no secrets.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug to resolve the policy for (when no RUM token).
+          required: false
+          description: Project slug to resolve the policy for (when no RUM token).
+          name: projectId
+          in: query
+      responses:
+        "200":
+          description: The resolved policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolvedReplayPolicy"
   /api/replays/{id}:
     get:
       tags:

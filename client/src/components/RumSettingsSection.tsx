@@ -90,6 +90,16 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   const [maskAll, setMaskAll] = useState(() => isMaskAllEnabled());
   const [maskToggling, setMaskToggling] = useState(false);
 
+  // Per-project server-delivered replay SAMPLE RATE. Unlike the per-browser
+  // toggle above, this is saved on the project (PATCH /api/projects/:id
+  // { replay }) so it applies to every user. The continuous-capture opt-in
+  // toggle is intentionally NOT here — it lands with the continuous recorder
+  // (card 1103) and its privacy guardrails (card 1106); shipping a toggle that
+  // doesn't change recorder behavior yet would be misleading.
+  const [replaySampleRate, setReplaySampleRate] = useState<number>(0);
+  const [savingReplayConfig, setSavingReplayConfig] = useState(false);
+  const [replayConfigError, setReplayConfigError] = useState<any>(null);
+
   // Ingest-client state
   const [clients, setClients] = useState<any[]>([]);
   const [loadingClients, setLoadingClients] = useState(false);
@@ -177,6 +187,60 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   }, [projectId, reloadDraft, reloadClients]);
 
   const project = projects.find((p: any) => p.id === projectId) || null;
+
+  // Sync the per-project replay config form from the selected project whenever
+  // it changes (the projects prop is the source of truth, refreshed via WS).
+  // Also clear the saving flag: a save started for the previous project guards
+  // its catch/finally on the active pid, so if it resolves after the switch it
+  // never clears `savingReplayConfig` for the new selection — which would leave
+  // the new project's controls permanently disabled. Resetting here mirrors how
+  // the other in-flight mutation flags are cleared on project change.
+  useEffect(() => {
+    const cfg = (project as any)?.replay || {};
+    setReplaySampleRate(typeof cfg.sampleRate === 'number' ? cfg.sampleRate : 0);
+    setReplayConfigError(null);
+    setSavingReplayConfig(false);
+  }, [project]);
+
+  // Persist the per-project replay sample rate. The operator's choice is always
+  // persisted explicitly — including `sampleRate: 0` for "Off (0%)". An ABSENT
+  // sampleRate means "unconfigured → fall back to the client default" on the
+  // server/recorder side, so dropping a 0 here would make "Off" silently become
+  // the default rate. The project's existing `continuous` flag (set by the
+  // opt-in card 1106, never by this UI) is preserved so editing the rate here
+  // can't clobber it. Optimistic state was already set by the caller; on failure
+  // we surface the error and revert to the project's persisted value.
+  const saveReplayConfig = useCallback(
+    async (next: { sampleRate: number }) => {
+      if (!project) return;
+      const pid = project.id;
+      setSavingReplayConfig(true);
+      setReplayConfigError(null);
+      const replay: Record<string, unknown> = { sampleRate: next.sampleRate };
+      // Preserve a continuous opt-in set elsewhere (this UI doesn't manage it).
+      if ((project as any)?.replay?.continuous === true) replay.continuous = true;
+      try {
+        await api.updateProject(pid, { replay });
+        if (showToast) showToast('Replay sample rate saved for this project.', 'success', 2500);
+      } catch (err: any) {
+        if (activePidRef.current !== pid) return;
+        setReplayConfigError(err?.message || 'Failed to save replay sample rate');
+        const cfg = (project as any)?.replay || {};
+        setReplaySampleRate(typeof cfg.sampleRate === 'number' ? cfg.sampleRate : 0);
+      } finally {
+        if (activePidRef.current === pid) setSavingReplayConfig(false);
+      }
+    },
+    [project, showToast],
+  );
+
+  const handleChangeReplaySampleRate = useCallback(
+    (value: number) => {
+      setReplaySampleRate(value);
+      void saveReplayConfig({ sampleRate: value });
+    },
+    [saveReplayConfig],
+  );
 
   const handleToggleReplay = useCallback(async () => {
     if (replayToggling) return;
@@ -418,6 +482,58 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
             </div>
           )}
         </div>
+      </div>
+
+      {/* ── Per-project replay sample rate (server-delivered) ───── */}
+      <div
+        className="bg-gray-800/50 border border-gray-700 rounded-xl p-4"
+        data-testid="rum-replay-config"
+      >
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-semibold text-gray-200 mb-1 flex items-center gap-2">
+            <Activity size={14} className="text-fuchsia-400" />
+            Replay sample rate (this project)
+          </h4>
+          <p className="text-xs text-gray-500 max-w-2xl">
+            Server-delivered sampling rate for <strong className="text-gray-300">all users</strong>{' '}
+            of this project (not just this browser). Off (0%) by default; a set rate is
+            authoritative for every user and overrides their per-browser toggle. This is the policy
+            the continuous-capture tier opts into once it ships.
+          </p>
+        </div>
+
+        <div className="mt-4 flex items-center gap-4">
+          <label
+            htmlFor="rum-replay-sample-rate"
+            className="text-xs font-semibold text-gray-300 flex-1"
+          >
+            Session sample rate
+          </label>
+          <select
+            id="rum-replay-sample-rate"
+            data-testid="rum-replay-sample-rate"
+            value={String(replaySampleRate)}
+            disabled={!project || savingReplayConfig}
+            onChange={(e: any) => handleChangeReplaySampleRate(Number(e.target.value))}
+            className="bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+          >
+            <option value="0">Off (0%)</option>
+            <option value="0.1">10%</option>
+            <option value="0.25">25%</option>
+            <option value="0.5">50%</option>
+            <option value="1">100%</option>
+          </select>
+        </div>
+
+        {replayConfigError && (
+          <p
+            className="mt-3 text-xs text-red-400 flex items-center gap-1"
+            data-testid="rum-replay-config-error"
+          >
+            <AlertCircle size={12} />
+            {replayConfigError}
+          </p>
+        )}
       </div>
 
       {/* ── Repo scan summary ───────────────────────────────────── */}

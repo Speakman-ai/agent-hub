@@ -1020,3 +1020,78 @@ describe('GET /api/replays/:id authorization (route)', () => {
     await supertest(adminApp).get(`/api/replays/${row.id}`).expect(200);
   });
 });
+
+describe('GET /api/replays/config', () => {
+  const PROJECT_WITH_REPLAY = {
+    id: 'proj-continuous',
+    name: 'Continuous',
+    replay: { sampleRate: 0.25, continuous: true },
+  } as unknown as Project;
+  const PROJECT_PLAIN = { id: 'proj-plain', name: 'Plain' } as unknown as Project;
+  // A misconfigured row: continuous on with no explicit rate. The resolver must
+  // pin it to a safe 0 so the client never reads it as the default-100% rate.
+  const PROJECT_CONTINUOUS_NO_RATE = {
+    id: 'proj-cnr',
+    name: 'ContinuousNoRate',
+    replay: { continuous: true },
+  } as unknown as Project;
+
+  beforeEach(() => {
+    (verifyRumToken as unknown as Mock).mockReset();
+    (verifyRumToken as unknown as Mock).mockReturnValue(null);
+  });
+
+  it('returns the default policy when no project is identified', async () => {
+    const { app } = makeApp();
+    const res = await supertest(app).get('/api/replays/config').expect(200);
+    expect(res.body).toEqual({ sampleRate: null, continuous: false, maskAllEnforced: false });
+    expect(verifyRumToken as unknown as Mock).not.toHaveBeenCalled();
+  });
+
+  it('resolves the policy from the projectId query param', async () => {
+    const { app } = makeApp({ projects: [PROJECT_WITH_REPLAY] });
+    const res = await supertest(app)
+      .get('/api/replays/config?projectId=proj-continuous')
+      .expect(200);
+    expect(res.body).toEqual({ sampleRate: 0.25, continuous: true, maskAllEnforced: true });
+  });
+
+  it('pins a continuous-on/no-rate project to an explicit sampleRate:0', async () => {
+    const { app } = makeApp({ projects: [PROJECT_CONTINUOUS_NO_RATE] });
+    const res = await supertest(app).get('/api/replays/config?projectId=proj-cnr').expect(200);
+    expect(res.body).toEqual({ sampleRate: 0, continuous: true, maskAllEnforced: true });
+  });
+
+  it('returns the default policy for a project with no replay config', async () => {
+    const { app } = makeApp({ projects: [PROJECT_PLAIN] });
+    const res = await supertest(app).get('/api/replays/config?projectId=proj-plain').expect(200);
+    expect(res.body).toEqual({ sampleRate: null, continuous: false, maskAllEnforced: false });
+  });
+
+  it('does not leak existence: unknown project resolves to the default policy', async () => {
+    const { app } = makeApp({ projects: [PROJECT_WITH_REPLAY] });
+    const res = await supertest(app).get('/api/replays/config?projectId=nope').expect(200);
+    expect(res.body).toEqual({ sampleRate: null, continuous: false, maskAllEnforced: false });
+  });
+
+  it('resolves the policy from a valid X-RUM-Token (token wins over query)', async () => {
+    (verifyRumToken as unknown as Mock).mockReturnValue({
+      clientId: 'c1',
+      projectId: 'proj-continuous',
+      name: 'web',
+    });
+    const { app } = makeApp({ projects: [PROJECT_WITH_REPLAY, PROJECT_PLAIN] });
+    const res = await supertest(app)
+      .get('/api/replays/config?projectId=proj-plain')
+      .set('X-RUM-Token', 'rum_sometoken')
+      .expect(200);
+    expect(res.body).toEqual({ sampleRate: 0.25, continuous: true, maskAllEnforced: true });
+    expect(verifyRumToken as unknown as Mock).toHaveBeenCalledWith('rum_sometoken');
+  });
+
+  it('answers the CORS preflight with 204 and an allow-origin header', async () => {
+    const { app } = makeApp();
+    const res = await supertest(app).options('/api/replays/config').expect(204);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+});

@@ -34,6 +34,10 @@ const PUBLIC_PATHS: readonly string[] = [
   // on any origin, gated by a per-IP rate limiter). Exact-match only, so the
   // authenticated read surfaces at `/api/replays/:id[/events]` stay gated.
   '/api/replays',
+  // Public, secret-free per-project replay policy (sample rate / continuous
+  // opt-in) a recorder fetches at boot — same cross-origin posture as ingest.
+  // Exact-match keeps the gated `:id` reads protected.
+  '/api/replays/config',
   // ── Auth bootstrap endpoints ─────────────────────────────────
   '/api/auth/status',
   '/api/auth/login',

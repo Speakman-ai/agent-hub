@@ -17,6 +17,7 @@ import {
     getRumClients: vi.fn(),
     createRumClient: vi.fn(),
     revokeRumClient: vi.fn(),
+    updateProject: vi.fn(),
   },
 }));
 
@@ -52,6 +53,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   (api.getRumSetupDraft as any).mockResolvedValue({ projectId: 'demo', draft });
   (api.getRumClients as any).mockResolvedValue({ projectId: 'demo', clients: [] });
+  (api.updateProject as any).mockResolvedValue({ id: 'demo' });
 });
 
 describe('RumSettingsSection', () => {
@@ -415,6 +417,112 @@ describe('RumSettingsSection', () => {
     render(<RumSettingsSection projects={projects} />);
     const toggle = await screen.findByTestId('rum-replay-toggle');
     expect(toggle!).toHaveAttribute('aria-checked', 'false');
+  });
+
+  // ── Per-project server-delivered replay policy ──────────────────────
+  it('initializes the sample-rate form from the project.replay', async () => {
+    render(
+      <RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]} />,
+    );
+    const select = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;
+    expect(select.value).toBe('0.5');
+    // The continuous-capture toggle is NOT part of this card (it ships with the
+    // continuous recorder / opt-in cards 1103/1106).
+    expect(screen.queryByTestId('rum-replay-continuous-toggle')).toBeNull();
+  });
+
+  it('defaults to off when the project has no replay config', async () => {
+    render(<RumSettingsSection projects={projects} />);
+    const select = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;
+    expect(select.value).toBe('0');
+  });
+
+  it('PATCHes the project with the chosen sample rate', async () => {
+    render(<RumSettingsSection projects={projects} showToast={vi.fn()} />);
+    const select = await screen.findByTestId('rum-replay-sample-rate');
+    fireEvent.change(select, { target: { value: '0.25' } });
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.25 },
+      }),
+    );
+  });
+
+  it('persists an explicit sampleRate:0 (not null) when Off is selected', async () => {
+    // Off must be unambiguous: an absent sampleRate would resolve to the client
+    // default rate server/recorder-side, so "Off (0%)" must persist 0.
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]}
+        showToast={vi.fn()}
+      />,
+    );
+    const select = await screen.findByTestId('rum-replay-sample-rate');
+    fireEvent.change(select, { target: { value: '0' } });
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0 },
+      }),
+    );
+  });
+
+  it('preserves an externally-set continuous flag when editing the sample rate', async () => {
+    // The opt-in toggle lives in another card (1106); editing the rate here must
+    // not clobber a `continuous` flag set there.
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5, continuous: true } }]}
+        showToast={vi.fn()}
+      />,
+    );
+    const select = await screen.findByTestId('rum-replay-sample-rate');
+    fireEvent.change(select, { target: { value: '0' } });
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0, continuous: true },
+      }),
+    );
+  });
+
+  it('surfaces a save error and reverts the form', async () => {
+    (api.updateProject as any).mockRejectedValueOnce(new Error('nope'));
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]}
+        showToast={vi.fn()}
+      />,
+    );
+    const select = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '1' } });
+    expect(await screen.findByTestId('rum-replay-config-error')).toHaveTextContent('nope');
+    await waitFor(() => expect(select.value).toBe('0.5'));
+  });
+
+  it('clears the saving flag when the project changes mid-save (no stuck-disabled controls)', async () => {
+    // A save for project A that never resolves before the user switches away.
+    (api.updateProject as any).mockImplementation(() => new Promise(() => {}));
+    const { rerender } = render(
+      <RumSettingsSection
+        projects={[{ id: 'A', name: 'A', replay: { sampleRate: 0.5 } }]}
+        showToast={vi.fn()}
+      />,
+    );
+    const selectA = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;
+    fireEvent.change(selectA, { target: { value: '1' } });
+    // Save in flight → controls disabled.
+    await waitFor(() => expect(selectA).toBeDisabled());
+
+    // Switch to project B before A's save resolves.
+    rerender(
+      <RumSettingsSection
+        projects={[{ id: 'B', name: 'B', replay: { sampleRate: 0.25 } }]}
+        showToast={vi.fn()}
+      />,
+    );
+    const selectB = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;
+    await waitFor(() => expect(selectB.value).toBe('0.25'));
+    // B's control must be enabled even though A's save never settled.
+    await waitFor(() => expect(selectB).not.toBeDisabled());
   });
 });
 

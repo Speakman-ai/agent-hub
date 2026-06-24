@@ -123,11 +123,16 @@ export function buildRecordPrivacyOptions(mode: any) {
 }
 
 /**
- * Resolve the active masking mode from the localStorage override the RUM
- * settings toggle writes. Defaults to the strict `mask-all` mode — a missing or
- * unrecognised value is always treated as the safe, content-redacting default.
+ * Resolve the active masking mode. The strict `mask-all` mode is the default,
+ * and a server-delivered policy that enforces it (continuous capture on) wins
+ * over any per-browser `passwords-only` choice — whole-session recording sharply
+ * widens the privacy surface, so the project's enforcement is not overridable
+ * client-side. Otherwise the localStorage override the RUM settings toggle
+ * writes is honoured; a missing/unrecognised value falls back to `mask-all`.
  */
 export function resolveMaskingMode() {
+  // Server enforcement (continuous capture on) is non-negotiable.
+  if (_serverMaskAllEnforced) return MASKING_MODES.ALL;
   try {
     if (typeof localStorage !== 'undefined') {
       const v = localStorage.getItem(MASKING_MODE_KEY);
@@ -154,6 +159,172 @@ export const REPLAY_INGEST_ENDPOINT = BUG_REPORT_ENDPOINT.replace(
   '/api/replays',
 );
 
+/**
+ * Public per-project replay-policy endpoint (`GET /api/replays/config`), on the
+ * same central hub the recorder uploads to. Server-delivered config is the
+ * single source of truth for the sample rate so a project's policy applies to
+ * ALL users, not whoever flipped their own localStorage toggle.
+ */
+export const REPLAY_CONFIG_ENDPOINT = `${REPLAY_INGEST_ENDPOINT}/config`;
+
+// Hard bound on the boot-time policy fetch. The recorder must start promptly on
+// its built-in default rather than hang behind a slow/stalled
+// `/api/replays/config` — the fetch is best-effort and must never gate capture.
+export const REPLAY_CONFIG_TIMEOUT_MS = 3_000;
+
+// Server-delivered sample rate ([0,1]) once fetched, or null when the server
+// has not set a per-project rate (the client then keeps its built-in default,
+// so the always-on bug-report capture is never silently disabled). Set by
+// `applyServerReplayConfig` / `fetchServerReplayConfig`.
+let _serverSampleRate: number | null = null;
+// Whether the server policy enforces mask-all (continuous capture on). When
+// true `resolveMaskingMode` returns `mask-all` regardless of the per-browser
+// override — the privacy contract of the continuous tier.
+let _serverMaskAllEnforced = false;
+
+/**
+ * Resolve the per-project id the Hub's own recorder should fetch policy for,
+ * from the build-time `VITE_REPLAY_PROJECT_ID` env. Without it the boot fetch
+ * has no project to resolve and the server returns the default policy — so a
+ * deployment that wants its first-party recorder governed by a project's
+ * server-side rate sets this env. Returns null when unset.
+ */
+export function resolveReplayProjectId() {
+  try {
+    const pid =
+      typeof import.meta !== 'undefined' && import.meta.env
+        ? import.meta.env.VITE_REPLAY_PROJECT_ID
+        : undefined;
+    return pid != null && pid !== '' ? String(pid) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the per-project RUM ingest token from the build-time
+ * `VITE_REPLAY_RUM_TOKEN` env. Injected/third-party recorders that already
+ * carry a token (the main cross-origin instrumentation path) use it both for
+ * `/api/replays` ingest and to resolve their policy — the server resolves the
+ * config project from `X-RUM-Token` first, ahead of `?projectId=`. Returns
+ * null when unset.
+ */
+export function resolveReplayRumToken() {
+  try {
+    const t =
+      typeof import.meta !== 'undefined' && import.meta.env
+        ? import.meta.env.VITE_REPLAY_RUM_TOKEN
+        : undefined;
+    return t != null && t !== '' ? String(t) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apply a server-delivered replay policy (shape: `{ sampleRate, continuous,
+ * maskAllEnforced }`):
+ *   - `sampleRate` (numeric) becomes authoritative over the localStorage
+ *     override; a null/absent rate leaves the client on its built-in default.
+ *   - `maskAllEnforced` (or `continuous`) forces the recorder into mask-all
+ *     mode (see `resolveMaskingMode`).
+ *
+ * Scope note: this module is the record-on-error recorder. Whole-session
+ * (continuous) capture — driving the upload path off the `continuous` flag — is
+ * the continuous-recorder card (1103); its admin opt-in + privacy guardrails are
+ * card 1106. So this card intentionally consumes only `sampleRate` (the
+ * server-delivered rate, this card's deliverable) and `maskAllEnforced` (the
+ * privacy guarantee), and does NOT itself switch to whole-session capture.
+ *
+ * Pure setter — no fetch, no DOM — so it is unit-testable. Returns the stored
+ * rate.
+ */
+export function applyServerReplayConfig(policy: any) {
+  const rate = policy == null ? null : policy.sampleRate;
+  _serverSampleRate =
+    typeof rate === 'number' && Number.isFinite(rate) ? clampSampleRate(rate) : null;
+  _serverMaskAllEnforced =
+    policy != null && (policy.maskAllEnforced === true || policy.continuous === true);
+  return _serverSampleRate;
+}
+
+/** The server-delivered sample rate currently in effect, or null when unset. */
+export function getServerSampleRate() {
+  return _serverSampleRate;
+}
+
+/** True when the server policy forces mask-all (continuous capture on). */
+export function isServerMaskAllEnforced() {
+  return _serverMaskAllEnforced;
+}
+
+/**
+ * Fetch the server-delivered replay policy and apply it. The project is
+ * resolved by the server from, in order: the `X-RUM-Token` header (sent when a
+ * `rumToken` is given or `VITE_REPLAY_RUM_TOKEN` is set — the main cross-origin
+ * instrumentation path), then the `?projectId=` query (from `projectId` or
+ * `VITE_REPLAY_PROJECT_ID`). Without either, the endpoint can only return the
+ * default policy.
+ *
+ * Accepts an options object: `{ projectId?, rumToken?, endpoint?, timeoutMs? }`.
+ * Best-effort and HARD-BOUNDED by `timeoutMs` (default
+ * `REPLAY_CONFIG_TIMEOUT_MS`): a slow/stalled endpoint loses to the timer and
+ * resolves to the default (null) so it can never prevent the recorder from
+ * starting. Any network/parse failure resolves to null too. No-op outside a
+ * browser.
+ */
+export async function fetchServerReplayConfig(opts: any = {}) {
+  if (typeof fetch !== 'function') return null;
+  const endpoint = opts.endpoint ?? REPLAY_CONFIG_ENDPOINT;
+  const projectId = opts.projectId ?? resolveReplayProjectId();
+  const rumToken = opts.rumToken ?? resolveReplayRumToken();
+  const timeoutMs = opts.timeoutMs ?? REPLAY_CONFIG_TIMEOUT_MS;
+  let url = endpoint;
+  if (projectId)
+    url += `${url.includes('?') ? '&' : '?'}projectId=${encodeURIComponent(projectId)}`;
+  const headers: Record<string, string> = {};
+  if (rumToken) headers['X-RUM-Token'] = rumToken;
+
+  // Actually cancel the request on timeout when AbortSignal.timeout exists; the
+  // fetch then rejects and resolves to the default below.
+  let signal: AbortSignal | undefined;
+  try {
+    signal =
+      typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout === 'function'
+        ? (AbortSignal as any).timeout(timeoutMs)
+        : undefined;
+  } catch {
+    signal = undefined;
+  }
+
+  // `timedOut` stops a late-settling fetch (an env that ignores the abort
+  // signal, or a hang inside res.json()) from applying the policy after we've
+  // already fallen back to the default.
+  let timedOut = false;
+  const work = (async () => {
+    try {
+      const res = await fetch(url, { method: 'GET', headers, ...(signal ? { signal } : {}) });
+      if (timedOut || !res || !res.ok) return null;
+      const policy = await res.json();
+      if (timedOut) return null;
+      return applyServerReplayConfig(policy);
+    } catch {
+      return null;
+    }
+  })();
+
+  if (!(timeoutMs > 0) || typeof setTimeout !== 'function') return work;
+  // Whichever settles first wins; a hung request loses to the timer and the
+  // recorder proceeds on its built-in default.
+  const timer = new Promise<null>((resolve) =>
+    setTimeout(() => {
+      timedOut = true;
+      resolve(null);
+    }, timeoutMs),
+  );
+  return Promise.race([work, timer]);
+}
+
 // localStorage key holding the user's explicit on/off choice (and any
 // fractional sample-rate an operator pokes in for repro). The RUM settings
 // toggle reads and writes this; it is the single source of truth for whether
@@ -172,13 +343,19 @@ export function clampSampleRate(value: any) {
  * Resolve the effective sample rate. **On (1) by default** — session replay is
  * the visual context that backs bug reports, so it records unless explicitly
  * turned off. Resolution order:
- *   1. localStorage override (the RUM settings toggle writes '1' / '0' here) —
- *      always wins when present, so a user's explicit choice is honoured.
- *   2. a build-time Vite env baseline (`VITE_SESSION_REPLAY_SAMPLE_RATE`) when
+ *   1. server-delivered per-project rate (`fetchServerReplayConfig`) — when the
+ *      project has set one it is authoritative for ALL users, overriding any
+ *      per-browser localStorage toggle. Unset (null) falls through.
+ *   2. localStorage override (the RUM settings toggle writes '1' / '0' here) —
+ *      honoured only when the server has not set a rate.
+ *   3. a build-time Vite env baseline (`VITE_SESSION_REPLAY_SAMPLE_RATE`) when
  *      set — lets an operator dial a fractional rollout.
- *   3. otherwise default to 1 (fully on).
+ *   4. otherwise default to 1 (fully on).
  */
 export function resolveSampleRate() {
+  // Server-delivered per-project rate wins when present — the whole point of
+  // moving config off localStorage is that the policy applies to every user.
+  if (_serverSampleRate != null) return _serverSampleRate;
   let override: any;
   try {
     if (typeof localStorage !== 'undefined') {
@@ -844,6 +1021,17 @@ export async function initSessionReplay(opts: any = {}) {
   if (_initialized) return _recorder;
   _initialized = true;
 
+  // Pull the server-delivered per-project policy before sampling so a
+  // project-set rate (and mask-all enforcement) governs this client. The server
+  // resolves the project from the RUM token (`opts.rumToken` /
+  // `VITE_REPLAY_RUM_TOKEN`) then the project id (`opts.projectId` /
+  // `VITE_REPLAY_PROJECT_ID`); without either it returns the default policy.
+  // Best-effort and skippable for tests (`opts.skipServerConfig` / an injected
+  // `opts.sampleRate`).
+  if (opts.sampleRate == null && !opts.skipServerConfig) {
+    await fetchServerReplayConfig({ projectId: opts.projectId, rumToken: opts.rumToken });
+  }
+
   const sampleRate = opts.sampleRate ?? resolveSampleRate();
   const rng = opts.rng ?? Math.random;
   if (!shouldSample(sampleRate, rng)) return null;
@@ -970,4 +1158,6 @@ export function _resetSessionReplayForTest() {
   _initialized = false;
   _errorListenersWired = false;
   _breadcrumbSink = defaultBreadcrumbSink;
+  _serverSampleRate = null;
+  _serverMaskAllEnforced = false;
 }

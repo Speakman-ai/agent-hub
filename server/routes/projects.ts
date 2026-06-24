@@ -31,6 +31,7 @@ import { getUserByUsername, getUserById, createUser } from '../users-store.js';
 import { isAuthConfigured } from '../auth-store.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { detectComposePreview } from '../scaffolding/detect-compose-preview.js';
+import { normalizeReplayConfig } from '../replays/replay-config.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
@@ -2421,6 +2422,20 @@ This workspace has no git repo and no PR automation — your job is planning, or
           ...(onPush !== undefined ? { onPush } : {}),
           ...(schedule !== undefined ? { schedule } : {}),
         };
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body as object, 'replay')) {
+      // Per-project session-replay policy (continuous-tier sample rate + opt-in
+      // flag), server-delivered so it applies to every user on the project
+      // rather than whoever flipped a per-browser localStorage toggle.
+      const result = normalizeReplayConfig((req.body as Record<string, unknown>).replay);
+      if (!result.ok) {
+        return res.status(400).json({ error: result.error });
+      }
+      if (result.value === null) {
+        delete (project as Record<string, unknown>).replay;
+      } else {
+        (project as Record<string, unknown>).replay = result.value;
       }
     }
     if (Object.prototype.hasOwnProperty.call(req.body as object, 'deleteBranchOnMerge')) {

@@ -18,6 +18,7 @@ import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { verifyRumToken } from '../rum-clients-store.js';
+import { resolveReplayPolicy } from '../replays/replay-config.js';
 
 /**
  * Public, rate-limited session-replay ingest endpoint, plus authenticated read
@@ -545,6 +546,50 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
       }
     },
   );
+
+  // ── Read: per-project replay policy (public) ──────────────────────
+  // Server-delivered replay config a recorder fetches at boot to learn the
+  // sample rate / continuous-tier opt-in for its project. Replaces the legacy
+  // per-browser localStorage sample rate so the policy applies to every user.
+  //
+  // Project resolution (first match wins): a valid `X-RUM-Token` (injected
+  // third-party recorders), else `?projectId=` (the Hub's own UI). No project
+  // → the default policy (sampleRate null → client keeps its built-in default;
+  // continuous off). Public + CORS `*` so cross-origin instrumented apps can
+  // read it; the policy carries no secrets. An unknown project resolves to the
+  // default policy so it is not an existence oracle.
+  function applyConfigCors(_req: Request, res: Response, next: NextFunction): void {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Requested-With, X-RUM-Token');
+    res.header('Access-Control-Max-Age', '600');
+    next();
+  }
+
+  router.options('/api/replays/config', applyConfigCors, (_req, res) => {
+    res.status(204).end();
+  });
+
+  router.get('/api/replays/config', applyConfigCors, (req: Request, res: Response) => {
+    let project: Project | null = null;
+
+    const rawToken = req.headers['x-rum-token'];
+    const presentedToken = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+    if (presentedToken != null && String(presentedToken).trim() !== '') {
+      const verified = verifyRumToken(String(presentedToken).trim());
+      if (verified) project = findProject(verified.projectId) ?? null;
+    }
+    if (!project) {
+      const rawPid = req.query.projectId;
+      const pid = Array.isArray(rawPid) ? rawPid[0] : rawPid;
+      if (typeof pid === 'string' && pid.trim() !== '') {
+        project = findProject(pid.trim()) ?? null;
+      }
+    }
+
+    const policy = resolveReplayPolicy(project?.replay ?? null);
+    res.json(policy);
+  });
 
   // ── Read: metadata ────────────────────────────────────────────────
   // Authenticated (not in PUBLIC_PATHS / no CORS *). Replay events can carry
