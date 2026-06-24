@@ -90,13 +90,14 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   const [maskAll, setMaskAll] = useState(() => isMaskAllEnabled());
   const [maskToggling, setMaskToggling] = useState(false);
 
-  // Per-project server-delivered replay SAMPLE RATE. Unlike the per-browser
-  // toggle above, this is saved on the project (PATCH /api/projects/:id
-  // { replay }) so it applies to every user. The continuous-capture opt-in
-  // toggle is intentionally NOT here — it lands with the continuous recorder
-  // (card 1103) and its privacy guardrails (card 1106); shipping a toggle that
-  // doesn't change recorder behavior yet would be misleading.
+  // Per-project server-delivered replay policy. Unlike the per-browser toggle
+  // above, this is saved on the project (PATCH /api/projects/:id { replay }) so
+  // it applies to every user. `continuous` is the whole-session continuous-
+  // capture opt-in (OFF by default); turning it on enforces mask-all for the
+  // project (the server resolves `maskAllEnforced` from `continuous`), so the
+  // per-browser masking choice can't relax it.
   const [replaySampleRate, setReplaySampleRate] = useState<number>(0);
+  const [continuous, setContinuous] = useState(false);
   const [savingReplayConfig, setSavingReplayConfig] = useState(false);
   const [replayConfigError, setReplayConfigError] = useState<any>(null);
 
@@ -198,6 +199,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   useEffect(() => {
     const cfg = (project as any)?.replay || {};
     setReplaySampleRate(typeof cfg.sampleRate === 'number' ? cfg.sampleRate : 0);
+    setContinuous(cfg.continuous === true);
     setReplayConfigError(null);
     setSavingReplayConfig(false);
   }, [project]);
@@ -241,6 +243,40 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     },
     [saveReplayConfig],
   );
+
+  // Opt the project into (or out of) whole-session continuous capture. The
+  // `replay` config is replaced wholesale on PATCH, so the current sample rate
+  // is sent alongside `continuous` to preserve it. Enabling continuous enforces
+  // mask-all server-side (the resolved policy sets `maskAllEnforced`), so this
+  // toggle is the operator's single privacy-bearing decision. Optimistic; on
+  // failure (e.g. a 403 for a non-admin) we surface the error and revert.
+  const handleToggleContinuous = useCallback(async () => {
+    if (!project || savingReplayConfig) return;
+    const pid = project.id;
+    const next = !continuous;
+    setContinuous(next);
+    setSavingReplayConfig(true);
+    setReplayConfigError(null);
+    try {
+      await api.updateProject(pid, { replay: { sampleRate: replaySampleRate, continuous: next } });
+      if (showToast) {
+        showToast(
+          next
+            ? 'Continuous capture enabled for this project — mask-all is enforced.'
+            : 'Continuous capture disabled for this project.',
+          next ? 'success' : 'info',
+          4000,
+        );
+      }
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setReplayConfigError(err?.message || 'Failed to update continuous capture');
+      const cfg = (project as any)?.replay || {};
+      setContinuous(cfg.continuous === true);
+    } finally {
+      if (activePidRef.current === pid) setSavingReplayConfig(false);
+    }
+  }, [project, savingReplayConfig, continuous, replaySampleRate, showToast]);
 
   const handleToggleReplay = useCallback(async () => {
     if (replayToggling) return;
@@ -495,10 +531,10 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
             Replay sample rate (this project)
           </h4>
           <p className="text-xs text-gray-500 max-w-2xl">
-            Server-delivered sampling rate for <strong className="text-gray-300">all users</strong>{' '}
-            of this project (not just this browser). Off (0%) by default; a set rate is
-            authoritative for every user and overrides their per-browser toggle. This is the policy
-            the continuous-capture tier opts into once it ships.
+            Server-delivered policy for <strong className="text-gray-300">all users</strong> of this
+            project (not just this browser). Off (0%) by default; a set rate is authoritative for
+            every user and overrides their per-browser toggle. The sample rate gates the
+            continuous-capture tier.
           </p>
         </div>
 
@@ -523,6 +559,68 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
             <option value="0.5">50%</option>
             <option value="1">100%</option>
           </select>
+        </div>
+
+        {/* Continuous-capture opt-in (Admin). OFF by default; enforces mask-all. */}
+        <div className="mt-4 pt-4 border-t border-gray-700/70">
+          <div className="flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <h5 className="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2">
+                <Video size={13} className="text-fuchsia-400" />
+                Continuous capture
+              </h5>
+              <p className="text-xs text-gray-500 max-w-2xl">
+                Record <strong className="text-gray-300">whole sessions</strong> for this project
+                instead of only the on-error window. Off by default — recording every screen of
+                every user is a privacy decision. Turning it on{' '}
+                <strong className="text-gray-300">enforces mask-all</strong> for the project (it
+                can&apos;t be relaxed per-browser). Requires Admin.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleContinuous}
+              disabled={!project || savingReplayConfig}
+              role="switch"
+              aria-checked={continuous}
+              aria-label="Toggle continuous capture for this project"
+              data-testid="rum-replay-continuous-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${
+                continuous ? 'bg-fuchsia-600' : 'bg-gray-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                  continuous ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+          {continuous && (
+            <div
+              className="mt-3 flex items-start gap-2 text-xs text-fuchsia-200 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-lg p-2.5"
+              data-testid="rum-continuous-enforced-note"
+            >
+              <ShieldCheck size={14} className="flex-shrink-0 mt-0.5" />
+              <span>
+                Mask-all is enforced for this project while continuous capture is on — input values
+                and visible text are redacted for every user; only structure and interactions are
+                recorded.
+              </span>
+            </div>
+          )}
+          {continuous && replaySampleRate <= 0 && (
+            <div
+              className="mt-3 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5"
+              data-testid="rum-continuous-rate-hint"
+            >
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+              <span>
+                The sample rate gates continuous capture. With the rate at Off (0%), no sessions are
+                captured — set a rate above 0% for continuous capture to take effect.
+              </span>
+            </div>
+          )}
         </div>
 
         {replayConfigError && (

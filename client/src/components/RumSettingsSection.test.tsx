@@ -426,9 +426,81 @@ describe('RumSettingsSection', () => {
     );
     const select = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;
     expect(select.value).toBe('0.5');
-    // The continuous-capture toggle is NOT part of this card (it ships with the
-    // continuous recorder / opt-in cards 1103/1106).
-    expect(screen.queryByTestId('rum-replay-continuous-toggle')).toBeNull();
+    // The continuous-capture opt-in toggle (card 1106) defaults OFF here.
+    const toggle = screen.getByTestId('rum-replay-continuous-toggle');
+    expect(toggle!).toHaveAttribute('role', 'switch');
+    expect(toggle!).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByTestId('rum-continuous-enforced-note')).toBeNull();
+  });
+
+  it('reflects an enabled continuous flag from project.replay (enforced note shown)', async () => {
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5, continuous: true } }]}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-replay-continuous-toggle');
+    expect(toggle!).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('rum-continuous-enforced-note')).toBeInTheDocument();
+    // Rate is above 0, so the rate-gating hint is not shown.
+    expect(screen.queryByTestId('rum-continuous-rate-hint')).toBeNull();
+  });
+
+  it('enabling continuous PATCHes the project preserving the sample rate, and enforces mask-all', async () => {
+    const showToast = vi.fn();
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]}
+        showToast={showToast}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-replay-continuous-toggle');
+    fireEvent.click(toggle as any);
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5, continuous: true },
+      }),
+    );
+    expect(screen.getByTestId('rum-replay-continuous-toggle')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByTestId('rum-continuous-enforced-note')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(showToast!).toHaveBeenCalledWith(
+        expect.stringMatching(/mask-all is enforced/i),
+        'success',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('warns when continuous is on but the sample rate is Off (0%)', async () => {
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0, continuous: true } }]}
+      />,
+    );
+    expect(await screen.findByTestId('rum-continuous-rate-hint')).toBeInTheDocument();
+  });
+
+  it('surfaces an error (e.g. 403 for a non-admin) and reverts the continuous toggle', async () => {
+    (api.updateProject as any).mockRejectedValueOnce(new Error('Forbidden: Admin required'));
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]}
+        showToast={vi.fn()}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-replay-continuous-toggle');
+    fireEvent.click(toggle as any);
+    expect(await screen.findByTestId('rum-replay-config-error')).toHaveTextContent(/forbidden/i);
+    await waitFor(() =>
+      expect(screen.getByTestId('rum-replay-continuous-toggle')).toHaveAttribute(
+        'aria-checked',
+        'false',
+      ),
+    );
   });
 
   it('defaults to off when the project has no replay config', async () => {
