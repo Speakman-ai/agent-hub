@@ -13,6 +13,7 @@ const ctl = vi.hoisted(() => ({
   resolveSessionsByAgent: {} as Record<string, any> as Record<string, any> as Record<string, any>,
   /** sessionId -> { promise, resolve, reject } */
   messageDefers: new Map(),
+  sAMessages: [{ id: 'm-a', role: 'user', content: 'from-a', created_at: '' }] as any[],
   deferredFor(sid: any) {
     if (!ctl.messageDefers.has(sid)) {
       let resolve: any;
@@ -27,6 +28,7 @@ const ctl = vi.hoisted(() => ({
   },
   resetMessages() {
     ctl.messageDefers = new Map();
+    ctl.sAMessages = [{ id: 'm-a', role: 'user', content: 'from-a', created_at: '' }];
   },
 }));
 
@@ -118,7 +120,7 @@ const ctl = vi.hoisted(() => ({
       getCronSessions: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn((sid: any) => {
         if (sid === 's-a') {
-          return Promise.resolve([{ id: 'm-a', role: 'user', content: 'from-a', created_at: '' }]);
+          return Promise.resolve(ctl.sAMessages);
         }
         return ctl.deferredFor(sid).promise;
       }),
@@ -236,6 +238,54 @@ describe('App — session switch + getMessages loading', () => {
       expect(screen.queryByTestId('chat-messages-loading')).not.toBeInTheDocument();
     });
     expect(await screen.findByText('from-b')).toBeInTheDocument();
+  });
+
+  it('backfills missed finalize checks messages after a WebSocket reconnect', async () => {
+    render(<App initialView="chat" />);
+    await bootstrapTwoSessions();
+
+    await act(async () => {
+      ctl.resolveSessionsByAgent['agent-1'](TWO_SESSIONS);
+    });
+
+    expect(await screen.findByText('from-a')).toBeInTheDocument();
+    expect(screen.queryByTestId('finalize-checks-round-block')).not.toBeInTheDocument();
+
+    ctl.sAMessages = [
+      { id: 'm-a', role: 'user', content: 'from-a', created_at: '' },
+      {
+        id: 'finalize-review-approved',
+        role: 'system',
+        content: 'Review · round 1 · approved',
+        created_at: '',
+        metadata: JSON.stringify({
+          kind: 'finalize_review_round',
+          runId: 'run-1',
+          round: 1,
+          verdict: 'approved',
+          threads: [],
+        }),
+      },
+      {
+        id: 'finalize-checks-round',
+        role: 'system',
+        content: 'Checks · round 1 · 1/1 passed',
+        created_at: '',
+        metadata: JSON.stringify({
+          kind: 'finalize_checks_round',
+          runId: 'run-1',
+          round: 1,
+          steps: [{ index: 1, name: 'tests', state: 'passed', exitCode: 0 }],
+        }),
+      },
+    ];
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agenthub:ws_reconnected'));
+    });
+
+    expect(await screen.findByTestId('finalize-checks-round-block')).toBeInTheDocument();
+    expect(screen.getByText('tests')).toBeInTheDocument();
   });
 
   it('does not apply a stale getMessages result after switching away (cancelled effect)', async () => {

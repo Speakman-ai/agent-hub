@@ -4,6 +4,7 @@ import {
   LOAD_OLDER_THRESHOLD_PX,
   shouldLoadOlder,
   inferHasMore,
+  mergeNewestMessages,
   prependOlderMessages,
   restoredScrollTop,
 } from './messagePagination';
@@ -88,6 +89,46 @@ describe('prependOlderMessages — prepend without duplicates', () => {
     const prev = [msg('m1')];
     expect(prependOlderMessages(prev, []).addedCount).toBe(0);
     expect(prependOlderMessages(prev, undefined).addedCount).toBe(0);
+  });
+});
+
+describe('mergeNewestMessages — reconnect tail recovery', () => {
+  const msg = (id: any) => ({ id, content: id });
+
+  it('inserts messages missed while the socket was down into the loaded tail', () => {
+    const prev = [msg('run-started'), msg('review-approved')];
+    const newest = [msg('review-approved'), msg('checks-round'), msg('ready-to-push')];
+
+    const { messages, addedCount } = mergeNewestMessages(prev, newest);
+
+    expect(messages.map((m: any) => m.id)).toEqual([
+      'run-started',
+      'review-approved',
+      'checks-round',
+      'ready-to-push',
+    ]);
+    expect(addedCount).toBe(2);
+  });
+
+  it('returns the original array unchanged when reconnect fetch has no new rows', () => {
+    const prev = [msg('m1'), msg('m2')];
+    const { messages, addedCount } = mergeNewestMessages(prev, [msg('m1'), msg('m2')]);
+    expect(messages).toBe(prev);
+    expect(addedCount).toBe(0);
+  });
+
+  it('preserves local-only rows after the authoritative newest page', () => {
+    const prev = [msg('m1'), msg('m2'), { ...msg('queued-local'), queued: true }];
+    const newest = [msg('m2'), msg('m3')];
+
+    const { messages } = mergeNewestMessages(prev, newest);
+
+    expect(messages.map((m: any) => m.id)).toEqual(['m1', 'm2', 'm3', 'queued-local']);
+  });
+
+  it('appends the newest page when there is no overlap with the current window', () => {
+    const { messages } = mergeNewestMessages([msg('m1')], [msg('m2'), msg('m3')]);
+    expect(messages.map((m: any) => m.id)).toEqual(['m1', 'm2', 'm3']);
   });
 });
 

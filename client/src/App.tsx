@@ -97,6 +97,7 @@ import {
 import {
   MESSAGES_PAGE_SIZE,
   inferHasMore,
+  mergeNewestMessages,
   shouldLoadOlder,
   prependOlderMessages,
   restoredScrollTop,
@@ -474,6 +475,7 @@ export default function App({ initialView }: any = {}) {
   // handler (a stable useCallback) reads fresh values without redefining.
   const olderHasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  const refreshingNewestMessagesRef = useRef(false);
   /** Mirrors `messages` so the scroll handler can read the oldest loaded id. */
   const messagesRef = useRef<any[]>([]);
   messagesRef.current = messages;
@@ -3112,6 +3114,7 @@ export default function App({ initialView }: any = {}) {
     // Reset the older-message window for the new session.
     prependRestoreRef.current = null;
     loadingOlderRef.current = false;
+    refreshingNewestMessagesRef.current = false;
     setLoadingOlderMessages(false);
     olderHasMoreRef.current = false;
     if (!activeSessionId) {
@@ -3142,6 +3145,38 @@ export default function App({ initialView }: any = {}) {
       cancelled = true;
     };
   }, [activeSessionId]);
+
+  useEffect(() => {
+    const refreshNewestMessages = () => {
+      const sid = activeSessionIdRef.current;
+      if (!sid || refreshingNewestMessagesRef.current) return;
+      refreshingNewestMessagesRef.current = true;
+      api
+        .getMessages(sid, { limit: MESSAGES_PAGE_SIZE })
+        .then((rows: any) => {
+          if (activeSessionIdRef.current !== sid) return;
+          const page = Array.isArray(rows) ? rows : [];
+          setMessages((prev: any) => mergeNewestMessages(prev, page).messages);
+          if (page.length > 0) {
+            olderHasMoreRef.current = inferHasMore(page.length);
+          }
+        })
+        .catch(() => {
+          // Best-effort reconnect repair. The next reconnect or session switch
+          // will try again; existing transcript state remains visible.
+        })
+        .finally(() => {
+          if (activeSessionIdRef.current === sid) {
+            refreshingNewestMessagesRef.current = false;
+          }
+        });
+    };
+
+    window.addEventListener('agenthub:ws_reconnected', refreshNewestMessages);
+    return () => {
+      window.removeEventListener('agenthub:ws_reconnected', refreshNewestMessages);
+    };
+  }, []);
 
   // Load any handoffs emitted from this session so HandoffCard can resolve
   // `toSessionId` and render a clickable "Open session" link. Best-effort —

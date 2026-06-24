@@ -50,6 +50,33 @@ export function prependOlderMessages(prev: any, older: any) {
 }
 
 /**
+ * Merge a freshly-fetched newest page back into the currently loaded window.
+ * Used after a WebSocket reconnect to recover persisted messages that were
+ * inserted while the socket was down. The incoming page is oldest-first and
+ * represents the transcript tail, so anchor on any overlap with the existing
+ * window and replace that tail with the authoritative page while preserving
+ * local-only rows after it (queued/interrupted affordances).
+ */
+export function mergeNewestMessages(prev: any, newest: any) {
+  const page = (Array.isArray(newest) ? newest : []).filter((m: any) => m?.id);
+  if (page.length === 0) return { messages: prev, addedCount: 0 };
+
+  const have = new Set(prev.map((m: any) => m.id));
+  const fresh = page.filter((m: any) => !have.has(m.id));
+  if (fresh.length === 0) return { messages: prev, addedCount: 0 };
+
+  const incomingIds = new Set(page.map((m: any) => m.id));
+  const overlapIndex = prev.findIndex((m: any) => incomingIds.has(m.id));
+  if (overlapIndex === -1) {
+    return { messages: [...prev, ...page], addedCount: fresh.length };
+  }
+
+  const before = prev.slice(0, overlapIndex);
+  const localAfter = prev.slice(overlapIndex).filter((m: any) => !incomingIds.has(m.id));
+  return { messages: [...before, ...page, ...localAfter], addedCount: fresh.length };
+}
+
+/**
  * The scrollTop that keeps the viewport anchored on the same content after a
  * prepend grows the container: shift down by exactly the height added above.
  */
