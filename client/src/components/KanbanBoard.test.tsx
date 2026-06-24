@@ -188,10 +188,15 @@ describe('KanbanBoard card detail modal', () => {
     expect(watchBtn!).toBeInTheDocument();
     expect(api.getCardReplay).toHaveBeenCalledWith('p1', 'card-replay');
 
-    // Clicking it mounts the sandboxed player.
+    // Clicking it mounts the isolated-origin player: a data: URL (opaque origin,
+    // cross-origin to the host app) — NOT srcDoc — with allow-scripts
+    // allow-same-origin so rrweb's nested replay frame can render. See
+    // ReplayPlayerModal / utils/replayPlayer.ts for the isolation rationale.
     fireEvent.click(watchBtn as any);
     const iframe = await screen.findByTestId('replay-player-iframe');
-    expect(iframe!.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(iframe!.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
+    expect(iframe!.getAttribute('srcdoc')).toBeNull();
+    expect((iframe!.getAttribute('src') || '').startsWith('data:text/html')).toBe(true);
   });
 
   it('renders card description as markdown in read mode and updates preview after edit', async () => {

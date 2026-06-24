@@ -19,17 +19,33 @@ describe('ReplayPlayerModal', () => {
       .mockResolvedValue({ events: [], total: 0, offset: 0, hasMore: false });
   });
 
-  it('renders a sandboxed allow-scripts iframe with an inlined srcDoc', () => {
+  it('loads the player from an isolated data: URL with the correct sandbox + CSP', () => {
     render(<ReplayPlayerModal replayId="abc123" title="Replay · crash" onClose={() => {}} />);
 
     const iframe = screen.getByTestId('replay-player-iframe');
-    // Acceptance criterion: sandboxed iframe isolation. allow-scripts only —
-    // no allow-same-origin, so the player runs at an opaque origin with no
-    // access to the host page, cookies, or network.
-    expect(iframe!.getAttribute('sandbox')).toBe('allow-scripts');
-    const srcDoc = iframe.getAttribute('srcdoc') || '';
-    expect(srcDoc!).toContain('id="root"');
-    expect(srcDoc!).toContain('rrwebPlayer');
+
+    // Host isolation: the player MUST load via a data: URL (opaque origin,
+    // cross-origin to the host app) and MUST NOT use srcDoc (which would inherit
+    // the host origin and let the frame reach host DOM/cookies/storage). The
+    // SecurityError boundary itself is proven at browser level in
+    // e2e/tests/replay-player.spec.ts; this guard pins the wiring that creates it.
+    expect(iframe.getAttribute('srcdoc')).toBeNull();
+    const src = iframe.getAttribute('src') || '';
+    expect(src.startsWith('data:text/html')).toBe(true);
+
+    // Sandbox: allow-scripts allow-same-origin. allow-same-origin here keeps
+    // rrweb's nested replay frame same-origin to the data: document's OWN opaque
+    // origin (not the host's) so the rebuild lands; dropping it reintroduces the
+    // blank-replay bug. The other sandbox restrictions (no top-nav/forms/popups)
+    // stay off by omission.
+    expect(iframe.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
+
+    // The decoded document carries the player root + the no-network CSP.
+    const doc = decodeURIComponent(src.replace(/^data:text\/html;charset=utf-8,/, ''));
+    expect(doc).toContain('id="root"');
+    expect(doc).toContain('rrwebPlayer');
+    expect(doc).toContain("connect-src 'none'");
+    expect(doc).toContain("default-src 'none'");
   });
 
   it('shows the title and a loading state before playback', () => {

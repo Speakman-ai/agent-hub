@@ -1,12 +1,32 @@
 // Sandboxed rrweb-player playback — pure helpers (no JSX, no `?raw` imports) so
-// they stay unit-testable without the bundler. ReplayPlayerModal.jsx imports the
-// rrweb-player UMD + CSS as raw strings and hands them to `buildReplayPlayerSrcDoc`.
+// they stay unit-testable without the bundler. ReplayPlayerModal imports the
+// rrweb-player UMD + CSS as raw strings, builds the player document with
+// `buildReplayPlayerSrcDoc`, and loads it via `buildReplayPlayerDataUrl`.
 //
-// The player runs inside a `sandbox="allow-scripts"` iframe (the DesignView /
-// SessionPreviewPane isolation pattern): an opaque-origin document with no DOM,
-// network, or storage access to the host. It can't make authenticated API calls,
-// so the parent streams the (already-authorized) event pages in over postMessage
-// and the iframe only ever renders them.
+// ISOLATION MODEL — isolated opaque origin, NOT same-origin to the host app.
+// The player document is loaded as a `data:` URL (`buildReplayPlayerDataUrl`),
+// which gives it an OPAQUE origin distinct from the Agent Hub app origin. The
+// frame is therefore CROSS-origin to the host: it cannot read the host
+// `document`, cookies, or `localStorage` (those accesses throw SecurityError) —
+// proven in e2e/tests/replay-player.spec.ts. This is the primary trust boundary
+// for sensitive (masked-DOM) replay content, so a compromised dependency, a
+// player-bundle bug, or rrweb-rendered active content still cannot reach host
+// state. CSP (below) is defense-in-depth (no network), not the only boundary.
+//
+// The iframe also carries `sandbox="allow-scripts allow-same-origin"`. Here
+// `allow-same-origin` does NOT grant the host origin — the data: document's
+// origin is opaque regardless. It only stops the sandbox from minting a *fresh*
+// opaque origin per nested frame, so rrweb's Replayer (which rebuilds the
+// captured DOM into a nested iframe it creates) gets a child frame that shares
+// the parent's opaque origin and can be written into. With `allow-scripts`
+// alone the nested frame gets its own opaque origin, the player can't reach its
+// contentDocument (cross-origin), and the page renders blank while the
+// controller bar + cursor still animate. The remaining sandbox restrictions
+// (no top-navigation / forms / popups / modals) stay in force.
+//
+// Because the frame is cross-origin and unauthenticated, the parent streams the
+// (already-authorized) event pages in over postMessage and the iframe only ever
+// renders them.
 
 // postMessage channel tag. Both directions carry `{ ch: REPLAY_CHANNEL }` so the
 // host and the sandbox can ignore unrelated messages (extensions, other frames).
@@ -100,9 +120,10 @@ export const IFRAME_BOOTSTRAP = `(function () {
   }, 150);
 })();`;
 
-// Content-Security-Policy for the player document. `sandbox="allow-scripts"`
-// alone gives the frame an opaque origin and strips host cookies/storage, but it
-// does NOT stop the frame from making network requests — and rrweb rehydrates
+// Content-Security-Policy for the player document. Host isolation is provided by
+// the data: URL's opaque origin (see the isolation-model note at the top of this
+// file), so this CSP is defense-in-depth, not the only boundary. Its key job is
+// to block ALL network egress from the frame — and rrweb rehydrates
 // captured DOM that can reference remote images/fonts/media/iframes/stylesheets.
 // This locks the document down to a no-network island:
 //   - `default-src 'none'`           — deny everything unless re-allowed below.
@@ -144,11 +165,14 @@ export const PLAYER_CSP =
   "form-action 'none'";
 
 /**
- * Build the `srcDoc` for the sandboxed player iframe. `playerJs` is the
- * rrweb-player UMD bundle (exposes `window.rrwebPlayer`); `playerCss` is its
- * stylesheet. Both are inlined so the opaque-origin sandbox needs no network,
- * and a restrictive CSP (see {@link PLAYER_CSP}) enforces that no-network
- * property even against the replayed DOM rrweb reconstructs.
+ * Build the player document HTML. `playerJs` is the rrweb-player UMD bundle
+ * (exposes `window.rrwebPlayer`); `playerCss` is its stylesheet. Both are inlined
+ * so the frame needs no network, and a restrictive CSP (see {@link PLAYER_CSP})
+ * enforces that no-network property even against the replayed DOM rrweb
+ * reconstructs. The document is loaded via {@link buildReplayPlayerDataUrl} so it
+ * runs at an isolated opaque origin (see the isolation-model note at the top of
+ * this file) — the name keeps `Doc` for historical reasons but it is no longer
+ * passed to the iframe `srcDoc` attribute.
  */
 export function buildReplayPlayerSrcDoc(playerJs?: string, playerCss?: string) {
   return `<!doctype html>
@@ -170,6 +194,25 @@ export function buildReplayPlayerSrcDoc(playerJs?: string, playerCss?: string) {
 <script>${escapeForScript(IFRAME_BOOTSTRAP)}</script>
 </body>
 </html>`;
+}
+
+/**
+ * Wrap the player document in a `data:text/html` URL. Loading the iframe from
+ * this (rather than the `srcDoc` attribute) is what gives the frame an OPAQUE
+ * origin distinct from the Agent Hub app, so it is cross-origin to the host and
+ * cannot reach host `document` / cookies / `localStorage`. A `srcDoc` document,
+ * by contrast, inherits the host origin — and `blob:` URLs inherit the creating
+ * (host) origin too — so only a data: URL achieves host isolation here. See the
+ * isolation-model note at the top of this file.
+ *
+ * `encodeURIComponent` (not base64) keeps UTF-8 in the inlined CSS/bundle intact
+ * and avoids `btoa` throwing on non-Latin1 characters.
+ */
+export function buildReplayPlayerDataUrl(playerJs?: string, playerCss?: string) {
+  return (
+    'data:text/html;charset=utf-8,' +
+    encodeURIComponent(buildReplayPlayerSrcDoc(playerJs, playerCss))
+  );
 }
 
 /**

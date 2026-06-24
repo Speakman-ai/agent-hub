@@ -6,6 +6,7 @@ import {
   parseReplayIdFromRef,
   escapeForScript,
   buildReplayPlayerSrcDoc,
+  buildReplayPlayerDataUrl,
   streamReplayEvents,
 } from './replayPlayer';
 
@@ -122,6 +123,35 @@ describe('buildReplayPlayerSrcDoc', () => {
   it('does not throw on empty inputs', () => {
     expect(() => buildReplayPlayerSrcDoc('', '')).not.toThrow();
     expect(() => buildReplayPlayerSrcDoc(undefined, undefined)).not.toThrow();
+  });
+});
+
+describe('buildReplayPlayerDataUrl', () => {
+  it('wraps the player document in a data:text/html URL (isolated opaque origin)', () => {
+    const url = buildReplayPlayerDataUrl('PLAYER_BUNDLE_JS', '.rr-player{color:red}');
+    // A data: URL is what makes the frame cross-origin to the host app; a
+    // srcDoc / blob: URL would inherit the host origin and break isolation.
+    expect(url.startsWith('data:text/html;charset=utf-8,')).toBe(true);
+  });
+
+  it('round-trips to the same HTML buildReplayPlayerSrcDoc produces', () => {
+    const html = buildReplayPlayerSrcDoc('PLAYER', '.x{color:red}');
+    const url = buildReplayPlayerDataUrl('PLAYER', '.x{color:red}');
+    const decoded = decodeURIComponent(url.replace(/^data:text\/html;charset=utf-8,/, ''));
+    expect(decoded).toBe(html);
+    expect(decoded).toContain("connect-src 'none'");
+  });
+
+  it('percent-encodes so the markup cannot break out of the URL', () => {
+    const url = buildReplayPlayerDataUrl('PLAYER', 'css');
+    // Raw angle brackets / quotes must be encoded, not literal, in the URL.
+    expect(url).not.toContain('<script');
+    expect(url).toContain('%3Cscript');
+  });
+
+  it('does not throw on empty inputs', () => {
+    expect(() => buildReplayPlayerDataUrl('', '')).not.toThrow();
+    expect(() => buildReplayPlayerDataUrl(undefined, undefined)).not.toThrow();
   });
 });
 

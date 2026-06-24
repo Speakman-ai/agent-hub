@@ -6,15 +6,33 @@ import { X, AlertCircle, Film } from 'lucide-react';
 import playerJs from '../../node_modules/rrweb-player/dist/rrweb-player.umd.min.cjs?raw';
 import playerCss from 'rrweb-player/dist/style.css?raw';
 import { api } from '../utils/api';
-import { REPLAY_CHANNEL, buildReplayPlayerSrcDoc, streamReplayEvents } from '../utils/replayPlayer';
+import {
+  REPLAY_CHANNEL,
+  buildReplayPlayerDataUrl,
+  streamReplayEvents,
+} from '../utils/replayPlayer';
 
 /**
- * Full-screen modal that plays a stored rrweb session replay inside a
- * `sandbox="allow-scripts"` iframe (the DesignView / SessionPreviewPane
- * isolation pattern). The iframe is an opaque-origin document with no access to
- * the host page, cookies, or network — so it can't fetch the (sensitive,
- * masked-DOM) events itself. Instead the host streams the already-authorized
- * event pages in over postMessage and the sandbox only renders them.
+ * Full-screen modal that plays a stored rrweb session replay inside an
+ * isolated-origin iframe. The player document is loaded as a `data:` URL, which
+ * gives the frame an OPAQUE origin distinct from the Agent Hub app — so it is
+ * cross-origin to the host and cannot read the host `document`, cookies, or
+ * `localStorage` (those throw SecurityError; proven in
+ * e2e/tests/replay-player.spec.ts). That cross-origin boundary is why the host
+ * can't hand the (sensitive, masked-DOM) events to the frame directly: it
+ * streams the already-authorized event pages in over postMessage and the frame
+ * only renders them.
+ *
+ * The iframe also carries `sandbox="allow-scripts allow-same-origin"`. Here
+ * `allow-same-origin` does NOT grant the host origin (a data: document's origin
+ * is opaque regardless) — it only stops the sandbox from minting a *fresh*
+ * opaque origin per nested frame. rrweb's Replayer rebuilds the captured DOM
+ * into a nested iframe it creates; that child must share the parent's opaque
+ * origin to be writable, otherwise the page renders blank while the controller
+ * bar + mouse cursor (drawn in the outer doc) still animate. The remaining
+ * sandbox restrictions (no top-navigation / forms / popups / modals) stay in
+ * force, and {@link PLAYER_CSP} blocks all network egress as defense-in-depth.
+ * See the isolation-model note in utils/replayPlayer.ts for the full rationale.
  *
  * Reachable from a bug support ticket (pass the replay id parsed from
  * `replay_ref`) and from a converted kanban card (resolve the id via
@@ -32,9 +50,9 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
   const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [errorMsg, setErrorMsg] = useState<any>(null);
 
-  // Build the player document once. Stable across renders so the iframe isn't
-  // torn down and rebuilt mid-stream.
-  const srcDoc = useMemo(() => buildReplayPlayerSrcDoc(playerJs, playerCss), []);
+  // Build the player document once, as an isolated-origin data: URL. Stable
+  // across renders so the iframe isn't torn down and rebuilt mid-stream.
+  const playerSrc = useMemo(() => buildReplayPlayerDataUrl(playerJs, playerCss), []);
 
   // Close on Escape.
   useEffect(() => {
@@ -123,9 +141,11 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
     };
 
     window.addEventListener('message', onMessage);
-    // If the iframe already loaded before this effect ran (fast srcDoc, or a
-    // re-subscribe), kick off immediately instead of waiting for an onLoad that
-    // already fired.
+    // Belt-and-suspenders early start: if the iframe somehow already loaded
+    // before this effect ran, kick off without waiting for onLoad. Note the
+    // player frame is cross-origin (data: opaque origin), so contentDocument
+    // reads back null and this branch is normally inert — the race-free start is
+    // the iframe `onLoad` handler, backstopped by the bootstrap's `ready` re-post.
     if (iframeRef.current?.contentDocument?.readyState === 'complete') {
       startStreaming();
     }
@@ -197,8 +217,13 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
           <iframe
             ref={iframeRef}
             title="Session replay player"
-            srcDoc={srcDoc}
-            sandbox="allow-scripts"
+            // Loaded as a data: URL (NOT srcDoc) so the frame runs at an opaque
+            // origin, cross-origin to the host app — it cannot reach host DOM /
+            // cookies / storage. allow-same-origin keeps rrweb's nested replay
+            // frame same-origin to *this* opaque origin (not the host's) so the
+            // rebuild lands. See the component-level comment + replayPlayer.ts.
+            src={playerSrc}
+            sandbox="allow-scripts allow-same-origin"
             onLoad={handleIframeLoad}
             className="w-full h-full border-0"
             data-testid="replay-player-iframe"
