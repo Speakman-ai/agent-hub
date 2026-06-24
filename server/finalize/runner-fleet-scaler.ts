@@ -32,6 +32,7 @@
  */
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
 import { runnerQueueDepth, runnerInflightCount, reapExpiredRunnerLeases } from './runner-queue.js';
+import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-protection.js';
 import { getJobChannel } from './runner-job-channel.js';
 import { spotReclaimDetail } from './spot-interruption.js';
 import { DEFAULT_FLEET_MAX_AGENTS, DEFAULT_FLEET_MIN_AGENTS } from './runner-fleet-constants.js';
@@ -291,6 +292,13 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
           ? `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
             `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`
           : `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`;
+      // Clear Hub task protection on each reaped agent's task. The lease expired,
+      // so either the task is already gone (clear is a harmless no-op) or it's a
+      // stuck-but-alive worker — in which case it would otherwise stay protected
+      // for the full Hub lease (up to 120 min), blocking scale-in / deploy from
+      // reclaiming it. Fire-and-forget; clearHubTaskProtection is bounded + no-op
+      // off-ECS / for a null ARN.
+      const protectionCfg = loadHubTaskProtectionConfig();
       for (const job of reaped) {
         const detail = job.spotReclaimed
           ? spotReclaimDetail(
@@ -298,6 +306,7 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
             )
           : genericDetail;
         getJobChannel(job.id)?.fail(new Error(detail));
+        void clearHubTaskProtection(job.ecsTaskArn, protectionCfg);
       }
     }
     const depth = runnerQueueDepth(); // queued + claimed + running, across all orgs

@@ -283,6 +283,13 @@ export interface ReapedRunnerJob {
    * the generous reclaim retry cap instead of `container_unavailable`.
    */
   spotReclaimed: boolean;
+  /**
+   * The reaped agent's ECS task ARN (runner_agents.ecs_task_arn), or null if the
+   * agent is off-ECS / unknown. The fleet scaler clears Hub task protection on
+   * this task so a stuck-but-alive worker doesn't stay protected for the full Hub
+   * lease, blocking scale-in / deploy reclaim.
+   */
+  ecsTaskArn: string | null;
 }
 
 /**
@@ -293,7 +300,8 @@ export interface ReapedRunnerJob {
  * persisted `detail` mirrors that distinction for post-hoc inspection.
  */
 export function reapExpiredRunnerLeases(now: number): ReapedRunnerJob[] {
-  const rows = getOrgsDb()
+  const db = getOrgsDb();
+  const rows = db
     .prepare(
       `UPDATE runner_jobs
           SET state='lost', ended_at=@now,
@@ -304,8 +312,28 @@ export function reapExpiredRunnerLeases(now: number): ReapedRunnerJob[] {
               END
         WHERE state IN ('claimed','running') AND lease_expires_at IS NOT NULL
           AND lease_expires_at < @now
-        RETURNING id, spot_interruption_at`,
+        RETURNING id, spot_interruption_at, claimed_by`,
     )
-    .all({ now }) as Array<{ id: string; spot_interruption_at: number | null }>;
-  return rows.map((r) => ({ id: r.id, spotReclaimed: r.spot_interruption_at != null }));
+    .all({ now }) as Array<{
+    id: string;
+    spot_interruption_at: number | null;
+    claimed_by: string | null;
+  }>;
+  if (!rows.length) return [];
+  // Resolve each reaped agent's ECS task ARN (cached per agent) so the caller can
+  // clear Hub task protection on the stuck task. Separate lookup because RETURNING
+  // can't join runner_agents.
+  const getArn = db.prepare('SELECT ecs_task_arn FROM runner_agents WHERE id=?');
+  const arnByAgent = new Map<string, string | null>();
+  return rows.map((r) => {
+    let ecsTaskArn: string | null = null;
+    if (r.claimed_by) {
+      if (!arnByAgent.has(r.claimed_by)) {
+        const a = getArn.get(r.claimed_by) as { ecs_task_arn?: string | null } | undefined;
+        arnByAgent.set(r.claimed_by, a?.ecs_task_arn ?? null);
+      }
+      ecsTaskArn = arnByAgent.get(r.claimed_by) ?? null;
+    }
+    return { id: r.id, spotReclaimed: r.spot_interruption_at != null, ecsTaskArn };
+  });
 }

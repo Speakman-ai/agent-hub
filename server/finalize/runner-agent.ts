@@ -305,15 +305,44 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
   };
 }
 
+/** Bound the ECS metadata probe so a hung endpoint can't block registration. */
+export const ECS_METADATA_TIMEOUT_MS = 2000;
+
+/**
+ * Best-effort resolve this task's ECS task ARN from the ECS container metadata
+ * endpoint ($ECS_CONTAINER_METADATA_URI_V4/task → TaskARN). Reported at
+ * registration so the Hub can arm scale-in protection on THIS exact task. Returns
+ * null off-ECS or on any failure (the Hub-side protection then no-ops).
+ *
+ * The fetch is bounded by a short AbortSignal.timeout: registerAgent awaits this
+ * before contacting the Hub, so a hung or mis-set metadata endpoint must fail
+ * CLOSED to null rather than take the runner out of service.
+ */
+export async function resolveEcsTaskArn(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const base = process.env.ECS_CONTAINER_METADATA_URI_V4?.trim();
+  if (!base) return null;
+  try {
+    const res = await fetchImpl(`${base.replace(/\/$/, '')}/task`, {
+      signal: AbortSignal.timeout(ECS_METADATA_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { TaskARN?: unknown };
+    return typeof body.TaskARN === 'string' ? body.TaskARN : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function registerAgent(
   hubUrl: string,
   fleetToken: string,
   orgScope: string,
 ): Promise<{ agentId: string; token: string }> {
+  const ecsTaskArn = await resolveEcsTaskArn();
   const res = await fetch(`${hubUrl.replace(/\/$/, '')}/api/runners/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ fleetToken, orgScope }),
+    body: JSON.stringify({ fleetToken, orgScope, ...(ecsTaskArn ? { ecsTaskArn } : {}) }),
   });
   if (!res.ok) throw new Error(`register failed: ${res.status}`);
   return (await res.json()) as { agentId: string; token: string };

@@ -90,8 +90,25 @@ describe('runner-queue', () => {
     // not yet expired at 25_000 (lease now 30_000)
     expect(reapExpiredRunnerLeases(25_000)).toEqual([]);
     // expired by 40_000 — generic loss, no spot interruption reported
-    expect(reapExpiredRunnerLeases(40_000)).toEqual([{ id: c.id, spotReclaimed: false }]);
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([
+      { id: c.id, spotReclaimed: false, ecsTaskArn: null },
+    ]);
     expect(runnerQueueDepth()).toBe(0); // 'lost' is terminal
+  });
+
+  it('reaper surfaces the claiming agent ECS task ARN so protection can be cleared', () => {
+    const arn = 'arn:aws:ecs:us-east-2:1:task/test-fleet/stuck123';
+    getOrgsDb()
+      .prepare(
+        `INSERT INTO runner_agents (id, org_scope, state, ecs_task_arn, registered_at, last_seen_at)
+         VALUES ('agent-x', 'shared', 'busy', ?, 1000, 1000)`,
+      )
+      .run(arn);
+    enq({ jobId: 'j', now: 1000 });
+    const c = claimRunnerJob({ agentId: 'agent-x', leaseMs: 10_000, now: 2000 })!;
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([
+      { id: c.id, spotReclaimed: false, ecsTaskArn: arn },
+    ]);
   });
 
   it('a reported spot interruption makes the reaped lease a known reclaim', () => {
@@ -102,7 +119,9 @@ describe('runner-queue', () => {
     // Re-report is idempotent (sticky) — no second stamp.
     expect(markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'a', now: 6000 })).toBe(false);
     // Instance dies → lease expires → reaper classifies it as a reclaim.
-    expect(reapExpiredRunnerLeases(40_000)).toEqual([{ id: c.id, spotReclaimed: true }]);
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([
+      { id: c.id, spotReclaimed: true, ecsTaskArn: null },
+    ]);
     const row = getOrgsDb().prepare('SELECT detail FROM runner_jobs WHERE id=?').get(c.id) as {
       detail: string;
     };
@@ -115,7 +134,9 @@ describe('runner-queue', () => {
     expect(markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'intruder', now: 5000 })).toBe(
       false,
     );
-    expect(reapExpiredRunnerLeases(40_000)).toEqual([{ id: c.id, spotReclaimed: false }]);
+    expect(reapExpiredRunnerLeases(40_000)).toEqual([
+      { id: c.id, spotReclaimed: false, ecsTaskArn: null },
+    ]);
   });
 
   it('log spool dedupes on (job_id, seq)', () => {

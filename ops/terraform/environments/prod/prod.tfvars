@@ -94,19 +94,58 @@ manage_shared_finalize_infra = true # this account owns its buckets/ECR
 # on-demand/Spot fulfillable. instance_type is kept in sync as the no-override
 # fallback but is otherwise inert here.
 finalize_runner_instance_type = "m7a.xlarge"
+# Deepened Spot pool: 10 full-performance 16 GB / 4 vCPU m-family xlarge types,
+# all verified offered across all 3 us-east-2 AZs (describe-instance-type-offerings,
+# 2026-06-23). 10 types x 3 AZs = 30 capacity-optimized Spot pools, up from 5x3=15.
+# A single capacity-pool reclaim event then touches a much smaller fraction of the
+# fleet, so correlated reclaim waves (observed 2026-06-23: 29/64 instances in 4 min)
+# shrink. Intentionally EXCLUDES burstable m7i-flex (baseline-CPU throttling would
+# reintroduce the timing-sensitive E2E flakes the GitHub-parity caps exist to prevent).
 finalize_runner_instance_types = [
-  "m7a.xlarge", "m7i.xlarge", "m6a.xlarge", "m6i.xlarge", "m5.xlarge",
+  "m7a.xlarge", "m7i.xlarge", "m6a.xlarge", "m6i.xlarge", "m6in.xlarge",
+  "m6id.xlarge", "m5.xlarge", "m5a.xlarge", "m5n.xlarge", "m5d.xlarge",
 ]
 finalize_runner_task_memory_mib = 12288 # ~12 GB on a 16 GB host → still one job/instance
 # Drop gp3 to its free baseline (3000 IOPS / 125 MB/s). Sampled CI I/O ~480 IOPS,
 # so the provisioned premium (6000/250) was unused. ~$20/mo per volume saved.
 finalize_runner_root_iops       = 3000
 finalize_runner_root_throughput = 125
-# On-demand: us-east-2 Spot for r/m-family 32GB types went region-wide
-# UnfulfillableCapacity (all 3 AZs), stranding runs. On-demand always has capacity.
-# Flip back to true once Spot recovers if the ~3x fleet cost matters (lost jobs
-# already retry on a fresh agent, so Spot is safe to re-enable).
-finalize_runner_use_spot = false
+# Spot is the INTENTIONAL steady state (~⅔ cheaper; lost jobs retry on a fresh
+# agent). Reclaim survivability is engineered, not luck: (1) the ASG runs with
+# capacity_rebalance=true (modules/finalize-runners/main.tf) so a rebalance
+# recommendation drains a busy runner to fresh capacity before the hard kill;
+# (2) the override pool above is widened to 30 Spot pools so a single capacity
+# event can't take a large slice of the fleet; (3) the Hub runs with a more
+# generous spot-reclaim retry budget (FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS,
+# finalize-hub.tf) so a long job survives a correlated reclaim wave. Do NOT flip
+# this to false to "fix" reclaim failures — that silently converts the whole
+# fleet to ~3x-cost on-demand against the standing decision; harden Spot instead.
+finalize_runner_use_spot = true
+# Spot-reclaim auto-retry depth (Hub env FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS).
+# Raised 3 -> 5 so a long E2E job survives a correlated reclaim wave (observed
+# 2026-06-23: 29/64 instances reclaimed in 4 min) instead of exhausting the
+# budget and terminating green code as infra_error. Reclaim retries reuse the
+# session/worktree and their active time is non-billable, so the extra headroom
+# is cheap insurance for the intentional Spot fleet.
+finalize_max_reclaim_retry_generations = 5
+# Runner-agent ECS task-protection lease. RAISED 15 -> 40 min so a long shard
+# stays shielded through a dynamic mid-run scale-in even if its 30s protection
+# refresh is starved under load. 40 covers the longest expected shard in a single
+# arming (the initial arm at job-start alone lasts the whole job). This is the fix
+# that makes dynamic scale-down safe for long tests instead of falling back to
+# SAFE mode (which pins the fleet at its high-water — the behaviour we moved off).
+# NOTE: lives in the finalize-runner agent image, so it only takes effect once
+# that image rolls (merge -> CI build/push -> agent service redeploy).
+finalize_task_protection_expiry_minutes = 40
+# Dynamic fleet scale-down (Hub env FINALIZE_FLEET_DYNAMIC_SCALE_DOWN). ENABLED:
+# the prod fleet is steadily loaded, so SAFE scale-down (shrink only at depth 0)
+# never fires and pins the fleet at whatever high-water a reclaim/burst wave set
+# (observed 2026-06-23: desiredCount stuck at 56 with ~4 real jobs). Dynamic mode
+# trims idle agents mid-run; its one hazard — scale-in killing long in-flight
+# shards — is closed by finalize_task_protection_expiry_minutes=40 above. The two
+# MUST move together: dynamic scale-down is only safe once the 40-min protection
+# is live on the agent fleet.
+finalize_fleet_dynamic_scale_down = true
 finalize_runner_min_size = 0 # scale-to-zero when idle
 # 64-agent ceiling. This single var drives the ASG max_size, on_demand_base_capacity,
 # and maximum_scaling_step_size (modules/finalize-runners) AND the Hub env

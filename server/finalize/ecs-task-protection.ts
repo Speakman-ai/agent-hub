@@ -39,8 +39,39 @@ export function noopTaskProtection(): TaskProtection {
  * re-arms it on every heartbeat so a live job never lapses. Kept short so a truly
  * dead agent's task becomes terminable again quickly (the lease reaper's partner)
  * and well under any deploy / CloudFormation timeout.
+ *
+ * BUT: the re-arm only holds if the agent keeps heartbeating. A long, CPU-heavy
+ * shard can starve the agent's 30s refresh loop (or the best-effort protection
+ * PUT to the ECS agent endpoint can fail under load) — so the lease must cover the
+ * WHOLE shard in a single arming, not just the gap between refreshes. Whenever the
+ * fleet trims idle agents mid-run (FINALIZE_FLEET_DYNAMIC_SCALE_DOWN=1), a shard
+ * whose protection has lapsed is the one ECS scale-in terminates — and the longest
+ * shards are the ones in flight when a shrink fires. Set
+ * FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES above the longest expected shard so even
+ * a refresh-starved long shard stays shielded for its full duration.
  */
 export const DEFAULT_PROTECTION_EXPIRY_MINUTES = 15;
+
+/** ECS UpdateTaskProtection caps expiresInMinutes at 2880 (48h); above that the
+ * API call fails at runtime, so every resolved value is clamped to this. */
+export const MAX_PROTECTION_EXPIRY_MINUTES = 2880;
+
+/**
+ * Live-resolved protection lease length (minutes). Reads
+ * FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES at call time so the agent fleet can be
+ * tuned via task-def env without a code change; falls back to
+ * {@link DEFAULT_PROTECTION_EXPIRY_MINUTES}. Sub-1 / non-finite values are coerced
+ * to the default (never arm a zero/garbage lease that lapses instantly); values
+ * above {@link MAX_PROTECTION_EXPIRY_MINUTES} are clamped so the ECS call can't
+ * fail at runtime even if the env is set directly (bypassing the TF bound).
+ */
+export function resolveProtectionExpiryMinutes(): number {
+  const raw = process.env.FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES?.trim();
+  if (!raw) return DEFAULT_PROTECTION_EXPIRY_MINUTES;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_PROTECTION_EXPIRY_MINUTES;
+  return Math.min(n, MAX_PROTECTION_EXPIRY_MINUTES);
+}
 
 interface EcsTaskProtectionOpts {
   agentUri?: string;
@@ -55,7 +86,7 @@ interface EcsTaskProtectionOpts {
 export function ecsTaskProtection(opts: EcsTaskProtectionOpts = {}): TaskProtection {
   const agentUri = (opts.agentUri ?? process.env.ECS_AGENT_URI)?.trim().replace(/\/$/, '');
   if (!agentUri) return noopTaskProtection();
-  const expiresInMinutes = opts.expiresInMinutes ?? DEFAULT_PROTECTION_EXPIRY_MINUTES;
+  const expiresInMinutes = opts.expiresInMinutes ?? resolveProtectionExpiryMinutes();
   const doFetch = opts.fetchImpl ?? fetch;
   return {
     async set(enabled) {

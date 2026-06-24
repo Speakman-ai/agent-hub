@@ -109,6 +109,16 @@ variable "task_memory_mib" {
   default = 28672 # ~28 GB on a 32 GB box → one job per instance (no co-schedule OOM)
 }
 
+variable "task_protection_expiry_minutes" {
+  type    = number
+  default = 15
+  # ECS task scale-in protection lease length the runner-agent arms per job
+  # (FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES). Must exceed the longest expected
+  # shard so a refresh-starved long job stays protected through a dynamic mid-run
+  # scale-in. 15 = the code default; raise on a dynamically-scaled fleet.
+  description = "Runner-agent ECS task-protection lease length (minutes). Raise above the longest shard when dynamic scale-down is on."
+}
+
 # ── Shared infra (managed in exactly one env) ────────────────────────────────
 variable "manage_shared_finalize_infra" {
   type        = bool

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   httpTransport,
+  resolveEcsTaskArn,
   runAgentJob,
   type AgentDocker,
   type AgentLogFrame,
@@ -314,5 +315,44 @@ describe('httpTransport.heartbeat', () => {
 
     await transport.heartbeat('job-1');
     expect(JSON.parse(calls[0].init.body as string)).toEqual({});
+  });
+});
+
+describe('resolveEcsTaskArn', () => {
+  const saved = process.env.ECS_CONTAINER_METADATA_URI_V4;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ECS_CONTAINER_METADATA_URI_V4;
+    else process.env.ECS_CONTAINER_METADATA_URI_V4 = saved;
+  });
+
+  it('returns null off-ECS (metadata URI unset) without fetching', async () => {
+    delete process.env.ECS_CONTAINER_METADATA_URI_V4;
+    const f = vi.fn();
+    expect(await resolveEcsTaskArn(f as unknown as typeof fetch)).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('fetches <metadata>/task and returns TaskARN', async () => {
+    process.env.ECS_CONTAINER_METADATA_URI_V4 = 'http://169.254.170.2/v4/abc';
+    const arn = 'arn:aws:ecs:us-east-2:1:task/agenthub-finalize-runner/deadbeef';
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('http://169.254.170.2/v4/abc/task');
+      // Bounded: a timeout AbortSignal is passed so a hung endpoint fails closed.
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return { ok: true, json: async () => ({ TaskARN: arn }) } as unknown as Response;
+    });
+    expect(await resolveEcsTaskArn(f as unknown as typeof fetch)).toBe(arn);
+  });
+
+  it('returns null on non-ok, missing TaskARN, or a thrown fetch (best-effort)', async () => {
+    process.env.ECS_CONTAINER_METADATA_URI_V4 = 'http://md';
+    const notOk = vi.fn(async () => ({ ok: false }) as unknown as Response);
+    expect(await resolveEcsTaskArn(notOk as unknown as typeof fetch)).toBeNull();
+    const noArn = vi.fn(async () => ({ ok: true, json: async () => ({}) }) as unknown as Response);
+    expect(await resolveEcsTaskArn(noArn as unknown as typeof fetch)).toBeNull();
+    const threw = vi.fn(async () => {
+      throw new Error('network');
+    });
+    expect(await resolveEcsTaskArn(threw as unknown as typeof fetch)).toBeNull();
   });
 });

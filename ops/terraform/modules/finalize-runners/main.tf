@@ -123,6 +123,17 @@ resource "aws_autoscaling_group" "fleet" {
   # made the apply time out ("want 0 healthy, have 6") while a run was scaled up.
   wait_for_capacity_timeout = "0"
 
+  # Capacity Rebalancing: on a Spot fleet, let the ASG act on an EC2 *rebalance
+  # recommendation* (proactively drain + launch a replacement BEFORE the hard
+  # 2-minute interruption notice) instead of waiting for the instance to die.
+  # This is what lets ECS managed-termination-protection drain a busy runner to
+  # fresh capacity rather than hard-killing a job mid-step (exit 137), so a
+  # reclaim no longer burns a spot_reclaimed retry generation for nothing. Only
+  # meaningful for Spot, so it tracks var.spot (on-demand never gets rebalance
+  # recommendations). See checks.tf "finalize_spot_pool_depth" for the matching
+  # pool-diversity guardrail.
+  capacity_rebalance = var.spot
+
   # Spot fleet (interruptible — CI re-runs) across a diversified pool of 32 GB
   # instance types so Spot stays available. capacity-optimized picks the deepest
   # pools (fewest interruptions). spot=false → 100% on-demand.
@@ -224,6 +235,11 @@ resource "aws_ecs_task_definition" "agent" {
         { name = "FINALIZE_RUNNER_HUB_URL", value = var.hub_url },
         { name = "FINALIZE_RUNNER_WORKSPACE_DIR", value = "/finalize-ws" },
         { name = "FINALIZE_RUNNER_ORG_SCOPE", value = "shared" },
+        # Task scale-in protection lease length. Must exceed the longest expected
+        # shard so a refresh-starved long job stays shielded through a dynamic
+        # mid-run scale-in (see ecs-task-protection.ts). Read by the runner-agent
+        # in the agent image — changing it requires the agent image to roll.
+        { name = "FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES", value = tostring(var.task_protection_expiry_minutes) },
       ]
       secrets = [
         { name = "FINALIZE_RUNNER_FLEET_TOKEN", valueFrom = var.fleet_token_secret_arn },

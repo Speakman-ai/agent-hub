@@ -53,7 +53,9 @@ locals {
       "FINALIZE_FLEET_ECS_SERVICE=${var.project_name}-finalize-runner-agent",
       "FINALIZE_FLEET_MIN_AGENTS=${tostring(var.finalize_runner_min_size)}",
       "FINALIZE_FLEET_MAX_AGENTS=${tostring(var.finalize_runner_max_size)}",
+      "FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS=${tostring(var.finalize_max_reclaim_retry_generations)}",
     ],
+    var.finalize_fleet_dynamic_scale_down ? ["FINALIZE_FLEET_DYNAMIC_SCALE_DOWN=1"] : [],
     local.finalize_create_fleet_token
     ? ["FINALIZE_RUNNER_FLEET_TOKEN=${random_password.finalize_fleet_token[0].result}"]
     : [],

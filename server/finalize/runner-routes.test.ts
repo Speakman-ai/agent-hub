@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -6,6 +6,20 @@ import express, { type Express } from 'express';
 import request from 'supertest';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import { enqueueRunnerJob, reapExpiredRunnerLeases } from './runner-queue.js';
+
+// Mock Hub-driven task protection: by default the arm/clear calls resolve
+// instantly ('skipped'), so every existing test is unaffected; the await-race
+// test below overrides arm with a deferred promise to assert the claim handler
+// blocks on it.
+vi.mock('./hub-task-protection.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./hub-task-protection.js')>();
+  return {
+    ...actual,
+    armHubTaskProtection: vi.fn(async () => 'skipped' as const),
+    clearHubTaskProtection: vi.fn(async () => 'skipped' as const),
+  };
+});
+import { armHubTaskProtection } from './hub-task-protection.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
 import { getJobChannel } from './runner-job-channel.js';
 import createRunnerRoutes, {
@@ -107,6 +121,61 @@ describe('runner-routes (HTTP control plane)', () => {
     labels: {},
   };
 
+  it('claim AWAITS task protection before returning the job (closes the claim→protect race)', async () => {
+    const mockedArm = vi.mocked(armHubTaskProtection);
+    let releaseArm!: () => void;
+    let armSettled = false;
+    // Deferred arm: stays pending until we release it. With the handler awaiting
+    // the arm, the claim response can't be sent until then. (A fire-and-forget
+    // `void arm()` would send the job immediately → this test would fail.)
+    mockedArm.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseArm = () => {
+            armSettled = true;
+            resolve('armed');
+          };
+        }),
+    );
+    // Register WITH a task ARN so the claim handler looks it up and arms THIS task.
+    const taskArn = 'arn:aws:ecs:us-east-2:1:task/test-fleet/abc123';
+    const reg = await request(app)
+      .post('/api/runners/register')
+      .send({ fleetToken: FLEET, ecsTaskArn: taskArn });
+    expect(reg.status).toBe(200);
+    const token = reg.body.token as string;
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      specJson: '{}',
+      now: Date.now(),
+    });
+
+    const claimP = request(app)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    let responded = false;
+    void claimP.then(() => {
+      responded = true;
+    });
+
+    // Ample time for the handler to claim + invoke arm. The claim must still be
+    // BLOCKED on the (un-released) arm — that's the race being closed.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mockedArm).toHaveBeenCalledWith(taskArn, expect.anything(), { force: true });
+    expect(responded).toBe(false);
+
+    releaseArm();
+    const claim = await claimP;
+    expect(claim.status).toBe(200);
+    expect(armSettled).toBe(true);
+  });
+
   it('heartbeat with spotInterruption=true stamps the job so a lost lease is a known reclaim', async () => {
     const token = await register();
     enqueueRunnerJob({
@@ -140,7 +209,7 @@ describe('runner-routes (HTTP control plane)', () => {
 
     // And the consequence: a later lease expiry is classified as a reclaim.
     expect(reapExpiredRunnerLeases(Date.now() + 10 * 60_000)).toEqual([
-      { id: jobId, spotReclaimed: true },
+      { id: jobId, spotReclaimed: true, ecsTaskArn: null },
     ]);
   });
 

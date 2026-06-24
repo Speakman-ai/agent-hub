@@ -30,6 +30,8 @@ module "finalize_runners" {
   agent_desired_count = var.finalize_agent_desired_count
   spot                = var.finalize_runner_use_spot
 
+  task_protection_expiry_minutes = var.finalize_task_protection_expiry_minutes
+
   agent_image_uri = (
     trimspace(var.finalize_agent_image_uri) != ""
     ? var.finalize_agent_image_uri
@@ -76,13 +78,25 @@ resource "aws_iam_role_policy" "hub_fleet_scale" {
   role  = aws_iam_role.ec2_ssm[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = ["ecs:UpdateService", "ecs:DescribeServices"]
-      Resource = [
-        "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${var.project_name}-finalize-runner/${var.project_name}-finalize-runner-agent",
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["ecs:UpdateService", "ecs:DescribeServices"]
+        Resource = [
+          "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:service/${var.project_name}-finalize-runner/${var.project_name}-finalize-runner-agent",
+        ]
+      },
+      {
+        # Hub-driven task scale-in protection (hub-task-protection.ts): the Hub
+        # arms/clears protection on the runner-agent tasks in lockstep with the
+        # queue lease (claim/heartbeat/finish), so a busy shard can't be killed by
+        # a dynamic scale-in. UpdateTaskProtection acts on TASKS, not the service,
+        # so it needs its own statement scoped to this cluster's tasks.
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateTaskProtection"]
+        Resource = ["arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${var.project_name}-finalize-runner/*"]
+      },
+    ]
   })
 }
 

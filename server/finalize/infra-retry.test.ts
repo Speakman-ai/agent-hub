@@ -446,6 +446,29 @@ describe('openInfraRetryRun', () => {
     expect(resolveRetryGenerationCap(undefined)).toBe(2);
   });
 
+  it('FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS env overrides the reclaim cap live (prod sets 5)', () => {
+    // The prod Spot fleet sets FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS=5 (ops/
+    // terraform/environments/prod/prod.tfvars → finalize-hub.tf) so a long job
+    // survives a correlated reclaim wave. The cap is read at CALL time, so the
+    // deployed env must take effect without a re-import. Lock that in.
+    const saved = process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
+    try {
+      process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '5';
+      expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(5);
+      // Generic infra is unaffected by the reclaim-specific override.
+      expect(resolveRetryGenerationCap('container_unavailable')).toBe(2);
+      // Values below 1 are coerced to the historical single-retry floor.
+      process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = '0';
+      expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(1);
+      // A non-numeric env falls back to the default reclaim cap (3).
+      process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = 'not-a-number';
+      expect(resolveRetryGenerationCap('spot_reclaimed')).toBe(3);
+    } finally {
+      if (saved === undefined) delete process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS;
+      else process.env.FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS = saved;
+    }
+  });
+
   it('getRetryGenerationDepth counts the retry_of_run_id chain', () => {
     const { stmts } = makeStmts(chainRows(2));
     expect(getRetryGenerationDepth(stmts, 'g0')).toBe(0);

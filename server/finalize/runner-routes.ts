@@ -22,6 +22,11 @@ import {
   markRunnerJobSpotInterruption,
 } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
+import {
+  armHubTaskProtection,
+  clearHubTaskProtection,
+  loadHubTaskProtectionConfig,
+} from './hub-task-protection.js';
 import type { JobResourceSummary } from './job-resource-sampler.js';
 import {
   bearerToken,
@@ -129,28 +134,49 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       .run(Date.now(), agentId);
   }
 
+  // Hub-driven ECS task scale-in protection. The Hub owns the queue lease, so it
+  // arms/clears protection in lockstep with claim/heartbeat/terminal — far more
+  // reliable than the agent's best-effort self-protect (which silently drops
+  // under load and leaves long shards exposed to a dynamic scale-in). Off-ECS /
+  // unknown cluster → every call is a no-op. Config is fixed for the process.
+  const taskProtectionCfg = loadHubTaskProtectionConfig();
+  const agentTaskArn = (agentId: string): string | null =>
+    (
+      getOrgsDb().prepare('SELECT ecs_task_arn FROM runner_agents WHERE id=?').get(agentId) as
+        | { ecs_task_arn?: string | null }
+        | undefined
+    )?.ecs_task_arn ?? null;
+
   router.post('/api/runners/register', (req: Request, res: Response) => {
     if (!isRunnerFleetEnabled()) {
       res.status(404).json({ error: 'runner fleet not enabled' });
       return;
     }
-    const { fleetToken, orgScope } = (req.body ?? {}) as {
+    const { fleetToken, orgScope, ecsTaskArn } = (req.body ?? {}) as {
       fleetToken?: string;
       orgScope?: string;
+      ecsTaskArn?: string;
     };
     if (!verifyFleetToken(fleetToken)) {
       res.status(401).json({ error: 'invalid fleet token' });
       return;
     }
     const scope = orgScope && /^[A-Za-z0-9_-]+$/.test(orgScope) ? orgScope : 'shared';
+    // The agent reports its own ECS task ARN (from the ECS metadata endpoint) so
+    // the Hub can protect that exact task on claim. Validate it loosely; off-ECS
+    // agents send nothing and the Hub-side protection no-ops.
+    const taskArn =
+      typeof ecsTaskArn === 'string' && /^arn:aws:ecs:[\w-]+:\d+:task\//.test(ecsTaskArn)
+        ? ecsTaskArn
+        : null;
     const agentId = randomUUID();
     const now = Date.now();
     getOrgsDb()
       .prepare(
-        `INSERT INTO runner_agents (id, org_scope, state, registered_at, last_seen_at)
-         VALUES (?, ?, 'idle', ?, ?)`,
+        `INSERT INTO runner_agents (id, org_scope, state, ecs_task_arn, registered_at, last_seen_at)
+         VALUES (?, ?, 'idle', ?, ?, ?)`,
       )
-      .run(agentId, scope, now, now);
+      .run(agentId, scope, taskArn, now, now);
     res.json({ agentId, token: signAgentToken({ agentId, orgScope: scope }) });
   });
 
@@ -167,6 +193,15 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
             "UPDATE runner_agents SET state='busy', current_job_id=?, last_seen_at=? WHERE id=?",
           )
           .run(job.id, Date.now(), agent.agentId);
+        // Arm scale-in protection BEFORE handing the job to the agent (force past
+        // the throttle). AWAIT it — not fire-and-forget — so the task is actually
+        // confirmed protected (or skipped off-ECS) before it becomes visible to
+        // the agent; otherwise a concurrent dynamic scale-in could pick this
+        // newly-busy task in the window before UpdateTaskProtection returns. The
+        // call never throws (off-ECS / unknown ARN → instant 'skipped'; an ECS
+        // failure → 'error', which the per-heartbeat re-arm then retries), so
+        // awaiting it can't break the claim handshake.
+        await armHubTaskProtection(agentTaskArn(agent.agentId), taskProtectionCfg, { force: true });
         res.json({
           jobId: job.id,
           spec: JSON.parse(job.specJson),
@@ -242,6 +277,14 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       if (!authorizeJob(req.agent!, jobId, res)) return;
       const now = Date.now();
       heartbeatRunnerJob({ jobId, agentId: req.agent!.agentId, leaseMs, now });
+      // Re-arm scale-in protection off the SAME heartbeat that keeps the lease
+      // alive (throttled). This is the crux: a long shard keeps heartbeating, so
+      // the Hub keeps protection fresh — it can't silently lapse the way the
+      // agent's best-effort local self-protect does under load. If heartbeats
+      // ever stop, the lease expires and the reaper clears protection: consistent.
+      void armHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg, {
+        now: () => now,
+      });
       // The agent polls IMDS on its heartbeat tick; when it sees an EC2 Spot
       // interruption notice it sets `spotInterruption: true` here. Stamp the row
       // (sticky) so that when the instance dies and the lease expires, the reaper
@@ -321,6 +364,9 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
         "UPDATE runner_agents SET state='idle', current_job_id=NULL, last_seen_at=? WHERE id=?",
       )
       .run(Date.now(), req.agent!.agentId);
+    // Job done → release the task so deploys / dynamic scale-in can reclaim this
+    // now-idle agent. Fire-and-forget.
+    void clearHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg);
     res.status(204).end();
   });
 

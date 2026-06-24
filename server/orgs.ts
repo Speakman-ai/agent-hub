@@ -198,6 +198,17 @@ export function initOrgsDb(): void {
     orgsDb.exec('ALTER TABLE runner_jobs ADD COLUMN spot_interruption_at INTEGER');
   }
 
+  // Add `ecs_task_arn` to runner_agents on installs predating Hub-driven task
+  // scale-in protection. Nullable column — the agent reports its ECS task ARN at
+  // registration so the Hub can arm UpdateTaskProtection on that exact task.
+  // Without this, the register insert fails with `no such column` on an existing
+  // table (CREATE TABLE IF NOT EXISTS above won't add it).
+  try {
+    orgsDb.prepare('SELECT ecs_task_arn FROM runner_agents LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE runner_agents ADD COLUMN ecs_task_arn TEXT');
+  }
+
   // Add `masked_preview` to user_skill_credentials on installs predating the
   // pre-computed mask. Nullable column → backfill happens lazily on the
   // first list/upsert that touches each row. CREATE TABLE IF NOT EXISTS

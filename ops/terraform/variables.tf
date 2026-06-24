@@ -490,6 +490,64 @@ variable "finalize_runner_max_size" {
   default = 4
 }
 
+variable "finalize_max_reclaim_retry_generations" {
+  type    = number
+  default = 3
+  # Max chained auto-retries the Hub will open when a Finalize run loses its
+  # driving agent to an EC2 Spot reclaim (failure_reason=spot_reclaimed). Sets
+  # the Hub env FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS (server/finalize/
+  # infra-retry.ts default 3). On a Spot fleet, raise this so a long job (e.g.
+  # heavy E2E shards) survives a *correlated* reclaim wave instead of exhausting
+  # the budget and terminating green code as infra_error. Reclaim retries reuse
+  # the same session/worktree and a reclaim-aborted attempt's active time is
+  # non-billable (budget.ts), so a higher cap costs little but recovers more.
+  description = "FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS for the Hub — spot-reclaim auto-retry depth. Raise on a Spot fleet to survive correlated reclaim waves."
+
+  validation {
+    condition     = var.finalize_max_reclaim_retry_generations >= 1
+    error_message = "finalize_max_reclaim_retry_generations must be >= 1 (always allow at least the historical single retry)."
+  }
+}
+
+variable "finalize_task_protection_expiry_minutes" {
+  type    = number
+  default = 15
+  # Runner-agent ECS task-protection lease (FINALIZE_TASK_PROTECTION_EXPIRY_MINUTES,
+  # ecs-task-protection.ts default 15). On a fleet with dynamic scale-down on, a
+  # mid-run scale-in terminates whichever in-flight shard has the weakest
+  # protection — and the LONGEST shards are the ones in flight when a shrink fires.
+  # Set this ABOVE the longest expected shard so even a refresh-starved long job
+  # stays shielded for its full duration. Lives in the agent image, so a change
+  # only takes effect once the finalize-runner image rolls.
+  description = "Runner-agent task-protection lease length (minutes). Raise above the longest shard when dynamic scale-down is on."
+
+  validation {
+    # ECS UpdateTaskProtection accepts expiresInMinutes only in [1, 2880]; a value
+    # above 2880 passes silently here and then fails the runner's protection call
+    # at runtime. Bound both ends at plan/apply time.
+    condition = (
+      var.finalize_task_protection_expiry_minutes >= 1
+      && var.finalize_task_protection_expiry_minutes <= 2880
+    )
+    error_message = "finalize_task_protection_expiry_minutes must be between 1 and 2880 (the ECS task-protection expiresInMinutes limit)."
+  }
+}
+
+variable "finalize_fleet_dynamic_scale_down" {
+  type    = bool
+  default = false
+  # Sets the Hub env FINALIZE_FLEET_DYNAMIC_SCALE_DOWN (runner-fleet-scaler.ts).
+  # false (default) = SAFE scale-down: the fleet only shrinks when the queue is
+  # FULLY drained (depth 0). On a busy fleet with a continuous trickle of runs,
+  # depth never hits 0, so a high-water set during a reclaim/burst wave stays
+  # pinned (observed 2026-06-23: desiredCount frozen at 56 with only ~4 real
+  # jobs). true = DYNAMIC: also trims IDLE agents mid-run down to
+  # inflight + warm_headroom, leaning on ECS task scale-in protection to keep
+  # busy shards alive (target is always >= inflight, so a shrink never kills a
+  # running job). Recommended true for a steadily-loaded fleet.
+  description = "FINALIZE_FLEET_DYNAMIC_SCALE_DOWN for the Hub — trim idle agents mid-run instead of only at full drain. Recommended true on a busy fleet."
+}
+
 variable "finalize_runner_root_volume_size" {
   type    = number
   default = 200
