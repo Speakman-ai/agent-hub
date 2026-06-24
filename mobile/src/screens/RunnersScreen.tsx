@@ -13,6 +13,17 @@ const STATUS_COLOR: Record<string, any> = {
     queued: colors.gray400,
     cancelled: colors.gray500,
 };
+// Mirrors TERMINAL_STATUSES in client/src/components/CiRunsSection.tsx — a run
+// is stoppable only while it is still in flight (not one of these).
+const TERMINAL_STATUSES = new Set([
+    'ready_to_push',
+    'pushed',
+    'succeeded',
+    'failed',
+    'timed_out',
+    'infra_error',
+    'cancelled',
+]);
 export default function RunnersScreen({ route, navigation }: any) {
     const { projectId, project: routeProject } = route.params || {};
     const project = routeProject;
@@ -22,6 +33,7 @@ export default function RunnersScreen({ route, navigation }: any) {
     const [selectedRun, setSelectedRun] = useState<any>(null);
     const [detail, setDetail] = useState<any>(null);
     const [detailLoading, setDetailLoading] = useState(false);
+    const [stoppingId, setStoppingId] = useState<string | null>(null);
     const loadRuns = useCallback(async () => {
         if (!projectId)
             return;
@@ -59,6 +71,21 @@ export default function RunnersScreen({ route, navigation }: any) {
             setDetailLoading(false);
         }
     };
+    const stopRun = async (run: any) => {
+        if (!projectId || !run?.id || stoppingId)
+            return;
+        setStoppingId(run.id);
+        try {
+            await api.cancelFinalizeRun(projectId, run.id);
+            setTimeout(() => loadRuns(), 1500);
+        }
+        catch (err: any) {
+            setError(err?.message || 'Failed to stop run');
+        }
+        finally {
+            setStoppingId(null);
+        }
+    };
     return (<SafeAreaView style={styles.screen} edges={['top']}>
       <ProjectScreenHeader title="Runners" project={project} onBack={() => navigation.goBack()}/>
       <ScrollView contentContainerStyle={styles.content}>
@@ -76,17 +103,31 @@ export default function RunnersScreen({ route, navigation }: any) {
           {!loading && runs.length === 0 && !error && (<Text style={styles.empty}>No CI runs yet for this project.</Text>)}
           {runs.map((run: any) => {
             const color = STATUS_COLOR[run.status] || colors.gray400;
-            return (<TouchableOpacity key={run.id} style={styles.runCard} onPress={() => openDetail(run)}>
+            const stoppable = !TERMINAL_STATUSES.has(run.status);
+            const isStopping = stoppingId === run.id;
+            // The Stop-all control is a SIBLING of the detail-opening press
+            // targets, never nested inside one. React Native fires both a
+            // nested and a parent Touchable's onPress, so nesting would let a
+            // Stop tap also openDetail(run). Keeping them as separate, adjacent
+            // press targets means a Stop tap can never reach openDetail.
+            return (<View key={run.id} style={styles.runCard}>
                 <View style={styles.runRow}>
-                  <View style={[styles.statusDot, { backgroundColor: color }]}/>
-                  <Text style={styles.runStatus}>{run.status || 'unknown'}</Text>
-                  <Text style={styles.runTime}>{relativeTime(run.started_at || run.created_at)}</Text>
+                  <TouchableOpacity style={styles.runRowMain} onPress={() => openDetail(run)} accessibilityLabel="Open run detail">
+                    <View style={[styles.statusDot, { backgroundColor: color }]}/>
+                    <Text style={styles.runStatus}>{run.status || 'unknown'}</Text>
+                    <Text style={styles.runTime}>{relativeTime(run.started_at || run.created_at)}</Text>
+                  </TouchableOpacity>
+                  {stoppable ? (<TouchableOpacity style={styles.stopBtn} disabled={isStopping} onPress={() => stopRun(run)} accessibilityLabel="Stop all jobs in this run">
+                      {isStopping ? (<ActivityIndicator color={colors.red400} size="small"/>) : (<Text style={styles.stopBtnText}>Stop all</Text>)}
+                    </TouchableOpacity>) : null}
                 </View>
-                {run.branch ? (<Text style={styles.runMeta} numberOfLines={1}>
-                    {run.branch}
-                    {run.trigger ? ` · ${run.trigger}` : ''}
-                  </Text>) : null}
-              </TouchableOpacity>);
+                {run.branch ? (<TouchableOpacity onPress={() => openDetail(run)} accessibilityLabel="Open run detail">
+                    <Text style={styles.runMeta} numberOfLines={1}>
+                      {run.branch}
+                      {run.trigger ? ` · ${run.trigger}` : ''}
+                    </Text>
+                  </TouchableOpacity>) : null}
+              </View>);
         })}
         </View>
 
@@ -122,8 +163,18 @@ const styles = StyleSheet.create({
         borderColor: colors.gray800,
     },
     runRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    runRowMain: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
     statusDot: { width: 8, height: 8, borderRadius: 4 },
     runStatus: { fontSize: 14, color: colors.gray200, fontWeight: '600', flex: 1 },
+    stopBtn: {
+        paddingVertical: 4,
+        paddingHorizontal: 10,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: colors.red400,
+        marginLeft: 8,
+    },
+    stopBtnText: { fontSize: 12, color: colors.red400, fontWeight: '600' },
     runTime: { fontSize: 11, color: colors.gray500 },
     runMeta: { fontSize: 12, color: colors.gray500, marginTop: 4, fontFamily: 'monospace' },
     detailCard: {

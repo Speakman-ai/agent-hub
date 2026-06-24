@@ -20,6 +20,7 @@ import {
   ChevronRight,
   History,
   Zap,
+  Square,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { relativePrTime } from '../utils/prFormatting';
@@ -149,10 +150,11 @@ function StepLog({ projectId, runId, step }: any) {
   );
 }
 
-function RunRow({ projectId, run, onRerun = null }: any) {
+function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   const [expanded, setExpanded] = useState(false);
   const [steps, setSteps] = useState<any>(null);
   const [openStep, setOpenStep] = useState<any>(null);
+  const [stopping, setStopping] = useState(false);
   // Per-job resource high-water marks (peak mem / CPU), keyed by job+matrix.
   const [resources, setResources] = useState<any>(null);
   const { Icon, cls, label } = statusVisual(run.status);
@@ -162,6 +164,10 @@ function RunRow({ projectId, run, onRerun = null }: any) {
     (run.trigger_source === 'git_push' || run.trigger_source === 'pr_push') &&
     run.status !== 'queued' &&
     run.status !== 'running';
+  // A run is stoppable while it is still in flight (not yet terminal). Stopping
+  // it signals termination of every job/test in the group via the run-level
+  // cancel endpoint.
+  const stoppable = typeof onStop === 'function' && !TERMINAL_STATUSES.has(run.status);
 
   useEffect(() => {
     if (!expanded || steps) return;
@@ -222,6 +228,37 @@ function RunRow({ projectId, run, onRerun = null }: any) {
           <span className={cls.replace(' animate-spin', '')}>{label}</span>
           <span>{durationLabel(run)}</span>
           <span>{relativePrTime(new Date(run.started_at).toISOString())}</span>
+          {stoppable && (
+            <span
+              role="button"
+              tabIndex={stopping ? -1 : 0}
+              aria-disabled={stopping}
+              onClick={(e: any) => {
+                e.stopPropagation();
+                if (stopping) return;
+                setStopping(true);
+                Promise.resolve(onStop(run)).finally(() => setStopping(false));
+              }}
+              onKeyDown={(e: any) => {
+                if ((e.key === 'Enter' || e.key === ' ') && !stopping) {
+                  e.stopPropagation();
+                  setStopping(true);
+                  Promise.resolve(onStop(run)).finally(() => setStopping(false));
+                }
+              }}
+              title="Stop all — terminate every job in this run"
+              data-testid={`ci-run-stop-${run.id}`}
+              className={`p-1 rounded text-gray-500 transition-colors ${
+                stopping ? 'opacity-50 cursor-default' : 'hover:text-red-400 cursor-pointer'
+              }`}
+            >
+              {stopping ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Square size={12} className="fill-current" />
+              )}
+            </span>
+          )}
           {rerunnable && (
             <span
               role="button"
@@ -479,6 +516,15 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
               try {
                 await api.rerunCiRun(projectId, r.id);
                 if (showToast) showToast('Re-run queued.', 'success', 4000);
+                setTimeout(() => refresh(), 1500);
+              } catch (err: any) {
+                if (showToast) showToast(String(err?.message || err), 'error', 6000);
+              }
+            }}
+            onStop={async (r: any) => {
+              try {
+                await api.cancelFinalizeRun(projectId, r.id);
+                if (showToast) showToast('Stopping all jobs…', 'success', 4000);
                 setTimeout(() => refresh(), 1500);
               } catch (err: any) {
                 if (showToast) showToast(String(err?.message || err), 'error', 6000);

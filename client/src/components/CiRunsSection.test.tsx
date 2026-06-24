@@ -10,6 +10,8 @@ import { api } from '../utils/api';
     getFinalizeStepOutput: vi.fn(),
     getFinalizeRunResources: vi.fn(),
     updateProject: vi.fn(),
+    cancelFinalizeRun: vi.fn(),
+    rerunCiRun: vi.fn(),
   },
 }));
 
@@ -52,6 +54,18 @@ const runs = [
     failure_reason: 'checks_failed',
     started_at: Date.now() - 120_000,
     ended_at: Date.now() - 100_000,
+    jobs: [],
+  },
+  {
+    id: 'run-3',
+    branch: 'agent-hub/dev/session-live',
+    head_sha: 'c'.repeat(40),
+    status: 'running',
+    mode: 'full',
+    trigger_source: 'ui_button',
+    failure_reason: null,
+    started_at: Date.now() - 5_000,
+    ended_at: null,
     jobs: [],
   },
 ];
@@ -253,5 +267,23 @@ describe('CiRunsSection', () => {
     (api.getCiRuns as any).mockResolvedValue({ runs: [] });
     render(<CiRunsSection project={hostedProject} />);
     expect(await screen.findByText(/No runs yet/)).toBeInTheDocument();
+  });
+
+  it('shows a Stop-all control only on live (non-terminal) runs', async () => {
+    render(<CiRunsSection project={hostedProject} />);
+    // run-3 is `running` → stoppable; run-1 (succeeded) and run-2 (failed) are terminal.
+    expect(await screen.findByTestId('ci-run-stop-run-3')).toBeInTheDocument();
+    expect(screen.queryByTestId('ci-run-stop-run-1')).toBeNull();
+    expect(screen.queryByTestId('ci-run-stop-run-2')).toBeNull();
+  });
+
+  it('Stop-all cancels the run without expanding the row', async () => {
+    (api.cancelFinalizeRun as any).mockResolvedValue({ ok: true, status: 'cancelled' });
+    render(<CiRunsSection project={hostedProject} />);
+
+    fireEvent.click(await screen.findByTestId('ci-run-stop-run-3' as any));
+    await waitFor(() => expect(api.cancelFinalizeRun).toHaveBeenCalledWith('proj-1', 'run-3'));
+    // The click must not bubble to the row toggle (which would fetch detail).
+    expect(api.getCiRunDetail).not.toHaveBeenCalled();
   });
 });
