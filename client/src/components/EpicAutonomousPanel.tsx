@@ -8,7 +8,7 @@ const HINT_CLASS = 'text-[11px] text-gray-500 mt-1.5 leading-snug';
 export const EMPTY_AUTONOMOUS_FORM = {
   autonomous: 0,
   autonomous_interval: 5,
-  autonomous_max_concurrent: 2,
+  autonomous_max_concurrent: 1,
   autonomous_model: '',
   autonomous_send_it: 0,
   pr_base_branch: '',
@@ -18,7 +18,7 @@ export function epicToAutonomousForm(epic: any) {
   return {
     autonomous: epic.autonomous || 0,
     autonomous_interval: epic.autonomous_interval || 5,
-    autonomous_max_concurrent: epic.autonomous_max_concurrent || 2,
+    autonomous_max_concurrent: epic.autonomous_max_concurrent || 1,
     autonomous_model: epic.autonomous_model || '',
     autonomous_send_it: epic.autonomous_send_it || 0,
     pr_base_branch: epic.pr_base_branch || '',
@@ -108,10 +108,10 @@ export default function EpicAutonomousPanel({
             <input
               id="autonomous-max-concurrent"
               type="number"
-              value={form.autonomous_max_concurrent || 2}
+              value={form.autonomous_max_concurrent || 1}
               onChange={(e: any) =>
                 onChange({
-                  autonomous_max_concurrent: parseInt(e.target.value, 10) || 2,
+                  autonomous_max_concurrent: parseInt(e.target.value, 10) || 1,
                 })
               }
               min={1}

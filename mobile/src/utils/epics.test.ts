@@ -26,7 +26,7 @@ describe('DEFAULT_EPIC_FORM', () => {
             pr_base_branch: '',
             autonomous: 0,
             autonomous_interval: 5,
-            autonomous_max_concurrent: 2,
+            autonomous_max_concurrent: 1,
             autonomous_model: '',
             autonomous_send_it: 0,
         });

@@ -3,6 +3,7 @@ import {
   epicFormToUpdateBody,
   epicFormToCreateBody,
   epicsWithActiveCards,
+  phaseFormToUpdateBody,
   DEFAULT_EPIC_COLOR,
 } from './epics';
 
@@ -116,9 +117,12 @@ describe('epicFormToUpdateBody', () => {
   });
 
   it('applies sensible fallbacks when autonomous fields are missing', () => {
+    // Default "tickets at once" is 1 — dispatch one card at a time unless the
+    // operator raises it. (Was 2; lowered so autonomous/run-phase dispatch is
+    // conservative by default.)
     const body = epicFormToUpdateBody({ name: 'x', autonomous: 1 });
     expect(body.autonomousInterval).toBe(5);
-    expect(body.autonomousMaxConcurrent).toBe(2);
+    expect(body.autonomousMaxConcurrent).toBe(1);
     expect(body.autonomousModel).toBe(null);
   });
 
@@ -133,6 +137,31 @@ describe('epicFormToUpdateBody', () => {
       orchestrationBudgets: { maxContinuationDepth: 2 },
     });
     expect(body.orchestrationBudgets).toEqual({ maxContinuationDepth: 2 });
+  });
+});
+
+describe('phaseFormToUpdateBody', () => {
+  it('defaults "tickets at once" (max concurrent) to 1 when unset', () => {
+    const body = phaseFormToUpdateBody({ name: 'Build', autonomous: 1 });
+    expect(body.autonomousMaxConcurrent).toBe(1);
+    expect(body.autonomousInterval).toBe(5);
+  });
+
+  it('round-trips an explicit max_concurrent and the autonomous toggle', () => {
+    const body = phaseFormToUpdateBody({
+      name: 'Build',
+      autonomous: 1,
+      autonomous_max_concurrent: 3,
+    });
+    expect(body).toEqual({
+      name: 'Build',
+      description: '',
+      autonomous: 1,
+      autonomousInterval: 5,
+      autonomousMaxConcurrent: 3,
+      autonomousModel: null,
+      autonomousSendIt: 0,
+    });
   });
 });
 

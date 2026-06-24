@@ -1574,7 +1574,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                         <Text style={styles.autonomousSettingLabel}>Max concurrent</Text>
                         <TextInput style={styles.fieldInput} value={String(epicForm.autonomous_max_concurrent)} onChangeText={(v: any) => setEpicForm((f: any) => ({
                     ...f,
-                    autonomous_max_concurrent: parseInt(v, 10) || 2,
+                    autonomous_max_concurrent: parseInt(v, 10) || 1,
                 }))} keyboardType="number-pad"/>
                       </View>
                     </View>)}

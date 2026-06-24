@@ -316,10 +316,33 @@ export default function EpicView({
   };
 
   const handlePhaseFormChange = (phaseId: string, patch: any) => {
+    // Build the next form synchronously from the current render's state so the
+    // persist payload below is always the FULL merged form, never the bare
+    // patch. (Reading `merged` out of the functional updater closure was racy:
+    // React may defer the updater, so the API write could have fired with only
+    // `{ autonomous }` and reset description/interval/concurrency/model/send-it
+    // to defaults.)
+    const merged = { ...(phaseForms[phaseId] || {}), ...patch };
     setPhaseForms((prev: any) => ({
       ...prev,
       [phaseId]: { ...(prev[phaseId] || {}), ...patch },
     }));
+    // Auto-persist the auto-dispatch toggle so it sticks across remounts/reloads.
+    // Other fields (e.g. "tickets at once") still persist via "Save phase
+    // settings" / "Run phase" so we don't fire a request on every keystroke.
+    if ('autonomous' in patch) {
+      const phase = epicPhases.find((p: any) => p.id === phaseId);
+      if (phase) {
+        setPhaseRunError(null);
+        api
+          .updatePhase(projectId, phaseId, phaseFormToUpdateBody({ ...merged, name: phase.name }))
+          .then(() => fetchBoard())
+          .catch((err: any) => {
+            console.error('Failed to persist auto-dispatch toggle:', err);
+            setPhaseRunError(err?.message || 'Failed to update auto-dispatch');
+          });
+      }
+    }
   };
 
   const epicAutoSummary = epicId ? epicAutonomousSummary(epicPhases) : null;

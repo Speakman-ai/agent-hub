@@ -109,6 +109,31 @@ export default function SessionScopingModePane({
     return todo?.id || columns[0]?.id || null;
   }, [columns]);
 
+  const handlePhaseFormChange = (phaseId: string, patch: any) => {
+    // Build the next form synchronously from the current render's state so the
+    // persist payload below is always the FULL merged form, never the bare
+    // patch (reading `merged` out of the functional updater closure was racy —
+    // a deferred updater could reset unrelated phase settings to defaults).
+    const merged = { ...(phaseForms[phaseId] || {}), ...patch };
+    setPhaseForms((prev) => ({ ...prev, [phaseId]: { ...(prev[phaseId] || {}), ...patch } }));
+    // Auto-persist the auto-dispatch toggle so it sticks across remounts/reloads
+    // (e.g. switching sessions or relinking the epic). Other fields still
+    // persist via "Save phase settings" / "Run phase".
+    if ('autonomous' in patch && projectId) {
+      const phase = epicPhases.find((p: any) => p.id === phaseId);
+      if (phase) {
+        setPhaseRunError(null);
+        api
+          .updatePhase(projectId, phaseId, phaseFormToUpdateBody({ ...merged, name: phase.name }))
+          .then(() => fetchBoard())
+          .catch((err: any) => {
+            console.error('Failed to persist auto-dispatch toggle:', err);
+            setPhaseRunError(err?.message || 'Failed to update auto-dispatch');
+          });
+      }
+    }
+  };
+
   const handleSavePhase = async (phase: any, form: any) => {
     if (!projectId || phaseSavingId) return;
     setPhaseSavingId(phase.id);
@@ -279,9 +304,7 @@ export default function SessionScopingModePane({
             specItems={specItems}
             compact
             phaseForms={phaseForms}
-            onPhaseFormChange={(phaseId: string, patch: any) =>
-              setPhaseForms((prev) => ({ ...prev, [phaseId]: { ...prev[phaseId], ...patch } }))
-            }
+            onPhaseFormChange={handlePhaseFormChange}
             onSavePhase={handleSavePhase}
             phaseSavingId={phaseSavingId}
             onAddTicket={handleAddTicket}

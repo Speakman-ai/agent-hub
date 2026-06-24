@@ -27,7 +27,7 @@ export function epicFormToUpdateBody(form: any) {
     color: form.color || DEFAULT_EPIC_COLOR,
     autonomous: autonomousOn,
     autonomousInterval: form.autonomous_interval || 5,
-    autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
+    autonomousMaxConcurrent: form.autonomous_max_concurrent || 1,
     autonomousModel,
     autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
     prBaseBranch: prTrim || null,
@@ -79,7 +79,7 @@ export function phaseFormToUpdateBody(form: any) {
     description: form.description || '',
     autonomous: autonomousOn,
     autonomousInterval: form.autonomous_interval || 5,
-    autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
+    autonomousMaxConcurrent: form.autonomous_max_concurrent || 1,
     autonomousModel: autonomousOn ? rawModel || null : null,
     autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
   };

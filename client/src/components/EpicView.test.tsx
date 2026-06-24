@@ -119,4 +119,61 @@ describe('EpicView', () => {
     );
     await waitFor(() => expect(screen.getAllByText('New ticket').length).toBeGreaterThan(0));
   });
+
+  it('persists the phase auto-dispatch toggle immediately, preserving other settings', async () => {
+    // Regression: toggling auto-dispatch only updated local form state, so it
+    // reverted on remount/refetch ("toggle doesn't stick") and the Run phase
+    // button would silently no-op. Flipping the toggle must call updatePhase.
+    //
+    // Second regression (reviewer): the persist payload was derived from a
+    // `merged` variable assigned inside the functional setState updater, which
+    // React may defer — so the request could fire with only `{ autonomous }`
+    // and reset the phase's other settings to defaults. Seed the phase with
+    // NON-default interval/concurrency/model/send-it and assert they survive.
+    const enrichedBoard = {
+      ...board,
+      phases: [
+        {
+          id: 'ph1',
+          epic_id: 'e1',
+          name: 'Build',
+          position: 0,
+          autonomous: 0,
+          autonomous_interval: 9,
+          autonomous_max_concurrent: 4,
+          autonomous_model: 'claude-sonnet-4-6',
+          autonomous_send_it: 1,
+        },
+      ],
+    };
+    (api.updatePhase as any).mockResolvedValue({ id: 'ph1', autonomous: 1 });
+    (api.getBoard as any).mockResolvedValue(enrichedBoard);
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    const toggle = await screen.findByLabelText('Auto-dispatch for Build' as any);
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(api.updatePhase).toHaveBeenCalledWith('p1', 'ph1', {
+        name: 'Build',
+        description: '',
+        autonomous: 1,
+        autonomousInterval: 9,
+        autonomousMaxConcurrent: 4,
+        autonomousModel: 'claude-sonnet-4-6',
+        autonomousSendIt: 1,
+      }),
+    );
+  });
 });

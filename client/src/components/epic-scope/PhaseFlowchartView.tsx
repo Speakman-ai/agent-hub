@@ -53,7 +53,7 @@ function PhaseColumn({
   const phaseTickets = ticketsForPhase(tickets, phase.id);
   const progress = phaseProgress(phaseTickets, colMap);
   const autonomous = !!phaseForm?.autonomous;
-  const maxConcurrent = phaseForm?.autonomous_max_concurrent ?? 2;
+  const maxConcurrent = phaseForm?.autonomous_max_concurrent ?? 1;
   const addingTicket = addingTicketPhaseId === phase.id;
   const [showTicketForm, setShowTicketForm] = useState(false);
 

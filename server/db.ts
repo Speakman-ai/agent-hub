@@ -534,7 +534,7 @@ function initDb(dataDir: string): void {
       color TEXT NOT NULL DEFAULT '#6366F1',
       autonomous INTEGER NOT NULL DEFAULT 0,
       autonomous_interval INTEGER NOT NULL DEFAULT 5,
-      autonomous_max_concurrent INTEGER NOT NULL DEFAULT 2,
+      autonomous_max_concurrent INTEGER NOT NULL DEFAULT 1,
       autonomous_model TEXT DEFAULT NULL,
       position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -2120,7 +2120,7 @@ function initDb(dataDir: string): void {
         position INTEGER NOT NULL DEFAULT 0,
         autonomous INTEGER NOT NULL DEFAULT 0,
         autonomous_interval INTEGER NOT NULL DEFAULT 5,
-        autonomous_max_concurrent INTEGER NOT NULL DEFAULT 2,
+        autonomous_max_concurrent INTEGER NOT NULL DEFAULT 1,
         autonomous_model TEXT DEFAULT NULL,
         autonomous_enabled_by TEXT DEFAULT NULL,
         autonomous_send_it INTEGER NOT NULL DEFAULT 0,
@@ -3873,7 +3873,10 @@ function initDb(dataDir: string): void {
     ),
     getKanbanEpic: db.prepare('SELECT * FROM kanban_epics WHERE id = ?'),
     createKanbanEpic: db.prepare(
-      `INSERT INTO kanban_epics (id, board_id, name, description, color, position) VALUES (?, ?, ?, ?, ?, ?)`,
+      // Default autonomous_max_concurrent to 1 explicitly (not just via the
+      // column DEFAULT) so existing DBs created before the default dropped from
+      // 2 → 1 also start new epics at 1 ticket-at-once.
+      `INSERT INTO kanban_epics (id, board_id, name, description, color, position, autonomous_max_concurrent) VALUES (?, ?, ?, ?, ?, ?, 1)`,
     ),
     updateKanbanEpic: db.prepare(
       `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -3909,7 +3912,8 @@ function initDb(dataDir: string): void {
     ),
     getKanbanPhase: db.prepare('SELECT * FROM kanban_phases WHERE id = ?'),
     createKanbanPhase: db.prepare(
-      `INSERT INTO kanban_phases (id, epic_id, board_id, name, description, position) VALUES (?, ?, ?, ?, ?, ?)`,
+      // Default autonomous_max_concurrent to 1 explicitly (see createKanbanEpic).
+      `INSERT INTO kanban_phases (id, epic_id, board_id, name, description, position, autonomous_max_concurrent) VALUES (?, ?, ?, ?, ?, ?, 1)`,
     ),
     updateKanbanPhase: db.prepare(
       `UPDATE kanban_phases SET name = ?, description = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, updated_at = datetime('now') WHERE id = ?`,
