@@ -167,6 +167,67 @@ describe('composeDispatchBody', () => {
     expect(composeDispatchBody({ reviewerVerdict: 'approved', reviewerThreads: [] })).toBe('');
   });
 
+  // The checks scheduler waits for ALL parallel jobs to finish before the
+  // orchestrator dispatches, so a single fix turn must surface every red.
+  it('enumerates every failure when multiple parallel jobs went red', () => {
+    const body = composeDispatchBody({
+      failedStep: {
+        phase: 'tasks',
+        name: 'test',
+        exitCode: 1,
+        outputTail: ['FAIL server/foo.test.ts'],
+        jobId: 'backend',
+        matrixKey: 'node-20',
+      },
+      failedSteps: [
+        {
+          phase: 'tasks',
+          name: 'test',
+          exitCode: 1,
+          outputTail: ['FAIL server/foo.test.ts'],
+          jobId: 'backend',
+          matrixKey: 'node-20',
+        },
+        {
+          phase: 'tasks',
+          name: 'build',
+          exitCode: 2,
+          outputTail: ['error TS2304: Cannot find name bar'],
+          jobId: 'frontend',
+        },
+      ],
+    });
+    const lines = body.split('\n');
+    expect(lines[0]).toBe('Finalize Code Changes: phase=tasks, 2 steps failed across CI jobs.');
+    expect(body).toContain(
+      'Failure 1 of 2 — job "backend" / shard "node-20", step "test" failed (exit 1).',
+    );
+    expect(body).toContain('Failure 2 of 2 — job "frontend", step "build" failed (exit 2).');
+    // Both jobs' evidence is present.
+    expect(body).toContain('FAIL server/foo.test.ts');
+    expect(body).toContain('error TS2304: Cannot find name bar');
+    // Locked trailer still closes the body.
+    expect(body.endsWith(`\n${DISPATCH_TRAILER}`)).toBe(true);
+  });
+
+  // A single-element failedSteps must NOT switch to the multi-failure header —
+  // the legacy single-failure shape stays byte-for-byte identical.
+  it('keeps the single-failure header when only one job failed', () => {
+    const single = {
+      phase: 'tasks' as const,
+      name: 'Typecheck',
+      exitCode: 2,
+      outputTail: ['error TS2304: Cannot find name foo'],
+    };
+    const withArray = composeDispatchBody({ failedStep: single, failedSteps: [single] });
+    const withoutArray = composeDispatchBody({ failedStep: single });
+    expect(withArray).toBe(withoutArray);
+    expect(withArray.split('\n')[0]).toBe(
+      'Finalize Code Changes: phase=tasks, step "Typecheck" failed (exit 2).',
+    );
+    expect(withArray).not.toContain('steps failed across CI jobs');
+  });
+
   it('ends with the locked trailer', () => {
     const body = composeDispatchBody({
       failedStep: {

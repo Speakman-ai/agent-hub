@@ -10,21 +10,35 @@ import { FinalizeChecksStepList } from './blocks/FinalizeChecksStepList';
  * finalize_checks_round timeline message (written when the phase ends).
  */
 export default function FinalizeChecksLiveBlock({ sessionId, projectId }: any) {
-  const { run, steps, phase, status } = useFinalizeRun({ sessionId, enabled: Boolean(sessionId) });
+  const { run, steps, phase, status, awaitingChecksFix } = useFinalizeRun({
+    sessionId,
+    enabled: Boolean(sessionId),
+  });
   const [logStep, setLogStep] = useState<any>(null);
 
   const inFlight = isFinalizeInFlight(status);
-  const showLiveChecks =
-    inFlight && status === 'running' && (phase === 'tasks' || steps.length > 0);
+  // Active checks phase: status is `running` and we're in (or have rows for)
+  // the tasks phase.
+  const inChecksPhase = status === 'running' && (phase === 'tasks' || steps.length > 0);
+  // `awaitingChecksFix` (from the hook) is true only while a fix is being
+  // dispatched for a *failed checks round* — i.e. the run entered
+  // `dispatching` from the `tasks` phase. Without this the box would vanish
+  // for the entire awaiting-fix window even though the round is still in
+  // flight. The hook derives this from the pre-dispatch phase rather than the
+  // historical step list, so a stale `failed` row from an earlier checks round
+  // can't resurrect the box during a later review-phase dispatch.
+  const showLiveChecks = inFlight && (inChecksPhase || awaitingChecksFix);
 
   if (!showLiveChecks || !run?.id) return null;
 
   const runningStep = steps.find((s: any) => s.state === 'running');
-  const subtitle = runningStep
-    ? `${runningStep.name} running…`
-    : steps.length > 0
-      ? 'Running checks…'
-      : 'Starting checks…';
+  const subtitle = awaitingChecksFix
+    ? 'Fixing failed checks…'
+    : runningStep
+      ? `${runningStep.name} running…`
+      : steps.length > 0
+        ? 'Running checks…'
+        : 'Starting checks…';
 
   return (
     <>

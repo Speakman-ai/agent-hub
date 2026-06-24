@@ -184,6 +184,14 @@ export function useFinalizeRun({
           // null), so the panel would show stale results and stale per-row
           // durations until each live step event overwrote them one by one.
           const runSwitched = Boolean(nextRunId) && nextRunId !== runIdRef.current;
+          // Seed the pre-dispatch phase from an authoritative fetch (mount,
+          // reconnect). A fetch that lands ON `dispatching` can't tell us where
+          // the run came from, so we leave the ref untouched in that case
+          // (stays null → `awaitingChecksFix` stays false post-reconnect).
+          if (runSwitched) lastActivePhaseRef.current = null;
+          if (nextRun?.phase && nextRun.phase !== 'dispatching') {
+            lastActivePhaseRef.current = nextRun.phase;
+          }
           setRun(nextRun);
           // Keep the watched-run ref in lockstep so a step event that races
           // this fetch doesn't mistake the same run for another switch.
@@ -214,6 +222,7 @@ export function useFinalizeRun({
     setLoadError(null);
     setStepsByIndex(new Map());
     setPhases(null);
+    lastActivePhaseRef.current = null;
     if (!enabled || !sessionId) {
       setRun(null);
       return () => controller.abort();
@@ -255,6 +264,22 @@ export function useFinalizeRun({
     runIdRef.current = run?.id ?? null;
   }, [run?.id]);
 
+  // The most recent *non-dispatching* phase we've observed for the current
+  // run. `dispatching` is a generic awaiting-fix state shared by checks
+  // failures, reviewer-requested-changes, and rebase-conflict dispatches, so
+  // the run's `phase` column alone can't say which kind of fix is in flight.
+  // We remember the phase the run was in immediately BEFORE it entered
+  // `dispatching` — a checks fix enters from `tasks`, a review fix from
+  // `review` — and derive `awaitingChecksFix` from that. This deliberately
+  // does NOT look at the historical step list: a stale `failed` row from an
+  // earlier checks round (the client merge keeps terminal rows over an
+  // incoming `queued` reset) would otherwise mis-flag a later review-phase
+  // dispatch as "fixing failed checks". On a fresh load / reconnect mid-gap we
+  // never saw the transition, so this stays null and the live "fixing" box is
+  // hidden (the persisted finalize_checks_round message still shows the
+  // failure) — the safe direction.
+  const lastActivePhaseRef = useRef<any>(null);
+
   const sessionIdRef = useRef<any>(null);
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -279,6 +304,13 @@ export function useFinalizeRun({
     const onPhaseChanged = (event: any) => {
       const detail = event?.detail || {};
       if (!matchesRun(detail)) return;
+      // Remember the phase the run is transitioning INTO, except the generic
+      // `dispatching` — so when the next event flips status to `dispatching`
+      // we still know whether we came from `tasks` (checks fix) or `review`
+      // (reviewer fix). See `lastActivePhaseRef` above.
+      if (detail.phase && detail.phase !== 'dispatching') {
+        lastActivePhaseRef.current = detail.phase;
+      }
       // Optimistic local update so the badge reacts the same tick the WS
       // event arrives. The refetch below picks up any other columns that
       // the server may have touched (active_seconds_consumed, etc).
@@ -313,6 +345,12 @@ export function useFinalizeRun({
       if (!matchesRun(detail)) return;
       const stepIndex = detail.step_index;
       if (typeof stepIndex !== 'number') return;
+      // A live step event means the run is actively in the checks/tasks phase
+      // (the handler forces status='running', phase='tasks' below), so the
+      // last active phase is `tasks`. This is what lets a subsequent flip to
+      // `dispatching` be recognised as a checks fix even if no explicit
+      // phase-change event for `tasks` was observed first.
+      lastActivePhaseRef.current = 'tasks';
       const eventRunId = detail.run_id;
       const switchesRun = Boolean(
         eventRunId && runIdRef.current && eventRunId !== runIdRef.current,
@@ -455,6 +493,15 @@ export function useFinalizeRun({
   const isPaused = status === 'dispatching' || status === 'stalled_no_response';
   const isActive = !!status && !isTerminal;
 
+  // True only while a fix is being dispatched for a *failed checks round* —
+  // i.e. the run entered `dispatching` from the `tasks` phase. Reviewer fixes
+  // (entered from `review`) and rebase-conflict fixes (entered from `rebase`)
+  // are excluded, so the live checks box doesn't misfire on a review-phase
+  // dispatch that happens to still carry a stale `failed` step row. Reading
+  // the ref here is safe: the transition into `dispatching` updates `run`
+  // (state) → re-render → this recomputes with the ref already set.
+  const awaitingChecksFix = status === 'dispatching' && lastActivePhaseRef.current === 'tasks';
+
   // Wall-clock tick — runs only while the row is active. Cleared on
   // unmount and whenever the run terminates so a long-running tab
   // doesn't burn an interval per closed run.
@@ -487,6 +534,7 @@ export function useFinalizeRun({
     isActive,
     isPaused,
     isTerminal,
+    awaitingChecksFix,
     activeSeconds: run?.active_seconds_consumed ?? null,
     wallSeconds,
     loadError,

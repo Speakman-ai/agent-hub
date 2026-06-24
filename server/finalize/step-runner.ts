@@ -226,30 +226,50 @@ export interface StepResult {
 /** Tagged failure surface — mirrors §10 of the design doc. */
 export type StepRunStatus = 'success' | 'failure' | 'timeout' | 'infra_error';
 
+/**
+ * One failed step's full context — everything the §7 dispatch body needs to
+ * describe a single red. Carried singly (`failedStep`) for the primary failure
+ * and as an array (`failedSteps`) when several parallel jobs failed in the same
+ * round.
+ */
+export interface FailedStepDetail {
+  index: number;
+  name: string;
+  run: string;
+  exitCode: number;
+  outputTail: string[];
+  /**
+   * Signal-aware excerpt of the failing step's output — the lines that
+   * matched a test/build failure marker ({@link FAILURE_SIGNAL_RE}) plus
+   * surrounding context, biased to the most recent failure. Empty when no
+   * marker was seen. This is what the §7 dispatch body leads with so a
+   * chatty sidecar (e.g. a Postgres container's checkpoint logs) can't
+   * bury the real failure under the plain trailing tail.
+   */
+  failureExcerpt?: string[];
+  jobId?: string;
+  matrixKey?: string;
+}
+
 export interface StepRunResult {
   status: StepRunStatus;
   /**
    * Populated when {@link status} is `'failure'` or `'timeout'`. Carries
-   * everything the §7 dispatch body needs.
+   * everything the §7 dispatch body needs. This is the *primary* failure —
+   * a genuine `failure`/`timeout` is preferred over `infra_error` collateral
+   * when several shards went red (see {@link failedSteps}).
    */
-  failedStep?: {
-    index: number;
-    name: string;
-    run: string;
-    exitCode: number;
-    outputTail: string[];
-    /**
-     * Signal-aware excerpt of the failing step's output — the lines that
-     * matched a test/build failure marker ({@link FAILURE_SIGNAL_RE}) plus
-     * surrounding context, biased to the most recent failure. Empty when no
-     * marker was seen. This is what the §7 dispatch body leads with so a
-     * chatty sidecar (e.g. a Postgres container's checkpoint logs) can't
-     * bury the real failure under the plain trailing tail.
-     */
-    failureExcerpt?: string[];
-    jobId?: string;
-    matrixKey?: string;
-  };
+  failedStep?: FailedStepDetail;
+  /**
+   * Every failed step across the round's parallel jobs/shards, not just the
+   * primary one. The v2 job-runner waits for ALL jobs to finish before the
+   * orchestrator dispatches a fix, so a single dispatch can — and should —
+   * surface every failure at once (the agent fixes them together instead of
+   * one-per-round). Ordered by job/step for a stable dispatch body. Absent on
+   * the success path and on the v1 single-sequence path where there is at most
+   * one failed step (use {@link failedStep} there).
+   */
+  failedSteps?: FailedStepDetail[];
   /** Every step actually invoked, in declaration order. */
   stepResults: StepResult[];
   /** Total active seconds the phase billed to `finalize_runs`. */

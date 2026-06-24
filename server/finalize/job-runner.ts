@@ -717,6 +717,20 @@ export async function runJobPhase(
         ?.result ?? outcomes.find((o) => o.result.status !== 'success')?.result;
     const failedStep = failedOutcome?.failedStep;
 
+    // Collect EVERY failed step across all parallel jobs/shards — not just the
+    // primary. Because the scheduler waits for all jobs to finish before we get
+    // here, the orchestrator's single fix dispatch can surface every failure at
+    // once (the agent fixes them together rather than rediscovering one per
+    // round). Lead with genuine CI failures, then infra collateral, so the most
+    // actionable reds come first; within each class, declaration order is kept.
+    const orderedFailedOutcomes = [
+      ...outcomes.filter((o) => o.result.status === 'failure' || o.result.status === 'timeout'),
+      ...outcomes.filter((o) => o.result.status === 'infra_error'),
+    ];
+    const failedSteps = orderedFailedOutcomes
+      .map((o) => o.result.failedStep)
+      .filter((s): s is NonNullable<typeof s> => Boolean(s));
+
     if (failedOutcome?.status === 'infra_error') {
       result = {
         status: 'infra_error',
@@ -728,6 +742,7 @@ export async function runJobPhase(
         // retry-generation cap instead of always assuming `container_unavailable`.
         ...(failedOutcome.failureReason ? { failureReason: failedOutcome.failureReason } : {}),
         ...(failedStep ? { failedStep } : {}),
+        ...(failedSteps.length > 0 ? { failedSteps } : {}),
       };
     } else if (failedOutcome?.status === 'timeout') {
       result = {
@@ -735,6 +750,7 @@ export async function runJobPhase(
         stepResults: allStepResults,
         activeSecondsBilled,
         ...(failedStep ? { failedStep } : {}),
+        ...(failedSteps.length > 0 ? { failedSteps } : {}),
       };
     } else {
       result = {
@@ -742,6 +758,7 @@ export async function runJobPhase(
         stepResults: allStepResults,
         activeSecondsBilled,
         ...(failedStep ? { failedStep } : {}),
+        ...(failedSteps.length > 0 ? { failedSteps } : {}),
       };
     }
   }

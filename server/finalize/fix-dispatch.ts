@@ -115,6 +115,12 @@ export interface FailedStepContext {
    * Empty / absent when no failure marker was detected.
    */
   failureExcerpt?: string[];
+  /** Job id this failure came from (v2 parallel jobs). Used to label which
+   * job failed when several reds are surfaced in one dispatch. */
+  jobId?: string;
+  /** Matrix shard key (v2 matrix). Combined with {@link jobId} to
+   * disambiguate per-shard failures in a multi-failure dispatch. */
+  matrixKey?: string;
 }
 
 /**
@@ -124,8 +130,21 @@ export interface FailedStepContext {
  * and `reviewerThreads` are not mutually exclusive.
  */
 export interface FixDispatchTrigger {
-  /** Failed-step context; null when only the reviewer requested changes. */
+  /**
+   * Primary failed-step context; null when only the reviewer requested
+   * changes. When several parallel jobs failed in the same round this is the
+   * lead failure — the full set is in {@link failedSteps}.
+   */
   failedStep?: FailedStepContext | null;
+  /**
+   * Every failed step from the round, when more than one parallel job/shard
+   * went red. The checks scheduler waits for ALL jobs to finish before the
+   * orchestrator dispatches, so a single fix turn can address every failure at
+   * once. When present (length ≥ 2) the dispatch body enumerates each red;
+   * when absent or length ≤ 1 the body uses {@link failedStep} alone (the
+   * legacy single-failure shape, unchanged).
+   */
+  failedSteps?: FailedStepContext[] | null;
   /**
    * Reviewer threads from the latest review pass on this head. May be
    * empty when only a step failed and the reviewer hadn't run yet (no
@@ -542,8 +561,77 @@ export async function dispatchFixMessage(
  * Empty input produces an empty string — the caller treats that as
  * "no useful dispatch, do not send".
  */
+/** Human label for which job/shard a failure came from (v2 parallel jobs). */
+function failedStepJobLabel(f: FailedStepContext): string {
+  if (f.jobId && f.matrixKey) return `job "${f.jobId}" / shard "${f.matrixKey}"`;
+  if (f.jobId) return `job "${f.jobId}"`;
+  return '';
+}
+
+/**
+ * Render one failed step's evidence block (teardown hint → excerpt → tail).
+ * Shared by the single- and multi-failure code paths so both lay out the
+ * excerpt/tail identically.
+ */
+function renderFailedStepEvidence(f: FailedStepContext): string[] {
+  const lines: string[] = [];
+
+  // Layer B safety net: if this failed step looks like a runner teardown
+  // (Go `context canceled` sentinel, no test-failure summary) rather than a
+  // real red, lead with a hint so the agent doesn't chase a phantom failure.
+  // Layer A reclassifies clean teardowns as infra_error before they reach
+  // dispatch, so the cases that survive to here are exactly the ones Layer
+  // A's strict terminal-window detector rejected — which is why this uses the
+  // BROADER `looksLikeRunnerTeardownForHint` (sentinel anywhere, not just the
+  // terminal window). Using the strict predicate here would be dead code: a
+  // failedStep only reaches dispatch when the strict check already returned
+  // false. The hint is advisory and never suppresses CI, so the looser match
+  // is safe.
+  if (
+    looksLikeRunnerTeardownForHint({
+      outputTail: f.outputTail,
+      failureExcerpt: f.failureExcerpt,
+    })
+  ) {
+    lines.push('');
+    lines.push(RUNNER_TEARDOWN_DISPATCH_HINT);
+  }
+
+  // Lead with the signal-aware excerpt when we have one — it points at the
+  // actual failure (test summary, stack trace) rather than whatever
+  // happened to be last in the raw stream. The trailing tail still follows
+  // as a fallback / for the surrounding raw context.
+  const failureExcerpt = f.failureExcerpt ?? [];
+  if (failureExcerpt.length > 0) {
+    lines.push('');
+    lines.push('Likely failure (excerpt):');
+    for (const t of failureExcerpt) lines.push(t);
+  }
+
+  const tail = f.outputTail ?? [];
+  lines.push('');
+  lines.push('Last output (40 lines):');
+  if (tail.length === 0) {
+    lines.push('(no output captured)');
+  } else {
+    for (const t of tail) lines.push(t);
+  }
+
+  return lines;
+}
+
 export function composeDispatchBody(trigger: FixDispatchTrigger): string {
-  const hasFailedStep = !!trigger.failedStep;
+  // The full failure set takes precedence when the round had ≥2 reds across
+  // parallel jobs; otherwise fall back to the single primary failure so the
+  // legacy one-failure output is byte-for-byte unchanged.
+  const failedSteps =
+    trigger.failedSteps && trigger.failedSteps.length >= 2
+      ? trigger.failedSteps
+      : trigger.failedStep
+        ? [trigger.failedStep]
+        : [];
+  const hasFailedStep = failedSteps.length > 0;
+  const multiFailure = failedSteps.length >= 2;
   const threads = trigger.reviewerThreads ?? [];
   const hasReviewerNotes = threads.length > 0;
   const reviewerChangesRequested = trigger.reviewerVerdict === 'changes_requested';
@@ -554,60 +642,35 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
 
   const lines: string[] = [];
 
-  if (hasFailedStep) {
-    const f = trigger.failedStep!;
+  if (multiFailure) {
+    // Several parallel jobs went red in the same round. Because the scheduler
+    // waited for every job before dispatching, surface all of them in one turn
+    // so the agent fixes them together instead of one-per-round.
+    const phase = failedSteps[0].phase;
+    lines.push(
+      `Finalize Code Changes: phase=${phase}, ${failedSteps.length} steps failed across CI jobs.`,
+    );
+    failedSteps.forEach((f, i) => {
+      lines.push('');
+      const where = failedStepJobLabel(f);
+      lines.push(
+        `Failure ${i + 1} of ${failedSteps.length} — ${
+          where ? `${where}, ` : ''
+        }step "${f.name}" failed (exit ${f.exitCode}).`,
+      );
+      lines.push(...renderFailedStepEvidence(f));
+    });
+  } else if (hasFailedStep) {
+    const f = failedSteps[0];
     lines.push(
       `Finalize Code Changes: phase=${f.phase}, step "${f.name}" failed (exit ${f.exitCode}).`,
     );
+    lines.push(...renderFailedStepEvidence(f));
   } else {
     // Reviewer-only dispatch. The header phase matches the design doc
     // wording ("phase=review, reviewer requested changes.") regardless
     // of which side of the gate the orchestrator entered from.
     lines.push('Finalize Code Changes: phase=review, reviewer requested changes.');
-  }
-
-  if (hasFailedStep) {
-    // Layer B safety net: if this failed step looks like a runner teardown
-    // (Go `context canceled` sentinel, no test-failure summary) rather than a
-    // real red, lead with a hint so the agent doesn't chase a phantom failure.
-    // Layer A reclassifies clean teardowns as infra_error before they reach
-    // dispatch, so the cases that survive to here are exactly the ones Layer
-    // A's strict terminal-window detector rejected — which is why this uses the
-    // BROADER `looksLikeRunnerTeardownForHint` (sentinel anywhere, not just the
-    // terminal window). Using the strict predicate here would be dead code: a
-    // failedStep only reaches dispatch when the strict check already returned
-    // false. The hint is advisory and never suppresses CI, so the looser match
-    // is safe.
-    const fs = trigger.failedStep!;
-    if (
-      looksLikeRunnerTeardownForHint({
-        outputTail: fs.outputTail,
-        failureExcerpt: fs.failureExcerpt,
-      })
-    ) {
-      lines.push('');
-      lines.push(RUNNER_TEARDOWN_DISPATCH_HINT);
-    }
-
-    // Lead with the signal-aware excerpt when we have one — it points at the
-    // actual failure (test summary, stack trace) rather than whatever
-    // happened to be last in the raw stream. The trailing tail still follows
-    // as a fallback / for the surrounding raw context.
-    const failureExcerpt = trigger.failedStep!.failureExcerpt ?? [];
-    if (failureExcerpt.length > 0) {
-      lines.push('');
-      lines.push('Likely failure (excerpt):');
-      for (const t of failureExcerpt) lines.push(t);
-    }
-
-    const tail = trigger.failedStep!.outputTail ?? [];
-    lines.push('');
-    lines.push('Last output (40 lines):');
-    if (tail.length === 0) {
-      lines.push('(no output captured)');
-    } else {
-      for (const t of tail) lines.push(t);
-    }
   }
 
   if (hasReviewerNotes) {

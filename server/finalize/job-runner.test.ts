@@ -367,6 +367,68 @@ jobs:
     expect(result.failedStep?.matrixKey).toContain('A');
   });
 
+  it('collects every failed job into failedSteps when several go red (waits for all)', async () => {
+    // Two independent jobs both genuinely fail in the same round. The
+    // scheduler waits for both before returning, so the round must surface
+    // BOTH reds in `failedSteps` (not just the primary) — that is what lets
+    // the orchestrator dispatch a single fix turn covering every failure.
+    const MATRIX = `
+version: 2
+on: [finalize]
+jobs:
+  backend:
+    runs-on: host
+    steps:
+      - run: backend-test
+  frontend:
+    runs-on: host
+    steps:
+      - run: frontend-test
+`;
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      const stdout = new Readable({ read() {} });
+      const stderr = new Readable({ read() {} });
+      const child: SpawnedStep = {
+        stdout,
+        stderr,
+        on(event: 'close' | 'error', listener: (arg: never) => void) {
+          if (event === 'close') {
+            queueMicrotask(() => {
+              if (step.run.includes('backend')) {
+                stdout.push('FAIL server/foo.test.ts\n');
+              } else {
+                stdout.push('error TS2304: Cannot find name bar\n');
+              }
+              queueMicrotask(() => (listener as (c: number | null) => void)(1));
+            });
+          }
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+
+    const parsed = parseCiConfig(MATRIX);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+      runId: 'multi-fail-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('failure');
+    expect(result.failedSteps).toBeDefined();
+    expect(result.failedSteps).toHaveLength(2);
+    const jobIds = (result.failedSteps ?? []).map((s) => s.jobId).sort();
+    expect(jobIds).toEqual(['backend', 'frontend']);
+  });
+
   it('passes step-level env to the spawned step (e.g. FINALIZE_WARMUP)', async () => {
     const seen: Array<Record<string, string | undefined> | undefined> = [];
     const spawnStep: SpawnStepFn = ({ step, env }) => {

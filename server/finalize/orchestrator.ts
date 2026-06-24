@@ -2398,7 +2398,23 @@ function buildFixTrigger(
       ...(stepOutcome.failedStep.failureExcerpt?.length
         ? { failureExcerpt: stepOutcome.failedStep.failureExcerpt }
         : {}),
+      ...(stepOutcome.failedStep.jobId ? { jobId: stepOutcome.failedStep.jobId } : {}),
+      ...(stepOutcome.failedStep.matrixKey ? { matrixKey: stepOutcome.failedStep.matrixKey } : {}),
     };
+    // When several parallel jobs failed in the same round, the scheduler
+    // already waited for all of them before we got here — surface every red in
+    // one dispatch so the agent fixes them together instead of one-per-round.
+    if (stepOutcome.failedSteps && stepOutcome.failedSteps.length >= 2) {
+      trigger.failedSteps = stepOutcome.failedSteps.map((fs) => ({
+        phase: 'tasks' as const,
+        name: fs.name,
+        exitCode: fs.exitCode,
+        outputTail: fs.outputTail,
+        ...(fs.failureExcerpt?.length ? { failureExcerpt: fs.failureExcerpt } : {}),
+        ...(fs.jobId ? { jobId: fs.jobId } : {}),
+        ...(fs.matrixKey ? { matrixKey: fs.matrixKey } : {}),
+      }));
+    }
   }
   if (phases.reviewRequired && reviewerOutcome?.kind === 'success') {
     trigger.reviewerVerdict = reviewerOutcome.verdict;

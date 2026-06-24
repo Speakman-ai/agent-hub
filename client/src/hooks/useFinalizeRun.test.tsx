@@ -691,6 +691,102 @@ describe('useFinalizeRun — WebSocket reconnect self-heal', () => {
   });
 });
 
+describe('useFinalizeRun — awaitingChecksFix (pre-dispatch phase, not step list)', () => {
+  it('is true when the run enters dispatching from the tasks phase (checks fix)', async () => {
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'running', phase: 'tasks' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.phase).toBe('tasks'));
+
+    // Checks fail → orchestrator flips to the generic dispatching state.
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'dispatching', phase: 'dispatching' }),
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_phase_changed', {
+          detail: { run_id: 'run-1', phase: 'dispatching', status: 'dispatching' },
+        }),
+      );
+    });
+    await waitFor(() => expect(ref.current?.status).toBe('dispatching'));
+    expect(ref.current?.awaitingChecksFix).toBe(true);
+  });
+
+  it('is false when the run enters dispatching from the review phase (reviewer fix)', async () => {
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'reviewing', phase: 'review' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.phase).toBe('review'));
+
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'dispatching', phase: 'dispatching' }),
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_phase_changed', {
+          detail: { run_id: 'run-1', phase: 'dispatching', status: 'dispatching' },
+        }),
+      );
+    });
+    await waitFor(() => expect(ref.current?.status).toBe('dispatching'));
+    expect(ref.current?.awaitingChecksFix).toBe(false);
+  });
+
+  it('treats a live step event as tasks activity so a later dispatch is a checks fix', async () => {
+    // The run was reviewing; then checks start (a step event lands) and fail —
+    // the step event alone must mark the active phase as `tasks`.
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'reviewing', phase: 'review' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.phase).toBe('review'));
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_step_state', {
+          detail: {
+            run_id: 'run-1',
+            step_index: 1,
+            step_name: 'e2e',
+            state: 'failed',
+            exit_code: 1,
+          },
+        }),
+      );
+    });
+
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValueOnce({
+      run: fakeRun({ status: 'dispatching', phase: 'dispatching' }),
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('finalize_run_phase_changed', {
+          detail: { run_id: 'run-1', phase: 'dispatching', status: 'dispatching' },
+        }),
+      );
+    });
+    await waitFor(() => expect(ref.current?.status).toBe('dispatching'));
+    expect(ref.current?.awaitingChecksFix).toBe(true);
+  });
+
+  it('is false on a fresh load that lands mid-dispatch (origin unknown → safe direction)', async () => {
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValue({
+      run: fakeRun({ status: 'dispatching', phase: 'dispatching' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.status).toBe('dispatching'));
+    // We never observed the pre-dispatch phase, so we don't claim it was checks.
+    expect(ref.current?.awaitingChecksFix).toBe(false);
+  });
+});
+
 describe('useFinalizeRun — helpers', () => {
   it('isFinalizeBlocked is true for in-flight statuses, false for terminal + null', () => {
     for (const s of ['queued', 'rebasing', 'reviewing', 'running', 'dispatching', 'pushing']) {
