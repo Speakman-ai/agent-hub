@@ -69,6 +69,7 @@ import type {
 import { runStepPhase } from './step-runner.js';
 import type { StepRunResult } from './step-runner.js';
 import { runJobPhase } from './job-runner.js';
+import { reconcileFinalizeRunTerminalSteps } from './reconcile-terminal-steps.js';
 import type { FinalizeStepLogStore } from './finalize-log-store.js';
 import { dispatchFixMessage, type SpawnFixTurnFn } from './fix-dispatch.js';
 import type {
@@ -244,6 +245,8 @@ export interface OrchestratorDeps {
     | 'beginFinalizeRunStepAttempt'
     | 'attachFinalizeRunStepLog'
     | 'listFinalizeRunStepsForRun'
+    | 'markFinalizeRunStepSkippedIfPending'
+    | 'backfillFinalizeRunFailedStep'
     | 'upsertFinalizeRunJob'
     | 'listFinalizeRunJobsForRun'
     | 'upsertFinalizeRunJobAttempt'
@@ -2051,6 +2054,10 @@ function terminate(
   }
   mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
   const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+  // Reconcile step rows to the run's terminal truth: backfill the failed-step
+  // summary and sweep any sibling shards left non-terminal (v2 matrix runs go
+  // terminal on the first shard failure while siblings are still in flight).
+  reconcileFinalizeRunTerminalSteps(deps, runId, row?.session_id ?? null);
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
@@ -2095,6 +2102,9 @@ function cancelTerminal(
     );
   }
   const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+  // A cancel can land while CI shards are mid-flight; sweep the stranded step
+  // rows to terminal so the checks panel doesn't show them running forever.
+  reconcileFinalizeRunTerminalSteps(deps, runId, row?.session_id ?? null);
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,
@@ -2273,6 +2283,10 @@ function outcomeFromFailed(
         : 'failed';
   mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
   const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+  // Reconcile step rows even though the sub-phase wrote the terminal status:
+  // backfill the failed-step summary and sweep any step rows the sub-phase left
+  // non-terminal (a v2 matrix shard fails the run while siblings still run).
+  reconcileFinalizeRunTerminalSteps(deps, runId, row?.session_id ?? null);
   // Mirror what `terminate()` emits so subscribers see the same shape on
   // every terminal path, regardless of which phase produced the failure.
   // The sub-phase already wrote the row's terminal status (status,

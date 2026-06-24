@@ -73,5 +73,23 @@ export function failStuckFinalizeRunsOnBoot(stmts: Stmts): InterruptedFinalizeRu
     console.error('[finalize] failStuckActiveFinalizeRunStepsOnBoot', (e as Error).message);
   }
 
+  // Backfill the failed-step summary for runs that went terminal-FAILED without
+  // it. A v2 matrix shard marks the run `failed`/`step_failed` on the first
+  // shard failure but never records WHICH step failed; if the Hub then crashed
+  // before the in-process reconcile path ran, the run row's
+  // `failed_step_index/name/exit_code` stay NULL and the UI can't name the
+  // failing step. This catches that already-terminal class on boot (the
+  // in-flight step sweep above already cleared their stranded sibling rows).
+  try {
+    const backfilled = stmts.backfillFinalizeRunFailedStepsOnBoot.run() as { changes: number };
+    if (backfilled.changes > 0) {
+      console.warn(
+        `[finalize] Backfilled failed-step summary for ${backfilled.changes} terminal finalize run(s) on boot`,
+      );
+    }
+  } catch (e) {
+    console.error('[finalize] backfillFinalizeRunFailedStepsOnBoot', (e as Error).message);
+  }
+
   return interrupted;
 }

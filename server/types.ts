@@ -2035,6 +2035,26 @@ export interface Stmts {
   getFinalizeRunByPrUrl: Stmt;
   upsertFinalizeRunStep: Stmt;
   listFinalizeRunStepsForRun: Stmt;
+  /**
+   * Terminal-reconcile: flip one run's still-in-flight (`queued`/`running`)
+   * step row to terminal `skipped`. Used by
+   * `reconcileFinalizeRunTerminalSteps` to clear sibling shards stranded when a
+   * v2 matrix run went terminal on the first shard failure. No-op (zero rows)
+   * for an already-terminal step.
+   */
+  markFinalizeRunStepSkippedIfPending: Stmt;
+  /**
+   * Terminal-reconcile: backfill `failed_step_index/name/exit_code` on a run
+   * row from the first `failed` step. `failFinalizeRun` leaves them NULL.
+   * Guarded on `failed_step_index IS NULL` so it is idempotent.
+   */
+  backfillFinalizeRunFailedStep: Stmt;
+  /**
+   * Boot-recovery: backfill the failed-step summary for every terminal-failed
+   * run whose summary is still NULL but which has a `failed` step row. Catches
+   * runs left inconsistent by a crash / premature shard-terminal write.
+   */
+  backfillFinalizeRunFailedStepsOnBoot: Stmt;
   getFinalizeRunStep: Stmt;
   beginFinalizeRunStepAttempt: Stmt;
   attachFinalizeRunStepLog: Stmt;

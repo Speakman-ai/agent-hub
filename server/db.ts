@@ -4916,6 +4916,64 @@ function initDb(dataDir: string): void {
         WHERE run_id = ?
         ORDER BY step_index ASC`,
     ),
+    // Terminal-reconcile: sweep one run's still-in-flight step rows to a
+    // terminal `skipped` state. A v2 matrix run marks the run terminal on the
+    // FIRST shard to fail (see runStepsSequence); sibling shards that were still
+    // queued/running when the run ended (or when the orchestrator crashed) leave
+    // their step rows stuck non-terminal, so the Runners/checks panel shows them
+    // "running" forever. `reconcileFinalizeRunTerminalSteps` calls this per
+    // stuck step (then broadcasts the terminal state) so the panel converges to
+    // the run's terminal truth. Scoped to (run_id, step_index) + a non-terminal
+    // guard so it can never clobber a step that legitimately passed/failed.
+    markFinalizeRunStepSkippedIfPending: db.prepare(
+      `UPDATE finalize_run_steps
+          SET state = 'skipped',
+              ended_at = COALESCE(ended_at, unixepoch() * 1000)
+        WHERE run_id = ? AND step_index = ? AND state IN ('queued', 'running')`,
+    ),
+    // Terminal-reconcile: backfill the run-row failed-step summary from the
+    // first `failed` step row. `failFinalizeRun` records status + failure_reason
+    // + ended_at but NOT which step failed, so `failed_step_index/name/exit_code`
+    // stay NULL and surfaces that name the failing step from the run row render
+    // "failed" with nothing to point at. The `failed_step_index IS NULL` guard
+    // makes this idempotent and prevents overwriting an already-recorded summary.
+    backfillFinalizeRunFailedStep: db.prepare(
+      `UPDATE finalize_runs
+          SET failed_step_index = ?,
+              failed_step_name = ?,
+              failed_step_exit_code = ?
+        WHERE id = ? AND failed_step_index IS NULL`,
+    ),
+    // Boot-recovery variant: backfill failed_step_* for EVERY terminal-failed
+    // run whose summary is still NULL but which has a `failed` step row. Covers
+    // runs left inconsistent by a crash (or the premature shard-terminal write)
+    // that never reached the in-process reconcile path. Correlated subqueries
+    // pick the first failed step per run; the EXISTS guard skips runs with no
+    // failed step (e.g. infra_error with all steps skipped).
+    backfillFinalizeRunFailedStepsOnBoot: db.prepare(
+      `UPDATE finalize_runs
+          SET failed_step_index = (
+                SELECT s.step_index FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+                 ORDER BY s.step_index ASC LIMIT 1
+              ),
+              failed_step_name = (
+                SELECT s.name FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+                 ORDER BY s.step_index ASC LIMIT 1
+              ),
+              failed_step_exit_code = (
+                SELECT s.exit_code FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+                 ORDER BY s.step_index ASC LIMIT 1
+              )
+        WHERE status IN ('failed', 'timed_out')
+          AND failed_step_index IS NULL
+          AND EXISTS (
+                SELECT 1 FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+              )`,
+    ),
     getFinalizeRunStep: db.prepare(
       `SELECT run_id, step_index, name, state, exit_code, started_at, ended_at, job_id, matrix_key,
               log_storage_kind, log_storage_bucket, log_storage_region, log_key, log_lines, log_truncated,

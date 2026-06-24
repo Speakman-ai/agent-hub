@@ -13,10 +13,12 @@ function setup() {
     CREATE TABLE finalize_runs (
       id TEXT PRIMARY KEY, status TEXT NOT NULL, phase TEXT, failure_reason TEXT,
       session_id TEXT, card_id TEXT, project_id TEXT, head_sha TEXT,
-      started_at INTEGER, ended_at INTEGER
+      started_at INTEGER, ended_at INTEGER,
+      failed_step_index INTEGER, failed_step_name TEXT, failed_step_exit_code INTEGER
     );
     CREATE TABLE finalize_run_steps (
-      run_id TEXT, step_index INTEGER, state TEXT NOT NULL, ended_at INTEGER
+      run_id TEXT, step_index INTEGER, name TEXT, state TEXT NOT NULL,
+      exit_code INTEGER, ended_at INTEGER
     );
   `);
   const stmts = {
@@ -38,6 +40,30 @@ function setup() {
       `UPDATE finalize_run_steps
          SET state='skipped', ended_at=COALESCE(ended_at, unixepoch() * 1000)
        WHERE state IN ('queued','running')`,
+    ),
+    backfillFinalizeRunFailedStepsOnBoot: db.prepare(
+      `UPDATE finalize_runs
+          SET failed_step_index = (
+                SELECT s.step_index FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+                 ORDER BY s.step_index ASC LIMIT 1
+              ),
+              failed_step_name = (
+                SELECT s.name FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+                 ORDER BY s.step_index ASC LIMIT 1
+              ),
+              failed_step_exit_code = (
+                SELECT s.exit_code FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+                 ORDER BY s.step_index ASC LIMIT 1
+              )
+        WHERE status IN ('failed', 'timed_out')
+          AND failed_step_index IS NULL
+          AND EXISTS (
+                SELECT 1 FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'failed'
+              )`,
     ),
   } as unknown as Stmts;
   return { db, stmts };
@@ -137,5 +163,59 @@ describe('failStuckFinalizeRunsOnBoot', () => {
       status: string;
     };
     expect(r.status).toBe('infra_error');
+  });
+
+  it('backfills failed_step_* for an already-terminal failed run that lost its summary', () => {
+    // Regression: a v2 matrix shard marked the run `failed`/`step_failed` on the
+    // first shard failure (premature run-terminal write) but never recorded WHICH
+    // step failed, and the Hub then crashed before the in-process reconcile ran.
+    // The run is already terminal, so the run/step SWEEPS skip it — only the
+    // failed-step backfill repairs the "can't name the failing step" gap.
+    const { db, stmts } = setup();
+    db.prepare(
+      `INSERT INTO finalize_runs (id, status, failure_reason, ended_at)
+       VALUES ('r-term','failed','step_failed',500)`,
+    ).run();
+    db.prepare(
+      "INSERT INTO finalize_run_steps (run_id, step_index, name, state, exit_code) VALUES ('r-term',8,'server 1/3','failed',1)",
+    ).run();
+    db.prepare(
+      "INSERT INTO finalize_run_steps (run_id, step_index, name, state, exit_code) VALUES ('r-term',9,'server 2/3','passed',0)",
+    ).run();
+
+    failStuckFinalizeRunsOnBoot(stmts);
+
+    const run = db.prepare("SELECT * FROM finalize_runs WHERE id='r-term'").get() as Record<
+      string,
+      unknown
+    >;
+    // Terminal status/ended_at untouched; only the summary is filled in.
+    expect(run.status).toBe('failed');
+    expect(run.ended_at).toBe(500);
+    expect(run.failed_step_index).toBe(8);
+    expect(run.failed_step_name).toBe('server 1/3');
+    expect(run.failed_step_exit_code).toBe(1);
+  });
+
+  it('does not overwrite a failed-step summary that is already recorded', () => {
+    const { db, stmts } = setup();
+    db.prepare(
+      `INSERT INTO finalize_runs (id, status, failed_step_index, failed_step_name, failed_step_exit_code)
+       VALUES ('r-keep','failed',3,'lint',2)`,
+    ).run();
+    db.prepare(
+      "INSERT INTO finalize_run_steps (run_id, step_index, name, state, exit_code) VALUES ('r-keep',1,'build','failed',9)",
+    ).run();
+
+    failStuckFinalizeRunsOnBoot(stmts);
+
+    const run = db.prepare("SELECT * FROM finalize_runs WHERE id='r-keep'").get() as Record<
+      string,
+      unknown
+    >;
+    // The `failed_step_index IS NULL` guard prevents clobbering the existing one.
+    expect(run.failed_step_index).toBe(3);
+    expect(run.failed_step_name).toBe('lint');
+    expect(run.failed_step_exit_code).toBe(2);
   });
 });

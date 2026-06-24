@@ -309,6 +309,12 @@ function makeStmts(): {
     listFinalizeRunStepsForRun: {
       all: vi.fn(() => []),
     } as unknown as OrchestratorDeps['stmts']['listFinalizeRunStepsForRun'],
+    markFinalizeRunStepSkippedIfPending: {
+      run: vi.fn(() => ({ changes: 0 })),
+    } as unknown as OrchestratorDeps['stmts']['markFinalizeRunStepSkippedIfPending'],
+    backfillFinalizeRunFailedStep: {
+      run: vi.fn(() => ({ changes: 0 })),
+    } as unknown as OrchestratorDeps['stmts']['backfillFinalizeRunFailedStep'],
     upsertFinalizeRunJob: {
       run: vi.fn(),
     } as unknown as OrchestratorDeps['stmts']['upsertFinalizeRunJob'],
@@ -1029,6 +1035,100 @@ describe('runFinalize — step phase status mapping', () => {
       expect(result.status).toBe('infra_error');
     }
     expect(stmts.failCalls.some((c) => c.status === 'infra_error')).toBe(true);
+  });
+
+  // Regression for the recurring "appears to be running but has failed" report:
+  // when a run reaches a terminal failure, the orchestrator must reconcile the
+  // step rows — backfill which step failed AND sweep any sibling shard left
+  // non-terminal — so the checks/Runners panel doesn't show steps running forever.
+  it('reconciles step rows on terminal failure: backfills failed-step summary and sweeps stranded shards', async () => {
+    const { deps, stmts, broadcast } = makeDeps({
+      // A genuine step failure (exit 1) drives the run terminal via the step phase.
+      runStepPhase: fakeRunSteps({
+        status: 'failure',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        failedStep: {
+          index: 8,
+          name: 'server 1/3',
+          run: 'npm test',
+          exitCode: 1,
+          outputTail: ['FAIL'],
+        },
+      }),
+      // No fix progress, so the loop reaches a real terminal instead of retrying.
+      dispatchFixMessage: fakeDispatchFix({
+        outcome: 'spawn_failed',
+        messageId: 'msg-fix',
+        activeSecondsBilled: 1,
+      }),
+    });
+
+    // Persisted step rows at terminal time: shard 1 failed, shard 2 passed, and
+    // two siblings (shards 3 + client) were still in flight — the exact shape
+    // that strands rows in `queued`/`running` forever.
+    (stmts.stmts.listFinalizeRunStepsForRun.all as ReturnType<typeof vi.fn>).mockReturnValue([
+      {
+        run_id: 'run-1',
+        step_index: 8,
+        name: 'server 1/3',
+        state: 'failed',
+        exit_code: 1,
+        job_id: 'test',
+        matrix_key: 's1',
+      },
+      {
+        run_id: 'run-1',
+        step_index: 9,
+        name: 'server 2/3',
+        state: 'passed',
+        exit_code: 0,
+        job_id: 'test',
+        matrix_key: 's2',
+      },
+      {
+        run_id: 'run-1',
+        step_index: 10,
+        name: 'server 3/3',
+        state: 'queued',
+        exit_code: null,
+        job_id: 'test',
+        matrix_key: 's3',
+      },
+      {
+        run_id: 'run-1',
+        step_index: 11,
+        name: 'client',
+        state: 'running',
+        exit_code: null,
+        job_id: 'test',
+        matrix_key: 'client',
+      },
+    ]);
+    (
+      stmts.stmts.markFinalizeRunStepSkippedIfPending.run as ReturnType<typeof vi.fn>
+    ).mockReturnValue({
+      changes: 1,
+    });
+
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+
+    // Failed-step summary backfilled from the FIRST failed step (idx 8).
+    const backfill = stmts.stmts.backfillFinalizeRunFailedStep.run as ReturnType<typeof vi.fn>;
+    expect(backfill).toHaveBeenCalledWith(8, 'server 1/3', 1, 'run-1');
+
+    // Both stranded siblings swept; passed/failed rows never touched.
+    const skip = stmts.stmts.markFinalizeRunStepSkippedIfPending.run as ReturnType<typeof vi.fn>;
+    const sweptIndexes = skip.mock.calls.map((c) => c[1]);
+    expect(sweptIndexes).toEqual([10, 11]);
+
+    // A terminal `skipped` step event is broadcast for each swept row.
+    const skipEvents = broadcast.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'finalize_run_step_state' && e.state === 'skipped');
+    expect(skipEvents.map((e) => e.step_index)).toEqual([10, 11]);
+    expect(skipEvents[0]).toMatchObject({ run_id: 'run-1', state: 'skipped' });
   });
 });
 
