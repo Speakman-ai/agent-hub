@@ -63,11 +63,61 @@ function statusVisual(status: any) {
   return { Icon: Loader2, cls: 'text-amber-400 animate-spin', label: status };
 }
 
-function durationLabel(run: any) {
-  if (!run.started_at || !run.ended_at) return '';
-  const sec = Math.max(0, Math.round((run.ended_at - run.started_at) / 1000));
+function durationFromTimes(started: any, ended: any) {
+  if (!started || !ended) return '';
+  const sec = Math.max(0, Math.round((ended - started) / 1000));
   if (sec < 60) return `${sec}s`;
   return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+function durationLabel(run: any) {
+  return durationFromTimes(run.started_at, run.ended_at);
+}
+
+// Step names are often emitted fully-qualified ("unit / default / test").
+// Inside a job's block the job + shard are already the header, so strip that
+// leading context to leave just the step ("test").
+function shortStepName(name: any, job: any) {
+  if (!name || !job) return name || '';
+  // Try the most-specific prefix first so "job / matrix / step" collapses to
+  // "step" (names embed the matrix key even when it's "default").
+  const prefixes = [];
+  if (job.matrix_key) prefixes.push(`${job.job_id} / ${job.matrix_key} / `);
+  prefixes.push(`${job.job_id} / `);
+  for (const p of prefixes) {
+    if (name.startsWith(p)) return name.slice(p.length);
+  }
+  return name;
+}
+
+// Reassemble the real Run -> Job -> Steps hierarchy. Steps carry job_id +
+// matrix_key; we bucket them under their parent job so a matrix run reads as
+// "job (shard) -> its steps" instead of one flat repeated step pile. Steps
+// whose job_id matches no job row (legacy / null job_id) come back as
+// `orphan`; when there's exactly one job we fold them into it.
+export function groupStepsByJob(jobs: any, steps: any) {
+  const key = (jid: any, mk: any) => `${jid ?? ''}::${mk ?? ''}`;
+  const byKey = new Map<string, any[]>();
+  for (const s of steps || []) {
+    const k = key(s.job_id, s.matrix_key);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k)!.push(s);
+  }
+  const used = new Set<string>();
+  const groups = (jobs || []).map((job: any) => {
+    const k = key(job.job_id, job.matrix_key);
+    used.add(k);
+    return { job, steps: byKey.get(k) || [] };
+  });
+  const orphan: any[] = [];
+  for (const [k, list] of byKey) {
+    if (!used.has(k)) orphan.push(...list);
+  }
+  // Single-job run with unkeyed steps: attach them to the one job.
+  if (orphan.length > 0 && groups.length === 1 && groups[0].steps.length === 0) {
+    groups[0].steps = orphan.splice(0, orphan.length);
+  }
+  return { groups, orphan };
 }
 
 function jobStateIcon(state: any) {
@@ -120,6 +170,10 @@ function RunRow({ projectId, run, onRerun = null }: any) {
       .then((d: any) => setSteps(Array.isArray(d?.steps) ? d.steps : []))
       .catch(() => setSteps([]));
   }, [expanded, steps, projectId, run.id]);
+
+  // Nest steps under their parent job (Run -> Job -> Steps). Until steps load
+  // we still show the job headers from run.jobs so the run isn't blank.
+  const { groups, orphan } = groupStepsByJob(run.jobs, steps || []);
 
   useEffect(() => {
     if (!expanded || resources) return;
@@ -193,58 +247,100 @@ function RunRow({ projectId, run, onRerun = null }: any) {
       </button>
 
       {expanded && (
-        <div className="border-t border-gray-700/60 px-3 py-2 space-y-1.5">
-          {(run.jobs || []).map((job: any) => {
+        <div className="border-t border-gray-700/60 px-3 py-2 space-y-2">
+          {groups.length === 0 && steps === null && (
+            <p className="text-[11px] text-gray-500 flex items-center gap-1.5">
+              <Loader2 size={11} className="animate-spin" /> Loading jobs…
+            </p>
+          )}
+          {groups.map(({ job, steps: jobSteps }: any) => {
             const resBadge = resourceBadgeText(
               resources?.[jobResourceKey(job.job_id, job.matrix_key)],
             );
+            const jobDur = durationFromTimes(job.started_at, job.ended_at);
             return (
               <div
                 key={`${job.job_id}-${job.matrix_key}`}
-                className="flex items-center gap-2 text-xs text-gray-300"
+                className="rounded-lg border border-gray-800/70 bg-gray-900/30"
               >
-                {jobStateIcon(job.state)}
-                <code className="font-mono">{job.job_id}</code>
-                {job.matrix_key && job.matrix_key !== 'default' && (
-                  <span className="text-gray-500">{job.matrix_key}</span>
-                )}
-                <span className="ml-auto flex items-center gap-2 tabular-nums">
-                  {resBadge && (
-                    <span className="text-gray-500" title="Peak host memory · CPU">
-                      {resBadge}
+                <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-gray-200">
+                  {jobStateIcon(job.state)}
+                  <code className="font-mono">{job.job_id}</code>
+                  {job.matrix_key && job.matrix_key !== 'default' && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded border border-gray-700 bg-gray-800/60 text-gray-400">
+                      {job.matrix_key}
                     </span>
                   )}
-                  <span className="text-gray-600">
-                    {job.exit_code !== null && job.exit_code !== 0 ? `exit ${job.exit_code}` : ''}
+                  <span className="ml-auto flex items-center gap-2.5 tabular-nums text-gray-500">
+                    {resBadge && <span title="Peak host memory · CPU">{resBadge}</span>}
+                    {job.exit_code !== null && job.exit_code !== 0 && (
+                      <span className="text-red-400/80">exit {job.exit_code}</span>
+                    )}
+                    {jobDur && <span>{jobDur}</span>}
                   </span>
-                </span>
+                </div>
+                {jobSteps.length > 0 && (
+                  <div className="border-t border-gray-800/70 px-2.5 py-1 space-y-0.5">
+                    {jobSteps.map((s: any) => {
+                      const stepDur = durationFromTimes(s.started_at, s.ended_at);
+                      return (
+                        <div key={s.step_index}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenStep(openStep === s.step_index ? null : s.step_index)
+                            }
+                            className="w-full flex items-center gap-2 py-0.5 text-[11px] text-gray-400 hover:text-gray-200 transition-colors text-left"
+                            data-testid={`ci-run-step-${run.id}-${s.step_index}`}
+                          >
+                            {jobStateIcon(s.state)}
+                            <span className="truncate">{shortStepName(s.name, job)}</span>
+                            {stepDur && (
+                              <span className="ml-auto tabular-nums text-gray-600">{stepDur}</span>
+                            )}
+                          </button>
+                          {openStep === s.step_index && (
+                            <StepLog projectId={projectId} runId={run.id} step={s} />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
-          {steps === null && (
-            <p className="text-[11px] text-gray-500 flex items-center gap-1.5">
-              <Loader2 size={11} className="animate-spin" /> Loading steps…
-            </p>
-          )}
-          {steps && steps.length > 0 && (
-            <div className="pt-1 space-y-1">
-              {steps.map((s: any) => (
-                <div key={s.step_index}>
-                  <button
-                    type="button"
-                    onClick={() => setOpenStep(openStep === s.step_index ? null : s.step_index)}
-                    className="w-full flex items-center gap-2 text-[11px] text-gray-400 hover:text-gray-200 transition-colors text-left"
-                    data-testid={`ci-run-step-${run.id}-${s.step_index}`}
-                  >
-                    {jobStateIcon(s.state)}
-                    <span className="truncate">{s.name}</span>
-                  </button>
-                  {openStep === s.step_index && (
-                    <StepLog projectId={projectId} runId={run.id} step={s} />
-                  )}
-                </div>
-              ))}
+          {steps !== null && orphan.length > 0 && (
+            <div className="rounded-lg border border-gray-800/70 bg-gray-900/30">
+              <div className="px-2.5 py-1.5 text-[11px] text-gray-500">Other steps</div>
+              <div className="border-t border-gray-800/70 px-2.5 py-1 space-y-0.5">
+                {orphan.map((s: any) => {
+                  const stepDur = durationFromTimes(s.started_at, s.ended_at);
+                  return (
+                    <div key={s.step_index}>
+                      <button
+                        type="button"
+                        onClick={() => setOpenStep(openStep === s.step_index ? null : s.step_index)}
+                        className="w-full flex items-center gap-2 py-0.5 text-[11px] text-gray-400 hover:text-gray-200 transition-colors text-left"
+                        data-testid={`ci-run-step-${run.id}-${s.step_index}`}
+                      >
+                        {jobStateIcon(s.state)}
+                        <span className="truncate">{s.name}</span>
+                        {stepDur && (
+                          <span className="ml-auto tabular-nums text-gray-600">{stepDur}</span>
+                        )}
+                      </button>
+                      {openStep === s.step_index && (
+                        <StepLog projectId={projectId} runId={run.id} step={s} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
+          )}
+          {steps !== null && groups.length === 0 && orphan.length === 0 && (
+            <p className="text-[11px] text-gray-600 italic">No jobs recorded for this run.</p>
           )}
         </div>
       )}

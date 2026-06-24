@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import CiRunsSection from './CiRunsSection';
+import CiRunsSection, { groupStepsByJob } from './CiRunsSection';
 import { api } from '../utils/api';
 
 (vi as any).mock('../utils/api.js', () => ({
@@ -93,13 +93,118 @@ describe('CiRunsSection', () => {
     fireEvent.click(await screen.findByTestId('ci-run-run-1' as any));
 
     await waitFor(() => expect(api.getCiRunDetail).toHaveBeenCalledWith('proj-1', 'run-1'));
-    expect(await screen.findByText('unit / default / test')).toBeInTheDocument();
+    // The step name renders with its job/matrix prefix stripped ("unit /
+    // default / test" -> "test") because the job header already shows that
+    // context.
+    expect(await screen.findByText('test')).toBeInTheDocument();
+    expect(screen.queryByText('unit / default / test')).toBeNull();
+    // Job header still shows the job id once.
+    expect(screen.getByText('unit')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('ci-run-step-run-1-1' as any) as any);
     await waitFor(() =>
       expect(api.getFinalizeStepOutput).toHaveBeenCalledWith('proj-1', 'run-1', 1),
     );
     expect(await screen.findByText('[stdout] all green')).toBeInTheDocument();
+  });
+
+  it('nests each step under its parent job for a matrix run', async () => {
+    const matrixRun = {
+      ...runs[0],
+      id: 'run-3',
+      jobs: [
+        {
+          job_id: 'e2e',
+          matrix_key: 'shard-1',
+          state: 'success',
+          exit_code: 0,
+          started_at: 1,
+          ended_at: 2,
+        },
+        {
+          job_id: 'e2e',
+          matrix_key: 'shard-2',
+          state: 'failure',
+          exit_code: 1,
+          started_at: 1,
+          ended_at: 2,
+        },
+      ],
+    };
+    (api.getCiRuns as any).mockResolvedValue({ runs: [matrixRun] });
+    (api.getCiRunDetail as any).mockResolvedValue({
+      run: matrixRun,
+      steps: [
+        {
+          step_index: 1,
+          name: 'e2e / shard-1 / cypress',
+          state: 'success',
+          exit_code: 0,
+          started_at: 1,
+          ended_at: 2,
+          job_id: 'e2e',
+          matrix_key: 'shard-1',
+        },
+        {
+          step_index: 2,
+          name: 'e2e / shard-2 / cypress',
+          state: 'failure',
+          exit_code: 1,
+          started_at: 1,
+          ended_at: 2,
+          job_id: 'e2e',
+          matrix_key: 'shard-2',
+        },
+      ],
+    });
+    render(<CiRunsSection project={hostedProject} />);
+    fireEvent.click(await screen.findByTestId('ci-run-run-3' as any));
+
+    // Both shards render as separate job blocks, each with its own step row.
+    expect(await screen.findByTestId('ci-run-step-run-3-1')).toBeInTheDocument();
+    expect(await screen.findByTestId('ci-run-step-run-3-2')).toBeInTheDocument();
+    // Shard labels are shown so the otherwise-identical 'cypress' steps are
+    // distinguishable.
+    expect(screen.getByText('shard-1')).toBeInTheDocument();
+    expect(screen.getByText('shard-2')).toBeInTheDocument();
+  });
+
+  describe('groupStepsByJob', () => {
+    const job = (id: string, mk: string) => ({ job_id: id, matrix_key: mk });
+    const step = (i: number, jid: string | null, mk: string | null) => ({
+      step_index: i,
+      job_id: jid,
+      matrix_key: mk,
+    });
+
+    it('buckets steps under the matching job by id + matrix_key', () => {
+      const { groups, orphan } = groupStepsByJob(
+        [job('e2e', 'shard-1'), job('e2e', 'shard-2')],
+        [step(1, 'e2e', 'shard-1'), step(2, 'e2e', 'shard-2'), step(3, 'e2e', 'shard-1')],
+      );
+      expect(orphan).toEqual([]);
+      expect(groups[0].steps.map((s: any) => s.step_index)).toEqual([1, 3]);
+      expect(groups[1].steps.map((s: any) => s.step_index)).toEqual([2]);
+    });
+
+    it('folds unkeyed steps into the sole job (legacy single-job runs)', () => {
+      const { groups, orphan } = groupStepsByJob(
+        [job('checks', 'default')],
+        [step(1, null, null), step(2, null, null)],
+      );
+      expect(orphan).toEqual([]);
+      expect(groups[0].steps.map((s: any) => s.step_index)).toEqual([1, 2]);
+    });
+
+    it('returns unmatched steps as orphan when there are multiple jobs', () => {
+      const { groups, orphan } = groupStepsByJob(
+        [job('a', 'default'), job('b', 'default')],
+        [step(1, 'a', 'default'), step(2, 'ghost', 'default')],
+      );
+      expect(groups[0].steps.map((s: any) => s.step_index)).toEqual([1]);
+      expect(groups[1].steps).toEqual([]);
+      expect(orphan.map((s: any) => s.step_index)).toEqual([2]);
+    });
   });
 
   it('renders the per-job resource badge keyed by job id + matrix', async () => {
