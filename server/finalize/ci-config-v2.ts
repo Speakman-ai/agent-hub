@@ -299,6 +299,28 @@ function parseMatrixInclude(
   return { ok: true, include };
 }
 
+/**
+ * Finalize's default for matrix `fail-fast` when a job omits the key.
+ *
+ * GitHub Actions defaults matrix fail-fast to TRUE — cancel the sibling shards
+ * the instant one fails — to save runner minutes. Finalize's gate has the
+ * OPPOSITE priority: the fix agent needs the COMPLETE, accurate failure set to
+ * know what to repair. Cancelling siblings on first failure turns "1 real
+ * failure" into "1 real failure + N collateral `context canceled` shards"
+ * (which even record a misleading non-zero exit code), so the agent can't tell
+ * the genuine red from the cascade noise. Finalize therefore defaults fail-fast
+ * OFF: every matrix shard runs to completion and reports its true result.
+ *
+ * Override to restore GHA parity globally with
+ * `FINALIZE_MATRIX_FAIL_FAST_DEFAULT=true` (`1`/`on`/`yes` also accepted), or
+ * per-job with an explicit `fail-fast: true` in ci.yaml — an explicit value
+ * always wins over this default.
+ */
+export function resolveDefaultMatrixFailFast(): boolean {
+  const raw = process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT?.trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'on' || raw === 'yes';
+}
+
 function parseJob(
   jobId: string,
   raw: unknown,
@@ -327,7 +349,7 @@ function parseJob(
       `${jobPath}.runs-on`,
     );
   }
-  let failFast = true;
+  let failFast = resolveDefaultMatrixFailFast();
   if ('fail-fast' in jobObj) {
     if (typeof jobObj['fail-fast'] !== 'boolean') {
       return err(

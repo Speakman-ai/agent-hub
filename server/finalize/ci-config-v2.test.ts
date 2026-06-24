@@ -5,6 +5,7 @@ import {
   buildFinalizeBuiltinEnv,
   expandJobInstances,
   matrixKeyFromRow,
+  resolveDefaultMatrixFailFast,
   substituteEnvString,
 } from './ci-config-v2.js';
 
@@ -127,6 +128,86 @@ jobs:
     );
     expect(instances.find((i) => i.jobId === 'prepare')?.warmup).toBe(true);
     expect(instances.find((i) => i.jobId === 'e2e')?.warmup).toBe(false);
+  });
+
+  it('defaults matrix fail-fast OFF so every shard runs and reports its true result', () => {
+    // Finalize diverges from GHA here: a fix agent needs the complete failure
+    // set, so a job that omits fail-fast must NOT cancel sibling shards.
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: A
+          specs: "a.cy.ts"
+    steps:
+      - run: ./run_e2e_ci.sh
+  strict:
+    runs-on: ubuntu-24.04
+    fail-fast: true
+    matrix:
+      include:
+        - group: B
+          specs: "b.cy.ts"
+    steps:
+      - run: ./run_e2e_ci.sh
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    // Omitted → defaults OFF (the new Finalize default).
+    expect(parsed.config.jobs.e2e.failFast).toBe(false);
+    // Explicit fail-fast: true still wins over the default.
+    expect(parsed.config.jobs.strict.failFast).toBe(true);
+    const instances = expandJobInstances(
+      parsed.config,
+      buildFinalizeBuiltinEnv({ branch: 'b', headSha: 's' }),
+    );
+    expect(instances.find((i) => i.jobId === 'e2e')?.failFast).toBe(false);
+    expect(instances.find((i) => i.jobId === 'strict')?.failFast).toBe(true);
+  });
+
+  it('resolveDefaultMatrixFailFast: OFF by default, ON via env override', () => {
+    const prev = process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT;
+    try {
+      delete process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT;
+      expect(resolveDefaultMatrixFailFast()).toBe(false);
+      for (const v of ['true', 'TRUE', '1', 'on', 'yes']) {
+        process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT = v;
+        expect(resolveDefaultMatrixFailFast()).toBe(true);
+      }
+      for (const v of ['false', '0', 'off', '']) {
+        process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT = v;
+        expect(resolveDefaultMatrixFailFast()).toBe(false);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT;
+      else process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT = prev;
+    }
+  });
+
+  it('env override flips the parsed job default to fail-fast ON', () => {
+    const prev = process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT;
+    process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT = 'true';
+    try {
+      const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: ./run_e2e_ci.sh
+`);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok || parsed.config.version !== 2) return;
+      expect(parsed.config.jobs.e2e.failFast).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT;
+      else process.env.FINALIZE_MATRIX_FAIL_FAST_DEFAULT = prev;
+    }
   });
 
   it('parses needs (bare string and list) and normalizes to an array', () => {

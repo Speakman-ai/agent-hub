@@ -166,7 +166,7 @@ jobs:                      # required, non-empty MAP keyed by job id
         run: npm run build
   test:
     runs-on: ubuntu-24.04
-    fail-fast: false       # optional, default true
+    fail-fast: false       # optional; Finalize default is false (run all shards)
     needs: []              # optional — job ids this job waits on (DAG)
     env:                   # optional job-level env (overrides top-level)
       AWS_REGION: ${AWS_REGION}
@@ -198,7 +198,7 @@ jobs:                      # required, non-empty MAP keyed by job id
 |---|---|---|
 | `runs-on` | Yes | `ubuntu-24.04` or `ubuntu-latest` (→ the fleet image), `host` (Hub box, legacy), or a fully-qualified image ref. |
 | `steps` | Yes | Non-empty list; same `name` + `run` + optional `env` shape as v1. |
-| `fail-fast` | No | Default `true`. `false` = let sibling matrix instances finish if one fails. |
+| `fail-fast` | No | **Finalize default `false`** (unlike GHA's `true`): every matrix shard runs to completion so the fix agent sees the full failure set instead of collateral `context canceled` shards. Set `true` per-job to cancel siblings on first failure, or flip the global default back with `FINALIZE_MATRIX_FAIL_FAST_DEFAULT=true`. |
 | `needs` | No | String or list of job ids this job depends on. Cycles are rejected. A failed/skipped dependency skips the dependent. |
 | `warmup` | No | `true` makes the job an implicit prerequisite of every non-warmup job (e.g. seed a shared image cache once). |
 | `matrix` | No | `{ include: [ {k: "v"}, ... ] }`. Each row spawns a concurrent instance; **all values must be quoted strings**. |
