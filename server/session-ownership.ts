@@ -289,10 +289,10 @@ export function userOwnsSession(req: OwnerResolvable | undefined, sessionId: str
  *      card. Useful when the ticket came in via a chat thread that
  *      doesn't write `created_by` (e.g. the user typed the ticket in
  *      free-form and the agent created it under its own session).
- *   3. **`epic.autonomous_enabled_by`** — whoever flipped
- *      `epic.autonomous = 1`. Same validity check as `created_by`.
- *      Captures the "no card-level signal, but a human did press the
- *      autonomous switch" case.
+ *   3. **`epic.autonomous_enabled_by`** (or phase-level via the merged
+ *      dispatch settings object) — whoever flipped autonomous on. Same
+ *      validity check as `created_by`. Captures the "no card-level signal,
+ *      but a human did press Run / enable auto-dispatch" case.
  *
  * Returns `null` when none of the above identifies a real user. There is
  * **no org-owner fallback**: the autonomous dispatcher must hard-fail (skip

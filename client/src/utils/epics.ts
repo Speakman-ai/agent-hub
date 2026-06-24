@@ -69,3 +69,18 @@ export function epicFormToCreateBody(form: any) {
     ...(pr ? { prBaseBranch: pr } : {}),
   };
 }
+
+/** Phase autonomous settings use the same camelCase contract as epics. */
+export function phaseFormToUpdateBody(form: any) {
+  const autonomousOn = form.autonomous ? 1 : 0;
+  const rawModel = typeof form.autonomous_model === 'string' ? form.autonomous_model.trim() : '';
+  return {
+    name: (form.name || '').trim(),
+    description: form.description || '',
+    autonomous: autonomousOn,
+    autonomousInterval: form.autonomous_interval || 5,
+    autonomousMaxConcurrent: form.autonomous_max_concurrent || 2,
+    autonomousModel: autonomousOn ? rawModel || null : null,
+    autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
+  };
+}

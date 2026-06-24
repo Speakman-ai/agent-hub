@@ -126,6 +126,11 @@ export const KanbanCardComponent = registerComponent(
       }),
       position: z.number().int(),
       epic_id: z.string().nullable(),
+      phase_id: z.string().nullable().optional(),
+      card_kind: z.enum(['task', 'spike']).optional().openapi({
+        description:
+          '`task` (default) or `spike` — spike cards resolve epic spec decisions via scoping sessions.',
+      }),
       documented: z.number().int(),
       dispatched_by_autonomous: z.number().int(),
       orphaned_at: z.string().nullable().optional().openapi({
@@ -196,6 +201,53 @@ export const KanbanEpicComponent = registerComponent(
     .openapi({ description: 'A kanban epic — a group of related cards.' }),
 );
 
+export const KanbanPhaseComponent = registerComponent(
+  'KanbanPhase',
+  z
+    .object({
+      id: z.string(),
+      epic_id: z.string(),
+      board_id: z.string(),
+      name: z.string(),
+      description: z.string().nullable(),
+      position: z.number().int(),
+      autonomous: z.number().int(),
+      autonomous_interval: z.number().int(),
+      autonomous_max_concurrent: z.number().int(),
+      autonomous_model: z.string().nullable(),
+      autonomous_enabled_by: z.string().nullable().optional(),
+      autonomous_send_it: z.number().int().optional(),
+      autonomous_running: z.number().int().optional(),
+      created_at: z.string(),
+      updated_at: z.string(),
+    })
+    .openapi({ description: 'A phase within an epic — groups related tickets for a feature run.' }),
+);
+
+export const KanbanEpicSpecItemComponent = registerComponent(
+  'KanbanEpicSpecItem',
+  z
+    .object({
+      id: z.string(),
+      epic_id: z.string(),
+      board_id: z.string(),
+      phase_id: z.string().nullable(),
+      tag: z.string(),
+      title: z.string(),
+      decision: z.string().nullable(),
+      status: z.enum(['open', 'chosen', 'deferred']),
+      position: z.number().int(),
+      spike_card_id: z.string().nullable(),
+      resolved_session_id: z.string().nullable(),
+      created_at: z.string(),
+      updated_at: z.string(),
+    })
+    .openapi({
+      description:
+        'An architecture decision for an epic. Open items have a linked spike ticket; spike sessions lock the decision.',
+    }),
+);
+
 export const KanbanCardCommentComponent = registerComponent(
   'KanbanCardComment',
   z
@@ -232,6 +284,12 @@ export const BoardResponseComponent = registerComponent(
       columns: z.array(KanbanColumnComponent),
       cards: z.array(KanbanCardEnrichedComponent),
       epics: z.array(KanbanEpicComponent),
+      phases: z.array(KanbanPhaseComponent).optional().openapi({
+        description: 'All phases on the board, ordered by position within their epic.',
+      }),
+      specItems: z.array(KanbanEpicSpecItemComponent).optional().openapi({
+        description: 'Architecture spec decisions for epics — resolved via spike tickets/sessions.',
+      }),
       counts: z.record(z.string(), z.number().int()).openapi({
         description:
           'Total card count per column, keyed by column id (`{ [columnId]: total }`). Always present. Lets a client decide whether a column has more cards than the page in `cards` and fetch the rest via GET /board/columns/:columnId/cards.',
@@ -292,6 +350,8 @@ export const CreateCardRequestSchema = z.preprocess(
     sessionId: 'session_id',
     githubIssueUrl: 'github_issue_url',
     createdBy: 'created_by',
+    epicId: 'epic_id',
+    phaseId: 'phase_id',
   }),
   z.object({
     title: z.string({ error: 'title is required' }).min(1, 'title is required'),
@@ -303,6 +363,8 @@ export const CreateCardRequestSchema = z.preprocess(
     sessionId: z.string().nullable().optional(),
     githubIssueUrl: z.string().nullable().optional(),
     createdBy: z.string().nullable().optional(),
+    epicId: z.string().nullable().optional(),
+    phaseId: z.string().nullable().optional(),
   }),
 );
 
@@ -312,6 +374,7 @@ export const UpdateCardRequestSchema = z.preprocess(
     githubIssueUrl: 'github_issue_url',
     prUrl: 'pr_url',
     epicId: 'epic_id',
+    phaseId: 'phase_id',
     assignModel: 'assign_model',
     assignEngine: 'assign_engine',
     prBaseBranch: 'pr_base_branch',
@@ -326,6 +389,7 @@ export const UpdateCardRequestSchema = z.preprocess(
     githubIssueUrl: z.string().nullable().optional(),
     prUrl: z.string().nullable().optional(),
     epicId: z.string().nullable().optional(),
+    phaseId: z.string().nullable().optional(),
     assignModel: z.string().nullable().optional(),
     assignEngine: z.string().nullable().optional().openapi({
       description:
@@ -411,6 +475,74 @@ export const LinkEpicRequestSchema = z.object({
   epicId: z.string().nullable().optional(),
 });
 
+export const CreatePhaseRequestSchema = z.preprocess(
+  aliasPreprocess({ epicId: 'epic_id' }),
+  z.object({
+    epicId: z.string({ error: 'epicId is required' }).min(1, 'epicId is required'),
+    name: z.string({ error: 'name is required' }).min(1, 'name is required'),
+    description: z.string().nullable().optional(),
+  }),
+);
+
+export const UpdatePhaseRequestSchema = z.preprocess(
+  aliasPreprocess({
+    autonomousInterval: 'autonomous_interval',
+    autonomousMaxConcurrent: 'autonomous_max_concurrent',
+    autonomousModel: 'autonomous_model',
+    autonomousSendIt: 'autonomous_send_it',
+  }),
+  z.object({
+    name: z.string().min(1).optional(),
+    description: z.string().nullable().optional(),
+    autonomous: z.number().int().optional(),
+    autonomousInterval: z.number().int().optional(),
+    autonomousMaxConcurrent: z.number().int().optional(),
+    autonomousModel: z.string().nullable().optional(),
+    autonomousSendIt: z
+      .union([z.literal(0), z.literal(1)])
+      .optional()
+      .openapi({
+        type: 'integer',
+        enum: [0, 1],
+      }),
+  }),
+);
+
+export const CreateSpecItemRequestSchema = z.preprocess(
+  aliasPreprocess({ epicId: 'epic_id', phaseId: 'phase_id', createSpikeCard: 'create_spike_card' }),
+  z.object({
+    epicId: z.string({ error: 'epicId is required' }).min(1, 'epicId is required'),
+    tag: z.string({ error: 'tag is required' }).min(1, 'tag is required'),
+    title: z.string({ error: 'title is required' }).min(1, 'title is required'),
+    decision: z.string().nullable().optional(),
+    phaseId: z.string().nullable().optional(),
+    // Allow creating an already-decided item directly (the spike/scoping
+    // instructions tell agents to write a decision + `status: "chosen"` in one
+    // call). `chosen` requires a non-empty `decision`; the handler 400s
+    // otherwise. Defaults to `open`.
+    status: z.enum(['open', 'chosen', 'deferred']).optional().openapi({
+      description: 'Initial status. `chosen` requires a non-empty `decision`; defaults to `open`.',
+    }),
+    createSpikeCard: z.boolean().optional().openapi({
+      description:
+        'When true, also create a legacy spike kanban ticket linked to this spec item. Default false — use Decide for me or write the decision directly.',
+    }),
+  }),
+);
+
+export const UpdateSpecItemRequestSchema = z.preprocess(
+  aliasPreprocess({ phaseId: 'phase_id', resolvedSessionId: 'resolved_session_id' }),
+  z.object({
+    tag: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+    decision: z.string().nullable().optional(),
+    status: z.enum(['open', 'chosen', 'deferred']).optional(),
+    phaseId: z.string().nullable().optional(),
+    position: z.number().int().optional(),
+    resolvedSessionId: z.string().nullable().optional(),
+  }),
+);
+
 /**
  * Upper bound for free-text assignment notes / card comments captured at
  * assign / support-ticket-convert time. These strings are persisted as card
@@ -468,6 +600,12 @@ const blockerDeleteParams = projectCardIdParams.extend({
 });
 const commentDeleteParams = projectCardIdParams.extend({
   commentId: z.string().openapi({ description: 'Comment UUID.' }),
+});
+const projectPhaseIdParams = projectIdParams.extend({
+  phaseId: z.string().openapi({ description: 'Kanban phase UUID.' }),
+});
+const projectSpecItemIdParams = projectIdParams.extend({
+  specItemId: z.string().openapi({ description: 'Epic spec item UUID.' }),
 });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -836,6 +974,12 @@ registerPath({
   },
 });
 
+export const DecideForMeRequestSchema = z.object({
+  agentId: z.string().min(1).optional().openapi({
+    description: 'Agent to run the research session. Defaults to the project lead.',
+  }),
+});
+
 registerPath({
   method: 'put',
   path: '/api/projects/{projectId}/board/columns/{columnId}',
@@ -866,5 +1010,186 @@ registerPath({
       description: 'Acknowledgment.',
       content: jsonContent(z.object({ ok: z.literal(true) })),
     },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/spec-items/{specItemId}/decide-for-me',
+  tags: ['Board'],
+  summary: 'Research and lock a spec decision via agent session',
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      specItemId: z.string(),
+    }),
+    body: { content: jsonContent(DecideForMeRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Scoping session started.',
+      content: jsonContent(
+        z.object({
+          sessionId: z.string(),
+          agentId: z.string(),
+          specItem: KanbanEpicSpecItemComponent,
+        }),
+      ),
+    },
+    400: errorResponse('Spec item already locked or validation failed.'),
+    404: errorResponse('Spec item not found.'),
+  },
+});
+
+// ── Phases ──────────────────────────────────────────────────────────────
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/board/phases',
+  tags: ['Board'],
+  summary: 'List phases on the board',
+  request: { params: projectIdParams },
+  responses: {
+    200: {
+      description: 'All phases on the board, ordered by position within their epic.',
+      content: jsonContent(z.array(KanbanPhaseComponent)),
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/phases',
+  tags: ['Board'],
+  summary: 'Create a phase under an epic',
+  request: { params: projectIdParams, body: { content: jsonContent(CreatePhaseRequestSchema) } },
+  responses: {
+    200: { description: 'The created phase.', content: jsonContent(KanbanPhaseComponent) },
+    404: errorResponse('Epic not found on this board.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/board/phases/{phaseId}',
+  tags: ['Board'],
+  summary: 'Update a phase (incl. autonomous settings)',
+  request: {
+    params: projectPhaseIdParams,
+    body: { content: jsonContent(UpdatePhaseRequestSchema) },
+  },
+  responses: {
+    200: { description: 'The updated phase.', content: jsonContent(KanbanPhaseComponent) },
+    404: errorResponse('Phase not found on this project board.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/board/phases/{phaseId}',
+  tags: ['Board'],
+  summary: 'Delete a phase (unlinks its cards)',
+  request: { params: projectPhaseIdParams },
+  responses: {
+    200: {
+      description: 'Acknowledgment.',
+      content: jsonContent(z.object({ ok: z.literal(true) })),
+    },
+    404: errorResponse('Phase not found on this project board.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/phases/{phaseId}/run',
+  tags: ['Board'],
+  summary: 'Start autonomous dispatch for a phase',
+  request: { params: projectPhaseIdParams },
+  responses: {
+    200: { description: 'The phase, now running.', content: jsonContent(KanbanPhaseComponent) },
+    400: errorResponse('Phase could not be started.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/phases/{phaseId}/stop',
+  tags: ['Board'],
+  summary: 'Stop autonomous dispatch for a phase',
+  request: { params: projectPhaseIdParams },
+  responses: {
+    200: { description: 'The phase, now stopped.', content: jsonContent(KanbanPhaseComponent) },
+    400: errorResponse('Phase could not be stopped.'),
+  },
+});
+
+// ── Spec items ──────────────────────────────────────────────────────────
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/spec-items',
+  tags: ['Board'],
+  summary: 'Create an epic spec item (optionally already chosen)',
+  request: {
+    params: projectIdParams,
+    body: { content: jsonContent(CreateSpecItemRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'The created spec item.',
+      content: jsonContent(KanbanEpicSpecItemComponent),
+    },
+    400: errorResponse('Validation failed (e.g. chosen without a decision, or a foreign phase).'),
+    404: errorResponse('Epic not found on this board.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/board/spec-items/{specItemId}',
+  tags: ['Board'],
+  summary: 'Update an epic spec item',
+  request: {
+    params: projectSpecItemIdParams,
+    body: { content: jsonContent(UpdateSpecItemRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'The updated spec item.',
+      content: jsonContent(KanbanEpicSpecItemComponent),
+    },
+    400: errorResponse('Validation failed (e.g. chosen without a decision, or a foreign phase).'),
+    404: errorResponse('Spec item not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/spec-items/{specItemId}/spike',
+  tags: ['Board'],
+  summary: 'Create (or return) the spike card for a spec item',
+  request: { params: projectSpecItemIdParams },
+  responses: {
+    200: {
+      description: 'The spec item and its linked spike card.',
+      content: jsonContent(
+        z.object({ specItem: KanbanEpicSpecItemComponent, spikeCard: KanbanCardComponent }),
+      ),
+    },
+    404: errorResponse('Spec item not found.'),
+    500: errorResponse('Failed to create the spike card.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/board/spec-items/{specItemId}',
+  tags: ['Board'],
+  summary: 'Delete an epic spec item',
+  request: { params: projectSpecItemIdParams },
+  responses: {
+    200: {
+      description: 'Acknowledgment.',
+      content: jsonContent(z.object({ ok: z.literal(true) })),
+    },
+    404: errorResponse('Spec item not found.'),
   },
 });

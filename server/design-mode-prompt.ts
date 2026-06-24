@@ -31,7 +31,7 @@ import {
   unlinkSync,
 } from 'fs';
 import path from 'path';
-import { isDesignModeActive } from './session-mode.js';
+import { isDesignModeActive, isScopingModeActive } from './session-mode.js';
 import type { Project } from './types.js';
 
 /** Subdirectory of the session worktree that holds design artifacts. */
@@ -55,7 +55,9 @@ export const DESIGN_SKILL_ID = 'design';
 export function requiredSkillIdsForSession(
   session: { session_mode?: string | null } | null | undefined,
 ): string[] {
-  return isDesignModeActive(session) ? [DESIGN_SKILL_ID] : [];
+  if (isDesignModeActive(session)) return [DESIGN_SKILL_ID];
+  if (isScopingModeActive(session)) return ['agent-hub-kanban'];
+  return [];
 }
 
 export interface EnsureRealDesignDirResult {

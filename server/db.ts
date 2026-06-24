@@ -2106,6 +2106,102 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_send_it INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Phases — subgroups within an epic (Epic → Phase → Ticket hierarchy).
+  try {
+    db.prepare('SELECT id FROM kanban_phases LIMIT 1').get();
+  } catch {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS kanban_phases (
+        id TEXT PRIMARY KEY,
+        epic_id TEXT NOT NULL,
+        board_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        autonomous INTEGER NOT NULL DEFAULT 0,
+        autonomous_interval INTEGER NOT NULL DEFAULT 5,
+        autonomous_max_concurrent INTEGER NOT NULL DEFAULT 2,
+        autonomous_model TEXT DEFAULT NULL,
+        autonomous_enabled_by TEXT DEFAULT NULL,
+        autonomous_send_it INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (epic_id) REFERENCES kanban_epics(id) ON DELETE CASCADE,
+        FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
+      )
+    `);
+  }
+
+  try {
+    db.prepare('SELECT autonomous_running FROM kanban_phases LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_phases ADD COLUMN autonomous_running INTEGER NOT NULL DEFAULT 0');
+  }
+
+  try {
+    db.prepare('SELECT phase_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN phase_id TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT linked_epic_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN linked_epic_id TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT linked_spec_item_id FROM sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE sessions ADD COLUMN linked_spec_item_id TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT card_kind FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec("ALTER TABLE kanban_cards ADD COLUMN card_kind TEXT NOT NULL DEFAULT 'task'");
+  }
+
+  // Backfill spike kind for cards linked from spec items (older rows may predate card_kind).
+  try {
+    db.exec(`
+      UPDATE kanban_cards SET card_kind = 'spike'
+      WHERE COALESCE(card_kind, 'task') = 'task'
+        AND id IN (
+          SELECT spike_card_id FROM kanban_epic_spec_items WHERE spike_card_id IS NOT NULL
+        )
+    `);
+  } catch {
+    /* spec items table may not exist yet on very old DBs */
+  }
+
+  try {
+    db.prepare('SELECT id FROM kanban_epic_spec_items LIMIT 1').get();
+  } catch {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS kanban_epic_spec_items (
+        id TEXT PRIMARY KEY,
+        epic_id TEXT NOT NULL,
+        board_id TEXT NOT NULL,
+        phase_id TEXT DEFAULT NULL,
+        tag TEXT NOT NULL,
+        title TEXT NOT NULL,
+        decision TEXT DEFAULT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'chosen', 'deferred')),
+        position INTEGER NOT NULL DEFAULT 0,
+        spike_card_id TEXT DEFAULT NULL,
+        resolved_session_id TEXT DEFAULT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (epic_id) REFERENCES kanban_epics(id) ON DELETE CASCADE,
+        FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
+      )
+    `);
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_kanban_spec_items_epic ON kanban_epic_spec_items(epic_id)',
+    );
+  }
+
   // Per-device push notification preferences. JSON array of enabled event
   // type strings; NULL = all events enabled (legacy default).
   try {
@@ -2954,6 +3050,12 @@ function initDb(dataDir: string): void {
     updateSessionLinkedDesign: db.prepare(
       "UPDATE sessions SET linked_design_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    updateSessionLinkedEpic: db.prepare(
+      "UPDATE sessions SET linked_epic_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    updateSessionLinkedSpecItem: db.prepare(
+      "UPDATE sessions SET linked_spec_item_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     deleteSession: db.prepare('DELETE FROM sessions WHERE id = ?'),
     // Soft-delete: mark the row archived. Worktree is intentionally preserved
     // until hard-delete so restore can reattach the same branch/checkout.
@@ -3562,7 +3664,7 @@ function initDb(dataDir: string): void {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateKanbanCard: db.prepare(
-      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, assign_model = ?, assign_engine = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, phase_id = ?, assign_model = ?, assign_engine = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -3796,6 +3898,126 @@ function initDb(dataDir: string): void {
     updateKanbanCardEpic: db.prepare(
       "UPDATE kanban_cards SET epic_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    updateKanbanCardPhase: db.prepare(
+      "UPDATE kanban_cards SET phase_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    getKanbanPhases: db.prepare(
+      'SELECT * FROM kanban_phases WHERE board_id = ? ORDER BY position ASC',
+    ),
+    getKanbanPhasesByEpic: db.prepare(
+      'SELECT * FROM kanban_phases WHERE epic_id = ? ORDER BY position ASC',
+    ),
+    getKanbanPhase: db.prepare('SELECT * FROM kanban_phases WHERE id = ?'),
+    createKanbanPhase: db.prepare(
+      `INSERT INTO kanban_phases (id, epic_id, board_id, name, description, position) VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    updateKanbanPhase: db.prepare(
+      `UPDATE kanban_phases SET name = ?, description = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setPhaseAutonomousEnabledBy: db.prepare(
+      `UPDATE kanban_phases SET autonomous_enabled_by = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setPhaseAutonomousSendIt: db.prepare(
+      `UPDATE kanban_phases SET autonomous_send_it = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setPhaseAutonomousRunning: db.prepare(
+      `UPDATE kanban_phases SET autonomous_running = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    deleteKanbanPhase: db.prepare('DELETE FROM kanban_phases WHERE id = ?'),
+    getKanbanCardsByPhase: db.prepare(
+      'SELECT * FROM kanban_cards WHERE phase_id = ? ORDER BY position ASC',
+    ),
+    setKanbanCardKind: db.prepare(
+      "UPDATE kanban_cards SET card_kind = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+
+    getKanbanSpecItems: db.prepare(
+      'SELECT * FROM kanban_epic_spec_items WHERE board_id = ? ORDER BY position ASC, title ASC',
+    ),
+    getKanbanSpecItemsByEpic: db.prepare(
+      'SELECT * FROM kanban_epic_spec_items WHERE epic_id = ? ORDER BY position ASC, title ASC',
+    ),
+    getKanbanSpecItem: db.prepare('SELECT * FROM kanban_epic_spec_items WHERE id = ?'),
+    getKanbanSpecItemBySpikeCard: db.prepare(
+      'SELECT * FROM kanban_epic_spec_items WHERE spike_card_id = ? LIMIT 1',
+    ),
+    countOpenKanbanSpecItemsByEpic: db.prepare(
+      "SELECT COUNT(*) AS n FROM kanban_epic_spec_items WHERE epic_id = ? AND status = 'open'",
+    ),
+    createKanbanSpecItem: db.prepare(
+      `INSERT INTO kanban_epic_spec_items (id, epic_id, board_id, phase_id, tag, title, decision, status, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateKanbanSpecItem: db.prepare(
+      `UPDATE kanban_epic_spec_items SET tag = ?, title = ?, decision = ?, status = ?, phase_id = ?, position = ?, resolved_session_id = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setKanbanSpecItemSpikeCard: db.prepare(
+      "UPDATE kanban_epic_spec_items SET spike_card_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    deleteKanbanSpecItem: db.prepare('DELETE FROM kanban_epic_spec_items WHERE id = ?'),
+
+    getAutonomousPhases: db.prepare(
+      'SELECT * FROM kanban_phases WHERE board_id = ? AND autonomous_running = 1 ORDER BY name ASC',
+    ),
+    getEligibleAutonomousCardsByPhase: db.prepare(
+      `SELECT c.* FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       WHERE c.phase_id = ? AND col.name = 'To Do'
+       AND (c.assignee IS NULL OR c.assignee = '')
+       AND COALESCE(c.card_kind, 'task') != 'spike'
+       AND c.id NOT IN (
+         SELECT spike_card_id FROM kanban_epic_spec_items WHERE spike_card_id IS NOT NULL
+       )
+       ORDER BY
+         CASE c.priority
+           WHEN 'urgent' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+           ELSE 4
+         END,
+         c.position ASC`,
+    ),
+    getEligibleAutonomousSpikeCardsByPhase: db.prepare(
+      `SELECT c.* FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       WHERE c.phase_id = ? AND col.name = 'To Do'
+       AND (c.assignee IS NULL OR c.assignee = '')
+       AND (
+         COALESCE(c.card_kind, 'task') = 'spike'
+         OR c.id IN (SELECT spike_card_id FROM kanban_epic_spec_items WHERE spike_card_id IS NOT NULL)
+         OR LOWER(TRIM(c.title)) LIKE 'spike:%'
+       )
+       ORDER BY
+         CASE c.priority
+           WHEN 'urgent' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+           ELSE 4
+         END,
+         c.position ASC`,
+    ),
+    getEligibleAutonomousSpikeCards: db.prepare(
+      `SELECT c.* FROM kanban_cards c
+       JOIN kanban_columns col ON c.column_id = col.id
+       WHERE c.epic_id = ? AND col.name = 'To Do'
+       AND (c.assignee IS NULL OR c.assignee = '')
+       AND (
+         COALESCE(c.card_kind, 'task') = 'spike'
+         OR c.id IN (SELECT spike_card_id FROM kanban_epic_spec_items WHERE spike_card_id IS NOT NULL)
+         OR LOWER(TRIM(c.title)) LIKE 'spike:%'
+       )
+       ORDER BY
+         CASE c.priority
+           WHEN 'urgent' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+           ELSE 4
+         END,
+         c.position ASC`,
+    ),
     getAutonomousEpic: db.prepare(
       'SELECT * FROM kanban_epics WHERE board_id = ? AND autonomous = 1 LIMIT 1',
     ),
@@ -3819,6 +4041,10 @@ function initDb(dataDir: string): void {
        JOIN kanban_columns col ON c.column_id = col.id
        WHERE c.epic_id = ? AND col.name = 'To Do'
        AND (c.assignee IS NULL OR c.assignee = '')
+       AND COALESCE(c.card_kind, 'task') != 'spike'
+       AND c.id NOT IN (
+         SELECT spike_card_id FROM kanban_epic_spec_items WHERE spike_card_id IS NOT NULL
+       )
        ORDER BY
          CASE c.priority
            WHEN 'urgent' THEN 0

@@ -35,6 +35,10 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { SESSION_MODES } from '../session-mode.js';
+
+/** Shared enum for session_mode across request/response schemas. */
+const SessionModeSchema = z.enum(SESSION_MODES);
 
 // ─── Domain component schemas (response shapes) ──────────────────
 
@@ -54,9 +58,9 @@ export const SessionComponent = registerComponent(
       use_worktree: z.number().int(),
       ask_mode: z.number().int(),
       react_loop_enabled: z.number().int().nullable().optional(),
-      session_mode: z.enum(['chat', 'design']).nullable().optional().openapi({
+      session_mode: SessionModeSchema.nullable().optional().openapi({
         description:
-          'Session mode picker dimension: `chat` (default) or `design`. NULL/absent on legacy rows → treated as `chat`. A `design` session loads the design skill and produces HTML/CSS/JS artifacts in its worktree. Set via `PUT /api/sessions/{sessionId}/mode`.',
+          'Session mode picker dimension: `chat` (default), `design`, or `scoping`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
       }),
       reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
         description:
@@ -76,6 +80,10 @@ export const SessionComponent = registerComponent(
       linked_design_id: z.string().nullable().optional().openapi({
         description:
           "Optional Design Studio design id linked to this session. When set, the web client renders the design's live canvas in a preview pane beside the chat. Set/cleared via `PUT /api/sessions/{sessionId}/linked-design`. Not a foreign key — a stale id (design since deleted) is tolerated and ignored at render time.",
+      }),
+      linked_epic_id: z.string().nullable().optional().openapi({
+        description:
+          'Epic linked for scoping mode. When `session_mode` is `scoping`, the web client renders a live Epic → Phase → Ticket flowchart for this epic. Set/cleared via `PUT /api/sessions/{sessionId}/linked-epic`.',
       }),
       state: z
         .enum([
@@ -248,7 +256,7 @@ export const PatchSessionRequestSchema = z.object({
   // both switch the mode AND reset ship intent, all-or-nothing. A `design`
   // request without a usable worktree rejects the WHOLE patch (400), so no
   // other axis is mutated.
-  session_mode: z.enum(['chat', 'design']).optional(),
+  session_mode: SessionModeSchema.optional(),
   ask_mode: z.boolean().optional(),
 });
 
@@ -279,13 +287,10 @@ export const PutSessionReasoningEffortRequestSchema = z.object({
 
 /**
  * PUT /api/sessions/:sessionId/mode — set the session mode picker dimension.
- * `chat` (default) or `design`. A `design` session loads the design skill and
- * produces HTML/CSS/JS artifacts in its worktree.
+ * `chat` (default), `design`, or `scoping`.
  */
 export const PutSessionModeRequestSchema = z.object({
-  mode: z.enum(['chat', 'design'], {
-    error: 'Invalid session mode. Must be "chat" or "design".',
-  }),
+  mode: SessionModeSchema,
 });
 
 /**
@@ -545,6 +550,34 @@ registerPath({
     200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
     400: errorResponse('Validation failed.'),
     404: errorResponse('Session or design not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/linked-epic
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/linked-epic',
+  tags: ['Sessions'],
+  summary: 'Link (or unlink) a kanban epic to a session for scoping mode',
+  description:
+    "Sets `linked_epic_id` so a scoping-mode session renders the Epic → Phase → Ticket flowchart and loads the epic's spec context. Pass `epicId: null` to clear the link. A non-null id must reference an epic on the session's own project board.",
+  request: {
+    params: sessionIdParams,
+    body: {
+      content: jsonContent(
+        z.object({
+          epicId: z
+            .string()
+            .nullable()
+            .optional()
+            .openapi({ description: 'Epic UUID to link, or null to unlink.' }),
+        }),
+      ),
+    },
+  },
+  responses: {
+    200: { description: 'Updated session.', content: jsonContent(SessionComponent) },
+    404: errorResponse('Session or epic not found (incl. an epic on a different project).'),
   },
 });
 

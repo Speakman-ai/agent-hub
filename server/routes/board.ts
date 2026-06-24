@@ -11,6 +11,8 @@ import type {
   KanbanColumnRow,
   KanbanCardRow,
   KanbanEpicRow,
+  KanbanEpicSpecItemRow,
+  KanbanPhaseRow,
   KanbanBlockerLink,
   KanbanCardBlockerRow,
   SessionRow,
@@ -27,7 +29,12 @@ import {
 } from '../kanban-pagination.js';
 import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
-import { ensureOperatorBaseBranch } from '../autonomous.js';
+import {
+  ensureOperatorBaseBranch,
+  scheduleAutonomousPhase,
+  startAutonomousPhase,
+  stopAutonomousPhase,
+} from '../autonomous.js';
 import {
   validateKanbanAssignModel,
   validateKanbanAssignModelForEngine,
@@ -40,6 +47,16 @@ import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { recomputeSessionState } from '../session-state.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
 import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
+import {
+  buildSpikeSessionContext,
+  buildSpikeSessionContextFallback,
+  completeSpikeCardForSpecItem,
+  ensureSpecItemForSpikeCard,
+  getSpecItemForSpikeCard,
+  isSpikeCard,
+  normalizeSpecItemStatus,
+} from '../epic-spec.js';
+import { buildDecideForMeSessionContext, pickDefaultDecideAgent } from '../spec-decide-for-me.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
@@ -55,6 +72,11 @@ import {
   CreateEpicRequestSchema,
   UpdateEpicRequestSchema,
   LinkEpicRequestSchema,
+  CreatePhaseRequestSchema,
+  UpdatePhaseRequestSchema,
+  CreateSpecItemRequestSchema,
+  UpdateSpecItemRequestSchema,
+  DecideForMeRequestSchema,
 } from './board.openapi.js';
 
 /**
@@ -89,6 +111,8 @@ interface BoardData {
   columns: KanbanColumnRow[];
   cards: KanbanCardRow[];
   epics: KanbanEpicRow[];
+  phases: KanbanPhaseRow[];
+  specItems: KanbanEpicSpecItemRow[];
 }
 
 /** A card row enriched with its blocker relationships. */
@@ -251,6 +275,53 @@ function normalizeAssignee(
   return trimmed;
 }
 
+function findTodoColumnId(stmts: Stmts, boardId: string): string | null {
+  const cols = stmts.getKanbanColumns.all(boardId) as KanbanColumnRow[];
+  const todo = cols.find((c) => c.name.toLowerCase() === 'to do');
+  return todo?.id ?? cols[0]?.id ?? null;
+}
+
+/** Create a spike kanban card linked to a spec item (planning ticket). */
+function createSpikeCardForSpecItem(
+  stmts: Stmts,
+  args: {
+    boardId: string;
+    epicId: string;
+    phaseId?: string | null;
+    specItem: KanbanEpicSpecItemRow;
+  },
+): KanbanCardRow | null {
+  const columnId = findTodoColumnId(stmts, args.boardId);
+  if (!columnId) return null;
+  const existingCards = stmts.getKanbanCardsByColumn.all(columnId) as KanbanCardRow[];
+  const maxPos =
+    existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
+  const cardId = uuidv4();
+  const title = `Spike: ${args.specItem.title}`;
+  stmts.createKanbanCard.run(
+    cardId,
+    columnId,
+    args.boardId,
+    title,
+    `Research and lock spec decision **${args.specItem.tag}: ${args.specItem.title}** (\`${args.specItem.id}\`).`,
+    'medium',
+    null,
+    null,
+    null,
+    null,
+    'system',
+    null,
+    maxPos,
+  );
+  stmts.setKanbanCardKind.run('spike', cardId);
+  stmts.updateKanbanCardEpic.run(args.epicId, cardId);
+  if (args.phaseId) {
+    stmts.updateKanbanCardPhase.run(args.phaseId, cardId);
+  }
+  stmts.setKanbanSpecItemSpikeCard.run(cardId, args.specItem.id);
+  return (stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined) ?? null;
+}
+
 export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
   let board = stmts.getKanbanBoard.get(projectId) as KanbanBoardRow | undefined;
   if (board) {
@@ -259,6 +330,8 @@ export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
       columns: stmts.getKanbanColumns.all(board.id) as KanbanColumnRow[],
       cards: stmts.getKanbanCards.all(board.id) as KanbanCardRow[],
       epics: stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[],
+      phases: stmts.getKanbanPhases.all(board.id) as KanbanPhaseRow[],
+      specItems: stmts.getKanbanSpecItems.all(board.id) as KanbanEpicSpecItemRow[],
     };
   }
   const boardId = uuidv4();
@@ -286,6 +359,8 @@ export function getOrCreateBoard(stmts: Stmts, projectId: string): BoardData {
     columns: stmts.getKanbanColumns.all(boardId) as KanbanColumnRow[],
     cards: [],
     epics: [],
+    phases: [],
+    specItems: [],
   };
 }
 
@@ -479,6 +554,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       sessionId: bodySessionId,
       githubIssueUrl,
       createdBy,
+      epicId: bodyEpicId,
+      phaseId: bodyPhaseId,
     } = parsed;
     // Merge header / spawn-creds fallbacks before dedup and intake gating so
     // both guards see the same resolved session id (not just the Zod body).
@@ -521,6 +598,38 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
+    // Validate the epic/phase relationship BEFORE inserting, so a rejection
+    // never leaves an orphan card on the board. Resolve the final (epic,
+    // phase) the card will carry: a phase is authoritative for scope, so its
+    // epic is derived; an explicit conflicting epicId is a contradiction.
+    const hasBodyEpic = bodyEpicId != null && String(bodyEpicId).trim();
+    const hasBodyPhase = bodyPhaseId != null && String(bodyPhaseId).trim();
+    let resolvedEpicId: string | null = null;
+    let resolvedPhaseId: string | null = null;
+    if (hasBodyPhase) {
+      const phase = stmts.getKanbanPhase.get(bodyPhaseId) as KanbanPhaseRow | undefined;
+      // Reject missing/foreign phases explicitly rather than silently creating
+      // an unscoped card (which the phase runner of another board could pick
+      // up via getKanbanCardsByPhase).
+      if (!phase || phase.board_id !== board.id) {
+        return res.status(404).json({ error: 'Phase not found on this board' });
+      }
+      if (hasBodyEpic && String(bodyEpicId) !== String(phase.epic_id)) {
+        return res.status(400).json({
+          error: 'phaseId belongs to a different epic than the supplied epicId',
+        });
+      }
+      resolvedPhaseId = String(bodyPhaseId);
+      resolvedEpicId = String(phase.epic_id);
+    } else if (hasBodyEpic) {
+      const epic = stmts.getKanbanEpic.get(bodyEpicId) as KanbanEpicRow | undefined;
+      // Unknown/foreign epic: ignore silently (matches prior behavior) — only
+      // a valid same-board epic is linked.
+      if (epic && epic.board_id === board.id) {
+        resolvedEpicId = String(bodyEpicId);
+      }
+    }
+
     const existingCards = stmts.getKanbanCardsByColumn.all(columnId) as KanbanCardRow[];
     const maxPos =
       existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
@@ -559,6 +668,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       null,
       maxPos,
     );
+
+    // Apply the pre-validated scope (validation + any 400/404 already ran
+    // above, before the insert).
+    if (resolvedEpicId) stmts.updateKanbanCardEpic.run(resolvedEpicId, id);
+    if (resolvedPhaseId) stmts.updateKanbanCardPhase.run(resolvedPhaseId, id);
+
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     if (effectiveSessionId) {
       maybeRenameSessionForLinkedCard(stmts, broadcast, effectiveSessionId, title);
@@ -593,6 +708,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const prUrl = parsed.prUrl;
     const hasEpicId = parsed.epicId !== undefined;
     const epicId = parsed.epicId;
+    const hasPhaseId = parsed.phaseId !== undefined;
+    const phaseId = parsed.phaseId;
     const hasAssignModel = parsed.assignModel !== undefined;
     const assignModel = parsed.assignModel;
     const hasAssignEngine = parsed.assignEngine !== undefined;
@@ -616,6 +733,27 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (!epic || epic.board_id !== card.board_id) {
         return res.status(404).json({ error: "Epic not found on this card's board" });
       }
+    }
+
+    // The epic the card will carry after this update — needed so the phase
+    // block below can keep `epic_id` and `phase_id` consistent.
+    let nextEpicId: string | null = hasEpicId ? (epicId ?? null) : (card.epic_id ?? null);
+
+    if (hasPhaseId && phaseId != null) {
+      const phase = stmts.getKanbanPhase.get(phaseId) as KanbanPhaseRow | undefined;
+      if (!phase || phase.board_id !== card.board_id) {
+        return res.status(404).json({ error: "Phase not found on this card's board" });
+      }
+      // A phase implies its epic. If the caller also passed an explicit
+      // `epicId` that disagrees, that's a contradiction — reject it. Then
+      // force the card's epic to the phase's epic so the epic UI (filters by
+      // `epic_id`) and phase dispatch (queries by `phase_id`) can't diverge.
+      if (hasEpicId && epicId != null && String(epicId) !== String(phase.epic_id)) {
+        return res.status(400).json({
+          error: 'phaseId belongs to a different epic than the supplied epicId',
+        });
+      }
+      nextEpicId = phase.epic_id;
     }
 
     // Defense-in-depth (matches POST /board/cards): if the client is
@@ -694,7 +832,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasSessionId ? (effectiveSessionId ?? null) : card.session_id,
       hasGithubIssueUrl ? (githubIssueUrl ?? null) : card.github_issue_url,
       hasPrUrl ? (prUrl ?? null) : card.pr_url,
-      hasEpicId ? (epicId ?? null) : card.epic_id,
+      nextEpicId,
+      hasPhaseId ? (phaseId ?? null) : (card.phase_id ?? null),
       hasAssignModel
         ? assignModel != null && String(assignModel).trim()
           ? String(assignModel).trim()
@@ -862,19 +1001,37 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
               ? false
               : undefined;
 
-      const wt = defaultSessionUseWorktreeFlag(project);
-      stmts.createSession.run(sessionId, agentId, card.title, engine, resolvedModel, wt, 0, 1);
-      markSessionAutoShipOnComplete(stmts, sessionId);
-      // Assigned cards run at least "Build and Push"; they escalate to "Auto
-      // Merge" when the per-card override (or, absent one, the project's
-      // auto-merge setting) opts in.
-      markSessionFinalizeAutomation(
-        stmts,
+      const spikeAssign = isSpikeCard(card);
+      const wt = spikeAssign ? 0 : defaultSessionUseWorktreeFlag(project);
+      let linkedSpecItem = spikeAssign ? getSpecItemForSpikeCard(stmts, card.id) : null;
+      if (spikeAssign && card.epic_id) {
+        linkedSpecItem = ensureSpecItemForSpikeCard(stmts, card) ?? linkedSpecItem;
+      }
+      stmts.createSession.run(
         sessionId,
-        assignedFinalizeAutomationLevel(
-          resolveShouldAutoMerge(autoMergeOverride, project.githubWorkflow),
-        ),
+        agentId,
+        card.title,
+        engine,
+        resolvedModel,
+        wt,
+        spikeAssign ? 1 : 0,
+        1,
       );
+      if (spikeAssign) {
+        stmts.updateSessionMode.run('scoping', sessionId);
+        if (card.epic_id) stmts.updateSessionLinkedEpic.run(card.epic_id, sessionId);
+        if (linkedSpecItem) stmts.updateSessionLinkedSpecItem.run(linkedSpecItem.id, sessionId);
+        markSessionFinalizeAutomation(stmts, sessionId, 'manual');
+      } else {
+        markSessionAutoShipOnComplete(stmts, sessionId);
+        markSessionFinalizeAutomation(
+          stmts,
+          sessionId,
+          assignedFinalizeAutomationLevel(
+            resolveShouldAutoMerge(autoMergeOverride, project.githubWorkflow),
+          ),
+        );
+      }
       // Reuse the owner uid resolved above; no need to walk req.user twice
       // in the same handler.
       setSessionOwner(sessionId, assignOwnerUid);
@@ -897,6 +1054,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
+        card.phase_id ?? null,
         trimmedOverride,
         trimmedEngineOverride,
         card.pr_base_branch ?? null,
@@ -920,51 +1078,73 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         stmts.createKanbanCardComment.run(uuidv4(), req.params.cardId, agent.name, assignmentNote);
       }
 
-      const contextLines = [`# Task: ${card.title}`];
-      if (card.description) contextLines.push(`\n## Description\n${card.description}`);
-      if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
-      if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
-      if (card.github_issue_url) contextLines.push(`**GitHub:** ${card.github_issue_url}`);
-      if (assignmentNote) {
-        contextLines.push(`\n## Assignment Note\n${assignmentNote}`);
-      }
-
-      if (agent.role === 'intake') {
+      const contextLines: string[] = [];
+      if (spikeAssign) {
+        // The session was created in scoping mode (no worktree, manual
+        // finalize) — its first message must be spike/research instructions,
+        // never the implementation prompt. Mirror autonomous dispatch: use the
+        // spec-linked context when one exists, else the planning-only fallback
+        // (deriving the question from the card title). Emitting `# Task: …`
+        // here would tell the agent to start building in a no-worktree session.
         contextLines.push(
-          `\n---\n## Ticket Research & Breakdown`,
-          `\nYou have been assigned this card for **research and ticket creation only** — do NOT write code or create PRs.`,
-          `\nYour job:`,
-          `1. **Research** this task — understand the scope, identify sub-tasks, and consider edge cases`,
-          `2. **Check for duplicates** — before creating any new ticket, search the existing board to make sure a similar card doesn't already exist`,
-          `3. **Break it down** into actionable sub-tickets on the kanban board (in To Do)`,
-          `4. **Link sub-tickets** to the same epic as this card (if it has one)${card.epic_id ? ` — epic ID: \`${card.epic_id}\`` : ''}`,
-          `5. **Add a comment** to this card summarizing what you created`,
-          `6. **Move this card to Done** when finished`,
-          `\n### Duplicate Detection`,
-          `Before creating each ticket, fetch all existing cards:`,
-          `\`\`\`bash`,
-          `curl -s http://localhost:3051/api/projects/${req.params.projectId}/board | jq '.cards[] | {id, title, description, column: .column_id}'`,
-          `\`\`\``,
-          `If a card with a similar title or overlapping scope already exists, skip creating a duplicate and note it in your summary comment.`,
-          `\n### Card APIs`,
-          `- **Get board**: \`GET /api/projects/${req.params.projectId}/board\``,
-          `- **Create card**: \`POST /api/projects/${req.params.projectId}/board/cards\` with \`{title, description, priority, labels, columnId, createdBy: "${agent.id}"}\``,
-          `- **Link to epic**: \`POST /api/projects/${req.params.projectId}/board/cards/:cardId/epic\` with \`{epicId}\``,
-          `- **Add comment**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\` with \`{content, author: "${agent.id}"}\``,
-          `- **Move card**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\` with \`{columnId: "<done-column-id>"}\``,
+          linkedSpecItem
+            ? buildSpikeSessionContext({
+                card,
+                specItem: linkedSpecItem,
+                projectId: req.params.projectId as string,
+              })
+            : buildSpikeSessionContextFallback({
+                card,
+                projectId: req.params.projectId as string,
+              }),
         );
       } else {
-        contextLines.push(
-          `\n---`,
-          `You have been assigned this task from the project kanban board. Review the description above and begin working on it.`,
-          ``,
-          `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
-          `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
-          `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
-          `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
-          ``,
-          `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
-        );
+        contextLines.push(`# Task: ${card.title}`);
+        if (card.description) contextLines.push(`\n## Description\n${card.description}`);
+        if (card.priority) contextLines.push(`\n**Priority:** ${card.priority}`);
+        if (card.labels) contextLines.push(`**Labels:** ${card.labels}`);
+        if (card.github_issue_url) contextLines.push(`**GitHub:** ${card.github_issue_url}`);
+        if (assignmentNote) {
+          contextLines.push(`\n## Assignment Note\n${assignmentNote}`);
+        }
+
+        if (agent.role === 'intake') {
+          contextLines.push(
+            `\n---\n## Ticket Research & Breakdown`,
+            `\nYou have been assigned this card for **research and ticket creation only** — do NOT write code or create PRs.`,
+            `\nYour job:`,
+            `1. **Research** this task — understand the scope, identify sub-tasks, and consider edge cases`,
+            `2. **Check for duplicates** — before creating any new ticket, search the existing board to make sure a similar card doesn't already exist`,
+            `3. **Break it down** into actionable sub-tickets on the kanban board (in To Do)`,
+            `4. **Link sub-tickets** to the same epic as this card (if it has one)${card.epic_id ? ` — epic ID: \`${card.epic_id}\`` : ''}`,
+            `5. **Add a comment** to this card summarizing what you created`,
+            `6. **Move this card to Done** when finished`,
+            `\n### Duplicate Detection`,
+            `Before creating each ticket, fetch all existing cards:`,
+            `\`\`\`bash`,
+            `curl -s http://localhost:3051/api/projects/${req.params.projectId}/board | jq '.cards[] | {id, title, description, column: .column_id}'`,
+            `\`\`\``,
+            `If a card with a similar title or overlapping scope already exists, skip creating a duplicate and note it in your summary comment.`,
+            `\n### Card APIs`,
+            `- **Get board**: \`GET /api/projects/${req.params.projectId}/board\``,
+            `- **Create card**: \`POST /api/projects/${req.params.projectId}/board/cards\` with \`{title, description, priority, labels, columnId, createdBy: "${agent.id}"}\``,
+            `- **Link to epic**: \`POST /api/projects/${req.params.projectId}/board/cards/:cardId/epic\` with \`{epicId}\``,
+            `- **Add comment**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\` with \`{content, author: "${agent.id}"}\``,
+            `- **Move card**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\` with \`{columnId: "<done-column-id>"}\``,
+          );
+        } else {
+          contextLines.push(
+            `\n---`,
+            `You have been assigned this task from the project kanban board. Review the description above and begin working on it.`,
+            ``,
+            `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
+            `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
+            `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
+            `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
+            ``,
+            `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
+          );
+        }
       }
 
       const contextMessage = contextLines.join('\n');
@@ -1029,6 +1209,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         card.github_issue_url,
         card.pr_url,
         card.epic_id,
+        card.phase_id ?? null,
         null,
         null,
         card.pr_base_branch ?? null,
@@ -1339,11 +1520,463 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const epicCards = stmts.getKanbanCardsByEpic.all(req.params.epicId) as KanbanCardRow[];
     for (const card of epicCards) {
       stmts.updateKanbanCardEpic.run(null, card.id);
+      stmts.updateKanbanCardPhase.run(null, card.id);
     }
     stmts.deleteKanbanEpic.run(req.params.epicId);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
   });
+
+  router.get('/api/projects/:projectId/board/phases', (req: Request, res: Response) => {
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    res.json(stmts.getKanbanPhases.all(board.id));
+  });
+
+  router.post('/api/projects/:projectId/board/phases', (req: Request, res: Response) => {
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const parsed = parseBody(CreatePhaseRequestSchema, req, res);
+    if (!parsed) return;
+    const { epicId, name, description } = parsed;
+    const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+    if (!epic || epic.board_id !== board.id) {
+      return res.status(404).json({ error: 'Epic not found' });
+    }
+    const existing = stmts.getKanbanPhasesByEpic.all(epicId) as KanbanPhaseRow[];
+    const maxPos = existing.length > 0 ? Math.max(...existing.map((p) => p.position)) + 1 : 0;
+    const id = uuidv4();
+    stmts.createKanbanPhase.run(id, epicId, board.id, name, description || null, maxPos);
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json(stmts.getKanbanPhase.get(id));
+  });
+
+  router.put('/api/projects/:projectId/board/phases/:phaseId', (req: Request, res: Response) => {
+    const phase = stmts.getKanbanPhase.get(req.params.phaseId) as KanbanPhaseRow | undefined;
+    if (!phase) return res.status(404).json({ error: 'Phase not found' });
+    // Phase IDs are global; scope the lookup to the URL's project so a caller
+    // can't update (or `scheduleAutonomousPhase` under) a foreign project's
+    // phase through any project URL.
+    const { board: phaseBoard } = getOrCreateBoard(stmts, req.params.projectId as string);
+    if (phase.board_id !== phaseBoard.id) {
+      return res.status(404).json({ error: 'Phase not found' });
+    }
+    const parsed = parseBody(UpdatePhaseRequestSchema, req, res);
+    if (!parsed) return;
+    const {
+      name,
+      description,
+      autonomous,
+      autonomousInterval,
+      autonomousMaxConcurrent,
+      autonomousModel,
+      autonomousSendIt,
+    } = parsed;
+
+    const nextAutonomousModel =
+      autonomousModel !== undefined
+        ? autonomousModel && String(autonomousModel).trim()
+          ? String(autonomousModel).trim()
+          : null
+        : phase.autonomous_model;
+
+    const turningAutonomousOn = !!(autonomous && !phase.autonomous);
+    if (turningAutonomousOn) {
+      const enablerId = resolveOwnerUserId(req as AuthenticatedRequest);
+      if (enablerId) {
+        stmts.setPhaseAutonomousEnabledBy.run(enablerId, req.params.phaseId);
+      }
+    }
+
+    stmts.updateKanbanPhase.run(
+      name ?? phase.name,
+      description ?? phase.description,
+      autonomous ?? phase.autonomous,
+      autonomousInterval ?? phase.autonomous_interval,
+      autonomousMaxConcurrent ?? phase.autonomous_max_concurrent,
+      nextAutonomousModel,
+      req.params.phaseId,
+    );
+
+    if (autonomousSendIt !== undefined) {
+      stmts.setPhaseAutonomousSendIt.run(autonomousSendIt ? 1 : 0, req.params.phaseId);
+    }
+
+    const turningAutonomousOff = autonomous !== undefined && !autonomous;
+    if (turningAutonomousOff) {
+      stmts.setPhaseAutonomousRunning.run(0, req.params.phaseId);
+    }
+
+    const updatedPhase = stmts.getKanbanPhase.get(req.params.phaseId) as KanbanPhaseRow;
+    // Saving phase settings does not start dispatch — only POST .../run does.
+    // If the phase is already running, reschedule so interval/concurrency changes apply.
+    scheduleAutonomousPhase(req.params.projectId as string, updatedPhase);
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json(updatedPhase);
+  });
+
+  router.post(
+    '/api/projects/:projectId/board/phases/:phaseId/run',
+    async (req: Request, res: Response) => {
+      try {
+        const enablerId = resolveOwnerUserId(req as AuthenticatedRequest);
+        await startAutonomousPhase(
+          req.params.projectId as string,
+          req.params.phaseId as string,
+          enablerId,
+        );
+        const phase = stmts.getKanbanPhase.get(req.params.phaseId) as KanbanPhaseRow;
+        broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+        res.json(phase);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/board/phases/:phaseId/stop',
+    (req: Request, res: Response) => {
+      try {
+        const phase = stopAutonomousPhase(
+          req.params.projectId as string,
+          req.params.phaseId as string,
+        );
+        res.json(phase);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        res.status(400).json({ error: msg });
+      }
+    },
+  );
+
+  router.delete('/api/projects/:projectId/board/phases/:phaseId', (req: Request, res: Response) => {
+    const phase = stmts.getKanbanPhase.get(req.params.phaseId) as KanbanPhaseRow | undefined;
+    if (!phase) return res.status(404).json({ error: 'Phase not found' });
+    // Same project-scope guard as the PUT: never mutate a foreign project's
+    // phase through this project's URL.
+    const { board: phaseBoard } = getOrCreateBoard(stmts, req.params.projectId as string);
+    if (phase.board_id !== phaseBoard.id) {
+      return res.status(404).json({ error: 'Phase not found' });
+    }
+    const phaseCards = stmts.getKanbanCardsByPhase.all(req.params.phaseId) as KanbanCardRow[];
+    for (const card of phaseCards) {
+      stmts.updateKanbanCardPhase.run(null, card.id);
+    }
+    stmts.deleteKanbanPhase.run(req.params.phaseId);
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json({ ok: true });
+  });
+
+  router.post('/api/projects/:projectId/board/spec-items', (req: Request, res: Response) => {
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const parsed = parseBody(CreateSpecItemRequestSchema, req, res);
+    if (!parsed) return;
+    const { epicId, tag, title, decision, phaseId, createSpikeCard } = parsed;
+    const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+    if (!epic || epic.board_id !== board.id) {
+      return res.status(404).json({ error: 'Epic not found' });
+    }
+    // Honor an explicit initial status. Creating a `chosen` item requires a
+    // real decision (same gate as the update path) — otherwise the open-spec
+    // dispatch gate would be cleared with no decision context for workers.
+    const createStatus = normalizeSpecItemStatus(parsed.status);
+    const trimmedDecision = decision?.trim() || null;
+    if (createStatus === 'chosen' && !trimmedDecision) {
+      return res
+        .status(400)
+        .json({ error: 'A non-empty decision is required to create a spec item as chosen' });
+    }
+    // Normalize a blank/whitespace phaseId to NULL up front (matching the
+    // card / linked-epic paths) so we never both skip validation AND persist
+    // an empty string as an invalid phase reference.
+    const normalizedPhaseId =
+      phaseId != null && String(phaseId).trim() ? String(phaseId).trim() : null;
+    // A supplied phase must be on this board AND belong to the spec item's
+    // epic. Otherwise `createSpikeCard` would stamp a foreign/unrelated
+    // `phase_id` on a card created on this board, and another project's phase
+    // runner could later pick it up via `getKanbanCardsByPhase`.
+    if (normalizedPhaseId) {
+      const phase = stmts.getKanbanPhase.get(normalizedPhaseId) as KanbanPhaseRow | undefined;
+      if (!phase || phase.board_id !== board.id || String(phase.epic_id) !== String(epicId)) {
+        return res.status(400).json({ error: 'phaseId is not a valid phase of this epic' });
+      }
+    }
+    const existing = stmts.getKanbanSpecItemsByEpic.all(epicId) as KanbanEpicSpecItemRow[];
+    const maxPos = existing.length > 0 ? Math.max(...existing.map((s) => s.position)) + 1 : 0;
+    const id = uuidv4();
+    stmts.createKanbanSpecItem.run(
+      id,
+      epicId,
+      board.id,
+      normalizedPhaseId,
+      tag.trim(),
+      title.trim(),
+      trimmedDecision,
+      createStatus,
+      maxPos,
+    );
+    let specItem = stmts.getKanbanSpecItem.get(id) as KanbanEpicSpecItemRow;
+    // Only spike an *undecided* item — a spec created already `chosen` has its
+    // decision and doesn't need a research spike.
+    if (createSpikeCard === true && createStatus !== 'chosen') {
+      createSpikeCardForSpecItem(stmts, {
+        boardId: board.id,
+        epicId,
+        phaseId: normalizedPhaseId,
+        specItem,
+      });
+      specItem = stmts.getKanbanSpecItem.get(id) as KanbanEpicSpecItemRow;
+    }
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json(specItem);
+  });
+
+  router.put(
+    '/api/projects/:projectId/board/spec-items/:specItemId',
+    (req: Request, res: Response) => {
+      const specItem = stmts.getKanbanSpecItem.get(req.params.specItemId) as
+        | KanbanEpicSpecItemRow
+        | undefined;
+      if (!specItem) return res.status(404).json({ error: 'Spec item not found' });
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      if (specItem.board_id !== board.id) {
+        return res.status(404).json({ error: 'Spec item not found' });
+      }
+      const parsed = parseBody(UpdateSpecItemRequestSchema, req, res);
+      if (!parsed) return;
+      // Normalize a blank/whitespace phaseId to NULL (an explicit clear),
+      // matching the create path — never persist an empty-string phase ref.
+      const nextPhaseId =
+        parsed.phaseId !== undefined
+          ? String(parsed.phaseId ?? '').trim() || null
+          : (specItem.phase_id ?? null);
+      // A supplied phase must stay on this board AND belong to the spec item's
+      // epic, mirroring the create path — a foreign/cross-epic phase here would
+      // be inherited by the spike card and dispatched under the wrong scope.
+      if (parsed.phaseId !== undefined && nextPhaseId) {
+        const phase = stmts.getKanbanPhase.get(nextPhaseId) as KanbanPhaseRow | undefined;
+        if (
+          !phase ||
+          phase.board_id !== board.id ||
+          String(phase.epic_id) !== String(specItem.epic_id)
+        ) {
+          return res.status(400).json({ error: 'phaseId is not a valid phase of this epic' });
+        }
+      }
+      const nextStatus =
+        parsed.status !== undefined ? normalizeSpecItemStatus(parsed.status) : specItem.status;
+      // The effective decision after this update — either the (trimmed) value
+      // in the body or the already-stored one.
+      const nextDecision =
+        parsed.decision !== undefined ? parsed.decision?.trim() || null : specItem.decision;
+      // Locking a spec to `chosen` clears the open-spec dispatch gate, so a
+      // worker must inherit a real decision. Refuse the transition when the
+      // effective decision is empty.
+      if (nextStatus === 'chosen' && !(nextDecision && String(nextDecision).trim())) {
+        return res
+          .status(400)
+          .json({ error: 'A non-empty decision is required to mark a spec item chosen' });
+      }
+      const resolvedSessionId =
+        parsed.resolvedSessionId !== undefined
+          ? parsed.resolvedSessionId
+          : nextStatus === 'chosen' && specItem.status !== 'chosen'
+            ? ((req.headers['x-session-id'] as string | undefined) ?? specItem.resolved_session_id)
+            : specItem.resolved_session_id;
+      stmts.updateKanbanSpecItem.run(
+        parsed.tag?.trim() ?? specItem.tag,
+        parsed.title?.trim() ?? specItem.title,
+        nextDecision,
+        nextStatus,
+        nextPhaseId,
+        parsed.position ?? specItem.position,
+        resolvedSessionId ?? null,
+        req.params.specItemId,
+      );
+      const updated = stmts.getKanbanSpecItem.get(req.params.specItemId) as KanbanEpicSpecItemRow;
+      if (nextStatus === 'chosen') {
+        completeSpikeCardForSpecItem(stmts, updated);
+      }
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json(updated);
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/board/spec-items/:specItemId/decide-for-me',
+    async (req: Request, res: Response) => {
+      const specItem = stmts.getKanbanSpecItem.get(req.params.specItemId) as
+        | KanbanEpicSpecItemRow
+        | undefined;
+      if (!specItem) return res.status(404).json({ error: 'Spec item not found' });
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      if (specItem.board_id !== board.id) {
+        return res.status(404).json({ error: 'Spec item not found' });
+      }
+      if (specItem.status === 'chosen') {
+        return res.status(400).json({ error: 'Spec decision is already locked' });
+      }
+
+      const parsed = parseBody(DecideForMeRequestSchema, req, res);
+      if (!parsed) return;
+
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ownerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
+      if (!ownerUserId) {
+        return res.status(401).json({ error: 'Authentication required to run Decide for me' });
+      }
+
+      let found = parsed.agentId ? findAgent(parsed.agentId) : null;
+      // An explicitly chosen agent must belong to THIS project. `findAgent` is
+      // a global lookup, so without this a caller could start a scoping session
+      // for this project's spec item under a foreign project's agent, mixing
+      // session ownership/visibility and project context.
+      if (parsed.agentId && (!found || found.project?.id !== project.id)) {
+        return res.status(400).json({ error: 'agentId does not belong to this project' });
+      }
+      if (!found) {
+        const pick = pickDefaultDecideAgent(project);
+        if (!pick) return res.status(400).json({ error: 'No agent available for this project' });
+        found = findAgent(pick.id);
+      }
+      if (!found) return res.status(404).json({ error: 'Agent not found' });
+      const { agent } = found;
+
+      if (specItem.resolved_session_id) {
+        const existing = stmts.getSession.get(specItem.resolved_session_id) as
+          | SessionRow
+          | undefined;
+        if (existing && existing.state === 'working') {
+          return res.json({
+            sessionId: existing.id,
+            agentId: existing.agent_id,
+            specItem,
+          });
+        }
+      }
+
+      const sessionId = crypto.randomUUID();
+      const { engine, model: resolvedModel } = resolveEffectiveEngineAndModel(config, {
+        agentId: agent.id,
+        agentEngine: agent.engine || 'claude-code',
+        agentModel: agent.model ?? null,
+        ownerUserId,
+      });
+
+      stmts.createSession.run(
+        sessionId,
+        agent.id,
+        `Decide: ${specItem.title}`,
+        engine,
+        resolvedModel,
+        0,
+        1,
+        1,
+      );
+      stmts.updateSessionMode.run('scoping', sessionId);
+      stmts.updateSessionLinkedEpic.run(specItem.epic_id, sessionId);
+      stmts.updateSessionLinkedSpecItem.run(specItem.id, sessionId);
+      markSessionFinalizeAutomation(stmts, sessionId, 'manual');
+      setSessionOwner(sessionId, ownerUserId);
+
+      stmts.updateKanbanSpecItem.run(
+        specItem.tag,
+        specItem.title,
+        specItem.decision,
+        specItem.status,
+        specItem.phase_id,
+        specItem.position,
+        sessionId,
+        specItem.id,
+      );
+
+      const context = buildDecideForMeSessionContext({
+        specItem,
+        projectId: req.params.projectId as string,
+        projectName: project.name,
+      });
+
+      handleChat(null, {
+        type: 'chat',
+        agentId: agent.id,
+        sessionId,
+        content: context,
+        hookSpecificOutput: { sessionTitle: `Decide: ${specItem.title}` },
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[DecideForMe] handleChat failed for session ${sessionId}:`, msg);
+      });
+
+      const sessionRow = stmts.getSession.get(sessionId) as SessionRow;
+      broadcast({
+        type: 'session_created',
+        agentId: agent.id,
+        session: enrichSessionForClient(sessionRow, stmts),
+      });
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+
+      const refreshed = stmts.getKanbanSpecItem.get(specItem.id) as KanbanEpicSpecItemRow;
+      res.json({ sessionId, agentId: agent.id, specItem: refreshed });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/board/spec-items/:specItemId/spike',
+    (req: Request, res: Response) => {
+      const specItem = stmts.getKanbanSpecItem.get(req.params.specItemId) as
+        | KanbanEpicSpecItemRow
+        | undefined;
+      if (!specItem) return res.status(404).json({ error: 'Spec item not found' });
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      if (specItem.board_id !== board.id) {
+        return res.status(404).json({ error: 'Spec item not found' });
+      }
+      if (specItem.spike_card_id) {
+        const existing = stmts.getKanbanCard.get(specItem.spike_card_id) as
+          | KanbanCardRow
+          | undefined;
+        if (existing) return res.json({ specItem, spikeCard: existing });
+      }
+      const spikeCard = createSpikeCardForSpecItem(stmts, {
+        boardId: board.id,
+        epicId: specItem.epic_id,
+        phaseId: specItem.phase_id,
+        specItem,
+      });
+      if (!spikeCard) return res.status(500).json({ error: 'Failed to create spike card' });
+      const refreshed = stmts.getKanbanSpecItem.get(specItem.id) as KanbanEpicSpecItemRow;
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json({ specItem: refreshed, spikeCard });
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/board/spec-items/:specItemId',
+    (req: Request, res: Response) => {
+      const specItem = stmts.getKanbanSpecItem.get(req.params.specItemId) as
+        | KanbanEpicSpecItemRow
+        | undefined;
+      if (!specItem) return res.status(404).json({ error: 'Spec item not found' });
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      if (specItem.board_id !== board.id) {
+        return res.status(404).json({ error: 'Spec item not found' });
+      }
+      // Delete the linked spike card too. A spike card exists only to drive
+      // this spec decision; left behind, it stays eligible for autonomous
+      // dispatch (by `card_kind`, the `spike_card_id` link, OR a `Spike:`
+      // title) and `ensureSpecItemForSpikeCard` would recreate a fresh spec
+      // item on the next pass — resurrecting the decision we just deleted.
+      if (specItem.spike_card_id) {
+        lastDispatchedReviewId.delete(specItem.spike_card_id);
+        stmts.deleteKanbanCard.run(specItem.spike_card_id);
+      }
+      stmts.deleteKanbanSpecItem.run(req.params.specItemId);
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json({ ok: true });
+    },
+  );
 
   router.post(
     '/api/projects/:projectId/board/autonomous/run',

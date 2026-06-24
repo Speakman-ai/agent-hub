@@ -54,15 +54,23 @@ function ToggleSwitch({ checked, onChange, ariaLabel }: any) {
   );
 }
 
-/** Inline autonomous dispatch settings for the epic screen. */
-export default function EpicAutonomousPanel({ form, onChange, modelConfig }: any) {
+/** Inline autonomous dispatch settings for epic or phase scope. */
+export default function EpicAutonomousPanel({
+  form,
+  onChange,
+  modelConfig,
+  scopeLabel = 'epic',
+}: any) {
+  const scopeNoun = scopeLabel === 'phase' ? 'phase' : 'epic';
   return (
     <div className="space-y-5" data-testid="epic-autonomous-panel">
       <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
         <div className="min-w-0">
           <div className="text-sm font-medium text-gray-100">Enable autonomous dispatch</div>
           <p className={`${HINT_CLASS} mt-0.5`}>
-            Automatically assign backlog cards in this epic when agent slots are free.
+            {scopeNoun === 'phase'
+              ? 'Configure auto-dispatch — tickets are assigned only when you click Run phase.'
+              : `Automatically assign To Do tickets in this ${scopeNoun} when agent slots are free.`}
           </p>
         </div>
         <ToggleSwitch
@@ -72,22 +80,26 @@ export default function EpicAutonomousPanel({ form, onChange, modelConfig }: any
         />
       </div>
 
-      <div>
-        <FieldLabel htmlFor="autonomous-pr-base">PR base branch</FieldLabel>
-        <input
-          id="autonomous-pr-base"
-          type="text"
-          value={form.pr_base_branch ?? ''}
-          onChange={(e: any) => onChange({ pr_base_branch: e.target.value })}
-          placeholder="feature/epic-integration"
-          data-testid="autonomous-pr-base-input"
-          className={FIELD_MONO_CLASS}
-        />
-        <p className={HINT_CLASS}>
-          Default base branch for cards in this epic. Cards can override individually. Leave empty
-          to use the repo default. Integration branches enforce serial dispatch.
-        </p>
-      </div>
+      {scopeLabel !== 'phase' ? (
+        <div>
+          <FieldLabel htmlFor="autonomous-pr-base">PR base branch</FieldLabel>
+          <input
+            id="autonomous-pr-base"
+            type="text"
+            value={form.pr_base_branch ?? ''}
+            onChange={(e: any) => onChange({ pr_base_branch: e.target.value })}
+            placeholder="feature/epic-integration"
+            data-testid="autonomous-pr-base-input"
+            className={FIELD_MONO_CLASS}
+          />
+          <p className={HINT_CLASS}>
+            Default base branch for cards in this epic. Cards can override individually. Leave empty
+            to use the repo default. Integration branches enforce serial dispatch.
+          </p>
+        </div>
+      ) : (
+        <p className={HINT_CLASS}>Phases inherit the epic&apos;s PR base branch setting.</p>
+      )}
 
       {form.autonomous === 1 ? (
         <div className="space-y-5">

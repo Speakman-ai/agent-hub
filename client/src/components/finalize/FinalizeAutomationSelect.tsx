@@ -31,7 +31,12 @@ export default function FinalizeAutomationSelect({
   variant = 'default',
 }: any) {
   const level = finalizeAutomationFromSession(session);
-  const sessionMode = session?.session_mode === 'design' ? 'design' : 'chat';
+  const sessionMode =
+    session?.session_mode === 'design'
+      ? 'design'
+      : session?.session_mode === 'scoping'
+        ? 'scoping'
+        : 'chat';
   const canDesign = !!session?.can_design_mode;
   const [pending, setPending] = useState(false);
   const [open, setOpen] = useState(false);

@@ -1046,6 +1046,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
               card.github_issue_url || null,
               card.pr_url || null,
               newEpicId,
+              null,
               importAssignModel,
               importAssignEngine,
               card.pr_base_branch ?? null,

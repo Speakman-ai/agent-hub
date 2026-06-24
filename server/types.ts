@@ -94,6 +94,10 @@ export interface SessionRow {
    * tolerated and ignored at render time.
    */
   linked_design_id?: string | null;
+  /** Epic being scoped in scoping mode — drives the flowchart panel. */
+  linked_epic_id?: string | null;
+  /** Spec decision being resolved in a spike session (scoping mode). */
+  linked_spec_item_id?: string | null;
   /**
    * When `1`, session end may commit/push/open a PR without the operator
    * clicking Create ticket & PR (board assign + autonomous dispatch).
@@ -631,6 +635,10 @@ export interface KanbanCardRow {
   short_id: number | null;
   position: number;
   epic_id: string | null;
+  /** Optional phase subgroup within the parent epic. */
+  phase_id?: string | null;
+  /** `task` (default) or `spike` — spike cards resolve epic spec decisions. */
+  card_kind?: string | null;
   documented: number;
   /** Set when autonomous dispatch claims a card — controls auto-PR at session end vs Create PR banner. */
   dispatched_by_autonomous: number;
@@ -794,6 +802,42 @@ export interface KanbanEpicRow {
    */
   autonomous_send_it?: number;
   position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A phase within an epic — groups related tickets for a feature run or module. */
+export interface KanbanPhaseRow {
+  id: string;
+  epic_id: string;
+  board_id: string;
+  name: string;
+  description: string | null;
+  position: number;
+  autonomous: number;
+  autonomous_interval: number;
+  autonomous_max_concurrent: number;
+  autonomous_model: string | null;
+  autonomous_enabled_by?: string | null;
+  autonomous_send_it?: number;
+  autonomous_running?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Architecture decision for an epic — researched via spike ticket + session. */
+export interface KanbanEpicSpecItemRow {
+  id: string;
+  epic_id: string;
+  board_id: string;
+  phase_id: string | null;
+  tag: string;
+  title: string;
+  decision: string | null;
+  status: 'open' | 'chosen' | 'deferred';
+  position: number;
+  spike_card_id: string | null;
+  resolved_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1331,6 +1375,7 @@ export interface Stmts {
   updateAutoSessionNameIfCurrent: Stmt;
   updateSessionMaxTurns: Stmt;
   updateSessionLinkedDesign: Stmt;
+  updateSessionLinkedEpic: Stmt;
   deleteSession: Stmt;
   softDeleteSession: Stmt;
   restoreArchivedSession: Stmt;
@@ -1603,6 +1648,32 @@ export interface Stmts {
   deleteKanbanEpic: Stmt;
   getKanbanCardsByEpic: Stmt;
   updateKanbanCardEpic: Stmt;
+  updateKanbanCardPhase: Stmt;
+  getKanbanPhases: Stmt;
+  getKanbanPhasesByEpic: Stmt;
+  getKanbanPhase: Stmt;
+  createKanbanPhase: Stmt;
+  updateKanbanPhase: Stmt;
+  setPhaseAutonomousEnabledBy: Stmt;
+  setPhaseAutonomousSendIt: Stmt;
+  setPhaseAutonomousRunning: Stmt;
+  deleteKanbanPhase: Stmt;
+  getKanbanCardsByPhase: Stmt;
+  getKanbanSpecItems: Stmt;
+  getKanbanSpecItemsByEpic: Stmt;
+  getKanbanSpecItem: Stmt;
+  getKanbanSpecItemBySpikeCard: Stmt;
+  countOpenKanbanSpecItemsByEpic: Stmt;
+  createKanbanSpecItem: Stmt;
+  updateKanbanSpecItem: Stmt;
+  setKanbanSpecItemSpikeCard: Stmt;
+  deleteKanbanSpecItem: Stmt;
+  setKanbanCardKind: Stmt;
+  updateSessionLinkedSpecItem: Stmt;
+  getAutonomousPhases: Stmt;
+  getEligibleAutonomousCardsByPhase: Stmt;
+  getEligibleAutonomousSpikeCardsByPhase: Stmt;
+  getEligibleAutonomousSpikeCards: Stmt;
   getAutonomousEpic: Stmt;
   getAutonomousEpics: Stmt;
   getEligibleAutonomousCards: Stmt;

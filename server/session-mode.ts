@@ -25,7 +25,7 @@
  */
 
 /** Canonical, ordered list of session modes. Order is display order. */
-export const SESSION_MODES = ['chat', 'design'] as const;
+export const SESSION_MODES = ['chat', 'design', 'scoping'] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
 
@@ -56,6 +56,16 @@ export function isDesignModeActive(
   session: { session_mode?: string | null } | null | undefined,
 ): boolean {
   return normalizeSessionMode(session?.session_mode) === 'design';
+}
+
+/**
+ * Whether scoping-mode behavior (kanban flowchart panel, phase/ticket planning)
+ * should be active for a session row.
+ */
+export function isScopingModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'scoping';
 }
 
 /**

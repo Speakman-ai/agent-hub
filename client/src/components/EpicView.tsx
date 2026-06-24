@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronRight, LayoutGrid, Plus, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, Trash2, Zap } from 'lucide-react';
 import { api } from '../utils/api';
-import { epicFormToCreateBody, epicFormToUpdateBody } from '../utils/epics';
+import { epicFormToCreateBody, epicFormToUpdateBody, phaseFormToUpdateBody } from '../utils/epics';
 import EpicDetailsPanel, { EMPTY_EPIC_FORM } from './EpicDetailsPanel';
 import EpicAutonomousPanel, {
   EMPTY_AUTONOMOUS_FORM,
   epicToAutonomousForm,
 } from './EpicAutonomousPanel';
-
-const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
-
-const PRIORITY_STYLES = {
-  urgent: 'bg-red-500/10 text-red-300 ring-1 ring-inset ring-red-500/25',
-  high: 'bg-orange-500/10 text-orange-300 ring-1 ring-inset ring-orange-500/25',
-  medium: 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25',
-  low: 'bg-gray-500/10 text-gray-400 ring-1 ring-inset ring-gray-500/20',
-} as Record<string, any>;
+import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
+import { epicAutonomousSummary, specProgress } from '../utils/epicScopeStats';
+import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
+import { useKanbanCardDetail } from '../hooks/useKanbanCardDetail';
 
 function SectionCard({ title, description, children, action }: any) {
   return (
@@ -41,13 +36,17 @@ export default function EpicView({
   epicId,
   project,
   refreshKey,
+  agents = [],
   onBackToBoard,
   onOpenEpic,
   onOpenEpicsList,
+  onNavigateToSession,
 }: any) {
   const [columns, setColumns] = useState<any[]>([]);
   const [cards, setCards] = useState<any[]>([]);
   const [epics, setEpics] = useState<any[]>([]);
+  const [phases, setPhases] = useState<any[]>([]);
+  const [specItems, setSpecItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
   const [modelConfig, setModelConfig] = useState<any>(null);
@@ -59,27 +58,45 @@ export default function EpicView({
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [newEpicForm, setNewEpicForm] = useState({ ...EMPTY_EPIC_FORM });
 
-  const [newTicketTitle, setNewTicketTitle] = useState('');
-  const [newTicketPriority, setNewTicketPriority] = useState('medium');
-  const [addingTicket, setAddingTicket] = useState(false);
-  const ticketInputRef = useRef<any>(null);
+  const [addingTicketPhaseId, setAddingTicketPhaseId] = useState<string | null>(null);
+  const [creatingPhase, setCreatingPhase] = useState(false);
+  const [phaseSavingId, setPhaseSavingId] = useState<any>(null);
+  const [phaseForms, setPhaseForms] = useState<Record<string, any>>({});
+  const [specSavingId, setSpecSavingId] = useState<any>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
+  const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
 
   const epic = epicId ? epics.find((e: any) => e.id === epicId) : null;
 
   const fetchBoard = useCallback(async () => {
-    if (!projectId) return;
+    if (!projectId) return undefined;
     try {
       const data = await api.getBoard(projectId);
       setColumns(data.columns || []);
       setCards(data.cards || []);
       setEpics(data.epics || []);
+      setPhases(data.phases || []);
+      setSpecItems(data.specItems || []);
       setError(null);
+      return data.cards || [];
     } catch (err: any) {
       setError(err.message);
+      return undefined;
     } finally {
       setLoading(false);
     }
   }, [projectId]);
+
+  const cardDetail = useKanbanCardDetail({
+    projectId,
+    agents,
+    epics,
+    cards,
+    modelConfig,
+    onRefresh: fetchBoard,
+    onNavigateToSession,
+  });
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;
@@ -118,14 +135,11 @@ export default function EpicView({
     setAutonomousForm(epicToAutonomousForm(epic));
   }, [epic?.id, epic?.name, epic?.description, epic?.color, epic?.autonomous]);
 
-  const doneColumnIds = useMemo(
-    () =>
-      new Set(columns.filter((c: any) => c.name.toLowerCase() === 'done').map((c: any) => c.id)),
-    [columns],
-  );
-
-  const epicCardCount = (id: any) =>
-    cards.filter((c: any) => c.epic_id === id && !doneColumnIds.has(c.column_id)).length;
+  const defaultColumnId = useMemo(() => {
+    const backlog = columns.find((c: any) => c.name.toLowerCase() === 'backlog');
+    const todo = columns.find((c: any) => c.name.toLowerCase() === 'to do');
+    return backlog?.id || todo?.id || columns[0]?.id || null;
+  }, [columns]);
 
   const epicTickets = useMemo(() => {
     if (!epicId) return [];
@@ -141,13 +155,26 @@ export default function EpicView({
       });
   }, [cards, columns, epicId]);
 
-  const defaultColumnId = useMemo(() => {
-    const backlog = columns.find((c: any) => c.name.toLowerCase() === 'backlog');
-    return backlog?.id || columns[0]?.id || null;
-  }, [columns]);
+  const epicPhases = useMemo(() => {
+    if (!epicId) return [];
+    return phases
+      .filter((p: any) => p.epic_id === epicId)
+      .sort((a: any, b: any) => a.position - b.position);
+  }, [phases, epicId]);
 
-  const columnName = (columnId: any) =>
-    columns.find((c: any) => c.id === columnId)?.name || 'Unknown';
+  useEffect(() => {
+    if (!epicPhases.length) {
+      setPhaseForms({});
+      return;
+    }
+    setPhaseForms((prev: any) => {
+      const next = { ...prev };
+      for (const phase of epicPhases) {
+        if (!next[phase.id]) next[phase.id] = epicToAutonomousForm(phase);
+      }
+      return next;
+    });
+  }, [epicPhases]);
 
   const handleCreateEpic = async () => {
     if (!newEpicForm.name.trim() || creatingEpic) return;
@@ -221,26 +248,142 @@ export default function EpicView({
     }
   };
 
-  const handleAddTicket = async (e: any) => {
-    e?.preventDefault();
-    if (!epicId || !newTicketTitle.trim() || !defaultColumnId || addingTicket) return;
-    setAddingTicket(true);
+  const handleAddPhaseByName = async (name: string) => {
+    if (!epicId || !name.trim() || creatingPhase) return;
+    setCreatingPhase(true);
+    try {
+      await api.createPhase(projectId, { epicId, name: name.trim() });
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to create phase:', err);
+    } finally {
+      setCreatingPhase(false);
+    }
+  };
+
+  const handleAddTicketToPhase = async (phaseId: string, title: string) => {
+    if (!epicId || !title.trim() || !defaultColumnId || addingTicketPhaseId) return;
+    setAddingTicketPhaseId(phaseId);
     try {
       await api.createCard(projectId, {
-        title: newTicketTitle.trim(),
-        priority: newTicketPriority,
+        title: title.trim(),
+        priority: 'medium',
         columnId: defaultColumnId,
         epicId,
+        phaseId,
         createdBy: 'user',
       });
-      setNewTicketTitle('');
-      setNewTicketPriority('medium');
       await fetchBoard();
-      ticketInputRef.current?.focus();
     } catch (err: any) {
       console.error('Failed to create ticket:', err);
     } finally {
-      setAddingTicket(false);
+      setAddingTicketPhaseId(null);
+    }
+  };
+
+  const handleRunPhase = async (phaseId: string) => {
+    const phase = epicPhases.find((p: any) => p.id === phaseId);
+    const form = phaseForms[phaseId];
+    if (!phase || !form?.autonomous) return;
+    setPhaseRunError(null);
+    try {
+      await api.updatePhase(
+        projectId,
+        phaseId,
+        phaseFormToUpdateBody({ ...form, name: phase.name }),
+      );
+      await api.runPhase(projectId, phaseId);
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to run phase:', err);
+      setPhaseRunError(err?.message || 'Failed to run phase');
+    }
+  };
+
+  const handleStopPhase = async (phaseId: string) => {
+    if (phaseStoppingId) return;
+    setPhaseRunError(null);
+    setPhaseStoppingId(phaseId);
+    try {
+      await api.stopPhase(projectId, phaseId);
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to stop phase:', err);
+      setPhaseRunError(err?.message || 'Failed to stop phase');
+    } finally {
+      setPhaseStoppingId(null);
+    }
+  };
+
+  const handlePhaseFormChange = (phaseId: string, patch: any) => {
+    setPhaseForms((prev: any) => ({
+      ...prev,
+      [phaseId]: { ...(prev[phaseId] || {}), ...patch },
+    }));
+  };
+
+  const epicAutoSummary = epicId ? epicAutonomousSummary(epicPhases) : null;
+  const epicSpecStats = useMemo(() => {
+    if (!epicId) return null;
+    return specProgress(specItems.filter((s: any) => s.epic_id === epicId));
+  }, [specItems, epicId]);
+
+  const handleSavePhaseAutonomous = async (phase: any, form: any) => {
+    if (phaseSavingId) return;
+    setPhaseSavingId(phase.id);
+    try {
+      await api.updatePhase(
+        projectId,
+        phase.id,
+        phaseFormToUpdateBody({ ...form, name: phase.name }),
+      );
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to save phase:', err);
+    } finally {
+      setPhaseSavingId(null);
+    }
+  };
+
+  const handleAddSpecItem = async ({ tag, title }: { tag: string; title: string }) => {
+    if (!epicId || specSavingId) return;
+    setSpecSavingId('new');
+    try {
+      await api.createSpecItem(projectId, { epicId, tag, title });
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to create spec item:', err);
+    } finally {
+      setSpecSavingId(null);
+    }
+  };
+
+  const handleUpdateSpecItem = async (specItemId: string, patch: any) => {
+    if (specSavingId) return;
+    setSpecSavingId(specItemId);
+    try {
+      await api.updateSpecItem(projectId, specItemId, patch);
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to update spec item:', err);
+    } finally {
+      setSpecSavingId(null);
+    }
+  };
+
+  const handleDecideForMe = async (specItemId: string) => {
+    if (specSavingId) return;
+    setSpecSavingId(specItemId);
+    try {
+      const result = await api.decideSpecForMe(projectId, specItemId);
+      await fetchBoard();
+      if (onNavigateToSession && result?.sessionId && result?.agentId) {
+        onNavigateToSession(result.agentId, result.sessionId);
+      }
+    } catch (err: any) {
+      console.error('Failed to start decide-for-me:', err);
+    } finally {
+      setSpecSavingId(null);
     }
   };
 
@@ -303,19 +446,28 @@ export default function EpicView({
             </h1>
             <p className="text-xs text-gray-500 truncate">
               {epicId
-                ? `${epicTickets.length} ticket${epicTickets.length !== 1 ? 's' : ''}`
+                ? epicSpecStats && epicSpecStats.total > 0
+                  ? `${epicSpecStats.chosen}/${epicSpecStats.total} spec locked · ${epicTickets.length} ticket${epicTickets.length !== 1 ? 's' : ''}`
+                  : `${epicTickets.length} ticket${epicTickets.length !== 1 ? 's' : ''} · ${epicPhases.length} phase${epicPhases.length !== 1 ? 's' : ''}`
                 : `${epics.length} epic${epics.length !== 1 ? 's' : ''} · ${project?.name || 'Project'}`}
             </p>
           </div>
         </div>
         {epicId && epic ? (
           <div className="flex items-center gap-2">
-            {epic.autonomous === 1 && (
+            {epicAutoSummary?.label && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded-md">
                 <Zap size={11} />
-                Autonomous
+                {epicAutoSummary.label}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setShowSettings((s) => !s)}
+              className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-white/[0.06]"
+            >
+              Settings
+            </button>
             <span
               className="w-3 h-3 rounded-full ring-1 ring-white/10"
               style={{ backgroundColor: epic.color }}
@@ -325,12 +477,12 @@ export default function EpicView({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto p-5 space-y-5">
+        <div className={`mx-auto p-5 ${epicId ? 'max-w-[1400px]' : 'max-w-6xl'}`}>
           {!epicId ? (
-            <>
+            <div className="space-y-6">
               <SectionCard
                 title="New epic"
-                description="Create an epic, then add tickets on its detail page."
+                description="Create an epic, then add spec decisions and phases."
                 action={
                   <button
                     type="button"
@@ -350,201 +502,118 @@ export default function EpicView({
                 />
               </SectionCard>
 
-              <SectionCard
-                title="Your epics"
-                description="Open an epic to manage tickets and settings."
-              >
-                {epics.length === 0 ? (
-                  <p className="text-sm text-gray-500">No epics yet. Create one above.</p>
-                ) : (
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {epics.map((item: any) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => onOpenEpic(item.id)}
-                        data-testid={`epic-list-item-${item.id}`}
-                        className="text-left rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] p-4 transition-all"
-                      >
-                        <div className="flex items-start gap-3">
-                          <span
-                            className="mt-0.5 w-3 h-3 rounded-full ring-1 ring-white/10 flex-shrink-0"
-                            style={{ backgroundColor: item.color }}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-gray-100 truncate">
-                                {item.name}
-                              </span>
-                              {item.autonomous === 1 && (
-                                <Zap size={12} className="text-emerald-400 flex-shrink-0" />
-                              )}
-                            </div>
-                            {item.description ? (
-                              <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                                {item.description}
-                              </p>
-                            ) : null}
-                            <p className="text-[11px] text-gray-500 mt-2">
-                              {epicCardCount(item.id)} active ticket
-                              {epicCardCount(item.id) !== 1 ? 's' : ''}
-                            </p>
-                          </div>
-                          <ChevronRight size={16} className="text-gray-600 flex-shrink-0 mt-0.5" />
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </SectionCard>
-            </>
+              <EpicScopeWorkbench
+                variant="page"
+                epics={epics}
+                phases={phases}
+                allCards={cards}
+                tickets={[]}
+                columns={columns}
+                specItems={specItems}
+                projectName={project?.name}
+                onOpenEpic={onOpenEpic}
+              />
+            </div>
           ) : (
-            <>
-              <SectionCard
-                title="Tickets"
-                description="Add cards directly to this epic. New tickets land in Backlog."
-                action={
-                  <button
-                    type="button"
-                    onClick={onBackToBoard}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-white/[0.06] rounded-lg transition-colors"
+            <div className="space-y-6">
+              {phaseRunError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                  {phaseRunError}
+                </div>
+              )}
+              <EpicScopeWorkbench
+                variant="page"
+                epic={epic}
+                epics={epics}
+                phases={phases}
+                tickets={epicTickets}
+                allCards={cards}
+                columns={columns}
+                specItems={specItems}
+                projectName={project?.name}
+                phaseForms={phaseForms}
+                onPhaseFormChange={handlePhaseFormChange}
+                onSavePhase={handleSavePhaseAutonomous}
+                phaseSavingId={phaseSavingId}
+                onAddTicket={handleAddTicketToPhase}
+                addingTicketPhaseId={addingTicketPhaseId}
+                onAddPhase={handleAddPhaseByName}
+                creatingPhase={creatingPhase}
+                onRunPhase={handleRunPhase}
+                onStopPhase={handleStopPhase}
+                phaseStoppingId={phaseStoppingId}
+                onOpenEpic={onOpenEpic}
+                onAddSpecItem={handleAddSpecItem}
+                onUpdateSpecItem={handleUpdateSpecItem}
+                onDecideForMe={handleDecideForMe}
+                specSavingId={specSavingId}
+                onOpenCard={cardDetail.openDetail}
+              />
+
+              {showSettings && (
+                <div className="grid gap-5 lg:grid-cols-2 max-w-6xl">
+                  <SectionCard
+                    title="Epic details"
+                    description="Name, description, and color."
+                    action={
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleDeleteEpic}
+                          disabled={detailsSaving || autonomousSaving}
+                          data-testid="epic-delete-button"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          <Trash2 size={12} />
+                          Delete
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveDetails}
+                          disabled={!detailsForm.name.trim() || detailsSaving}
+                          data-testid="epic-save-button"
+                          className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
+                        >
+                          {detailsSaving ? 'Saving…' : 'Save'}
+                        </button>
+                      </div>
+                    }
                   >
-                    <LayoutGrid size={12} />
-                    View board
-                  </button>
-                }
-              >
-                <form onSubmit={handleAddTicket} className="flex flex-wrap items-end gap-2 mb-5">
-                  <div className="flex-1 min-w-[220px]">
-                    <label htmlFor="new-ticket-title" className="sr-only">
-                      Ticket title
-                    </label>
-                    <input
-                      ref={ticketInputRef}
-                      id="new-ticket-title"
-                      type="text"
-                      value={newTicketTitle}
-                      onChange={(e: any) => setNewTicketTitle(e.target.value)}
-                      placeholder="Ticket title…"
-                      data-testid="epic-add-ticket-input"
-                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 focus:border-indigo-500/40"
+                    <EpicDetailsPanel
+                      form={detailsForm}
+                      onChange={(patch: any) => setDetailsForm((f: any) => ({ ...f, ...patch }))}
                     />
-                  </div>
-                  <select
-                    value={newTicketPriority}
-                    onChange={(e: any) => setNewTicketPriority(e.target.value)}
-                    className="h-[42px] bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 text-sm text-gray-200 focus:outline-none"
-                  >
-                    {PRIORITIES.map((p: any) => (
-                      <option key={p} value={p}>
-                        {p}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="submit"
-                    disabled={!newTicketTitle.trim() || addingTicket || !defaultColumnId}
-                    data-testid="epic-add-ticket-button"
-                    className="inline-flex items-center gap-1.5 h-[42px] px-4 text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
-                  >
-                    <Plus size={14} />
-                    {addingTicket ? 'Adding…' : 'Add ticket'}
-                  </button>
-                </form>
+                  </SectionCard>
 
-                {epicTickets.length === 0 ? (
-                  <p className="text-sm text-gray-500">No tickets in this epic yet.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {epicTickets.map((ticket: any) => (
-                      <li
-                        key={ticket.id}
-                        className="flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5"
-                        data-testid={`epic-ticket-${ticket.id}`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-gray-100 truncate">
-                            {ticket.title}
-                          </p>
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            {columnName(ticket.column_id)}
-                          </p>
-                        </div>
-                        {ticket.priority && (
-                          <span
-                            className={`text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-md ${
-                              PRIORITY_STYLES[ticket.priority] || PRIORITY_STYLES.medium
-                            }`}
-                          >
-                            {ticket.priority}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </SectionCard>
-
-              <div className="grid gap-5 lg:grid-cols-2">
-                <SectionCard
-                  title="Epic details"
-                  description="Name, description, and color."
-                  action={
-                    <div className="flex items-center gap-2">
+                  <SectionCard
+                    title="Epic settings"
+                    description="PR base branch and legacy epic-level autonomous (phases preferred)."
+                    action={
                       <button
                         type="button"
-                        onClick={handleDeleteEpic}
-                        disabled={detailsSaving || autonomousSaving}
-                        data-testid="epic-delete-button"
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50"
+                        onClick={handleSaveAutonomous}
+                        disabled={autonomousSaving}
+                        data-testid="autonomous-save-button"
+                        className="px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/40 text-white rounded-lg transition-colors"
                       >
-                        <Trash2 size={12} />
-                        Delete
+                        {autonomousSaving ? 'Saving…' : 'Save'}
                       </button>
-                      <button
-                        type="button"
-                        onClick={handleSaveDetails}
-                        disabled={!detailsForm.name.trim() || detailsSaving}
-                        data-testid="epic-save-button"
-                        className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
-                      >
-                        {detailsSaving ? 'Saving…' : 'Save'}
-                      </button>
-                    </div>
-                  }
-                >
-                  <EpicDetailsPanel
-                    form={detailsForm}
-                    onChange={(patch: any) => setDetailsForm((f: any) => ({ ...f, ...patch }))}
-                  />
-                </SectionCard>
-
-                <SectionCard
-                  title="Autonomous dispatch"
-                  description="PR base branch, auto-assign, concurrency, and Auto Merge."
-                  action={
-                    <button
-                      type="button"
-                      onClick={handleSaveAutonomous}
-                      disabled={autonomousSaving}
-                      data-testid="autonomous-save-button"
-                      className="px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/40 text-white rounded-lg transition-colors"
-                    >
-                      {autonomousSaving ? 'Saving…' : 'Save'}
-                    </button>
-                  }
-                >
-                  <EpicAutonomousPanel
-                    form={autonomousForm}
-                    onChange={(patch: any) => setAutonomousForm((f: any) => ({ ...f, ...patch }))}
-                    modelConfig={modelConfig}
-                  />
-                </SectionCard>
-              </div>
-            </>
+                    }
+                  >
+                    <EpicAutonomousPanel
+                      form={autonomousForm}
+                      onChange={(patch: any) => setAutonomousForm((f: any) => ({ ...f, ...patch }))}
+                      modelConfig={modelConfig}
+                    />
+                  </SectionCard>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
+
+      <KanbanCardDetailModal detail={cardDetail} agents={agents} />
     </div>
   );
 }

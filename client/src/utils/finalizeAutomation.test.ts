@@ -25,6 +25,7 @@ describe('SESSION_CONTROL_OPTIONS', () => {
   it('folds Design + Ask + the four finalize levels into one ordered list', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => (o as any).value)).toEqual([
       'design',
+      'scoping',
       'ask',
       'manual',
       'review',

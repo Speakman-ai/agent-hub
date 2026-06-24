@@ -1413,6 +1413,15 @@ components:
         epic_id:
           type: string
           nullable: true
+        phase_id:
+          type: string
+          nullable: true
+        card_kind:
+          type: string
+          enum:
+            - task
+            - spike
+          description: "`task` (default) or `spike` — spike cards resolve epic spec decisions via scoping sessions."
         documented:
           type: integer
         dispatched_by_autonomous:
@@ -1546,6 +1555,108 @@ components:
         - created_at
         - updated_at
       description: A kanban epic — a group of related cards.
+    KanbanPhase:
+      type: object
+      properties:
+        id:
+          type: string
+        epic_id:
+          type: string
+        board_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        position:
+          type: integer
+        autonomous:
+          type: integer
+        autonomous_interval:
+          type: integer
+        autonomous_max_concurrent:
+          type: integer
+        autonomous_model:
+          type: string
+          nullable: true
+        autonomous_enabled_by:
+          type: string
+          nullable: true
+        autonomous_send_it:
+          type: integer
+        autonomous_running:
+          type: integer
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - epic_id
+        - board_id
+        - name
+        - description
+        - position
+        - autonomous
+        - autonomous_interval
+        - autonomous_max_concurrent
+        - autonomous_model
+        - created_at
+        - updated_at
+      description: A phase within an epic — groups related tickets for a feature run.
+    KanbanEpicSpecItem:
+      type: object
+      properties:
+        id:
+          type: string
+        epic_id:
+          type: string
+        board_id:
+          type: string
+        phase_id:
+          type: string
+          nullable: true
+        tag:
+          type: string
+        title:
+          type: string
+        decision:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - open
+            - chosen
+            - deferred
+        position:
+          type: integer
+        spike_card_id:
+          type: string
+          nullable: true
+        resolved_session_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - epic_id
+        - board_id
+        - phase_id
+        - tag
+        - title
+        - decision
+        - status
+        - position
+        - spike_card_id
+        - resolved_session_id
+        - created_at
+        - updated_at
+      description: An architecture decision for an epic. Open items have a linked spike ticket; spike sessions lock the decision.
     KanbanCardComment:
       type: object
       properties:
@@ -1600,6 +1711,16 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/KanbanEpic"
+        phases:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanPhase"
+          description: All phases on the board, ordered by position within their epic.
+        specItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanEpicSpecItem"
+          description: Architecture spec decisions for epics — resolved via spike tickets/sessions.
         counts:
           type: object
           additionalProperties:
@@ -1694,8 +1815,9 @@ components:
           enum:
             - chat
             - design
+            - scoping
             - null
-          description: "Session mode picker dimension: `chat` (default) or `design`. NULL/absent on legacy rows → treated as `chat`. A `design` session loads the design skill and produces HTML/CSS/JS artifacts in its worktree. Set via `PUT /api/sessions/{sessionId}/mode`."
+          description: "Session mode picker dimension: `chat` (default), `design`, or `scoping`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         reasoning_effort:
           type: string
           nullable: true
@@ -1738,6 +1860,10 @@ components:
           type: string
           nullable: true
           description: Optional Design Studio design id linked to this session. When set, the web client renders the design's live canvas in a preview pane beside the chat. Set/cleared via `PUT /api/sessions/{sessionId}/linked-design`. Not a foreign key — a stale id (design since deleted) is tolerated and ignored at render time.
+        linked_epic_id:
+          type: string
+          nullable: true
+          description: Epic linked for scoping mode. When `session_mode` is `scoping`, the web client renders a live Epic → Phase → Ticket flowchart for this epic. Set/cleared via `PUT /api/sessions/{sessionId}/linked-epic`.
         state:
           type: string
           enum:
@@ -10077,6 +10203,12 @@ paths:
                 createdBy:
                   type: string
                   nullable: true
+                epicId:
+                  type: string
+                  nullable: true
+                phaseId:
+                  type: string
+                  nullable: true
               required:
                 - title
                 - columnId
@@ -10189,6 +10321,9 @@ paths:
                   type: string
                   nullable: true
                 epicId:
+                  type: string
+                  nullable: true
+                phaseId:
                   type: string
                   nullable: true
                 assignModel:
@@ -10940,6 +11075,512 @@ paths:
                       - true
                 required:
                   - ok
+  /api/projects/{projectId}/board/spec-items/{specItemId}/decide-for-me:
+    post:
+      tags:
+        - Board
+      summary: Research and lock a spec decision via agent session
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: specItemId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+                  description: Agent to run the research session. Defaults to the project lead.
+      responses:
+        "200":
+          description: Scoping session started.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                  specItem:
+                    $ref: "#/components/schemas/KanbanEpicSpecItem"
+                required:
+                  - sessionId
+                  - agentId
+                  - specItem
+        "400":
+          description: Spec item already locked or validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Spec item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/phases:
+    get:
+      tags:
+        - Board
+      summary: List phases on the board
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: All phases on the board, ordered by position within their epic.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanPhase"
+    post:
+      tags:
+        - Board
+      summary: Create a phase under an epic
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                  minLength: 1
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+              required:
+                - epicId
+                - name
+      responses:
+        "200":
+          description: The created phase.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanPhase"
+        "404":
+          description: Epic not found on this board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/phases/{phaseId}:
+    put:
+      tags:
+        - Board
+      summary: Update a phase (incl. autonomous settings)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban phase UUID.
+          required: true
+          description: Kanban phase UUID.
+          name: phaseId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                description:
+                  type: string
+                  nullable: true
+                autonomous:
+                  type: integer
+                autonomousInterval:
+                  type: integer
+                autonomousMaxConcurrent:
+                  type: integer
+                autonomousModel:
+                  type: string
+                  nullable: true
+                autonomousSendIt:
+                  type: integer
+                  enum:
+                    - 0
+                    - 1
+      responses:
+        "200":
+          description: The updated phase.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanPhase"
+        "404":
+          description: Phase not found on this project board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete a phase (unlinks its cards)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban phase UUID.
+          required: true
+          description: Kanban phase UUID.
+          name: phaseId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "404":
+          description: Phase not found on this project board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/phases/{phaseId}/run:
+    post:
+      tags:
+        - Board
+      summary: Start autonomous dispatch for a phase
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban phase UUID.
+          required: true
+          description: Kanban phase UUID.
+          name: phaseId
+          in: path
+      responses:
+        "200":
+          description: The phase, now running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanPhase"
+        "400":
+          description: Phase could not be started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/phases/{phaseId}/stop:
+    post:
+      tags:
+        - Board
+      summary: Stop autonomous dispatch for a phase
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban phase UUID.
+          required: true
+          description: Kanban phase UUID.
+          name: phaseId
+          in: path
+      responses:
+        "200":
+          description: The phase, now stopped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanPhase"
+        "400":
+          description: Phase could not be stopped.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/spec-items:
+    post:
+      tags:
+        - Board
+      summary: Create an epic spec item (optionally already chosen)
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                  minLength: 1
+                tag:
+                  type: string
+                  minLength: 1
+                title:
+                  type: string
+                  minLength: 1
+                decision:
+                  type: string
+                  nullable: true
+                phaseId:
+                  type: string
+                  nullable: true
+                status:
+                  type: string
+                  enum:
+                    - open
+                    - chosen
+                    - deferred
+                  description: Initial status. `chosen` requires a non-empty `decision`; defaults to `open`.
+                createSpikeCard:
+                  type: boolean
+                  description: When true, also create a legacy spike kanban ticket linked to this spec item. Default false — use Decide for me or write the decision directly.
+              required:
+                - epicId
+                - tag
+                - title
+      responses:
+        "200":
+          description: The created spec item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpicSpecItem"
+        "400":
+          description: Validation failed (e.g. chosen without a decision, or a foreign phase).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Epic not found on this board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/spec-items/{specItemId}:
+    put:
+      tags:
+        - Board
+      summary: Update an epic spec item
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Epic spec item UUID.
+          required: true
+          description: Epic spec item UUID.
+          name: specItemId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tag:
+                  type: string
+                  minLength: 1
+                title:
+                  type: string
+                  minLength: 1
+                decision:
+                  type: string
+                  nullable: true
+                status:
+                  type: string
+                  enum:
+                    - open
+                    - chosen
+                    - deferred
+                phaseId:
+                  type: string
+                  nullable: true
+                position:
+                  type: integer
+                resolvedSessionId:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: The updated spec item.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanEpicSpecItem"
+        "400":
+          description: Validation failed (e.g. chosen without a decision, or a foreign phase).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Spec item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete an epic spec item
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Epic spec item UUID.
+          required: true
+          description: Epic spec item UUID.
+          name: specItemId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "404":
+          description: Spec item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/spec-items/{specItemId}/spike:
+    post:
+      tags:
+        - Board
+      summary: Create (or return) the spike card for a spec item
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Epic spec item UUID.
+          required: true
+          description: Epic spec item UUID.
+          name: specItemId
+          in: path
+      responses:
+        "200":
+          description: The spec item and its linked spike card.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  specItem:
+                    $ref: "#/components/schemas/KanbanEpicSpecItem"
+                  spikeCard:
+                    $ref: "#/components/schemas/KanbanCard"
+                required:
+                  - specItem
+                  - spikeCard
+        "404":
+          description: Spec item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "500":
+          description: Failed to create the spike card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/agents/{agentId}/sessions:
     get:
       tags:
@@ -11165,6 +11806,7 @@ paths:
                   enum:
                     - chat
                     - design
+                    - scoping
                 ask_mode:
                   type: boolean
       responses:
@@ -11393,6 +12035,43 @@ paths:
                 $ref: "#/components/schemas/SessionErrorResponse"
         "404":
           description: Session or design not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/linked-epic:
+    put:
+      tags:
+        - Sessions
+      summary: Link (or unlink) a kanban epic to a session for scoping mode
+      description: "Sets `linked_epic_id` so a scoping-mode session renders the Epic → Phase → Ticket flowchart and loads the epic's spec context. Pass `epicId: null` to clear the link. A non-null id must reference an epic on the session's own project board."
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                epicId:
+                  type: string
+                  nullable: true
+                  description: Epic UUID to link, or null to unlink.
+      responses:
+        "200":
+          description: Updated session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Session or epic not found (incl. an epic on a different project).
           content:
             application/json:
               schema:
@@ -11725,6 +12404,7 @@ paths:
                   enum:
                     - chat
                     - design
+                    - scoping
               required:
                 - mode
       responses:

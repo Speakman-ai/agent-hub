@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import EpicView from './EpicView';
 import { api } from '../utils/api';
 
@@ -11,6 +11,10 @@ import { api } from '../utils/api';
     createCard: vi.fn(),
     updateEpic: vi.fn(),
     deleteEpic: vi.fn(),
+    createPhase: vi.fn(),
+    updatePhase: vi.fn(),
+    runPhase: vi.fn(),
+    stopPhase: vi.fn(),
   },
 }));
 
@@ -20,11 +24,19 @@ const board = {
     { id: 'col-done', name: 'Done', position: 1 },
   ],
   cards: [
-    { id: 'c1', title: 'Existing ticket', column_id: 'col-backlog', epic_id: 'e1', position: 0 },
+    {
+      id: 'c1',
+      title: 'Existing ticket',
+      column_id: 'col-backlog',
+      epic_id: 'e1',
+      phase_id: 'ph1',
+      position: 0,
+    },
   ],
   epics: [
     { id: 'e1', name: 'Platform', color: '#6366F1', description: 'Core work', autonomous: 0 },
   ],
+  phases: [{ id: 'ph1', epic_id: 'e1', name: 'Build', position: 0 }],
 };
 
 describe('EpicView', () => {
@@ -48,17 +60,24 @@ describe('EpicView', () => {
     );
 
     await waitFor(() => expect(screen.getByText('Platform')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('epic-list-item-e1' as any) as any);
+    fireEvent.click(screen.getByTestId('manage-epic-e1' as any) as any);
     expect(onOpenEpic!).toHaveBeenCalledWith('e1');
   });
 
-  it('adds a ticket on the epic detail screen', async () => {
+  it('adds a ticket to a phase on the epic detail screen', async () => {
     (api.createCard as any).mockResolvedValue({ id: 'c2' });
     (api.getBoard as any).mockResolvedValueOnce(board).mockResolvedValueOnce({
       ...board,
       cards: [
         ...board.cards,
-        { id: 'c2', title: 'New ticket', column_id: 'col-backlog', epic_id: 'e1', position: 1 },
+        {
+          id: 'c2',
+          title: 'New ticket',
+          column_id: 'col-backlog',
+          epic_id: 'e1',
+          phase_id: 'ph1',
+          position: 1,
+        },
       ],
     });
 
@@ -74,12 +93,19 @@ describe('EpicView', () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText('Existing ticket')).toBeInTheDocument());
+    // The existing phase-scoped ticket renders inside its phase column.
+    const phaseColumn = await screen.findByTestId('phase-column-ph1' as any);
+    await waitFor(() =>
+      expect(within(phaseColumn).getByText('Existing ticket')).toBeInTheDocument(),
+    );
 
-    fireEvent.change(screen.getByTestId('epic-add-ticket-input' as any), {
+    // Open the per-phase add-ticket form, type a title, and submit.
+    fireEvent.click(within(phaseColumn).getByText('Add ticket'));
+    const form = await within(phaseColumn).findByTestId('add-ticket-form' as any);
+    fireEvent.change(within(form).getByLabelText('Ticket title'), {
       target: { value: 'New ticket' },
     });
-    fireEvent.click(screen.getByTestId('epic-add-ticket-button' as any) as any);
+    fireEvent.submit(form);
 
     await waitFor(() =>
       expect(api.createCard).toHaveBeenCalledWith('p1', {
@@ -87,6 +113,7 @@ describe('EpicView', () => {
         priority: 'medium',
         columnId: 'col-backlog',
         epicId: 'e1',
+        phaseId: 'ph1',
         createdBy: 'user',
       }),
     );

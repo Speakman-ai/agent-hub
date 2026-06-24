@@ -10,7 +10,7 @@ import {
 
 describe('session-mode helpers', () => {
   it('exposes the canonical mode list with chat as the default', () => {
-    expect(SESSION_MODES).toEqual(['chat', 'design']);
+    expect(SESSION_MODES).toEqual(['chat', 'design', 'scoping']);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);
   });
@@ -19,6 +19,7 @@ describe('session-mode helpers', () => {
     it('accepts the canonical values only', () => {
       expect(isSessionMode('chat')).toBe(true);
       expect(isSessionMode('design')).toBe(true);
+      expect(isSessionMode('scoping')).toBe(true);
     });
 
     it('rejects unknown strings and non-strings', () => {
@@ -36,6 +37,7 @@ describe('session-mode helpers', () => {
     it('passes through valid modes', () => {
       expect(normalizeSessionMode('chat')).toBe('chat');
       expect(normalizeSessionMode('design')).toBe('design');
+      expect(normalizeSessionMode('scoping')).toBe('scoping');
     });
 
     it('collapses null / undefined / unknown to the default (legacy rows)', () => {

@@ -1368,6 +1368,7 @@ function reconcileOrphanedTasks(): ResumeEntry[] {
           card.github_issue_url,
           card.pr_url,
           card.epic_id,
+          card.phase_id ?? null,
           card.assign_model ?? null,
           card.assign_engine ?? null,
           card.pr_base_branch ?? null,

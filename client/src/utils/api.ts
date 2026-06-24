@@ -592,6 +592,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ designId: designId ?? null }),
     }),
+  setSessionLinkedEpic: (sessionId: any, epicId: any) =>
+    fetchJSON(`/sessions/${sessionId}/linked-epic`, {
+      method: 'PUT',
+      body: JSON.stringify({ epicId: epicId ?? null }),
+    }),
   // `setSessionWorktree` was removed when Agent Hub locked to
   // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
   // endpoint no longer exists.
@@ -1146,6 +1151,51 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ epicId }),
     }),
+
+  // Phases
+  getPhases: (projectId: any) => fetchJSON(`/projects/${projectId}/board/phases`),
+  createPhase: (projectId: any, data: any) =>
+    fetchJSON(`/projects/${projectId}/board/phases`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updatePhase: (projectId: any, phaseId: any, data: any) =>
+    fetchJSON(`/projects/${projectId}/board/phases/${phaseId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deletePhase: (projectId: any, phaseId: any) =>
+    fetchJSON(`/projects/${projectId}/board/phases/${phaseId}`, { method: 'DELETE' }),
+  runAutonomous: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/board/autonomous/run`, { method: 'POST' }),
+  runPhase: (projectId: any, phaseId: any) =>
+    fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/run`, { method: 'POST' }),
+  stopPhase: (projectId: any, phaseId: any) =>
+    fetchJSON(`/projects/${projectId}/board/phases/${phaseId}/stop`, { method: 'POST' }),
+
+  // Epic spec decisions
+  createSpecItem: (projectId: any, data: any) =>
+    fetchJSON(`/projects/${projectId}/board/spec-items`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateSpecItem: (projectId: any, specItemId: any, data: any) =>
+    fetchJSON(`/projects/${projectId}/board/spec-items/${specItemId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  createSpecSpike: (projectId: any, specItemId: any) =>
+    fetchJSON(`/projects/${projectId}/board/spec-items/${specItemId}/spike`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  decideSpecForMe: (projectId: any, specItemId: any, data: { agentId?: string } = {}) =>
+    fetchJSON(`/projects/${projectId}/board/spec-items/${specItemId}/decide-for-me`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  deleteSpecItem: (projectId: any, specItemId: any) =>
+    fetchJSON(`/projects/${projectId}/board/spec-items/${specItemId}`, { method: 'DELETE' }),
 
   // Background tasks
   getTasks: (limit: any = 50) => fetchJSON(`/tasks?limit=${limit}`),

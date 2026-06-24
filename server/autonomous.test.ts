@@ -29,7 +29,7 @@ vi.mock('./session-ownership.js', () => ({
   getOrgOwnerUserId: vi.fn(() => null),
   inheritOwnerFromSession: vi.fn(),
   resolveOwnerUserId: vi.fn(() => null),
-  resolveAutonomousOwnerUserId: vi.fn(() => null),
+  resolveAutonomousOwnerUserId: vi.fn(() => 'test-operator'),
   userOwnsSession: vi.fn(() => true),
 }));
 
@@ -49,6 +49,8 @@ const {
   initAutonomous,
   runAutonomousLoop,
   runAutonomousLoopForEpic,
+  runAutonomousLoopForPhase,
+  startAutonomousPhase,
   tryAutonomousDispatch,
   scheduleAutonomousEpic,
   autonomousProjects,
@@ -78,9 +80,23 @@ interface MockStmts {
   // which is why the default `makeStmts` intentionally omits it.
   getAutonomousEpics?: { all: Mock };
   getEligibleAutonomousCards: { all: Mock };
+  getEligibleAutonomousCardsByPhase?: { all: Mock };
+  getEligibleAutonomousSpikeCards?: { all: Mock };
+  getEligibleAutonomousSpikeCardsByPhase?: { all: Mock };
+  countOpenKanbanSpecItemsByEpic?: { get: Mock };
+  getKanbanSpecItemsByEpic?: { all: Mock };
+  getKanbanSpecItemBySpikeCard?: { get: Mock };
+  updateSessionMode?: { run: Mock };
+  updateSessionLinkedEpic?: { run: Mock };
+  updateSessionLinkedSpecItem?: { run: Mock };
   getKanbanColumns: { all: Mock };
   getSession: { get: Mock };
+  getKanbanCard: { get: Mock };
   getKanbanCardsByEpic: { all: Mock };
+  getKanbanCardsByPhase?: { all: Mock };
+  getKanbanPhase?: { get: Mock };
+  setPhaseAutonomousRunning?: { run: Mock };
+  setPhaseAutonomousEnabledBy?: { run: Mock };
   getKanbanEpic: { get: Mock };
   updateKanbanEpic: { run: Mock };
   createSession: { run: Mock };
@@ -104,8 +120,21 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
   return {
     getAutonomousEpic: { get: vi.fn(() => null) },
     getEligibleAutonomousCards: { all: vi.fn(() => []) },
+    getEligibleAutonomousSpikeCards: { all: vi.fn(() => []) },
+    getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+    getEligibleAutonomousCardsByPhase: { all: vi.fn(() => []) },
+    countOpenKanbanSpecItemsByEpic: { get: vi.fn(() => ({ n: 0 })) },
+    getKanbanSpecItemsByEpic: { all: vi.fn(() => []) },
+    getKanbanSpecItemBySpikeCard: { get: vi.fn(() => undefined) },
+    updateSessionMode: { run: vi.fn() },
+    updateSessionLinkedEpic: { run: vi.fn() },
+    updateSessionLinkedSpecItem: { run: vi.fn() },
     getKanbanColumns: { all: vi.fn(() => []) },
     getSession: { get: vi.fn(() => null) },
+    // Default: the card re-read inside the transactional slot claim is still
+    // eligible (To Do, not dispatched, no session). Tests that simulate a
+    // concurrent claim override this to return an already-claimed row.
+    getKanbanCard: { get: vi.fn((id: string) => makeCard({ id })) },
     getKanbanCardsByEpic: { all: vi.fn(() => []) },
     getKanbanEpic: { get: vi.fn() },
     updateKanbanEpic: { run: vi.fn() },
@@ -222,7 +251,7 @@ const ACTIVE_EPIC: KanbanEpicRow = {
   autonomous_model: null,
 } as unknown as KanbanEpicRow;
 
-beforeEach(() => {
+beforeEach(async () => {
   mockGetOrCreateBoard.mockReset();
   mockMarkFinalizeAutomationFn.mockClear();
   autonomousProjects.clear();
@@ -231,6 +260,9 @@ beforeEach(() => {
   autonomousCrons.clear();
   lastDispatchedReviewId.clear();
   lastBlockerSkipSignature.clear();
+  const ownership = await import('./session-ownership.js');
+  (ownership.resolveAutonomousOwnerUserId as Mock).mockReset();
+  (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue('test-operator');
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -511,6 +543,309 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     const sessionId = stmts.createSession.run.mock.calls[0][0] as string;
     expect(mockMarkFinalizeAutomationFn).toHaveBeenCalledWith(expect.anything(), sessionId, 'push');
+  });
+
+  it('dispatches spike cards as scoping sessions when Run phase starts', async () => {
+    const specItem = {
+      id: 'spec-spike-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      phase_id: 'phase-1',
+      tag: 'CHOOSE',
+      title: 'choose chat delivery mechanism',
+      decision: null,
+      status: 'open',
+      position: 0,
+      spike_card_id: 'spike-1',
+      resolved_session_id: null,
+      created_at: '',
+      updated_at: '',
+    };
+    const spikeCard = makeCard({
+      id: 'spike-1',
+      title: 'Spike: choose chat delivery mechanism',
+      card_kind: 'spike',
+    });
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Delivery decision',
+      autonomous_running: 1,
+      autonomous: 1,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_send_it: 0,
+      autonomous_interval: 60,
+      description: null,
+      autonomous_enabled_by: '0fca54a2-f809-4929-a89c-3a411a0fb485',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanPhase: { get: vi.fn(() => phase) },
+      getEligibleAutonomousCards: { all: vi.fn(() => []) },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => []) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => [spikeCard]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByPhase: { all: vi.fn(() => [spikeCard]) },
+      getKanbanSpecItemBySpikeCard: { get: vi.fn(() => specItem) },
+      getKanbanSpecItemsByEpic: { all: vi.fn(() => [specItem]) },
+      updateSessionLinkedSpecItem: { run: vi.fn() },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue(
+      '0fca54a2-f809-4929-a89c-3a411a0fb485',
+    );
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      spikeCard.title,
+      'claude-code',
+      expect.any(String),
+      0,
+      1,
+      1,
+    );
+    expect(stmts.updateSessionMode!.run).toHaveBeenCalledWith('scoping', expect.any(String));
+    expect(stmts.updateSessionLinkedEpic!.run).toHaveBeenCalledWith('epic-1', expect.any(String));
+    expect(stmts.updateSessionLinkedSpecItem!.run).toHaveBeenCalledWith(
+      'spec-spike-1',
+      expect.any(String),
+    );
+    expect(mockMarkFinalizeAutomationFn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(String),
+      'manual',
+    );
+    expect(deps.handleChat).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({
+        content: expect.stringContaining('Spec decisions'),
+      }),
+    );
+  });
+
+  it('uses phase autonomous_enabled_by when resolving session owner', async () => {
+    const card = makeCard({ created_by: 'not-a-user' });
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous_running: 1,
+      autonomous: 1,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_send_it: 0,
+      autonomous_interval: 60,
+      description: null,
+      autonomous_enabled_by: 'operator-user',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, autonomous_enabled_by: null })) },
+      getKanbanPhase: { get: vi.fn(() => phase) },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => [card]) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByPhase: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+
+    const ownership = await import('./session-ownership.js');
+    const mockResolve = ownership.resolveAutonomousOwnerUserId as Mock;
+    const mockSetOwner = ownership.setSessionOwner as Mock;
+    mockResolve.mockReset();
+    mockSetOwner.mockReset();
+    mockResolve.mockReturnValue('operator-user');
+
+    initAutonomous(deps as never);
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(mockResolve).toHaveBeenCalledWith(
+      expect.objectContaining({ id: card.id }),
+      expect.objectContaining({ autonomous_enabled_by: 'operator-user' }),
+    );
+    expect(mockSetOwner).toHaveBeenCalledWith(expect.any(String), 'operator-user');
+  });
+
+  it('counts only phase-local cards in the transactional slot claim (not sibling phases)', async () => {
+    // Regression: the BEGIN IMMEDIATE slot claim re-read `getKanbanCardsByEpic`
+    // even when dispatching a phase, so a busy *sibling* phase could make this
+    // phase look full and refuse to dispatch despite having a free phase-local
+    // slot. The claim must re-read the same scope the loop-top count used.
+    const todoCard = makeCard({ id: 'phase1-todo', phase_id: 'phase-1', column_id: 'col-todo' });
+    // A sibling phase has a card already In Progress — epic-wide that's 1 active,
+    // which equals this phase's max_concurrent of 1 and would wrongly block it.
+    const siblingActive = makeCard({
+      id: 'phase2-active',
+      phase_id: 'phase-2',
+      column_id: 'col-progress',
+    });
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous_running: 1,
+      autonomous: 1,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_send_it: 0,
+      autonomous_interval: 60,
+      description: null,
+      autonomous_enabled_by: 'operator-user',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanPhase: { get: vi.fn(() => phase) },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => [todoCard]) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      // Phase-scoped read: only this phase's cards → 0 active locally.
+      getKanbanCardsByPhase: { all: vi.fn(() => [todoCard]) },
+      // Epic-wide read: includes the busy sibling phase → 1 active.
+      getKanbanCardsByEpic: { all: vi.fn(() => [todoCard, siblingActive]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue('operator-user');
+
+    initAutonomous(deps as never);
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    // With the fix the phase-local slot is free, so the To Do card dispatches.
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('phase1-todo');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'phase1-todo');
+  });
+
+  it('skips dispatch when no session owner can be resolved', async () => {
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue(null);
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalled();
+  });
+
+  it('does not create a duplicate session when a concurrent loop already claimed the card', async () => {
+    // Regression: epic and phase dispatch loops use different single-flight
+    // keys, so they can run concurrently over the same To Do card. The
+    // transactional claim must re-verify the card is still eligible — here the
+    // re-read returns an already-dispatched/moved row (as if the other loop
+    // committed first), so this loop must NOT spawn a second session.
+    const card = makeCard({ id: 'shared-card', column_id: 'col-todo' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+      // Inside the BEGIN IMMEDIATE claim the card has already been claimed by
+      // the concurrent loop: marked dispatched and moved to In Progress.
+      getKanbanCard: {
+        get: vi.fn(() =>
+          makeCard({ id: 'shared-card', dispatched_by_autonomous: 1, column_id: 'col-progress' }),
+        ),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue('operator-user');
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // No second session, and the claim bailed before marking/moving.
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
+  });
+
+  it('an owner-less card does not consume the slot that a later card needs (max_concurrent=1)', async () => {
+    // Regression: the no-owner skip used to run AFTER the dispatch budget was
+    // consumed, so under max_concurrent=1 one unresolvable high-priority card
+    // starved every later eligible card on the same tick.
+    const ownerlessCard = makeCard({ id: 'no-owner', title: 'No owner card' });
+    const dispatchableCard = makeCard({ id: 'has-owner', title: 'Has owner card' });
+    const singleSlotEpic = { ...ACTIVE_EPIC, autonomous_max_concurrent: 1 } as KanbanEpicRow;
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => singleSlotEpic) },
+      getKanbanEpic: { get: vi.fn(() => singleSlotEpic) },
+      // Ordered: the owner-less card is first (e.g. highest priority).
+      getEligibleAutonomousCards: { all: vi.fn(() => [ownerlessCard, dispatchableCard]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [ownerlessCard, dispatchableCard]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockImplementation((card: KanbanCardRow) =>
+      card.id === 'has-owner' ? 'operator-user' : null,
+    );
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // The owner-less card is skipped (with a comment) but the later card with
+    // a resolvable owner still dispatches into the single free slot.
+    expect(stmts.createKanbanCardComment.run).toHaveBeenCalled();
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createSession.run.mock.calls[0][2]).toBe('Has owner card');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('has-owner');
+  });
+
+  it('skips implementation tickets while open spec decisions remain but still dispatches spikes', async () => {
+    const spikeCard = makeCard({
+      id: 'spike-1',
+      title: 'Spike: auth approach',
+      card_kind: 'spike',
+    });
+    const buildCard = makeCard({ id: 'build-1', title: 'Implement login' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [buildCard]) },
+      getEligibleAutonomousSpikeCards: { all: vi.fn(() => [spikeCard]) },
+      countOpenKanbanSpecItemsByEpic: { get: vi.fn(() => ({ n: 2 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [spikeCard, buildCard]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createSession.run.mock.calls[0][2]).toBe(spikeCard.title);
   });
 
   it('forces "Auto Merge" (merge) when the epic has autonomous_send_it set, even with project auto-merge off', async () => {
@@ -797,6 +1132,69 @@ describe('runAutonomousLoop — dispatch', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  startAutonomousPhase — owner required
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('startAutonomousPhase — owner required', () => {
+  const runnablePhase = {
+    id: 'phase-1',
+    epic_id: 'epic-1',
+    board_id: 'board-1',
+    name: 'Phase 1',
+    autonomous: 1,
+    autonomous_running: 0,
+    autonomous_interval: 60,
+    autonomous_max_concurrent: 2,
+    autonomous_model: null,
+    autonomous_send_it: 0,
+    description: null,
+    autonomous_enabled_by: 'previous-user',
+    position: 0,
+  } as unknown as KanbanEpicRow;
+
+  function phaseStmts() {
+    return makeStmts({
+      getKanbanPhase: { get: vi.fn(() => runnablePhase) },
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      setPhaseAutonomousRunning: { run: vi.fn() },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+    });
+  }
+
+  it('refuses to run and does not set the running flag when no owner resolves', async () => {
+    const stmts = phaseStmts();
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    // A stop/re-run from an unauthenticated path (null owner) must not restart
+    // work under the stale `autonomous_enabled_by` already on the phase.
+    await expect(startAutonomousPhase('proj-1', 'phase-1', null)).rejects.toThrow(
+      /Authentication required/i,
+    );
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalled();
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalled();
+  });
+
+  it('advances the stored owner to the current operator and starts when one is provided', async () => {
+    const stmts = phaseStmts();
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await startAutonomousPhase('proj-1', 'phase-1', 'current-operator');
+
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith(
+      'current-operator',
+      'phase-1',
+    );
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-1');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  engineForModel — unit
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -876,7 +1274,7 @@ describe('runAutonomousLoop — owner attribution', () => {
     expect(mockSetSessionOwner).toHaveBeenCalledWith(sessionId, 'userA');
   });
 
-  it('still stamps null when the chain resolves to null (fresh install / pre-setup)', async () => {
+  it('skips dispatch when owner chain resolves to null (no credential borrower)', async () => {
     const card = makeCard();
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -899,10 +1297,8 @@ describe('runAutonomousLoop — owner attribution', () => {
     await runAutonomousLoop('proj-1');
 
     expect(mockResolveAutonomousOwner).toHaveBeenCalledTimes(1);
-    // setSessionOwner itself is a no-op on null (see session-ownership.ts),
-    // but the dispatcher must still call it so the contract is observable.
-    expect(mockSetSessionOwner).toHaveBeenCalledTimes(1);
-    expect(mockSetSessionOwner.mock.calls[0]?.[1]).toBeNull();
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(mockSetSessionOwner).not.toHaveBeenCalled();
   });
 });
 
@@ -1263,16 +1659,14 @@ describe('runAutonomousLoop — concurrency', () => {
     const c2 = makeCard({ id: 'card-b', position: 1, title: 'B' });
     const racer = makeCard({ id: 'card-racer', column_id: 'col-progress', title: 'Raced in' });
 
-    // getKanbanCardsByEpic.all is called three times inside runAutonomousLoopInner:
-    //   call 0 — allEpicCardsForDone (done-check)
-    //   call 1 — outer activeCardCount
-    //   call 2 — in-transaction re-read (first while-loop iteration)
-    //   call 3 — in-transaction re-read (second while-loop iteration)
+    // getKanbanCardsByEpic.all is called inside runAutonomousLoopInner:
+    //   call 0 — allScopeCards (done-check + activeCardCount)
+    //   call 1 — in-transaction re-read (first while-loop iteration)
+    //   call 2 — in-transaction re-read (second while-loop iteration)
     //
-    // call 0: [c1, c2] — no done cards → epicWorkComplete=false, continue
-    // call 1: [c1, c2] — 0 active → slotsAvailable=2, while-loop runs twice
-    // call 2: [c1, c2, racer] — racer just raced in → activeNow=1<2, claim succeeds
-    // call 3: [c1InProgress, c2, racer] — c1 now in-progress too → activeNow=2>=2, abort
+    // call 0: [c1, c2] — no done cards → epicWorkComplete=false, 0 active → slotsAvailable=2
+    // call 1: [c1, c2] — activeNow=0<2, first claim succeeds
+    // call 2: [c1InProgress, c2, racer] — c1 + racer in progress → activeNow=2>=2, abort
     const c1InProgress = makeCard({
       id: 'card-a',
       position: 0,
@@ -1280,10 +1674,9 @@ describe('runAutonomousLoop — concurrency', () => {
       column_id: 'col-progress',
     });
     const epicCardsCalls = [
-      [c1, c2], // call 0: done-check
-      [c1, c2], // call 1: outer activeCardCount — 0 active, slotsAvailable=2
-      [c1, c2, racer], // call 2: first in-tx re-read — activeNow=1<2, claim succeeds
-      [c1InProgress, c2, racer], // call 3: second in-tx re-read — activeNow=2>=2, abort
+      [c1, c2],
+      [c1, c2],
+      [c1InProgress, c2, racer],
     ];
     let callIdx = 0;
     const stmts = makeStmts({

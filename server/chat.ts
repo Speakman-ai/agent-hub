@@ -79,12 +79,18 @@ import {
   parseSkillBlock,
 } from './skill-invoke.js';
 import { routeSkillsFromMessage } from './skill-router.js';
-import { isDesignModeActive, sessionHasUsableWorktree } from './session-mode.js';
+import {
+  isDesignModeActive,
+  isScopingModeActive,
+  sessionHasUsableWorktree,
+} from './session-mode.js';
 import {
   buildDesignModePreamble,
   requiredSkillIdsForSession,
   ensureRealDesignDir,
 } from './design-mode-prompt.js';
+import { buildScopingModePreamble } from './scoping-mode-prompt.js';
+import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
 import {
   detectTagBlockInLastFence,
   extractJsonFromTagBody,
@@ -325,6 +331,8 @@ interface BuildEnrichedPromptOptions {
    * card through the column lifecycle.
    */
   sessionHasLinkedCard?: boolean;
+  /** Locked epic spec decisions for implementation sessions linked to an epic. */
+  epicSpecContext?: string | null;
   /**
    * True when the session worktree contains `.agent-hub/ci.yaml`. Suppresses
    * agent-owned push/PR instructions and tells the model to commit only — the
@@ -1159,6 +1167,10 @@ Do not omit \`Evidence\`. **\`Next step\` is optional and must NOT be a parking 
     options.orchestrationMetaJson ?? null,
   );
   if (outerOrch) prompt += `\n\n${outerOrch}`;
+
+  if (options.epicSpecContext) {
+    prompt += `\n\n${options.epicSpecContext}`;
+  }
 
   // Active-PR awareness. When a previous session for this kanban card
   // already opened a PR (see `auto-git.ts` → `setCardPrUrl`), the server
@@ -2394,6 +2406,27 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       } catch {
         /* leave null — builder falls back to `main` */
       }
+
+      const projectId =
+        (project as ProjectWithCommands & { id?: string }).id ||
+        (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
+        '';
+
+      let epicSpecContext: string | null = null;
+      try {
+        const epicIdForSpec =
+          linkedCardForPr?.epic_id ??
+          (session as { linked_epic_id?: string | null }).linked_epic_id ??
+          null;
+        if (epicIdForSpec) {
+          epicSpecContext = formatEpicSpecDecisionsForContext(
+            loadChosenSpecItemsForEpic(stmts as Stmts, epicIdForSpec),
+          );
+        }
+      } catch {
+        epicSpecContext = null;
+      }
+
       let enrichedPrompt = buildEnrichedPrompt(
         project as ProjectWithCommands,
         agent as AgentWithModel,
@@ -2407,6 +2440,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           branchPrBase: linkedCardForPr?.pr_base_branch ?? null,
           defaultBranch: resolvedDefaultBranch,
           sessionHasLinkedCard: !!linkedCardForPr,
+          epicSpecContext,
           finalizeConfigured: worktreeHasFinalizeCi(session!.worktree_path),
           sessionWorktreePath: session!.worktree_path ?? null,
           sessionWorktreeBranch: session!.worktree_branch ?? null,
@@ -2444,10 +2478,57 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
       if (designTurn.preamble) enrichedPrompt = `${designTurn.preamble}\n\n${enrichedPrompt}`;
 
-      const projectId =
-        (project as ProjectWithCommands & { id?: string }).id ||
-        (enrichedAgent as EnrichedAgent | null | undefined)?.projectId ||
-        '';
+      if (isScopingModeActive(session!)) {
+        const linkedEpicId = (session as { linked_epic_id?: string | null }).linked_epic_id;
+        const linkedSpecItemId = (session as { linked_spec_item_id?: string | null })
+          .linked_spec_item_id;
+        let linkedEpic: KanbanEpicRow | null = null;
+        let linkedPhases: import('./types.js').KanbanPhaseRow[] = [];
+        let specItems: import('./types.js').KanbanEpicSpecItemRow[] = [];
+        let linkedSpecItem: import('./types.js').KanbanEpicSpecItemRow | null = null;
+        if (linkedEpicId) {
+          linkedEpic =
+            ((stmts as Stmts).getKanbanEpic.get(linkedEpicId) as KanbanEpicRow | undefined) ?? null;
+          if (linkedEpic) {
+            linkedPhases = (stmts as Stmts).getKanbanPhasesByEpic.all(
+              linkedEpicId,
+            ) as import('./types.js').KanbanPhaseRow[];
+            specItems = (stmts as Stmts).getKanbanSpecItemsByEpic.all(
+              linkedEpicId,
+            ) as import('./types.js').KanbanEpicSpecItemRow[];
+          }
+        }
+        if (linkedSpecItemId) {
+          linkedSpecItem =
+            ((stmts as Stmts).getKanbanSpecItem.get(linkedSpecItemId) as
+              | import('./types.js').KanbanEpicSpecItemRow
+              | undefined) ?? null;
+        }
+        if (!isAutoContinuation) {
+          for (const requiredId of requiredSkillIdsForSession(session!)) {
+            if (loadedRoutedSkillIds.has(requiredId)) continue;
+            const injection = loadSkillByName({
+              name: requiredId,
+              reason: 'session_mode=scoping (required)',
+              paths: { skillsDir: paths.skillsDir },
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            enrichedPrompt += `\n\n${injection}`;
+            loadedRoutedSkillIds.add(requiredId);
+          }
+        }
+        const scopingPreamble = buildScopingModePreamble({
+          projectName: (project as Project).name,
+          linkedEpic,
+          phases: linkedPhases,
+          specItems,
+          linkedSpecItem,
+          projectId,
+        });
+        enrichedPrompt = `${scopingPreamble}\n\n${enrichedPrompt}`;
+      }
 
       let linkedEpicForBudgets: KanbanEpicRow | null = null;
       try {

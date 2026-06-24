@@ -50,6 +50,12 @@ export const DESIGN_AUTOMATION_OPTION = {
   description: 'Iterate on a live canvas with the app as context — nothing ships',
 } as Record<string, any>;
 
+export const SCOPING_AUTOMATION_OPTION = {
+  value: 'scoping',
+  label: 'Scoping',
+  description: 'Plan work as Epic → Phase → Ticket with a live flowchart panel',
+} as Record<string, any>;
+
 export const ASK_AUTOMATION_OPTION = {
   value: 'ask',
   label: 'Ask',
@@ -62,6 +68,7 @@ export const ASK_AUTOMATION_OPTION = {
  */
 export const SESSION_CONTROL_OPTIONS = [
   DESIGN_AUTOMATION_OPTION,
+  SCOPING_AUTOMATION_OPTION,
   ASK_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
@@ -76,6 +83,7 @@ export const SESSION_CONTROL_OPTIONS = [
  */
 export function sessionControlValue({ sessionMode, askMode, automation }: any = {}) {
   if (sessionMode === 'design') return 'design';
+  if (sessionMode === 'scoping') return 'scoping';
   if (askMode) return 'ask';
   return parseFinalizeAutomation(automation);
 }
@@ -110,7 +118,12 @@ export function sessionControlLabel(value: any) {
  * @returns {Array<{ type: 'mode'|'ask'|'automation', value: any }>}
  */
 export function planSessionControlChange(current: any, target: any) {
-  const sessionMode = current?.sessionMode === 'design' ? 'design' : 'chat';
+  const sessionMode =
+    current?.sessionMode === 'design'
+      ? 'design'
+      : current?.sessionMode === 'scoping'
+        ? 'scoping'
+        : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -118,16 +131,23 @@ export function planSessionControlChange(current: any, target: any) {
 
   const steps: any[] = [];
   if (target === 'design') {
-    // Design is the no-ship state: clear ask AND reset any stored ship intent so
-    // neither is left lurking underneath the Design label.
     if (askMode) steps.push({ type: 'ask', value: false });
     if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
     steps.push({ type: 'mode', value: 'design' });
     return steps;
   }
 
-  // Any non-design target: drop out of design mode first.
-  if (sessionMode === 'design') steps.push({ type: 'mode', value: 'chat' });
+  if (target === 'scoping') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
+    steps.push({ type: 'mode', value: 'scoping' });
+    return steps;
+  }
+
+  // Any non-design/scoping target: drop out of special modes first.
+  if (sessionMode === 'design' || sessionMode === 'scoping') {
+    steps.push({ type: 'mode', value: 'chat' });
+  }
   if (target === 'ask') {
     steps.push({ type: 'ask', value: true });
   } else {

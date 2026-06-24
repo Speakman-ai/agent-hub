@@ -28,6 +28,7 @@ import SessionSummarySidebar from './components/SessionSummarySidebar';
 import SessionPreviewPane from './components/SessionPreviewPane';
 import SessionDesignPane from './components/SessionDesignPane';
 import SessionDesignModePane from './components/SessionDesignModePane';
+import SessionScopingModePane from './components/SessionScopingModePane';
 // Lazy — pulls in @git-diff-view/react + its CSS only when the diff pane opens.
 const SessionChangesPane = lazy(() => import('./components/SessionChangesPane'));
 const SessionArtifactsPane = lazy(() => import('./components/SessionArtifactsPane'));
@@ -4086,6 +4087,21 @@ export default function App({ initialView }: any = {}) {
     }
   }, [activeSessionId, showToast]);
 
+  const handleLinkScopingEpic = useCallback(
+    async (epicId: any) => {
+      if (!activeSessionId) return;
+      try {
+        const updated = await api.setSessionLinkedEpic(activeSessionId, epicId);
+        setSessions((prev: any) =>
+          prev.map((s: any) => (s.id === updated.id ? { ...s, ...updated } : s)),
+        );
+      } catch (err: any) {
+        showToast(err?.message || 'Failed to link epic', 'error', 6000);
+      }
+    },
+    [activeSessionId, showToast],
+  );
+
   const handleOpenLinkedDesignStudio = useCallback(() => {
     if (!linkedDesign) return;
     setActiveDesignId(linkedDesign.id);
@@ -4097,8 +4113,14 @@ export default function App({ initialView }: any = {}) {
   // `can_design_mode` capability (derived from the SAME `sessionHasUsableWorktree`
   // gate) rather than reimplementing the worktree check here, so the picker
   // offers Design exactly when the server would accept it and can't drift.
-  const sessionMode = activeSession?.session_mode === 'design' ? 'design' : 'chat';
+  const sessionMode =
+    activeSession?.session_mode === 'design'
+      ? 'design'
+      : activeSession?.session_mode === 'scoping'
+        ? 'scoping'
+        : 'chat';
   const designModeActive = sessionMode === 'design';
+  const scopingModeActive = sessionMode === 'scoping';
 
   // Atomic multi-axis session-control change for the Finalize automation picker
   // (Design / Ask / Build / …). The picker can change session_mode + ask_mode +
@@ -4800,7 +4822,14 @@ export default function App({ initialView }: any = {}) {
                         ? currentView.slice('epics:'.length)
                         : currentView.split(':')[1]),
                   )}
+                  agents={agents}
                   refreshKey={kanbanRefreshKey}
+                  onNavigateToSession={(agentId: any, sessionId: any) => {
+                    pendingSessionIdRef.current = sessionId;
+                    setActiveAgentId(agentId);
+                    setActiveSessionId(sessionId);
+                    setCurrentView('chat');
+                  }}
                   onBackToBoard={() => {
                     const projectId = currentView.startsWith('epics:')
                       ? currentView.slice('epics:'.length)
@@ -5670,6 +5699,15 @@ export default function App({ initialView }: any = {}) {
                         }
                         busy={isProcessing || Boolean(activeTasks[activeSessionId])}
                         onManualReload={() => setDesignModeManualReload((n: any) => n + 1)}
+                      />
+                    )}
+                    {scopingModeActive && (
+                      <SessionScopingModePane
+                        sessionId={activeSessionId}
+                        projectId={activeChatProject?.id}
+                        linkedEpicId={activeSession?.linked_epic_id ?? null}
+                        onLinkEpic={handleLinkScopingEpic}
+                        reloadToken={kanbanRefreshKey}
                       />
                     )}
                   </div>

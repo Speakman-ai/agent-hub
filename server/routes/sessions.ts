@@ -52,6 +52,7 @@ import type {
   CheckpointRow,
   KanbanCardRow,
   KanbanEpicRow,
+  KanbanBoardRow,
   SkillInvocationRow,
   Project,
   FinalizeRunRow,
@@ -1212,6 +1213,44 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     stmts.updateSessionLinkedDesign.run(designId, sessionId);
+    const updated = stmts.getSession.get(sessionId) as SessionRow;
+    const enriched = enrichSessionForClient(updated, stmts);
+    deps.broadcast({ type: 'session-updated', session: enriched });
+    res.json(enriched);
+  });
+
+  router.put('/api/sessions/:sessionId/linked-epic', (req: Request, res: Response) => {
+    const epicId =
+      req.body && typeof req.body === 'object' && 'epicId' in req.body
+        ? ((req.body as { epicId?: string | null }).epicId ?? null)
+        : null;
+    const sessionId = req.params.sessionId as string;
+    const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Session not found' });
+    if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (epicId !== null) {
+      const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+      if (!epic) return res.status(404).json({ error: 'Epic not found' });
+      // The epic must belong to the session's own project. Scoping-mode
+      // prompt assembly later loads the linked epic/spec data straight from
+      // `linked_epic_id`, so without this a user could attach a foreign
+      // project's epic ID and pull that epic's scoping context into their
+      // session. Resolve the project via the session's agent and require the
+      // epic's board to match.
+      const found = findAgent(existing.agent_id);
+      const projectId = found?.project?.id ?? null;
+      const board = projectId
+        ? (stmts.getKanbanBoard.get(projectId) as KanbanBoardRow | undefined)
+        : undefined;
+      if (!board || epic.board_id !== board.id) {
+        return res.status(404).json({ error: 'Epic not found' });
+      }
+    }
+
+    stmts.updateSessionLinkedEpic.run(epicId, sessionId);
     const updated = stmts.getSession.get(sessionId) as SessionRow;
     const enriched = enrichSessionForClient(updated, stmts);
     deps.broadcast({ type: 'session-updated', session: enriched });
