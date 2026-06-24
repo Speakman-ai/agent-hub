@@ -705,7 +705,16 @@ export async function runJobPhase(
       activeSecondsBilled,
     };
   } else {
-    const failedOutcome = outcomes.find((o) => o.result.status !== 'success')?.result;
+    // Prefer a GENUINE failure (CI-class `failure` / `timeout`) over an
+    // `infra_error` when several shards went red. A shard cancelled mid-run
+    // (`runner_cancelled` collateral, e.g. the inner dockerd died) lands as
+    // `infra_error`; if a sibling shard has a real test failure, that real red
+    // is what the fix agent must see — not the collateral. Falling back to the
+    // first non-success outcome preserves the prior behaviour when the only
+    // failures are infra-class.
+    const failedOutcome =
+      outcomes.find((o) => o.result.status === 'failure' || o.result.status === 'timeout')
+        ?.result ?? outcomes.find((o) => o.result.status !== 'success')?.result;
     const failedStep = failedOutcome?.failedStep;
 
     if (failedOutcome?.status === 'infra_error') {

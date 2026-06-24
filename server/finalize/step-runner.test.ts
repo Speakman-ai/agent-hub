@@ -490,7 +490,9 @@ describe('runStepPhase — runner teardown (context canceled) reclassifies to in
 
     const result = await resultP;
     // Routed to the infra class so the orchestrator's one-auto-retry re-runs
-    // on a fresh runner — NO wasted fix round dispatched to the agent.
+    // on a fresh runner — NO wasted fix round dispatched to the agent. The
+    // strict terminal-sentinel detector (runner-teardown.ts) owns this case and
+    // tags it container_unavailable.
     expect(result.status).toBe('infra_error');
     expect(result.failureReason).toBe('container_unavailable');
     // Contract: infra_error must NOT persist a terminal status — the
@@ -526,10 +528,97 @@ describe('runStepPhase — runner teardown (context canceled) reclassifies to in
 
     await microtaskTick();
     // A genuine red: the vitest failure summary is present, so even with a
-    // trailing context-canceled teardown line this must NOT be reclassified.
+    // trailing context-canceled teardown line this must NOT be reclassified by
+    // EITHER detector — the shared hasTestFailureSummary guardrail keeps it red.
     fakes[0].stdout.push('FAIL src/components/Foo.test.tsx\n');
     fakes[0].stdout.push('Tests  3 failed | 900 passed (903)\n');
     fakes[0].stderr.push('context canceled\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
+  });
+});
+
+describe('runStepPhase — runner cancellation collateral', () => {
+  it('reclassifies a `context canceled` non-zero exit as infra `runner_cancelled` (not step_failed)', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([
+      { name: 'E2E', run: 'docker compose up --abort-on-container-exit' },
+    ]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    // The inner dockerd is torn down mid-run: the Go CLI prints the canonical
+    // context-canceled error and the process exits 1. The strict
+    // terminal-sentinel detector rejects this (the sentinel is not the bare
+    // terminal line), so the broader collateral detector catches it.
+    fakes[0].stderr.push(
+      'error during connect: Get "http://docker.sock/v1.45/info": context canceled\n',
+    );
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+
+    // Infra-class, NOT a genuine `step_failed` red the fix loop would chase.
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('runner_cancelled');
+    // No terminal `failed`/`timed_out` write — infra terminals are owned by the
+    // orchestrator's retry path.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+    // The failing step is still surfaced so the UI/log viewer can show it.
+    expect(result.failedStep).toMatchObject({ index: 1, name: 'E2E', exitCode: 1 });
+  });
+
+  it('leaves a genuine test failure that merely mentions "context canceled" mid-output as step_failed', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Test', run: 'npm test' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    fakes[0].stdout.push('handler logged: context canceled\n');
+    fakes[0].stdout.push('AssertionError: expected 200 but got 500\n');
+    fakes[0].stdout.push('1 failing\n');
     await microtaskTick();
     fakes[0].emitter.emit('close', 1);
 

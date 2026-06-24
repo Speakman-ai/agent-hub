@@ -123,6 +123,16 @@ export const INFRA_FAILURE_REASONS = [
   'worktree_create_failed',
   'container_unavailable',
   'github_push_5xx',
+  // A CI step that was CANCELLED mid-run rather than genuinely failing: it
+  // shelled out to a Go binary (docker / compose / buildx) that printed the
+  // canonical `context canceled` error when the inner dockerd / runner went
+  // away (recycle, Spot reclaim, sibling/run cancel) and exited non-zero. The
+  // step-runner tags it here (see `step-cancellation.ts`) so the collateral is
+  // re-run on a fresh runner instead of being chased by the fix loop as a real
+  // test failure. Infra-class, conservative cap — if the cancellation keeps
+  // recurring the run still terminates `infra_error` with a retrigger
+  // affordance rather than livelocking.
+  'runner_cancelled',
   // A known-transient Spot reclaim: the runner instance was interrupted by
   // EC2 (2-minute notice → instance killed → lease expired → reaper marks
   // the job lost). Distinct from `container_unavailable` (which may be a

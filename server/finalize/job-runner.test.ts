@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Readable } from 'stream';
 import { parseCiConfig } from './ci-config.js';
 import { expandJobInstances, buildFinalizeBuiltinEnv } from './ci-config-v2.js';
 import {
@@ -298,6 +299,72 @@ jobs:
     expect(result.status).not.toBe('success');
     // The fan-out shards never ran — only the warmup step was spawned.
     expect(order).toEqual(['warmup-cmd']);
+  });
+
+  it('a genuine shard failure wins over a `context canceled` collateral shard', async () => {
+    // Shard A genuinely fails an assertion (exit 1). Shard B is cancelled
+    // mid-run — the inner dockerd dies and the CLI prints the Go context error
+    // (exit 1). Shard B must be reclassified `runner_cancelled` (infra) and the
+    // REAL red (shard A's step_failed) must be what the run surfaces, so the fix
+    // loop chases the genuine failure, not the collateral.
+    const MATRIX = `
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: host
+    matrix:
+      include:
+        - group: A
+          specs: a.cy.ts
+        - group: B
+          specs: b.cy.ts
+    steps:
+      - run: test-cmd \${FINALIZE_MATRIX_SPECS}
+`;
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      const isCollateral = step.run.includes('b.cy.ts');
+      const stderr = new Readable({ read() {} });
+      const stdout = new Readable({ read() {} });
+      const child: SpawnedStep = {
+        stdout,
+        stderr,
+        on(event: 'close' | 'error', listener: (arg: never) => void) {
+          if (event === 'close') {
+            queueMicrotask(() => {
+              if (isCollateral) {
+                stderr.push(
+                  'error during connect: Get "http://docker.sock/info": context canceled\n',
+                );
+              } else {
+                stdout.push('AssertionError: expected 200 but got 500\n');
+              }
+              queueMicrotask(() => (listener as (c: number | null) => void)(1));
+            });
+          }
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+
+    const parsed = parseCiConfig(MATRIX);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const result = await runJobPhase(makeDeps(vi.fn(spawnStep)), {
+      runId: 'collateral-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    // The genuine CI failure is what the run reports — NOT the infra collateral.
+    expect(result.status).toBe('failure');
+    expect(result.failedStep?.matrixKey).toContain('A');
   });
 
   it('passes step-level env to the spawned step (e.g. FINALIZE_WARMUP)', async () => {

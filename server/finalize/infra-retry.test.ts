@@ -232,15 +232,25 @@ describe('classifyFailureReason', () => {
     expect(classifyFailureReason(' container_unavailable')).toBe('unknown');
   });
 
-  it('INFRA list is the §10 trio plus the reclaim class — no more, no less', () => {
+  it('INFRA list is the §10 trio plus the reclaim + cancellation classes — no more, no less', () => {
     // Locks the whitelist to prevent accidental drift. If §10 ever
     // gains another infra code, update both the wiki and this test.
     expect([...INFRA_FAILURE_REASONS]).toEqual([
       'worktree_create_failed',
       'container_unavailable',
       'github_push_5xx',
+      'runner_cancelled',
       'spot_reclaimed',
     ]);
+  });
+
+  it('runner_cancelled classifies as infra (collateral cancellation, retryable) but is not a reclaim', () => {
+    // A step cancelled mid-run by runner/daemon teardown is infra-class so the
+    // §10 auto-retry re-runs it — but it gets the CONSERVATIVE generation cap
+    // (it is not a known-transient Spot reclaim).
+    expect(classifyFailureReason('runner_cancelled')).toBe('infra');
+    expect(isInfraFailureReason('runner_cancelled')).toBe(true);
+    expect(isReclaimFailureReason('runner_cancelled')).toBe(false);
   });
 
   it('worktree_bundle_failed is CI-class (deterministic) — never auto-retried', () => {

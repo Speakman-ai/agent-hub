@@ -89,7 +89,7 @@ function cleanNonEmpty(lines: string[] | undefined): string[] {
  * teardown. Scanning the excerpt matters because that is where a `FAIL` line is
  * most likely retained even when the tail has scrolled past it.
  */
-function hasTestFailureSummary(input: RunnerTeardownInput): boolean {
+export function hasTestFailureSummary(input: RunnerTeardownInput): boolean {
   const haystack = [...(input.failureExcerpt ?? []), ...(input.outputTail ?? [])].map((l) =>
     stripAnsi(l).trim(),
   );
