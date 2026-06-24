@@ -50,6 +50,24 @@ describe('agentClaimsLabel', () => {
     expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-backend' }), 'hub-backend')).toBe(true);
   });
 
+  it('matches ANY trailing suffix of a 3-segment id (agent-hub-mobile → mobile)', () => {
+    // Regression: the old single-strip logic produced a tail of `hub-mobile`
+    // for `agent-hub-mobile` and so never matched the bare specialty label
+    // `mobile`, so "mobile parity" cards were never routed to the mobile
+    // specialist and appeared to never get picked up.
+    expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-mobile' }), 'mobile')).toBe(true);
+    expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-mobile' }), 'hub-mobile')).toBe(true);
+    expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-backend' }), 'backend')).toBe(true);
+  });
+
+  it('does not match a non-suffix interior or leading segment', () => {
+    // `hub` is a leading/interior qualifier of `agent-hub-mobile`, not a
+    // trailing suffix — it must not claim the card.
+    expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-mobile' }), 'hub')).toBe(false);
+    expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-mobile' }), 'agent')).toBe(false);
+    expect(agentClaimsLabel(makeAgent({ id: 'agent-hub-mobile' }), 'agent-hub')).toBe(false);
+  });
+
   it('does not match unrelated labels', () => {
     expect(agentClaimsLabel(makeAgent({ id: 'hub-frontend' }), 'mobile')).toBe(false);
   });
@@ -87,6 +105,25 @@ describe('pickAgentForCard', () => {
       ctx: ctxWith({ 'hub-frontend': 1, 'hub-backend': 1, 'hub-lead': 1 }),
     });
     expect(picked?.id).toBe('hub-backend');
+  });
+
+  it('routes a bare-specialty label to a 3-segment specialist instead of the lead', () => {
+    // Regression for "the mobile parity ticket is not getting picked up":
+    // with the `agent-hub-<specialty>` convention, a `mobile`-labelled card
+    // must reach `agent-hub-mobile`, not silently fall through to the lead.
+    const mobile = makeAgent({ id: 'agent-hub-mobile', role: 'sub', name: 'Mobile' });
+    const picked = pickAgentForCard({
+      card: makeCard('mobile'),
+      assignableAgents: [fe, be, mobile],
+      lead,
+      ctx: ctxWith({
+        'hub-frontend': 1,
+        'hub-backend': 1,
+        'agent-hub-mobile': 1,
+        'hub-lead': 1,
+      }),
+    });
+    expect(picked?.id).toBe('agent-hub-mobile');
   });
 
   it('honors label order (first matching label wins) when multiple labels are stamped', () => {

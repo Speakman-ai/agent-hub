@@ -22,8 +22,18 @@ export function parseLabels(raw: string | null | undefined): string[] {
 
 /**
  * Does this agent claim ownership of `label`? True when the (lowercased)
- * label exactly matches the agent's `id`, `role`, or `name`, or the tail of
- * a hyphenated id (e.g. `hub-frontend` → also matches the label `frontend`).
+ * label exactly matches the agent's `id`, `role`, or `name`, or ANY trailing
+ * suffix of a hyphenated id (e.g. `agent-hub-mobile` → also matches the
+ * labels `hub-mobile` AND `mobile`).
+ *
+ * The suffix match strips 1..n-1 leading segments, not just the first one.
+ * This matters for the 3-segment `agent-hub-<specialty>` naming convention
+ * this platform uses for its own agents: the old single-strip logic computed
+ * a tail of `hub-mobile` for `agent-hub-mobile` and so never matched a card
+ * labelled with the bare specialty `mobile` — the exact label an operator
+ * stamps. Such cards silently fell through to the lead instead of routing to
+ * the specialist, which read to operators as "the ticket isn't getting picked
+ * up." (Regression: routing.test.ts.)
  */
 export function agentClaimsLabel(agent: Agent, label: string): boolean {
   const norm = label.trim().toLowerCase();
@@ -31,16 +41,17 @@ export function agentClaimsLabel(agent: Agent, label: string): boolean {
   if (agent.id?.toLowerCase() === norm) return true;
   if (typeof agent.role === 'string' && agent.role.toLowerCase() === norm) return true;
   if (agent.name?.toLowerCase() === norm) return true;
-  // `hub-frontend` / `agent-hub-backend` both expose a tail segment after
-  // the leading qualifier — e.g. `frontend`, `backend`. Operators commonly
-  // tag cards with the tail rather than the fully-qualified id, so we
-  // accept it here.
+  // `hub-frontend`, `agent-hub-backend`, `agent-hub-mobile` all expose
+  // specialty segments after one or more leading qualifiers. Operators
+  // commonly tag cards with a trailing suffix (often just the final
+  // specialty word) rather than the fully-qualified id, so we accept every
+  // proper suffix of the hyphen-split id here — `agent-hub-mobile` claims
+  // both `hub-mobile` and `mobile`.
   const idLower = agent.id?.toLowerCase();
   if (idLower) {
     const parts = idLower.split('-');
-    if (parts.length > 1) {
-      const tail = parts.slice(1).join('-');
-      if (tail === norm) return true;
+    for (let i = 1; i < parts.length; i++) {
+      if (parts.slice(i).join('-') === norm) return true;
     }
   }
   return false;
