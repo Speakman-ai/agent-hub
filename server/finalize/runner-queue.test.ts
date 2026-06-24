@@ -9,6 +9,7 @@ import {
   enqueueRunnerJob,
   heartbeatRunnerJob,
   markRunnerJobSpotInterruption,
+  pruneRunnerJobLogs,
   reapExpiredRunnerLeases,
   reportRunnerJob,
   runnerQueueDepth,
@@ -152,5 +153,87 @@ describe('runner-queue', () => {
       .prepare('SELECT data FROM runner_job_logs WHERE job_id=? AND seq=0')
       .get(j) as { data: string };
     expect(first.data).toBe('a'); // original kept, not 'dup'
+  });
+
+  describe('pruneRunnerJobLogs', () => {
+    const countLogs = () =>
+      (getOrgsDb().prepare('SELECT COUNT(*) AS n FROM runner_job_logs').get() as { n: number }).n;
+
+    it('deletes frames older than the cutoff and keeps newer ones', () => {
+      const j = enq({ jobId: 'j', now: 1000 });
+      appendRunnerJobLog({
+        jobId: j,
+        seq: 0,
+        stepIndex: 0,
+        stream: 'stdout',
+        data: 'old',
+        now: 100,
+      });
+      appendRunnerJobLog({
+        jobId: j,
+        seq: 1,
+        stepIndex: 0,
+        stream: 'stdout',
+        data: 'edge',
+        now: 200,
+      });
+      appendRunnerJobLog({
+        jobId: j,
+        seq: 2,
+        stepIndex: 0,
+        stream: 'stdout',
+        data: 'new',
+        now: 300,
+      });
+
+      const deleted = pruneRunnerJobLogs({ cutoff: 200 });
+
+      expect(deleted).toBe(1); // only `at < 200` (the cutoff is exclusive)
+      expect(countLogs()).toBe(2);
+      const survivors = getOrgsDb()
+        .prepare('SELECT data FROM runner_job_logs ORDER BY seq')
+        .all() as Array<{ data: string }>;
+      expect(survivors.map((r) => r.data)).toEqual(['edge', 'new']);
+    });
+
+    it('returns 0 and deletes nothing when all frames are within retention', () => {
+      const j = enq({ jobId: 'j', now: 1000 });
+      appendRunnerJobLog({ jobId: j, seq: 0, stepIndex: 0, stream: 'stdout', data: 'x', now: 500 });
+      expect(pruneRunnerJobLogs({ cutoff: 100 })).toBe(0);
+      expect(countLogs()).toBe(1);
+    });
+
+    it('drains a backlog larger than one batch across batches in a single call', () => {
+      const j = enq({ jobId: 'j', now: 1000 });
+      const insert = getOrgsDb().prepare(
+        'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
+      );
+      const tx = getOrgsDb().transaction(() => {
+        for (let i = 0; i < 25; i++) insert.run(j, i, 0, 'stdout', 'd', 10);
+      });
+      tx();
+
+      // batchSize 10 + enough maxBatches: all 25 expired rows go in one call.
+      expect(pruneRunnerJobLogs({ cutoff: 100, batchSize: 10, maxBatches: 50 })).toBe(25);
+      expect(countLogs()).toBe(0);
+    });
+
+    it('caps work per call at batchSize * maxBatches, leaving the rest for the next tick', () => {
+      const j = enq({ jobId: 'j', now: 1000 });
+      const insert = getOrgsDb().prepare(
+        'INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at) VALUES (?,?,?,?,?,?)',
+      );
+      const tx = getOrgsDb().transaction(() => {
+        for (let i = 0; i < 25; i++) insert.run(j, i, 0, 'stdout', 'd', 10);
+      });
+      tx();
+
+      // batchSize 10 * maxBatches 2 = at most 20 deleted this call.
+      expect(pruneRunnerJobLogs({ cutoff: 100, batchSize: 10, maxBatches: 2 })).toBe(20);
+      expect(countLogs()).toBe(5);
+      // The next tick drains the remainder.
+      expect(pruneRunnerJobLogs({ cutoff: 100, batchSize: 10, maxBatches: 2 })).toBe(5);
+      expect(countLogs()).toBe(0);
+    });
   });
 });

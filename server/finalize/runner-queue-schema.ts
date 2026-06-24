@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS runner_job_logs (
   at         INTEGER NOT NULL,
   PRIMARY KEY (job_id, seq)
 );
+
+-- Age index for the retention reaper. The spool is append-only and grows
+-- without bound (transient CI stdout/stderr frames, never read post-run), so a
+-- periodic prune deletes frames older than the TTL. Without this index the
+-- prune DELETE would full-scan a multi-million-row table every tick.
+CREATE INDEX IF NOT EXISTS idx_runner_job_logs_at ON runner_job_logs(at);
 `;
 
 /** Terminal job states (a run leaving any of these needs no further work). */

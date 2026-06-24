@@ -240,6 +240,41 @@ export function appendRunnerJobLog(args: {
 }
 
 /**
+ * Prune `runner_job_logs` frames older than `cutoff` (epoch ms), in bounded
+ * batches so a single tick can never block the synchronous better-sqlite3 event
+ * loop — the exact failure mode this reaper exists to prevent. A naive
+ * `DELETE ... WHERE at < cutoff` over a multi-million-row backlog is one giant
+ * synchronous statement that stalls the loop (= the slow page loads). Instead we
+ * delete in `batchSize` chunks (via a rowid subquery — better-sqlite3's bundled
+ * SQLite isn't built with `DELETE ... LIMIT`) and stop after `maxBatches` chunks
+ * so a huge first-run backlog drains across several ticks rather than one stall.
+ *
+ * Returns the number of rows deleted this call.
+ */
+export function pruneRunnerJobLogs(args: {
+  cutoff: number;
+  batchSize?: number;
+  maxBatches?: number;
+}): number {
+  const batchSize = args.batchSize ?? 5_000;
+  const maxBatches = args.maxBatches ?? 200;
+  const db = getOrgsDb();
+  const stmt = db.prepare(
+    `DELETE FROM runner_job_logs
+       WHERE rowid IN (
+         SELECT rowid FROM runner_job_logs WHERE at < @cutoff LIMIT @batchSize
+       )`,
+  );
+  let deleted = 0;
+  for (let i = 0; i < maxBatches; i++) {
+    const res = stmt.run({ cutoff: args.cutoff, batchSize });
+    deleted += res.changes;
+    if (res.changes < batchSize) break;
+  }
+  return deleted;
+}
+
+/**
  * In-flight depth (queued + claimed + running) — the autoscaler signal.
  * Pass orgId for a per-tenant metric; omit for the aggregate.
  */

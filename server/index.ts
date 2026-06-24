@@ -199,6 +199,10 @@ import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
+import {
+  runRunnerJobLogReaper,
+  RUNNER_JOB_LOG_REAPER_CRON,
+} from './finalize/runner-job-log-reaper.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
 
@@ -972,6 +976,24 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       { name: 'finalize-reaper' },
     );
   }
+
+  // Runner job-log retention reaper — prune transient CI stdout/stderr frames
+  // from `runner_job_logs` (orgs.db) older than the TTL. Append-only and never
+  // read post-run, the spool grew without bound until synchronous reads against
+  // the bloated DB stalled the event loop (the recurring slow-page-load
+  // incident). Pure SQLite, so NOT docker-gated; runs on every Hub.
+  // See server/finalize/runner-job-log-reaper.ts.
+  cron.schedule(
+    RUNNER_JOB_LOG_REAPER_CRON,
+    () => {
+      try {
+        runRunnerJobLogReaper();
+      } catch (err) {
+        console.warn('[runner-job-log-reaper] tick failed:', (err as Error).message);
+      }
+    },
+    { name: 'runner-job-log-reaper' },
+  );
 }
 
 /** Full route wiring; exported so integration tests can `vi.spyOn(routeDeps, 'broadcast')`. */
