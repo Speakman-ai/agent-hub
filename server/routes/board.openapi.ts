@@ -980,6 +980,40 @@ export const DecideForMeRequestSchema = z.object({
   }),
 });
 
+export const ScopeEpicRequestSchema = z.object({
+  agentId: z.string().min(1).optional().openapi({
+    description: 'Agent to run the scoping session. Defaults to the project lead.',
+  }),
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/epics/{epicId}/scope',
+  tags: ['Board'],
+  summary: 'Open a scoping-mode session pre-linked to an epic',
+  request: {
+    params: z.object({
+      projectId: z.string(),
+      epicId: z.string(),
+    }),
+    body: { content: jsonContent(ScopeEpicRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Scoping session created and linked to the epic.',
+      content: jsonContent(
+        z.object({
+          sessionId: z.string(),
+          agentId: z.string(),
+        }),
+      ),
+    },
+    400: errorResponse('No agent available or agent does not belong to this project.'),
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('Epic not found.'),
+  },
+});
+
 registerPath({
   method: 'put',
   path: '/api/projects/{projectId}/board/columns/{columnId}',

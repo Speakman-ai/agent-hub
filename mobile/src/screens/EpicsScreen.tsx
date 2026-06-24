@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Switch, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
+import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { EPIC_COLORS, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, } from '../utils/epics';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
@@ -14,6 +15,30 @@ export default function EpicsScreen({ route, navigation }: any) {
     const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
     const [showForm, setShowForm] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [scopingId, setScopingId] = useState<any>(null);
+    const { setActiveAgentId, setActiveSessionId } = useApp();
+    const openScopingSession = useCallback(async (epicId: any) => {
+        if (!epicId || scopingId)
+            return false;
+        setScopingId(epicId);
+        try {
+            const result = await api.scopeEpic(projectId, epicId);
+            if (result?.sessionId && result?.agentId && navigation) {
+                setActiveAgentId(result.agentId);
+                setActiveSessionId(result.sessionId);
+                navigation.navigate('Chat');
+                return true;
+            }
+            return false;
+        }
+        catch {
+            Alert.alert('Error', 'Failed to open scoping session');
+            return false;
+        }
+        finally {
+            setScopingId(null);
+        }
+    }, [projectId, scopingId, navigation, setActiveAgentId, setActiveSessionId]);
     const loadBoard = useCallback(async () => {
         setLoading(true);
         try {
@@ -67,6 +92,31 @@ export default function EpicsScreen({ route, navigation }: any) {
         }
         catch {
             Alert.alert('Error', 'Failed to save epic');
+        }
+        finally {
+            setSaving(false);
+        }
+    };
+    const handleCreateAndScope = async () => {
+        if (!epicForm.name.trim()) {
+            Alert.alert('Error', 'Epic name is required');
+            return;
+        }
+        setSaving(true);
+        try {
+            const created = await api.createEpic(projectId, epicFormToCreateBody(epicForm));
+            if (created?.id && epicForm.autonomous) {
+                await api.updateEpic(projectId, created.id, epicFormToUpdateBody(epicForm));
+            }
+            setShowForm(false);
+            setEditingEpic(null);
+            setEpicForm(DEFAULT_EPIC_FORM);
+            await loadBoard();
+            if (created?.id)
+                await openScopingSession(created.id);
+        }
+        catch {
+            Alert.alert('Error', 'Failed to create epic');
         }
         finally {
             setSaving(false);
@@ -129,6 +179,12 @@ export default function EpicsScreen({ route, navigation }: any) {
             <TouchableOpacity style={[styles.primaryBtn, saving && { opacity: 0.5 }]} onPress={handleSave} disabled={saving}>
               <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : editingEpic ? 'Update' : 'Create'}</Text>
             </TouchableOpacity>
+            {!editingEpic && (<TouchableOpacity style={[styles.scopeBtn, (saving || !!scopingId) && { opacity: 0.5 }]} onPress={handleCreateAndScope} disabled={saving || !!scopingId}>
+                <Text style={styles.scopeBtnText}>{scopingId ? 'Opening…' : 'Create & scope with agent'}</Text>
+              </TouchableOpacity>)}
+            {editingEpic && (<TouchableOpacity style={[styles.scopeBtn, !!scopingId && { opacity: 0.5 }]} onPress={() => openScopingSession(editingEpic.id)} disabled={!!scopingId}>
+                <Text style={styles.scopeBtnText}>{scopingId ? 'Opening…' : 'Scope with agent'}</Text>
+              </TouchableOpacity>)}
             {editingEpic && (<TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
                 <Text style={styles.deleteBtnText}>Delete epic</Text>
               </TouchableOpacity>)}
@@ -145,9 +201,14 @@ export default function EpicsScreen({ route, navigation }: any) {
                     {open} open · {total} total card{total === 1 ? '' : 's'}
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.boardLink} onPress={() => navigation.navigate('Kanban', { projectId, project, epicId: epic.id })}>
-                  <Text style={styles.boardLinkText}>Board</Text>
-                </TouchableOpacity>
+                <View style={styles.epicActions}>
+                  <TouchableOpacity style={styles.boardLink} onPress={() => openScopingSession(epic.id)} disabled={!!scopingId}>
+                    <Text style={styles.scopeLinkText}>{scopingId === epic.id ? '…' : 'Scope'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.boardLink} onPress={() => navigation.navigate('Kanban', { projectId, project, epicId: epic.id })}>
+                    <Text style={styles.boardLinkText}>Board</Text>
+                  </TouchableOpacity>
+                </View>
               </TouchableOpacity>);
         }))}
       </ScrollView>
@@ -215,4 +276,14 @@ const styles = StyleSheet.create({
         backgroundColor: colors.gray800,
     },
     boardLinkText: { fontSize: 12, color: colors.blue400 },
+    epicActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    scopeLinkText: { fontSize: 12, color: colors.indigo300 },
+    scopeBtn: {
+        marginTop: 8,
+        backgroundColor: colors.indigo900_40,
+        paddingVertical: 10,
+        borderRadius: 8,
+        alignItems: 'center',
+    },
+    scopeBtnText: { color: colors.indigo300, fontWeight: '600' },
 });

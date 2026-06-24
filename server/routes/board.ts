@@ -77,6 +77,7 @@ import {
   CreateSpecItemRequestSchema,
   UpdateSpecItemRequestSchema,
   DecideForMeRequestSchema,
+  ScopeEpicRequestSchema,
 } from './board.openapi.js';
 
 /**
@@ -1919,6 +1920,73 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       const refreshed = stmts.getKanbanSpecItem.get(specItem.id) as KanbanEpicSpecItemRow;
       res.json({ sessionId, agentId: agent.id, specItem: refreshed });
+    },
+  );
+
+  // Open a scoping-mode session pre-linked to an epic. Unlike Decide for me,
+  // this does NOT auto-send a kickoff message — the session is created empty so
+  // the user can type their own request. The scoping preamble (chat.ts) injects
+  // the epic, its phases, spec items, and locked decisions on the first turn, so
+  // the agent already knows which epic without being told.
+  router.post(
+    '/api/projects/:projectId/board/epics/:epicId/scope',
+    async (req: Request, res: Response) => {
+      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
+      if (!epic) return res.status(404).json({ error: 'Epic not found' });
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      if (epic.board_id !== board.id) {
+        return res.status(404).json({ error: 'Epic not found' });
+      }
+
+      const parsed = parseBody(ScopeEpicRequestSchema, req, res);
+      if (!parsed) return;
+
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ownerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
+      if (!ownerUserId) {
+        return res.status(401).json({ error: 'Authentication required to scope an epic' });
+      }
+
+      let found = parsed.agentId ? findAgent(parsed.agentId) : null;
+      // An explicitly chosen agent must belong to THIS project — `findAgent` is a
+      // global lookup, so without this guard a caller could open a scoping session
+      // for this project's epic under a foreign project's agent.
+      if (parsed.agentId && (!found || found.project?.id !== project.id)) {
+        return res.status(400).json({ error: 'agentId does not belong to this project' });
+      }
+      if (!found) {
+        const pick = pickDefaultDecideAgent(project);
+        if (!pick) return res.status(400).json({ error: 'No agent available for this project' });
+        found = findAgent(pick.id);
+      }
+      if (!found) return res.status(404).json({ error: 'Agent not found' });
+      const { agent } = found;
+
+      const sessionId = crypto.randomUUID();
+      const { engine, model: resolvedModel } = resolveEffectiveEngineAndModel(config, {
+        agentId: agent.id,
+        agentEngine: agent.engine || 'claude-code',
+        agentModel: agent.model ?? null,
+        ownerUserId,
+      });
+
+      const sessionTitle = `Scope: ${epic.name}`;
+      stmts.createSession.run(sessionId, agent.id, sessionTitle, engine, resolvedModel, 0, 1, 1);
+      stmts.updateSessionMode.run('scoping', sessionId);
+      stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
+      markSessionFinalizeAutomation(stmts, sessionId, 'manual');
+      setSessionOwner(sessionId, ownerUserId);
+
+      const sessionRow = stmts.getSession.get(sessionId) as SessionRow;
+      broadcast({
+        type: 'session_created',
+        agentId: agent.id,
+        session: enrichSessionForClient(sessionRow, stmts),
+      });
+
+      res.json({ sessionId, agentId: agent.id });
     },
   );
 

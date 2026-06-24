@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, MessagesSquare, Trash2, Zap } from 'lucide-react';
 import { api } from '../utils/api';
 import { epicFormToCreateBody, epicFormToUpdateBody, phaseFormToUpdateBody } from '../utils/epics';
 import EpicDetailsPanel, { EMPTY_EPIC_FORM } from './EpicDetailsPanel';
@@ -56,6 +56,7 @@ export default function EpicView({
   const [detailsSaving, setDetailsSaving] = useState(false);
   const [autonomousSaving, setAutonomousSaving] = useState(false);
   const [creatingEpic, setCreatingEpic] = useState(false);
+  const [scopingEpic, setScopingEpic] = useState(false);
   const [newEpicForm, setNewEpicForm] = useState({ ...EMPTY_EPIC_FORM });
 
   const [addingTicketPhaseId, setAddingTicketPhaseId] = useState<string | null>(null);
@@ -394,6 +395,47 @@ export default function EpicView({
     }
   };
 
+  const handleCreateAndScopeEpic = async () => {
+    if (!newEpicForm.name.trim() || creatingEpic || scopingEpic) return;
+    // Hold BOTH busy flags across the whole create→scope sequence so a second
+    // click can't slip in during the scoping leg and create a duplicate epic
+    // or a duplicate scoping session.
+    setCreatingEpic(true);
+    setScopingEpic(true);
+    try {
+      const created = await api.createEpic(projectId, epicFormToCreateBody(newEpicForm));
+      setNewEpicForm({ ...EMPTY_EPIC_FORM });
+      await fetchBoard();
+      if (!created?.id) return;
+      const result = await api.scopeEpic(projectId, created.id);
+      if (onNavigateToSession && result?.sessionId && result?.agentId) {
+        onNavigateToSession(result.agentId, result.sessionId);
+      } else {
+        onOpenEpic(created.id);
+      }
+    } catch (err: any) {
+      console.error('Failed to create and scope epic:', err);
+    } finally {
+      setCreatingEpic(false);
+      setScopingEpic(false);
+    }
+  };
+
+  const handleScopeEpic = async () => {
+    if (!epic || scopingEpic) return;
+    setScopingEpic(true);
+    try {
+      const result = await api.scopeEpic(projectId, epic.id);
+      if (onNavigateToSession && result?.sessionId && result?.agentId) {
+        onNavigateToSession(result.agentId, result.sessionId);
+      }
+    } catch (err: any) {
+      console.error('Failed to start scoping session:', err);
+    } finally {
+      setScopingEpic(false);
+    }
+  };
+
   const handleDecideForMe = async (specItemId: string) => {
     if (specSavingId) return;
     setSpecSavingId(specItemId);
@@ -486,6 +528,17 @@ export default function EpicView({
             )}
             <button
               type="button"
+              onClick={handleScopeEpic}
+              disabled={scopingEpic}
+              data-testid="epic-scope-button"
+              title="Open a scoping session that already knows this epic"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-50 px-2.5 py-1.5 rounded-lg transition-colors"
+            >
+              <MessagesSquare size={13} />
+              {scopingEpic ? 'Opening…' : 'Scope with agent'}
+            </button>
+            <button
+              type="button"
               onClick={() => setShowSettings((s) => !s)}
               className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-white/[0.06]"
             >
@@ -507,15 +560,28 @@ export default function EpicView({
                 title="New epic"
                 description="Create an epic, then add spec decisions and phases."
                 action={
-                  <button
-                    type="button"
-                    onClick={handleCreateEpic}
-                    disabled={!newEpicForm.name.trim() || creatingEpic}
-                    data-testid="epic-create-button"
-                    className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
-                  >
-                    {creatingEpic ? 'Creating…' : 'Create epic'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCreateEpic}
+                      disabled={!newEpicForm.name.trim() || creatingEpic || scopingEpic}
+                      data-testid="epic-create-button"
+                      className="px-3 py-1.5 text-xs font-medium bg-white/[0.06] hover:bg-white/[0.1] disabled:opacity-40 text-gray-200 rounded-lg transition-colors"
+                    >
+                      {creatingEpic ? 'Creating…' : 'Create epic'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCreateAndScopeEpic}
+                      disabled={!newEpicForm.name.trim() || creatingEpic || scopingEpic}
+                      data-testid="epic-create-scope-button"
+                      title="Create the epic and open a scoping session that already knows it"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
+                    >
+                      <MessagesSquare size={13} />
+                      {creatingEpic ? 'Creating…' : 'Create & scope'}
+                    </button>
+                  </div>
                 }
               >
                 <EpicDetailsPanel

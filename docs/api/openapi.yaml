@@ -10983,6 +10983,65 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/epics/{epicId}/scope:
+    post:
+      tags:
+        - Board
+      summary: Open a scoping-mode session pre-linked to an epic
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: epicId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId:
+                  type: string
+                  minLength: 1
+                  description: Agent to run the scoping session. Defaults to the project lead.
+      responses:
+        "200":
+          description: Scoping session created and linked to the epic.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                required:
+                  - sessionId
+                  - agentId
+        "400":
+          description: No agent available or agent does not belong to this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/columns/{columnId}:
     put:
       tags:

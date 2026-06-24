@@ -8,6 +8,7 @@ import { api } from '../utils/api';
     getBoard: vi.fn(),
     getModelConfig: vi.fn().mockResolvedValue({ engineValidModels: {} }),
     createEpic: vi.fn(),
+    scopeEpic: vi.fn(),
     createCard: vi.fn(),
     updateEpic: vi.fn(),
     deleteEpic: vi.fn(),
@@ -62,6 +63,57 @@ describe('EpicView', () => {
     await waitFor(() => expect(screen.getByText('Platform')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('manage-epic-e1' as any) as any);
     expect(onOpenEpic!).toHaveBeenCalledWith('e1');
+  });
+
+  it('opens a scoping session pre-linked to the epic and navigates to it', async () => {
+    (api.scopeEpic as any).mockResolvedValue({ sessionId: 's-1', agentId: 'a-1' });
+    const onNavigateToSession = vi.fn();
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+        onNavigateToSession={onNavigateToSession}
+      />,
+    );
+
+    const button = await screen.findByTestId('epic-scope-button' as any);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(api.scopeEpic).toHaveBeenCalledWith('p1', 'e1'));
+    await waitFor(() => expect(onNavigateToSession).toHaveBeenCalledWith('a-1', 's-1'));
+  });
+
+  it('creates an epic and opens a scoping session for it via Create & scope', async () => {
+    (api.createEpic as any).mockResolvedValue({ id: 'e-new' });
+    (api.scopeEpic as any).mockResolvedValue({ sessionId: 's-2', agentId: 'a-2' });
+    const onNavigateToSession = vi.fn();
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+        onNavigateToSession={onNavigateToSession}
+      />,
+    );
+
+    const nameInput = await screen.findByPlaceholderText('e.g. Platform reliability' as any);
+    fireEvent.change(nameInput, { target: { value: 'Payments' } });
+    fireEvent.click(screen.getByTestId('epic-create-scope-button' as any));
+
+    await waitFor(() => expect(api.createEpic).toHaveBeenCalled());
+    await waitFor(() => expect(api.scopeEpic).toHaveBeenCalledWith('p1', 'e-new'));
+    await waitFor(() => expect(onNavigateToSession).toHaveBeenCalledWith('a-2', 's-2'));
   });
 
   it('adds a ticket to a phase on the epic detail screen', async () => {

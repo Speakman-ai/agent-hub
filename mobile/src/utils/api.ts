@@ -505,6 +505,10 @@ export const api = {
         body: JSON.stringify(data),
     }),
     deleteEpic: (projectId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
+    scopeEpic: (projectId: any, epicId: any, data: { agentId?: string } = {}) => fetchJSON(`/projects/${projectId}/board/epics/${epicId}/scope`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     linkCardToEpic: (projectId: any, cardId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, {
         method: 'POST',
         body: JSON.stringify({ epicId }),
