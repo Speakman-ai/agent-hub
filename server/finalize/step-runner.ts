@@ -97,6 +97,7 @@ import {
   type TimelineMessageDeps,
 } from './timeline-message.js';
 import { detailIsSpotReclaim } from './spot-interruption.js';
+import { isRunnerTeardownExit } from './runner-teardown.js';
 
 /**
  * Argv form of {@link FINALIZE_STEP_SHELL}. Parsed once at module load so
@@ -632,6 +633,38 @@ export async function runStepsSequence(
           activeSecondsBilled,
           stepResults,
           runOutcome.detail,
+          failedStep,
+        ),
+      );
+    }
+
+    // A non-zero exit whose terminal output is the Go `context canceled`
+    // sentinel (with no test-failure summary) is a runner TEARDOWN, not a CI
+    // failure: the container was killed mid `docker exec` (OOM on a
+    // memory-capped job, an EC2 Spot reclaim, a lost runner, or a whole-run
+    // abort catching this in-flight job). Classify it infra-class so the
+    // orchestrator's one-auto-retry re-runs the job on a fresh runner instead
+    // of dispatching a wasted fix round to the agent with every test green.
+    // The detector is tight (see runner-teardown.ts) — a real red that also
+    // logs `context canceled` keeps its failure summary and stays CI-class.
+    if (
+      isRunnerTeardownExit({
+        outputTail: runOutcome.outputTail,
+        failureExcerpt: runOutcome.failureExcerpt,
+      })
+    ) {
+      return finishStepSequence(
+        deps,
+        opts,
+        terminate(
+          stmts,
+          opts.runId,
+          'infra_error',
+          'container_unavailable',
+          `step ${stepIndex} (${displayName}) runner torn down mid-exec (context canceled) — retrying on a fresh runner`,
+          activeSecondsBilled,
+          stepResults,
+          'runner teardown: context canceled (no test-failure summary)',
           failedStep,
         ),
       );

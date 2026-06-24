@@ -25,6 +25,7 @@ import {
   type FixDispatchTrigger,
   type TurnEndSubscriber,
 } from './fix-dispatch.js';
+import { RUNNER_TEARDOWN_DISPATCH_HINT } from './runner-teardown.js';
 
 // ─── §7 composer tests ────────────────────────────────────────────────
 
@@ -176,6 +177,60 @@ describe('composeDispatchBody', () => {
       },
     });
     expect(body.endsWith(`\n${DISPATCH_TRAILER}`)).toBe(true);
+  });
+
+  // Layer B: a fix round that slips past the step-runner's infra reclassifier
+  // and reaches dispatch should still tell the agent a context-canceled
+  // teardown is not a real failure, so it doesn't waste the round chasing it.
+  it('prepends the runner-teardown hint when the failed step is a context-canceled teardown', () => {
+    const body = composeDispatchBody({
+      failedStep: {
+        phase: 'tasks',
+        name: 'Tests (client)',
+        exitCode: 1,
+        outputTail: ['✓ src/components/Foo.test.tsx (4 tests)', 'context canceled'],
+      },
+    });
+    expect(body).toContain(RUNNER_TEARDOWN_DISPATCH_HINT);
+    // Header + trailer are still present — the hint is additive.
+    expect(body.split('\n')[0]).toContain('step "Tests (client)" failed (exit 1)');
+    expect(body.endsWith(`\n${DISPATCH_TRAILER}`)).toBe(true);
+  });
+
+  // The case the reviewer flagged: a teardown whose sentinel is NOT in the
+  // strict terminal window is exactly what Layer A misses (so it lands here as
+  // a `failure`). The dispatch-side check is intentionally BROADER than Layer
+  // A's, so the hint still fires — proving Layer B is not dead code.
+  it('prepends the hint for a teardown whose sentinel is outside the terminal window', () => {
+    const body = composeDispatchBody({
+      failedStep: {
+        phase: 'tasks',
+        name: 'Tests (client)',
+        exitCode: 1,
+        outputTail: [
+          '✓ src/components/Foo.test.tsx (4 tests)',
+          'context canceled',
+          'runner: stopping inner dockerd',
+          'runner: removing graph volume',
+          'runner: lease released',
+        ],
+      },
+    });
+    expect(body).toContain(RUNNER_TEARDOWN_DISPATCH_HINT);
+  });
+
+  it('does NOT prepend the teardown hint for a genuine failure', () => {
+    const body = composeDispatchBody({
+      failedStep: {
+        phase: 'tasks',
+        name: 'Tests (client)',
+        exitCode: 1,
+        outputTail: ['Tests  3 failed | 900 passed (903)', 'context canceled'],
+      },
+    });
+    // A real red that also logged context-canceled keeps its failure summary,
+    // so the hint must NOT appear.
+    expect(body).not.toContain(RUNNER_TEARDOWN_DISPATCH_HINT);
   });
 
   // Regression: a spawned agent has no web "session strip". The trailer

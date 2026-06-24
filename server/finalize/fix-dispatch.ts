@@ -50,6 +50,10 @@ import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, MessageRow, ReviewerThreadRow, Stmts } from '../types.js';
 import { formatThreadsForDispatchBody } from './reviewer-dispatch.js';
 import {
+  looksLikeRunnerTeardownForHint,
+  RUNNER_TEARDOWN_DISPATCH_HINT,
+} from './runner-teardown.js';
+import {
   armStallWatchdog,
   DEFAULT_NOTIFY_AFTER_MS,
   DEFAULT_STALL_AFTER_MS,
@@ -563,6 +567,28 @@ export function composeDispatchBody(trigger: FixDispatchTrigger): string {
   }
 
   if (hasFailedStep) {
+    // Layer B safety net: if this failed step looks like a runner teardown
+    // (Go `context canceled` sentinel, no test-failure summary) rather than a
+    // real red, lead with a hint so the agent doesn't chase a phantom failure.
+    // Layer A reclassifies clean teardowns as infra_error before they reach
+    // dispatch, so the cases that survive to here are exactly the ones Layer
+    // A's strict terminal-window detector rejected — which is why this uses the
+    // BROADER `looksLikeRunnerTeardownForHint` (sentinel anywhere, not just the
+    // terminal window). Using the strict predicate here would be dead code: a
+    // failedStep only reaches dispatch when the strict check already returned
+    // false. The hint is advisory and never suppresses CI, so the looser match
+    // is safe.
+    const fs = trigger.failedStep!;
+    if (
+      looksLikeRunnerTeardownForHint({
+        outputTail: fs.outputTail,
+        failureExcerpt: fs.failureExcerpt,
+      })
+    ) {
+      lines.push('');
+      lines.push(RUNNER_TEARDOWN_DISPATCH_HINT);
+    }
+
     // Lead with the signal-aware excerpt when we have one — it points at the
     // actual failure (test summary, stack trace) rather than whatever
     // happened to be last in the raw stream. The trailing tail still follows

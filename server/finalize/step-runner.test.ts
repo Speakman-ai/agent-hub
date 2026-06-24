@@ -456,6 +456,89 @@ describe('runStepPhase — failure short-circuits', () => {
   });
 });
 
+describe('runStepPhase — runner teardown (context canceled) reclassifies to infra_error', () => {
+  it('a non-zero exit ending in the context-canceled sentinel (all tests green) → infra_error, not step_failed', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Tests (client)', run: 'npm test' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    // Every test passes, then the runner is torn down mid-exec: the docker CLI
+    // prints Go's context.Canceled sentinel and the exec exits non-zero.
+    fakes[0].stdout.push('✓ src/components/MyCodexAuthSection.test.tsx (4 tests)\n');
+    fakes[0].stderr.push('context canceled\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    // Routed to the infra class so the orchestrator's one-auto-retry re-runs
+    // on a fresh runner — NO wasted fix round dispatched to the agent.
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('container_unavailable');
+    // Contract: infra_error must NOT persist a terminal status — the
+    // orchestrator owns the retry-vs-fail decision.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+    // failedStep is still carried for diagnostics.
+    expect(result.failedStep).toBeDefined();
+    expect(result.failedStep!.name).toBe('Tests (client)');
+  });
+
+  it('a REAL test failure that also logs context canceled stays CI-class (step_failed)', async () => {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    const config = makeConfig([{ name: 'Tests (client)', run: 'npm test' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+
+    await microtaskTick();
+    // A genuine red: the vitest failure summary is present, so even with a
+    // trailing context-canceled teardown line this must NOT be reclassified.
+    fakes[0].stdout.push('FAIL src/components/Foo.test.tsx\n');
+    fakes[0].stdout.push('Tests  3 failed | 900 passed (903)\n');
+    fakes[0].stderr.push('context canceled\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
+  });
+});
+
 describe('runStepPhase — timeout (fake timers)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
