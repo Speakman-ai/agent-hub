@@ -20,6 +20,11 @@ import {
 import { readSpawnCredsFile } from './spawn-creds-file.js';
 import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 import { resolvePersonalOAuthConfig } from './personal-oauth-config.js';
+import {
+  DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
+  PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS,
+  PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS,
+} from './preview/preview-ready-timeout-bounds.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -366,10 +371,14 @@ const config: AppConfig = {
   // `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS` or `previewComposeReadyTimeoutMs`
   // in config.json. Per-project override: `prEnv.preview.compose.readyTimeoutMs`.
   previewComposeReadyTimeoutMs: clampFiniteInt(
-    resolveInt('AGENT_HUB_PREVIEW_READY_TIMEOUT_MS', 'previewComposeReadyTimeoutMs', 600_000),
-    600_000,
-    5_000,
-    1_800_000,
+    resolveInt(
+      'AGENT_HUB_PREVIEW_READY_TIMEOUT_MS',
+      'previewComposeReadyTimeoutMs',
+      DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
+    ),
+    DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
+    PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS,
+    PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS,
   ),
 
   // Wildcard subdomain base for "subdomain preview" mode. When set

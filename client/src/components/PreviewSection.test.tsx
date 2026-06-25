@@ -209,7 +209,7 @@ describe('PreviewSection', () => {
     // than silently changing behavior.
     expect((input as any).value).toBe('');
     expect((input as any).min).toBe('5000');
-    expect((input as any).max).toBe('1800000');
+    expect((input as any).max).toBe('3600000');
   });
 
   it('forwards readyTimeoutMs from the form to buildPreviewEnvironment when set', async () => {

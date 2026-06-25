@@ -41,7 +41,7 @@ export interface PreviewEnvironmentBuildBody {
      * Per-project override for the compose preview "ready" health budget.
      * Optional; when omitted the server default (10 min, configurable via
      * `previewComposeReadyTimeoutMs` / `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`)
-     * is used. Final bounds (5,000–1,800,000 ms) are enforced downstream in
+     * is used. Final bounds (5,000–3,600,000 ms) are enforced downstream in
      * `validatePrEnvPreviewCompose`.
      */
     readyTimeoutMs?: number;

@@ -91,6 +91,7 @@ import {
 } from './preview-log-tail.js';
 import { waitForWorktreeComposeReady } from './worktree-compose-ready.js';
 import { previewProxyMountPath } from './preview-public-url.js';
+import { DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS } from './preview-ready-timeout-bounds.js';
 
 export type RemoveComposeProjectVolumesFn = (deps: RemoveComposeProjectVolumesDeps) => void;
 
@@ -373,8 +374,12 @@ export interface PreviewComposeRuntimeDeps {
 
 // ─── Constants ──────────────────────────────────────────────────────────
 
-/** Default health-poll budget for compose previews (cold build + DB restore). */
-export const DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS = 600_000; // 10 min
+/**
+ * Default health-poll budget for compose previews (cold build + DB restore).
+ * Re-exported from the shared bounds module so the runtime default, the
+ * global config clamp, and the per-project validation all agree.
+ */
+export { DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS };
 const DEFAULT_READY_TIMEOUT_MS = DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS;
 const DEFAULT_HEALTH_INTERVAL_MS = 1_000;
 /** Default cadence for the "still starting" boot-log heartbeat. */

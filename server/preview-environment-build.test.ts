@@ -118,7 +118,7 @@ describe('runPreviewEnvironmentBuild — readyTimeoutMs round-trip', () => {
     expect(compose?.readyTimeoutMs).toBeUndefined();
   });
 
-  it('rejects readyTimeoutMs values outside the documented 5,000–1,800,000 ms band', async () => {
+  it('rejects readyTimeoutMs values outside the documented 5,000–3,600,000 ms band', async () => {
     const { project } = makeProjectWithCompose();
     const result = await runPreviewEnvironmentBuild({
       project,
@@ -128,7 +128,7 @@ describe('runPreviewEnvironmentBuild — readyTimeoutMs round-trip', () => {
           file: 'docker-compose.yml',
           entryService: 'web',
           entryPort: 3000,
-          // Over the 30-minute ceiling — must surface as a 400 from
+          // 90 min — over the 60-minute ceiling — must surface as a 400 from
           // validatePrEnvPreviewCompose, not silently clamp.
           readyTimeoutMs: 5_400_000,
         },
@@ -142,5 +142,31 @@ describe('runPreviewEnvironmentBuild — readyTimeoutMs round-trip', () => {
     if ('error' in result && typeof result.error === 'string') {
       expect(result.error).toContain('readyTimeoutMs');
     }
+  });
+
+  it('accepts and persists a 45-minute readyTimeoutMs that the old 30-minute ceiling rejected', async () => {
+    const { project } = makeProjectWithCompose();
+    await runPreviewEnvironmentBuild({
+      project,
+      cwd: project.cwd,
+      body: {
+        compose: {
+          file: 'docker-compose.yml',
+          entryService: 'web',
+          entryPort: 3000,
+          // 45 min — above the old 30-min cap, within the new 60-min ceiling.
+          // The config-save step is what we assert here; the post-save preview
+          // smoke test is out of scope (same as the "persists" case above).
+          readyTimeoutMs: 2_700_000,
+        },
+      },
+      saveProjects: saveProjectsSpy,
+      getPreviewComposeRuntime: getRuntimeStub as never,
+      actorUserId: null,
+    });
+    expect(saveProjectsSpy).toHaveBeenCalled();
+    const compose = (project.prEnv as { preview?: { compose?: { readyTimeoutMs?: number } } })
+      ?.preview?.compose;
+    expect(compose?.readyTimeoutMs).toBe(2_700_000);
   });
 });

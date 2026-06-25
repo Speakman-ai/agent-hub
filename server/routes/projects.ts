@@ -22,6 +22,10 @@ import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolve
 import type { SupportedEngine } from '../engine-availability.js';
 import { claudePermissionModeForSpawn } from '../claude-cli-args.js';
 import {
+  PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS as PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS_SHARED,
+  PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS as PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS_SHARED,
+} from '../preview/preview-ready-timeout-bounds.js';
+import {
   ANALYZE_FINALIZE_SHIPPING_GUIDELINES,
   applyOnboardDevAgentShippingContracts,
   patchOnboardContextFilesForShipping,
@@ -482,8 +486,11 @@ const PR_ENV_PREVIEW_IDLE_TTL_MAX = 86400;
 // service-name surfaces at save time instead of when `docker compose`
 // rejects it minutes into a build.
 const PREVIEW_COMPOSE_SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-const PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS = 5_000;
-const PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS = 1_800_000;
+// Bounds shared with the global config clamp (`server/config.ts`) via
+// `preview/preview-ready-timeout-bounds.ts` so the per-project override and
+// the host default can't drift.
+const PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS = PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS_SHARED;
+const PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS = PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS_SHARED;
 const PREVIEW_COMPOSE_FILE_MAX_LEN = 256;
 // Path-traversal guard for `file` / `envFile`. These resolve relative to
 // the worktree root at runtime; a `..` segment could escape the worktree

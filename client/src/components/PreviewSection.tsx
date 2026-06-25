@@ -30,7 +30,7 @@ const COMPOSE_PATH_TRAVERSAL_RE = /(^|\/)\.\.(\/|$)/;
 // (PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS / _MAX_MS). Kept in sync with the
 // note in `formFromProject` — empty = use server default (10 min today).
 const PREVIEW_READY_TIMEOUT_MIN_MS = 5_000;
-const PREVIEW_READY_TIMEOUT_MAX_MS = 1_800_000;
+const PREVIEW_READY_TIMEOUT_MAX_MS = 3_600_000;
 
 const DEFAULT_FORM = Object.freeze({
   composeFile: DEFAULT_COMPOSE_FILE,
@@ -897,7 +897,7 @@ export default function PreviewSection({
                   min={PREVIEW_READY_TIMEOUT_MIN_MS}
                   max={PREVIEW_READY_TIMEOUT_MAX_MS}
                   step={1000}
-                  placeholder="e.g. 1800000 for 30 min"
+                  placeholder="e.g. 1800000 for 30 min, 3600000 for 60 min"
                   value={form.composeReadyTimeoutMs}
                   onChange={(e: any) => setField('composeReadyTimeoutMs', e.target.value)}
                   className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm"
@@ -907,7 +907,7 @@ export default function PreviewSection({
                   How long Agent Hub waits for the entry service to report healthy after compose
                   starts. Raise this when your boot sequence (DB restore, asset build, framework
                   compile) needs more than 10 minutes. Bounds: {PREVIEW_READY_TIMEOUT_MIN_MS}–
-                  {PREVIEW_READY_TIMEOUT_MAX_MS} ms (5 s – 30 min).
+                  {PREVIEW_READY_TIMEOUT_MAX_MS} ms (5 s – 60 min).
                 </p>
               </div>
             </div>

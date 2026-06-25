@@ -609,12 +609,23 @@ describe('config.ts — previewComposeReadyTimeoutMs', () => {
     }
   });
 
-  it('clamps out-of-range values to 1800000', async () => {
+  it('clamps out-of-range values to the 60-minute ceiling (3600000)', async () => {
     const dir = path.join(os.tmpdir(), `agent-hub-preview-timeout-clamp-${process.pid}`);
     try {
       delete process.env.AGENT_HUB_PREVIEW_READY_TIMEOUT_MS;
       const mod = await loadPreviewTimeoutConfig(dir, { previewComposeReadyTimeoutMs: 9_999_999 });
-      expect(mod.default.previewComposeReadyTimeoutMs).toBe(1_800_000);
+      expect(mod.default.previewComposeReadyTimeoutMs).toBe(3_600_000);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a 50-minute override that the old 30-minute ceiling rejected', async () => {
+    const dir = path.join(os.tmpdir(), `agent-hub-preview-timeout-50m-${process.pid}`);
+    try {
+      delete process.env.AGENT_HUB_PREVIEW_READY_TIMEOUT_MS;
+      const mod = await loadPreviewTimeoutConfig(dir, { previewComposeReadyTimeoutMs: 3_000_000 });
+      expect(mod.default.previewComposeReadyTimeoutMs).toBe(3_000_000);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
