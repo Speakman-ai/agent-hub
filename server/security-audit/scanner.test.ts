@@ -218,6 +218,46 @@ describe('scanResolvedDependencies', () => {
     );
   });
 
+  it('discovers requirements filename variants and surfaces pip findings', async () => {
+    const reader = fakeReader({
+      'backend/opensign/requirements-base.txt': 'Django==4.2.30\nrequests==2.25.1\n',
+      'backend/opensign/requirements-docker.txt': 'gunicorn==22.0.0\n',
+    });
+    const source = new CapturingSource((deps) =>
+      deps
+        .filter((d) => d.name === 'django')
+        .map((d) => ({
+          dependency: d,
+          advisory: {
+            id: 'PYSEC-django',
+            summary: 'vuln',
+            severity: 'high' as const,
+            aliases: [],
+            fixedVersion: null,
+            url: '',
+          },
+        })),
+    );
+    const result = await scanResolvedDependencies({ reader, ref: 'main', advisorySource: source });
+
+    expect(result.scannedManifests.sort()).toEqual([
+      'backend/opensign/requirements-base.txt',
+      'backend/opensign/requirements-docker.txt',
+    ]);
+    expect(source.seen.map((d) => `${d.ecosystem}:${d.name}@${d.version}`).sort()).toEqual([
+      'pip:django@4.2.30',
+      'pip:gunicorn@22.0.0',
+      'pip:requests@2.25.1',
+    ]);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.dependency).toMatchObject({
+      ecosystem: 'pip',
+      name: 'django',
+      version: '4.2.30',
+      manifestPath: 'backend/opensign/requirements-base.txt',
+    });
+  });
+
   it('records a corrupt poetry.lock (no [[package]] blocks) as failed, preserving findings', async () => {
     const reader = fakeReader({ 'poetry.lock': '# truncated, no packages\n' });
     const source = new CapturingSource(() => []);

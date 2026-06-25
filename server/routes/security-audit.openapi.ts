@@ -259,7 +259,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Run a dependency security scan now',
   description:
-    'Scans the Hub-hosted repo (default branch unless `ref` is given): parses npm lockfiles (`package-lock.json`, `npm-shrinkwrap.json`) and Python/PyPI lockfiles (`requirements.txt`, `poetry.lock`, `Pipfile.lock`), queries the OSV advisory database, persists findings with de-dupe, and opens a kanban card for genuinely new findings. Persistence is restricted to the default-branch tip — scanning any other `ref` is a read-only dry run (`dryRun: true`, nothing written). Requires gitHost: agenthub and the Admin role.',
+    'Scans the Hub-hosted repo (default branch unless `ref` is given): parses npm lockfiles (`package-lock.json`, `npm-shrinkwrap.json`) and Python/PyPI lockfiles (`requirements.txt` plus common `requirements-*.txt` variants, `poetry.lock`, `Pipfile.lock`), queries the OSV advisory database, persists findings with de-dupe, and opens a kanban card for genuinely new findings. Persistence is restricted to the default-branch tip — scanning any other `ref` is a read-only dry run (`dryRun: true`, nothing written). Requires gitHost: agenthub and the Admin role.',
   request: {
     params: z.object({ projectId: z.string() }),
     body: {

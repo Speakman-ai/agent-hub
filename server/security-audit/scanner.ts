@@ -36,8 +36,10 @@ export interface RepoFileReader {
 /**
  * All lockfile parsers the scanner knows about. npm (`package-lock.json`,
  * `npm-shrinkwrap.json`) plus Python/PyPI (`requirements.txt`, `poetry.lock`,
- * `Pipfile.lock`). Each new ecosystem is a parser registration here — the
- * scanner, OSV query layer, store, and findings UI are all ecosystem-generic.
+ * `Pipfile.lock`). The requirements parser also matches common
+ * `requirements-*.txt` variants. Each new ecosystem is a parser registration
+ * here — the scanner, OSV query layer, store, and findings UI are all
+ * ecosystem-generic.
  */
 export const DEFAULT_PARSERS: readonly LockfileParser[] = [
   npmLockfileParser,
@@ -91,7 +93,7 @@ function parserForFile(
   parsers: readonly LockfileParser[],
 ): LockfileParser | null {
   const base = path.posix.basename(filePath).toLowerCase();
-  return parsers.find((p) => p.filenames.includes(base)) ?? null;
+  return parsers.find((p) => p.filenames.includes(base) || p.matchesFilename?.(base)) ?? null;
 }
 
 /**

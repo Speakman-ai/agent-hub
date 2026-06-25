@@ -256,12 +256,24 @@ describe('parsePipfileLock', () => {
 });
 
 describe('pipLockfileParsers registration', () => {
-  it('registers requirements.txt, poetry.lock and pipfile.lock under the pip ecosystem', () => {
+  it('registers Python lockfiles under the pip ecosystem', () => {
     const byFile = new Map<string, string>();
     for (const p of pipLockfileParsers) for (const f of p.filenames) byFile.set(f, p.ecosystem);
     expect(byFile.get('requirements.txt')).toBe('pip');
     expect(byFile.get('poetry.lock')).toBe('pip');
     // basenames are matched case-insensitively (lowercased) by the scanner.
     expect(byFile.get('pipfile.lock')).toBe('pip');
+  });
+
+  it('matches common requirements filename variants', () => {
+    const requirementsParser = pipLockfileParsers.find((p) =>
+      p.filenames.includes('requirements.txt'),
+    );
+    expect(requirementsParser?.matchesFilename?.('requirements.txt')).toBe(true);
+    expect(requirementsParser?.matchesFilename?.('requirements-base.txt')).toBe(true);
+    expect(requirementsParser?.matchesFilename?.('requirements_docker.txt')).toBe(true);
+    expect(requirementsParser?.matchesFilename?.('requirements.local.txt')).toBe(true);
+    expect(requirementsParser?.matchesFilename?.('dev-requirements.txt')).toBe(false);
+    expect(requirementsParser?.matchesFilename?.('requirements.in')).toBe(false);
   });
 });
