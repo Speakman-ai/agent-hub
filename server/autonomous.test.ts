@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import type { Project, KanbanCardRow, KanbanEpicRow, SessionRow } from './types.js';
+import type { Project, KanbanCardRow, KanbanEpicRow, KanbanPhaseRow, SessionRow } from './types.js';
 
 // ─── Module mocks (hoisted before imports) ────────────────────────────────
 
@@ -95,6 +95,8 @@ interface MockStmts {
   getKanbanCardsByEpic: { all: Mock };
   getKanbanCardsByPhase?: { all: Mock };
   getKanbanPhase?: { get: Mock };
+  getKanbanPhasesByEpic?: { all: Mock };
+  updateKanbanPhase?: { run: Mock };
   setPhaseAutonomousRunning?: { run: Mock };
   setPhaseAutonomousEnabledBy?: { run: Mock };
   getKanbanEpic: { get: Mock };
@@ -730,6 +732,154 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('phase1-todo');
     expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'phase1-todo');
+  });
+
+  // ─── Phase auto-advance: when a phase finishes, start the next armed phase ──
+  function makePhase(overrides: Partial<KanbanPhaseRow> = {}): KanbanPhaseRow {
+    return {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      description: null,
+      position: 0,
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_interval: 5,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_enabled_by: 'owner-1',
+      ...overrides,
+    } as unknown as KanbanPhaseRow;
+  }
+
+  function makePhaseAdvanceStmts(phase1: KanbanPhaseRow, phase2: KanbanPhaseRow): MockStmts {
+    // Mutable phase store so setPhaseAutonomousRunning is reflected by later
+    // getKanbanPhase reads (mirrors the DB round-trip the real code relies on).
+    const byId: Record<string, KanbanPhaseRow> = { [phase1.id]: phase1, [phase2.id]: phase2 };
+    const doneCard = makeCard({ id: 'p1-done', phase_id: phase1.id, column_id: 'col-done' });
+    const todoCard = makeCard({ id: 'p2-todo', phase_id: phase2.id, column_id: 'col-todo' });
+    return makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn((id: string) => byId[id]) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [phase1, phase2]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn((id: string) => (id === phase1.id ? [doneCard] : [todoCard])),
+      },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => []) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      updateKanbanPhase: { run: vi.fn() },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number, id: string) => {
+          if (byId[id]) byId[id] = { ...byId[id], autonomous_running: val };
+        }),
+      },
+    });
+  }
+
+  it('auto-starts the next armed phase when a phase completes, inheriting the owner', async () => {
+    const phase1 = makePhase();
+    const phase2 = makePhase({
+      id: 'phase-2',
+      name: 'Phase 2',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null, // no own owner → inherits from phase-1
+    });
+    const stmts = makePhaseAdvanceStmts(phase1, phase2);
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    // Completed phase-1 is disarmed/stopped.
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, 'phase-1');
+    // Next phase-2 inherits phase-1's owner and is started.
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).toHaveBeenCalledWith('owner-1', 'phase-2');
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(1, 'phase-2');
+  });
+
+  it('does not auto-start the next phase when it is not armed', async () => {
+    const phase1 = makePhase();
+    const phase2 = makePhase({
+      id: 'phase-2',
+      name: 'Phase 2',
+      position: 1,
+      autonomous: 0, // not armed
+      autonomous_running: 0,
+    });
+    const stmts = makePhaseAdvanceStmts(phase1, phase2);
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(stmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, 'phase-1');
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-2');
+    expect(stmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'phase-2',
+    );
+  });
+
+  it('does not auto-start the next phase when no owner can be resolved', async () => {
+    const phase1 = makePhase({ autonomous_enabled_by: null });
+    const phase2 = makePhase({
+      id: 'phase-2',
+      name: 'Phase 2',
+      position: 1,
+      autonomous: 1,
+      autonomous_running: 0,
+      autonomous_enabled_by: null,
+    });
+    const stmts = makePhaseAdvanceStmts(phase1, phase2);
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(stmts.setPhaseAutonomousRunning!.run).not.toHaveBeenCalledWith(1, 'phase-2');
+  });
+
+  it('does nothing when the completed phase is the last in the epic', async () => {
+    // Only one phase in the epic. Mutable store so the disarm (running → 0) is
+    // reflected by the re-read inside the completion branch — otherwise the
+    // existing scheduleAutonomousPhase(clearedPhase) would re-fire the loop.
+    let phase1 = makePhase();
+    const byIdStmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, id: 'epic-1', autonomous: 1 })) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanPhase: { get: vi.fn(() => phase1) },
+      getKanbanPhasesByEpic: { all: vi.fn(() => [phase1]) },
+      getKanbanCardsByPhase: {
+        all: vi.fn(() => [makeCard({ id: 'p1-done', phase_id: 'phase-1', column_id: 'col-done' })]),
+      },
+      updateKanbanPhase: { run: vi.fn() },
+      setPhaseAutonomousEnabledBy: { run: vi.fn() },
+      setPhaseAutonomousRunning: {
+        run: vi.fn((val: number) => {
+          phase1 = { ...phase1, autonomous_running: val } as KanbanPhaseRow;
+        }),
+      },
+    });
+    const deps = makeDeps(byIdStmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(byIdStmts.setPhaseAutonomousRunning!.run).toHaveBeenCalledWith(0, 'phase-1');
+    expect(byIdStmts.setPhaseAutonomousEnabledBy!.run).not.toHaveBeenCalled();
   });
 
   it('skips dispatch when no session owner can be resolved', async () => {

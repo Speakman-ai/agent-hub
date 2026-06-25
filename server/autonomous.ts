@@ -649,6 +649,53 @@ export async function runAutonomousLoopForEpic(projectId: string, epicId: string
   await dispatchEpicGated(projectId, epic);
 }
 
+/**
+ * When an autonomous phase completes, start the next armed phase in the same
+ * epic so a multi-phase run advances on its own. Mirrors the gates in
+ * `startAutonomousPhase`: only an armed phase (`autonomous = 1`) auto-starts,
+ * and a resolvable credential owner is required (the next phase's own
+ * `autonomous_enabled_by`, falling back to the completed phase's owner). If the
+ * next phase is not armed, there is no next phase, or no owner resolves, we
+ * leave it stopped — same as before. Cascades naturally: starting the next
+ * phase re-enters the loop, so an already-complete next phase advances again.
+ */
+async function maybeAdvanceToNextPhase(
+  projectId: string,
+  epic: KanbanEpicRow,
+  completedPhase: KanbanPhaseRow,
+): Promise<void> {
+  const d = getDeps();
+  const phases = d.stmts.getKanbanPhasesByEpic.all(epic.id) as KanbanPhaseRow[];
+  const idx = phases.findIndex((p) => p.id === completedPhase.id);
+  const next = idx >= 0 ? phases[idx + 1] : undefined;
+  if (!next) return; // last phase in the epic — nothing to advance to
+
+  if (!next.autonomous) {
+    console.log(
+      `[Autonomous] phase "${completedPhase.name}" complete — next phase "${next.name}" is not armed for auto-dispatch; leaving stopped`,
+    );
+    return;
+  }
+  if (next.autonomous_running) return; // already running — nothing to do
+
+  const owner = next.autonomous_enabled_by ?? completedPhase.autonomous_enabled_by ?? null;
+  if (!owner) {
+    console.log(
+      `[Autonomous] phase "${completedPhase.name}" complete — cannot auto-start next phase "${next.name}": no resolvable owner for credential resolution`,
+    );
+    return;
+  }
+
+  d.stmts.setPhaseAutonomousEnabledBy.run(owner, next.id);
+  d.stmts.setPhaseAutonomousRunning.run(1, next.id);
+  const started = d.stmts.getKanbanPhase.get(next.id) as KanbanPhaseRow;
+  scheduleAutonomousPhase(projectId, started);
+  d.broadcast({ type: 'kanban_update', projectId });
+  console.log(
+    `[Autonomous] phase "${completedPhase.name}" complete — auto-started next phase "${next.name}"`,
+  );
+}
+
 async function runAutonomousLoopInner(
   projectId: string,
   epic: KanbanEpicRow,
@@ -709,6 +756,13 @@ async function runAutonomousLoopInner(
       d.stmts.setPhaseAutonomousRunning.run(0, phase.id);
       const clearedPhase = d.stmts.getKanbanPhase.get(phase.id) as KanbanPhaseRow;
       scheduleAutonomousPhase(projectId, clearedPhase);
+      d.broadcast({ type: 'kanban_update', projectId });
+      console.log(`[Autonomous] ${scopeLabel} — all cards are Done; autonomous mode disabled`);
+      // Sequential phases: when one finishes, automatically start the next
+      // armed phase in the epic instead of stranding the operator on a manual
+      // "Run phase" click. Cascades through already-complete phases.
+      await maybeAdvanceToNextPhase(projectId, epic, clearedPhase);
+      return;
     } else {
       d.stmts.updateKanbanEpic.run(
         epic.name,
