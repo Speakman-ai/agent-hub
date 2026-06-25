@@ -231,6 +231,32 @@ export const api = {
         return fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs${q}`);
     },
     getWorkflowRunDetail: (projectId: any, workflowId: any, runId: any) => fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs/${runId}`),
+    // Deployment Module — deploy.yaml environments + run actions.
+    getDeployConfig: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/config`),
+    listDeployments: (projectId: any, { environment, limit, offset }: any = {}) => {
+        const params = new URLSearchParams();
+        if (environment)
+            params.set('environment', environment);
+        if (limit != null)
+            params.set('limit', String(limit));
+        if (offset)
+            params.set('offset', String(offset));
+        const qs = params.toString();
+        return fetchJSON(`/projects/${projectId}/deployments${qs ? `?${qs}` : ''}`);
+    },
+    getDeployment: (projectId: any, deploymentId: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}`),
+    triggerDeployment: (projectId: any, environment: any, body: any) => fetchJSON(`/projects/${projectId}/deployments`, {
+        method: 'POST',
+        body: JSON.stringify({ ...body, environment }),
+    }),
+    rollbackDeployment: (projectId: any, deploymentId: any, body: any = {}) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/rollback`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }),
+    approveDeployment: (projectId: any, deploymentId: any, body: any = {}) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }),
     // Designs (Claude Design)
     getDesigns: () => fetchJSON('/designs'),
     getDesign: (id: any) => fetchJSON(`/designs/${id}`),

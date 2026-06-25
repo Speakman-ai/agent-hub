@@ -102,6 +102,9 @@ export function AppProvider({ children }: any) {
     const [lastFinalizeWizardEvent, setLastFinalizeWizardEvent] = useState<any>(null);
     // Last `finalize_run_*` WS event — drives live FinalizeButton updates without polling.
     const [lastFinalizeRunEvent, setLastFinalizeRunEvent] = useState<any>(null);
+    // Last deployment_update WS event. DeploymentsScreen consumes this to keep
+    // environment status and step logs live without a project-wide refetch loop.
+    const [lastDeploymentEvent, setLastDeploymentEvent] = useState<any>(null);
     // Tracks the project currently being viewed in ThreadsScreen so we can
     // suppress unread-badge increments (counts are only incremented when the
     // user isn't already looking at that project's threads list).
@@ -769,6 +772,17 @@ export function AppProvider({ children }: any) {
                     projectId: data.projectId,
                     sessionId: data.sessionId,
                     agentId: data.agentId,
+                    bump: Date.now(),
+                });
+                break;
+            case 'deployment_update':
+                setLastDeploymentEvent({
+                    type: data.type,
+                    projectId: data.projectId,
+                    deployment: data.deployment,
+                    steps: data.steps || [],
+                    approvals: data.approvals || [],
+                    logs: data.logs || [],
                     bump: Date.now(),
                 });
                 break;
@@ -1895,6 +1909,8 @@ export function AppProvider({ children }: any) {
         // Finalize setup wizard (Settings → Finalize)
         lastFinalizeWizardEvent,
         lastFinalizeRunEvent,
+        // Deployments
+        lastDeploymentEvent,
         // Threads
         unreadThreadCounts,
         lastThreadEvent,

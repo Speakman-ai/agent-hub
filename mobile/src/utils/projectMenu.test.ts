@@ -7,12 +7,21 @@ describe('projectLifecycleEntries', () => {
         const keys = projectLifecycleEntries({}).map((e: any) => e.key);
         expect(keys).toContain('board');
         expect(keys).toContain('epics');
+        expect(keys).toContain('deployments');
         expect(keys).toContain('threads');
         expect(keys).toContain('support');
         expect(keys).toContain('security');
         expect(keys).toContain('wiki');
         expect(keys).toContain('notes');
         expect(keys).not.toContain('workflows');
+    });
+    it('exposes Deployments as a lifecycle destination', () => {
+        const entry = projectLifecycleEntries({}).find((e: any) => e.key === 'deployments');
+        expect(entry).toMatchObject({
+            label: 'Deployments',
+            icon: 'Cloud',
+            screen: 'Deployments',
+        });
     });
     it('adds Repository when gitHost is agenthub', () => {
         const keys = projectLifecycleEntries({ gitHost: 'agenthub' }).map((e: any) => e.key);

@@ -33,6 +33,7 @@ import AwsProfilesScreen from './src/screens/AwsProfilesScreen';
 import ReviewerScreen from './src/screens/ReviewerScreen';
 import EpicsScreen from './src/screens/EpicsScreen';
 import RepositoryScreen from './src/screens/RepositoryScreen';
+import DeploymentsScreen from './src/screens/DeploymentsScreen';
 import DrawerContent from './src/components/DrawerContent';
 import SetupWizard from './src/components/SetupWizard';
 import LoginScreen from './src/components/LoginScreen';
@@ -182,6 +183,7 @@ function AppContent() {
             <Stack.Screen name="Reviewer" component={ReviewerScreen}/>
             <Stack.Screen name="Epics" component={EpicsScreen}/>
             <Stack.Screen name="Repository" component={RepositoryScreen}/>
+            <Stack.Screen name="Deployments" component={DeploymentsScreen}/>
           </Stack.Navigator>
         </NavigationContainer>
 

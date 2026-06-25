@@ -42,25 +42,40 @@ _latest_json() {
   hub_api GET "/api/sessions/$AGENT_HUB_SESSION_ID/finalize-runs/latest"
 }
 
+_json_tmp() {
+  mktemp "${TMPDIR:-/tmp}/agenthub-finalize.XXXXXX"
+}
+
 # Echo the latest run id for this session (empty if no run yet).
 _latest_run_id() {
   _need_python
-  FINALIZE_JSON="$(_latest_json)" python3 <<'PY'
-import json, os, sys
-d = json.loads(os.environ.get("FINALIZE_JSON") or "{}")
+  local tmp
+  tmp="$(_json_tmp)"
+  trap 'rm -f "$tmp"' RETURN
+  _latest_json > "$tmp"
+  python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
 run = d.get("run") or {}
 sys.stdout.write(run.get("id") or "")
 PY
+  rm -f "$tmp"
+  trap - RETURN
 }
 
 # Print log lines for one step of a run. Args: <runId> <stepIndex>.
 _print_step_output() {
   local runid="$1" step="$2"
   require_var PROJECT_ID
-  FINALIZE_JSON="$(hub_api GET "/api/projects/$PROJECT_ID/finalize/$runid/steps/$step/output")" \
-    python3 <<'PY'
-import json, os, sys
-d = json.loads(os.environ.get("FINALIZE_JSON") or "{}")
+  local tmp
+  tmp="$(_json_tmp)"
+  trap 'rm -f "$tmp"' RETURN
+  hub_api GET "/api/projects/$PROJECT_ID/finalize/$runid/steps/$step/output" > "$tmp"
+  python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
 lines = d.get("lines") or []
 if not lines:
     sys.stderr.write("(no captured output for this step)\n")
@@ -68,17 +83,20 @@ for ln in lines:
     prefix = "E " if ln.get("stream") == "stderr" else "  "
     sys.stdout.write(prefix + (ln.get("text") or "") + "\n")
 PY
+  rm -f "$tmp"
+  trap - RETURN
 }
 
-cmd="${1:-help}"
-shift || true
-
-case "$cmd" in
-  latest)
-    _need_python
-    FINALIZE_JSON="$(_latest_json)" python3 <<'PY'
-import json, os, sys
-d = json.loads(os.environ.get("FINALIZE_JSON") or "{}")
+_print_latest() {
+  _need_python
+  local tmp
+  tmp="$(_json_tmp)"
+  trap 'rm -f "$tmp"' RETURN
+  _latest_json > "$tmp"
+  python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
 run = d.get("run")
 steps = d.get("steps") or []
 if not run:
@@ -108,25 +126,52 @@ if failed:
     print("Run: finalize.sh failed   (full logs for every failed step)")
     print("  or finalize.sh output <stepIndex>")
 PY
+  rm -f "$tmp"
+  trap - RETURN
+}
+
+_failed_run_id() {
+  local latest_file="$1"
+  python3 - "$latest_file" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
+print((d.get("run") or {}).get("id") or "")
+PY
+}
+
+_failed_step_indexes() {
+  local latest_file="$1"
+  python3 - "$latest_file" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
+for s in (d.get("steps") or []):
+    if s.get("state") in ("failed", "error"):
+        print(s.get("index"))
+PY
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  latest)
+    _print_latest
     ;;
 
   failed)
     _need_python
     runid="${1:-}"
-    latest="$(_latest_json)"
+    latest_file="$(_json_tmp)"
+    trap 'rm -f "$latest_file"' EXIT
+    _latest_json > "$latest_file"
     if [[ -z "$runid" ]]; then
-      runid="$(FINALIZE_JSON="$latest" python3 -c 'import json,os; print((json.loads(os.environ.get("FINALIZE_JSON") or "{}").get("run") or {}).get("id") or "")')"
+      runid="$(_failed_run_id "$latest_file")"
     fi
     [[ -n "$runid" ]] || usage_die "No Finalize run for this session yet."
     # Indexes of failed/errored steps on the latest run.
-    mapfile -t failed_idxs < <(FINALIZE_JSON="$latest" python3 <<'PY'
-import json, os
-d = json.loads(os.environ.get("FINALIZE_JSON") or "{}")
-for s in (d.get("steps") or []):
-    if s.get("state") in ("failed", "error"):
-        print(s.get("index"))
-PY
-)
+    mapfile -t failed_idxs < <(_failed_step_indexes "$latest_file")
     if [[ ${#failed_idxs[@]} -eq 0 ]]; then
       echo "No failed steps on the latest run ($runid)."
       exit 0
@@ -138,6 +183,8 @@ PY
       _print_step_output "$runid" "$idx"
       echo
     done
+    rm -f "$latest_file"
+    trap - EXIT
     ;;
 
   output)

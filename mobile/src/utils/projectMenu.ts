@@ -26,7 +26,7 @@ export function projectLifecycleEntries(project: any) {
     if (project?.githubRepo && !isWorkflowProject(project)) {
         entries.push({ key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' });
     }
-    entries.push({ key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' }, { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' }, { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' }, { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' }, { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' }, { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' }, { key: 'wiki', label: 'Wiki', icon: 'BookOpen', screen: 'Wiki' });
+    entries.push({ key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' }, { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' }, { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' }, { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' }, { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' }, { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' }, { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' }, { key: 'wiki', label: 'Wiki', screen: 'Wiki', icon: 'BookOpen' });
     return entries;
 }
 /**

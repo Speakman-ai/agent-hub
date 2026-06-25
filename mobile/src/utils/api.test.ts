@@ -165,6 +165,47 @@ describe('api updateProject — PATCH parity with web client', () => {
         expect(JSON.parse(init.body)).toEqual({ mode: 'workflow' });
     });
 });
+describe('api deployment helpers — URL + body parity with web client', () => {
+    it('getDeployConfig(projectId) → GET /projects/:id/deploy/config', async () => {
+        await api.getDeployConfig('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deploy/config');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('listDeployments includes optional query params', async () => {
+        await api.listDeployments('agent-hub', { environment: 'prod', limit: 20, offset: 40 });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments?environment=prod&limit=20&offset=40');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('getDeployment(projectId, deploymentId) → GET /deployments/:id', async () => {
+        await api.getDeployment('agent-hub', 'dep-1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-1');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('triggerDeployment posts environment plus ref', async () => {
+        await api.triggerDeployment('agent-hub', 'prod', { ref: 'release-1' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ environment: 'prod', ref: 'release-1' });
+    });
+    it('rollbackDeployment posts to the selected deployment rollback action', async () => {
+        await api.rollbackDeployment('agent-hub', 'dep-prev', {});
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-prev/rollback');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({});
+    });
+    it('approveDeployment posts to the selected deployment approval action', async () => {
+        await api.approveDeployment('agent-hub', 'dep-gated', {});
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-gated/approve');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({});
+    });
+});
 describe('api plugin key helpers', () => {
     it('setGeminiApiKey saves through the host Gemini auth endpoint', async () => {
         await api.setGeminiApiKey('AIza-test');
