@@ -55,6 +55,98 @@ describe('replays-dashboard routes', () => {
     await request.get(`/api/projects/${projectId}/replays?filter=bogus`).expect(400);
   });
 
+  it('rejects an invalid kind', async () => {
+    const projectId = await newProjectId();
+    await request.get(`/api/projects/${projectId}/replays?kind=bogus`).expect(400);
+  });
+
+  it('classifies captures and filters by kind (continuous vs on-error)', async () => {
+    const projectId = await newProjectId();
+
+    // Two captures attributed to the project via the ticket-link flow: one
+    // continuous (trigger=continuous), one on-error (trigger=error).
+    const cont = await ingestOrphanReplay({ trigger: 'continuous', url: 'https://app/x' });
+    const err = await ingestOrphanReplay({ trigger: 'error', url: 'https://app/y' });
+    for (const r of [cont, err]) {
+      const ticketId = await createTicket(projectId);
+      await request
+        .post(`/api/projects/${projectId}/replays/${r.replayId}/link`)
+        .send({ supportTicketId: ticketId })
+        .expect(200);
+    }
+
+    // Capture-kind is surfaced on every row, and `live` is present.
+    const all = await request.get(`/api/projects/${projectId}/replays`).expect(200);
+    expect(all.body.kind).toBe('all');
+    const contRow = all.body.replays.find((r: any) => r.id === cont.replayId);
+    const errRow = all.body.replays.find((r: any) => r.id === err.replayId);
+    expect(contRow.captureKind).toBe('continuous');
+    expect(errRow.captureKind).toBe('on-error');
+    expect(typeof contRow.live).toBe('boolean');
+    expect(typeof contRow.updatedAt).toBe('string');
+    // A finalized (ticket-linked) capture is never "live".
+    expect(contRow.live).toBe(false);
+    expect(errRow.live).toBe(false);
+
+    // kind=continuous keeps only the continuous capture.
+    const continuous = await request
+      .get(`/api/projects/${projectId}/replays?kind=continuous`)
+      .expect(200);
+    expect(continuous.body.kind).toBe('continuous');
+    expect(continuous.body.replays.map((r: any) => r.id)).toContain(cont.replayId);
+    expect(continuous.body.replays.map((r: any) => r.id)).not.toContain(err.replayId);
+
+    // kind=on-error keeps only the on-error capture.
+    const onError = await request
+      .get(`/api/projects/${projectId}/replays?kind=on-error`)
+      .expect(200);
+    expect(onError.body.replays.map((r: any) => r.id)).toContain(err.replayId);
+    expect(onError.body.replays.map((r: any) => r.id)).not.toContain(cont.replayId);
+  });
+
+  it('keeps SQL kind filter and captureKind in agreement on blank/non-string trigger fallback', async () => {
+    const projectId = await newProjectId();
+    // Blank trigger must fall through to `reason` — classified continuous AND
+    // matched by ?kind=continuous (the exact mismatch the SQL fix targets).
+    const blank = await ingestOrphanReplay({ trigger: '', reason: 'interval' });
+    // Non-string trigger must be skipped, falling through to `reason`.
+    const numeric = await ingestOrphanReplay({ trigger: 5, reason: 'continuous' });
+
+    const cont = await request
+      .get(`/api/projects/${projectId}/replays?filter=orphans&kind=continuous`)
+      .expect(200);
+    const ids = cont.body.replays.map((r: any) => r.id);
+    expect(ids).toContain(blank.replayId);
+    expect(ids).toContain(numeric.replayId);
+    for (const r of cont.body.replays) {
+      if (r.id === blank.replayId || r.id === numeric.replayId) {
+        expect(r.captureKind).toBe('continuous');
+      }
+    }
+
+    // …and they must NOT leak into the on-error view.
+    const onError = await request
+      .get(`/api/projects/${projectId}/replays?filter=orphans&kind=on-error`)
+      .expect(200);
+    const errIds = onError.body.replays.map((r: any) => r.id);
+    expect(errIds).not.toContain(blank.replayId);
+    expect(errIds).not.toContain(numeric.replayId);
+  });
+
+  it('reports a fresh, unlinked continuous capture as live', async () => {
+    const projectId = await newProjectId();
+    // Stamp the project via a RUM-less link is not possible without finalizing,
+    // so assert liveness on the orphan (unfinalized) continuous capture instead.
+    const { replayId } = await ingestOrphanReplay({ trigger: 'interval' });
+    const orphans = await request
+      .get(`/api/projects/${projectId}/replays?filter=orphans&kind=continuous`)
+      .expect(200);
+    const row = orphans.body.replays.find((r: any) => r.id === replayId);
+    expect(row).toBeTruthy();
+    expect(row.captureKind).toBe('continuous');
+    expect(row.live).toBe(true);
+  });
+
   it('surfaces an orphan, links it to a ticket, then unlinks it', async () => {
     const projectId = await newProjectId();
     const { replayId, replayRef } = await ingestOrphanReplay({

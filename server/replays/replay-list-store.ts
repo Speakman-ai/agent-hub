@@ -14,15 +14,72 @@
 // for unattributed rows.
 import { getDb } from '../db.js';
 import type { SessionReplayRow } from '../types.js';
+import { CONTINUOUS_TRIGGERS, TRIGGER_KEYS } from './replay-capture-kind.js';
 
 export const REPLAY_LIST_FILTERS = ['all', 'linked', 'unlinked', 'orphans'] as const;
 export type ReplayListFilter = (typeof REPLAY_LIST_FILTERS)[number];
+
+/** Capture-kind facet, orthogonal to the ticket-link `filter`: a continuous
+ *  replay can be linked or unlinked. `all` is the no-op default. */
+export const REPLAY_LIST_KINDS = ['all', 'continuous', 'on-error'] as const;
+export type ReplayListKind = (typeof REPLAY_LIST_KINDS)[number];
 
 export const REPLAY_LIST_MAX_LIMIT = 200;
 export const REPLAY_LIST_DEFAULT_LIMIT = 50;
 
 export function isReplayListFilter(v: unknown): v is ReplayListFilter {
   return typeof v === 'string' && (REPLAY_LIST_FILTERS as readonly string[]).includes(v);
+}
+
+export function isReplayListKind(v: unknown): v is ReplayListKind {
+  return typeof v === 'string' && (REPLAY_LIST_KINDS as readonly string[]).includes(v);
+}
+
+/**
+ * Per-key SQL: resolve `meta.<key>` to its lower-cased, trimmed value, but ONLY
+ * when it is a non-blank STRING — `json_type(...) = 'text'` rejects numbers /
+ * booleans / objects, and the trim check rejects blanks. This is the exact
+ * predicate `replayTrigger()` applies (`typeof v === 'string' && v.trim() !==
+ * ''`), so a non-string / empty key falls through to the next instead of
+ * short-circuiting the coalesce on a non-null-but-unusable value. Yields NULL
+ * when the key is absent/unusable so the surrounding coalesce moves on.
+ */
+function triggerKeySql(key: string): string {
+  const path = `'$.${key}'`;
+  return (
+    `CASE WHEN json_type(r.meta, ${path}) = 'text' ` +
+    `AND trim(json_extract(r.meta, ${path})) <> '' ` +
+    `THEN lower(trim(json_extract(r.meta, ${path}))) END`
+  );
+}
+
+/**
+ * SQL fragment that resolves a row's capture trigger with the SAME key priority
+ * (trigger → reason → source) and SAME string/non-blank fallback semantics as
+ * `replayTrigger()`, so SQL `kind` filtering and the TS `captureKind` classifier
+ * can never disagree (e.g. `{ "trigger": "", "reason": "interval" }` resolves to
+ * `interval` in both). Guarded by json_valid so a legacy/malformed `meta` blob
+ * yields NULL instead of throwing and breaking the whole list query.
+ */
+const TRIGGER_SQL =
+  'CASE WHEN json_valid(r.meta) THEN coalesce(' +
+  TRIGGER_KEYS.map(triggerKeySql).join(', ') +
+  ') END';
+
+/** Build the WHERE predicate (and push its bind params) for a capture-kind
+ *  facet. Returns null for `all` (no constraint). `continuous` keeps rows whose
+ *  trigger is in CONTINUOUS_TRIGGERS; `on-error` keeps the complement (including
+ *  rows with a missing/unrecognized trigger). */
+function captureKindClause(kind: ReplayListKind, params: unknown[]): string | null {
+  if (kind === 'all') return null;
+  const placeholders = CONTINUOUS_TRIGGERS.map(() => '?').join(', ');
+  if (kind === 'continuous') {
+    for (const t of CONTINUOUS_TRIGGERS) params.push(t);
+    return `${TRIGGER_SQL} IN (${placeholders})`;
+  }
+  // on-error: trigger absent OR not a continuous-tier trigger.
+  for (const t of CONTINUOUS_TRIGGERS) params.push(t);
+  return `(${TRIGGER_SQL} IS NULL OR ${TRIGGER_SQL} NOT IN (${placeholders}))`;
 }
 
 /** Clamp a requested page size into `[1, REPLAY_LIST_MAX_LIMIT]`, defaulting a
@@ -62,10 +119,12 @@ export interface ListProjectReplaysResult {
 export function listProjectReplays(opts: {
   projectId: string;
   filter?: ReplayListFilter;
+  kind?: ReplayListKind;
   limit?: number;
   offset?: number;
 }): ListProjectReplaysResult {
   const filter: ReplayListFilter = opts.filter ?? 'all';
+  const kind: ReplayListKind = opts.kind ?? 'all';
   const limit = clampReplayLimit(opts.limit);
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
 
@@ -79,6 +138,10 @@ export function listProjectReplays(opts: {
     if (filter === 'linked') where.push('r.support_ticket_id IS NOT NULL');
     else if (filter === 'unlinked') where.push('r.support_ticket_id IS NULL');
   }
+  // Capture-kind facet (continuous vs on-error), appended after the link-filter
+  // params so the combined bind order stays positional.
+  const kindClause = captureKindClause(kind, params);
+  if (kindClause) where.push(kindClause);
   const whereClause = `WHERE ${where.join(' AND ')}`;
 
   const db = getDb();

@@ -5197,6 +5197,18 @@ components:
           description: True when the capture is unattributed (project_id IS NULL).
         createdAt:
           type: string
+        updatedAt:
+          type: string
+          description: Most-recent write (insert or append); falls back to createdAt.
+        captureKind:
+          type: string
+          enum:
+            - continuous
+            - on-error
+          description: "Derived capture tier: `continuous` (whole-session, interval/tail-flushed) vs `on-error` (record-on-error / manual bug-report)."
+        live:
+          type: boolean
+          description: 'Best-effort "still streaming" signal: a continuous, unfinalized capture written to within the freshness window. Always false for on-error captures.'
         durationMs:
           type: integer
           minimum: 0
@@ -5258,6 +5270,9 @@ components:
         - projectId
         - orphaned
         - createdAt
+        - updatedAt
+        - captureKind
+        - live
         - durationMs
         - eventCount
         - size
@@ -5298,6 +5313,13 @@ components:
             - linked
             - unlinked
             - orphans
+        kind:
+          type: string
+          enum:
+            - all
+            - continuous
+            - on-error
+          description: Active capture-kind facet. Default `all`.
         canViewOrphans:
           type: boolean
           description: Whether the caller may enumerate the global orphan (unattributed) set.
@@ -5308,6 +5330,7 @@ components:
         - offset
         - hasMore
         - filter
+        - kind
         - canViewOrphans
       description: A page of replays for the dashboard table.
     LinkReplayRequest:
@@ -19496,6 +19519,17 @@ paths:
           name: filter
           in: query
         - schema:
+            type: string
+            enum:
+              - all
+              - continuous
+              - on-error
+            description: Capture-kind facet (continuous vs on-error). Default `all`.
+          required: false
+          description: Capture-kind facet (continuous vs on-error). Default `all`.
+          name: kind
+          in: query
+        - schema:
             type: integer
             minimum: 0
             exclusiveMinimum: true
@@ -19518,7 +19552,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReplayListResponse"
         "400":
-          description: Invalid filter.
+          description: Invalid filter or kind.
           content:
             application/json:
               schema:

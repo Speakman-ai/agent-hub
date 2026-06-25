@@ -308,6 +308,10 @@ function initDb(dataDir: string): void {
       id TEXT PRIMARY KEY,
       project_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      -- Bumped on every write (insert + chunked append); powers the dashboard's
+      -- "live"/in-progress signal for continuous captures. See migration block
+      -- below for existing installs.
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       duration_ms INTEGER NOT NULL DEFAULT 0,
       event_count INTEGER NOT NULL DEFAULT 0,
       size INTEGER NOT NULL DEFAULT 0,
@@ -1077,6 +1081,18 @@ function initDb(dataDir: string): void {
       CREATE INDEX IF NOT EXISTS finalize_run_steps_run
         ON finalize_run_steps(run_id, step_index);
     `);
+  }
+
+  // session_replays.updated_at — added for the continuous-replay dashboard's
+  // live/in-progress signal. ALTER ADD COLUMN can't take a non-constant default,
+  // so add it nullable and backfill existing rows to created_at; new installs
+  // get the NOT NULL DEFAULT from CREATE TABLE above. Appends bump it going
+  // forward (see updateSessionReplayStats / ...ForAppend).
+  try {
+    db.prepare('SELECT updated_at FROM session_replays LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE session_replays ADD COLUMN updated_at TEXT');
+    db.exec('UPDATE session_replays SET updated_at = created_at WHERE updated_at IS NULL');
   }
 
   try {
@@ -2953,7 +2969,8 @@ function initDb(dataDir: string): void {
               event_count       = ?,
               size              = ?,
               uncompressed_size = ?,
-              meta              = ?
+              meta              = ?,
+              updated_at        = datetime('now')
         WHERE id = ?`,
     ),
     // Restamp the blob-derived stats for a chunked append, but only while the
@@ -2977,7 +2994,8 @@ function initDb(dataDir: string): void {
               size              = ?,
               uncompressed_size = ?,
               meta              = ?,
-              project_id        = COALESCE(project_id, ?)
+              project_id        = COALESCE(project_id, ?),
+              updated_at        = datetime('now')
         WHERE id = ?
           AND support_ticket_id IS NULL
           AND card_id IS NULL

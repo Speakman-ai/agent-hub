@@ -1352,9 +1352,10 @@ export const api = {
   // is one of all | linked | unlinked | orphans (orphans = global unattributed
   // captures, privileged-only). Returns { replays, total, limit, offset,
   // hasMore, filter, canViewOrphans }.
-  listReplays: (projectId: any, { filter, limit, offset }: any = {}) => {
+  listReplays: (projectId: any, { filter, kind, limit, offset }: any = {}) => {
     const params = new URLSearchParams();
     if (filter) params.set('filter', filter);
+    if (kind && kind !== 'all') params.set('kind', kind);
     if (limit != null) params.set('limit', String(limit));
     if (offset) params.set('offset', String(offset));
     const qs = params.toString();

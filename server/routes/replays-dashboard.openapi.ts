@@ -10,6 +10,7 @@
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 
 const FILTERS = ['all', 'linked', 'unlinked', 'orphans'] as const;
+const KINDS = ['all', 'continuous', 'on-error'] as const;
 
 const ErrorResponse = registerComponent(
   'ReplaysDashboardErrorResponse',
@@ -26,6 +27,17 @@ const ReplayListItem = registerComponent(
         .boolean()
         .openapi({ description: 'True when the capture is unattributed (project_id IS NULL).' }),
       createdAt: z.string(),
+      updatedAt: z
+        .string()
+        .openapi({ description: 'Most-recent write (insert or append); falls back to createdAt.' }),
+      captureKind: z.enum(KINDS.filter((k) => k !== 'all') as ['continuous', 'on-error']).openapi({
+        description:
+          'Derived capture tier: `continuous` (whole-session, interval/tail-flushed) vs `on-error` (record-on-error / manual bug-report).',
+      }),
+      live: z.boolean().openapi({
+        description:
+          'Best-effort "still streaming" signal: a continuous, unfinalized capture written to within the freshness window. Always false for on-error captures.',
+      }),
       durationMs: z.number().int().nonnegative(),
       eventCount: z.number().int().nonnegative(),
       size: z
@@ -65,6 +77,7 @@ const ReplayListResponse = registerComponent(
       offset: z.number().int().nonnegative(),
       hasMore: z.boolean(),
       filter: z.enum(FILTERS),
+      kind: z.enum(KINDS).openapi({ description: 'Active capture-kind facet. Default `all`.' }),
       canViewOrphans: z.boolean().openapi({
         description: 'Whether the caller may enumerate the global orphan (unattributed) set.',
       }),
@@ -101,13 +114,17 @@ registerPath({
     params: projectIdParam,
     query: z.object({
       filter: z.enum(FILTERS).optional().openapi({ description: 'Default `all`.' }),
+      kind: z
+        .enum(KINDS)
+        .optional()
+        .openapi({ description: 'Capture-kind facet (continuous vs on-error). Default `all`.' }),
       limit: z.coerce.number().int().positive().max(200).optional(),
       offset: z.coerce.number().int().nonnegative().optional(),
     }),
   },
   responses: {
     200: { description: 'A page of replays.', content: jsonContent(ReplayListResponse) },
-    400: { description: 'Invalid filter.', content: jsonContent(ErrorResponse) },
+    400: { description: 'Invalid filter or kind.', content: jsonContent(ErrorResponse) },
     403: {
       description: 'Not authorized to view unattributed replays.',
       content: jsonContent(ErrorResponse),

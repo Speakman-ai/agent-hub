@@ -6,10 +6,18 @@ import {
   listProjectReplays,
   unlinkReplayTicket,
   isReplayListFilter,
+  isReplayListKind,
   REPLAY_LIST_FILTERS,
+  REPLAY_LIST_KINDS,
   type ReplayListFilter,
+  type ReplayListKind,
   type ReplayListRow,
 } from '../replays/replay-list-store.js';
+import {
+  classifyReplayCaptureKind,
+  isReplayLive,
+  type ReplayCaptureKind,
+} from '../replays/replay-capture-kind.js';
 import { getSupportTicket, countUnreadSupportTickets } from '../support-tickets-store.js';
 import { setGuardedReplayRef } from '../support-ticket-intake.js';
 import { setSupportTicketReplayRef } from '../support-tickets-store.js';
@@ -69,6 +77,17 @@ export default function createReplaysDashboardRoutes(deps: RouteDeps): Router {
       filter = rawFilter;
     }
 
+    const rawKind = req.query.kind;
+    let kind: ReplayListKind = 'all';
+    if (rawKind !== undefined) {
+      if (!isReplayListKind(rawKind)) {
+        return res
+          .status(400)
+          .json({ error: `kind must be one of: ${REPLAY_LIST_KINDS.join(', ')}` });
+      }
+      kind = rawKind;
+    }
+
     // Unattributed (orphan) captures are not scoped to any project, so only a
     // privileged caller may enumerate them — mirrors canViewReplay.
     if (filter === 'orphans' && !canViewOrphans(resolveVisibilityCaller(req))) {
@@ -78,17 +97,20 @@ export default function createReplaysDashboardRoutes(deps: RouteDeps): Router {
     const page = listProjectReplays({
       projectId: project.id,
       filter,
+      kind,
       limit: parseIntParam(req.query.limit),
       offset: parseIntParam(req.query.offset),
     });
 
+    const nowMs = Date.now();
     res.json({
-      replays: page.replays.map(toReplayListItem),
+      replays: page.replays.map((r) => toReplayListItem(r, nowMs)),
       total: page.total,
       limit: page.limit,
       offset: page.offset,
       hasMore: page.hasMore,
       filter,
+      kind,
       canViewOrphans: canViewOrphans(resolveVisibilityCaller(req)),
     });
   });
@@ -220,6 +242,8 @@ export interface ReplayListItemView {
   projectId: string | null;
   orphaned: boolean;
   createdAt: string;
+  /** Wall-clock of the most recent write; falls back to createdAt on legacy rows. */
+  updatedAt: string;
   durationMs: number;
   eventCount: number;
   size: number;
@@ -228,6 +252,11 @@ export interface ReplayListItemView {
   cardId: string | null;
   pageUrl: string | null;
   trigger: string | null;
+  /** Derived capture tier: `continuous` (whole-session) vs `on-error`. */
+  captureKind: ReplayCaptureKind;
+  /** Best-effort "still streaming" signal — a continuous, unfinalized capture
+   *  written to within the freshness window. Always false for on-error. */
+  live: boolean;
   errorMessage: string | null;
   meta: Record<string, unknown> | null;
   eventsUrl: string;
@@ -245,7 +274,10 @@ function metaString(meta: Record<string, unknown> | null, ...keys: string[]): st
   return null;
 }
 
-export function toReplayListItem(row: ReplayListRow): ReplayListItemView {
+export function toReplayListItem(
+  row: ReplayListRow,
+  nowMs: number = Date.now(),
+): ReplayListItemView {
   let meta: Record<string, unknown> | null = null;
   if (row.meta) {
     try {
@@ -257,11 +289,15 @@ export function toReplayListItem(row: ReplayListRow): ReplayListItemView {
       meta = null;
     }
   }
+  const captureKind = classifyReplayCaptureKind(meta);
   return {
     id: row.id,
     projectId: row.project_id,
     orphaned: row.project_id == null,
     createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
+    captureKind,
+    live: isReplayLive(row, captureKind, nowMs),
     durationMs: row.duration_ms,
     eventCount: row.event_count,
     size: row.size,

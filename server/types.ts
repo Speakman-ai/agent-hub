@@ -201,6 +201,14 @@ export interface SessionReplayRow {
   /** Project the replay belongs to, when known (NULL for anonymous ingests). */
   project_id: string | null;
   created_at: string;
+  /**
+   * Wall-clock of the most recent write (insert or chunked append), as a SQLite
+   * `datetime('now')` UTC string. Bumped on every append so the dashboard can
+   * derive a best-effort "live" (still-streaming) signal for continuous
+   * captures. NULL only on legacy rows created before the column existed and
+   * not yet re-appended (readers fall back to `created_at`).
+   */
+  updated_at: string | null;
   /** Span between the first and last rrweb event timestamp, in ms (>= 0). */
   duration_ms: number;
   /** Number of rrweb events in the capture. */
