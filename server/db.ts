@@ -3168,6 +3168,14 @@ function initDb(dataDir: string): void {
               updated_at = datetime('now')
         WHERE project_id = @project_id AND name = @name`,
     ),
+    claimDeploymentForApproval: db.prepare(
+      `UPDATE deployments
+          SET status = 'running',
+              error = NULL,
+              started_at = COALESCE(started_at, datetime('now')),
+              updated_at = datetime('now')
+        WHERE id = @id AND status = 'awaiting_approval'`,
+    ),
     insertDeploymentApproval: db.prepare(
       `INSERT INTO deployment_approvals
          (id, deployment_id, approver_user_id, approver_role, decision, note)

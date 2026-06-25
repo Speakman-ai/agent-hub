@@ -12,14 +12,17 @@ import { getDb } from '../db.js';
 import {
   getDeploymentEnvironment,
   listDeploymentSteps,
+  listDeploymentApprovals,
   createDeployment,
   ensureDeploymentEnvironment,
   acquireEnvironmentLock,
 } from './deployment-store.js';
 import { parseDeployConfig } from './deploy-config.js';
 import {
+  approveDeployment,
   triggerDeployment,
   EnvironmentBusyError,
+  type DeploymentApprovalError,
   type DeployOrchestratorDeps,
 } from './deploy-orchestrator.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
@@ -67,7 +70,10 @@ interface FakeBackend {
   killed: NodeJS.Signals[];
 }
 
-function makeFakeBackend(scripts: StepScript[]): FakeBackend {
+function makeFakeBackend(
+  scripts: StepScript[],
+  opts: { acquireDelay?: Promise<void> } = {},
+): FakeBackend {
   const acquireCalls: JobClaimSpec[] = [];
   const spawnArgs: Array<{ run: string; cwd: string; env: NodeJS.ProcessEnv | undefined }> = [];
   const killed: NodeJS.Signals[] = [];
@@ -111,6 +117,7 @@ function makeFakeBackend(scripts: StepScript[]): FakeBackend {
     kind: 'fake',
     async acquire(spec) {
       acquireCalls.push(spec);
+      if (opts.acquireDelay) await opts.acquireDelay;
       return lease;
     },
   };
@@ -128,6 +135,14 @@ function makeFakeBackend(scripts: StepScript[]): FakeBackend {
 
 function makeDeps(backend: RunnerBackend, broadcast = vi.fn()): DeployOrchestratorDeps {
   return { broadcast, runnerBackend: backend, env: { PATH: '/usr/bin' } };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error('timed out waiting for condition');
 }
 
 describe('triggerDeployment — happy path', () => {
@@ -441,6 +456,223 @@ describe('triggerDeployment — gated environment', () => {
     expect(fb.acquireCalls).toHaveLength(0);
     // Lock held by this deployment — env stays serialized.
     expect(getDeploymentEnvironment(PROJECT, 'prod')!.active_deployment_id).toBe(dep.id);
+  });
+
+  it('records Admin/Owner approval, then resumes and runs the parked deployment', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'prod-sha',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        triggeredBy: 'admin-1',
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(parked.status).toBe('awaiting_approval');
+    expect(fb.acquireCalls).toHaveLength(0);
+
+    const approved = await approveDeployment(
+      {
+        deploymentId: parked.id,
+        approverUserId: 'admin-1',
+        approverRole: 'Admin',
+        note: 'release approved',
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(approved.status).toBe('success');
+    expect(approved.started_at).toBeTruthy();
+    expect(approved.completed_at).toBeTruthy();
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./deploy-prod.sh']);
+
+    const approvals = listDeploymentApprovals(parked.id);
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0].approver_user_id).toBe('admin-1');
+    expect(approvals[0].approver_role).toBe('Admin');
+    expect(approvals[0].decision).toBe('approved');
+    expect(approvals[0].note).toBe('release approved');
+    expect(approvals[0].created_at).toBeTruthy();
+
+    const env = getDeploymentEnvironment(PROJECT, 'prod')!;
+    expect(env.current_ref).toBe('prod-sha');
+    expect(env.current_deployment_id).toBe(parked.id);
+    expect(env.active_deployment_id).toBeNull();
+  });
+
+  it('allows the triggering Owner to self-approve v1 gated deploys', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'prod-self',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        triggeredBy: 'owner-1',
+      },
+      makeDeps(fb.backend),
+    );
+
+    const approved = await approveDeployment(
+      {
+        deploymentId: parked.id,
+        approverUserId: 'owner-1',
+        approverRole: 'Owner',
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(approved.status).toBe('success');
+    expect(listDeploymentApprovals(parked.id)[0].approver_user_id).toBe('owner-1');
+  });
+
+  it('resumes from the trigger-time plan, not a later deploy.yaml or checkout supplied at approval', async () => {
+    const triggerConfig = parseDeployConfig(`
+version: 1
+environments:
+  prod:
+    approval: true
+    steps:
+      - name: original
+        run: ./deploy-original.sh
+`);
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'prod-bound',
+        worktreePath: '/tmp/original-worktree',
+        config: triggerConfig,
+      },
+      makeDeps(fb.backend),
+    );
+
+    // Simulate a changed in-memory deploy.yaml after the deploy parked. Approval
+    // must use the snapshot persisted with the deployment, not this newer plan.
+    triggerConfig.environments.get('prod')!.steps[0] = {
+      name: 'changed',
+      run: './deploy-changed.sh',
+    };
+
+    const approved = await approveDeployment(
+      {
+        deploymentId: parked.id,
+        approverUserId: 'admin-1',
+        approverRole: 'Admin',
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(approved.status).toBe('success');
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./deploy-original.sh']);
+    expect(fb.spawnArgs.map((s) => s.cwd)).toEqual(['/tmp/original-worktree']);
+  });
+
+  it('allows only one concurrent approval caller to claim and run a parked deployment', async () => {
+    let releaseAcquire!: () => void;
+    const acquireDelay = new Promise<void>((resolve) => {
+      releaseAcquire = resolve;
+    });
+    const fb = makeFakeBackend([{ exitCode: 0 }], { acquireDelay });
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'prod-race',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    const first = approveDeployment(
+      {
+        deploymentId: parked.id,
+        approverUserId: 'admin-1',
+        approverRole: 'Admin',
+      },
+      makeDeps(fb.backend),
+    );
+    await waitFor(() => fb.acquireCalls.length === 1);
+
+    await expect(
+      approveDeployment(
+        {
+          deploymentId: parked.id,
+          approverUserId: 'admin-2',
+          approverRole: 'Owner',
+        },
+        makeDeps(fb.backend),
+      ),
+    ).rejects.toMatchObject({
+      name: 'DeploymentApprovalError',
+      reason: 'invalid_status',
+    } satisfies Partial<DeploymentApprovalError>);
+
+    expect(listDeploymentApprovals(parked.id).map((a) => a.approver_user_id)).toEqual(['admin-1']);
+    expect(fb.acquireCalls).toHaveLength(1);
+
+    releaseAcquire();
+    await expect(first).resolves.toMatchObject({ status: 'success' });
+    expect(listDeploymentApprovals(parked.id).map((a) => a.approver_user_id)).toEqual(['admin-1']);
+  });
+
+  it('rejects non-admin approval without recording approval or running steps', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'prod-no',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    await expect(
+      approveDeployment(
+        {
+          deploymentId: parked.id,
+          approverUserId: 'user-1',
+          approverRole: 'User',
+        },
+        makeDeps(fb.backend),
+      ),
+    ).rejects.toMatchObject({
+      name: 'DeploymentApprovalError',
+      reason: 'forbidden',
+    } satisfies Partial<DeploymentApprovalError>);
+
+    expect(listDeploymentApprovals(parked.id)).toHaveLength(0);
+    expect(fb.acquireCalls).toHaveLength(0);
+    expect(listDeploymentSteps(parked.id).map((s) => s.status)).toEqual(['pending']);
+    expect(getDeploymentEnvironment(PROJECT, 'prod')!.active_deployment_id).toBe(parked.id);
+  });
+
+  it('approval:false runs immediately and records no approval rows', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'dev-direct',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./build.sh', './ship.sh']);
+    expect(listDeploymentApprovals(dep.id)).toHaveLength(0);
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
   });
 });
 

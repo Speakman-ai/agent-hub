@@ -44,9 +44,11 @@ import { resolveRunnerBackend } from '../finalize/runner-backend.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import { resolveRunsOnImage } from '../finalize/runner-images.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { hasAtLeastRole, parseRole } from '../roles.js';
 import {
   acquireEnvironmentLock,
   addDeploymentStep,
+  claimDeploymentApproval,
   createDeployment,
   ensureDeploymentEnvironment,
   getDeployment,
@@ -122,6 +124,26 @@ export class EnvironmentBusyError extends Error {
   }
 }
 
+/**
+ * Rejection for an approval attempt that cannot legally resume a deployment.
+ * Phase 5's REST layer maps `reason` to 403/404/409/422 as appropriate.
+ */
+export class DeploymentApprovalError extends Error {
+  readonly reason:
+    | 'forbidden'
+    | 'not_found'
+    | 'approval_not_required'
+    | 'invalid_status'
+    | 'lock_lost'
+    | 'missing_plan';
+
+  constructor(reason: DeploymentApprovalError['reason'], message: string) {
+    super(message);
+    this.name = 'DeploymentApprovalError';
+    this.reason = reason;
+  }
+}
+
 export interface DeployOrchestratorDeps {
   broadcast: BroadcastFn;
   /** RunnerBackend to lease a runner from. Defaults to {@link resolveRunnerBackend}. */
@@ -157,6 +179,101 @@ export interface TriggerDeploymentInput {
   sessionId?: string | null;
   /** Free-form metadata stashed on the deployment row. */
   meta?: unknown;
+}
+
+export interface ApproveDeploymentInput {
+  deploymentId: string;
+  /** User id approving the gated deploy. */
+  approverUserId: string;
+  /** Org role held by the approver at approval time. Must be Admin or Owner. */
+  approverRole: string;
+  /** Optional approver note persisted with the audit row. */
+  note?: string | null;
+  /** Chat session driving approval/resume (secret-decrypt audit attribution). */
+  sessionId?: string | null;
+}
+
+const DEPLOYMENT_PLAN_META_KEY = 'agentHubDeploymentPlan';
+
+interface DeploymentPlanSnapshot {
+  version: 1;
+  worktreePath: string;
+  environment: DeployEnvironmentConfig;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function snapshotDeploymentPlan(
+  worktreePath: string,
+  envConfig: DeployEnvironmentConfig,
+): DeploymentPlanSnapshot {
+  return {
+    version: 1,
+    worktreePath,
+    environment: {
+      name: envConfig.name,
+      approval: envConfig.approval,
+      runsOn: envConfig.runsOn,
+      timeoutMinutes: envConfig.timeoutMinutes,
+      steps: envConfig.steps.map((step) => ({ name: step.name, run: step.run })),
+    },
+  };
+}
+
+function mergeDeploymentPlanMeta(meta: unknown, plan: DeploymentPlanSnapshot): unknown {
+  if (meta == null) return { [DEPLOYMENT_PLAN_META_KEY]: plan };
+  if (isRecord(meta)) return { ...meta, [DEPLOYMENT_PLAN_META_KEY]: plan };
+  return { userMeta: meta, [DEPLOYMENT_PLAN_META_KEY]: plan };
+}
+
+function parseDeploymentPlan(deployment: DeploymentRow): DeploymentPlanSnapshot | null {
+  if (!deployment.meta) return null;
+  let meta: unknown;
+  try {
+    meta = JSON.parse(deployment.meta);
+  } catch {
+    return null;
+  }
+  if (!isRecord(meta)) return null;
+  const plan = meta[DEPLOYMENT_PLAN_META_KEY];
+  if (!isRecord(plan) || plan.version !== 1 || typeof plan.worktreePath !== 'string') {
+    return null;
+  }
+
+  const environment = plan.environment;
+  if (!isRecord(environment)) return null;
+  const { name, approval, runsOn, timeoutMinutes, steps } = environment;
+  if (
+    typeof name !== 'string' ||
+    typeof approval !== 'boolean' ||
+    typeof runsOn !== 'string' ||
+    typeof timeoutMinutes !== 'number' ||
+    !Array.isArray(steps)
+  ) {
+    return null;
+  }
+
+  const parsedSteps: DeployStep[] = [];
+  for (const step of steps) {
+    if (!isRecord(step) || typeof step.name !== 'string' || typeof step.run !== 'string') {
+      return null;
+    }
+    parsedSteps.push({ name: step.name, run: step.run });
+  }
+
+  return {
+    version: 1,
+    worktreePath: plan.worktreePath,
+    environment: {
+      name,
+      approval,
+      runsOn,
+      timeoutMinutes,
+      steps: parsedSteps,
+    },
+  };
 }
 
 /**
@@ -524,7 +641,7 @@ export async function triggerDeployment(
     triggeredBy: input.triggeredBy ?? null,
     sourceDeploymentId: input.sourceDeploymentId ?? null,
     status: 'pending',
-    meta: input.meta,
+    meta: mergeDeploymentPlanMeta(input.meta, snapshotDeploymentPlan(worktreePath, envConfig)),
   });
 
   // Atomic acquire closes the TOCTOU window: only one of two racing triggers
@@ -555,6 +672,91 @@ export async function triggerDeployment(
   return runDeployment(
     deployment.id,
     { projectId, environment, ref, worktreePath, envConfig, sessionId: input.sessionId ?? null },
+    deps,
+  );
+}
+
+/**
+ * Approve and resume a gated deployment parked by `triggerDeployment`.
+ *
+ * Authorization is intentionally role-based here, not "different user" based:
+ * Admin/Owner may approve, and v1 explicitly allows the triggering user to
+ * self-approve. The approver id + role are recorded before steps run so the
+ * audit trail survives even if the deployment subsequently fails.
+ */
+export async function approveDeployment(
+  input: ApproveDeploymentInput,
+  deps: DeployOrchestratorDeps,
+): Promise<DeploymentRow> {
+  const role = parseRole(input.approverRole);
+  if (!role || !hasAtLeastRole(role, 'Admin')) {
+    throw new DeploymentApprovalError(
+      'forbidden',
+      'deployment approval requires the Admin role or higher',
+    );
+  }
+
+  const deployment = getDeployment(input.deploymentId);
+  if (!deployment) {
+    throw new DeploymentApprovalError('not_found', 'deployment not found');
+  }
+
+  const plan = parseDeploymentPlan(deployment);
+  if (!plan) {
+    throw new DeploymentApprovalError(
+      'missing_plan',
+      'deployment is missing its trigger-time plan snapshot',
+    );
+  }
+
+  if (!plan.environment.approval) {
+    throw new DeploymentApprovalError(
+      'approval_not_required',
+      `environment "${deployment.environment}" does not require approval`,
+    );
+  }
+
+  if (deployment.status !== 'awaiting_approval') {
+    throw new DeploymentApprovalError(
+      'invalid_status',
+      `deployment is ${deployment.status}, not awaiting approval`,
+    );
+  }
+
+  const env = getDeploymentEnvironment(deployment.project_id, deployment.environment);
+  if (env?.active_deployment_id !== deployment.id) {
+    throw new DeploymentApprovalError(
+      'lock_lost',
+      'deployment no longer holds the environment lock',
+    );
+  }
+
+  const approval = claimDeploymentApproval({
+    deploymentId: deployment.id,
+    approverUserId: input.approverUserId,
+    approverRole: role,
+    decision: 'approved',
+    note: input.note ?? null,
+  });
+  if (!approval) {
+    const current = getDeployment(deployment.id);
+    throw new DeploymentApprovalError(
+      'invalid_status',
+      `deployment is ${current?.status ?? 'missing'}, not awaiting approval`,
+    );
+  }
+  emitDeploymentUpdate(deps, deployment.project_id, deployment.id);
+
+  return runDeployment(
+    deployment.id,
+    {
+      projectId: deployment.project_id,
+      environment: deployment.environment,
+      ref: deployment.ref,
+      worktreePath: plan.worktreePath,
+      envConfig: plan.environment,
+      sessionId: input.sessionId ?? null,
+    },
     deps,
   );
 }

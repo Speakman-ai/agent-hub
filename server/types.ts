@@ -1458,6 +1458,7 @@ export interface Stmts {
   acquireDeploymentEnvironmentLock: Stmt;
   releaseDeploymentEnvironmentLock: Stmt;
   setDeploymentEnvironmentCurrentRef: Stmt;
+  claimDeploymentForApproval: Stmt;
   insertDeploymentApproval: Stmt;
   listDeploymentApprovals: Stmt;
   // Sessions

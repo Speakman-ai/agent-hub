@@ -14,7 +14,7 @@
  * the per-org main DB the rest of the app uses.
  */
 import { randomUUID } from 'crypto';
-import { getStmts } from '../db.js';
+import { getDb, getStmts } from '../db.js';
 import type {
   DeploymentRow,
   DeploymentStepRow,
@@ -265,6 +265,19 @@ export function recordDeploymentApproval(input: RecordApprovalInput): Deployment
   return getStmts()
     .listDeploymentApprovals.all(input.deploymentId)
     .find((r) => (r as DeploymentApprovalRow).id === id) as DeploymentApprovalRow;
+}
+
+/**
+ * Atomically claim a parked gated deployment for approval/resume and insert the
+ * approval audit row. Returns null when another approver already claimed it.
+ */
+export function claimDeploymentApproval(input: RecordApprovalInput): DeploymentApprovalRow | null {
+  const claim = getDb().transaction((approval: RecordApprovalInput) => {
+    const res = getStmts().claimDeploymentForApproval.run({ id: approval.deploymentId });
+    if (res.changes === 0) return null;
+    return recordDeploymentApproval(approval);
+  });
+  return claim(input) as DeploymentApprovalRow | null;
 }
 
 export function listDeploymentApprovals(deploymentId: string): DeploymentApprovalRow[] {
