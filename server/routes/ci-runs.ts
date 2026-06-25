@@ -11,6 +11,7 @@
 
 import { Router, type Request, type Response } from 'express';
 import type { FinalizeRunRow, Project, RouteDeps } from '../types.js';
+import { getDb } from '../db.js';
 import { rerunCiRun } from '../git-host/push-ci.js';
 import { z, registerPath } from '../openapi/registry.js';
 
@@ -43,6 +44,9 @@ const CiRunSchema = z.object({
   failure_reason: z.string().nullable(),
   started_at: z.number(),
   ended_at: z.number().nullable(),
+  session_id: z.string().nullable(),
+  /** Human-readable title of the run's session, when one is linked. */
+  session_title: z.string().nullable(),
   jobs: z.array(CiRunJobSchema),
 });
 
@@ -117,8 +121,38 @@ registerPath({
   },
 });
 
-function serializeRun(deps: RouteDeps, row: FinalizeRunRow): Record<string, unknown> {
+/**
+ * Batch-load `session_id -> session.name` for every distinct, non-null
+ * session id across a set of runs in ONE query. The list endpoint returns
+ * up to MAX_LIMIT runs; resolving titles per-row would be an N+1 lookup, so
+ * we collect the ids and fetch them all at once. Empty input short-circuits
+ * (an empty `IN ()` is not valid SQLite).
+ */
+function loadSessionTitles(rows: FinalizeRunRow[]): Map<string, string> {
+  const ids = [...new Set(rows.map((r) => r.session_id).filter((id): id is string => !!id))];
+  const titles = new Map<string, string>();
+  if (ids.length === 0) return titles;
+  const placeholders = ids.map(() => '?').join(',');
+  const sessions = getDb()
+    .prepare(`SELECT id, name FROM sessions WHERE id IN (${placeholders})`)
+    .all(...ids) as Array<{ id: string; name: string | null }>;
+  for (const s of sessions) {
+    if (s.name != null) titles.set(s.id, s.name);
+  }
+  return titles;
+}
+
+function serializeRun(
+  deps: RouteDeps,
+  row: FinalizeRunRow,
+  sessionTitles: Map<string, string>,
+): Record<string, unknown> {
   const jobs = deps.stmts.listFinalizeRunJobsForRun.all(row.id) as Array<Record<string, unknown>>;
+  // Surface the linked session's title so the Runners history reads as
+  // human-readable work ("Fix login redirect") instead of an opaque
+  // `agent-hub/<agent>/session-<id>` branch. Push / pr-ci runs have no
+  // session (session_id null) and fall back to the branch in the UI.
+  const sessionTitle = row.session_id ? (sessionTitles.get(row.session_id) ?? null) : null;
   return {
     id: row.id,
     branch: row.branch,
@@ -129,6 +163,8 @@ function serializeRun(deps: RouteDeps, row: FinalizeRunRow): Record<string, unkn
     failure_reason: row.failure_reason,
     started_at: row.started_at,
     ended_at: row.ended_at,
+    session_id: row.session_id,
+    session_title: sessionTitle,
     jobs,
   };
 }
@@ -160,7 +196,8 @@ export default function createCiRunsRoutes(deps: RouteDeps): Router {
       trigger,
       limit,
     ) as FinalizeRunRow[];
-    res.json({ runs: rows.map((r) => serializeRun(deps, r)) });
+    const sessionTitles = loadSessionTitles(rows);
+    res.json({ runs: rows.map((r) => serializeRun(deps, r, sessionTitles)) });
   });
 
   router.get('/api/projects/:projectId/ci-runs/:runId', (req: Request, res: Response) => {
@@ -175,7 +212,7 @@ export default function createCiRunsRoutes(deps: RouteDeps): Router {
     const steps = deps.stmts.listFinalizeRunStepsForRun.all(run.id) as Array<
       Record<string, unknown>
     >;
-    res.json({ run: serializeRun(deps, run), steps });
+    res.json({ run: serializeRun(deps, run, loadSessionTitles([run])), steps });
   });
 
   router.post('/api/projects/:projectId/ci-runs/:runId/rerun', (req: Request, res: Response) => {

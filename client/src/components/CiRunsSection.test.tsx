@@ -102,6 +102,32 @@ describe('CiRunsSection', () => {
     expect(api.getCiRuns).toHaveBeenCalledWith('proj-1', { limit: 30 });
   });
 
+  it('shows the session title when present, falling back to the branch otherwise', async () => {
+    const titled = {
+      ...runs[1],
+      id: 'run-titled',
+      branch: 'agent-hub/dev/session-abc123',
+      session_id: 'sess-1',
+      session_title: 'Fix login redirect',
+    };
+    const untitled = {
+      ...runs[0],
+      id: 'run-untitled',
+      branch: 'main',
+      session_id: null,
+      session_title: null,
+    };
+    (api.getCiRuns as any).mockResolvedValue({ runs: [titled, untitled] });
+    render(<CiRunsSection project={hostedProject} />);
+
+    // Titled run shows the human-readable session title, not its branch.
+    const titledRow = await screen.findByTestId('ci-run-run-titled');
+    expect(titledRow).toHaveTextContent('Fix login redirect');
+    expect(titledRow).not.toHaveTextContent('agent-hub/dev/session-abc123');
+    // Sessionless push run keeps showing the branch.
+    expect(screen.getByTestId('ci-run-run-untitled')).toHaveTextContent('main');
+  });
+
   it('expands a run to jobs + steps and opens a step log', async () => {
     render(<CiRunsSection project={hostedProject} />);
     fireEvent.click(await screen.findByTestId('ci-run-run-1' as any));

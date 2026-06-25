@@ -13286,6 +13286,12 @@ paths:
                         ended_at:
                           type: number
                           nullable: true
+                        session_id:
+                          type: string
+                          nullable: true
+                        session_title:
+                          type: string
+                          nullable: true
                         jobs:
                           type: array
                           items:
@@ -13323,6 +13329,8 @@ paths:
                         - failure_reason
                         - started_at
                         - ended_at
+                        - session_id
+                        - session_title
                         - jobs
                 required:
                   - runs
@@ -13384,6 +13392,12 @@ paths:
                       ended_at:
                         type: number
                         nullable: true
+                      session_id:
+                        type: string
+                        nullable: true
+                      session_title:
+                        type: string
+                        nullable: true
                       jobs:
                         type: array
                         items:
@@ -13421,6 +13435,8 @@ paths:
                       - failure_reason
                       - started_at
                       - ended_at
+                      - session_id
+                      - session_title
                       - jobs
                   steps:
                     type: array

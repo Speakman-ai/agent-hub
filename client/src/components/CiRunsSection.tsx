@@ -242,10 +242,21 @@ function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
           {trig.label}
         </span>
         <span className="text-sm text-gray-200 truncate">
-          {run.branch}
-          <code className="text-[11px] text-gray-500 font-mono ml-2">
-            {(run.head_sha || '').slice(0, 8)}
-          </code>
+          {run.session_title ? (
+            <>
+              <span title={run.branch}>{run.session_title}</span>
+              <code className="text-[11px] text-gray-500 font-mono ml-2">
+                {(run.head_sha || '').slice(0, 8)}
+              </code>
+            </>
+          ) : (
+            <>
+              {run.branch}
+              <code className="text-[11px] text-gray-500 font-mono ml-2">
+                {(run.head_sha || '').slice(0, 8)}
+              </code>
+            </>
+          )}
         </span>
         {run.failure_reason && (
           <span

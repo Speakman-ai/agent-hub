@@ -26,15 +26,21 @@ async function freshProject(): Promise<string> {
   return id;
 }
 
+function seedSession(name: string): string {
+  const sessionId = uuidv4();
+  stmts.createSession.run(sessionId, 'some-agent', name, 'claude', 'sonnet', 1, 0, 1);
+  return sessionId;
+}
+
 function seedRun(
   projectId: string,
-  overrides: { trigger?: string; status?: string; startedAt?: number } = {},
+  overrides: { trigger?: string; status?: string; startedAt?: number; sessionId?: string } = {},
 ): string {
   const runId = uuidv4();
   stmts.insertFinalizeRun.run(
     runId,
     'ci-push',
-    null,
+    overrides.sessionId ?? null,
     projectId,
     'main',
     uuidv4().replace(/-/g, '').padEnd(40, '0').slice(0, 40),
@@ -85,6 +91,39 @@ describe('GET /api/projects/:projectId/ci-runs', () => {
       branch: 'main',
     });
     expect(res.body.runs[0].jobs[0]).toMatchObject({ job_id: 'unit', state: 'success' });
+  });
+
+  it('batch-resolves linked session titles across runs (and null when no session)', async () => {
+    const projectId = await freshProject();
+    // Two DISTINCT sessions plus a sessionless push run: the list endpoint
+    // must map each run to its own title via a single batched lookup, not an
+    // N+1 per-row query.
+    const sessionA = seedSession('Fix login redirect');
+    const sessionB = seedSession('Add CSV export');
+    seedRun(projectId, { trigger: 'agent_block', startedAt: 1000, sessionId: sessionA });
+    seedRun(projectId, { trigger: 'agent_block', startedAt: 2000, sessionId: sessionB });
+    seedRun(projectId, { trigger: 'git_push', startedAt: 3000 });
+
+    const res = await request.get(`/api/projects/${projectId}/ci-runs`).expect(200);
+    // Newest first: push (no session), then sessionB, then sessionA.
+    expect(res.body.runs[0]).toMatchObject({ session_id: null, session_title: null });
+    expect(res.body.runs[1]).toMatchObject({
+      session_id: sessionB,
+      session_title: 'Add CSV export',
+    });
+    expect(res.body.runs[2]).toMatchObject({
+      session_id: sessionA,
+      session_title: 'Fix login redirect',
+    });
+  });
+
+  it('run detail also surfaces the linked session title', async () => {
+    const projectId = await freshProject();
+    const sessionId = seedSession('Refactor auth');
+    const runId = seedRun(projectId, { trigger: 'agent_block', sessionId });
+
+    const res = await request.get(`/api/projects/${projectId}/ci-runs/${runId}`).expect(200);
+    expect(res.body.run).toMatchObject({ session_id: sessionId, session_title: 'Refactor auth' });
   });
 
   it('filters by trigger and caps limit', async () => {
