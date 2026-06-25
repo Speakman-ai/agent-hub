@@ -1,5 +1,5 @@
 /**
- * version-compare.ts — a tiny, dependency-free semver comparator.
+ * version-compare.ts - a tiny, dependency-free semver comparator.
  *
  * Advisory "fixed" versions and installed lockfile versions are concrete
  * release versions (`4.17.21`, `1.2.3`, occasionally `1.2.3-rc.1`). We only

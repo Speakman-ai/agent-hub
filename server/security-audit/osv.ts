@@ -20,6 +20,7 @@
 import type { Advisory, AdvisorySource, DependencyFinding, ResolvedDependency } from './types.js';
 import { resolveSeverity } from './severity.js';
 import { compareVersions, isValidVersion } from './version-compare.js';
+import { comparePep440Versions, isValidPep440Version } from './pep440-version.js';
 
 const DEFAULT_BASE_URL = 'https://api.osv.dev';
 /** OSV batch limit is generous; we chunk to stay well under any cap. */
@@ -148,10 +149,27 @@ function affectedMatches(aff: OsvAffected, pkgName: string, ecosystem: string): 
   return aff.package?.name === pkgName && ecosystemMatches(aff.package?.ecosystem, ecosystem);
 }
 
+function rangeHasFixedVersions(range: OsvRange, ecosystem: string): boolean {
+  const type = (range.type ?? '').toUpperCase();
+  return type === 'SEMVER' || (ecosystem === 'PyPI' && type === 'ECOSYSTEM');
+}
+
+function isValidFixedVersion(version: string, ecosystem: string): boolean {
+  return ecosystem === 'PyPI' ? isValidPep440Version(version) : isValidVersion(version);
+}
+
+function isInstalledVersionComparable(version: string, ecosystem: string): boolean {
+  return ecosystem === 'PyPI' ? isValidPep440Version(version) : isValidVersion(version);
+}
+
+function compareFixedVersions(a: string, b: string, ecosystem: string): number {
+  return ecosystem === 'PyPI' ? comparePep440Versions(a, b) : compareVersions(a, b);
+}
+
 /**
  * Smallest published fixed version that resolves `vuln` for the given
- * (ecosystem, package) at `currentVersion`. Walks every SEMVER range's `fixed`
- * events, keeps those >= the installed version, and returns the lowest — the
+ * (ecosystem, package) at `currentVersion`. Walks every supported range's
+ * `fixed` events, keeps those >= the installed version, and returns the lowest
  * minimal safe bump. `null` when no fix is published.
  *
  * Matching is by BOTH name and ecosystem: a hydrated advisory can carry
@@ -168,23 +186,23 @@ export function pickFixedVersion(
   for (const aff of vuln.affected ?? []) {
     if (!affectedMatches(aff, pkgName, ecosystem)) continue;
     for (const range of aff.ranges ?? []) {
-      if ((range.type ?? '').toUpperCase() !== 'SEMVER') continue;
+      if (!rangeHasFixedVersions(range, ecosystem)) continue;
       for (const ev of range.events ?? []) {
-        if (typeof ev.fixed === 'string' && isValidVersion(ev.fixed)) {
+        if (typeof ev.fixed === 'string' && isValidFixedVersion(ev.fixed, ecosystem)) {
           candidates.push(ev.fixed);
         }
       }
     }
   }
   if (candidates.length === 0) return null;
-  const sorted = [...candidates].sort(compareVersions);
-  if (isValidVersion(currentVersion)) {
+  const sorted = [...candidates].sort((a, b) => compareFixedVersions(a, b, ecosystem));
+  if (isInstalledVersionComparable(currentVersion, ecosystem)) {
     // Only a fix >= the installed version actually resolves it. A lower `fixed`
     // event belongs to an older, disjoint affected range; for a package
     // vulnerable in a later/unfixed range, suggesting that lower version would
     // be a DOWNGRADE that doesn't fix the installed version. When nothing
     // qualifies, make no suggestion (null) rather than a misleading downgrade.
-    return sorted.find((v) => compareVersions(v, currentVersion) >= 0) ?? null;
+    return sorted.find((v) => compareFixedVersions(v, currentVersion, ecosystem) >= 0) ?? null;
   }
   // Installed version unparseable → best-effort lowest published fix.
   return sorted[0] ?? null;

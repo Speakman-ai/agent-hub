@@ -109,6 +109,91 @@ describe('pickFixedVersion', () => {
     };
     expect(pickFixedVersion(noEco, 'colors', 'npm', '1.0.0')).toBeNull();
   });
+
+  it('picks PyPI fixed versions from OSV ECOSYSTEM ranges', () => {
+    const pyPiEcoRange = {
+      id: 'GHSA-jm82-fx9c-mx94',
+      affected: [
+        {
+          package: { ecosystem: 'PyPI', name: 'pypdf' },
+          ranges: [{ type: 'ECOSYSTEM', events: [{ fixed: '6.13.3' }] }],
+        },
+      ],
+    };
+
+    expect(pickFixedVersion(pyPiEcoRange, 'pypdf', 'PyPI', '6.13.0')).toBe('6.13.3');
+  });
+
+  it('does not apply OSV ECOSYSTEM ranges to npm packages', () => {
+    const npmEcoRange = {
+      id: 'GHSA-npm-eco',
+      affected: [
+        {
+          package: { ecosystem: 'npm', name: 'left-pad' },
+          ranges: [{ type: 'ECOSYSTEM', events: [{ fixed: '1.3.1' }] }],
+        },
+      ],
+    };
+
+    expect(pickFixedVersion(npmEcoRange, 'left-pad', 'npm', '1.3.0')).toBeNull();
+  });
+
+  it('uses PyPI version ordering when selecting fixed versions', () => {
+    const pyPiVersions = {
+      id: 'PYSEC-version-order',
+      affected: [
+        {
+          package: { ecosystem: 'PyPI', name: 'pkg' },
+          ranges: [
+            {
+              type: 'ECOSYSTEM',
+              events: [{ fixed: '1!9.9' }, { fixed: '2!1.0' }],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(pickFixedVersion(pyPiVersions, 'pkg', 'PyPI', '2!0.9')).toBe('2!1.0');
+  });
+
+  it('keeps PEP 440 separator variants visible as fixed candidates', () => {
+    const pyPiVariants = {
+      id: 'PYSEC-version-variants',
+      affected: [
+        {
+          package: { ecosystem: 'PyPI', name: 'pkg' },
+          ranges: [
+            {
+              type: 'ECOSYSTEM',
+              events: [{ fixed: '1.0-1' }, { fixed: '1.0.post2' }],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(pickFixedVersion(pyPiVariants, 'pkg', 'PyPI', '1.0')).toBe('1.0-1');
+  });
+
+  it('does not collapse PyPI local suffixes when selecting a fixed version', () => {
+    const pyPiLocal = {
+      id: 'PYSEC-local',
+      affected: [
+        {
+          package: { ecosystem: 'PyPI', name: 'pkg' },
+          ranges: [
+            {
+              type: 'ECOSYSTEM',
+              events: [{ fixed: '1.0' }, { fixed: '1.0+local.2' }],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(pickFixedVersion(pyPiLocal, 'pkg', 'PyPI', '1.0+local.1')).toBe('1.0+local.2');
+  });
 });
 
 describe('osvVulnToAdvisory', () => {
@@ -239,7 +324,12 @@ describe('OsvAdvisorySource.query', () => {
             summary: 'Django SQL injection',
             aliases: ['CVE-2021-35042'],
             database_specific: { severity: 'HIGH' },
-            affected: [{ package: { ecosystem: 'PyPI', name: 'django' } }],
+            affected: [
+              {
+                package: { ecosystem: 'PyPI', name: 'django' },
+                ranges: [{ type: 'ECOSYSTEM', events: [{ fixed: '3.2.1' }] }],
+              },
+            ],
           }),
           { status: 200 },
         );
@@ -255,6 +345,7 @@ describe('OsvAdvisorySource.query', () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].advisory.id).toBe('PYSEC-2021-1');
     expect(findings[0].advisory.severity).toBe('high');
+    expect(findings[0].advisory.fixedVersion).toBe('3.2.1');
     expect(findings[0].dependency).toMatchObject({ ecosystem: 'pip', name: 'django' });
   });
 
