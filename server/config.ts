@@ -444,19 +444,19 @@ const config: AppConfig = {
     return coerceConfigBooleanLoose(fileConfig.codexDangerBypass, true);
   })(),
 
-  // Card → Done on push. Default true: a successful GitHub push moves the
-  // linked kanban card to Done immediately rather than parking it in Review
-  // until the PR-merge webhook. Opt out (restore the §15 push → Review →
-  // merge → Done flow) with AGENT_HUB_CARD_DONE_ON_PUSH=false or
-  // `"cardDoneOnPush": false` in config.json.
+  // Card → Done on push. Default false: a successful GitHub push parks the
+  // linked kanban card in Review and only the PR-merge moves it to Done
+  // ("Done means merged, not pushed"). Opt in to the legacy "pushed = shipped"
+  // behavior (push moves the card straight to Done) with
+  // AGENT_HUB_CARD_DONE_ON_PUSH=true or `"cardDoneOnPush": true` in config.json.
   cardDoneOnPush: (() => {
     const k = 'AGENT_HUB_CARD_DONE_ON_PUSH' as const;
     if (process.env[k] !== undefined) {
       if (envMeansFalse(k)) return false;
       if (envMeansTrue(k)) return true;
-      return coerceConfigBooleanLoose(process.env[k], true);
+      return coerceConfigBooleanLoose(process.env[k], false);
     }
-    return coerceConfigBooleanLoose(fileConfig.cardDoneOnPush, true);
+    return coerceConfigBooleanLoose(fileConfig.cardDoneOnPush, false);
   })(),
 
   // ── Host browser sessions (Stagehand / Playwright Chromium) ──

@@ -12,14 +12,16 @@
  *      so a human scanning the card thread can tell at a glance whether
  *      the run was kicked off manually or by autonomous mode.
  *
- *   2. Moves the card → **Done** (when the `cardDoneOnPush` config flag is
- *      on, the default) or the existing **Review** column (legacy flow).
+ *   2. Moves the card → **Review** (the default) or straight to **Done**
+ *      (only when the `cardDoneOnPush` config flag is explicitly enabled).
  *      No new column is introduced — the design (§15) deliberately keeps
  *      the board schema stable; the comment carries the handoff semantics.
  *
- * With `cardDoneOnPush` enabled, "pushed = shipped": the card lands in Done
- * the moment the branch reaches GitHub. With it disabled, the card stays in
- * Review until the GitHub PR merges, and the PR-close webhook handler
+ * By default (`cardDoneOnPush=false`), "Done means merged, not pushed": the
+ * card stays in Review until the PR merges, and the merge handler moves it to
+ * Done. With `cardDoneOnPush` enabled, "pushed = shipped": the card lands in
+ * Done the moment the branch reaches GitHub. In the disabled (default) case
+ * the legacy GitHub PR-close webhook handler
  * (`server/routes/webhooks.ts`, `handleWebhookPrClosed`) moves it to Done on
  * merge (that handler is a no-op when the card is already Done). The webhook
  * does NOT auto-dispatch the

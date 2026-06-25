@@ -2984,13 +2984,13 @@ export interface AppConfig {
    */
   codexDangerBypass: boolean;
   /**
-   * When true (the default), a successful push to GitHub moves the linked
-   * kanban card straight to the board's **Done** column instead of parking
-   * it in **Review**. This overrides the §15 Finalize default (push → Review,
-   * GitHub merge → Done): operators who treat "pushed = shipped" want the card
+   * When false (the default), a successful push to GitHub parks the linked
+   * kanban card in **Review**; only the PR-merge moves it to **Done**. This is
+   * the merge-gated §15 Finalize flow (push → Review, merge → Done) and encodes
+   * "Done means merged, not pushed."
+   * Set true to opt into the legacy "pushed = shipped" behavior: the card is
    * marked Done the moment the branch lands on GitHub, without waiting for merge.
-   * Set false to restore the merge-gated Review-then-Done flow. Configure via
-   * `AGENT_HUB_CARD_DONE_ON_PUSH` (`false` / `0` / `off` to disable).
+   * Configure via `AGENT_HUB_CARD_DONE_ON_PUSH` (`true` / `1` / `on` to enable).
    */
   cardDoneOnPush: boolean;
   slackWebhookUrl: string | null;

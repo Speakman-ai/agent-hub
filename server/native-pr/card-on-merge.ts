@@ -8,10 +8,12 @@
  * `webhook_pr_merged` broadcast keeps its legacy type name so the
  * push-notification bridge (server/push.ts) fires unchanged.
  *
- * Note the double-Done hazard: finalize's post-push-detach may already
- * have moved the card to Done (`cardDoneOnPush`, default true). Both
- * moves are idempotent by column check, so merge-after-push is a no-op
- * move plus one comment — acceptable.
+ * This is the canonical Done transition: "Done means merged, not pushed."
+ * By default (`cardDoneOnPush=false`) finalize's post-push-detach parks the
+ * card in Review and this merge handler is what moves it to Done. If an
+ * operator opts into `cardDoneOnPush=true` ("pushed = shipped"), the card may
+ * already be in Done; both moves are idempotent by column check, so
+ * merge-after-push is a no-op move plus one comment — acceptable.
  */
 
 import { randomUUID } from 'crypto';
