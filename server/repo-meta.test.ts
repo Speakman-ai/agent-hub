@@ -20,6 +20,30 @@ import { describe, it, expect } from 'vitest';
 const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(serverDir, '..');
 
+type PackageJson = {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
+
+type PackageLockJson = {
+  packages?: Record<string, { version?: string }>;
+};
+
+function parseVersion(version: string): [number, number, number] {
+  const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) throw new Error(`Expected semver-like version, got ${version}`);
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function isAtLeast(version: string, floor: string): boolean {
+  const actual = parseVersion(version);
+  const minimum = parseVersion(floor);
+  for (let i = 0; i < actual.length; i += 1) {
+    if (actual[i] !== minimum[i]) return actual[i] > minimum[i];
+  }
+  return true;
+}
+
 describe('typecheck preflight', () => {
   it('runs assert-dev-types before tsc so missing devDeps fail with a clear message', () => {
     const pkg = JSON.parse(readFileSync(path.join(serverDir, 'package.json'), 'utf8')) as {
@@ -82,6 +106,39 @@ describe('native module ABI', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('Electron native dependency contract', () => {
+  it('keeps better-sqlite3 new enough for the Electron runtime', () => {
+    const rootPkg = JSON.parse(
+      readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+    ) as PackageJson;
+    const serverPkg = JSON.parse(
+      readFileSync(path.join(serverDir, 'package.json'), 'utf8'),
+    ) as PackageJson;
+    const rootLock = JSON.parse(
+      readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8'),
+    ) as PackageLockJson;
+    const serverLock = JSON.parse(
+      readFileSync(path.join(serverDir, 'package-lock.json'), 'utf8'),
+    ) as PackageLockJson;
+
+    const electronSpec = rootPkg.devDependencies?.electron;
+    const electronMajor = electronSpec ? parseVersion(electronSpec)[0] : 0;
+    const requiredSqliteFloor = electronMajor >= 39 ? '12.11.1' : '0.0.0';
+
+    const rootSqlite = rootPkg.dependencies?.['better-sqlite3'];
+    const serverSqlite = serverPkg.dependencies?.['better-sqlite3'];
+    const rootLockedSqlite = rootLock.packages?.['node_modules/better-sqlite3']?.version;
+    const serverLockedSqlite = serverLock.packages?.['node_modules/better-sqlite3']?.version;
+
+    expect(rootSqlite).toBe(`^${rootLockedSqlite}`);
+    expect(serverSqlite).toBe(`^${serverLockedSqlite}`);
+    expect(isAtLeast(rootSqlite ?? '0.0.0', requiredSqliteFloor)).toBe(true);
+    expect(isAtLeast(serverSqlite ?? '0.0.0', requiredSqliteFloor)).toBe(true);
+    expect(isAtLeast(rootLockedSqlite ?? '0.0.0', requiredSqliteFloor)).toBe(true);
+    expect(isAtLeast(serverLockedSqlite ?? '0.0.0', requiredSqliteFloor)).toBe(true);
   });
 });
 

@@ -54,7 +54,7 @@
     "node": ">=22.14.0 <23.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0"
+    "better-sqlite3": "^12.11.1"
   },
   "build": {
     "appId": "com.agenthub.app",
