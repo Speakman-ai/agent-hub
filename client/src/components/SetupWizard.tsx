@@ -4,7 +4,6 @@ import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connec
 import { setup as setupHubAuth } from '../utils/auth';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs';
 import GithubConnectionSection from './GithubConnectionSection';
-import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
 import MyClaudeAuthSection from './MyClaudeAuthSection';
 import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
@@ -580,19 +579,16 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               <p className="text-gray-400 text-sm">
                 This is the right moment if your first project will be a{' '}
                 <strong className="text-gray-300">GitHub codebase</strong>— clones, PRs, and
-                reviewer bots need your GitHub login. Each user connects their own account. Skip if
-                you&apos;re starting non-repo work; you can finish this later in Settings.
+                reviewer bots need your GitHub login. Paste a personal access token to connect your
+                account. Skip if you&apos;re starting non-repo work; you can finish this later in
+                Settings.
               </p>
             </div>
 
-            {/* Optional: register an OAuth App so "Sign in with GitHub" works
-                without falling back to a PAT. Skipped by users who don't run
-                the server (the section already shows a Configured state if
-                someone else set it up). */}
-            <PersonalOAuthConfigSection />
-
+            {/* Setup uses the simple PAT paste flow. OAuth App registration
+                lives in Settings for operators who want "Sign in with GitHub". */}
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
-              <GithubConnectionSection embedded />
+              <GithubConnectionSection embedded patOnly />
             </div>
 
             <div className="flex gap-3 pt-1">

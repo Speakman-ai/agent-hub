@@ -77,6 +77,17 @@ jobs:
             (cd client && npm test)
           elif [ "$FINALIZE_MATRIX_SUITE" = "electron" ]; then
             (cd shared && npm ci --include=dev)
+            # electron/ has no package.json, so `test:electron` runs vitest from
+            # the ROOT node_modules. vitest 4 loads a platform-specific rolldown
+            # native binding (@rolldown/binding-linux-x64-gnu) that is an OPTIONAL
+            # dependency. The root install above uses --ignore-scripts to skip the
+            # heavy electron-binary download + better-sqlite3 rebuild, and under
+            # `npm ci` the optional binding is intermittently omitted (npm/cli#4828
+            # → vitest startup error "Cannot find native binding"). A full-resolve
+            # `npm install` reconciles the optional deps the lockfile pins; keeping
+            # --ignore-scripts means the electron binary / native rebuild stay
+            # skipped (no scripts run for the pure-prebuilt binding package).
+            npm install --include=optional --ignore-scripts --no-audit --no-fund --no-save
             npm run test:electron
           elif [ "$FINALIZE_MATRIX_SUITE" = "mobile" ]; then
             (cd shared && npm ci --include=dev)

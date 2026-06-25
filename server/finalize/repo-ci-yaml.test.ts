@@ -40,6 +40,7 @@
  */
 
 import path from 'path';
+import { readFile } from 'fs/promises';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
 import { loadCiConfigFromFile } from './ci-config.js';
@@ -123,6 +124,41 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     // surfaces here.
     const instances = expandJobInstances(result.config, {});
     expect(instances).toHaveLength(8);
+  });
+
+  it('reconciles the optional rolldown binding before running the electron suite', async () => {
+    // Regression for the Finalize electron-shard failure where vitest's startup
+    // aborted with "Cannot find native binding" / "Cannot find module
+    // '@rolldown/binding-linux-x64-gnu'" (npm/cli#4828).
+    //
+    // electron/ has no package.json, so `npm run test:electron` resolves vitest
+    // (and its platform-specific rolldown native binding, an OPTIONAL dep) from
+    // the ROOT node_modules. The root install uses `npm ci --ignore-scripts` to
+    // skip the heavy electron-binary download + better-sqlite3 rebuild, and npm
+    // intermittently omits the optional binding under that path. The fix adds an
+    // optional-deps reconcile in the electron branch BEFORE the suite runs.
+    //
+    // We assert on the raw run-script text (not the parsed model) because the
+    // per-suite branch lives inside a single shell `run:` block keyed off
+    // FINALIZE_MATRIX_SUITE — exactly the surface a future edit might drop.
+    const raw = await readFile(CI_YAML_PATH, 'utf8');
+    const electronIdx = raw.indexOf('"$FINALIZE_MATRIX_SUITE" = "electron"');
+    expect(electronIdx).toBeGreaterThan(-1);
+    // Window from the electron branch to the next branch / fi so we only match
+    // the electron arm.
+    const after = raw.slice(electronIdx);
+    const branchEnd = after.search(/elif \[|^\s*fi\b/m);
+    const electronBranch = branchEnd > -1 ? after.slice(0, branchEnd) : after;
+
+    const reconcileIdx = electronBranch.indexOf('npm install --include=optional');
+    const testIdx = electronBranch.indexOf('npm run test:electron');
+    // The reconcile step exists, includes optional deps, keeps --ignore-scripts
+    // (so the electron binary / native rebuild stay skipped), and runs BEFORE
+    // the electron suite.
+    expect(reconcileIdx).toBeGreaterThan(-1);
+    expect(electronBranch).toMatch(/npm install --include=optional[^\n]*--ignore-scripts/);
+    expect(testIdx).toBeGreaterThan(-1);
+    expect(reconcileIdx).toBeLessThan(testIdx);
   });
 
   it('sets an explicit fast-fail timeout (dogfood cap is 45 minutes)', async () => {

@@ -77,6 +77,26 @@ describe('GithubConnectionSection', () => {
     expect(screen.queryByRole('button', { name: /Sign in with GitHub/i })).toBeNull();
   });
 
+  it('patOnly mode shows the token input directly and never the OAuth path', async () => {
+    // Even when the server HAS OAuth configured, patOnly suppresses the OAuth
+    // button + warning and drops straight into the PAT form (setup wizard).
+    (fetchMock as any).mockResolvedValueOnce(
+      respond({ connected: false, login: null, serverConfigured: true }),
+    );
+
+    render(<GithubConnectionSection patOnly />);
+
+    // Token field is visible without clicking any "paste a token" button.
+    expect(await screen.findByTestId('github-pat-input')).toBeInTheDocument();
+    // No OAuth sign-in button, no "use a token instead" / "paste a token" button,
+    // no Cancel (nothing to fall back to), and no OAuth-not-configured warning.
+    expect(screen.queryByRole('button', { name: /Sign in with GitHub/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /personal access token/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /use a token instead/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^cancel$/i })).toBeNull();
+    expect(screen.queryByText(/OAuth is not configured on this server/i)).toBeNull();
+  });
+
   it('disconnects and refetches status on click', async () => {
     (fetchMock as any)
       .mockResolvedValueOnce(

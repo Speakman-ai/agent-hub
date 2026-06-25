@@ -26,12 +26,14 @@ import { formatDate } from '../utils/time';
  *      local-only Electron installs, and any time the server hasn't been
  *      configured with an OAuth App yet).
  */
-export default function GithubConnectionSection({ embedded = false }: any = {}) {
+export default function GithubConnectionSection({ embedded = false, patOnly = false }: any = {}) {
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
   const [busy, setBusy] = useState(false);
-  const [showTokenInput, setShowTokenInput] = useState(false);
+  // In PAT-only mode (e.g. the setup wizard) the token form is the only path,
+  // so show it directly instead of behind a "Paste a token" button.
+  const [showTokenInput, setShowTokenInput] = useState(patOnly);
   const [tokenInput, setTokenInput] = useState('');
   const [tokenSaving, setTokenSaving] = useState(false);
 
@@ -158,7 +160,9 @@ export default function GithubConnectionSection({ embedded = false }: any = {}) 
   }
 
   const connected = !!status?.connected;
-  const serverConfigured = status?.serverConfigured !== false;
+  // In PAT-only mode we never surface the OAuth path, regardless of whether the
+  // server happens to have OAuth credentials configured.
+  const serverConfigured = !patOnly && status?.serverConfigured !== false;
 
   return (
     <div className={containerClass}>
@@ -168,7 +172,7 @@ export default function GithubConnectionSection({ embedded = false }: any = {}) 
         </h4>
       )}
 
-      {!serverConfigured && !connected && !showTokenInput && (
+      {!patOnly && !serverConfigured && !connected && !showTokenInput && (
         <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded p-2 mb-3 flex items-start gap-2">
           <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
           <span>
@@ -269,18 +273,20 @@ export default function GithubConnectionSection({ embedded = false }: any = {}) 
                   {tokenSaving && <Loader2 size={12} className="animate-spin" />}
                   {tokenSaving ? 'Saving…' : 'Save token'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowTokenInput(false);
-                    setTokenInput('');
-                    setError(null);
-                  }}
-                  disabled={tokenSaving}
-                  className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 px-3 py-1.5 rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
+                {!patOnly && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTokenInput(false);
+                      setTokenInput('');
+                      setError(null);
+                    }}
+                    disabled={tokenSaving}
+                    className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 px-3 py-1.5 rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
             </div>
           ) : (
