@@ -137,6 +137,33 @@ describe('RumSettingsSection', () => {
     expect(summary!).toHaveTextContent(/client component/i);
   });
 
+  // Regression: a successful scan that returns no draft (empty body / unreadable
+  // workspace) used to render only the "Repo scan" header — a blank box that
+  // reads as "Repo scan is showing nothing". The panel must now surface an
+  // explicit empty-state with a rescan affordance instead of nothing.
+  it('shows an empty-state (not a blank box) when the scan returns no draft', async () => {
+    (api.getRumSetupDraft as any).mockResolvedValue({ projectId: 'demo', draft: null });
+    render(<RumSettingsSection projects={projects} />);
+    await waitFor(() => expect(api.getRumSetupDraft).toHaveBeenCalledWith('demo'));
+    const empty = await screen.findByTestId('rum-draft-empty');
+    expect(empty!).toHaveTextContent(/no result/i);
+    // The draft summary must NOT be present (nothing to populate).
+    expect(screen.queryByTestId('rum-draft-summary')).not.toBeInTheDocument();
+  });
+
+  it('re-runs the scan when the empty-state Rescan button is clicked', async () => {
+    (api.getRumSetupDraft as any).mockResolvedValue({ projectId: 'demo', draft: null });
+    render(<RumSettingsSection projects={projects} />);
+    const empty = await screen.findByTestId('rum-draft-empty');
+
+    // A populated draft on the retry should replace the empty-state.
+    (api.getRumSetupDraft as any).mockResolvedValue({ projectId: 'demo', draft });
+    fireEvent.click(empty!.querySelector('button') as any);
+
+    expect(await screen.findByTestId('rum-draft-summary')).toHaveTextContent('Next.js');
+    expect(screen.queryByTestId('rum-draft-empty')).not.toBeInTheDocument();
+  });
+
   it('spawns the wizard and opens the session on success (default passwords-only masking)', async () => {
     (api.startRumWizard as any).mockResolvedValueOnce({ sessionId: 'sess-1', agentId: 'agent-1' });
     const onOpenSession = vi.fn();

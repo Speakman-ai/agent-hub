@@ -145,6 +145,15 @@ export default function RumSettingsScreen({ route, navigation }: any) {
             </Text>
             {draft.cspHits?.length > 0 && (<Text style={styles.row}>CSP locations: {draft.cspHits.length}</Text>)}
           </View>)}
+        {!draftLoading && !draftError && !draft && (<View style={styles.card}>
+            <Text style={styles.row}>
+              The repo scan returned no result for this project. Its workspace may be empty or
+              unreadable.
+            </Text>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={reloadDraft}>
+              <Text style={styles.secondaryBtnText}>Rescan</Text>
+            </TouchableOpacity>
+          </View>)}
 
         <Text style={styles.sectionTitle}>RUM wizard</Text>
         <TouchableOpacity style={[styles.primaryBtn, wizardStarting && styles.btnDisabled]} onPress={handleStartWizard} disabled={wizardStarting}>

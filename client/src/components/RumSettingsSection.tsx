@@ -22,6 +22,7 @@ import {
   Copy,
   ShieldCheck,
   Video,
+  RefreshCw,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { copyToClipboard } from '../utils/export';
@@ -636,7 +637,21 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
 
       {/* ── Repo scan summary ───────────────────────────────────── */}
       <div className="bg-gray-800/30 border border-gray-700 rounded-xl p-4">
-        <h4 className="text-sm font-semibold text-gray-300 mb-3">Repo scan</h4>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h4 className="text-sm font-semibold text-gray-300">Repo scan</h4>
+          {!loadingDraft && projectId && (
+            <button
+              type="button"
+              onClick={() => void reloadDraft(projectId)}
+              data-testid="rum-draft-rescan"
+              title="Re-run the repo scan for this project"
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors"
+            >
+              <RefreshCw size={12} />
+              Rescan
+            </button>
+          )}
+        </div>
         {loadingDraft && (
           <div className="flex items-center gap-2 text-xs text-gray-400">
             <Loader2 size={12} className="animate-spin" />
@@ -704,6 +719,33 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
                 This project already has a wired recorder — re-running the wizard may
                 double-instrument. Confirm in chat before applying edits.
               </p>
+            )}
+          </div>
+        )}
+        {/* Loaded, no error, but the scan produced no draft (e.g. the server
+            returned an empty body, or the project cwd is unreadable). Without
+            this branch the panel renders only its header — a blank box that
+            reads as "Repo scan is showing nothing". Give the operator a clear
+            message and a way to retry. */}
+        {!loadingDraft && !draftError && !draft && (
+          <div
+            className="flex flex-col items-start gap-2 text-xs text-gray-400"
+            data-testid="rum-draft-empty"
+          >
+            <p className="flex items-center gap-1.5">
+              <AlertCircle size={12} className="text-amber-300" />
+              The repo scan returned no result for this project. Its workspace may be empty or
+              unreadable.
+            </p>
+            {projectId && (
+              <button
+                type="button"
+                onClick={() => void reloadDraft(projectId)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-700 text-gray-300 hover:text-gray-100 hover:bg-gray-800 transition-colors"
+              >
+                <RefreshCw size={12} />
+                Rescan
+              </button>
             )}
           </div>
         )}
