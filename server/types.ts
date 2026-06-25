@@ -3372,7 +3372,7 @@ export interface RouteDeps {
   activeProcesses: Map<string, import('child_process').ChildProcess>;
   getProjectDataDir: (projectId: string) => string;
   ensureDocsAgents: () => void;
-  ensureIntakeAgents: () => void;
+  retireIntakeAgents: () => void;
   ensureSkillBuilderAgents: (projectId?: string) => void;
   ensureReviewerAgents: () => boolean;
   ensureContextFiles: () => void;

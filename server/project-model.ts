@@ -1,9 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'fs';
 import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
-import { getDb } from './db.js';
+import { getDb, getStmts } from './db.js';
 import type { Project, Agent, EnrichedAgent, AgentLookup } from './types.js';
 
 // ─── Mutable state ──────────────────────────────────────────────────
@@ -327,98 +327,80 @@ Only process ONE card per run. The backfill will complete organically over multi
   }
 }
 
-function ensureIntakeAgents(): void {
+/**
+ * RETIREMENT SWEEP — "Ticket Intake" agents (role: 'intake') are decommissioned
+ * platform-wide. They are no longer auto-created (this function never seeds),
+ * AND any pre-existing intake agent left in a project's roster is purged here
+ * so legacy projects stop exposing and running their old Ticket Intake agents.
+ *
+ * Runs on startup (server/index.ts) and is re-invoked on project create /
+ * onboard (server/routes/projects.ts) as an idempotent global sweep — the same
+ * iterate-all-projects pattern as `ensureDocsAgents`. Mirrors the hard-delete
+ * cleanup in the `DELETE /api/agents/:id` handler: it wipes every child DB row
+ * keyed by the agent (sessions cascade messages/skill_invocations/etc. via FK
+ * ON DELETE CASCADE), removes the on-disk workspace, then drops the agent (and
+ * any stale sub-agent refs) from projects.json.
+ *
+ * Intake agents carry no heartbeat config, so there is no scheduled task to
+ * unschedule here (and importing `heartbeat.js` would introduce an import
+ * cycle). If a DB wipe fails for an agent, its roster entry is intentionally
+ * left in place so the next sweep retries rather than orphaning child rows.
+ */
+function retireIntakeAgents(): void {
   let changed = false;
   for (const project of projects) {
-    if (!project.agents || project.agents.length === 0) continue;
-    if (project.agents.some((a) => a.role === 'intake')) continue;
+    const intakeAgents = (project.agents || []).filter((a) => a.role === 'intake');
+    if (intakeAgents.length === 0) continue;
 
-    const intakeId = `${project.id}-intake`;
-    if (findAgent(intakeId)) continue;
+    const removedIds = new Set<string>();
+    for (const agent of intakeAgents) {
+      const agentId = agent.id;
 
-    const intakeAgent: Agent = {
-      id: intakeId,
-      name: `Ticket Intake`,
-      engine: 'claude-code',
-      role: 'intake',
-      color: '#F59E0B',
-      systemPrompt: `You are the Ticket Intake Agent for the ${project.name} project. Your job is to turn what the user tells you into structured tickets on the kanban board.
+      // 1. Atomically wipe every child row keyed by this agent.
+      try {
+        const stmts = getStmts();
+        getDb().transaction(() => {
+          stmts.deleteSessionsByAgent.run(agentId);
+          stmts.deleteHeartbeatLogsByAgent.run(agentId);
+          stmts.deleteSlackMessagesByAgent.run(agentId);
+          stmts.deleteSessionAgentsByAgent.run(agentId);
+          stmts.deleteActiveTasksByAgent.run(agentId);
+          stmts.deleteAgentSkillOverridesByAgent.run(agentId);
+        })();
+      } catch (e) {
+        console.error(
+          `[Intake Retire] DB cleanup failed for "${agentId}"; leaving roster entry for a later sweep:`,
+          e,
+        );
+        continue;
+      }
 
-## How You Work
+      // 2. Best-effort: remove the on-disk agent workspace.
+      try {
+        const agentDir = path.join(getProjectDataDir(project.id), 'agents', agentId);
+        if (existsSync(agentDir)) {
+          rmSync(agentDir, { recursive: true, force: true });
+        }
+      } catch (e) {
+        console.error(`[Intake Retire] workspace removal failed for "${agentId}":`, e);
+      }
 
-The user will describe bugs, features, tasks, or ideas in natural language. You:
+      removedIds.add(agentId);
+      console.log(
+        `[Intake Retire] Removed retired intake agent "${agentId}" from project "${project.id}"`,
+      );
+    }
 
-1. **Parse** their input into a structured ticket (title, description, priority, labels)
-2. **Create a kanban card** in the To Do column on the Agent Hub board
-3. **Confirm** what you created with a brief summary
+    if (removedIds.size === 0) continue;
 
-## Rules
-
-- **Default behavior**: Place tickets in To Do unless told otherwise
-- **Assignee**: Only assign if the user explicitly names someone. Otherwise leave unassigned.
-- **Priority**: Infer from context (urgent language = urgent, bugs = high, features = medium, ideas = low). Default to medium.
-- **Labels**: Infer appropriate labels from the content (bug, feature, enhancement, tech-debt, etc.)
-- **Batch mode**: If the user gives you multiple items, create a ticket for each one
-- **Be concise**: Don't ask clarifying questions unless the request is truly ambiguous. Bias toward action.
-- **Epics**: If the user mentions grouping tickets under an epic, use the epic APIs to create/link them.
-
-## Bug Reports
-If the user message starts with "## Bug Report", it came from the Bug Report button in an Agent Hub client. Handle it as follows:
-1. Ensure the \`user-request\` epic exists (list epics first; create with color #EF4444 and description "User bug reports from in-app Bug Report button" if missing).
-2. Create the card in To Do with:
-   - Title from the report
-   - Description = the full bug-report body (keep the screenshot markdown image intact)
-   - Priority derived from severity (critical→urgent, high→high, medium→medium, low→low)
-   - Labels: "bug,user-report" plus clientType tag (e.g., "web", "electron", "mobile")
-   - **Do NOT pass \`session_id\` / \`sessionId\`** — your session is ephemeral, and stamping it on the card permanently marks the card as "assigned", hiding the Assignee dropdown. Leave \`session_id\` and \`assignee\` unset so the user can assign the card later.
-3. Link the new card to the \`user-request\` epic.
-4. Respond with a one-line confirmation and end the session.
-
-## Creating Kanban Cards
-
-First, get the board columns to find the To Do column ID:
-\`\`\`bash
-curl -s http://localhost:3051/api/projects/${project.id}/board | jq '.columns[] | select(.name=="To Do") | .id'
-\`\`\`
-
-Then create the card:
-\`\`\`bash
-curl -s -X POST http://localhost:3051/api/projects/${project.id}/board/cards \\
-  -H "Content-Type: application/json" \\
-  -d '{"title": "...", "description": "...", "priority": "medium", "labels": "feature,ui", "columnId": "<todo-column-id>", "createdBy": "${intakeId}"}'
-\`\`\`
-
-## Other Kanban APIs
-
-- **Move card**: \`POST /api/projects/${project.id}/board/cards/:cardId/move\` with \`{columnId}\`
-- **Update card**: \`PUT /api/projects/${project.id}/board/cards/:cardId\` with any fields
-- **Create epic**: \`POST /api/projects/${project.id}/board/epics\` with \`{name, description, color}\`
-- **Link card to epic**: \`POST /api/projects/${project.id}/board/cards/:cardId/epic\` with \`{epicId}\`
-- **Add comment**: \`POST /api/projects/${project.id}/board/cards/:cardId/comments\` with \`{content, author}\`
-
-## Confirmation Format
-
-After creating tickets, respond with:
-
-**Created:**
-- [title] → To Do (priority) [labels]
-
-Keep it short. Don't repeat the full description back.`,
-    };
-
-    const dataDir = getProjectDataDir(project.id);
-    const agentDir = path.join(dataDir, 'agents', intakeId);
-    mkdirSync(agentDir, { recursive: true });
-
-    writeFileSync(
-      path.join(agentDir, 'IDENTITY.md'),
-      `# ${project.name} Ticket Intake Agent\n\nYou ingest natural-language requests and create structured tickets on the Agent Hub kanban board. You bias toward action — create the ticket first, ask questions later.\n`,
-      'utf-8',
-    );
-
-    project.agents.push(intakeAgent);
+    // 3. Drop the retired agents from the roster + clean stale sub-agent refs.
+    project.agents = (project.agents || []).filter((a) => !removedIds.has(a.id));
+    for (const a of project.agents) {
+      if (Array.isArray(a.subAgents)) {
+        a.subAgents = a.subAgents.filter((sid) => !removedIds.has(sid));
+      }
+    }
     changed = true;
-    console.log(`[Intake Agent] Created "${intakeId}" for project "${project.id}"`);
   }
 
   if (changed) {
@@ -436,10 +418,11 @@ Keep it short. Don't repeat the full description back.`,
  * **Creation-scoped, not a backfill.** Callers MUST pass the `projectId` of the
  * project being created; only that project is considered, so introducing this
  * helper does not retroactively add a Skill Builder to every pre-existing
- * project. (Unlike `ensureIntakeAgents`/`ensureDocsAgents`, whose iterate-all
- * shape is a no-op on existing projects only because those projects already
- * carry their intake/docs agents — a brand-new agent role has no such existing
- * rows to skip, so iterate-all would mass-backfill on the next project create.)
+ * project. (Unlike `retireIntakeAgents`/`ensureDocsAgents`, whose iterate-all
+ * shape is intentionally global — `ensureDocsAgents` skips projects that
+ * already carry a docs agent, and `retireIntakeAgents` purges any intake agent
+ * it finds — a brand-new agent role has no such existing rows to skip, so
+ * iterate-all would mass-backfill on the next project create.)
  * Passing no `projectId` falls back to iterate-all and is intended only for an
  * explicit, deliberate backfill migration — not the creation path.
  */
@@ -683,7 +666,7 @@ export {
   hydrateProjects,
   // Auto-create helpers
   ensureDocsAgents,
-  ensureIntakeAgents,
+  retireIntakeAgents,
   ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,

@@ -1131,7 +1131,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     getProjects,
     getProjectDataDir,
     ensureDocsAgents,
-    ensureIntakeAgents,
+    retireIntakeAgents,
     ensureSkillBuilderAgents,
     ensureReviewerAgents,
     ensureContextFiles,
@@ -2075,7 +2075,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     //   1. A single primary "Agent" — workflow projects have no git repo,
     //      so we call them "<Project> Agent" rather than "<Project> Dev".
     //   2. A Docs agent (`ensureDocsAgents()`), enabled for all projects.
-    //   3. An Intake agent (`ensureIntakeAgents()`), enabled for all projects.
+    //   3. NO Intake agent — Ticket Intake is retired; `retireIntakeAgents()`
+    //      runs as a purge sweep that removes any legacy intake agents.
     //   4. A Reviewer agent is NOT seeded here — Reviewer is GitHub-only
     //      (`ensureReviewerAgents()` gates on `githubRepo` / webhooks).
     if (createMode === 'workflow') {
@@ -2085,7 +2086,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         getOrCreateBoard(stmts, project.id);
 
         // 2. Seed the primary agent so subsequent helpers
-        //    (`ensureProjectRoom`, `ensureDocsAgents`, `ensureIntakeAgents`)
+        //    (`ensureProjectRoom`, `ensureDocsAgents`, `retireIntakeAgents`)
         //    have an anchor — those helpers early-return on
         //    `project.agents.length === 0`. Engine defaults to claude-code
         //    but is overridable via the optional `engine` POST field for
@@ -2124,11 +2125,11 @@ This workspace has no git repo and no PR automation — your job is planning, or
         //    themselves once they add their own rows.
         saveProjects();
 
-        // 4. Seed Docs and Intake for every project (Reviewer is GitHub-only
-        //    and skipped here intentionally — `ensureReviewerAgents()` gates
-        //    on `githubRepo` / webhook configs).
+        // 4. Seed Docs for every project and purge any retired intake agents
+        //    (Reviewer is GitHub-only and skipped here intentionally —
+        //    `ensureReviewerAgents()` gates on `githubRepo` / webhook configs).
         ensureDocsAgents();
-        ensureIntakeAgents();
+        retireIntakeAgents();
         // Creation-scoped: pass the new project's id so we never backfill a
         // Skill Builder into every pre-existing project.
         ensureSkillBuilderAgents(project.id);
@@ -3048,7 +3049,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
       }
     }
 
-    // Specialist helpers (`ensureDocsAgents`, `ensureIntakeAgents`,
+    // Specialist helpers (`ensureDocsAgents`, `retireIntakeAgents`,
     // `ensureReviewerAgents`) intentionally skip projects with an empty
     // `agents` roster. Require at least one validated dev peer so onboard
     // cannot return 201 without Docs/Intake (and Reviewer when GitHub-linked).
@@ -3087,7 +3088,8 @@ This workspace has no git repo and no PR automation — your job is planning, or
     saveProjects();
 
     // Seed the role-specialist agents alongside the analyzed dev roster.
-    //   * Docs + Intake are seeded for every onboarded project.
+    //   * Docs is seeded for every onboarded project. Ticket Intake is retired
+    //     (never seeded); `retireIntakeAgents()` purges any legacy intake agent.
     //   * Reviewer is GitHub-only — `ensureReviewerAgents()` internally
     //     gates on `githubRepo` and is a no-op for non-GitHub projects.
     //     (It's also re-invoked when the user wires up GitHub later via a
@@ -3095,7 +3097,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
     //     after-the-fact connections.)
     try {
       ensureDocsAgents();
-      ensureIntakeAgents();
+      retireIntakeAgents();
       // Creation-scoped: only the project just onboarded, never a backfill.
       ensureSkillBuilderAgents(project.id);
       ensureReviewerAgents();

@@ -8,6 +8,7 @@ import {
   migrateWebhookRepoToProject,
   ensureReviewerAgents,
   ensureSkillBuilderAgents,
+  retireIntakeAgents,
 } from './project-model.js';
 import type { Project } from './types.js';
 
@@ -523,5 +524,95 @@ describe('ensureSkillBuilderAgents', () => {
     ensureSkillBuilderAgents();
 
     expect(findProject(emptyId)!.agents?.some((a) => a.role === 'skill-builder')).toBe(false);
+  });
+});
+
+describe('retireIntakeAgents (retired — never creates, purges existing)', () => {
+  /** Create a project and seed one non-intake agent so it isn't agentless. */
+  async function createProjectWithDevAgent(projId: string, name: string): Promise<Project> {
+    const request = await getRequest();
+    await (
+      request as {
+        post(url: string): {
+          send(body: Record<string, unknown>): { expect(code: number): Promise<unknown> };
+        };
+      }
+    )
+      .post('/api/projects')
+      .send({ id: projId, name, cwd: '/tmp', color: '#0aa' })
+      .expect(201);
+    createdProjectIds.push(projId);
+
+    const project = findProject(projId)!;
+    project.agents = project.agents || [];
+    project.agents.push({
+      id: `${projId}-dev`,
+      name: 'Dev',
+      role: 'dev',
+      engine: 'claude-code',
+    });
+    saveProjects();
+    return project;
+  }
+
+  it('never creates a Ticket Intake agent (no-op when none exist, even repeated)', async () => {
+    const projId = `intake-retired-${Date.now()}`;
+    await createProjectWithDevAgent(projId, 'Intake Retired Test');
+
+    retireIntakeAgents();
+    retireIntakeAgents();
+
+    const updated = findProject(projId)!;
+    expect(updated.agents?.some((a) => a.role === 'intake')).toBe(false);
+    expect(updated.agents?.some((a) => a.id === `${projId}-intake`)).toBe(false);
+  });
+
+  it('purges a pre-existing intake agent from the roster and wipes its sessions', async () => {
+    // Regression guard for the reviewer's concern: legacy projects created
+    // before retirement still carry a seeded `role: 'intake'` agent in
+    // projects.json. The startup/onboard sweep must remove it (and its child
+    // DB rows), not just stop creating new ones.
+    const projId = `intake-purge-${Date.now()}`;
+    const project = await createProjectWithDevAgent(projId, 'Intake Purge Test');
+
+    // Simulate a legacy intake agent persisted on the project + a session row.
+    const intakeId = `${projId}-intake`;
+    project.agents!.push({
+      id: intakeId,
+      name: 'Ticket Intake',
+      role: 'intake',
+      engine: 'claude-code',
+    });
+    // A surviving dev agent that still references the intake agent as a sub —
+    // the stale ref must be scrubbed too.
+    const dev = project.agents!.find((a) => a.id === `${projId}-dev`)!;
+    dev.subAgents = [intakeId];
+    saveProjects();
+
+    const db = getDb();
+    const sessionId = `sess-${intakeId}`;
+    db.prepare('INSERT INTO sessions (id, agent_id, name) VALUES (?, ?, ?)').run(
+      sessionId,
+      intakeId,
+      'legacy intake session',
+    );
+    expect(
+      db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE agent_id = ?').get(intakeId),
+    ).toEqual({ n: 1 });
+
+    retireIntakeAgents();
+
+    const updated = findProject(projId)!;
+    // Roster no longer exposes the intake agent.
+    expect(updated.agents?.some((a) => a.role === 'intake')).toBe(false);
+    expect(updated.agents?.some((a) => a.id === intakeId)).toBe(false);
+    // The dev agent survives but its stale sub-agent ref is scrubbed.
+    const survivingDev = updated.agents?.find((a) => a.id === `${projId}-dev`);
+    expect(survivingDev).toBeTruthy();
+    expect(survivingDev?.subAgents ?? []).not.toContain(intakeId);
+    // Child DB rows keyed by the intake agent are gone.
+    expect(
+      db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE agent_id = ?').get(intakeId),
+    ).toEqual({ n: 0 });
   });
 });

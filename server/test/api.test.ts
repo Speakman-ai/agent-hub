@@ -147,15 +147,15 @@ describe('Projects', () => {
       expect(res.body.githubRepo).toBeUndefined();
     });
 
-    it('scaffolds a workflow project with board, primary agent + docs + intake, and context files', async () => {
+    it('scaffolds a workflow project with board, primary agent + docs (intake retired), and context files', async () => {
       // Workflow projects must land the user on a fully-formed shell — not
       // a blank canvas. The wizard's `POST /api/projects { mode: 'workflow' }`
       // call should eagerly initialise:
       //   - kanban board with the 4 default columns (To Do → Done)
       //   - the primary "<Project> Agent" (role: 'dev', id: '<id>-agent')
       //   - a Docs agent (role: 'docs') — seeded for every project
-      //   - a Ticket Intake agent (role: 'intake') — seeded for every project
       //   - top-level context files (SOUL.md, AGENTS.md, USER.md, TOOLS.md, MEMORY.md)
+      // Ticket Intake (role: 'intake') is RETIRED — never seeded anymore.
       // and explicitly NOT seed a Reviewer agent — Reviewer is GitHub-only
       // (`ensureReviewerAgents()` gates on `githubRepo` / webhook configs).
       const projectId = `wf-scaffold-${Date.now()}-${++_uniqueCounter}`;
@@ -170,8 +170,9 @@ describe('Projects', () => {
       const columnNames = (board.body.columns as Array<{ name: string }>).map((c) => c.name);
       expect(columnNames).toEqual(['To Do', 'In Progress', 'Done']);
 
-      // Project carries the primary "<Project> Agent" plus Docs + Intake.
-      // Reviewer is deliberately absent (no `githubRepo` on workflow projects).
+      // Project carries the primary "<Project> Agent" plus Docs.
+      // Intake is retired (never seeded); Reviewer is deliberately absent
+      // (no `githubRepo` on workflow projects).
       const proj = await request.get(`/api/projects/${projectId}`).expect(200);
       const agents =
         (proj.body.agents as Array<{
@@ -183,7 +184,7 @@ describe('Projects', () => {
       const roles = agents.map((a) => a.role).filter(Boolean);
       expect(roles).toContain('dev');
       expect(roles).toContain('docs');
-      expect(roles).toContain('intake');
+      expect(roles).not.toContain('intake');
       expect(roles).not.toContain('lead');
       expect(roles).not.toContain('reviewer');
       // Workflow projects: the primary agent is named "<Project> Agent" with
@@ -395,10 +396,10 @@ describe('Projects', () => {
 
   describe('POST /api/projects/onboard — role-specialist seeding', () => {
     // The onboard route owns dev-mode scaffolding (analyzed roster + GitHub
-    // wiring). It must seed Docs + Intake for every project and a Reviewer
-    // for projects with a `githubRepo` set. Reviewer stays out of non-GitHub
-    // onboards.
-    it('seeds Docs + Intake on any onboarded project, and Reviewer when githubRepo is set', async () => {
+    // wiring). It must seed Docs for every project and a Reviewer for projects
+    // with a `githubRepo` set. Intake is retired (never seeded). Reviewer stays
+    // out of non-GitHub onboards.
+    it('seeds Docs (not Intake) on any onboarded project, and Reviewer when githubRepo is set', async () => {
       const projectId = `onboard-gh-${Date.now()}-${++_uniqueCounter}`;
       await request
         .post('/api/projects/onboard')
@@ -429,14 +430,14 @@ describe('Projects', () => {
       const roles = agents.map((a) => a.role).filter(Boolean);
       expect(roles).toContain('dev');
       expect(roles).toContain('docs');
-      expect(roles).toContain('intake');
+      expect(roles).not.toContain('intake');
       expect(roles).toContain('reviewer');
       expect(agents.some((a) => a.id === `${projectId}-docs`)).toBe(true);
-      expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(true);
+      expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(false);
       expect(agents.some((a) => a.id === `${projectId}-reviewer`)).toBe(true);
     });
 
-    it('seeds Docs + Intake but NOT Reviewer when onboarded without a GitHub repo', async () => {
+    it('seeds Docs but NOT Intake or Reviewer when onboarded without a GitHub repo', async () => {
       const projectId = `onboard-nogh-${Date.now()}-${++_uniqueCounter}`;
       await request
         .post('/api/projects/onboard')
@@ -464,8 +465,9 @@ describe('Projects', () => {
       const roles = agents.map((a) => a.role).filter(Boolean);
       expect(roles).toContain('dev');
       expect(roles).toContain('docs');
-      expect(roles).toContain('intake');
+      expect(roles).not.toContain('intake');
       expect(roles).not.toContain('reviewer');
+      expect(agents.some((a) => a.id === `${projectId}-intake`)).toBe(false);
       expect(agents.some((a) => a.id === `${projectId}-reviewer`)).toBe(false);
     });
   });

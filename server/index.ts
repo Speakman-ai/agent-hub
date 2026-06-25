@@ -49,7 +49,7 @@ import {
   saveProjects,
   reloadProjects,
   ensureDocsAgents,
-  ensureIntakeAgents,
+  retireIntakeAgents,
   ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,
@@ -325,6 +325,13 @@ migrateAhwDirectories();
 // invoked when a project is wired up to GitHub so the Finalize review
 // phase has a reviewer agent to spawn.
 ensureContextFiles();
+// Retirement sweep: "Ticket Intake" agents (role: 'intake') are decommissioned
+// platform-wide. Unlike the deprecated-but-passive seeders above, this actively
+// PURGES any legacy intake agent still persisted in an existing project's
+// roster (plus its child DB rows + workspace), so projects created before
+// retirement stop exposing and running their old Ticket Intake agent. Runs
+// every boot — idempotent and self-healing (a no-op once none remain).
+retireIntakeAgents();
 // Exception to the no-backfill rule: Agent Hub-HOSTED projects need the
 // Reviewer (Finalize review phase + native PR reviews), and hosting can
 // be enabled at any time — seed any hosted project that is missing one.
@@ -1027,7 +1034,7 @@ export const routeDeps: RouteDeps = {
   activeProcesses,
   getProjectDataDir,
   ensureDocsAgents,
-  ensureIntakeAgents,
+  retireIntakeAgents,
   ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,
