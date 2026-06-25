@@ -47,7 +47,13 @@
  * burn the budget faster than its actual processing time.
  */
 import { v4 as uuidv4 } from 'uuid';
-import type { BroadcastFn, MessageRow, ReviewerThreadRow, Stmts } from '../types.js';
+import type {
+  BroadcastFn,
+  FinalizeRunPhase,
+  MessageRow,
+  ReviewerThreadRow,
+  Stmts,
+} from '../types.js';
 import { formatThreadsForDispatchBody } from './reviewer-dispatch.js';
 import {
   looksLikeRunnerTeardownForHint,
@@ -295,8 +301,11 @@ export interface FixDispatchOptions {
  *
  * Side effects (in order):
  *
- *   1. `finalize_runs.phase = 'dispatching'`, `status = 'dispatching'`
- *      via `updateFinalizeRunPhase` + broadcast.
+ *   1. `finalize_runs.phase = <originating phase>` (`'tasks'` for a
+ *      checks-failure fix, `'review'` for a reviewer fix), `status =
+ *      'dispatching'` via `updateFinalizeRunPhase` + broadcast. The phase is
+ *      preserved (not clobbered to `'dispatching'`) so a cold fetch / reconnect
+ *      mid-fix can still tell which kind of fix is in flight.
  *   2. `finalize_runs.active_seconds_consumed += DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS`
  *      (skippable via {@link FixDispatchOptions.skipActiveSecondsCharge}).
  *   3. Insert the composed §7 message into the session via
@@ -334,13 +343,29 @@ export async function dispatchFixMessage(
   // Phase + status flip. We write BEFORE the message insert so a UI
   // subscriber that joins between the broadcast and the insert sees
   // the dispatching state at minimum.
+  //
+  // PRESERVE the originating phase — `'tasks'` for a checks-failure fix,
+  // `'review'` for a reviewer-requested-changes fix — instead of clobbering
+  // it to `'dispatching'`. The `status` column already carries the
+  // awaiting-fix state (`status === 'dispatching'`); the `phase` column must
+  // stay the phase being fixed so a cold mount / WebSocket reconnect DURING
+  // the fix window can reconstruct WHICH kind of fix is in flight. The client
+  // derives `awaitingChecksFix` (what keeps the live checks block on screen)
+  // from `status === 'dispatching' && phase === 'tasks'`; once `phase` was
+  // overwritten with `'dispatching'`, that became underivable from any
+  // fetch-based recovery — so the live checks block silently vanished for the
+  // entire fix loop on every FAILED checks round, reappearing only as the
+  // persisted round message after the round completed ("tests only show after
+  // they finish, and only when there's a failure"). Mirrors `rebase.ts`,
+  // which already keeps `phase === 'rebase'` on its conflict-fix dispatch.
+  const originPhase: FinalizeRunPhase = opts.trigger.failedStep?.phase ?? 'review';
   try {
-    stmts.updateFinalizeRunPhase.run('dispatching', 'dispatching', opts.runId);
+    stmts.updateFinalizeRunPhase.run(originPhase, 'dispatching', opts.runId);
     broadcast({
       type: 'finalize_run_phase_changed',
       run_id: opts.runId,
       session_id: opts.sessionId,
-      phase: 'dispatching',
+      phase: originPhase,
       status: 'dispatching',
     });
   } catch (err) {

@@ -83,6 +83,37 @@ describe('useFinalizeRun — initial load', () => {
     expect(ref.current?.isPaused).toBe(false);
   });
 
+  it('derives awaitingChecksFix=true from a COLD fetch landing on dispatching+tasks', async () => {
+    // Regression for the failure-only "checks block shows nothing until the
+    // round completes" report. When a checks round fails and a fix is
+    // dispatched, the server now keeps phase='tasks' (status='dispatching')
+    // instead of clobbering phase to 'dispatching'. That is what lets a fresh
+    // mount / reconnect refetch — with NO prior live step events observed —
+    // re-derive awaitingChecksFix and keep the live checks block on screen.
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValue({
+      run: fakeRun({ status: 'dispatching', phase: 'tasks' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.status).toBe('dispatching'));
+    expect(ref.current?.phase).toBe('tasks');
+    expect(ref.current?.awaitingChecksFix).toBe(true);
+    expect(ref.current?.isActive).toBe(true);
+  });
+
+  it('keeps awaitingChecksFix=false for a COLD fetch landing on dispatching+review', async () => {
+    // A reviewer-requested-changes fix keeps phase='review'; the live CHECKS
+    // block must stay hidden (the reviewer panel owns that surface).
+    (api.getLatestFinalizeRunForSession as any).mockResolvedValue({
+      run: fakeRun({ status: 'dispatching', phase: 'review' }),
+    });
+    const ref: { current: any } = { current: null };
+    render(<HookProbe args={{ sessionId: 's1' }} capture={ref} />);
+    await waitFor(() => expect(ref.current?.status).toBe('dispatching'));
+    expect(ref.current?.phase).toBe('review');
+    expect(ref.current?.awaitingChecksFix).toBe(false);
+  });
+
   it('skips the round-trip when initialRun matches the session', async () => {
     const ref: { current: any } = { current: null };
     render(

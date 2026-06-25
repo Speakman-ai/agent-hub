@@ -347,14 +347,18 @@ function writeStallTerminal(
   const { stmts, broadcast } = deps;
   stmts.failFinalizeRun.run('stalled_no_response', 'stalled_no_response', opts.runId);
   // Emit a phase-terminal broadcast so the checks panel + card status
-  // chip clear their spinners. We do NOT flip `phase` here — the row
-  // remains in `'dispatching'` phase by intent, since the dispatch is
-  // what got abandoned. The phase + terminal status together render as
-  // "Stalled while waiting on a fix" in the UI.
+  // chip clear their spinners. We do NOT write `phase` to the DB here — the
+  // row keeps the originating fix phase (`'tasks'` / `'review'`, set by
+  // `dispatchFixMessage`). The broadcast carries `phase: null`, matching the
+  // terminal-broadcast convention used by `orchestrator.terminate()` /
+  // `cancelTerminal()`; the terminal `status` drives the "Stalled" label
+  // (`describeRunPhase` is status-driven), and any client refetch reads the
+  // true persisted phase. (Previously this hardcoded `phase: 'dispatching'`,
+  // which no longer matches the row now that the fix phase is preserved.)
   broadcast({
     type: 'finalize_run_phase_changed',
     run_id: opts.runId,
-    phase: 'dispatching',
+    phase: null,
     status: 'stalled_no_response',
     failure_reason: 'stalled_no_response',
   });

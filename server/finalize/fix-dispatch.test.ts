@@ -482,11 +482,11 @@ describe('dispatchFixMessage — turn-end resolves the dispatch', () => {
 
     // The composer + insert happens synchronously before the await
     // takes hold; assert the side effects landed.
-    expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith(
-      'dispatching',
-      'dispatching',
-      'run-1',
-    );
+    // The originating phase is PRESERVED (a checks-failure fix keeps
+    // `phase='tasks'`); only `status` flips to `'dispatching'`. This is what
+    // lets a cold fetch / reconnect mid-fix re-derive `awaitingChecksFix` and
+    // keep the live checks block on screen during a failed round.
+    expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith('tasks', 'dispatching', 'run-1');
     expect(stmts.updateFinalizeRunActiveSeconds.run).toHaveBeenCalledWith(
       DISPATCH_PHASE_ENTRY_ACTIVE_SECONDS,
       'run-1',
@@ -518,6 +518,77 @@ describe('dispatchFixMessage — turn-end resolves the dispatch', () => {
 
     // Cleanup: subscriber is removed.
     expect(turnEnd.subscribers('sess-1')).toBe(0);
+  });
+
+  it('preserves the originating phase on the row + broadcast (checks fix → tasks, reviewer fix → review)', async () => {
+    // Regression: dispatchFixMessage used to clobber `phase` to 'dispatching',
+    // which made `awaitingChecksFix` (status==='dispatching' && phase==='tasks')
+    // underivable from a cold fetch / reconnect — the live checks block then
+    // silently vanished for the whole fix loop on every FAILED round, showing
+    // only after the round completed and only on failure.
+
+    // Checks-failure fix: `phase` must stay 'tasks'.
+    {
+      const { deps, stmts, broadcast, turnEnd } = makeDeps();
+      const promise = dispatchFixMessage(
+        deps,
+        baseOpts({
+          trigger: {
+            failedStep: { phase: 'tasks', name: 'Test', exitCode: 1, outputTail: ['boom'] },
+          },
+        }),
+      );
+      expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith(
+        'tasks',
+        'dispatching',
+        'run-1',
+      );
+      const phaseEvent = broadcast.mock.calls
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((e) => e.type === 'finalize_run_phase_changed');
+      expect(phaseEvent).toMatchObject({ phase: 'tasks', status: 'dispatching' });
+      turnEnd.fireFor('sess-1');
+      await promise;
+    }
+
+    // Reviewer-only fix (no failed step): `phase` must be 'review', so the
+    // live CHECKS block stays hidden (awaitingChecksFix === false) — the
+    // reviewer panel owns that surface.
+    {
+      const { deps, stmts, broadcast, turnEnd } = makeDeps();
+      const promise = dispatchFixMessage(
+        deps,
+        baseOpts({
+          trigger: {
+            failedStep: null,
+            reviewerVerdict: 'changes_requested',
+            reviewerThreads: [
+              {
+                id: 't1',
+                run_id: 'run-1',
+                file_path: 'server/a.ts',
+                line_start: 1,
+                line_end: 1,
+                body: '**[6/10]** please fix',
+                author: 'reviewer-agent',
+                created_at: 1,
+              },
+            ] satisfies ReviewerThreadRow[],
+          },
+        }),
+      );
+      expect(stmts.updateFinalizeRunPhase.run).toHaveBeenCalledWith(
+        'review',
+        'dispatching',
+        'run-1',
+      );
+      const phaseEvent = broadcast.mock.calls
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((e) => e.type === 'finalize_run_phase_changed');
+      expect(phaseEvent).toMatchObject({ phase: 'review', status: 'dispatching' });
+      turnEnd.fireFor('sess-1');
+      await promise;
+    }
   });
 
   it('invokes spawnFixTurn after inserting the system message', async () => {

@@ -188,9 +188,12 @@ describe('armStallWatchdog — live mode arms both timers', () => {
     const phaseEvent = broadcast.mock.calls
       .map((c) => c[0] as Record<string, unknown>)
       .find((e) => e.type === 'finalize_run_phase_changed');
+    // Terminal broadcast carries `phase: null` (the terminal-broadcast
+    // convention shared with terminate()/cancelTerminal()); the DB row keeps
+    // the originating fix phase, which a client refetch reads back.
     expect(phaseEvent).toMatchObject({
       run_id: 'run-1',
-      phase: 'dispatching',
+      phase: null,
       status: 'stalled_no_response',
       failure_reason: 'stalled_no_response',
     });
