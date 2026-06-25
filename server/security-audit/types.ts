@@ -23,11 +23,16 @@
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'unknown';
 
 /**
- * Package ecosystems the audit can scan. Only `npm` is implemented today;
- * the union is the single place new ecosystems are added so the type
- * system flags every switch that needs a new arm.
+ * Package ecosystems the audit can scan. `npm` and `pip` (PyPI) are
+ * implemented today; the union is the single place new ecosystems are added
+ * so the type system flags every switch that needs a new arm.
+ *
+ * `pip` covers the whole Python ecosystem the way Dependabot does — a
+ * `requirements.txt`, `poetry.lock`, or `Pipfile.lock` all resolve to PyPI
+ * packages and query OSV's `PyPI` ecosystem. Automated fix write-back is
+ * npm-only for now; `pip` findings are detection-only (the fix route 409s).
  */
-export type Ecosystem = 'npm';
+export type Ecosystem = 'npm' | 'pip';
 
 /** A single dependency resolved to an exact version from a lockfile. */
 export interface ResolvedDependency {

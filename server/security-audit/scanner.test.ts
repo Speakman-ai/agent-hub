@@ -175,6 +175,58 @@ describe('scanResolvedDependencies', () => {
     expect(result.findings.every((f) => f.advisory.id === 'GHSA-lodash')).toBe(true);
   });
 
+  it('discovers Python lockfiles (requirements.txt + poetry.lock) and surfaces pip findings', async () => {
+    const reader = fakeReader({
+      'requirements.txt': 'Django==3.2.0\nrequests==2.25.1\n',
+      'svc/poetry.lock': '[[package]]\nname = "Jinja2"\nversion = "2.11.3"\n',
+      'package-lock.json': npmLock({ lodash: '4.17.20' }),
+    });
+    // Flag django (pip) and lodash (npm) as vulnerable to prove the scanner
+    // routes BOTH ecosystems through one advisory source.
+    const source = new CapturingSource((deps) =>
+      deps
+        .filter((d) => d.name === 'django' || d.name === 'lodash')
+        .map((d) => ({
+          dependency: d,
+          advisory: {
+            id: d.name === 'django' ? 'PYSEC-2021-1' : 'GHSA-lodash',
+            summary: 'vuln',
+            severity: 'high' as const,
+            aliases: [],
+            fixedVersion: null,
+            url: '',
+          },
+        })),
+    );
+    const result = await scanResolvedDependencies({ reader, ref: 'main', advisorySource: source });
+
+    // All three lockfiles parsed → all three in the fixed-sweep scope.
+    expect(result.scannedManifests.sort()).toEqual([
+      'package-lock.json',
+      'requirements.txt',
+      'svc/poetry.lock',
+    ]);
+    // pip deps carry the pip ecosystem with PEP 503-normalized names.
+    expect(source.seen.map((d) => `${d.ecosystem}:${d.name}@${d.version}`).sort()).toEqual([
+      'npm:lodash@4.17.20',
+      'pip:django@3.2.0',
+      'pip:jinja2@2.11.3',
+      'pip:requests@2.25.1',
+    ]);
+    expect(result.findings.map((f) => `${f.dependency.ecosystem}:${f.advisory.id}`).sort()).toEqual(
+      ['npm:GHSA-lodash', 'pip:PYSEC-2021-1'],
+    );
+  });
+
+  it('records a corrupt poetry.lock (no [[package]] blocks) as failed, preserving findings', async () => {
+    const reader = fakeReader({ 'poetry.lock': '# truncated, no packages\n' });
+    const source = new CapturingSource(() => []);
+    const result = await scanResolvedDependencies({ reader, ref: 'main', advisorySource: source });
+    expect(result.scannedManifests).toEqual([]);
+    expect(result.failedManifests).toEqual(['poetry.lock']);
+    expect(result.presentManifests).toEqual(['poetry.lock']);
+  });
+
   it('propagates a listFiles failure instead of treating it as a clean (empty) repo', async () => {
     // A git read failure must abort the scan — never resolve to zero findings,
     // which would make the store mark every open finding as fixed.

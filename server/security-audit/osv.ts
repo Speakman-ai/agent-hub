@@ -109,6 +109,10 @@ function osvEcosystem(ecosystem: ResolvedDependency['ecosystem']): string {
   switch (ecosystem) {
     case 'npm':
       return 'npm';
+    case 'pip':
+      // OSV keys the Python ecosystem as `PyPI`. Package names are normalised
+      // to PEP 503 form by the pip parser so they match OSV's records.
+      return 'PyPI';
     default:
       return ecosystem;
   }

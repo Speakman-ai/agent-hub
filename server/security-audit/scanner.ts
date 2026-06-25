@@ -22,6 +22,7 @@ import type {
   ResolvedDependency,
 } from './types.js';
 import { npmLockfileParser } from './npm-lockfile.js';
+import { pipLockfileParsers } from './pip-lockfile.js';
 import { severityRank } from './severity.js';
 
 /** Reads a repo's tracked file list and file contents at a git ref. */
@@ -32,8 +33,16 @@ export interface RepoFileReader {
   readFile(ref: string, filePath: string): Promise<string | null>;
 }
 
-/** All lockfile parsers the scanner knows about. npm is the only one today. */
-export const DEFAULT_PARSERS: readonly LockfileParser[] = [npmLockfileParser];
+/**
+ * All lockfile parsers the scanner knows about. npm (`package-lock.json`,
+ * `npm-shrinkwrap.json`) plus Python/PyPI (`requirements.txt`, `poetry.lock`,
+ * `Pipfile.lock`). Each new ecosystem is a parser registration here — the
+ * scanner, OSV query layer, store, and findings UI are all ecosystem-generic.
+ */
+export const DEFAULT_PARSERS: readonly LockfileParser[] = [
+  npmLockfileParser,
+  ...pipLockfileParsers,
+];
 
 /** Cap on lockfiles scanned per repo — guards against pathological trees. */
 const MAX_LOCKFILES = 100;

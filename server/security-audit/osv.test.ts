@@ -217,6 +217,47 @@ describe('OsvAdvisorySource.query', () => {
     expect(hydrateCalls.filter((c) => c.endsWith('GHSA-a'))).toHaveLength(1);
   });
 
+  it('queries the OSV PyPI ecosystem for pip dependencies and surfaces the finding', async () => {
+    // Capture the querybatch body so we can assert the ecosystem mapping
+    // (pip → OSV's `PyPI`) without which Python advisories would never match.
+    let sentEcosystem: string | undefined;
+    const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith('/v1/querybatch')) {
+        const body = JSON.parse(String(init?.body)) as {
+          queries: { package: { ecosystem: string; name: string }; version: string }[];
+        };
+        sentEcosystem = body.queries[0]?.package.ecosystem;
+        return new Response(JSON.stringify({ results: [{ vulns: [{ id: 'PYSEC-2021-1' }] }] }), {
+          status: 200,
+        });
+      }
+      if (u.includes('/v1/vulns/')) {
+        return new Response(
+          JSON.stringify({
+            id: 'PYSEC-2021-1',
+            summary: 'Django SQL injection',
+            aliases: ['CVE-2021-35042'],
+            database_specific: { severity: 'HIGH' },
+            affected: [{ package: { ecosystem: 'PyPI', name: 'django' } }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response('unexpected', { status: 500 });
+    });
+    const source = new OsvAdvisorySource({ fetchFn: fetchFn as unknown as typeof fetch });
+    const findings = await source.query([
+      { ecosystem: 'pip', name: 'django', version: '3.2.0', manifestPath: 'requirements.txt' },
+    ]);
+
+    expect(sentEcosystem).toBe('PyPI');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].advisory.id).toBe('PYSEC-2021-1');
+    expect(findings[0].advisory.severity).toBe('high');
+    expect(findings[0].dependency).toMatchObject({ ecosystem: 'pip', name: 'django' });
+  });
+
   // The follow-up request carries the DOCUMENTED snake_case `page_token`; the
   // fake here ONLY honors that field (reads `page_token`, ignores any other
   // spelling) so the test fails if we send the wrong key. Responses are read
