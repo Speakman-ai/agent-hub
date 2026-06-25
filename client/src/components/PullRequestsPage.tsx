@@ -1371,6 +1371,7 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
     };
   }, [projectId]);
 
+  const branchesLoaded = branchData !== null;
   const defaultBranch = branchData?.defaultBranch || 'main';
   const rawCandidates = useMemo(
     () =>
@@ -1496,8 +1497,11 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
           ))}
         </select>
         <span className="text-gray-500">→</span>
-        <code className="text-xs bg-gray-800/60 px-1.5 py-0.5 rounded text-gray-300">
-          {defaultBranch}
+        <code
+          className="text-xs bg-gray-800/60 px-1.5 py-0.5 rounded text-gray-300"
+          data-testid="new-pr-base-branch"
+        >
+          {branchesLoaded ? defaultBranch : '…'}
         </code>
       </div>
       {branchData !== null && candidateScanDone && candidates.length === 0 && (

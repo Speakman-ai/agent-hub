@@ -642,6 +642,41 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
     ).toEqual(['', 'feature/unknown']);
     expect(screen.getByText(/could not be prechecked/i)).toBeInTheDocument();
   });
+
+  it('shows the repo default branch as the PR base, not a hardcoded "main"', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [] });
+    (api.getGitHostRecentPushes as any).mockResolvedValue({ pushes: [] });
+    let resolveBranches: (value: any) => void = () => {};
+    (api.getGitHostBranches as any).mockReturnValue(
+      new Promise((resolve) => {
+        resolveBranches = resolve;
+      }),
+    );
+    (api.getNativePrBranchChanges as any).mockResolvedValue({
+      headBranch: 'feature/x',
+      baseBranch: 'master',
+      stats: { changedFiles: 1, additions: 1, deletions: 0 },
+      files: [{ filename: 'a.txt', status: 'added', additions: 1, deletions: 0 }],
+      truncated: false,
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button' as any));
+    const base = await screen.findByTestId('new-pr-base-branch');
+    // While branches are still loading we must not claim any concrete branch.
+    expect(base.textContent).not.toMatch(/main|master/);
+    expect(base).toHaveTextContent('…');
+
+    resolveBranches({
+      defaultBranch: 'master',
+      branches: [{ name: 'master' }, { name: 'feature/x' }],
+    });
+
+    await waitFor(() => expect(base).toHaveTextContent('master'));
+    expect(base.textContent).not.toMatch(/main/);
+  });
 });
 
 describe('<PullRequestsPage /> — PR description markdown', () => {
