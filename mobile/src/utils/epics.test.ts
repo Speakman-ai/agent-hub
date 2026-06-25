@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, } from './epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, } from './epics';
 describe('EPIC_COLORS', () => {
     it('matches the web palette', () => {
         expect(EPIC_COLORS).toEqual([
@@ -55,13 +55,15 @@ describe('epicFormFromRow', () => {
             autonomous_interval: 10,
             autonomous_max_concurrent: 4,
             autonomous_model: '',
-            autonomous_send_it: 0,
+            autonomous_send_it: 1,
             pr_base_branch: '',
         });
     });
     it('maps autonomous_send_it from the server row', () => {
         expect(epicFormFromRow({ name: 'x', autonomous_send_it: 1 }).autonomous_send_it).toBe(1);
-        expect(epicFormFromRow({ name: 'x' }).autonomous_send_it).toBe(0);
+        expect(epicFormFromRow({ name: 'x', autonomous_send_it: 0 }).autonomous_send_it).toBe(0);
+        expect(epicFormFromRow({ name: 'x', autonomous_send_it: null }).autonomous_send_it).toBe(1);
+        expect(epicFormFromRow({ name: 'x' }).autonomous_send_it).toBe(1);
     });
     it('coerces truthy autonomous to 1', () => {
         expect(epicFormFromRow({ name: 'x', autonomous: true }).autonomous).toBe(1);
@@ -232,5 +234,37 @@ describe('epicDropdownLabel', () => {
     });
     it('returns empty for nullish epic', () => {
         expect(epicDropdownLabel(null)).toBe('');
+    });
+});
+describe('phaseFormToUpdateBody', () => {
+    it('preserves a selected model even when auto-dispatch is off', () => {
+        expect(phaseFormToUpdateBody({
+            name: 'Build',
+            autonomous: 0,
+            autonomous_model: '  gpt-5.5  ',
+        }).autonomousModel).toBe('gpt-5.5');
+    });
+});
+describe('autonomous model helpers', () => {
+    const modelConfig = {
+        defaultModel: 'gpt-5.5',
+        engineDefaultModels: {
+            'claude-code': 'claude-opus-4-8',
+            'codex-cli': 'gpt-5.5',
+        },
+        engineValidModels: {
+            'claude-code': ['claude-opus-4-8'],
+            'codex-cli': ['gpt-5.5', 'gpt-5.4'],
+        },
+    };
+    it('flattens authenticated model options across engines', () => {
+        expect(autonomousModelOptions(modelConfig)).toEqual([
+            'claude-opus-4-8',
+            'gpt-5.5',
+            'gpt-5.4',
+        ]);
+    });
+    it('uses the configured default model when it is available', () => {
+        expect(defaultAutonomousModel(modelConfig)).toBe('gpt-5.5');
     });
 });

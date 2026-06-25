@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, MessagesSquare, Trash2, Zap } from 'lucide-react';
 import { api } from '../utils/api';
-import { epicFormToCreateBody, epicFormToUpdateBody, phaseFormToUpdateBody } from '../utils/epics';
+import {
+  defaultAutonomousModel,
+  epicFormToCreateBody,
+  epicFormToUpdateBody,
+  phaseFormToUpdateBody,
+} from '../utils/epics';
 import EpicDetailsPanel, { EMPTY_EPIC_FORM } from './EpicDetailsPanel';
 import EpicAutonomousPanel, {
   EMPTY_AUTONOMOUS_FORM,
@@ -112,6 +117,17 @@ export default function EpicView({
     fetchBoard();
   }, [fetchBoard, projectId]);
 
+  const epicRowId = epic?.id;
+  const epicRowName = epic?.name;
+  const epicRowDescription = epic?.description;
+  const epicRowColor = epic?.color;
+  const epicRowAutonomous = epic?.autonomous;
+  const epicRowAutonomousInterval = epic?.autonomous_interval;
+  const epicRowAutonomousMaxConcurrent = epic?.autonomous_max_concurrent;
+  const epicRowAutonomousModel = epic?.autonomous_model;
+  const epicRowAutonomousSendIt = epic?.autonomous_send_it;
+  const epicRowPrBaseBranch = epic?.pr_base_branch;
+
   const isFirstRefresh = useRef(true);
   useEffect(() => {
     if (isFirstRefresh.current) {
@@ -123,18 +139,36 @@ export default function EpicView({
   }, [refreshKey, projectId, fetchBoard]);
 
   useEffect(() => {
-    if (!epic) {
+    if (!epicRowId) {
       setDetailsForm({ ...EMPTY_EPIC_FORM });
       setAutonomousForm({ ...EMPTY_AUTONOMOUS_FORM });
       return;
     }
     setDetailsForm({
-      name: epic.name,
-      description: epic.description || '',
-      color: epic.color || EMPTY_EPIC_FORM.color,
+      name: epicRowName,
+      description: epicRowDescription || '',
+      color: epicRowColor || EMPTY_EPIC_FORM.color,
     });
-    setAutonomousForm(epicToAutonomousForm(epic));
-  }, [epic?.id, epic?.name, epic?.description, epic?.color, epic?.autonomous]);
+    setAutonomousForm({
+      autonomous: epicRowAutonomous || 0,
+      autonomous_interval: epicRowAutonomousInterval || 5,
+      autonomous_max_concurrent: epicRowAutonomousMaxConcurrent || 1,
+      autonomous_model: epicRowAutonomousModel || '',
+      autonomous_send_it: epicRowAutonomousSendIt === 0 ? 0 : 1,
+      pr_base_branch: epicRowPrBaseBranch || '',
+    });
+  }, [
+    epicRowId,
+    epicRowName,
+    epicRowDescription,
+    epicRowColor,
+    epicRowAutonomous,
+    epicRowAutonomousInterval,
+    epicRowAutonomousMaxConcurrent,
+    epicRowAutonomousModel,
+    epicRowAutonomousSendIt,
+    epicRowPrBaseBranch,
+  ]);
 
   const defaultColumnId = useMemo(() => {
     const backlog = columns.find((c: any) => c.name.toLowerCase() === 'backlog');
@@ -253,7 +287,12 @@ export default function EpicView({
     if (!epicId || !name.trim() || creatingPhase) return;
     setCreatingPhase(true);
     try {
-      await api.createPhase(projectId, { epicId, name: name.trim() });
+      const autonomousModel = defaultAutonomousModel(modelConfig);
+      await api.createPhase(projectId, {
+        epicId,
+        name: name.trim(),
+        ...(autonomousModel ? { autonomousModel } : {}),
+      });
       await fetchBoard();
     } catch (err: any) {
       console.error('Failed to create phase:', err);
@@ -621,6 +660,7 @@ export default function EpicView({
                 specItems={specItems}
                 projectName={project?.name}
                 phaseForms={phaseForms}
+                modelConfig={modelConfig}
                 onPhaseFormChange={handlePhaseFormChange}
                 onSavePhase={handleSavePhaseAutonomous}
                 phaseSavingId={phaseSavingId}

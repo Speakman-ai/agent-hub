@@ -4,6 +4,8 @@ import {
   epicFormToCreateBody,
   epicsWithActiveCards,
   phaseFormToUpdateBody,
+  autonomousModelOptions,
+  defaultAutonomousModel,
   DEFAULT_EPIC_COLOR,
 } from './epics';
 
@@ -162,6 +164,43 @@ describe('phaseFormToUpdateBody', () => {
       autonomousModel: null,
       autonomousSendIt: 0,
     });
+  });
+
+  it('preserves a selected model even when auto-dispatch is off', () => {
+    const body = phaseFormToUpdateBody({
+      name: 'Build',
+      autonomous: 0,
+      autonomous_model: '  gpt-5.5  ',
+    });
+    expect(body.autonomousModel).toBe('gpt-5.5');
+  });
+});
+
+describe('autonomous model helpers', () => {
+  const modelConfig = {
+    defaultModel: 'gpt-5.5',
+    engineDefaultModels: {
+      'claude-code': 'claude-opus-4-8',
+      'codex-cli': 'gpt-5.5',
+    },
+    engineValidModels: {
+      'claude-code': ['claude-opus-4-8'],
+      'codex-cli': ['gpt-5.5', 'gpt-5.4'],
+    },
+  };
+
+  it('flattens authenticated model options across engines', () => {
+    expect(autonomousModelOptions(modelConfig)).toEqual(['claude-opus-4-8', 'gpt-5.5', 'gpt-5.4']);
+  });
+
+  it('uses the configured default model when it is available', () => {
+    expect(defaultAutonomousModel(modelConfig)).toBe('gpt-5.5');
+  });
+
+  it('falls back to the first valid engine default when defaultModel is unavailable', () => {
+    expect(defaultAutonomousModel({ ...modelConfig, defaultModel: 'missing-model' })).toBe(
+      'claude-opus-4-8',
+    );
   });
 });
 

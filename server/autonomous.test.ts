@@ -1240,6 +1240,55 @@ describe('runAutonomousLoop — dispatch', () => {
     );
   });
 
+  it('spawns under the model-owning engine when phase autonomous_model is from a different engine', async () => {
+    const card = makeCard({ phase_id: 'phase-1' } as Partial<KanbanCardRow>);
+    const phaseWithModel = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous: 1,
+      autonomous_running: 1,
+      autonomous_interval: 60,
+      autonomous_max_concurrent: 2,
+      autonomous_model: 'gpt-5.5',
+      autonomous_send_it: 1,
+      description: null,
+      autonomous_enabled_by: 'operator-1',
+      position: 0,
+    } as unknown as KanbanPhaseRow;
+    const stmts = makeStmts({
+      getKanbanPhase: { get: vi.fn(() => phaseWithModel) },
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByPhase: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    deps.getConfig.mockReturnValue({
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-8'],
+        'codex-cli': ['gpt-5.5'],
+      },
+    } as never);
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    expect(stmts.createSession.run).toHaveBeenCalledWith(
+      expect.any(String),
+      'dev-1',
+      'Build feature',
+      'codex-cli',
+      'gpt-5.5',
+      1,
+      0,
+      1,
+    );
+  });
+
   it('still falls back to agent default when the model is in no configured engine allowlist', async () => {
     const card = makeCard();
     const epicWithModel = {

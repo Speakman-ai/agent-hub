@@ -107,6 +107,20 @@ function parseBody<T extends z.ZodTypeAny>(
   return result.data;
 }
 
+function defaultPhaseAutonomousModel(
+  cfg: Pick<RouteDeps['config'], 'defaultModel' | 'engineValidModels'>,
+): string | null {
+  const defaultModel =
+    typeof cfg.defaultModel === 'string' && cfg.defaultModel.trim()
+      ? cfg.defaultModel.trim()
+      : null;
+  if (!defaultModel) return null;
+  for (const models of Object.values(cfg.engineValidModels || {})) {
+    if (Array.isArray(models) && models.includes(defaultModel)) return defaultModel;
+  }
+  return null;
+}
+
 interface BoardData {
   board: KanbanBoardRow;
   columns: KanbanColumnRow[];
@@ -1537,7 +1551,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
     const parsed = parseBody(CreatePhaseRequestSchema, req, res);
     if (!parsed) return;
-    const { epicId, name, description } = parsed;
+    const { epicId, name, description, autonomousModel } = parsed;
     const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
     if (!epic || epic.board_id !== board.id) {
       return res.status(404).json({ error: 'Epic not found' });
@@ -1546,6 +1560,26 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const maxPos = existing.length > 0 ? Math.max(...existing.map((p) => p.position)) + 1 : 0;
     const id = uuidv4();
     stmts.createKanbanPhase.run(id, epicId, board.id, name, description || null, maxPos);
+    const defaultPhaseModel = defaultPhaseAutonomousModel(config);
+    const nextAutonomousModel =
+      autonomousModel !== undefined
+        ? autonomousModel && String(autonomousModel).trim()
+          ? String(autonomousModel).trim()
+          : null
+        : defaultPhaseModel;
+    if (autonomousModel !== undefined || nextAutonomousModel) {
+      const created = stmts.getKanbanPhase.get(id) as KanbanPhaseRow;
+      stmts.updateKanbanPhase.run(
+        created.name,
+        created.description,
+        created.autonomous,
+        created.autonomous_interval,
+        created.autonomous_max_concurrent,
+        nextAutonomousModel,
+        created.autonomous_send_it ?? 1,
+        id,
+      );
+    }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json(stmts.getKanbanPhase.get(id));
   });

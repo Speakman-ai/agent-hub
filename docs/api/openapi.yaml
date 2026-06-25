@@ -11723,6 +11723,10 @@ paths:
                 description:
                   type: string
                   nullable: true
+                autonomousModel:
+                  type: string
+                  nullable: true
+                  description: Optional phase autonomous model. Omit to seed from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.
               required:
                 - epicId
                 - name

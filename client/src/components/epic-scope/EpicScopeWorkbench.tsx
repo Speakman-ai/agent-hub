@@ -64,6 +64,7 @@ export default function EpicScopeWorkbench({
   onDecideForMe,
   specSavingId,
   onOpenCard,
+  modelConfig,
   variant = 'page',
   defaultTab = 'flowchart',
   showManageTab = true,
@@ -96,6 +97,7 @@ export default function EpicScopeWorkbench({
       onStopPhase={onStopPhase}
       phaseStoppingId={phaseStoppingId}
       onOpenCard={onOpenCard}
+      modelConfig={modelConfig}
     />
   );
 

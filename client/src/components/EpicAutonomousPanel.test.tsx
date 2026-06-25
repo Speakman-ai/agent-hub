@@ -3,6 +3,12 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import EpicAutonomousPanel, { epicToAutonomousForm } from './EpicAutonomousPanel';
 
 describe('EpicAutonomousPanel', () => {
+  it('defaults missing Auto Merge state to enabled while preserving explicit opt-out', () => {
+    expect(epicToAutonomousForm({ id: 'e1' }).autonomous_send_it).toBe(1);
+    expect(epicToAutonomousForm({ id: 'e1', autonomous_send_it: null }).autonomous_send_it).toBe(1);
+    expect(epicToAutonomousForm({ id: 'e1', autonomous_send_it: 0 }).autonomous_send_it).toBe(0);
+  });
+
   it('edits PR base branch and toggles autonomous', () => {
     const onChange = vi.fn();
 

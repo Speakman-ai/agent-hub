@@ -228,4 +228,48 @@ describe('EpicView', () => {
       }),
     );
   });
+
+  it('saves an existing epic with missing Auto Merge state as enabled by default', async () => {
+    const boardWithUnsetAutoMerge = {
+      ...board,
+      epics: [
+        {
+          id: 'e1',
+          name: 'Platform',
+          color: '#6366F1',
+          description: 'Core work',
+          autonomous: 1,
+          autonomous_interval: 5,
+          autonomous_max_concurrent: 1,
+          autonomous_model: '',
+          autonomous_send_it: null,
+        },
+      ],
+    };
+    (api.updateEpic as any).mockResolvedValue({ id: 'e1' });
+    (api.getBoard as any).mockResolvedValue(boardWithUnsetAutoMerge);
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByText('Settings'));
+    fireEvent.click(await screen.findByTestId('autonomous-save-button' as any));
+
+    await waitFor(() =>
+      expect(api.updateEpic).toHaveBeenCalledWith(
+        'p1',
+        'e1',
+        expect.objectContaining({ autonomousSendIt: 1 }),
+      ),
+    );
+  });
 });

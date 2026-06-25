@@ -10,6 +10,7 @@ import {
   ticketHasBlockers,
   ticketsForPhase,
 } from '../../utils/epicScopeStats';
+import { autonomousModelOptions } from '../../utils/epics';
 import { AddPhaseForm, AddTicketForm } from './ScopeForms';
 
 function Toggle({ checked, onChange, label }: any) {
@@ -49,6 +50,7 @@ function PhaseColumn({
   onOpenCard,
   running,
   stopping,
+  modelConfig,
 }: any) {
   const colMap = columnNameById(columns);
   const phaseTickets = ticketsForPhase(tickets, phase.id);
@@ -57,6 +59,8 @@ function PhaseColumn({
   const autonomous = !!phaseForm?.autonomous;
   const autoMerge = phaseForm?.autonomous_send_it === 1;
   const maxConcurrent = phaseForm?.autonomous_max_concurrent ?? 1;
+  const selectedModel = phaseForm?.autonomous_model ?? '';
+  const modelOptions = autonomousModelOptions(modelConfig);
   const addingTicket = addingTicketPhaseId === phase.id;
   const [showTicketForm, setShowTicketForm] = useState(false);
 
@@ -153,6 +157,41 @@ function PhaseColumn({
               Run phase
             </button>
           ) : null}
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor={`phase-model-${phase.id}`}
+            className="text-[10px] text-gray-500 uppercase tracking-wide"
+          >
+            Session model
+          </label>
+          <select
+            id={`phase-model-${phase.id}`}
+            value={selectedModel}
+            onChange={(e: any) => onPhaseFormChange?.({ autonomous_model: e.target.value })}
+            data-testid={`phase-model-${phase.id}`}
+            className="w-full rounded-md border border-white/[0.08] bg-[#10151d] px-2 py-1.5 text-[11px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+          >
+            <option value="">Each agent&apos;s default</option>
+            {selectedModel && !modelOptions.includes(selectedModel) ? (
+              <option value={selectedModel}>{selectedModel}</option>
+            ) : null}
+            {modelConfig?.engineValidModels
+              ? Object.entries(modelConfig.engineValidModels).map(([engine, models]: any) => (
+                  <optgroup key={engine} label={engine}>
+                    {(models || []).map((model: any) => (
+                      <option key={`${engine}:${model}`} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
+              : modelOptions.map((model: any) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+          </select>
         </div>
         {autonomous && (
           <div className="flex items-center justify-between gap-2">
@@ -315,6 +354,7 @@ export default function PhaseFlowchartView({
   onStopPhase,
   phaseStoppingId,
   onOpenCard,
+  modelConfig,
 }: any) {
   const [showEmptyPhaseForm, setShowEmptyPhaseForm] = useState(false);
   const [showTrailingPhaseForm, setShowTrailingPhaseForm] = useState(false);
@@ -377,6 +417,7 @@ export default function PhaseFlowchartView({
               onOpenCard={onOpenCard}
               running={!!phase.autonomous_running}
               stopping={phaseStoppingId === phase.id}
+              modelConfig={modelConfig}
             />
             {index < phases.length - 1 && (
               <div className="flex items-center px-1 self-center" aria-hidden>

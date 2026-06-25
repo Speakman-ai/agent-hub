@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { GitBranch, GripVertical } from 'lucide-react';
 import { api } from '../utils/api';
 import { epicToAutonomousForm } from './EpicAutonomousPanel';
-import { phaseFormToUpdateBody } from '../utils/epics';
+import { defaultAutonomousModel, phaseFormToUpdateBody } from '../utils/epics';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
 import { useResizablePaneWidth } from '../hooks/useResizablePaneWidth';
 import {
@@ -31,6 +31,7 @@ export default function SessionScopingModePane({
   const [specSavingId, setSpecSavingId] = useState<any>(null);
   const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
   const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
+  const [modelConfig, setModelConfig] = useState<any>(null);
 
   const { width, isResizing, handleProps } = useResizablePaneWidth({
     storageKey: `session-scoping-pane-width:${sessionId || 'none'}`,
@@ -56,6 +57,14 @@ export default function SessionScopingModePane({
   useEffect(() => {
     fetchBoard();
   }, [fetchBoard, reloadToken]);
+
+  useEffect(() => {
+    if (typeof api.getModelConfig !== 'function') return;
+    api
+      .getModelConfig()
+      .then(setModelConfig)
+      .catch(() => setModelConfig(null));
+  }, []);
 
   // Derive these from `board` with a stable reference per board snapshot.
   // Using inline `board?.x || []` would mint a fresh `[]` on every render
@@ -188,7 +197,12 @@ export default function SessionScopingModePane({
     if (!projectId || !linkedEpicId || creatingPhase) return;
     setCreatingPhase(true);
     try {
-      await api.createPhase(projectId, { epicId: linkedEpicId, name });
+      const autonomousModel = defaultAutonomousModel(modelConfig);
+      await api.createPhase(projectId, {
+        epicId: linkedEpicId,
+        name,
+        ...(autonomousModel ? { autonomousModel } : {}),
+      });
       await fetchBoard();
     } finally {
       setCreatingPhase(false);
@@ -304,6 +318,7 @@ export default function SessionScopingModePane({
             specItems={specItems}
             compact
             phaseForms={phaseForms}
+            modelConfig={modelConfig}
             onPhaseFormChange={handlePhaseFormChange}
             onSavePhase={handleSavePhase}
             phaseSavingId={phaseSavingId}

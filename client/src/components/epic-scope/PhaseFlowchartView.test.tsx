@@ -98,3 +98,58 @@ describe('PhaseFlowchartView Auto Merge toggle', () => {
     expect(onPhaseFormChange).toHaveBeenCalledWith('p1', { autonomous_send_it: 0 });
   });
 });
+
+describe('PhaseFlowchartView model selector', () => {
+  it('shows each phase model dropdown and emits autonomous_model changes', () => {
+    const onPhaseFormChange = vi.fn();
+    render(
+      <PhaseFlowchartView
+        phases={[{ id: 'p1', name: 'Phase One', position: 0 }]}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{
+          p1: {
+            autonomous: 1,
+            autonomous_send_it: 1,
+            autonomous_max_concurrent: 1,
+            autonomous_model: 'gpt-5.5',
+          },
+        }}
+        modelConfig={{
+          engineValidModels: {
+            'claude-code': ['claude-opus-4-8'],
+            'codex-cli': ['gpt-5.5', 'gpt-5.4'],
+          },
+        }}
+        onPhaseFormChange={onPhaseFormChange}
+      />,
+    );
+
+    const select = screen.getByTestId('phase-model-p1') as HTMLSelectElement;
+    expect(select.value).toBe('gpt-5.5');
+
+    fireEvent.change(select, { target: { value: 'gpt-5.4' } });
+    expect(onPhaseFormChange).toHaveBeenCalledWith('p1', { autonomous_model: 'gpt-5.4' });
+  });
+
+  it('keeps the phase model dropdown visible when auto-dispatch is off', () => {
+    const onPhaseFormChange = vi.fn();
+    render(
+      <PhaseFlowchartView
+        phases={[{ id: 'p1', name: 'Phase One', position: 0 }]}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{ p1: { autonomous: 0, autonomous_model: 'gpt-5.5' } }}
+        modelConfig={{ engineValidModels: { 'codex-cli': ['gpt-5.5', 'gpt-5.4'] } }}
+        onPhaseFormChange={onPhaseFormChange}
+      />,
+    );
+
+    const select = screen.getByTestId('phase-model-p1') as HTMLSelectElement;
+    expect(select.value).toBe('gpt-5.5');
+    expect(screen.queryByText('Tickets at once')).toBeNull();
+
+    fireEvent.change(select, { target: { value: 'gpt-5.4' } });
+    expect(onPhaseFormChange).toHaveBeenCalledWith('p1', { autonomous_model: 'gpt-5.4' });
+  });
+});

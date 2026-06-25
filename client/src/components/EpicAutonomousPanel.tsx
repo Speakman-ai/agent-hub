@@ -20,7 +20,7 @@ export function epicToAutonomousForm(epic: any) {
     autonomous_interval: epic.autonomous_interval || 5,
     autonomous_max_concurrent: epic.autonomous_max_concurrent || 1,
     autonomous_model: epic.autonomous_model || '',
-    autonomous_send_it: epic.autonomous_send_it || 0,
+    autonomous_send_it: epic.autonomous_send_it === 0 ? 0 : 1,
     pr_base_branch: epic.pr_base_branch || '',
   };
 }

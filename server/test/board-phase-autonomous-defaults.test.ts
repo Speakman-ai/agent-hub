@@ -1,4 +1,5 @@
 import type supertest from 'supertest';
+import config from '../config.js';
 import { getRequest, createProject } from './helpers.js';
 
 let request: supertest.Agent;
@@ -39,6 +40,65 @@ describe('Phase autonomous defaults', () => {
     // But not running — arming must never spontaneously start dispatch; that
     // only happens via Run phase or the auto-advance cascade.
     expect(phase.autonomous_running ?? 0).toBe(0);
+    expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBe(
+      config.defaultModel,
+    );
+  });
+
+  it('does not persist a stale default model when autonomousModel is omitted', async () => {
+    const originalDefaultModel = config.defaultModel;
+    const originalEngineValidModels = config.engineValidModels;
+    config.defaultModel = 'stale-default-model';
+    config.engineValidModels = { 'claude-code': ['claude-current-model'] };
+    try {
+      const epicId = await createEpic('Phase Stale Default Epic');
+      const res = await request
+        .post(`/api/projects/${projectId}/board/phases`)
+        .send({ epicId, name: 'Phase Stale Default', description: '' })
+        .expect(200);
+
+      expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBeNull();
+    } finally {
+      config.defaultModel = originalDefaultModel;
+      config.engineValidModels = originalEngineValidModels;
+    }
+  });
+
+  it('stores the supplied default autonomous model on phase creation', async () => {
+    const epicId = await createEpic('Phase Model Defaults Epic');
+    const res = await request
+      .post(`/api/projects/${projectId}/board/phases`)
+      .send({ epicId, name: 'Phase GPT', description: '', autonomousModel: 'gpt-5.5' })
+      .expect(200);
+
+    const phase = res.body as { id: string; autonomous_model?: string | null };
+    expect(phase.autonomous_model).toBe('gpt-5.5');
+
+    const reloaded = await request.get(`/api/projects/${projectId}/board/phases`).expect(200);
+    const found = (reloaded.body as Array<{ id: string; autonomous_model: string | null }>).find(
+      (p) => p.id === phase.id,
+    );
+    expect(found?.autonomous_model).toBe('gpt-5.5');
+  });
+
+  it('accepts snake_case autonomous_model on phase creation', async () => {
+    const epicId = await createEpic('Phase Model Alias Epic');
+    const res = await request
+      .post(`/api/projects/${projectId}/board/phases`)
+      .send({ epicId, name: 'Phase Alias', description: '', autonomous_model: 'gpt-5.4' })
+      .expect(200);
+
+    expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBe('gpt-5.4');
+  });
+
+  it('leaves the phase model unset when autonomousModel is explicitly null', async () => {
+    const epicId = await createEpic('Phase Null Model Epic');
+    const res = await request
+      .post(`/api/projects/${projectId}/board/phases`)
+      .send({ epicId, name: 'Phase Null Model', description: '', autonomousModel: null })
+      .expect(200);
+
+    expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBeNull();
   });
 
   it('persists an Auto Merge opt-out (autonomous_send_it 1 -> 0) across reload', async () => {

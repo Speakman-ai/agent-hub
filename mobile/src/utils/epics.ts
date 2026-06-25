@@ -40,7 +40,7 @@ export function epicFormFromRow(epic: any) {
         autonomous_interval: epic.autonomous_interval || 5,
         autonomous_max_concurrent: epic.autonomous_max_concurrent || 1,
         autonomous_model: epic.autonomous_model || '',
-        autonomous_send_it: epic.autonomous_send_it ? 1 : 0,
+        autonomous_send_it: epic.autonomous_send_it === 0 ? 0 : 1,
         pr_base_branch: epic.pr_base_branch || '',
     };
 }
@@ -138,4 +138,45 @@ export function epicDropdownLabel(epic: any) {
         return '';
     const prefix = epic.autonomous ? 'Auto: ' : '';
     return `${prefix}${epic.name}`;
+}
+export function phaseFormToUpdateBody(form: any) {
+    const autonomousOn = form.autonomous ? 1 : 0;
+    const rawModel = typeof form.autonomous_model === 'string' ? form.autonomous_model.trim() : '';
+    return {
+        name: (form.name || '').trim(),
+        description: form.description || '',
+        autonomous: autonomousOn,
+        autonomousInterval: form.autonomous_interval || 5,
+        autonomousMaxConcurrent: form.autonomous_max_concurrent || 1,
+        autonomousModel: rawModel || null,
+        autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
+    };
+}
+export function autonomousModelOptions(modelConfig: any) {
+    if (!modelConfig?.engineValidModels)
+        return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const models of Object.values(modelConfig.engineValidModels) as any[]) {
+        for (const model of models || []) {
+            if (!model || seen.has(model))
+                continue;
+            seen.add(model);
+            out.push(model);
+        }
+    }
+    return out;
+}
+export function defaultAutonomousModel(modelConfig: any) {
+    const options = new Set(autonomousModelOptions(modelConfig));
+    const defaultModel = typeof modelConfig?.defaultModel === 'string' ? modelConfig.defaultModel.trim() : '';
+    if (defaultModel && options.has(defaultModel))
+        return defaultModel;
+    const defaults = modelConfig?.engineDefaultModels || {};
+    for (const [engine, models] of Object.entries(modelConfig?.engineValidModels || {}) as any[]) {
+        const engineDefault = typeof defaults[engine] === 'string' ? defaults[engine].trim() : '';
+        if (engineDefault && Array.isArray(models) && models.includes(engineDefault))
+            return engineDefault;
+    }
+    return '';
 }

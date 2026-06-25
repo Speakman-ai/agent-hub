@@ -476,11 +476,15 @@ export const LinkEpicRequestSchema = z.object({
 });
 
 export const CreatePhaseRequestSchema = z.preprocess(
-  aliasPreprocess({ epicId: 'epic_id' }),
+  aliasPreprocess({ epicId: 'epic_id', autonomousModel: 'autonomous_model' }),
   z.object({
     epicId: z.string({ error: 'epicId is required' }).min(1, 'epicId is required'),
     name: z.string({ error: 'name is required' }).min(1, 'name is required'),
     description: z.string().nullable().optional(),
+    autonomousModel: z.string().nullable().optional().openapi({
+      description:
+        'Optional phase autonomous model. Omit to seed from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.',
+    }),
   }),
 );
 
