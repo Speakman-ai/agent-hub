@@ -149,6 +149,24 @@ function summarizeFinalizePhase(run: FinalizeRunRow | undefined): FinalizePhaseS
   };
 }
 
+function isActiveValidationRun(run: FinalizeRunRow): boolean {
+  if (run.ended_at) return false;
+  return (
+    (run.status === 'rebasing' && run.phase === 'rebase') ||
+    (run.status === 'reviewing' && run.phase === 'review') ||
+    (run.status === 'running' && run.phase === 'tasks') ||
+    (run.status === 'pushing' && run.phase === 'push')
+  );
+}
+
+function isFinalizeRunStale(
+  run: FinalizeRunRow | undefined,
+  currentHeadSha: string | null,
+): boolean {
+  if (!run || !currentHeadSha || !run.head_sha || run.head_sha === currentHeadSha) return false;
+  return !isActiveValidationRun(run);
+}
+
 export default function createFinalizeRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
   const stepLogStore = createFinalizeStepLogStore(deps.config);
@@ -215,7 +233,7 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
           currentHeadSha = null;
         }
       }
-      const stale = Boolean(run?.head_sha && currentHeadSha && run.head_sha !== currentHeadSha);
+      const stale = isFinalizeRunStale(run, currentHeadSha);
       // Per-phase done-state for the split "Run Tests" / "Reviewer" buttons.
       // Each phase may be satisfied by its own phase-scoped run OR by a
       // combined 'full' run, so they're resolved independently here rather

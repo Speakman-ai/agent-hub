@@ -25,10 +25,10 @@ import {
 
 // How long a dispatched job waits for an agent to claim it before it's marked
 // lost. With uncapped Hub dispatch (the remote default) every shard is enqueued
-// at once, so a job can legitimately sit behind a busy fleet for a while — this
-// is generous (1h) so a job that's just waiting its turn isn't failed; it only
-// trips when the fleet is genuinely dead/unscalable. Override with
-// FINALIZE_RUNNER_ACQUIRE_TIMEOUT_MS.
+// at once, so a job can legitimately sit behind a busy fleet for a while. This
+// backend default stays generous so healthy backlog does not fail; Finalize
+// passes JobClaimSpec.acquireTimeoutMs to cap each wait to the remaining run
+// budget when the caller has a shorter deadline.
 const DEFAULT_ACQUIRE_TIMEOUT_MS = 60 * 60_000;
 
 function envAcquireTimeoutMs(): number | undefined {
@@ -75,6 +75,11 @@ function toEnvRecord(env: NodeJS.ProcessEnv | undefined): Record<string, string>
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env ?? {})) if (v !== undefined) out[k] = v;
   return out;
+}
+
+function effectiveAcquireTimeoutMs(baseMs: number, specMs: number | undefined): number {
+  if (typeof specMs !== 'number' || !Number.isFinite(specMs) || specMs <= 0) return baseMs;
+  return Math.max(1, Math.min(baseMs, Math.floor(specMs)));
 }
 
 export function createRemoteRunnerBackend(opts?: {
@@ -156,11 +161,14 @@ export function createRemoteRunnerBackend(opts?: {
       const channel = createJobChannel(queueJobId);
 
       // Wait for an agent to claim + make its first poll (attach). Once the
-      // fleet has scaled up this is quick; the (generous) timeout only guards
-      // against a fleet that never comes up, not one that's merely busy.
+      // fleet has scaled up this is quick; the timeout guards against a fleet
+      // that never comes up or has no capacity for this job class. It is capped
+      // by the job's remaining run budget so acquisition cannot keep a checks
+      // row queued longer than the Finalize run itself.
+      const timeoutMs = effectiveAcquireTimeoutMs(acquireTimeoutMs, spec.acquireTimeoutMs);
       const attached = await Promise.race([
         channel.ready.then(() => true),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), acquireTimeoutMs)),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
       ]);
       if (!attached) {
         removeJobChannel(queueJobId);
@@ -171,7 +179,7 @@ export function createRemoteRunnerBackend(opts?: {
           now: now(),
         });
         throw new Error(
-          `no runner-agent claimed job ${spec.jobId} (${queueJobId}) within ${acquireTimeoutMs}ms`,
+          `no runner-agent claimed job ${spec.jobId} (${queueJobId}) within ${timeoutMs}ms`,
         );
       }
 
@@ -189,3 +197,5 @@ export function createRemoteRunnerBackend(opts?: {
     },
   };
 }
+
+export const __test = { effectiveAcquireTimeoutMs, DEFAULT_ACQUIRE_TIMEOUT_MS };

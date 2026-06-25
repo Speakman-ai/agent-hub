@@ -240,6 +240,47 @@ jobs:
     expect(released).toBe(1);
   });
 
+  it('passes the remaining run budget as the runner acquire timeout cap', async () => {
+    const acquired: Array<{ acquireTimeoutMs?: number }> = [];
+    const fakeBackend = {
+      kind: 'fake',
+      acquire: async (spec: { acquireTimeoutMs?: number }) => {
+        acquired.push({ acquireTimeoutMs: spec.acquireTimeoutMs });
+        return {
+          spawnStep: makeFakeSpawnStep(),
+          release: async () => {},
+        };
+      },
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+timeout_minutes: 3
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: e2e-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const deps = { ...makeDeps(vi.fn()), runnerBackend: fakeBackend } as StepRunnerDeps;
+    const result = await runJobPhase(deps, {
+      runId: 'budget-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    expect(result.status).toBe('success');
+    expect(acquired).toHaveLength(1);
+    expect(acquired[0].acquireTimeoutMs).toBeGreaterThan(0);
+    expect(acquired[0].acquireTimeoutMs).toBeLessThanOrEqual(3 * 60_000);
+  });
+
   it('runs warmup job to completion before any fan-out shard', async () => {
     const order: string[] = [];
     const spawnStep = vi.fn(makeFakeSpawnStep((run) => order.push(run)));

@@ -47,7 +47,7 @@ interface SeedRunOpts {
   jobFilter?: string[] | null;
 }
 
-function seedSession(sessionId: string, projectId: string): void {
+function seedSession(sessionId: string, _projectId: string): void {
   getDb()
     .prepare(
       `INSERT INTO sessions (id, agent_id, name, created_at, updated_at)
@@ -446,16 +446,25 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest — staleness', () =
       .run(sessionId, `agent-${uuidv4().slice(0, 8)}`, 'Test session', worktreePath);
   }
 
-  function seedRunWithHead(projectId: string, sessionId: string, headSha: string): string {
+  function seedRunWithHead(
+    projectId: string,
+    sessionId: string,
+    headSha: string,
+    opts: { status?: string; phase?: string | null; endedAt?: number | null } = {},
+  ): string {
     const id = `run-${uuidv4().slice(0, 8)}`;
+    const status = opts.status ?? 'failed';
+    const phase = opts.phase === undefined ? 'review' : opts.phase;
+    const endedAt =
+      opts.endedAt === undefined ? (status === 'running' ? null : 2_000) : opts.endedAt;
     getDb()
       .prepare(
         `INSERT INTO finalize_runs (
           id, card_id, session_id, project_id, branch, head_sha,
           idempotency_key, status, phase, trigger_source, worktree_path,
           triggered_by_user_id, author_name, author_email,
-          reviewer_verdict, active_seconds_consumed, started_at, mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reviewer_verdict, active_seconds_consumed, started_at, ended_at, mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -465,8 +474,8 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest — staleness', () =
         'feature/x',
         headSha,
         `idem-${uuidv4()}`,
-        'failed',
-        'review',
+        status,
+        phase,
         'ui_button',
         '/tmp/wt',
         'user-1',
@@ -475,6 +484,7 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest — staleness', () =
         null,
         0,
         1_000,
+        endedAt,
         'full',
       );
     return id;
@@ -503,6 +513,54 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest — staleness', () =
     const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
     expect(res.body.currentHeadSha).toBe(headSha);
     expect(res.body.stale).toBe(false);
+  });
+
+  it('does not flag an in-flight rebased run stale while it is still validating', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', {
+      status: 'running',
+      phase: 'tasks',
+      endedAt: null,
+    });
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBeTruthy();
+    expect(res.body.stale).toBe(false);
+  });
+
+  it('flags a non-ended dispatching run stale when its recorded head is obsolete', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir, headSha } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', {
+      status: 'dispatching',
+      phase: 'rebase',
+      endedAt: null,
+    });
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBe(headSha);
+    expect(res.body.stale).toBe(true);
+  });
+
+  it('flags a non-ended queued run stale when its recorded head is obsolete', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir, headSha } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', {
+      status: 'queued',
+      phase: null,
+      endedAt: null,
+    });
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBe(headSha);
+    expect(res.body.stale).toBe(true);
   });
 
   it('fails safe (stale=false) when the worktree HEAD cannot be resolved', async () => {

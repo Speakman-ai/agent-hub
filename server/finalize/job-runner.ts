@@ -399,6 +399,7 @@ async function runJobInstance(
           composeProjectName,
           env: mergedEnv,
           labels: jobLabels,
+          acquireTimeoutMs: Math.max(1, budgetMs - (now() - budgetStartedAt)),
           visibility,
         });
       } catch (err) {

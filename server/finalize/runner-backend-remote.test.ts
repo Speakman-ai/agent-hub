@@ -5,7 +5,7 @@ import path from 'path';
 import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
 import { claimRunnerJob } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
-import { createRemoteRunnerBackend } from './runner-backend-remote.js';
+import { createRemoteRunnerBackend, __test } from './runner-backend-remote.js';
 import type { BundleStore } from './worktree-bundle.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -190,5 +190,13 @@ describe('createRemoteRunnerBackend', () => {
         labels: {},
       }),
     ).rejects.toThrow(/no runner-agent claimed/);
+  });
+
+  it('caps the backend acquire timeout to the per-job remaining budget', () => {
+    expect(__test.DEFAULT_ACQUIRE_TIMEOUT_MS).toBe(60 * 60_000);
+    expect(__test.effectiveAcquireTimeoutMs(60_000, undefined)).toBe(60_000);
+    expect(__test.effectiveAcquireTimeoutMs(60_000, 2_500)).toBe(2_500);
+    expect(__test.effectiveAcquireTimeoutMs(60_000, 90_000)).toBe(60_000);
+    expect(__test.effectiveAcquireTimeoutMs(60_000, -1)).toBe(60_000);
   });
 });

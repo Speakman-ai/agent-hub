@@ -40,6 +40,12 @@ export interface JobClaimSpec {
   env: NodeJS.ProcessEnv;
   labels: Record<string, string>;
   /**
+   * Maximum time to wait for a runner agent to claim this job. The remote
+   * backend caps its configured acquire timeout to this per-job remaining
+   * budget so queued runner acquisition cannot outlive the Finalize run.
+   */
+  acquireTimeoutMs?: number;
+  /**
    * The gated repo's GitHub visibility, detected Hub-side from the worktree's
    * origin remote. Selects the GitHub-parity resource tier when no explicit
    * FINALIZE_RUNNER_RESOURCE_PROFILE override is in force. Omitted/`'unknown'`
