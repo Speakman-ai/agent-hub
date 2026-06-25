@@ -1594,12 +1594,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousInterval ?? phase.autonomous_interval,
       autonomousMaxConcurrent ?? phase.autonomous_max_concurrent,
       nextAutonomousModel,
+      // `?? `, not `||`: a deliberate opt-out (autonomousSendIt === 0) must be
+      // written, not treated as "unset" and reverted to the stored value.
+      autonomousSendIt ?? phase.autonomous_send_it ?? 0,
       req.params.phaseId,
     );
-
-    if (autonomousSendIt !== undefined) {
-      stmts.setPhaseAutonomousSendIt.run(autonomousSendIt ? 1 : 0, req.params.phaseId);
-    }
 
     const turningAutonomousOff = autonomous !== undefined && !autonomous;
     if (turningAutonomousOff) {

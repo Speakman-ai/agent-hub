@@ -55,6 +55,7 @@ function PhaseColumn({
   const progress = phaseProgress(phaseTickets, colMap);
   const complete = phaseComplete(phaseTickets, colMap);
   const autonomous = !!phaseForm?.autonomous;
+  const autoMerge = phaseForm?.autonomous_send_it === 1;
   const maxConcurrent = phaseForm?.autonomous_max_concurrent ?? 1;
   const addingTicket = addingTicketPhaseId === phase.id;
   const [showTicketForm, setShowTicketForm] = useState(false);
@@ -172,10 +173,29 @@ function PhaseColumn({
             />
           </div>
         )}
+        {autonomous && (
+          <div
+            className="flex items-center justify-between gap-2"
+            data-testid={`phase-auto-merge-${phase.id}`}
+          >
+            <span
+              className="text-[10px] text-gray-500 uppercase tracking-wide"
+              title="Dispatched tickets run at Auto Merge — build, review, test, push, and auto-merge once gates pass. Keep this on so PRs don't stack and stall the next phase."
+            >
+              Auto Merge
+            </span>
+            <Toggle
+              checked={autoMerge}
+              label={`Auto Merge for ${phase.name}`}
+              onChange={(on: boolean) => onPhaseFormChange?.({ autonomous_send_it: on ? 1 : 0 })}
+            />
+          </div>
+        )}
         {!running && autonomous && (
           <p className="text-[10px] text-gray-600 leading-snug">
             Run phase dispatches implementation tickets as build sessions after all spec decisions
-            are locked. Save settings first, then click Run phase.
+            are locked, each at Auto Merge so the next phase starts automatically when this one
+            finishes. Save settings first, then click Run phase.
           </p>
         )}
       </div>

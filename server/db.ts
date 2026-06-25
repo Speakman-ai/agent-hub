@@ -16,6 +16,7 @@ import {
   migrateSecurityFindingsAddLastScanId,
 } from './security-audit/findings-store.js';
 import { collapseReviewColumn } from './migrations/collapse-review-column.js';
+import { backfillPhaseAutonomousDefaults } from './migrations/backfill-phase-autonomous-defaults.js';
 import {
   deriveCardPrefix,
   KANBAN_CARD_SHORT_ID_TRIGGER_SQL,
@@ -2135,12 +2136,18 @@ function initDb(dataDir: string): void {
         name TEXT NOT NULL,
         description TEXT,
         position INTEGER NOT NULL DEFAULT 0,
-        autonomous INTEGER NOT NULL DEFAULT 0,
+        -- Phases default to armed for auto-dispatch (1) and Auto Merge (1) so a
+        -- multi-phase run flows on its own: each phase dispatches, its tickets
+        -- auto-merge (cards reach Done), the phase "completes", and
+        -- maybeAdvanceToNextPhase starts the next phase. Without auto-merge on,
+        -- PRs stack/conflict, cards never reach Done, and the sequential chain
+        -- stalls. The per-phase toggle is now an opt-out ("pause this phase").
+        autonomous INTEGER NOT NULL DEFAULT 1,
         autonomous_interval INTEGER NOT NULL DEFAULT 5,
         autonomous_max_concurrent INTEGER NOT NULL DEFAULT 1,
         autonomous_model TEXT DEFAULT NULL,
         autonomous_enabled_by TEXT DEFAULT NULL,
-        autonomous_send_it INTEGER NOT NULL DEFAULT 0,
+        autonomous_send_it INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (epic_id) REFERENCES kanban_epics(id) ON DELETE CASCADE,
@@ -2690,6 +2697,23 @@ function initDb(dataDir: string): void {
     }
   } catch (e) {
     console.error('[migration] collapse-review-column failed:', (e as Error).message);
+  }
+
+  // Migration: arm existing kanban phases for auto-dispatch + Auto Merge once.
+  // New phases default to 1/1 (see createKanbanPhase) so a multi-phase run flows
+  // and merges on its own; this normalizes phases created under the old 0/0
+  // defaults. Marker-guarded so a deliberately paused phase isn't re-armed on
+  // every boot. See migrations/backfill-phase-autonomous-defaults.ts.
+  try {
+    const r = backfillPhaseAutonomousDefaults({ db, dataDir });
+    if (r.ran && (r.armed > 0 || r.autoMerge > 0)) {
+      console.log(
+        `[migration] backfill-phase-autonomous-defaults: armed ${r.armed} phase(s) for ` +
+          `auto-dispatch, enabled Auto Merge on ${r.autoMerge} phase(s).`,
+      );
+    }
+  } catch (e) {
+    console.error('[migration] backfill-phase-autonomous-defaults failed:', (e as Error).message);
   }
 
   {
@@ -4052,11 +4076,19 @@ function initDb(dataDir: string): void {
     ),
     getKanbanPhase: db.prepare('SELECT * FROM kanban_phases WHERE id = ?'),
     createKanbanPhase: db.prepare(
-      // Default autonomous_max_concurrent to 1 explicitly (see createKanbanEpic).
-      `INSERT INTO kanban_phases (id, epic_id, board_id, name, description, position, autonomous_max_concurrent) VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      // Set autonomous + autonomous_send_it explicitly so phases are armed for
+      // auto-dispatch and Auto Merge regardless of the column default that an
+      // already-migrated DB happens to carry (older DBs created the table with a
+      // DEFAULT 0). This is what makes a freshly created phase participate in the
+      // sequential cascade and merge its PRs by default. autonomous_max_concurrent
+      // is also set explicitly (see createKanbanEpic).
+      `INSERT INTO kanban_phases (id, epic_id, board_id, name, description, position, autonomous_max_concurrent, autonomous, autonomous_send_it) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1)`,
     ),
     updateKanbanPhase: db.prepare(
-      `UPDATE kanban_phases SET name = ?, description = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, updated_at = datetime('now') WHERE id = ?`,
+      // autonomous_send_it is written here (the canonical phase-update path) so
+      // the Auto Merge toggle persists like every other phase field. Callers
+      // that don't change it pass the phase's current value to preserve it.
+      `UPDATE kanban_phases SET name = ?, description = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, autonomous_send_it = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     setPhaseAutonomousEnabledBy: db.prepare(
       `UPDATE kanban_phases SET autonomous_enabled_by = ?, updated_at = datetime('now') WHERE id = ?`,

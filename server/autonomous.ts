@@ -751,6 +751,8 @@ async function runAutonomousLoopInner(
         phase.autonomous_interval,
         phase.autonomous_max_concurrent,
         phase.autonomous_model ?? null,
+        // Preserve the phase's Auto Merge setting across the disarm-on-complete.
+        phase.autonomous_send_it ?? 0,
         phase.id,
       );
       d.stmts.setPhaseAutonomousRunning.run(0, phase.id);

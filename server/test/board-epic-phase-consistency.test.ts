@@ -131,19 +131,21 @@ describe('PUT/DELETE /board/phases/:phaseId — project scoping', () => {
     const otherEpic = await createEpic(otherProjectId, 'Other epic');
     const foreignPhase = await createPhase(otherProjectId, otherEpic, 'Foreign phase');
 
-    // Try to mutate the foreign phase through THIS project's URL.
+    // Try to mutate the foreign phase through THIS project's URL. Attempt to
+    // DISARM it (autonomous: 0) — distinguishable from the armed-by-default state
+    // so a refused PUT is provable (a fresh phase defaults to autonomous = 1).
     await request
       .put(`/api/projects/${projectId}/board/phases/${foreignPhase}`)
-      .send({ name: 'hijacked', autonomous: 1 })
+      .send({ name: 'hijacked', autonomous: 0 })
       .expect(404);
 
-    // The foreign phase is untouched.
+    // The foreign phase is untouched: still named, still armed at its default.
     const check = await request.get(`/api/projects/${otherProjectId}/board/phases`).expect(200);
     const phase = (check.body as Array<{ id: string; name: string; autonomous: number }>).find(
       (p) => p.id === foreignPhase,
     );
     expect(phase?.name).toBe('Foreign phase');
-    expect(phase?.autonomous).toBeFalsy();
+    expect(phase?.autonomous).toBe(1);
   });
 
   it('refuses to delete a phase that belongs to a different project', async () => {

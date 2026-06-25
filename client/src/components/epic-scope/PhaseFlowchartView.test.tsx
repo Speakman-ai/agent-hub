@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import PhaseFlowchartView from './PhaseFlowchartView';
 
 const columns = [
@@ -49,5 +49,52 @@ describe('PhaseFlowchartView phase completion shading', () => {
       { id: 't2', phase_id: 'p1', column_id: 'c2' },
     ]);
     expect(screen.getByTestId('phase-column-p1').getAttribute('data-complete')).toBe('false');
+  });
+});
+
+describe('PhaseFlowchartView Auto Merge toggle', () => {
+  it('shows the Auto Merge toggle, checked, when the phase defaults to armed + auto-merge', () => {
+    render(
+      <PhaseFlowchartView
+        phases={[{ id: 'p1', name: 'Phase One', position: 0 }]}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{ p1: { autonomous: 1, autonomous_send_it: 1, autonomous_max_concurrent: 1 } }}
+      />,
+    );
+
+    const row = screen.getByTestId('phase-auto-merge-p1');
+    expect(row.textContent).toContain('Auto Merge');
+    expect(within(row).getByRole('switch').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('hides the Auto Merge toggle when auto-dispatch (arming) is off', () => {
+    render(
+      <PhaseFlowchartView
+        phases={[{ id: 'p1', name: 'Phase One', position: 0 }]}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{ p1: { autonomous: 0, autonomous_send_it: 1 } }}
+      />,
+    );
+    expect(screen.queryByTestId('phase-auto-merge-p1')).toBeNull();
+  });
+
+  it('toggling Auto Merge off emits autonomous_send_it: 0', () => {
+    const onPhaseFormChange = vi.fn();
+    render(
+      <PhaseFlowchartView
+        phases={[{ id: 'p1', name: 'Phase One', position: 0 }]}
+        tickets={[]}
+        columns={columns}
+        phaseForms={{ p1: { autonomous: 1, autonomous_send_it: 1, autonomous_max_concurrent: 1 } }}
+        onPhaseFormChange={onPhaseFormChange}
+      />,
+    );
+
+    const row = screen.getByTestId('phase-auto-merge-p1');
+    fireEvent.click(within(row).getByRole('switch'));
+
+    expect(onPhaseFormChange).toHaveBeenCalledWith('p1', { autonomous_send_it: 0 });
   });
 });
