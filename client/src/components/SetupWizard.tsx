@@ -5,6 +5,9 @@ import { setup as setupHubAuth } from '../utils/auth';
 import { createOrg, switchOrg, getActiveOrg, updateOrg } from '../utils/orgs';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
+import MyClaudeAuthSection from './MyClaudeAuthSection';
+import MyCursorAuthSection from './MyCursorAuthSection';
+import MyCodexAuthSection from './MyCodexAuthSection';
 
 const DEFAULT_ORG_NAME = 'Personal';
 
@@ -85,10 +88,13 @@ function StepIndicator({ currentStep, minStep = 1, stepLabels }: any) {
   );
 }
 
-function ToggleSwitch({ enabled, onChange }: any) {
+function ToggleSwitch({ enabled, onChange, label }: any) {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={label}
       onClick={() => onChange(!enabled)}
       className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
         enabled ? 'bg-emerald-500' : 'bg-gray-600'
@@ -363,8 +369,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
             <div className="text-center mb-2">
               <h1 className="text-xl font-bold text-white mb-1">Choose Your AI Engines</h1>
               <p className="text-gray-400 text-sm">
-                Enable at least one engine. Each user signs in to their own AI account later in
-                Settings → Account — no shared host credentials are configured here.
+                Enable at least one engine, then sign in to it right here. Each login is personal to
+                your account — no shared host credentials are configured. You can revisit these
+                anytime in Settings → Account.
               </p>
             </div>
 
@@ -375,7 +382,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-purple-500 inline-block" />
                   <span className="font-medium text-white text-sm">Claude Code</span>
                 </div>
-                <ToggleSwitch enabled={claudeEnabled} onChange={setClaudeEnabled} />
+                <ToggleSwitch
+                  enabled={claudeEnabled}
+                  onChange={setClaudeEnabled}
+                  label="Enable Claude Code"
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {claudeEngine.available ? (
@@ -408,6 +419,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               </div>
             </div>
 
+            {/* Sign in to Claude inline once the engine is enabled. */}
+            {claudeEnabled && <MyClaudeAuthSection />}
+
             {/* Cursor Agent card */}
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -415,7 +429,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-sky-500 inline-block" />
                   <span className="font-medium text-white text-sm">Cursor Agent</span>
                 </div>
-                <ToggleSwitch enabled={cursorEnabled} onChange={setCursorEnabled} />
+                <ToggleSwitch
+                  enabled={cursorEnabled}
+                  onChange={setCursorEnabled}
+                  label="Enable Cursor Agent"
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {cursorEngine.available ? (
@@ -448,6 +466,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               </div>
             </div>
 
+            {/* Sign in to Cursor inline once the engine is enabled. */}
+            {cursorEnabled && <MyCursorAuthSection />}
+
             {/* Codex CLI card */}
             <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
@@ -455,7 +476,11 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   <span className="w-4 h-4 rounded-full bg-amber-500 inline-block" />
                   <span className="font-medium text-white text-sm">Codex CLI</span>
                 </div>
-                <ToggleSwitch enabled={codexEnabled} onChange={setCodexEnabled} />
+                <ToggleSwitch
+                  enabled={codexEnabled}
+                  onChange={setCodexEnabled}
+                  label="Enable Codex CLI"
+                />
               </div>
               <div className="flex items-center gap-1.5 text-xs">
                 {codexEngine.available ? (
@@ -487,6 +512,9 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                 )}
               </div>
             </div>
+
+            {/* Sign in to Codex inline once the engine is enabled. */}
+            {codexEnabled && <MyCodexAuthSection />}
 
             {!anyEngineEnabled && (
               <p className="text-yellow-400 text-xs text-center">

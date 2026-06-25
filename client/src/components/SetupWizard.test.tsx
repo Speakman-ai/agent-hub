@@ -40,6 +40,19 @@ import { setup as setupHubAuth } from '../utils/auth';
   };
 });
 
+// Stub the heavy per-user auth panels embedded in the AI engines step. We only
+// care that the right panel shows/hides with its engine toggle here; the panels
+// have their own dedicated tests. Each stub renders a marker we can query.
+(vi as any).mock('./MyClaudeAuthSection', () => ({
+  default: () => <div data-testid="claude-auth-panel">claude login</div>,
+}));
+(vi as any).mock('./MyCursorAuthSection', () => ({
+  default: () => <div data-testid="cursor-auth-panel">cursor login</div>,
+}));
+(vi as any).mock('./MyCodexAuthSection', () => ({
+  default: () => <div data-testid="codex-auth-panel">codex login</div>,
+}));
+
 import SetupWizard from './SetupWizard';
 import { api } from '../utils/api';
 import { saveConnectionConfig, testConnection } from '../utils/connection';
@@ -137,10 +150,10 @@ describe('SetupWizard — welcome auto-creates org', () => {
   });
 });
 
-// Per-account AI auth (Claude / Cursor / Codex) is configured by each user in
-// Settings → Account — not in the first-run wizard. The wizard's "AI engines"
-// step only selects which CLI engines to enable (host binary config via
-// /setup/configure). These tests guard the engine-enable gate.
+// The wizard's "AI engines" step selects which CLI engines to enable (host
+// binary config via /setup/configure) AND lets each user sign in to their own
+// per-account credentials inline. These tests guard the engine-enable gate and
+// the inline-login show/hide behavior.
 describe('SetupWizard — AI engines step gate', () => {
   it('disables Save & Continue when no engine is enabled', async () => {
     render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
@@ -159,5 +172,46 @@ describe('SetupWizard — AI engines step gate', () => {
     await advancePastWelcome();
     expect(screen.getByText(/Detected at \/usr\/bin\/claude/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
+  });
+});
+
+describe('SetupWizard — AI engines step inline login', () => {
+  it('shows only the enabled engine login panel', async () => {
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'claude-code': { available: true, path: '/usr/bin/claude' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advancePastWelcome();
+    // Claude is enabled (available) → its login panel renders inline.
+    expect(screen.getByTestId('claude-auth-panel')).toBeInTheDocument();
+    // Cursor and Codex are off → their panels stay hidden.
+    expect(screen.queryByTestId('cursor-auth-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('codex-auth-panel')).not.toBeInTheDocument();
+  });
+
+  it('renders no login panels when every engine is disabled', async () => {
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await advancePastWelcome();
+    expect(screen.queryByTestId('claude-auth-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cursor-auth-panel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('codex-auth-panel')).not.toBeInTheDocument();
+  });
+
+  it('toggling an engine on then off shows then hides its login panel', async () => {
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await advancePastWelcome();
+
+    const cursorToggle = screen.getByRole('switch', { name: /enable cursor agent/i });
+    await act(async () => {
+      fireEvent.click(cursorToggle);
+    });
+    expect(screen.getByTestId('cursor-auth-panel')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(cursorToggle);
+    });
+    expect(screen.queryByTestId('cursor-auth-panel')).not.toBeInTheDocument();
   });
 });
