@@ -197,6 +197,62 @@ describe('maybeRunPrAutoReview', () => {
     expect(handleChat).not.toHaveBeenCalled();
   });
 
+  it('skips a Finalize run still in the transient "pushing" status (validated head mid-push)', async () => {
+    // Regression: the actual `git push` + native-PR creation happen while the
+    // finalize run sits in 'pushing' (claimFinalizeRunPush flips ready_to_push
+    // → pushing; markFinalizeRunPushed flips it to 'pushed' only after the push
+    // returns). The onPrHeadChanged('created') hook fires maybeRunPrAutoReview
+    // synchronously inside that window. validated_head_sha is already stamped,
+    // so the head is Finalize-validated and the external-push reviewer must NOT
+    // dispatch. Before the fix, the passthrough excluded 'pushing' and a
+    // redundant reviewer was dispatched (often "changes requested").
+    const { project, branch, headSha } = await hostedPrProject();
+    const handleChat = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+
+    const runId = `fin-${uuidv4().slice(0, 8)}`;
+    stmts.insertFinalizeRun.run(
+      runId,
+      'card',
+      null,
+      project.id,
+      branch,
+      headSha,
+      `t|${runId}`,
+      'queued',
+      null,
+      'ui_button',
+      null,
+      'u',
+      'U',
+      'u@x',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+    // Stamp validated_head_sha (ready_to_push), then claim the push so the row
+    // sits in the transient 'pushing' status exactly as it does mid-push.
+    stmts.markFinalizeRunReadyToPush.run(headSha, runId);
+    const claim = stmts.claimFinalizeRunPush.run(runId, headSha);
+    expect(claim.changes).toBe(1);
+    const row = stmts.getFinalizeRun.get(runId) as { status: string };
+    expect(row.status).toBe('pushing');
+
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'pr_create' },
+    );
+    expect(handleChat).not.toHaveBeenCalled();
+  });
+
   it('is inert under the test-env guard without force', async () => {
     const { project, branch } = await hostedPrProject();
     const handleChat = vi.fn();

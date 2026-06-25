@@ -5285,12 +5285,25 @@ function initDb(dataDir: string): void {
     getPullRequestComment: db.prepare('SELECT * FROM pull_request_comments WHERE id = ?'),
     deletePullRequestComment: db.prepare('DELETE FROM pull_request_comments WHERE id = ?'),
     // "Was this exact sha fully validated by Finalize?" — review + checks
-    // both passed (mode 'full' reaching ready_to_push/pushed). Drives the
-    // PR-level validation passthrough: validated heads skip PR CI.
+    // both passed (mode 'full' reaching ready_to_push/pushing/pushed). Drives
+    // the PR-level validation passthrough: validated heads skip PR CI and the
+    // external-push auto-reviewer.
+    //
+    // 'pushing' MUST be in the accepted set. `validated_head_sha` is stamped
+    // at ready_to_push (markFinalizeRunReadyToPush), before the run claims the
+    // push (claimFinalizeRunPush flips status ready_to_push → pushing) and
+    // before markFinalizeRunPushed flips it to 'pushed'. The actual `git push`
+    // + native-PR creation happen entirely inside that 'pushing' window, and
+    // both the smart-HTTP onPush hook and the onPrHeadChanged('created') hook
+    // fire the passthrough checks synchronously there. Excluding 'pushing'
+    // meant a Finalize-validated head was mis-classified as an external push
+    // mid-push: a redundant Reviewer was dispatched (often "changes requested")
+    // and PR CI re-ran on an already-validated sha. The sha match keeps this
+    // exact — a push that ultimately fails never moved the ref to this sha.
     getValidatedFinalizeRunForSha: db.prepare(
       `SELECT * FROM finalize_runs
         WHERE project_id = ? AND branch = ? AND validated_head_sha = ?
-          AND mode = 'full' AND status IN ('ready_to_push', 'pushed')
+          AND mode = 'full' AND status IN ('ready_to_push', 'pushing', 'pushed')
         ORDER BY started_at DESC LIMIT 1`,
     ),
     // Latest CI-bearing run for a commit regardless of trigger (finalize,
