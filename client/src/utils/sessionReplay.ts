@@ -68,6 +68,40 @@ export const FLUSH_TIMEOUT_MS = UPLOAD_TIMEOUT_MS + BACKSTOP_MARGIN_MS;
 // submit result so we never cache a timeout as `lastResult`.
 const FLUSH_TIMED_OUT = Symbol('flush-timed-out');
 
+// ─── Continuous capture (whole-session streaming) ─────────────────
+//
+// When a project opts into the continuous tier, the recorder streams the WHOLE
+// session as appended chunks to the chunked-ingest endpoint
+// (`POST /api/replays/:id/events`) on a periodic interval plus a tab-close tail
+// flush. This is OFF by default and additive to the always-on record-on-error
+// path. v1 reuses the existing monolithic-append storage (no segmented rewrite),
+// which is acceptable at ~5-min cadence (~6 flushes / 30-min session) but NOT at
+// sub-minute cadence — hence the >=60s floor below. Sub-minute streaming is the
+// deferred segmented-storage upgrade.
+
+/** Default continuous-flush cadence (5 min) — the MVP interval. */
+export const DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+/** Sub-minute cadence is not supported on the monolithic-append MVP storage. */
+export const MIN_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 1000;
+/** Bound the tail-loss window: at most this long between flushes. */
+export const MAX_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Clamp a continuous-flush cadence into the deliverable range. A non-finite /
+ * unset value resolves to the 5-min default; a sub-minute value is raised to the
+ * floor (the MVP storage can't go faster), an excessive one capped to the
+ * ceiling. Pure — unit-testable in isolation.
+ */
+export function clampContinuousFlushInterval(value: any) {
+  // null / undefined are "unset" → default (NOT coerced to 0, which would floor).
+  if (value == null) return DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS;
+  if (n < MIN_CONTINUOUS_FLUSH_INTERVAL_MS) return MIN_CONTINUOUS_FLUSH_INTERVAL_MS;
+  if (n > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) return MAX_CONTINUOUS_FLUSH_INTERVAL_MS;
+  return n;
+}
+
 // Privacy contract for the recorder. Two modes, selectable per deployment:
 //
 //   - 'mask-all'  (default) — every input value AND all text is masked
@@ -184,6 +218,17 @@ let _serverSampleRate: number | null = null;
 // Admin opt-out). When true `resolveMaskingMode` returns `mask-all` regardless
 // of the per-browser override — the privacy contract of the continuous tier.
 let _serverMaskAllEnforced = false;
+// Whether the server policy enables the continuous-capture tier for this
+// project. Default OFF — whole-session recording is an explicit per-project
+// opt-in, never a sampling default. When true (and the client samples in) the
+// recorder additionally streams the WHOLE session as appended chunks (see
+// `ContinuousReplayFlusher`), on top of the always-on record-on-error path.
+let _serverContinuous = false;
+// Server-delivered continuous-flush cadence (ms), or null when unset (the
+// flusher then uses DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS). Floored at
+// MIN_CONTINUOUS_FLUSH_INTERVAL_MS — the monolithic-append storage cannot
+// support sub-minute cadence in the MVP.
+let _serverFlushIntervalMs: number | null = null;
 
 /**
  * Resolve the per-project id the Hub's own recorder should fetch policy for,
@@ -255,6 +300,12 @@ export function applyServerReplayConfig(policy: any) {
   // `continuous` here would force mask-all back on even when an Admin has
   // explicitly opted the project out.
   _serverMaskAllEnforced = policy != null && policy.maskAllEnforced === true;
+  _serverContinuous = policy != null && policy.continuous === true;
+  const interval = policy == null ? null : policy.flushIntervalMs;
+  _serverFlushIntervalMs =
+    typeof interval === 'number' && Number.isFinite(interval)
+      ? clampContinuousFlushInterval(interval)
+      : null;
   return _serverSampleRate;
 }
 
@@ -266,6 +317,19 @@ export function getServerSampleRate() {
 /** True when the server policy forces mask-all (continuous on, no Admin opt-out). */
 export function isServerMaskAllEnforced() {
   return _serverMaskAllEnforced;
+}
+
+/** True when the server policy enables the continuous-capture tier. */
+export function isServerContinuousEnabled() {
+  return _serverContinuous;
+}
+
+/**
+ * The continuous-flush cadence currently in effect (server-delivered when set,
+ * else the built-in 5-min default), already floored at the sub-minute minimum.
+ */
+export function getContinuousFlushIntervalMs() {
+  return clampContinuousFlushInterval(_serverFlushIntervalMs);
 }
 
 /**
@@ -648,6 +712,494 @@ export async function submitReplay(
   return res.json();
 }
 
+/** The chunked-append URL for a given replay id. */
+export function replayBatchEndpoint(id: any, base: any = REPLAY_INGEST_ENDPOINT) {
+  return `${base}/${encodeURIComponent(String(id))}/events`;
+}
+
+/**
+ * POST one chunk of a streamed replay to the chunked-ingest endpoint
+ * (`POST /api/replays/:id/events`). The first (creating) chunk must carry a full
+ * snapshot; later chunks append incremental events. Resolves with the parsed
+ * running-totals response on success; throws on a non-2xx. gzip-compressed when
+ * the platform supports it (same transport as `submitReplay`), falling back to
+ * uncompressed JSON.
+ *
+ * `rumToken`, when present, is sent as the `X-RUM-Token` header so the server
+ * attributes the capture to that project — exactly like the policy/config path.
+ * Without it the creating chunk is anonymous, and (worse) a later chunk would be
+ * rejected 403 if the capture was created under a token, so the token MUST ride
+ * along on every chunk of a token-attributed stream.
+ */
+export async function submitReplayBatch(
+  { id, events, meta }: any = {},
+  {
+    endpointBase = REPLAY_INGEST_ENDPOINT,
+    timeoutMs = UPLOAD_TIMEOUT_MS,
+    rumToken = null,
+  }: any = {},
+) {
+  if (id == null || String(id) === '') throw new Error('submitReplayBatch requires a replay id');
+  if (!Array.isArray(events) || events.length === 0) {
+    throw new Error('No replay events to submit');
+  }
+  const url = replayBatchEndpoint(id, endpointBase);
+  const signal =
+    timeoutMs && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(timeoutMs)
+      : undefined;
+  const json = JSON.stringify({ events, meta: meta || undefined });
+  const gzipped = await gzipString(json);
+  const headers: Record<string, string> = {
+    'Content-Type': gzipped ? 'application/octet-stream' : 'application/json',
+  };
+  if (rumToken) headers['X-RUM-Token'] = String(rumToken);
+  const res = await fetch(url, {
+    method: 'POST',
+    mode: 'cors',
+    headers,
+    body: gzipped || json,
+    signal,
+  });
+  if (!res.ok) {
+    let bodyText = '';
+    try {
+      bodyText = await res.text();
+    } catch {
+      // ignore
+    }
+    throw new Error(bodyText || `Replay batch ingest failed (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/**
+ * Streams the WHOLE session to the chunked-ingest endpoint as appended chunks.
+ *
+ * Fed every raw rrweb event (via the recorder's continuous sink, before the
+ * rolling-buffer pruner runs) so it accumulates the complete event stream, not
+ * the trailing window the record-on-error path keeps. On a periodic interval
+ * (default 5 min, server-delivered) and on tab-close it drains the pending
+ * events into one batch POST. The first batch creates the replay and carries the
+ * initial full snapshot; later batches append incrementally — matching the
+ * server's `requireSnapshotOnFirstChunk` contract.
+ *
+ * Durability: a hard crash between flushes loses up to one interval of tail
+ * (accepted MVP tradeoff). A normal tab close is caught by `flushTail`, which
+ * uses an unload-surviving transport (`navigator.sendBeacon`, or a keepalive
+ * `fetch` when a RUM token must be attached as a header), falling back to a
+ * best-effort async flush.
+ *
+ * Attribution: a per-project RUM token, when present, rides as `X-RUM-Token` on
+ * every chunk (async and beacon) so the server attributes the stream to its
+ * project — required for first-chunk creation and to keep later chunks from
+ * being rejected 403 against an already-attributed capture.
+ *
+ * All side-effecting collaborators (the batch transport, the interval timer
+ * functions, the beacon, the clock) are injected so the whole class is
+ * unit-testable without a DOM, rrweb, or network.
+ */
+export class ContinuousReplayFlusher {
+  [key: string]: any;
+  constructor({
+    replayId,
+    submitBatch = submitReplayBatch,
+    now = () => Date.now(),
+    flushIntervalMs = DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    minBatchEvents = 1,
+    setIntervalFn = typeof setInterval === 'function' ? setInterval : null,
+    clearIntervalFn = typeof clearInterval === 'function' ? clearInterval : null,
+    beacon = defaultReplayBeacon,
+    endpointBase = REPLAY_INGEST_ENDPOINT,
+    meta = null,
+    rumToken = null,
+  }: any = {}) {
+    if (replayId == null || String(replayId) === '') {
+      throw new Error('ContinuousReplayFlusher requires a replayId');
+    }
+    this.replayId = String(replayId);
+    this._submitBatch = submitBatch;
+    this._now = now;
+    // Clamp here too so a caller-supplied cadence can't sneak under the floor.
+    this.flushIntervalMs = clampContinuousFlushInterval(flushIntervalMs);
+    this.minBatchEvents = Math.max(1, minBatchEvents | 0);
+    this._setIntervalFn = setIntervalFn;
+    this._clearIntervalFn = clearIntervalFn;
+    this._beacon = beacon;
+    this._endpointBase = endpointBase;
+    this._meta = meta;
+    // Per-project RUM ingest token. Sent as `X-RUM-Token` on every chunk (async
+    // and beacon) so a token-attributed stream is created and appended under its
+    // project — null for the anonymous first-party recorder.
+    this._rumToken = rumToken || null;
+
+    this._pending = [];
+    this._created = false; // true once the creating (first) chunk lands
+    this.active = false;
+    this._timer = null;
+    this._flushing = null; // in-flight interval-flush promise (overlap guard)
+    this.lastResult = null;
+  }
+
+  /** Buffer one raw rrweb event for the next flush. */
+  addEvent(event: any) {
+    if (event) this._pending.push(event);
+  }
+
+  /** Start the periodic flush timer. Idempotent. */
+  start() {
+    if (this.active) return;
+    this.active = true;
+    if (typeof this._setIntervalFn === 'function' && this.flushIntervalMs > 0) {
+      this._timer = this._setIntervalFn(() => {
+        // Fire-and-forget — the interval must never await an upload.
+        void this.flush('interval');
+      }, this.flushIntervalMs);
+    }
+  }
+
+  /**
+   * Build the meta for a batch. Only the CREATING chunk carries meta (the server
+   * honors meta on the first chunk only), tagging the capture as continuous.
+   */
+  _batchMeta(reason: any) {
+    if (this._created) return null;
+    return { ...(this._meta || {}), trigger: 'continuous', reason: reason ?? 'interval' };
+  }
+
+  /**
+   * Flush the pending events as one chunk. No-op (returns null) when there's
+   * nothing to send, or when the replay hasn't been created yet and the pending
+   * batch carries no full snapshot — the server requires the first chunk to be
+   * replayable, so we wait for the snapshot rather than ship a batch it would
+   * reject. Overlapping callers share the in-flight promise. Never throws.
+   *
+   * Drain semantics differ by phase, and deliberately so:
+   *
+   *   - CREATING chunk (uncreated): the pending batch holds the ONLY full
+   *     snapshot, the single replayable anchor for the whole capture. We send a
+   *     COPY and DO NOT clear `_pending` until the server confirms (2xx). If this
+   *     async upload is killed during unload before its catch can re-queue — the
+   *     classic case where `visibilitychange: hidden` kicks off the confirmed
+   *     flush and a `pagehide` follows immediately — the snapshot is still in
+   *     `_pending`, so the terminal beacon can send it. Without this, the drained
+   *     snapshot would vanish and the whole short session would be lost.
+   *   - INCREMENTAL tail (created): drain immediately. A delivered failure
+   *     re-queues; an unload kill drops it — the accepted ≤interval loss, since
+   *     these events are independent and the replay already exists server-side.
+   */
+  async flush(reason?: any) {
+    if (this._flushing) return this._flushing;
+    if (this._pending.length < this.minBatchEvents) return null;
+    if (!this._created && !hasFullSnapshot(this._pending)) return null;
+    const p = this._runFlush(reason);
+    this._flushing = p;
+    try {
+      return await p;
+    } finally {
+      this._flushing = null;
+    }
+  }
+
+  async _runFlush(reason: any) {
+    // Uncreated → send a copy and retain `_pending` until confirmed; created →
+    // drain now. (See `flush` for why the creating chunk must not be drained.)
+    const creating = !this._created;
+    const batch = creating ? this._pending.slice() : this._pending;
+    if (!creating) this._pending = [];
+    try {
+      const result = await this._submitBatch(
+        { id: this.replayId, events: batch, meta: this._batchMeta(reason) },
+        { endpointBase: this._endpointBase, rumToken: this._rumToken },
+      );
+      this._created = true;
+      this.lastResult = result || null;
+      if (creating) {
+        // Confirmed: NOW drop exactly the sent leading events. More may have been
+        // appended behind them while in flight (the `_flushing` guard kept the
+        // front stable); those stay queued for the next flush.
+        this._pending = this._pending.slice(batch.length);
+      }
+      return this.lastResult;
+    } catch {
+      // creating: never drained → snapshot still in `_pending`, retained for a
+      // retry or a terminal beacon. created: re-queue the drained batch ahead of
+      // any newer events so order is preserved.
+      if (!creating) this._pending = batch.concat(this._pending);
+      return null;
+    }
+  }
+
+  /**
+   * Tail flush for a lifecycle event. For a TERMINAL flush it uses a synchronous
+   * unload-surviving transport (`navigator.sendBeacon`, or a keepalive `fetch`
+   * when a RUM token must ride along) so the final batch outlives page teardown,
+   * returning true when that request was queued. For a NON-terminal flush it uses
+   * the confirmed async path and returns false. Idempotent-safe to call from
+   * `pagehide` and `visibilitychange`.
+   *
+   * Terminality matters: a flush is terminal only when the document is truly
+   * being discarded and will never resume. `visibilitychange: hidden` is NOT
+   * terminal (a backgrounded tab can return), and neither is a *persisted*
+   * `pagehide` (the page entered the back/forward cache and can resume) — the
+   * caller signals that via `{ terminal: false }`. Terminality defaults to
+   * `reason === 'pagehide'` only for callers that don't pass the flag explicitly.
+   */
+  flushTail(reason: any = 'pagehide', { terminal = reason === 'pagehide' }: any = {}) {
+    if (this._pending.length < this.minBatchEvents) return false;
+
+    // NON-terminal flush (a backgrounded tab that can resume): the page is still
+    // ALIVE, so NEVER optimistically beacon-and-drain. A beacon/keepalive request
+    // only confirms the browser ENQUEUED it, not that the server accepted it — if
+    // it is later dropped/rejected and the tab resumes, the drained events are
+    // permanently lost even though we could have delivered them with a confirmed
+    // upload. This holds for BOTH phases:
+    //   - uncreated: the pending batch is the only full snapshot; an unconfirmed
+    //     enqueue must not flip `_created`/drop it (a returning tab would then
+    //     emit snapshot-less appends the server rejects, stranding the capture);
+    //   - created: an unconfirmed enqueue must not drop the only copy of the
+    //     incremental tail.
+    // `_runFlush` clears `_pending` only on a real 2xx and re-queues on failure,
+    // so the confirmed async path can't lose events while the page lives on.
+    if (!terminal) {
+      void this._drainAfterInflight(reason);
+      return false;
+    }
+
+    // TERMINAL flush (document unloading, won't return). A snapshot-less uncreated
+    // batch can't form a valid first chunk, so defer to the async path (no-ops
+    // until a snapshot exists); everything else is beaconed best-effort below.
+    if (!this._created && !hasFullSnapshot(this._pending)) {
+      void this._drainAfterInflight(reason);
+      return false;
+    }
+
+    const batch = this._pending;
+    this._pending = [];
+    const meta = this._batchMeta(reason);
+    const url = replayBatchEndpoint(this.replayId, this._endpointBase);
+
+    // The whole tail may exceed the unload transport's body budget
+    // (KEEPALIVE_MAX_BYTES / sendBeacon's ~64KB) — a 5-min rrweb chunk routinely
+    // does. We must NOT fall back to a normal async `fetch` on a terminal flush:
+    // that request is not unload-safe and is killed when the document is
+    // discarded, silently losing the batch. And we can't split into multiple
+    // keepalive requests either — the keepalive budget is shared (~64KB total
+    // across all in-flight keepalive requests), so on unload (where none complete
+    // before discard) extra chunks are simply rejected. The honest maximum on a
+    // terminal close is therefore ONE budget-sized request. So we send the
+    // largest leading prefix that fits, on the unload-safe transport, and drop
+    // the trailing remainder (the accepted unload tail loss). For an uncreated
+    // capture the prefix must still carry the snapshot to be a valid first chunk;
+    // if the snapshot alone overflows the budget no unload transport can deliver
+    // it (we can't gzip synchronously here), so we retain rather than send junk.
+    const send = (events: any) => {
+      if (!Array.isArray(events) || events.length === 0) return false;
+      if (!this._created && !hasFullSnapshot(events)) return false;
+      const body = JSON.stringify({ events, meta: meta || undefined });
+      try {
+        // Pass the RUM token so the beacon transport can attribute the capture
+        // (`navigator.sendBeacon` can't set headers, so the default beacon uses a
+        // keepalive `fetch` carrying `X-RUM-Token` whenever a token is present).
+        return this._beacon(url, body, this._rumToken) === true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Try the whole batch first; if the transport refuses it (over budget), send
+    // the largest budget-sized leading prefix instead.
+    let sent = send(batch);
+    if (!sent) {
+      const prefix = takeKeepalivePrefix(batch, meta, KEEPALIVE_MAX_BYTES);
+      if (prefix.length < batch.length) sent = send(prefix);
+    }
+
+    if (sent) {
+      // TERMINAL-only: the document is unloading and the tab won't return, so
+      // flipping `_created` off an unconfirmed enqueue is safe — there is no later
+      // flush for a dropped beacon to strand. The dropped remainder (if any) is
+      // the accepted terminal tail loss.
+      this._created = true;
+      return true;
+    }
+    // Nothing could be sent on the unload-safe transport (no transport available,
+    // or even the snapshot prefix overflows the budget). Retain the batch — it
+    // survives a mislabeled/bfcache resume; on a true discard it is lost, which is
+    // unavoidable for an oversized tail on unload.
+    this._pending = batch.concat(this._pending);
+    return false;
+  }
+
+  /**
+   * Drain the currently-pending tail even when a periodic flush is already in
+   * flight. `flush()` returns the existing `_flushing` promise without draining
+   * the newly-pending events, so the tab-close path could otherwise drop the
+   * final batch when an interval flush overlaps unload. This awaits any in-flight
+   * flush so `flush()`'s `_flushing` short-circuit clears, then flushes the
+   * remaining tail. Best-effort; never throws. Concurrent callers (pagehide +
+   * visibilitychange) are safe — the second `flush()` shares the first's in-flight
+   * promise rather than double-sending.
+   */
+  async _drainAfterInflight(reason: any) {
+    try {
+      const inflight = this._flushing;
+      if (inflight) {
+        try {
+          await inflight;
+        } catch {
+          // ignore — the in-flight flush swallows its own errors
+        }
+      }
+      await this.flush(reason);
+    } catch {
+      // ignore — tail flush is best-effort
+    }
+  }
+
+  /** Stop the periodic timer. The pending buffer is left intact. */
+  stop() {
+    if (this._timer != null && typeof this._clearIntervalFn === 'function') {
+      try {
+        this._clearIntervalFn(this._timer);
+      } catch {
+        // ignore
+      }
+    }
+    this._timer = null;
+    this.active = false;
+  }
+}
+
+/**
+ * Conservative cap on a keepalive `fetch` body. The Fetch spec budgets ~64 KB
+ * across ALL in-flight keepalive requests, and a body over that budget makes the
+ * request reject ASYNCHRONOUSLY — after `defaultReplayBeacon` would already have
+ * reported success and the caller had cleared its buffer. So the token path
+ * refuses synchronously above this limit (returning false) rather than silently
+ * losing the batch; the caller then retains it for the confirmed async path. Set
+ * below 64 KB to leave headroom for headers and other keepalive traffic.
+ */
+export const KEEPALIVE_MAX_BYTES = 60 * 1024;
+
+/** UTF-8 byte length of a string, best-effort across environments. */
+function utf8ByteLength(s: any): number {
+  const str = String(s);
+  try {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str).length;
+  } catch {
+    // fall through
+  }
+  try {
+    if (typeof Blob !== 'undefined') return new Blob([str]).size;
+  } catch {
+    // fall through
+  }
+  return str.length; // last resort (undercounts multi-byte, but never throws)
+}
+
+/**
+ * Largest leading run of `events` whose serialized `{ events, meta }` body fits
+ * `maxBytes`. Used to salvage the deliverable head of an oversized tail on a
+ * terminal flush, where only one budget-sized unload-safe request can land. The
+ * first event is always included (so a single over-budget event is still
+ * attempted — the transport then refuses it), and chronological order is
+ * preserved so the snapshot (at the front of an uncreated capture) stays in the
+ * prefix. Pure — no DOM/network — so it is unit-testable.
+ */
+export function takeKeepalivePrefix(events: any, meta: any, maxBytes: any) {
+  if (!Array.isArray(events) || events.length === 0) return [];
+  const limit =
+    typeof maxBytes === 'number' && Number.isFinite(maxBytes) && maxBytes > 0
+      ? maxBytes
+      : KEEPALIVE_MAX_BYTES;
+
+  // Size candidates against the EXACT serialized body the caller sends —
+  // `JSON.stringify({ events, meta: meta || undefined })` — so the returned
+  // prefix is GUARANTEED to fit the keepalive budget. A constant-overhead
+  // estimate under-counts: `meta`'s UTF-8 byte length differs from its UTF-16
+  // string length, and the real `{"events":[…],"meta":…}` framing is larger than
+  // a fixed guess. An under-count hands back an oversized prefix that the
+  // transport then refuses, and `flushTail` drops the whole tail instead of
+  // sending the largest deliverable head.
+  const metaJson = meta != null ? JSON.stringify(meta) : undefined;
+  const hasMeta = typeof metaJson === 'string';
+  // Fixed framing bytes (all ASCII), matching JSON.stringify of the wrapper:
+  //   `{"events":` (10) + `[` (1) + … + `]` (1) + `}` (1)
+  //   + `,"meta":` (8) + metaJson when meta is present.
+  // The `[` and `]` are counted here; per-event commas are added in the loop.
+  const framing = 10 + 1 + 1 + 1 + (hasMeta ? 8 + utf8ByteLength(metaJson) : 0);
+
+  let used = framing; // bytes for the empty wrapper `{"events":[]}` (+ meta)
+  let count = 0;
+  for (let i = 0; i < events.length; i++) {
+    const evBytes = utf8ByteLength(JSON.stringify(events[i]));
+    // Commas only appear BETWEEN events: the i-th event costs a separator only
+    // when one is already in the prefix.
+    const add = evBytes + (count > 0 ? 1 : 0);
+    // Always include the first event even if it alone blows the budget (the
+    // transport then refuses it); stop before any later event that would push the
+    // real body over the limit.
+    if (count > 0 && used + add > limit) break;
+    used += add;
+    count++;
+  }
+  return events.slice(0, count);
+}
+
+/**
+ * Default tail-flush transport for an unloading page. Returns true ONLY when the
+ * browser has actually accepted the body into a queue; false when no transport is
+ * available, the body is refused, or it exceeds the synchronous size budget.
+ * Never throws.
+ *
+ * Transport choice is driven by attribution:
+ *   - With a `rumToken`: `navigator.sendBeacon` CANNOT attach an `X-RUM-Token`
+ *     header, which the server requires to attribute the capture (and to accept
+ *     later chunks of an already-attributed stream — an anonymous chunk is
+ *     rejected 403). So we use a `fetch(..., { keepalive: true })`, which both
+ *     survives page teardown (the modern sendBeacon replacement) AND carries
+ *     custom headers. BUT keepalive fetch gives no synchronous accept signal and
+ *     rejects async on an over-budget body, so we apply a synchronous size guard
+ *     ({@link KEEPALIVE_MAX_BYTES}): over the limit we return false WITHOUT
+ *     dispatching, so the caller keeps the batch and falls back to the confirmed
+ *     async path (a live page) instead of silently dropping it. (5-min rrweb
+ *     chunks routinely exceed the budget — this is the common case.)
+ *   - Without a token (anonymous first-party recorder): plain `navigator.sendBeacon`,
+ *     which already returns false synchronously when it can't enqueue the body.
+ */
+export function defaultReplayBeacon(url: any, body: any, rumToken: any = null) {
+  try {
+    if (rumToken) {
+      if (typeof fetch !== 'function') return false;
+      // Synchronous size guard: a keepalive body over the browser budget rejects
+      // asynchronously (after we'd return), so refuse here rather than claim a
+      // queue we can't guarantee. The caller retains the batch for a confirmed flush.
+      if (utf8ByteLength(body) > KEEPALIVE_MAX_BYTES) return false;
+      // Within budget → dispatched and allowed to complete after unload.
+      void fetch(url, {
+        method: 'POST',
+        mode: 'cors',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'X-RUM-Token': String(rumToken) },
+        body,
+      }).catch(() => {});
+      return true;
+    }
+    if (
+      typeof navigator === 'undefined' ||
+      typeof navigator.sendBeacon !== 'function' ||
+      typeof Blob === 'undefined'
+    ) {
+      return false;
+    }
+    const blob = new Blob([body], { type: 'application/json' });
+    return navigator.sendBeacon(url, blob) === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Rolling-buffer rrweb recorder. The rrweb `record` function and the upload
  * transport are injected so the recorder is testable without a DOM or network.
@@ -688,6 +1240,9 @@ export class SessionReplayRecorder {
     this.buffer = [];
     this.active = false;
     this._stopFn = null;
+    // Optional consumer fed every raw emitted event (the continuous-capture
+    // flusher). Null when continuous capture is off, which is the default.
+    this._continuousSink = null;
     // The in-flight flush promise, or null when idle. Overlapping callers share
     // it (see flush) rather than getting a stale lastResult.
     this._activeFlush = null;
@@ -737,6 +1292,17 @@ export class SessionReplayRecorder {
   }
 
   _handleEmit(event: any) {
+    // Feed the continuous flusher (when wired) the RAW event BEFORE the rolling
+    // buffer is pruned — continuous capture needs the whole stream, not the
+    // trailing window the record-on-error path keeps. Never let a sink failure
+    // break the recorder.
+    if (typeof this._continuousSink === 'function') {
+      try {
+        this._continuousSink(event);
+      } catch {
+        // ignore — continuous streaming is best-effort
+      }
+    }
     this.buffer.push(event);
     this.buffer = pruneBuffer(this.buffer, this._now(), this.windowMs, this.maxEvents);
     this._maybeSnapshotOnMount(event);
@@ -920,10 +1486,70 @@ export class SessionReplayRecorder {
 let _recorder: any = null;
 let _initialized = false;
 let _errorListenersWired = false;
+// The active continuous-capture flusher, or null when the continuous tier is off
+// (the default) or recording hasn't started.
+let _continuousFlusher: any = null;
+let _tailFlushListenersWired = false;
+// Effective per-project RUM ingest token for this page, resolved once at init
+// (`initSessionReplay` opts.rumToken, else `VITE_REPLAY_RUM_TOKEN`). Threaded
+// into the continuous flusher so its chunk uploads carry `X-RUM-Token`.
+let _rumToken: string | null = null;
 
 export function getRecorder() {
   if (!_recorder) _recorder = new SessionReplayRecorder({});
   return _recorder;
+}
+
+/** The active continuous flusher, or null. Test/diagnostic accessor. */
+export function getContinuousFlusher() {
+  return _continuousFlusher;
+}
+
+/**
+ * Mint a per-session replay id for the continuous stream. Prefers
+ * `crypto.randomUUID()`; falls back to a timestamp+random id. The result matches
+ * the server's `^[A-Za-z0-9._-]{8,200}$` id charset.
+ */
+export function generateReplayId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function') {
+      return (crypto as any).randomUUID();
+    }
+  } catch {
+    // fall through
+  }
+  return `replay-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Wire the tab-close tail-flush listeners exactly once. `pagehide` is the
+ * reliable end-of-page signal; `visibilitychange → hidden` covers mobile
+ * background/app-switch where `pagehide` may not fire. Idempotent and a no-op
+ * outside a browser.
+ *
+ * Terminality is derived per-event, not assumed: a `pagehide` is terminal ONLY
+ * when `event.persisted` is false. A persisted pagehide means the page entered
+ * the back/forward cache and can later resume, so it is forwarded as NON-terminal
+ * — an uncreated capture then takes the confirmed async path instead of an
+ * optimistic beacon-create that could strand the capture if the bfcache page
+ * resumes and the beacon was never accepted. `visibilitychange: hidden` is always
+ * non-terminal (the tab can return).
+ */
+function ensureTailFlushListeners() {
+  if (_tailFlushListenersWired || typeof window === 'undefined') return;
+  _tailFlushListenersWired = true;
+  const onTail = (reason: any, terminal: any) => {
+    if (_continuousFlusher) _continuousFlusher.flushTail(reason, { terminal });
+  };
+  window.addEventListener('pagehide', (e: any) => {
+    // A persisted pagehide (bfcache) is NOT terminal — the page can resume.
+    onTail('pagehide', !(e && e.persisted));
+  });
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') onTail('visibilitychange', false);
+    });
+  }
 }
 
 /**
@@ -951,13 +1577,38 @@ async function startRecorder() {
   // `record()` is called, so the mode is applied here (and re-applied via a
   // stop/start in setMaskingMode when it changes at runtime).
   rec.recordOptions = buildRecordPrivacyOptions(resolveMaskingMode());
+  // Wire the continuous flusher BEFORE record() so the Meta + FullSnapshot that
+  // rrweb emits synchronously at record() start is captured as the creating
+  // chunk — without it the first batch would lack a snapshot and be rejected.
+  // Off by default; only when the project opts into the continuous tier.
+  if (_serverContinuous && !_continuousFlusher) {
+    _continuousFlusher = new ContinuousReplayFlusher({
+      replayId: generateReplayId(),
+      flushIntervalMs: getContinuousFlushIntervalMs(),
+      // Attribute chunks to the project, matching the config path. Falls back to
+      // the build-time env when init didn't capture one (e.g. a runtime toggle).
+      rumToken: _rumToken ?? resolveReplayRumToken(),
+    });
+    rec._continuousSink = (e: any) => _continuousFlusher.addEvent(e);
+  }
   try {
     const mod = await import('rrweb');
     rec.start(mod.record);
   } catch {
+    // rrweb failed to load — tear down the half-wired flusher so it can't leak.
+    if (_continuousFlusher) {
+      _continuousFlusher.stop();
+      _continuousFlusher = null;
+      rec._continuousSink = null;
+    }
     return null;
   }
   ensureErrorListeners();
+  // Start the periodic timer + tab-close listeners now that events are flowing.
+  if (_continuousFlusher) {
+    _continuousFlusher.start();
+    ensureTailFlushListeners();
+  }
   return rec;
 }
 
@@ -983,6 +1634,25 @@ export async function setSessionReplayEnabled(enabled: any) {
     await startRecorder();
   } else if (_recorder) {
     _recorder.stop();
+    // Tear down continuous streaming too. Unlike a tab close, a runtime disable
+    // happens while the page is ALIVE, so we can (and must) AWAIT a confirmed
+    // flush of whatever is buffered before dropping the flusher — `flushTail`'s
+    // non-terminal path is fire-and-forget and would be orphaned by the teardown
+    // below. Detach first (stop the timer, unwire the sink, null the singleton)
+    // so no new events queue and a concurrent pagehide can't double-flush, then
+    // drain the captured instance to completion. `_drainAfterInflight` waits out
+    // any in-flight interval flush before sending the remaining pending batch.
+    if (_continuousFlusher) {
+      const flusher = _continuousFlusher;
+      _continuousFlusher = null;
+      _recorder._continuousSink = null;
+      flusher.stop();
+      try {
+        await flusher._drainAfterInflight('disabled');
+      } catch {
+        // ignore — best-effort
+      }
+    }
   }
   return next;
 }
@@ -1030,6 +1700,10 @@ export async function initSessionReplay(opts: any = {}) {
   if (typeof window === 'undefined') return null;
   if (_initialized) return _recorder;
   _initialized = true;
+
+  // Capture the effective RUM token once so the continuous flusher can attribute
+  // its chunk uploads (and the config fetch below uses the same one).
+  _rumToken = opts.rumToken ?? resolveReplayRumToken();
 
   // Pull the server-delivered per-project policy before sampling so a
   // project-set rate (and mask-all enforcement) governs this client. The server
@@ -1164,10 +1838,22 @@ export async function flushSessionReplayRefWithReason(meta?: any, timeoutMs?: an
 
 /** Test-only: reset the module singleton. */
 export function _resetSessionReplayForTest() {
+  if (_continuousFlusher) {
+    try {
+      _continuousFlusher.stop();
+    } catch {
+      // ignore
+    }
+  }
   _recorder = null;
   _initialized = false;
   _errorListenersWired = false;
   _breadcrumbSink = defaultBreadcrumbSink;
   _serverSampleRate = null;
   _serverMaskAllEnforced = false;
+  _serverContinuous = false;
+  _serverFlushIntervalMs = null;
+  _continuousFlusher = null;
+  _tailFlushListenersWired = false;
+  _rumToken = null;
 }

@@ -36,6 +36,7 @@ import {
   resetArtifactStoreCache,
   getArtifactStoreForLocation,
 } from '../artifacts/artifact-store.js';
+import { DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS } from '../replays/replay-config.js';
 import type { AppConfig, Project, RouteDeps, Stmts } from '../types.js';
 
 /** Auth fields the gate reads — stamped onto the request by a test middleware. */
@@ -347,6 +348,9 @@ describe('POST /api/replays', () => {
     const res = await supertest(app).options('/api/replays').expect(204);
     expect(res.headers['access-control-allow-origin']).toBe('*');
     expect(res.headers['access-control-allow-methods']).toMatch(/POST/);
+    // Cross-origin embedded recorders attribute ingest via X-RUM-Token, so it
+    // must be an allowed request header.
+    expect(res.headers['access-control-allow-headers']).toMatch(/X-RUM-Token/i);
   });
 
   it('rate-limits to 30 ingests per IP per hour', async () => {
@@ -773,6 +777,8 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     const res = await supertest(app).options(`/api/replays/${ID}/events`).expect(204);
     expect(res.headers['access-control-allow-origin']).toBe('*');
     expect(res.headers['access-control-allow-methods']).toMatch(/POST/);
+    // Chunked ingest must accept the X-RUM-Token attribution header cross-origin.
+    expect(res.headers['access-control-allow-headers']).toMatch(/X-RUM-Token/i);
   });
 
   it('uses a separate rate-limit budget from one-shot ingest', async () => {
@@ -1278,7 +1284,12 @@ describe('GET /api/replays/config', () => {
   it('returns the default policy when no project is identified', async () => {
     const { app } = makeApp();
     const res = await supertest(app).get('/api/replays/config').expect(200);
-    expect(res.body).toEqual({ sampleRate: null, continuous: false, maskAllEnforced: false });
+    expect(res.body).toEqual({
+      sampleRate: null,
+      continuous: false,
+      maskAllEnforced: false,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    });
     expect(verifyRumToken as unknown as Mock).not.toHaveBeenCalled();
   });
 
@@ -1287,25 +1298,45 @@ describe('GET /api/replays/config', () => {
     const res = await supertest(app)
       .get('/api/replays/config?projectId=proj-continuous')
       .expect(200);
-    expect(res.body).toEqual({ sampleRate: 0.25, continuous: true, maskAllEnforced: true });
+    expect(res.body).toEqual({
+      sampleRate: 0.25,
+      continuous: true,
+      maskAllEnforced: true,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    });
   });
 
   it('pins a continuous-on/no-rate project to an explicit sampleRate:0', async () => {
     const { app } = makeApp({ projects: [PROJECT_CONTINUOUS_NO_RATE] });
     const res = await supertest(app).get('/api/replays/config?projectId=proj-cnr').expect(200);
-    expect(res.body).toEqual({ sampleRate: 0, continuous: true, maskAllEnforced: true });
+    expect(res.body).toEqual({
+      sampleRate: 0,
+      continuous: true,
+      maskAllEnforced: true,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    });
   });
 
   it('returns the default policy for a project with no replay config', async () => {
     const { app } = makeApp({ projects: [PROJECT_PLAIN] });
     const res = await supertest(app).get('/api/replays/config?projectId=proj-plain').expect(200);
-    expect(res.body).toEqual({ sampleRate: null, continuous: false, maskAllEnforced: false });
+    expect(res.body).toEqual({
+      sampleRate: null,
+      continuous: false,
+      maskAllEnforced: false,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    });
   });
 
   it('does not leak existence: unknown project resolves to the default policy', async () => {
     const { app } = makeApp({ projects: [PROJECT_WITH_REPLAY] });
     const res = await supertest(app).get('/api/replays/config?projectId=nope').expect(200);
-    expect(res.body).toEqual({ sampleRate: null, continuous: false, maskAllEnforced: false });
+    expect(res.body).toEqual({
+      sampleRate: null,
+      continuous: false,
+      maskAllEnforced: false,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    });
   });
 
   it('resolves the policy from a valid X-RUM-Token (token wins over query)', async () => {
@@ -1319,8 +1350,24 @@ describe('GET /api/replays/config', () => {
       .get('/api/replays/config?projectId=proj-plain')
       .set('X-RUM-Token', 'rum_sometoken')
       .expect(200);
-    expect(res.body).toEqual({ sampleRate: 0.25, continuous: true, maskAllEnforced: true });
+    expect(res.body).toEqual({
+      sampleRate: 0.25,
+      continuous: true,
+      maskAllEnforced: true,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    });
     expect(verifyRumToken as unknown as Mock).toHaveBeenCalledWith('rum_sometoken');
+  });
+
+  it('delivers a project-configured flush cadence', async () => {
+    const project = {
+      id: 'proj-cadence',
+      name: 'Cadence',
+      replay: { sampleRate: 1, continuous: true, flushIntervalMs: 120_000 },
+    } as unknown as Project;
+    const { app } = makeApp({ projects: [project] });
+    const res = await supertest(app).get('/api/replays/config?projectId=proj-cadence').expect(200);
+    expect(res.body.flushIntervalMs).toBe(120_000);
   });
 
   it('answers the CORS preflight with 204 and an allow-origin header', async () => {

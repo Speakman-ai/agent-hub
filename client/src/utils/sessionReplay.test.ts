@@ -38,6 +38,18 @@ import {
   gzipString,
   UPLOAD_TIMEOUT_MS,
   FLUSH_TIMEOUT_MS,
+  ContinuousReplayFlusher,
+  submitReplayBatch,
+  defaultReplayBeacon,
+  KEEPALIVE_MAX_BYTES,
+  takeKeepalivePrefix,
+  clampContinuousFlushInterval,
+  replayBatchEndpoint,
+  isServerContinuousEnabled,
+  getContinuousFlushIntervalMs,
+  DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+  MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
+  MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
 } from './sessionReplay';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
@@ -760,6 +772,187 @@ describe('submitReplay', () => {
   });
 });
 
+describe('submitReplayBatch', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the chunk to the per-id events endpoint and returns the parsed body', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ replayId: 'rb', created: true }), { status: 201 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await submitReplayBatch(
+      { id: 'rb', events: [snap(1)] },
+      { endpointBase: '/api/replays' },
+    );
+    expect(out.created).toBe(true);
+    const [url, init] = (fetchMock as any).mock.calls[0];
+    expect(url).toBe('/api/replays/rb/events');
+    expect(init.method).toBe('POST');
+    // No token → no X-RUM-Token header.
+    expect(init.headers['X-RUM-Token']).toBeUndefined();
+  });
+
+  it('attaches X-RUM-Token when a token is supplied', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ created: true }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await submitReplayBatch(
+      { id: 'rb', events: [snap(1)] },
+      { endpointBase: '/api/replays', rumToken: 'rum_abc' },
+    );
+    const [, init] = (fetchMock as any).mock.calls[0];
+    expect(init.headers['X-RUM-Token']).toBe('rum_abc');
+  });
+
+  it('throws without an id', async () => {
+    await expect(submitReplayBatch({ events: [snap(1)] })).rejects.toThrow(/replay id/i);
+  });
+});
+
+describe('takeKeepalivePrefix', () => {
+  it('returns the largest leading run that fits the budget, in order', () => {
+    const big = (ts: number) => ev(3, ts, { p: 'x'.repeat(10 * 1024) }); // ~10KB each
+    const events = [meta(1), snap(2), ...Array.from({ length: 10 }, (_, i) => big(100 + i))];
+    const prefix = takeKeepalivePrefix(events, { trigger: 'continuous' }, KEEPALIVE_MAX_BYTES);
+    // A strict, in-order prefix that still opens with the snapshot.
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(prefix.length).toBeLessThan(events.length);
+    expect(prefix[0]).toBe(events[0]);
+    expect(hasFullSnapshot(prefix)).toBe(true);
+    const bytes = JSON.stringify({ events: prefix, meta: { trigger: 'continuous' } }).length;
+    expect(bytes).toBeLessThanOrEqual(KEEPALIVE_MAX_BYTES);
+  });
+
+  it('always includes at least the first event (even if it alone is over budget)', () => {
+    const huge = ev(2, 1, { node: { huge: 'y'.repeat(KEEPALIVE_MAX_BYTES * 2) } });
+    expect(takeKeepalivePrefix([huge, incr(2)], null, KEEPALIVE_MAX_BYTES)).toEqual([huge]);
+  });
+
+  it('returns [] for an empty input', () => {
+    expect(takeKeepalivePrefix([], null, KEEPALIVE_MAX_BYTES)).toEqual([]);
+  });
+
+  it('returns a prefix whose ACTUAL serialized body fits, even with multi-byte meta', () => {
+    // Regression: the old overhead estimate used `metaJson.length` (UTF-16 code
+    // units) and a fixed wrapper constant, so multi-byte meta was under-counted
+    // and the returned prefix could still exceed the budget — the transport then
+    // refused it and `flushTail` dropped the whole tail. Size against the real
+    // serialized body instead.
+    const fatMeta = { trigger: 'continuous', note: '☃'.repeat(500) }; // 3 UTF-8 bytes/char
+    const events = [
+      snap(1),
+      ...Array.from({ length: 40 }, (_, i) => ev(3, 100 + i, { p: 'x'.repeat(200) })),
+    ];
+    const budget = 8 * 1024;
+    const prefix = takeKeepalivePrefix(events, fatMeta, budget);
+    expect(prefix.length).toBeGreaterThan(0);
+    expect(prefix[0]).toBe(events[0]);
+    // The body the caller will actually beacon must fit the budget in real UTF-8
+    // bytes — this is exactly what `defaultReplayBeacon`'s size guard measures.
+    const body = JSON.stringify({ events: prefix, meta: fatMeta || undefined });
+    expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(budget);
+  });
+
+  it('is maximal: appending the next event would overflow the real body', () => {
+    const enc = (s: string) => new TextEncoder().encode(s).length;
+    const m = { trigger: 'continuous' };
+    const events = [
+      snap(1),
+      ...Array.from({ length: 30 }, (_, i) => ev(3, 100 + i, { p: 'z'.repeat(512) })),
+    ];
+    const budget = 6 * 1024;
+    const prefix = takeKeepalivePrefix(events, m, budget);
+    expect(enc(JSON.stringify({ events: prefix, meta: m }))).toBeLessThanOrEqual(budget);
+    // We did not under-deliver: one more event would have pushed the real body over.
+    if (prefix.length < events.length) {
+      const oneMore = events.slice(0, prefix.length + 1);
+      expect(enc(JSON.stringify({ events: oneMore, meta: m }))).toBeGreaterThan(budget);
+    }
+  });
+
+  it('accounts for the wrapper exactly with no meta', () => {
+    const enc = (s: string) => new TextEncoder().encode(s).length;
+    const events = Array.from({ length: 20 }, (_, i) => ev(3, i, { p: 'q'.repeat(256) }));
+    const budget = 4 * 1024;
+    const prefix = takeKeepalivePrefix(events, null, budget);
+    expect(enc(JSON.stringify({ events: prefix, meta: undefined }))).toBeLessThanOrEqual(budget);
+    if (prefix.length < events.length) {
+      const oneMore = events.slice(0, prefix.length + 1);
+      expect(enc(JSON.stringify({ events: oneMore, meta: undefined }))).toBeGreaterThan(budget);
+    }
+  });
+});
+
+describe('defaultReplayBeacon', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('uses sendBeacon (no headers) when there is no token', () => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    vi.stubGlobal('navigator', { sendBeacon });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(defaultReplayBeacon('/api/replays/r/events', '{"events":[]}')).toBe(true);
+    expect(sendBeacon).toHaveBeenCalledTimes(1);
+    // sendBeacon can't carry headers, so the token-less path must not use fetch.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses a keepalive fetch carrying X-RUM-Token when a token is present', () => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    vi.stubGlobal('navigator', { sendBeacon });
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(defaultReplayBeacon('/api/replays/r/events', '{"events":[]}', 'rum_xyz')).toBe(true);
+    // sendBeacon can't attach the token header, so the token path must use fetch.
+    expect(sendBeacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = (fetchMock as any).mock.calls[0];
+    expect(url).toBe('/api/replays/r/events');
+    expect(init.keepalive).toBe(true);
+    expect(init.headers['X-RUM-Token']).toBe('rum_xyz');
+  });
+
+  // Regression: keepalive fetch rejects ASYNC on an over-budget body (after we'd
+  // have returned), so the token path must refuse oversize bodies SYNCHRONOUSLY
+  // and report false — never claim a queue it can't guarantee. 5-min rrweb chunks
+  // routinely exceed the keepalive budget.
+  it('refuses an over-budget token body synchronously without dispatching', () => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    vi.stubGlobal('navigator', { sendBeacon });
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const oversize = 'x'.repeat(KEEPALIVE_MAX_BYTES + 1);
+    expect(defaultReplayBeacon('/api/replays/r/events', oversize, 'rum_xyz')).toBe(false);
+    // No optimistic dispatch, and the headerless sendBeacon is never used for a token.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sendBeacon).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a token body exactly at the keepalive budget', () => {
+    vi.stubGlobal('navigator', { sendBeacon: vi.fn() });
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const atLimit = 'x'.repeat(KEEPALIVE_MAX_BYTES);
+    expect(defaultReplayBeacon('/api/replays/r/events', atLimit, 'rum_xyz')).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('SessionReplayRecorder', () => {
   function fakeRecord() {
     const calls: Record<string, any> = { emit: null, stopped: false };
@@ -1314,5 +1507,675 @@ describe('flushSessionReplayRef — null-flush breadcrumbs', () => {
       '/uploads/replay-x.json',
     );
     expect(sink!).not.toHaveBeenCalled();
+  });
+});
+
+describe('clampContinuousFlushInterval', () => {
+  it('defaults unset / non-finite to the 5-min default', () => {
+    expect(clampContinuousFlushInterval(undefined)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampContinuousFlushInterval(null)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampContinuousFlushInterval('soon')).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampContinuousFlushInterval(NaN)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  it('raises a sub-minute cadence to the floor (no sub-minute on monolithic storage)', () => {
+    expect(clampContinuousFlushInterval(5_000)).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampContinuousFlushInterval(0)).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  it('caps an excessive cadence and passes an in-range one through', () => {
+    expect(clampContinuousFlushInterval(10 * 60 * 60 * 1000)).toBe(
+      MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
+    );
+    expect(clampContinuousFlushInterval(2 * 60 * 1000)).toBe(2 * 60 * 1000);
+  });
+});
+
+describe('applyServerReplayConfig — continuous tier', () => {
+  beforeEach(() => _resetSessionReplayForTest());
+  afterEach(() => _resetSessionReplayForTest());
+
+  it('is OFF by default and for a non-continuous policy', () => {
+    expect(isServerContinuousEnabled()).toBe(false);
+    applyServerReplayConfig({ sampleRate: 1, continuous: false });
+    expect(isServerContinuousEnabled()).toBe(false);
+    // Cadence falls back to the built-in default when the server sends none.
+    expect(getContinuousFlushIntervalMs()).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  it('records the opt-in and the (clamped) server cadence', () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, flushIntervalMs: 120_000 });
+    expect(isServerContinuousEnabled()).toBe(true);
+    expect(getContinuousFlushIntervalMs()).toBe(120_000);
+  });
+
+  it('floors a sub-minute server cadence', () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, flushIntervalMs: 5_000 });
+    expect(getContinuousFlushIntervalMs()).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+});
+
+describe('ContinuousReplayFlusher', () => {
+  const cmeta = (ts: any) => meta(ts);
+  const csnap = (ts: any) => snap(ts);
+  const cincr = (ts: any) => incr(ts);
+
+  // A controllable interval timer: capture the scheduled callback and fire it
+  // on demand, so the periodic flush is deterministic without real timers.
+  function fakeInterval() {
+    const state: Record<string, any> = { cb: null, ms: null, cleared: false };
+    const setIntervalFn = (cb: any, ms: any) => {
+      state.cb = cb;
+      state.ms = ms;
+      return 42; // opaque handle
+    };
+    const clearIntervalFn = (_h: any) => {
+      state.cleared = true;
+    };
+    return { state, setIntervalFn, clearIntervalFn };
+  }
+
+  it('requires a replay id', () => {
+    expect(() => new ContinuousReplayFlusher({} as any)).toThrow(/replayId/);
+  });
+
+  it('clamps a sub-minute cadence at construction', () => {
+    const f = new ContinuousReplayFlusher({ replayId: 'abc12345', flushIntervalMs: 1_000 });
+    expect(f.flushIntervalMs).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  // Regression: the chunk transport must carry the project's RUM token so the
+  // creating chunk is attributed and later chunks aren't rejected 403.
+  it('threads the RUM token into both the async batch upload and the beacon', async () => {
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new ContinuousReplayFlusher({
+      replayId: 'rtok',
+      submitBatch,
+      beacon,
+      rumToken: 'rum_tok',
+    });
+
+    // async (interval) path forwards the token in the submit opts.
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    expect(submitBatch.mock.calls[0][1].rumToken).toBe('rum_tok');
+
+    // beacon (tail) path forwards the token as the 3rd arg.
+    f.addEvent(cincr(3));
+    f.flushTail('pagehide');
+    expect(beacon.mock.calls[0][2]).toBe('rum_tok');
+  });
+
+  it('schedules the periodic flush at the configured cadence', () => {
+    const { state, setIntervalFn, clearIntervalFn } = fakeInterval();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'r0',
+      submitBatch: vi.fn().mockResolvedValue({ created: true }),
+      setIntervalFn,
+      clearIntervalFn,
+      flushIntervalMs: 5 * 60 * 1000,
+    });
+    f.start();
+    expect(state.ms).toBe(5 * 60 * 1000);
+    expect(typeof state.cb).toBe('function');
+    f.stop();
+    expect(state.cleared).toBe(true);
+  });
+
+  it('the scheduled callback triggers a flush', async () => {
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const { state, setIntervalFn, clearIntervalFn } = fakeInterval();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'rcb',
+      submitBatch,
+      setIntervalFn,
+      clearIntervalFn,
+    });
+    f.start();
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    // The callback is fire-and-forget; invoke it, then await the buffered flush.
+    await state.cb();
+    await f.flush('interval');
+    expect(submitBatch).toHaveBeenCalled();
+  });
+
+  it('streams a multi-flush session as appended chunks', async () => {
+    const submitBatch = vi.fn().mockResolvedValue({ replayId: 'r1', created: true });
+    const f = new ContinuousReplayFlusher({
+      replayId: 'r1',
+      submitBatch,
+      flushIntervalMs: 5 * 60 * 1000,
+    });
+
+    // First window: snapshot + a couple events → creating chunk carries the snapshot.
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    f.addEvent(cincr(3));
+    await f.flush('interval');
+
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    const [firstArgs, firstOpts] = submitBatch.mock.calls[0];
+    expect(firstArgs.id).toBe('r1');
+    expect(firstArgs.events).toHaveLength(3);
+    expect(hasFullSnapshot(firstArgs.events)).toBe(true);
+    // First (creating) chunk carries the continuous meta.
+    expect(firstArgs.meta).toMatchObject({ trigger: 'continuous' });
+    expect(firstOpts.endpointBase).toBe(REPLAY_INGEST_ENDPOINT);
+
+    // Second window: only incrementals — appended without re-sending the snapshot,
+    // and with no meta (server honors meta on the first chunk only).
+    f.addEvent(cincr(4));
+    f.addEvent(cincr(5));
+    await f.flush('interval');
+
+    expect(submitBatch).toHaveBeenCalledTimes(2);
+    const secondArgs = submitBatch.mock.calls[1][0];
+    expect(secondArgs.events).toHaveLength(2);
+    expect(hasFullSnapshot(secondArgs.events)).toBe(false);
+    expect(secondArgs.meta).toBeNull();
+
+    // Nothing buffered → the next flush is a no-op.
+    await f.flush('interval');
+    expect(submitBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not ship a snapshot-less creating chunk (waits for a snapshot)', async () => {
+    const submitBatch = vi.fn().mockResolvedValue({ replayId: 'r2', created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'r2', submitBatch });
+    // Only incrementals so far → no creating chunk can be sent.
+    f.addEvent(cincr(1));
+    f.addEvent(cincr(2));
+    expect(await f.flush('interval')).toBeNull();
+    expect(submitBatch).not.toHaveBeenCalled();
+
+    // Snapshot arrives → the next flush creates the replay with the snapshot.
+    f.addEvent(csnap(3));
+    await f.flush('interval');
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    expect(hasFullSnapshot(submitBatch.mock.calls[0][0].events)).toBe(true);
+  });
+
+  it('retains the creating chunk until confirmed (keeps the only snapshot)', async () => {
+    const submitBatch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ replayId: 'r3', created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'r3', submitBatch });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    // Creating chunk is sent as a COPY and `_pending` is NOT drained until the
+    // server confirms — a failed (or unload-killed) upload leaves the snapshot
+    // in place rather than relying on a catch that may never run.
+    expect(await f.flush('interval')).toBeNull(); // failed, snapshot retained
+    expect(f._pending.length).toBe(2);
+    expect(f._created).toBe(false);
+    // Retry succeeds and still carries the snapshot; only then is `_pending` cleared.
+    await f.flush('interval');
+    expect(submitBatch).toHaveBeenCalledTimes(2);
+    expect(hasFullSnapshot(submitBatch.mock.calls[1][0].events)).toBe(true);
+    expect(f._created).toBe(true);
+    expect(f._pending.length).toBe(0);
+  });
+
+  it('clears only the confirmed creating events, keeping ones queued mid-flight', async () => {
+    let resolveCreate: any;
+    const create = new Promise((r) => {
+      resolveCreate = r;
+    });
+    const submitBatch = vi.fn().mockReturnValue(create.then(() => ({ created: true })));
+    const f = new ContinuousReplayFlusher({ replayId: 'r3b', submitBatch });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    const inflight = f.flush('interval'); // creating: sends copy of [meta, snap]
+    // Events arrive while the creating upload is in flight.
+    f.addEvent(cincr(3));
+    f.addEvent(cincr(4));
+    resolveCreate();
+    await inflight;
+    // Confirmed: the two sent events are dropped, the two queued behind stay.
+    expect(f._created).toBe(true);
+    expect(f._pending.map((e: any) => e.timestamp)).toEqual([3, 4]);
+  });
+
+  it('flushTail beacons the pending tail synchronously on tab close', () => {
+    const beacon = vi.fn().mockReturnValue(true);
+    const submitBatch = vi.fn();
+    const f = new ContinuousReplayFlusher({ replayId: 'r4', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    f.addEvent(cincr(3));
+
+    expect(f.flushTail('pagehide')).toBe(true);
+    expect(beacon).toHaveBeenCalledTimes(1);
+    const [url, body] = beacon.mock.calls[0];
+    expect(url).toBe(replayBatchEndpoint('r4'));
+    const parsed = JSON.parse(body);
+    expect(parsed.events).toHaveLength(3);
+    expect(hasFullSnapshot(parsed.events)).toBe(true);
+    // Beacon path does not also fire the async transport.
+    expect(submitBatch).not.toHaveBeenCalled();
+    // Tail drained the buffer.
+    expect(f._pending.length).toBe(0);
+  });
+
+  it('retains the batch (no unsafe async) when the beacon is unavailable on a terminal flush', async () => {
+    const beacon = vi.fn().mockReturnValue(false); // no usable unload transport
+    const submitBatch = vi.fn().mockResolvedValue({ replayId: 'r5', created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'r5', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+
+    expect(f.flushTail('pagehide')).toBe(false);
+    await Promise.resolve();
+    await Promise.resolve();
+    // A terminal flush must NOT fall back to the non-unload-safe async fetch — it
+    // would be killed on discard. The batch (incl. the snapshot) is retained in
+    // memory instead, not lost.
+    expect(submitBatch).not.toHaveBeenCalled();
+    expect(hasFullSnapshot(f._pending)).toBe(true);
+  });
+
+  it('is a no-op when nothing is buffered', async () => {
+    const beacon = vi.fn().mockReturnValue(true);
+    const submitBatch = vi.fn();
+    const f = new ContinuousReplayFlusher({ replayId: 'r6', submitBatch, beacon });
+    expect(await f.flush('interval')).toBeNull();
+    expect(f.flushTail('pagehide')).toBe(false);
+    expect(submitBatch).not.toHaveBeenCalled();
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
+  // Regression: a bare flush() short-circuits to the in-flight `_flushing`
+  // promise without draining a newly-pending tail, so a non-terminal flush that
+  // overlaps an in-flight interval flush could drop the tail. `_drainAfterInflight`
+  // (used by the non-terminal + disable paths) must chain a flush AFTER the
+  // in-flight one. (Terminal flushes never use this async path — see the
+  // unload-safe beacon tests below.)
+  it('does not lose the tail when a non-terminal flush overlaps an in-flight interval flush', async () => {
+    let resolveSlow: any;
+    const slow = new Promise((r) => {
+      resolveSlow = r;
+    });
+    const submitBatch = vi
+      .fn()
+      .mockResolvedValueOnce({ created: true }) // creating chunk (fast)
+      .mockReturnValueOnce(slow.then(() => ({ created: false }))) // interval chunk (slow)
+      .mockResolvedValue({ created: false }); // chained tail
+    const f = new ContinuousReplayFlusher({ replayId: 'r7', submitBatch });
+
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    expect(f._created).toBe(true);
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+
+    // A periodic flush is now in flight (its submit is held open).
+    f.addEvent(cincr(3));
+    const inflight = f.flush('interval');
+    expect(submitBatch).toHaveBeenCalledTimes(2);
+
+    // Tail events arrive while that flush is in flight; a non-terminal flush
+    // (tab backgrounded) must chain past the in-flight one, not drop them.
+    f.addEvent(cincr(4));
+    f.addEvent(cincr(5));
+    expect(f.flushTail('visibilitychange')).toBe(false);
+    expect(submitBatch).toHaveBeenCalledTimes(2); // waits out the in-flight flush
+
+    resolveSlow();
+    await inflight;
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The chained flush drained the re-queued tail.
+    expect(submitBatch).toHaveBeenCalledTimes(3);
+    const tail = submitBatch.mock.calls[2][0];
+    expect(tail.events.map((e: any) => e.timestamp)).toEqual([4, 5]);
+    expect(f._pending.length).toBe(0);
+  });
+
+  // Same hazard via the snapshot-less first-chunk branch: the creating flush is
+  // in flight, tail events (no snapshot) arrive, tab closes. The chained drain
+  // must send them once the creating chunk completes (so _created flips true).
+  it('defers a terminal flush with no snapshot yet to the confirmed path', async () => {
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new ContinuousReplayFlusher({ replayId: 'r9', submitBatch, beacon });
+
+    // Only incrementals so far — no full snapshot, so there is no valid first
+    // chunk to beacon. A terminal pagehide must NOT beacon a snapshot-less batch.
+    f.addEvent(cincr(1));
+    f.addEvent(cincr(2));
+    expect(f.flushTail('pagehide')).toBe(false);
+    expect(beacon).not.toHaveBeenCalled();
+
+    await new Promise((r) => setTimeout(r, 0));
+    // The confirmed async path also no-ops without a snapshot — nothing is sent
+    // and the capture stays uncreated until a snapshot is recorded.
+    expect(submitBatch).not.toHaveBeenCalled();
+    expect(f._created).toBe(false);
+  });
+
+  // Regression for the reviewer's race: on a normal close browsers commonly fire
+  // `visibilitychange: hidden` (non-terminal) THEN `pagehide` (terminal). For an
+  // uncreated capture the non-terminal flush must NOT drain the only snapshot
+  // into an async upload that unload will kill — otherwise the immediately
+  // following terminal beacon finds `_pending` empty and the first continuous
+  // chunk is lost for sessions that close before the first interval.
+  it('keeps the creating snapshot for a pagehide that follows a visibilitychange flush', async () => {
+    let resolveCreate: any;
+    const create = new Promise((r) => {
+      resolveCreate = r;
+    });
+    const submitBatch = vi.fn().mockReturnValue(create.then(() => ({ created: true })));
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new ContinuousReplayFlusher({ replayId: 'rseq', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+
+    // visibilitychange (non-terminal) → confirmed async flush sends a COPY.
+    expect(f.flushTail('visibilitychange')).toBe(false);
+    await Promise.resolve();
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    // The snapshot is NOT drained while creation is unconfirmed.
+    expect(hasFullSnapshot(f._pending)).toBe(true);
+
+    // pagehide follows immediately (the async upload would be killed on unload).
+    // The terminal beacon still has the snapshot to send.
+    expect(f.flushTail('pagehide')).toBe(true);
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(hasFullSnapshot(JSON.parse(beacon.mock.calls[0][1]).events)).toBe(true);
+
+    resolveCreate();
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  // Regression: sendBeacon only confirms the browser QUEUED the request, not that
+  // the server accepted it. A non-terminal `visibilitychange: hidden` of an
+  // uncreated capture must NOT optimistically flip `_created` (and discard the
+  // only snapshot) off a beacon enqueue — a returning tab would then emit
+  // snapshot-less appends the server rejects, with no snapshot left to recover.
+  it('does not create off an unconfirmed beacon on a non-terminal visibility flush', async () => {
+    const beacon = vi.fn().mockReturnValue(true); // "queued" — but unconfirmed
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'rv', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+
+    // Non-terminal: a backgrounded tab can return → must use the confirmed path.
+    expect(f.flushTail('visibilitychange')).toBe(false);
+    expect(beacon).not.toHaveBeenCalled();
+
+    // The confirmed async path creates the replay for real and only then flips.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    expect(hasFullSnapshot(submitBatch.mock.calls[0][0].events)).toBe(true);
+    expect(f._created).toBe(true);
+  });
+
+  it('retains the snapshot when a non-terminal flush cannot confirm creation', async () => {
+    const beacon = vi.fn().mockReturnValue(true);
+    const submitBatch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('dropped')) // first attempt: no server 2xx
+      .mockResolvedValueOnce({ created: true }); // later flush confirms
+    const f = new ContinuousReplayFlusher({ replayId: 'rv2', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+
+    expect(f.flushTail('visibilitychange')).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    // Creation NOT confirmed → still uncreated, snapshot retained for retry.
+    expect(f._created).toBe(false);
+    expect(hasFullSnapshot(f._pending)).toBe(true);
+
+    // A later (e.g. interval) flush recovers using the retained snapshot.
+    await f.flush('interval');
+    expect(f._created).toBe(true);
+    expect(submitBatch).toHaveBeenCalledTimes(2);
+    expect(hasFullSnapshot(submitBatch.mock.calls[1][0].events)).toBe(true);
+  });
+
+  // A TERMINAL `pagehide` of an uncreated capture still beacons the creating
+  // chunk best-effort — the document is unloading, an async fetch can't finish,
+  // and the tab won't return, so an unconfirmed enqueue can't strand a later flush.
+  it('beacons the creating chunk on a terminal pagehide', () => {
+    const beacon = vi.fn().mockReturnValue(true);
+    const submitBatch = vi.fn();
+    const f = new ContinuousReplayFlusher({ replayId: 'rterm', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+
+    expect(f.flushTail('pagehide')).toBe(true);
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(hasFullSnapshot(JSON.parse(beacon.mock.calls[0][1]).events)).toBe(true);
+    expect(submitBatch).not.toHaveBeenCalled();
+  });
+
+  // A size-aware beacon mock mirroring defaultReplayBeacon's keepalive budget:
+  // accepts a body within KEEPALIVE_MAX_BYTES, refuses (false) when over.
+  const sizedBeacon = () =>
+    vi.fn((_url: any, body: any) => String(body).length <= KEEPALIVE_MAX_BYTES);
+  // A ~10KB incremental event (ASCII padding so byte length ≈ string length).
+  const bigIncr = (ts: any) => ev(3, ts, { p: 'x'.repeat(10 * 1024) });
+
+  // Regression: an oversized terminal tail must stay on the UNLOAD-SAFE transport.
+  // The fallback to a normal async `fetch` (`_drainAfterInflight`) is killed on
+  // document unload, silently losing the batch. Instead flushTail beacons the
+  // largest budget-sized prefix and drops the remainder (accepted tail loss).
+  it('beacons a budget-sized prefix for an oversized terminal tail and never touches async', async () => {
+    const beacon = sizedBeacon();
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'rov', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval'); // create the replay
+    expect(f._created).toBe(true);
+    submitBatch.mockClear();
+
+    // ~100KB of incremental tail — far over the keepalive budget.
+    for (let i = 0; i < 10; i++) f.addEvent(bigIncr(100 + i));
+
+    expect(f.flushTail('pagehide')).toBe(true);
+    // Whole batch attempted (refused, over budget) then a budget-sized prefix.
+    expect(beacon).toHaveBeenCalledTimes(2);
+    expect(beacon.mock.calls[1][1].length).toBeLessThanOrEqual(KEEPALIVE_MAX_BYTES);
+    // The unsafe async transport is NEVER used on a terminal flush.
+    expect(submitBatch).not.toHaveBeenCalled();
+    // Remainder dropped (accepted unload tail loss); buffer cleared.
+    expect(f._pending.length).toBe(0);
+  });
+
+  it('keeps the snapshot in the prefix for an oversized uncreated terminal tail', () => {
+    const beacon = sizedBeacon();
+    const submitBatch = vi.fn();
+    const f = new ContinuousReplayFlusher({ replayId: 'rov2', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2)); // small snapshot
+    for (let i = 0; i < 10; i++) f.addEvent(bigIncr(100 + i));
+
+    expect(f.flushTail('pagehide')).toBe(true);
+    expect(submitBatch).not.toHaveBeenCalled();
+    // The prefix that was actually beaconed is a VALID creating chunk (has snapshot).
+    const lastBody = beacon.mock.calls[beacon.mock.calls.length - 1][1];
+    expect(hasFullSnapshot(JSON.parse(lastBody).events)).toBe(true);
+    expect(f._created).toBe(true);
+  });
+
+  it('retains (no junk, no async) when the snapshot alone overflows the budget', () => {
+    const beacon = sizedBeacon();
+    const submitBatch = vi.fn();
+    const f = new ContinuousReplayFlusher({ replayId: 'rov3', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(ev(2, 2, { node: { huge: 'y'.repeat(KEEPALIVE_MAX_BYTES) } })); // snapshot > budget
+    f.addEvent(ev(3, 3, {}));
+
+    expect(f.flushTail('pagehide')).toBe(false);
+    // Never beacons a snapshot-less first chunk, never falls to async.
+    expect(submitBatch).not.toHaveBeenCalled();
+    // The batch (incl. the snapshot) is retained in memory, not lost.
+    expect(hasFullSnapshot(f._pending)).toBe(true);
+  });
+
+  // Regression: a *persisted* pagehide (bfcache) can resume, so it is forwarded
+  // as { terminal: false }. An uncreated capture must then take the confirmed
+  // async path — not an optimistic beacon-create that would strand the capture
+  // if the bfcache page resumes and the beacon was never accepted server-side.
+  it('uses the confirmed path for a persisted (bfcache) pagehide', async () => {
+    const beacon = vi.fn().mockReturnValue(true);
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'rbf', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+
+    expect(f.flushTail('pagehide', { terminal: false })).toBe(false);
+    expect(beacon).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    expect(hasFullSnapshot(submitBatch.mock.calls[0][0].events)).toBe(true);
+    expect(f._created).toBe(true);
+  });
+
+  // Regression: a non-terminal flush of an ALREADY-CREATED capture must not
+  // beacon-and-drain either. The beacon only confirms enqueue; if it is dropped
+  // while the tab merely backgrounds and later resumes, those drained incremental
+  // events are lost for nothing. Non-terminal → confirmed async path.
+  it('does not optimistically drain a created capture on a non-terminal flush', async () => {
+    const beacon = vi.fn().mockReturnValue(true);
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const f = new ContinuousReplayFlusher({ replayId: 'rcnt', submitBatch, beacon });
+
+    // Create the replay first.
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    expect(f._created).toBe(true);
+    submitBatch.mockClear();
+
+    // Incremental tail + a non-terminal visibilitychange (tab backgrounded).
+    f.addEvent(cincr(3));
+    f.addEvent(cincr(4));
+    expect(f.flushTail('visibilitychange', { terminal: false })).toBe(false);
+    // Must NOT beacon (enqueue-only) the incremental tail on a live page.
+    expect(beacon).not.toHaveBeenCalled();
+
+    // The confirmed async path delivers them instead.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    expect(submitBatch.mock.calls[0][0].events.map((e: any) => e.timestamp)).toEqual([3, 4]);
+  });
+
+  // And when that confirmed flush fails, the created tail is RETAINED (re-queued)
+  // for the next attempt rather than lost — the whole point of avoiding the
+  // enqueue-only beacon while the page is alive.
+  it('retains a created tail when a non-terminal confirmed flush fails', async () => {
+    const submitBatch = vi
+      .fn()
+      .mockResolvedValueOnce({ created: true }) // creating chunk
+      .mockRejectedValueOnce(new Error('dropped')) // the non-terminal tail flush
+      .mockResolvedValueOnce({ created: false }); // retry
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new ContinuousReplayFlusher({ replayId: 'rcnt2', submitBatch, beacon });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+
+    f.addEvent(cincr(3));
+    expect(f.flushTail('visibilitychange', { terminal: false })).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    // Delivery failed → the event is retained, not lost.
+    expect(f._pending.map((e: any) => e.timestamp)).toEqual([3]);
+
+    // A later flush recovers it.
+    await f.flush('interval');
+    expect(submitBatch.mock.calls[2][0].events.map((e: any) => e.timestamp)).toEqual([3]);
+    expect(f._pending.length).toBe(0);
+  });
+});
+
+describe('continuous capture wiring (opted-out no-op)', () => {
+  beforeEach(() => _resetSessionReplayForTest());
+  afterEach(() => _resetSessionReplayForTest());
+
+  it('starts NO continuous flusher when the project has not opted in', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: false });
+    await setSessionReplayEnabled(true);
+    const { getContinuousFlusher } = await import('./sessionReplay');
+    expect(getContinuousFlusher()).toBeNull();
+  });
+
+  it('starts a continuous flusher when the project opts in', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, flushIntervalMs: 120_000 });
+    await setSessionReplayEnabled(true);
+    const { getContinuousFlusher } = await import('./sessionReplay');
+    const flusher = getContinuousFlusher();
+    expect(flusher).not.toBeNull();
+    expect(flusher.active).toBe(true);
+    expect(flusher.flushIntervalMs).toBe(120_000);
+    // Disabling tears it down.
+    await setSessionReplayEnabled(false);
+    expect(getContinuousFlusher()).toBeNull();
+  });
+
+  // Regression for the listener wiring: the pagehide handler must read
+  // event.persisted and forward terminality accordingly (persisted = bfcache =
+  // non-terminal), rather than always treating pagehide as terminal.
+  it('forwards pagehide terminality from event.persisted', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true });
+    await setSessionReplayEnabled(true);
+    const { getContinuousFlusher } = await import('./sessionReplay');
+    const flusher = getContinuousFlusher();
+    expect(flusher).not.toBeNull();
+    const spy = vi.spyOn(flusher, 'flushTail');
+
+    const persisted: any = new Event('pagehide');
+    persisted.persisted = true;
+    window.dispatchEvent(persisted);
+    expect(spy).toHaveBeenCalledWith('pagehide', { terminal: false });
+
+    spy.mockClear();
+    const discarded: any = new Event('pagehide');
+    discarded.persisted = false;
+    window.dispatchEvent(discarded);
+    expect(spy).toHaveBeenCalledWith('pagehide', { terminal: true });
+  });
+
+  // Regression: a runtime disable happens while the page is ALIVE, so the final
+  // buffered batch must be flushed with confirmation — not left to a
+  // fire-and-forget async flush that the immediate teardown would orphan.
+  // setSessionReplayEnabled(false) must AWAIT the flush before resolving.
+  it('awaits the final confirmed flush before tearing down on disable', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true });
+    await setSessionReplayEnabled(true);
+    const mod = await import('./sessionReplay');
+    const flusher = mod.getContinuousFlusher();
+    expect(flusher).not.toBeNull();
+
+    let resolveSubmit: any;
+    const submit = new Promise((r) => {
+      resolveSubmit = r;
+    });
+    const submitBatch = vi.fn().mockReturnValue(submit.then(() => ({ created: true })));
+    flusher._submitBatch = submitBatch;
+    // Buffer a creating chunk (as if the recorder had emitted it).
+    flusher.addEvent(meta(1));
+    flusher.addEvent(snap(2));
+
+    let resolved = false;
+    const disabling = mod.setSessionReplayEnabled(false).then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+
+    // The final flush is in flight and disable has NOT resolved yet.
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    expect(hasFullSnapshot(submitBatch.mock.calls[0][0].events)).toBe(true);
+    expect(resolved).toBe(false);
+
+    resolveSubmit();
+    await disabling;
+    expect(resolved).toBe(true);
+    expect(mod.getContinuousFlusher()).toBeNull();
   });
 });

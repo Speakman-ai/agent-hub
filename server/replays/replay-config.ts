@@ -38,6 +38,16 @@ export interface ProjectReplayConfig {
    * Only meaningful with `continuous: true`; ignored (and dropped) otherwise.
    */
   maskAllEnforced?: boolean;
+  /**
+   * Cadence (ms) at which the continuous recorder flushes appended chunks to the
+   * chunked-ingest endpoint. Server-delivered per-project so the policy applies
+   * to every user. Unset → the recorder uses {@link DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS}
+   * (5 min). Clamped to [{@link MIN_CONTINUOUS_FLUSH_INTERVAL_MS},
+   * {@link MAX_CONTINUOUS_FLUSH_INTERVAL_MS}] — the floor enforces the MVP
+   * decision that there is NO sub-minute cadence (sub-minute streaming is the
+   * deferred segmented-storage upgrade path).
+   */
+  flushIntervalMs?: number;
 }
 
 /** The resolved policy delivered to a recorder / the admin UI. */
@@ -59,13 +69,35 @@ export interface ResolvedReplayPolicy {
    * off this is always false (the per-browser masking choice governs).
    */
   maskAllEnforced: boolean;
+  /**
+   * Cadence (ms) the continuous recorder flushes chunks at. Always present so
+   * the client never has to guess; defaults to
+   * {@link DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS} and is clamped to the
+   * [{@link MIN_CONTINUOUS_FLUSH_INTERVAL_MS}, {@link MAX_CONTINUOUS_FLUSH_INTERVAL_MS}]
+   * range (the floor bars sub-minute cadence per the MVP storage decision).
+   */
+  flushIntervalMs: number;
 }
+
+/** Default continuous-flush cadence (5 min) — the MVP interval. */
+export const DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * Floor on the continuous-flush cadence. The MVP reuses the monolithic
+ * gunzip-concat-regzip-overwrite append, which is acceptable at ~5-min cadence
+ * (~6 flushes / 30-min session) but NOT at sub-minute cadence. Sub-minute
+ * streaming is the deferred segmented-storage upgrade, so the policy refuses to
+ * deliver a cadence faster than this.
+ */
+export const MIN_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 1000;
+/** Ceiling on the cadence so a tab's tail loss window stays bounded (1 hour). */
+export const MAX_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 60 * 1000;
 
 /** The policy returned when a project has no replay config (or no project). */
 export const DEFAULT_REPLAY_POLICY: ResolvedReplayPolicy = Object.freeze({
   sampleRate: null,
   continuous: false,
   maskAllEnforced: false,
+  flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
 });
 
 /** Clamp an arbitrary finite number to a valid sample rate in [0, 1]. */
@@ -73,6 +105,21 @@ export function clampReplaySampleRate(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value <= 0) return 0;
   if (value >= 1) return 1;
+  return value;
+}
+
+/**
+ * Clamp a continuous-flush cadence to the deliverable range. A non-finite /
+ * unset value resolves to the 5-min default; anything below the sub-minute floor
+ * is raised to it (the MVP storage cannot support faster), and anything above
+ * the ceiling is capped.
+ */
+export function clampFlushIntervalMs(value: number | undefined | null): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS;
+  }
+  if (value < MIN_CONTINUOUS_FLUSH_INTERVAL_MS) return MIN_CONTINUOUS_FLUSH_INTERVAL_MS;
+  if (value > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) return MAX_CONTINUOUS_FLUSH_INTERVAL_MS;
   return value;
 }
 
@@ -126,11 +173,29 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     out.maskAllEnforced = obj.maskAllEnforced;
   }
 
+  if (obj.flushIntervalMs !== undefined) {
+    const n = obj.flushIntervalMs;
+    if (typeof n !== 'number' || !Number.isFinite(n)) {
+      return { ok: false, error: 'replay.flushIntervalMs must be a finite number (ms)' };
+    }
+    if (n < MIN_CONTINUOUS_FLUSH_INTERVAL_MS || n > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) {
+      return {
+        ok: false,
+        error: `replay.flushIntervalMs must be between ${MIN_CONTINUOUS_FLUSH_INTERVAL_MS} and ${MAX_CONTINUOUS_FLUSH_INTERVAL_MS} ms (no sub-minute cadence on monolithic storage)`,
+      };
+    }
+    out.flushIntervalMs = clampFlushIntervalMs(n);
+  }
+
   // An empty object (no recognized config keys) clears the config rather than
   // persisting `{}`, so the project row stays lean. `maskAllEnforced` is not a
-  // standalone config — without `continuous`/`sampleRate` it is meaningless, so
-  // a lone `maskAllEnforced` also clears (handled by the strip below).
-  if (out.sampleRate === undefined && out.continuous === undefined) {
+  // standalone config — without `continuous`/`sampleRate`/`flushIntervalMs` it is
+  // meaningless, so a lone `maskAllEnforced` also clears (handled by the strip below).
+  if (
+    out.sampleRate === undefined &&
+    out.continuous === undefined &&
+    out.flushIntervalMs === undefined
+  ) {
     return { ok: true, value: null };
   }
   // Never persist continuous-on with an unset rate: pin it to an explicit 0
@@ -178,5 +243,6 @@ export function resolveReplayPolicy(
     // Admin has explicitly opted the project out (`maskAllEnforced === false`).
     // With continuous off, mask-all is never enforced (per-browser choice wins).
     maskAllEnforced: continuous && cfg.maskAllEnforced !== false,
+    flushIntervalMs: clampFlushIntervalMs(cfg.flushIntervalMs),
   };
 }

@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   clampReplaySampleRate,
+  clampFlushIntervalMs,
   normalizeReplayConfig,
   resolveReplayPolicy,
   DEFAULT_REPLAY_POLICY,
+  DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+  MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
+  MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
 } from './replay-config.js';
 
 describe('clampReplaySampleRate', () => {
@@ -23,6 +27,28 @@ describe('clampReplaySampleRate', () => {
     expect(clampReplaySampleRate(NaN)).toBe(0);
     expect(clampReplaySampleRate(Infinity)).toBe(0);
     expect(clampReplaySampleRate(-Infinity)).toBe(0);
+  });
+});
+
+describe('clampFlushIntervalMs', () => {
+  it('defaults unset / non-finite to the 5-min default', () => {
+    expect(clampFlushIntervalMs(undefined)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampFlushIntervalMs(null)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampFlushIntervalMs(NaN)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampFlushIntervalMs(Infinity)).toBe(DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  it('raises a sub-minute cadence to the floor (no sub-minute on monolithic storage)', () => {
+    expect(clampFlushIntervalMs(5_000)).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(clampFlushIntervalMs(0)).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  it('caps an excessive cadence to the ceiling', () => {
+    expect(clampFlushIntervalMs(10 * 60 * 60 * 1000)).toBe(MAX_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+
+  it('passes through an in-range cadence', () => {
+    expect(clampFlushIntervalMs(2 * 60 * 1000)).toBe(2 * 60 * 1000);
   });
 });
 
@@ -67,6 +93,22 @@ describe('normalizeReplayConfig', () => {
       ok: true,
       value: { sampleRate: 0.3, continuous: true },
     });
+  });
+
+  it('accepts an in-range flushIntervalMs', () => {
+    expect(
+      normalizeReplayConfig({ continuous: true, sampleRate: 1, flushIntervalMs: 120_000 }),
+    ).toEqual({
+      ok: true,
+      value: { sampleRate: 1, continuous: true, flushIntervalMs: 120_000 },
+    });
+  });
+
+  it('rejects a non-numeric or sub-minute flushIntervalMs', () => {
+    expect(normalizeReplayConfig({ flushIntervalMs: 'soon' }).ok).toBe(false);
+    expect(normalizeReplayConfig({ flushIntervalMs: NaN }).ok).toBe(false);
+    expect(normalizeReplayConfig({ flushIntervalMs: 5_000 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ flushIntervalMs: 10 * 60 * 60 * 1000 }).ok).toBe(false);
   });
 
   it('drops unknown keys and clears when nothing recognized', () => {
@@ -125,6 +167,7 @@ describe('resolveReplayPolicy', () => {
       sampleRate: 0.4,
       continuous: false,
       maskAllEnforced: false,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
     });
   });
 
@@ -136,6 +179,7 @@ describe('resolveReplayPolicy', () => {
       sampleRate: 0,
       continuous: true,
       maskAllEnforced: true,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
     });
   });
 
@@ -151,6 +195,7 @@ describe('resolveReplayPolicy', () => {
       sampleRate: 1,
       continuous: true,
       maskAllEnforced: false,
+      flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
     });
   });
 
@@ -171,5 +216,20 @@ describe('resolveReplayPolicy', () => {
       resolveReplayPolicy({ sampleRate: 1, continuous: false, maskAllEnforced: true })
         .maskAllEnforced,
     ).toBe(false);
+  });
+
+  it('delivers the (clamped) per-project flush cadence', () => {
+    expect(
+      resolveReplayPolicy({ continuous: true, sampleRate: 1, flushIntervalMs: 120_000 })
+        .flushIntervalMs,
+    ).toBe(120_000);
+    // Sub-minute is raised to the floor even if it slipped past the validator.
+    expect(resolveReplayPolicy({ flushIntervalMs: 1_000 }).flushIntervalMs).toBe(
+      MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
+    );
+    // Unset → default.
+    expect(resolveReplayPolicy({ sampleRate: 0.5 }).flushIntervalMs).toBe(
+      DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    );
   });
 });

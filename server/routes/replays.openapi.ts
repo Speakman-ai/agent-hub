@@ -264,6 +264,10 @@ const ReplayPolicyResponse = registerComponent(
         description:
           'When true the recorder must mask all text + inputs and the UI must not offer a relaxed masking mode. A strong default whenever continuous capture is on — true unless an Admin has explicitly opted the project out (project `replay.maskAllEnforced === false`).',
       }),
+      flushIntervalMs: z.number().openapi({
+        description:
+          'Cadence (ms) the continuous recorder flushes appended chunks at. Always present; defaults to 5 min and is clamped to a >=60s floor (no sub-minute cadence on the monolithic-append MVP storage).',
+      }),
     })
     .openapi({ description: 'Server-delivered per-project session-replay policy.' }),
 );

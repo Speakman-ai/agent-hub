@@ -313,7 +313,9 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
   function applyCors(_req: Request, res: Response, next: NextFunction): void {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Requested-With');
+    // X-RUM-Token lets a cross-origin embedded recorder attribute its ingest
+    // (one-shot and chunked) to its project — mirrors the config endpoint's CORS.
+    res.header('Access-Control-Allow-Headers', 'Content-Type, X-Requested-With, X-RUM-Token');
     res.header('Access-Control-Max-Age', '600');
     next();
   }

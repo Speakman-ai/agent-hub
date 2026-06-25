@@ -2705,8 +2705,16 @@ export interface Project {
    * - `maskAllEnforced`: Admin override for the mask-all default. Absent =
    *   enforced (the strong default); `false` = Admin opted the project out so
    *   whole sessions record un-masked. Only meaningful with `continuous: true`.
+   * - `flushIntervalMs`: continuous-recorder flush cadence (ms). Unset = the
+   *   5-min default; clamped to a >=60s floor (no sub-minute cadence on the
+   *   monolithic-append MVP storage).
    */
-  replay?: { sampleRate?: number; continuous?: boolean; maskAllEnforced?: boolean };
+  replay?: {
+    sampleRate?: number;
+    continuous?: boolean;
+    maskAllEnforced?: boolean;
+    flushIntervalMs?: number;
+  };
   /**
    * Branch protection for the hosted repo's default branch (Agent
    * Hub-hosted projects only).
