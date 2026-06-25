@@ -27,6 +27,17 @@ export interface ProjectReplayConfig {
    * opt-in, not a sampling default.
    */
   continuous?: boolean;
+  /**
+   * Whether mask-all is enforced while continuous capture is on. mask-all is a
+   * STRONG DEFAULT (enforced when continuous is on) that an Admin may explicitly
+   * override by persisting `false` — recording un-masked whole sessions is then
+   * the operator's deliberate, acknowledged choice. Semantics:
+   *   - **absent** → strong default: enforced whenever `continuous` is on.
+   *   - **`false`** → Admin opt-out: NOT enforced even with continuous on.
+   *   - **`true`** → same as the default (enforced); normalized away as redundant.
+   * Only meaningful with `continuous: true`; ignored (and dropped) otherwise.
+   */
+  maskAllEnforced?: boolean;
 }
 
 /** The resolved policy delivered to a recorder / the admin UI. */
@@ -42,9 +53,10 @@ export interface ResolvedReplayPolicy {
   continuous: boolean;
   /**
    * When true the recorder MUST mask all text + inputs and the UI must not
-   * offer a relaxed masking mode. mask-all is enforced (not merely defaulted)
-   * whenever continuous capture is on, because whole-session recording sharply
-   * widens the privacy surface.
+   * offer a relaxed masking mode. mask-all is a STRONG DEFAULT whenever
+   * continuous capture is on — it is enforced unless an Admin has explicitly
+   * opted the project out (`replay.maskAllEnforced === false`). With continuous
+   * off this is always false (the per-browser masking choice governs).
    */
   maskAllEnforced: boolean;
 }
@@ -107,8 +119,17 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     out.continuous = obj.continuous;
   }
 
-  // An empty object (no recognized keys) clears the config rather than
-  // persisting `{}`, so the project row stays lean.
+  if (obj.maskAllEnforced !== undefined) {
+    if (typeof obj.maskAllEnforced !== 'boolean') {
+      return { ok: false, error: 'replay.maskAllEnforced must be a boolean' };
+    }
+    out.maskAllEnforced = obj.maskAllEnforced;
+  }
+
+  // An empty object (no recognized config keys) clears the config rather than
+  // persisting `{}`, so the project row stays lean. `maskAllEnforced` is not a
+  // standalone config — without `continuous`/`sampleRate` it is meaningless, so
+  // a lone `maskAllEnforced` also clears (handled by the strip below).
   if (out.sampleRate === undefined && out.continuous === undefined) {
     return { ok: true, value: null };
   }
@@ -118,13 +139,21 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
   if (out.continuous === true && out.sampleRate === undefined) {
     out.sampleRate = 0;
   }
+  // `maskAllEnforced` only needs persisting as the non-default opt-out: keep it
+  // only when it is `false` AND continuous is on. The strong default (enforced)
+  // is "absent", so an explicit `true`, or a `false` with continuous off, is
+  // dropped — keeping the stored config lean and unambiguous.
+  if (out.maskAllEnforced !== false || out.continuous !== true) {
+    delete out.maskAllEnforced;
+  }
   return { ok: true, value: out };
 }
 
 /**
  * Resolve a project's raw replay config into the policy delivered to recorders
  * and the admin UI. Missing config resolves to {@link DEFAULT_REPLAY_POLICY}.
- * mask-all is enforced whenever continuous capture is on.
+ * mask-all is a strong default whenever continuous capture is on — enforced
+ * unless an Admin has explicitly opted out (`maskAllEnforced === false`).
  */
 export function resolveReplayPolicy(
   cfg: ProjectReplayConfig | null | undefined,
@@ -145,7 +174,9 @@ export function resolveReplayPolicy(
   return {
     sampleRate,
     continuous,
-    // Enforced (not merely defaulted) whenever continuous capture is on.
-    maskAllEnforced: continuous,
+    // Strong default: enforced whenever continuous capture is on, UNLESS an
+    // Admin has explicitly opted the project out (`maskAllEnforced === false`).
+    // With continuous off, mask-all is never enforced (per-browser choice wins).
+    maskAllEnforced: continuous && cfg.maskAllEnforced !== false,
   };
 }

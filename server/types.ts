@@ -2693,9 +2693,12 @@ export interface Project {
    *   the recorder keeps its built-in default (legacy on-error capture stays
    *   on); a set value is authoritative for every user on the project.
    * - `continuous`: opt into the continuous-capture tier (default off).
-   *   mask-all is enforced (not merely defaulted) whenever this is on.
+   *   mask-all is a strong default whenever this is on.
+   * - `maskAllEnforced`: Admin override for the mask-all default. Absent =
+   *   enforced (the strong default); `false` = Admin opted the project out so
+   *   whole sessions record un-masked. Only meaningful with `continuous: true`.
    */
-  replay?: { sampleRate?: number; continuous?: boolean };
+  replay?: { sampleRate?: number; continuous?: boolean; maskAllEnforced?: boolean };
   /**
    * Branch protection for the hosted repo's default branch (Agent
    * Hub-hosted projects only).

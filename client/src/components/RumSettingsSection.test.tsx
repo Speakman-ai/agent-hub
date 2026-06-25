@@ -530,6 +530,140 @@ describe('RumSettingsSection', () => {
     );
   });
 
+  it('shows the mask-all override toggle (default enforced) only while continuous is on', async () => {
+    const { rerender } = render(
+      <RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]} />,
+    );
+    // Continuous off → no override toggle at all.
+    expect(screen.queryByTestId('rum-continuous-maskall-toggle')).toBeNull();
+    // Continuous on, no opt-out → override toggle present and ON (enforced).
+    rerender(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5, continuous: true } }]}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-continuous-maskall-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('rum-continuous-enforced-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('rum-continuous-unmasked-warning')).toBeNull();
+  });
+
+  it('reflects a persisted Admin mask-all opt-out (toggle off + un-masked warning)', async () => {
+    render(
+      <RumSettingsSection
+        projects={[
+          {
+            id: 'demo',
+            name: 'Demo',
+            replay: { sampleRate: 0.5, continuous: true, maskAllEnforced: false },
+          },
+        ]}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-continuous-maskall-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('rum-continuous-unmasked-warning')).toBeInTheDocument();
+    expect(screen.queryByTestId('rum-continuous-enforced-note')).toBeNull();
+  });
+
+  it('turning the mask-all override off PATCHes maskAllEnforced:false and warns', async () => {
+    const showToast = vi.fn();
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5, continuous: true } }]}
+        showToast={showToast}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-continuous-maskall-toggle');
+    fireEvent.click(toggle as any);
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5, continuous: true, maskAllEnforced: false },
+      }),
+    );
+    expect(screen.getByTestId('rum-continuous-maskall-toggle')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    expect(screen.getByTestId('rum-continuous-unmasked-warning')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(showToast!).toHaveBeenCalledWith(
+        expect.stringMatching(/un-masked/i),
+        'info',
+        expect.any(Number),
+      ),
+    );
+  });
+
+  it('re-enforcing mask-all PATCHes without maskAllEnforced (back to the default)', async () => {
+    render(
+      <RumSettingsSection
+        projects={[
+          {
+            id: 'demo',
+            name: 'Demo',
+            replay: { sampleRate: 0.5, continuous: true, maskAllEnforced: false },
+          },
+        ]}
+        showToast={vi.fn()}
+      />,
+    );
+    const toggle = await screen.findByTestId('rum-continuous-maskall-toggle');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle as any);
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5, continuous: true },
+      }),
+    );
+    expect(screen.getByTestId('rum-continuous-enforced-note')).toBeInTheDocument();
+  });
+
+  it('re-enabling continuous defaults mask-all back to enforced (opt-out is not sticky)', async () => {
+    // mask-all enforcement is a continuous-tier control: the server does not
+    // persist `maskAllEnforced` while continuous is off, so toggling continuous
+    // off then on must NOT silently re-apply a prior opt-out — it defaults back
+    // to enforced (the strong privacy default), and an Admin can opt out again.
+    render(
+      <RumSettingsSection
+        projects={[
+          {
+            id: 'demo',
+            name: 'Demo',
+            replay: { sampleRate: 0.5, continuous: true, maskAllEnforced: false },
+          },
+        ]}
+        showToast={vi.fn()}
+      />,
+    );
+    // Sanity: loads opted out (override toggle off).
+    expect(await screen.findByTestId('rum-continuous-maskall-toggle')).toHaveAttribute(
+      'aria-checked',
+      'false',
+    );
+    // Turn continuous OFF, then back ON (no project refresh in between).
+    fireEvent.click(screen.getByTestId('rum-replay-continuous-toggle') as any); // off
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5, continuous: false },
+      }),
+    );
+    fireEvent.click(screen.getByTestId('rum-replay-continuous-toggle') as any); // back on
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        // No maskAllEnforced → server resolves the enforced default.
+        replay: { sampleRate: 0.5, continuous: true },
+      }),
+    );
+    // UI is consistent with what was persisted: enforced, not the stale opt-out.
+    expect(screen.getByTestId('rum-continuous-maskall-toggle')).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByTestId('rum-continuous-enforced-note')).toBeInTheDocument();
+    expect(screen.queryByTestId('rum-continuous-unmasked-warning')).toBeNull();
+  });
+
   it('defaults to off when the project has no replay config', async () => {
     render(<RumSettingsSection projects={projects} />);
     const select = (await screen.findByTestId('rum-replay-sample-rate')) as HTMLSelectElement;

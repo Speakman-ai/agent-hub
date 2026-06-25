@@ -124,14 +124,17 @@ export function buildRecordPrivacyOptions(mode: any) {
 
 /**
  * Resolve the active masking mode. The strict `mask-all` mode is the default,
- * and a server-delivered policy that enforces it (continuous capture on) wins
- * over any per-browser `passwords-only` choice — whole-session recording sharply
- * widens the privacy surface, so the project's enforcement is not overridable
- * client-side. Otherwise the localStorage override the RUM settings toggle
- * writes is honoured; a missing/unrecognised value falls back to `mask-all`.
+ * and a server-delivered policy that enforces it wins over any per-browser
+ * `passwords-only` choice — whole-session recording sharply widens the privacy
+ * surface, so when the project enforces mask-all it is not overridable
+ * client-side. Enforcement is the server's resolved decision (continuous on and
+ * no Admin opt-out); when an Admin has opted the project out it is NOT enforced
+ * and the per-browser choice governs. Otherwise the localStorage override the
+ * RUM settings toggle writes is honoured; a missing value falls back to
+ * `mask-all`.
  */
 export function resolveMaskingMode() {
-  // Server enforcement (continuous capture on) is non-negotiable.
+  // Server enforcement (resolved per-project policy) is non-negotiable.
   if (_serverMaskAllEnforced) return MASKING_MODES.ALL;
   try {
     if (typeof localStorage !== 'undefined') {
@@ -177,9 +180,9 @@ export const REPLAY_CONFIG_TIMEOUT_MS = 3_000;
 // so the always-on bug-report capture is never silently disabled). Set by
 // `applyServerReplayConfig` / `fetchServerReplayConfig`.
 let _serverSampleRate: number | null = null;
-// Whether the server policy enforces mask-all (continuous capture on). When
-// true `resolveMaskingMode` returns `mask-all` regardless of the per-browser
-// override — the privacy contract of the continuous tier.
+// Whether the server policy enforces mask-all (continuous capture on with no
+// Admin opt-out). When true `resolveMaskingMode` returns `mask-all` regardless
+// of the per-browser override — the privacy contract of the continuous tier.
 let _serverMaskAllEnforced = false;
 
 /**
@@ -226,8 +229,12 @@ export function resolveReplayRumToken() {
  * maskAllEnforced }`):
  *   - `sampleRate` (numeric) becomes authoritative over the localStorage
  *     override; a null/absent rate leaves the client on its built-in default.
- *   - `maskAllEnforced` (or `continuous`) forces the recorder into mask-all
- *     mode (see `resolveMaskingMode`).
+ *   - `maskAllEnforced` forces the recorder into mask-all mode (see
+ *     `resolveMaskingMode`). This is the SERVER's resolved decision: it is true
+ *     when continuous capture is on AND an Admin has not opted the project out
+ *     (`replay.maskAllEnforced === false`). The client trusts the flag verbatim
+ *     and does NOT re-derive enforcement from `continuous`, so an Admin opt-out
+ *     is honoured rather than overridden back on.
  *
  * Scope note: this module is the record-on-error recorder. Whole-session
  * (continuous) capture — driving the upload path off the `continuous` flag — is
@@ -243,8 +250,11 @@ export function applyServerReplayConfig(policy: any) {
   const rate = policy == null ? null : policy.sampleRate;
   _serverSampleRate =
     typeof rate === 'number' && Number.isFinite(rate) ? clampSampleRate(rate) : null;
-  _serverMaskAllEnforced =
-    policy != null && (policy.maskAllEnforced === true || policy.continuous === true);
+  // Trust the server's resolved `maskAllEnforced` verbatim — it already folds in
+  // the continuous-on default AND the Admin opt-out. Re-deriving from
+  // `continuous` here would force mask-all back on even when an Admin has
+  // explicitly opted the project out.
+  _serverMaskAllEnforced = policy != null && policy.maskAllEnforced === true;
   return _serverSampleRate;
 }
 
@@ -253,7 +263,7 @@ export function getServerSampleRate() {
   return _serverSampleRate;
 }
 
-/** True when the server policy forces mask-all (continuous capture on). */
+/** True when the server policy forces mask-all (continuous on, no Admin opt-out). */
 export function isServerMaskAllEnforced() {
   return _serverMaskAllEnforced;
 }

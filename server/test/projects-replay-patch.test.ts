@@ -17,7 +17,9 @@ beforeAll(async () => {
   request = await getRequest();
 });
 
-type ReplayBody = { replay?: { sampleRate?: number; continuous?: boolean } };
+type ReplayBody = {
+  replay?: { sampleRate?: number; continuous?: boolean; maskAllEnforced?: boolean };
+};
 
 describe('PATCH /api/projects/:projectId — replay', () => {
   it('persists a sampleRate + continuous flag', async () => {
@@ -99,5 +101,47 @@ describe('PATCH /api/projects/:projectId — replay', () => {
       .send({ replay: { continuous: 'yes' } })
       .expect(400);
     expect((res.body as { error: string }).error).toMatch(/replay.continuous must be a boolean/);
+  });
+
+  it('persists the mask-all Admin opt-out (continuous on, maskAllEnforced:false)', async () => {
+    const project = await createProject();
+    const res = await request
+      .patch(`/api/projects/${project.id as string}`)
+      .send({ replay: { sampleRate: 0.5, continuous: true, maskAllEnforced: false } })
+      .expect(200);
+    expect((res.body as ReplayBody).replay).toEqual({
+      sampleRate: 0.5,
+      continuous: true,
+      maskAllEnforced: false,
+    });
+  });
+
+  it('drops a redundant maskAllEnforced:true (the enforced default is "absent")', async () => {
+    const project = await createProject();
+    const res = await request
+      .patch(`/api/projects/${project.id as string}`)
+      .send({ replay: { sampleRate: 0.5, continuous: true, maskAllEnforced: true } })
+      .expect(200);
+    expect((res.body as ReplayBody).replay).toEqual({ sampleRate: 0.5, continuous: true });
+  });
+
+  it('drops maskAllEnforced when continuous is off (meaningless without it)', async () => {
+    const project = await createProject();
+    const res = await request
+      .patch(`/api/projects/${project.id as string}`)
+      .send({ replay: { sampleRate: 0.5, maskAllEnforced: false } })
+      .expect(200);
+    expect((res.body as ReplayBody).replay).toEqual({ sampleRate: 0.5 });
+  });
+
+  it('rejects a non-boolean maskAllEnforced with 400', async () => {
+    const project = await createProject();
+    const res = await request
+      .patch(`/api/projects/${project.id as string}`)
+      .send({ replay: { continuous: true, sampleRate: 1, maskAllEnforced: 'no' } })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(
+      /replay.maskAllEnforced must be a boolean/,
+    );
   });
 });

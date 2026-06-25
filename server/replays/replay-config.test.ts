@@ -76,6 +76,39 @@ describe('normalizeReplayConfig', () => {
       value: { sampleRate: 0.3 },
     });
   });
+
+  it('rejects a non-boolean maskAllEnforced', () => {
+    expect(
+      normalizeReplayConfig({ continuous: true, sampleRate: 1, maskAllEnforced: 'no' }).ok,
+    ).toBe(false);
+  });
+
+  it('persists the mask-all Admin opt-out (false) only with continuous on', () => {
+    expect(
+      normalizeReplayConfig({ continuous: true, sampleRate: 0.5, maskAllEnforced: false }),
+    ).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5, continuous: true, maskAllEnforced: false },
+    });
+  });
+
+  it('drops a redundant maskAllEnforced:true (the strong default is "absent")', () => {
+    expect(
+      normalizeReplayConfig({ continuous: true, sampleRate: 0.5, maskAllEnforced: true }),
+    ).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5, continuous: true },
+    });
+  });
+
+  it('drops maskAllEnforced when continuous is off (meaningless without it)', () => {
+    expect(normalizeReplayConfig({ sampleRate: 0.5, maskAllEnforced: false })).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5 },
+    });
+    // A lone maskAllEnforced (no rate/continuous) clears the config entirely.
+    expect(normalizeReplayConfig({ maskAllEnforced: false })).toEqual({ ok: true, value: null });
+  });
 });
 
 describe('resolveReplayPolicy', () => {
@@ -106,8 +139,37 @@ describe('resolveReplayPolicy', () => {
     });
   });
 
-  it('enforces mask-all whenever continuous is on', () => {
+  it('enforces mask-all by default when continuous is on', () => {
     expect(resolveReplayPolicy({ sampleRate: 1, continuous: true }).maskAllEnforced).toBe(true);
     expect(resolveReplayPolicy({ sampleRate: 1, continuous: false }).maskAllEnforced).toBe(false);
+  });
+
+  it('honours the Admin mask-all opt-out (continuous on, maskAllEnforced:false)', () => {
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: true, maskAllEnforced: false }),
+    ).toEqual({
+      sampleRate: 1,
+      continuous: true,
+      maskAllEnforced: false,
+    });
+  });
+
+  it('treats maskAllEnforced:true the same as the default (enforced)', () => {
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: true, maskAllEnforced: true })
+        .maskAllEnforced,
+    ).toBe(true);
+  });
+
+  it('ignores maskAllEnforced when continuous is off (never enforced)', () => {
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: false, maskAllEnforced: false })
+        .maskAllEnforced,
+    ).toBe(false);
+    // Even a stray maskAllEnforced:true can't enforce without continuous on.
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: false, maskAllEnforced: true })
+        .maskAllEnforced,
+    ).toBe(false);
   });
 });

@@ -94,11 +94,14 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   // Per-project server-delivered replay policy. Unlike the per-browser toggle
   // above, this is saved on the project (PATCH /api/projects/:id { replay }) so
   // it applies to every user. `continuous` is the whole-session continuous-
-  // capture opt-in (OFF by default); turning it on enforces mask-all for the
-  // project (the server resolves `maskAllEnforced` from `continuous`), so the
-  // per-browser masking choice can't relax it.
+  // capture opt-in (OFF by default); turning it on makes mask-all a strong
+  // default for the project. `enforceMaskAll` is the Admin override for that
+  // default: ON (the default) keeps mask-all enforced; an Admin can turn it OFF
+  // to record un-masked whole sessions. It maps to persisted
+  // `replay.maskAllEnforced` (absent = enforced default; `false` = opted out).
   const [replaySampleRate, setReplaySampleRate] = useState<number>(0);
   const [continuous, setContinuous] = useState(false);
+  const [enforceMaskAll, setEnforceMaskAll] = useState(true);
   const [savingReplayConfig, setSavingReplayConfig] = useState(false);
   const [replayConfigError, setReplayConfigError] = useState<any>(null);
 
@@ -201,6 +204,9 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     const cfg = (project as any)?.replay || {};
     setReplaySampleRate(typeof cfg.sampleRate === 'number' ? cfg.sampleRate : 0);
     setContinuous(cfg.continuous === true);
+    // Absent maskAllEnforced = strong default (enforced); only an explicit
+    // `false` is the Admin opt-out.
+    setEnforceMaskAll(cfg.maskAllEnforced !== false);
     setReplayConfigError(null);
     setSavingReplayConfig(false);
   }, [project]);
@@ -220,8 +226,13 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
       setSavingReplayConfig(true);
       setReplayConfigError(null);
       const replay: Record<string, unknown> = { sampleRate: next.sampleRate };
-      // Preserve a continuous opt-in set elsewhere (this UI doesn't manage it).
-      if ((project as any)?.replay?.continuous === true) replay.continuous = true;
+      // Preserve a continuous opt-in (and its mask-all Admin override) set
+      // elsewhere — the `replay` config is replaced wholesale on PATCH, so
+      // editing only the rate must not clobber the privacy decision.
+      if ((project as any)?.replay?.continuous === true) {
+        replay.continuous = true;
+        if ((project as any)?.replay?.maskAllEnforced === false) replay.maskAllEnforced = false;
+      }
       try {
         await api.updateProject(pid, { replay });
         if (showToast) showToast('Replay sample rate saved for this project.', 'success', 2500);
@@ -247,15 +258,21 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
 
   // Opt the project into (or out of) whole-session continuous capture. The
   // `replay` config is replaced wholesale on PATCH, so the current sample rate
-  // is sent alongside `continuous` to preserve it. Enabling continuous enforces
-  // mask-all server-side (the resolved policy sets `maskAllEnforced`), so this
-  // toggle is the operator's single privacy-bearing decision. Optimistic; on
-  // failure (e.g. a 403 for a non-admin) we surface the error and revert.
+  // is sent alongside `continuous` to preserve it. mask-all enforcement is a
+  // continuous-tier control: the server does not persist `maskAllEnforced` while
+  // continuous is off, so enabling continuous always starts from the enforced
+  // strong default (an Admin can opt out again afterwards). We therefore reset
+  // the local override to enforced on enable, keeping the UI consistent with
+  // what gets persisted. Optimistic; on failure (e.g. a 403 for a non-admin) we
+  // surface the error and revert.
   const handleToggleContinuous = useCallback(async () => {
     if (!project || savingReplayConfig) return;
     const pid = project.id;
     const next = !continuous;
     setContinuous(next);
+    // Enabling continuous defaults mask-all back ON (matches the persisted
+    // config: no `maskAllEnforced` is sent, so the server resolves enforced).
+    if (next) setEnforceMaskAll(true);
     setSavingReplayConfig(true);
     setReplayConfigError(null);
     try {
@@ -274,10 +291,46 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
       setReplayConfigError(err?.message || 'Failed to update continuous capture');
       const cfg = (project as any)?.replay || {};
       setContinuous(cfg.continuous === true);
+      setEnforceMaskAll(cfg.maskAllEnforced !== false);
     } finally {
       if (activePidRef.current === pid) setSavingReplayConfig(false);
     }
   }, [project, savingReplayConfig, continuous, replaySampleRate, showToast]);
+
+  // Admin override for the continuous-tier mask-all default. Default ON
+  // (enforced); turning it OFF persists `replay.maskAllEnforced: false`, so
+  // whole sessions record un-masked input values + visible text. Sent alongside
+  // the current rate + continuous flag (the config is replaced wholesale).
+  // Optimistic; on failure (e.g. a 403 for a non-admin) we surface and revert.
+  const handleToggleEnforceMaskAll = useCallback(async () => {
+    if (!project || savingReplayConfig || !continuous) return;
+    const pid = project.id;
+    const nextEnforced = !enforceMaskAll;
+    setEnforceMaskAll(nextEnforced);
+    setSavingReplayConfig(true);
+    setReplayConfigError(null);
+    const replay: Record<string, unknown> = { sampleRate: replaySampleRate, continuous: true };
+    if (!nextEnforced) replay.maskAllEnforced = false;
+    try {
+      await api.updateProject(pid, { replay });
+      if (showToast) {
+        showToast(
+          nextEnforced
+            ? 'Mask-all re-enforced for continuous capture on this project.'
+            : 'Mask-all override OFF — whole sessions record un-masked for this project.',
+          nextEnforced ? 'success' : 'info',
+          4500,
+        );
+      }
+    } catch (err: any) {
+      if (activePidRef.current !== pid) return;
+      setReplayConfigError(err?.message || 'Failed to update mask-all enforcement');
+      const cfg = (project as any)?.replay || {};
+      setEnforceMaskAll(cfg.maskAllEnforced !== false);
+    } finally {
+      if (activePidRef.current === pid) setSavingReplayConfig(false);
+    }
+  }, [project, savingReplayConfig, continuous, enforceMaskAll, replaySampleRate, showToast]);
 
   const handleToggleReplay = useCallback(async () => {
     if (replayToggling) return;
@@ -562,7 +615,7 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
           </select>
         </div>
 
-        {/* Continuous-capture opt-in (Admin). OFF by default; enforces mask-all. */}
+        {/* Continuous-capture opt-in (Admin). OFF by default; mask-all on by default. */}
         <div className="mt-4 pt-4 border-t border-gray-700/70">
           <div className="flex items-center gap-4">
             <div className="flex-1 min-w-0">
@@ -574,8 +627,8 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
                 Record <strong className="text-gray-300">whole sessions</strong> for this project
                 instead of only the on-error window. Off by default — recording every screen of
                 every user is a privacy decision. Turning it on{' '}
-                <strong className="text-gray-300">enforces mask-all</strong> for the project (it
-                can&apos;t be relaxed per-browser). Requires Admin.
+                <strong className="text-gray-300">defaults mask-all on</strong> for the project; an
+                Admin can override that below. Requires Admin.
               </p>
             </div>
             <button
@@ -597,17 +650,66 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
               />
             </button>
           </div>
+          {/* Admin override for the mask-all default (only while continuous is on). */}
           {continuous && (
-            <div
-              className="mt-3 flex items-start gap-2 text-xs text-fuchsia-200 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-lg p-2.5"
-              data-testid="rum-continuous-enforced-note"
-            >
-              <ShieldCheck size={14} className="flex-shrink-0 mt-0.5" />
-              <span>
-                Mask-all is enforced for this project while continuous capture is on — input values
-                and visible text are redacted for every user; only structure and interactions are
-                recorded.
-              </span>
+            <div className="mt-4 pt-4 border-t border-gray-700/50">
+              <div className="flex items-center gap-4">
+                <div className="flex-1 min-w-0">
+                  <h6 className="text-xs font-semibold text-gray-300 mb-1 flex items-center gap-2">
+                    <ShieldCheck size={13} className="text-fuchsia-400" />
+                    Enforce mask-all
+                  </h6>
+                  <p className="text-xs text-gray-500 max-w-2xl">
+                    On (recommended): redact every input value and all visible text for every user —
+                    only structure and interactions are recorded. Turn off to record whole sessions{' '}
+                    <strong className="text-gray-300">un-masked</strong> (passwords still masked).
+                    Admin override of the continuous-tier privacy default.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleEnforceMaskAll}
+                  disabled={!project || savingReplayConfig}
+                  role="switch"
+                  aria-checked={enforceMaskAll}
+                  aria-label="Toggle mask-all enforcement for continuous capture"
+                  data-testid="rum-continuous-maskall-toggle"
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    enforceMaskAll ? 'bg-fuchsia-600' : 'bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                      enforceMaskAll ? 'translate-x-4' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+              {enforceMaskAll ? (
+                <div
+                  className="mt-3 flex items-start gap-2 text-xs text-fuchsia-200 bg-fuchsia-500/10 border border-fuchsia-500/20 rounded-lg p-2.5"
+                  data-testid="rum-continuous-enforced-note"
+                >
+                  <ShieldCheck size={14} className="flex-shrink-0 mt-0.5" />
+                  <span>
+                    Mask-all is enforced for this project while continuous capture is on — input
+                    values and visible text are redacted for every user; only structure and
+                    interactions are recorded.
+                  </span>
+                </div>
+              ) : (
+                <div
+                  className="mt-3 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5"
+                  data-testid="rum-continuous-unmasked-warning"
+                >
+                  <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+                  <span>
+                    Mask-all is OFF for continuous capture — whole sessions record all input values
+                    and visible text (passwords still masked) for every user. Don&apos;t use this on
+                    surfaces that show chat, terminal output, tokens, or API keys.
+                  </span>
+                </div>
+              )}
             </div>
           )}
           {continuous && replaySampleRate <= 0 && (

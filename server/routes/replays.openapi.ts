@@ -262,7 +262,7 @@ const ReplayPolicyResponse = registerComponent(
       }),
       maskAllEnforced: z.boolean().openapi({
         description:
-          'When true the recorder must mask all text + inputs and the UI must not offer a relaxed masking mode — enforced whenever continuous capture is on.',
+          'When true the recorder must mask all text + inputs and the UI must not offer a relaxed masking mode. A strong default whenever continuous capture is on — true unless an Admin has explicitly opted the project out (project `replay.maskAllEnforced === false`).',
       }),
     })
     .openapi({ description: 'Server-delivered per-project session-replay policy.' }),

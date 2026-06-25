@@ -246,6 +246,18 @@ describe('applyServerReplayConfig / fetchServerReplayConfig', () => {
     localStorage.removeItem(MASKING_MODE_KEY);
   });
 
+  it('honours the Admin opt-out: continuous-on with maskAllEnforced:false does NOT force mask-all', () => {
+    // Regression: the client previously OR-ed `continuous === true` into
+    // enforcement, so an Admin opt-out (server resolves maskAllEnforced:false
+    // while continuous stays true) was silently overridden back to mask-all.
+    // The client must trust the server's resolved `maskAllEnforced` verbatim.
+    localStorage.setItem(MASKING_MODE_KEY, MASKING_MODES.PASSWORDS);
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, maskAllEnforced: false });
+    expect(isServerMaskAllEnforced()).toBe(false);
+    expect(resolveMaskingMode()).toBe(MASKING_MODES.PASSWORDS);
+    localStorage.removeItem(MASKING_MODE_KEY);
+  });
+
   it('is best-effort: a failed fetch leaves the client on its default (null)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     expect(await fetchServerReplayConfig()).toBeNull();
