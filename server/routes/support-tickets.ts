@@ -5,6 +5,7 @@ import {
   getSupportTicket,
   listSupportTickets,
   updateSupportTicketStatus,
+  updateSupportTicketType,
   setSupportTicketWontDoReason,
   convertSupportTicketToCard,
   recordSupportTicketInvestigation,
@@ -231,9 +232,10 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Support ticket not found' });
       }
 
-      const { status, wontDoReason, aiSummary, aiInvestigation, replayRef, screenshot } =
+      const { status, type, wontDoReason, aiSummary, aiInvestigation, replayRef, screenshot } =
         req.body as {
           status?: string;
+          type?: string;
           wontDoReason?: string | null;
           aiSummary?: string | null;
           aiInvestigation?: string | null;
@@ -288,6 +290,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           // Reason-only edit on an already-"won't do" ticket. A blank reason was
           // already rejected above, so this only ever stores a non-empty reason.
           ticket = setSupportTicketWontDoReason(ticket.id, trimmedReason)!;
+        }
+        if (type !== undefined) {
+          ticket = updateSupportTicketType(ticket.id, type as SupportTicketType)!;
         }
         if (aiSummary !== undefined || aiInvestigation !== undefined) {
           // Pass the raw values through: the store preserves fields left

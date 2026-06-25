@@ -660,6 +660,10 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(wontDoReason === undefined ? { status } : { status, wontDoReason }),
     }),
+    setSupportTicketType: (projectId: any, id: any, type: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ type }),
+    }),
     // Promote a support ticket to a To Do kanban card. The source ticket is
     // RETAINED and flagged `converted`; re-converting 409s.
     convertSupportTicketToCard: (projectId: any, id: any, opts: any = {}) => {

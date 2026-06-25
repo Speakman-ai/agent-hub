@@ -22549,7 +22549,7 @@ paths:
     patch:
       tags:
         - Support
-      summary: Update a support ticket (status, AI investigation, replay ref)
+      summary: Update a support ticket (status, type, AI investigation, replay ref)
       parameters:
         - schema:
             type: string
@@ -22580,6 +22580,15 @@ paths:
                     - closed
                     - duplicate
                     - wont_do
+                type:
+                  type: string
+                  enum:
+                    - bug
+                    - question
+                    - feature_request
+                    - incident
+                    - other
+                  description: Reclassify the ticket request type (bug, question, feature_request, incident, other).
                 wontDoReason:
                   type: string
                   nullable: true
@@ -22597,7 +22606,7 @@ paths:
                   type: string
                   nullable: true
                   description: Attach a screenshot (base64 data URL) or clear it with null. Persisted server-side; exposed via screenshot_ref.
-              description: "Partial update: status transition and/or AI/replay/screenshot fields."
+              description: "Partial update: status/type transition and/or AI/replay/screenshot fields."
       responses:
         "200":
           description: Updated ticket.
@@ -22606,7 +22615,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SupportTicket"
         "400":
-          description: Invalid status.
+          description: Invalid status or type.
           content:
             application/json:
               schema:

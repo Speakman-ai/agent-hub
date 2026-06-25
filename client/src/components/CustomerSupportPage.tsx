@@ -87,6 +87,11 @@ const TYPE_FILTERS = [
   { key: 'other', label: 'Other' },
 ];
 
+const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all').map((f: any) => ({
+  value: f.key,
+  label: f.label,
+}));
+
 function sortTickets(list: any) {
   return [...list].sort((a: any, b: any) => {
     const sa = SEVERITY_RANK[a.severity] ?? 4;
@@ -291,6 +296,45 @@ function StatusSelect({ projectId, ticket, stretched = false, onUpdated }: any) 
         <option value={ticket.status}>{STATUS_LABEL[ticket.status] || ticket.status}</option>
       ) : null}
       {STATUS_OPTIONS.map((o: any) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function TypeSelect({ projectId, ticket, stretched = false, onUpdated }: any) {
+  const [saving, setSaving] = useState(false);
+  const pe = stretched ? 'pointer-events-auto relative' : '';
+  const current = TYPE_OPTIONS.some((o: any) => o.value === ticket.type) ? ticket.type : 'other';
+
+  const handleChange = async (e: any) => {
+    const next = e.target.value;
+    if (next === ticket.type || saving) return;
+    setSaving(true);
+    onUpdated?.({ ...ticket, type: next });
+    try {
+      const updated = await api.setSupportTicketType(projectId, ticket.id, next);
+      if (updated) onUpdated?.(updated);
+    } catch {
+      onUpdated?.(ticket);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <select
+      value={current}
+      onChange={handleChange}
+      disabled={saving}
+      aria-label="Reclassify ticket"
+      title="Reclassify ticket"
+      data-testid="ticket-type-select"
+      className={`${pe} text-[10px] uppercase tracking-wide bg-gray-800/60 border border-gray-700 rounded px-1.5 py-0.5 text-gray-300 focus:outline-none focus:border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed`}
+    >
+      {TYPE_OPTIONS.map((o: any) => (
         <option key={o.value} value={o.value}>
           {o.label}
         </option>
@@ -546,9 +590,7 @@ function SupportTicketCard({
               >
                 {ticket.severity}
               </span>
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-                {type.label}
-              </span>
+              <TypeSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
               <StatusSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
               <span className="text-[11px] text-gray-600 ml-auto">
                 {relativeTime(ticket.created_at)}
@@ -747,9 +789,7 @@ function SupportTicketDetailModal({
                 >
                   {ticket.severity}
                 </span>
-                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-800 text-gray-300">
-                  {type.label}
-                </span>
+                <TypeSelect projectId={projectId} ticket={ticket} onUpdated={onUpdated} />
                 {isConverted ? (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/60 text-gray-500">
                     {STATUS_LABEL[ticket.status] || ticket.status}

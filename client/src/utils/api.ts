@@ -1260,6 +1260,13 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(wontDoReason === undefined ? { status } : { status, wontDoReason }),
     }),
+  // Reclassify a ticket's request type. Returns the updated ticket and emits a
+  // support_ticket_updated WebSocket event.
+  setSupportTicketType: (projectId: any, id: any, type: any) =>
+    fetchJSON(`/projects/${projectId}/support-tickets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ type }),
+    }),
   // Promote a support ticket to a To Do kanban card. The source ticket is
   // RETAINED and flagged `converted` (it leaves the default open queue but is
   // not deleted). Returns { card, ticket, ticketId, converted: true }.

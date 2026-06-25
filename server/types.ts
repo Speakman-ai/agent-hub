@@ -1861,6 +1861,7 @@ export interface Stmts {
   listSupportTicketsByProject: Stmt;
   listSupportTicketsByProjectAndStatus: Stmt;
   updateSupportTicketStatus: Stmt;
+  updateSupportTicketType: Stmt;
   updateSupportTicketInvestigation: Stmt;
   setSupportTicketReplayRef: Stmt;
   setSupportTicketScreenshotRef: Stmt;

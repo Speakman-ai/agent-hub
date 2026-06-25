@@ -243,6 +243,22 @@ export function updateSupportTicketStatus(
 }
 
 /**
+ * Reclassify a ticket's request type. Returns the updated row, or null if the
+ * ticket doesn't exist. Throws on an invalid type.
+ */
+export function updateSupportTicketType(
+  id: string,
+  type: SupportTicketType,
+): SupportTicketRow | null {
+  if (!isType(type)) {
+    throw new Error(`type must be one of: ${SUPPORT_TICKET_TYPES.join(', ')}`);
+  }
+  if (!getSupportTicket(id)) return null;
+  getStmts().updateSupportTicketType.run(type, id);
+  return getSupportTicket(id);
+}
+
+/**
  * Record the result of an AI investigation and stamp `ai_investigated_at`.
  * Returns null if the ticket doesn't exist.
  *

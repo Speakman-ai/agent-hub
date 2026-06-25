@@ -6,6 +6,7 @@ import {
   getSupportTicket,
   listSupportTickets,
   updateSupportTicketStatus,
+  updateSupportTicketType,
   recordSupportTicketInvestigation,
   setSupportTicketReplayRef,
   convertSupportTicketToCard,
@@ -161,8 +162,17 @@ describe('support-tickets-store — lifecycle & mutations', () => {
     expect(() => updateSupportTicketStatus(t.id, 'done' as never)).toThrow(/status must be one of/);
   });
 
+  it('reclassifies a ticket type and rejects an invalid type', () => {
+    const t = createSupportTicket({ projectId: 'p1', body: 'b', type: 'question' });
+    expect(updateSupportTicketType(t.id, 'feature_request')!.type).toBe('feature_request');
+    expect(getSupportTicket(t.id)!.type).toBe('feature_request');
+
+    expect(() => updateSupportTicketType(t.id, 'nope' as never)).toThrow(/type must be one of/);
+  });
+
   it('returns null when updating a missing ticket', () => {
     expect(updateSupportTicketStatus('missing', 'closed')).toBeNull();
+    expect(updateSupportTicketType('missing', 'bug')).toBeNull();
   });
 
   it('records an AI investigation and stamps ai_investigated_at', () => {

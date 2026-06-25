@@ -47,7 +47,8 @@ const TYPE_FILTERS = [
     { key: 'incident', label: 'Incident' },
     { key: 'other', label: 'Other' },
 ];
-function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo }: any) {
+const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all');
+function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
     const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
     const hasReplay = item.type === 'bug' && item.replay_ref;
@@ -190,6 +191,9 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
       </View>
 
       {item.status !== 'converted' ? (<View style={styles.statusActionRow}>
+          <TouchableOpacity testID="reclassify-ticket" onPress={() => onReclassify?.(item)} style={styles.statusActionButton}>
+            <Text style={styles.statusActionText}>Reclassify</Text>
+          </TouchableOpacity>
           {[
                 { value: 'closed', label: 'Done' },
                 { value: 'duplicate', label: 'Duplicate' },
@@ -220,6 +224,7 @@ export default function CustomerSupportScreen({ route }: any) {
     // The ticket whose "won't do" reason is being captured (null = modal closed).
     const [wontDoTicket, setWontDoTicket] = useState<any>(null);
     const [wontDoReason, setWontDoReason] = useState('');
+    const [reclassifyTicket, setReclassifyTicket] = useState<any>(null);
     const activeStatusFilter = STATUS_FILTERS.find((f: any) => f.key === statusFilter) || STATUS_FILTERS[0];
     const load = useCallback(async () => {
         if (!projectId)
@@ -312,6 +317,7 @@ export default function CustomerSupportScreen({ route }: any) {
                 return without;
             return sortTickets([...without, updated]);
         });
+        setSelectedTicket((cur: any) => (cur && cur.id === updated.id ? updated : cur));
     };
     // Optimistically apply a status change, reconciling with the server's row.
     const setStatus = async (ticket: any, status: any, reason: any) => {
@@ -338,6 +344,19 @@ export default function CustomerSupportScreen({ route }: any) {
         setWontDoTicket(null);
         await setStatus(target, 'wont_do', reason);
     };
+    const setType = async (ticket: any, type: any) => {
+        setReclassifyTicket(null);
+        upsertOrDrop({ ...ticket, type });
+        try {
+            const updated = await api.setSupportTicketType(projectId, ticket.id, type);
+            if (updated)
+                upsertOrDrop(updated);
+        }
+        catch (err: any) {
+            upsertOrDrop(ticket);
+            Alert.alert('Could not reclassify ticket', err?.message || 'Failed to reclassify ticket');
+        }
+    };
     const handleTicketPress = useCallback((ticket: any) => {
         markRead(ticket);
         setSelectedTicket(ticket);
@@ -360,7 +379,7 @@ export default function CustomerSupportScreen({ route }: any) {
         deepLinkAppliedRef.current = deepLinkedTicketId;
         handleTicketPress(match);
     }, [deepLinkedTicketId, tickets, handleTicketPress]);
-    const renderItem = ({ item }: any) => (<TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} onDeleted={removeTicket} onPress={handleTicketPress} onSetStatus={setStatus} onWontDo={handleWontDo}/>);
+    const renderItem = ({ item }: any) => (<TicketCard item={item} projectId={projectId} onOpenReplay={openReplay} onDeleted={removeTicket} onPress={handleTicketPress} onSetStatus={setStatus} onWontDo={handleWontDo} onReclassify={setReclassifyTicket}/>);
     if (selectedTicket) {
         const title = selectedTicket.subject?.trim() || selectedTicket.body?.trim() || '(no subject)';
         const screenshotUrl = resolveUploadUrl(selectedTicket.screenshot_ref);
@@ -379,6 +398,9 @@ export default function CustomerSupportScreen({ route }: any) {
             {TYPE_LABEL[selectedTicket.type] || 'Other'} · {selectedTicket.severity} ·{' '}
             {STATUS_LABEL[selectedTicket.status] || selectedTicket.status}
           </Text>
+          <TouchableOpacity testID="detail-reclassify-ticket" onPress={() => setReclassifyTicket(selectedTicket)} style={styles.detailReclassifyButton}>
+            <Text style={styles.statusActionText}>Reclassify</Text>
+          </TouchableOpacity>
           {selectedTicket.body ? (<Text style={styles.detailBody}>{selectedTicket.body}</Text>) : null}
           {selectedTicket.reporter ? (<Text style={styles.reporter}>Reported by {selectedTicket.reporter}</Text>) : null}
           {selectedTicket.status === 'wont_do' && selectedTicket.wont_do_reason ? (<View style={styles.wontDoBox} testID="detail-wont-do-reason">
@@ -391,6 +413,26 @@ export default function CustomerSupportScreen({ route }: any) {
             </View>) : null}
           {screenshotUrl ? (<Image source={{ uri: screenshotUrl }} style={styles.detailScreenshot} resizeMode="contain"/>) : null}
         </ScrollView>
+        <Modal visible={!!reclassifyTicket} transparent animationType="fade" onRequestClose={() => setReclassifyTicket(null)}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard} testID="reclassify-modal">
+              <Text style={styles.modalTitle}>Reclassify ticket</Text>
+              {TYPE_OPTIONS.map((t: any) => {
+                const active = reclassifyTicket?.type === t.key;
+                return (<TouchableOpacity key={t.key} testID={`reclassify-option-${t.key}`} onPress={() => reclassifyTicket ? setType(reclassifyTicket, t.key) : undefined} style={[styles.reclassifyOption, active && styles.statusActionButtonActive]}>
+                  <Text style={[styles.statusActionText, active && styles.statusActionTextActive]}>
+                    {t.label}
+                  </Text>
+                </TouchableOpacity>);
+              })}
+              <View style={styles.modalActions}>
+                <TouchableOpacity onPress={() => setReclassifyTicket(null)} style={styles.modalCancel}>
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>);
     }
     return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -443,6 +485,26 @@ export default function CustomerSupportScreen({ route }: any) {
               </TouchableOpacity>
               <TouchableOpacity testID="wont-do-save" onPress={submitWontDo} disabled={!wontDoReason.trim()} style={[styles.modalSave, !wontDoReason.trim() && styles.convertButtonDisabled]}>
                 <Text style={styles.modalSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={!!reclassifyTicket} transparent animationType="fade" onRequestClose={() => setReclassifyTicket(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard} testID="reclassify-modal">
+            <Text style={styles.modalTitle}>Reclassify ticket</Text>
+            {TYPE_OPTIONS.map((t: any) => {
+              const active = reclassifyTicket?.type === t.key;
+              return (<TouchableOpacity key={t.key} testID={`reclassify-option-${t.key}`} onPress={() => reclassifyTicket ? setType(reclassifyTicket, t.key) : undefined} style={[styles.reclassifyOption, active && styles.statusActionButtonActive]}>
+                <Text style={[styles.statusActionText, active && styles.statusActionTextActive]}>
+                  {t.label}
+                </Text>
+              </TouchableOpacity>);
+            })}
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={() => setReclassifyTicket(null)} style={styles.modalCancel}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -603,6 +665,15 @@ const styles = StyleSheet.create({
     backIcon: { fontSize: 22, color: colors.gray400 },
     detailTitle: { fontSize: 18, fontWeight: '700', color: colors.white, marginBottom: 8 },
     detailMeta: { fontSize: 12, color: colors.gray500, marginBottom: 12 },
+    detailReclassifyButton: {
+        alignSelf: 'flex-start',
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        marginBottom: 12,
+    },
     detailBody: { fontSize: 14, color: colors.gray300, lineHeight: 20 },
     detailScreenshot: {
         marginTop: 12,
@@ -697,4 +768,12 @@ const styles = StyleSheet.create({
         backgroundColor: colors.gray800,
     },
     modalSaveText: { fontSize: 13, color: colors.gray200, fontWeight: '700' },
+    reclassifyOption: {
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        marginBottom: 8,
+    },
 });

@@ -11,6 +11,7 @@ import { api } from '../utils/api';
     convertSupportTicketToCard: vi.fn(),
     assignCard: vi.fn(),
     setSupportTicketStatus: vi.fn(),
+    setSupportTicketType: vi.fn(),
     deleteSupportTicket: vi.fn(),
     markSupportTicketRead: vi.fn().mockResolvedValue({}),
     markSupportTicketUnread: vi.fn().mockResolvedValue({}),
@@ -103,7 +104,11 @@ describe('CustomerSupportPage', () => {
     // (the replay now opens a sandboxed in-app player rather than a raw JSON link).
     // "Bug" also appears as a type-filter chip, so scope to the card badges.
     expect(screen.getAllByText('Bug').length).toBeGreaterThan(0);
-    expect(screen.getByText('Feature request')).toBeInTheDocument();
+    expect(
+      screen
+        .getAllByTestId('ticket-type-select')
+        .some((select: any) => select.value === 'feature_request'),
+    ).toBe(true);
     expect(screen.getByText('critical')).toBeInTheDocument();
     expect(screen.getByText('Likely a null deref in checkout')).toBeInTheDocument();
     const replay = screen.getByRole('button', { name: /watch replay/i });
@@ -768,6 +773,31 @@ describe('CustomerSupportPage — change ticket status', () => {
     // and the inline reason form closes with it.
     await waitFor(() => expect(screen.queryByTestId('wont-do-reason-form')).toBeNull());
     expect(screen.queryByText('Decline me')).toBeNull();
+  });
+});
+
+describe('CustomerSupportPage — reclassify ticket type', () => {
+  it('changes a ticket type via the reclassify dropdown', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 't1', subject: 'Classify me', type: 'question' }),
+    ]);
+    (api.setSupportTicketType as any).mockResolvedValue(
+      ticket({ id: 't1', subject: 'Classify me', type: 'feature_request' }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Classify me')).toBeInTheDocument());
+
+    const select = screen.getByTestId('ticket-type-select');
+    expect((select as any).value).toBe('question');
+    fireEvent.change(select, { target: { value: 'feature_request' } } as any);
+
+    await waitFor(() =>
+      expect(api.setSupportTicketType).toHaveBeenCalledWith('proj-1', 't1', 'feature_request'),
+    );
+    await waitFor(() =>
+      expect((screen.getByTestId('ticket-type-select') as any).value).toBe('feature_request'),
+    );
   });
 });
 

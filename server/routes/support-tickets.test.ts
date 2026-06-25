@@ -130,6 +130,36 @@ describe('support-tickets routes', () => {
     expect(patched.body.ai_investigation).toBe('details v1');
   });
 
+  it('PATCH reclassifies ticket type and updates type filters', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'make this a feature', severity: 'medium', type: 'question' })
+      .expect(201);
+    const id = created.body.id as string;
+
+    const patched = await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ type: 'feature_request' })
+      .expect(200);
+    expect(patched.body.type).toBe('feature_request');
+
+    const questions = await request
+      .get(`/api/projects/${projectId}/support-tickets?type=question`)
+      .expect(200);
+    expect(questions.body.find((t: { id: string }) => t.id === id)).toBeUndefined();
+
+    const features = await request
+      .get(`/api/projects/${projectId}/support-tickets?type=feature_request`)
+      .expect(200);
+    expect(features.body.find((t: { id: string }) => t.id === id)?.type).toBe('feature_request');
+
+    await request
+      .patch(`/api/projects/${projectId}/support-tickets/${id}`)
+      .send({ type: 'bogus' })
+      .expect(400);
+  });
+
   it('rejects a missing body and invalid status filter', async () => {
     const projectId = await newProjectId();
     await request

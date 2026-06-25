@@ -515,6 +515,13 @@ describe('api support-ticket helpers — URL + method parity with web client', (
         });
         expect(JSON.parse(lastCall()[1].body)).toEqual({ autoMerge: true, comment: 'ship it' });
     });
+    it('setSupportTicketType(projectId, id, type) → PATCH /…/support-tickets/:id', async () => {
+        await api.setSupportTicketType('agent-hub', 'tkt-5', 'feature_request');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-5');
+        expect(init?.method).toBe('PATCH');
+        expect(JSON.parse(init.body)).toEqual({ type: 'feature_request' });
+    });
     it('getSupportUnreadCount(projectId) → GET /…/support-tickets/unread-count', async () => {
         await api.getSupportUnreadCount('agent-hub');
         const [url, init] = lastCall();
