@@ -14,6 +14,7 @@ const ctl = vi.hoisted(() => ({
   /** sessionId -> { promise, resolve, reject } */
   messageDefers: new Map(),
   sAMessages: [{ id: 'm-a', role: 'user', content: 'from-a', created_at: '' }] as any[],
+  getMessagesImpl: null as any,
   deferredFor(sid: any) {
     if (!ctl.messageDefers.has(sid)) {
       let resolve: any;
@@ -29,6 +30,7 @@ const ctl = vi.hoisted(() => ({
   resetMessages() {
     ctl.messageDefers = new Map();
     ctl.sAMessages = [{ id: 'm-a', role: 'user', content: 'from-a', created_at: '' }];
+    ctl.getMessagesImpl = null;
   },
 }));
 
@@ -118,7 +120,8 @@ const ctl = vi.hoisted(() => ({
       getSkills: vi.fn().mockResolvedValue([]),
       getDesigns: vi.fn().mockResolvedValue([]),
       getCronSessions: vi.fn().mockResolvedValue([]),
-      getMessages: vi.fn((sid: any) => {
+      getMessages: vi.fn((sid: any, opts: any) => {
+        if (ctl.getMessagesImpl) return ctl.getMessagesImpl(sid, opts);
         if (sid === 's-a') {
           return Promise.resolve(ctl.sAMessages);
         }
@@ -286,6 +289,51 @@ describe('App — session switch + getMessages loading', () => {
 
     expect(await screen.findByTestId('finalize-checks-round-block')).toBeInTheDocument();
     expect(screen.getByText('tests')).toBeInTheDocument();
+  });
+
+  it('loads older failed finalize checks after navigating back to a finalize session', async () => {
+    const newestPage = Array.from({ length: 40 }, (_, i) => ({
+      id: `new-${i + 1}`,
+      role: 'assistant',
+      content: `newest ${i + 1}`,
+      created_at: '',
+    }));
+    const olderPage = [
+      {
+        id: 'finalize-checks-failed',
+        role: 'system',
+        content: 'Checks · round 1 · server 3/3 failed',
+        created_at: '',
+        metadata: JSON.stringify({
+          kind: 'finalize_checks_round',
+          runId: 'run-1',
+          round: 1,
+          steps: [{ index: 1, name: 'server 3/3', state: 'failed', exitCode: 1 }],
+        }),
+      },
+    ];
+    ctl.getMessagesImpl = vi.fn((sid: any, opts: any = {}) => {
+      if (sid !== 's-a') return Promise.resolve([]);
+      if (opts.before === 'new-1') return Promise.resolve(olderPage);
+      return Promise.resolve(newestPage);
+    });
+
+    render(<App initialView="chat" />);
+    await bootstrapTwoSessions();
+
+    await act(async () => {
+      ctl.resolveSessionsByAgent['agent-1']([
+        { id: 's-a', name: 'SA', engine: 'claude-code', finalize_status: 'dispatching' },
+        { id: 's-b', name: 'SB', engine: 'claude-code' },
+      ]);
+    });
+
+    expect(await screen.findByTestId('finalize-checks-round-block')).toBeInTheDocument();
+    expect(screen.getByText('server 3/3')).toBeInTheDocument();
+    expect(api.getMessages).toHaveBeenCalledWith('s-a', {
+      limit: expect.any(Number),
+      before: 'new-1',
+    });
   });
 
   it('does not apply a stale getMessages result after switching away (cancelled effect)', async () => {

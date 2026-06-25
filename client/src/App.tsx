@@ -102,6 +102,7 @@ import {
   prependOlderMessages,
   restoredScrollTop,
 } from './utils/messagePagination';
+import { shouldBackfillFinalizeChecksTimeline } from './utils/finalizeTimelineBackfill';
 import {
   buildInterruptQueuedMessageDispatch,
   isPersistedUploadAttachment,
@@ -539,6 +540,8 @@ export default function App({ initialView }: any = {}) {
   // detect whether a `changes_ready` event is a fresh prompt vs a replay).
   const changesReadyRef = useRef(changesReady);
   changesReadyRef.current = changesReady;
+  const finalizeStatusBySessionRef = useRef(finalizeStatusBySession);
+  finalizeStatusBySessionRef.current = finalizeStatusBySession;
 
   // Track when a session was explicitly navigated to (e.g. from kanban assign)
   // so the agent-change useEffect doesn't overwrite it with a stale session ID.
@@ -3125,14 +3128,45 @@ export default function App({ initialView }: any = {}) {
     setMessages([]);
     setSessionMessagesLoading(true);
     let cancelled = false;
-    api
-      .getMessages(activeSessionId, { limit: MESSAGES_PAGE_SIZE })
-      .then((rows: any) => {
+    const loadInitialMessages = async () => {
+      const firstRows = await api.getMessages(activeSessionId, { limit: MESSAGES_PAGE_SIZE });
+      let page = Array.isArray(firstRows) ? firstRows : [];
+      let hasMore = inferHasMore(page.length);
+      const sessionRow = sessionsByIdRef.current.get(activeSessionId);
+      const finalizeStatus =
+        finalizeStatusBySessionRef.current[activeSessionId] ?? sessionRow?.finalize_status ?? null;
+
+      for (
+        let olderPagesLoaded = 0;
+        shouldBackfillFinalizeChecksTimeline({
+          messages: page,
+          finalizeStatus,
+          hasMore,
+          olderPagesLoaded,
+        });
+        olderPagesLoaded += 1
+      ) {
+        if (cancelled) break;
+        const oldest = page[0];
+        if (!oldest?.id) break;
+        const olderRows = await api.getMessages(activeSessionId, {
+          limit: MESSAGES_PAGE_SIZE,
+          before: oldest.id,
+        });
+        const olderPage = Array.isArray(olderRows) ? olderRows : [];
+        hasMore = inferHasMore(olderPage.length);
+        page = prependOlderMessages(page, olderPage).messages;
+      }
+
+      return { page, hasMore };
+    };
+
+    loadInitialMessages()
+      .then(({ page, hasMore }: any) => {
         if (cancelled) return;
-        const page = Array.isArray(rows) ? rows : [];
         setMessages(page);
         // A full page implies older messages exist above the loaded window.
-        olderHasMoreRef.current = inferHasMore(page.length);
+        olderHasMoreRef.current = hasMore;
         setSessionMessagesLoading(false);
       })
       .catch(() => {
