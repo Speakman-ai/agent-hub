@@ -3135,6 +3135,246 @@ components:
         - openPRs
         - recentActivity
       description: Org-wide dashboard payload. `:id` may be an explicit org id or the alias `active`.
+    Deployment:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        environment:
+          type: string
+        ref:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - awaiting_approval
+            - running
+            - success
+            - error
+            - cancelled
+        trigger:
+          type: string
+        triggered_by:
+          type: string
+          nullable: true
+        source_deployment_id:
+          type: string
+          nullable: true
+        runner_job_id:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        meta:
+          nullable: true
+        created_at:
+          type: string
+        started_at:
+          type: string
+          nullable: true
+        completed_at:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - environment
+        - ref
+        - status
+        - trigger
+        - triggered_by
+        - source_deployment_id
+        - runner_job_id
+        - error
+        - created_at
+        - started_at
+        - completed_at
+        - updated_at
+    DeploymentStep:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment_id:
+          type: string
+        name:
+          type: string
+        step_order:
+          type: integer
+        status:
+          type: string
+          enum:
+            - pending
+            - running
+            - success
+            - error
+            - skipped
+            - cancelled
+        exit_code:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          nullable: true
+        completed_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - deployment_id
+        - name
+        - step_order
+        - status
+        - exit_code
+        - error
+        - started_at
+        - completed_at
+        - created_at
+    DeploymentApproval:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment_id:
+          type: string
+        approver_user_id:
+          type: string
+        approver_role:
+          type: string
+        decision:
+          type: string
+          enum:
+            - approved
+            - rejected
+        note:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+      required:
+        - id
+        - deployment_id
+        - approver_user_id
+        - approver_role
+        - decision
+        - note
+        - created_at
+    DeploymentEnvironment:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        name:
+          type: string
+        current_ref:
+          type: string
+          nullable: true
+        current_deployment_id:
+          type: string
+          nullable: true
+        active_deployment_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - name
+        - current_ref
+        - current_deployment_id
+        - active_deployment_id
+        - created_at
+        - updated_at
+    DeploymentListResponse:
+      type: object
+      properties:
+        deployments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Deployment"
+        limit:
+          type: integer
+        offset:
+          type: integer
+      required:
+        - deployments
+        - limit
+        - offset
+    DeploymentDetailResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: "#/components/schemas/Deployment"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentStep"
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentApproval"
+        environment:
+          allOf:
+            - $ref: "#/components/schemas/DeploymentEnvironment"
+            - nullable: true
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/Deployment"
+        logs:
+          type: array
+          items:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+      required:
+        - deployment
+        - steps
+        - approvals
+        - environment
+        - history
+        - logs
+    DeploymentActionResponse:
+      type: object
+      properties:
+        deployment:
+          $ref: "#/components/schemas/Deployment"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentStep"
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentApproval"
+      required:
+        - deployment
+        - steps
+        - approvals
+    DeploymentErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     EscalationsErrorResponse:
       type: object
       properties:
@@ -14485,6 +14725,310 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardErrorResponse"
+  /api/projects/{projectId}/deployments:
+    get:
+      tags:
+        - Deployments
+      summary: List deployments
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            minLength: 1
+          required: false
+          name: environment
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Deployment history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentListResponse"
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    post:
+      tags:
+        - Deployments
+      summary: Trigger a deployment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                environment:
+                  type: string
+                  minLength: 1
+                ref:
+                  type: string
+                  minLength: 1
+                sessionId:
+                  type: string
+                  minLength: 1
+                meta:
+                  nullable: true
+              required:
+                - environment
+                - ref
+      responses:
+        "202":
+          description: Deployment accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentActionResponse"
+        "400":
+          description: Invalid body, deploy.yaml, or ref.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Environment is already busy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}:
+    get:
+      tags:
+        - Deployments
+      summary: Get deployment status
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      responses:
+        "200":
+          description: Deployment detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentDetailResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/cancel:
+    post:
+      tags:
+        - Deployments
+      summary: Cancel a deployment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "202":
+          description: Action accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentActionResponse"
+        "400":
+          description: Invalid request or action is not applicable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Deployment is no longer actionable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/approve:
+    post:
+      tags:
+        - Deployments
+      summary: Approve a gated deployment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "202":
+          description: Action accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentActionResponse"
+        "400":
+          description: Invalid request or action is not applicable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Deployment is no longer awaiting approval.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/rollback:
+    post:
+      tags:
+        - Deployments
+      summary: Rollback by redeploying a historical ref
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessionId:
+                  type: string
+                  minLength: 1
+                meta:
+                  nullable: true
+      responses:
+        "202":
+          description: Action accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentActionResponse"
+        "400":
+          description: Invalid request or action is not applicable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Environment is already busy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
   /api/designs/{id}/import:
     post:
       tags:

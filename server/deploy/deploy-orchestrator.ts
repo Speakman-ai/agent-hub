@@ -38,6 +38,7 @@
  * `deps.runnerBackend` with a fake lease whose `spawnStep` emits scripted
  * stdout/close events (see `deploy-orchestrator.test.ts`).
  */
+import { rmSync } from 'fs';
 import type { BroadcastFn, DeploymentRow } from '../types.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { resolveRunnerBackend } from '../finalize/runner-backend.js';
@@ -179,6 +180,18 @@ export interface TriggerDeploymentInput {
   sessionId?: string | null;
   /** Free-form metadata stashed on the deployment row. */
   meta?: unknown;
+  /**
+   * Return as soon as the deployment row is created and step rows are registered.
+   * The runner continues in the background. REST uses this so deploy triggers do
+   * not hold the HTTP request open for the full pipeline.
+   */
+  deferRun?: boolean;
+  /**
+   * Remove the materialized checkout once the deployment reaches a terminal
+   * state. REST-created deployment checkouts set this; direct orchestrator tests
+   * and callers that manage their own worktree leave it false.
+   */
+  cleanupWorktreeOnTerminal?: boolean;
 }
 
 export interface ApproveDeploymentInput {
@@ -191,7 +204,32 @@ export interface ApproveDeploymentInput {
   note?: string | null;
   /** Chat session driving approval/resume (secret-decrypt audit attribution). */
   sessionId?: string | null;
+  /**
+   * Return after claiming approval and start the runner in the background. REST
+   * uses this so approval requests do not block for the full deploy pipeline.
+   */
+  deferRun?: boolean;
 }
+
+export interface CancelDeploymentInput {
+  deploymentId: string;
+  reason?: string | null;
+}
+
+export class DeploymentCancelError extends Error {
+  readonly reason: 'not_found' | 'already_terminal';
+  constructor(reason: DeploymentCancelError['reason'], message: string) {
+    super(message);
+    this.name = 'DeploymentCancelError';
+    this.reason = reason;
+  }
+}
+
+const TERMINAL_DEPLOYMENT_STATUSES = new Set<DeploymentRow['status']>([
+  'success',
+  'error',
+  'cancelled',
+]);
 
 const DEPLOYMENT_PLAN_META_KEY = 'agentHubDeploymentPlan';
 
@@ -199,7 +237,16 @@ interface DeploymentPlanSnapshot {
   version: 1;
   worktreePath: string;
   environment: DeployEnvironmentConfig;
+  cleanupWorktreeOnTerminal?: boolean;
 }
+
+interface ActiveDeploymentRun {
+  cancelRequested: boolean;
+  child?: SpawnedStep;
+  killTimer?: NodeJS.Timeout;
+}
+
+const activeDeploymentRuns = new Map<string, ActiveDeploymentRun>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -208,10 +255,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function snapshotDeploymentPlan(
   worktreePath: string,
   envConfig: DeployEnvironmentConfig,
+  cleanupWorktreeOnTerminal: boolean,
 ): DeploymentPlanSnapshot {
   return {
     version: 1,
     worktreePath,
+    cleanupWorktreeOnTerminal,
     environment: {
       name: envConfig.name,
       approval: envConfig.approval,
@@ -266,6 +315,7 @@ function parseDeploymentPlan(deployment: DeploymentRow): DeploymentPlanSnapshot 
   return {
     version: 1,
     worktreePath: plan.worktreePath,
+    cleanupWorktreeOnTerminal: plan.cleanupWorktreeOnTerminal === true,
     environment: {
       name,
       approval,
@@ -274,6 +324,44 @@ function parseDeploymentPlan(deployment: DeploymentRow): DeploymentPlanSnapshot 
       steps: parsedSteps,
     },
   };
+}
+
+function cleanupDeploymentWorktree(worktreePath: string, deploymentId: string): void {
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[deploy-orchestrator] failed to remove deployment checkout ` +
+        `deployment=${deploymentId} path=${worktreePath}: ${detail}`,
+    );
+  }
+}
+
+function clearActiveChild(active: ActiveDeploymentRun, child: SpawnedStep): void {
+  if (active.child === child) active.child = undefined;
+  if (active.killTimer) {
+    clearTimeout(active.killTimer);
+    active.killTimer = undefined;
+  }
+}
+
+function requestActiveDeploymentCancel(deploymentId: string): boolean {
+  const active = activeDeploymentRuns.get(deploymentId);
+  if (!active) return false;
+  active.cancelRequested = true;
+  const child = active.child;
+  if (child) {
+    child.kill('SIGTERM');
+    active.killTimer =
+      active.killTimer ??
+      setTimeout(() => {
+        if (activeDeploymentRuns.get(deploymentId) === active && active.child === child) {
+          child.kill('SIGKILL');
+        }
+      }, 5_000);
+  }
+  return true;
 }
 
 /**
@@ -336,6 +424,7 @@ function runStep(
   cwd: string,
   env: NodeJS.ProcessEnv,
   budgetMs: number,
+  active?: ActiveDeploymentRun,
 ): Promise<StepRunOutcome> {
   return new Promise<StepRunOutcome>((resolve) => {
     let child: SpawnedStep;
@@ -344,6 +433,10 @@ function runStep(
     } catch (err) {
       resolve({ exitCode: -1, tail: [], timedOut: false, spawnError: String(err) });
       return;
+    }
+    if (active) {
+      active.child = child;
+      if (active.cancelRequested) child.kill('SIGTERM');
     }
 
     const tail: string[] = [];
@@ -387,6 +480,7 @@ function runStep(
         tail.push(buffered);
         if (tail.length > STEP_TAIL_LINES) tail.shift();
       }
+      if (active) clearActiveChild(active, child);
       resolve({ ...outcome, tail });
     };
 
@@ -418,13 +512,31 @@ export async function runDeployment(
     worktreePath: string;
     envConfig: DeployEnvironmentConfig;
     sessionId?: string | null;
+    cleanupWorktreeOnTerminal?: boolean;
   },
   deps: DeployOrchestratorDeps,
 ): Promise<DeploymentRow> {
   const { projectId, environment, ref, worktreePath, envConfig } = ctx;
   const now = deps.now ?? Date.now;
+  const active: ActiveDeploymentRun = activeDeploymentRuns.get(deploymentId) ?? {
+    cancelRequested: false,
+  };
+  activeDeploymentRuns.set(deploymentId, active);
+  const shouldCleanupWorktree = ctx.cleanupWorktreeOnTerminal === true;
+  const cleanupIfOwned = (): void => {
+    if (shouldCleanupWorktree) cleanupDeploymentWorktree(worktreePath, deploymentId);
+  };
+  const currentDeploymentIsCancelled = (): boolean =>
+    active.cancelRequested || getDeployment(deploymentId)?.status === 'cancelled';
 
   const fail = (error: string): DeploymentRow => {
+    if (currentDeploymentIsCancelled()) {
+      releaseEnvironmentLock(projectId, environment, deploymentId);
+      activeDeploymentRuns.delete(deploymentId);
+      cleanupIfOwned();
+      emitDeploymentUpdate(deps, projectId, deploymentId);
+      return getDeployment(deploymentId) as DeploymentRow;
+    }
     // Terminalize the still-pending step rows so a terminal errored deployment
     // never shows steps stuck "waiting" (this path covers unsupported runs-on,
     // secret/backend resolution failures, and runner acquire failures — none of
@@ -442,6 +554,8 @@ export async function runDeployment(
     }
     updateDeploymentStatus(deploymentId, 'error', { error });
     releaseEnvironmentLock(projectId, environment, deploymentId);
+    activeDeploymentRuns.delete(deploymentId);
+    cleanupIfOwned();
     emitDeploymentUpdate(deps, projectId, deploymentId);
     return getDeployment(deploymentId) as DeploymentRow;
   };
@@ -511,6 +625,9 @@ export async function runDeployment(
 
   try {
     for (const stepRow of steps) {
+      if (currentDeploymentIsCancelled()) {
+        return getDeployment(deploymentId) as DeploymentRow;
+      }
       const stepCfg = envConfig.steps[stepRow.step_order - 1];
       if (!stepCfg) continue; // defensive: row/config drift
 
@@ -535,7 +652,12 @@ export async function runDeployment(
         worktreePath,
         baseEnv,
         remaining,
+        active,
       );
+
+      if (currentDeploymentIsCancelled()) {
+        return getDeployment(deploymentId) as DeploymentRow;
+      }
 
       if (outcome.timedOut) {
         updateDeploymentStepStatus(stepRow.id, 'error', {
@@ -585,6 +707,13 @@ export async function runDeployment(
       // Release is best-effort; a teardown failure must not mask the deploy result.
     }
     releaseEnvironmentLock(projectId, environment, deploymentId);
+    activeDeploymentRuns.delete(deploymentId);
+    cleanupIfOwned();
+  }
+
+  if (currentDeploymentIsCancelled()) {
+    emitDeploymentUpdate(deps, projectId, deploymentId);
+    return getDeployment(deploymentId) as DeploymentRow;
   }
 
   if (failure) {
@@ -641,7 +770,10 @@ export async function triggerDeployment(
     triggeredBy: input.triggeredBy ?? null,
     sourceDeploymentId: input.sourceDeploymentId ?? null,
     status: 'pending',
-    meta: mergeDeploymentPlanMeta(input.meta, snapshotDeploymentPlan(worktreePath, envConfig)),
+    meta: mergeDeploymentPlanMeta(
+      input.meta,
+      snapshotDeploymentPlan(worktreePath, envConfig, input.cleanupWorktreeOnTerminal === true),
+    ),
   });
 
   // Atomic acquire closes the TOCTOU window: only one of two racing triggers
@@ -650,6 +782,7 @@ export async function triggerDeployment(
     updateDeploymentStatus(deployment.id, 'cancelled', {
       error: 'environment busy: another deployment acquired the lock first',
     });
+    if (input.cleanupWorktreeOnTerminal) cleanupDeploymentWorktree(worktreePath, deployment.id);
     const cur = getDeploymentEnvironment(projectId, environment);
     throw new EnvironmentBusyError(cur?.active_deployment_id ?? null);
   }
@@ -669,11 +802,68 @@ export async function triggerDeployment(
     return getDeployment(deployment.id) as DeploymentRow;
   }
 
-  return runDeployment(
+  const runPromise = runDeployment(
     deployment.id,
-    { projectId, environment, ref, worktreePath, envConfig, sessionId: input.sessionId ?? null },
+    {
+      projectId,
+      environment,
+      ref,
+      worktreePath,
+      envConfig,
+      sessionId: input.sessionId ?? null,
+      cleanupWorktreeOnTerminal: input.cleanupWorktreeOnTerminal === true,
+    },
     deps,
   );
+  if (input.deferRun) {
+    void runPromise.catch((err) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      updateDeploymentStatus(deployment.id, 'error', { error: detail });
+      releaseEnvironmentLock(projectId, environment, deployment.id);
+      activeDeploymentRuns.delete(deployment.id);
+      if (input.cleanupWorktreeOnTerminal) cleanupDeploymentWorktree(worktreePath, deployment.id);
+      emitDeploymentUpdate(deps, projectId, deployment.id);
+    });
+    return getDeployment(deployment.id) as DeploymentRow;
+  }
+  return runPromise;
+}
+
+export function cancelDeployment(
+  input: CancelDeploymentInput,
+  deps: DeployOrchestratorDeps,
+): DeploymentRow {
+  const deployment = getDeployment(input.deploymentId);
+  if (!deployment) {
+    throw new DeploymentCancelError('not_found', 'Deployment not found.');
+  }
+  if (TERMINAL_DEPLOYMENT_STATUSES.has(deployment.status)) {
+    throw new DeploymentCancelError(
+      'already_terminal',
+      `Deployment is already terminal (${deployment.status}).`,
+    );
+  }
+
+  const activeCancelRequested = requestActiveDeploymentCancel(deployment.id);
+  for (const step of listDeploymentSteps(deployment.id)) {
+    if (step.status === 'pending' || step.status === 'running') {
+      updateDeploymentStepStatus(step.id, 'cancelled', {
+        error: input.reason ?? 'Deployment cancelled.',
+      });
+    }
+  }
+  updateDeploymentStatus(deployment.id, 'cancelled', {
+    error: input.reason ?? 'Deployment cancelled.',
+  });
+  if (!activeCancelRequested) {
+    const plan = parseDeploymentPlan(deployment);
+    releaseEnvironmentLock(deployment.project_id, deployment.environment, deployment.id);
+    if (plan?.cleanupWorktreeOnTerminal) {
+      cleanupDeploymentWorktree(plan.worktreePath, deployment.id);
+    }
+  }
+  emitDeploymentUpdate(deps, deployment.project_id, deployment.id);
+  return getDeployment(deployment.id) as DeploymentRow;
 }
 
 /**
@@ -747,7 +937,7 @@ export async function approveDeployment(
   }
   emitDeploymentUpdate(deps, deployment.project_id, deployment.id);
 
-  return runDeployment(
+  const runPromise = runDeployment(
     deployment.id,
     {
       projectId: deployment.project_id,
@@ -756,7 +946,22 @@ export async function approveDeployment(
       worktreePath: plan.worktreePath,
       envConfig: plan.environment,
       sessionId: input.sessionId ?? null,
+      cleanupWorktreeOnTerminal: plan.cleanupWorktreeOnTerminal === true,
     },
     deps,
   );
+  if (input.deferRun) {
+    void runPromise.catch((err) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      updateDeploymentStatus(deployment.id, 'error', { error: detail });
+      releaseEnvironmentLock(deployment.project_id, deployment.environment, deployment.id);
+      activeDeploymentRuns.delete(deployment.id);
+      if (plan.cleanupWorktreeOnTerminal) {
+        cleanupDeploymentWorktree(plan.worktreePath, deployment.id);
+      }
+      emitDeploymentUpdate(deps, deployment.project_id, deployment.id);
+    });
+    return getDeployment(deployment.id) as DeploymentRow;
+  }
+  return runPromise;
 }
