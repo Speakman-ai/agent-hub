@@ -48,6 +48,24 @@ beforeAll(() => {
   // path under test — the lock check exits before that.
   writeFileSync(stub, '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
   chmodSync(stub, 0o755);
+  const curlStub = path.join(stubDir, 'curl');
+  writeFileSync(
+    curlStub,
+    [
+      '#!/usr/bin/env bash',
+      'for arg in "$@"; do',
+      '  case "$arg" in',
+      '    */api/projects/*)',
+      '      printf "%s" "$AGENT_HUB_TEST_PROJECT_JSON"',
+      '      exit "${AGENT_HUB_TEST_CURL_STATUS:-0}"',
+      '      ;;',
+      '  esac',
+      'done',
+      'exit 1',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  chmodSync(curlStub, 0o755);
   // Prepend the stub dir so `command -v gh` resolves to our shim
   // regardless of whether a real gh is installed on the test host.
   stubbedPath = `${stubDir}:${process.env.PATH || ''}`;
@@ -56,6 +74,13 @@ beforeAll(() => {
 afterAll(() => {
   if (stubDir && existsSync(stubDir)) rmSync(stubDir, { recursive: true, force: true });
 });
+
+function makeGitRepoWithOrigin(remoteUrl: string): string {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'gh-pr-repo-'));
+  execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['remote', 'add', 'origin', remoteUrl], { cwd: dir, stdio: 'ignore' });
+  return dir;
+}
 
 describe('gh-pr.sh review — disabled (in-session advisor)', () => {
   it('exits 2 with the in-session advisor message when AGENT_HUB_REVIEWER_LOCK=1', () => {
@@ -187,6 +212,127 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
     });
     expect(result.stderr || '').not.toContain('gh-pr.sh create is disabled');
     expect(result.status).not.toBe(2);
+  });
+
+  it('blocks create when the target repo differs from the Agent Hub project repo', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'cross repo pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        PROJECT_ID: 'mcs-field',
+        AGENT_HUB_URL: 'http://agent-hub.test',
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"mcsteen/mcs-field"}',
+        GH_REPO: 'mcsteen/surveytracker',
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    const stderr = result.stderr || '';
+    expect(stderr).toContain('cross-repo PR creation is not allowed');
+    expect(stderr).toContain('mcsteen/mcs-field');
+    expect(stderr).toContain('mcsteen/surveytracker');
+    expect(stderr).toContain('Agent Hub ticket in the target project instead');
+  });
+
+  it('allows create when the target repo matches the Agent Hub project repo case-insensitively', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'same repo pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        PROJECT_ID: 'mcs-field',
+        AGENT_HUB_URL: 'http://agent-hub.test',
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"McSteen/MCS-Field"}',
+        GH_REPO: 'mcsteen/mcs-field',
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.stderr || '').not.toContain('cross-repo PR creation is not allowed');
+    expect(result.status).not.toBe(2);
+  });
+
+  it.each([
+    ['ssh URL', 'ssh://git@github.com/mcsteen/mcs-field.git'],
+    ['https URL with userinfo', 'https://user@github.com/mcsteen/mcs-field.git'],
+  ])('allows create when origin is a matching GitHub %s', (_label, remoteUrl) => {
+    const cwd = makeGitRepoWithOrigin(remoteUrl);
+    try {
+      const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'same repo pr'], {
+        cwd,
+        env: {
+          PATH: stubbedPath,
+          HOME: os.tmpdir(),
+          PROJECT_ID: 'mcs-field',
+          AGENT_HUB_URL: 'http://agent-hub.test',
+          AGENT_HUB_API_KEY: 'test-key',
+          AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"mcsteen/mcs-field"}',
+          GH_TOKEN: 'gho_fake-user-oauth',
+        },
+        encoding: 'utf-8',
+      });
+      expect(result.stderr || '').not.toContain('cross-repo PR creation is not allowed');
+      expect(result.status).not.toBe(2);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks create when project repo is configured but target repo cannot be resolved', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'unknown repo pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        PROJECT_ID: 'mcs-field',
+        AGENT_HUB_URL: 'http://agent-hub.test',
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"mcsteen/mcs-field"}',
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('cannot determine the target GitHub repo');
+    expect(result.stderr || '').toContain('create an Agent Hub ticket in that repo');
+  });
+
+  it('blocks create when the Agent Hub project lookup fails', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'unverified repo pr'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        PROJECT_ID: 'mcs-field',
+        AGENT_HUB_URL: 'http://agent-hub.test',
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"error":"unauthorized"}',
+        AGENT_HUB_TEST_CURL_STATUS: '1',
+        GH_REPO: 'mcsteen/surveytracker',
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('could not verify the Agent Hub project repo');
+  });
+
+  it('blocks create when the Agent Hub project response is invalid JSON', () => {
+    const result = spawnSync('bash', [SCRIPT, 'create', '--title', 'invalid project json'], {
+      env: {
+        PATH: stubbedPath,
+        HOME: os.tmpdir(),
+        PROJECT_ID: 'mcs-field',
+        AGENT_HUB_URL: 'http://agent-hub.test',
+        AGENT_HUB_API_KEY: 'test-key',
+        AGENT_HUB_TEST_PROJECT_JSON: 'not json',
+        GH_REPO: 'mcsteen/surveytracker',
+        GH_TOKEN: 'gho_fake-user-oauth',
+      },
+      encoding: 'utf-8',
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr || '').toContain('could not verify the Agent Hub project repo');
   });
 
   it('blocks create under AGENT_HUB_REVIEWER_LOCK=1 with App installation token (ghs_)', () => {

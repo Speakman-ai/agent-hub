@@ -141,6 +141,7 @@ cmd_create() {
   done
   _require_arg "--title" "$title"
 
+  agent_hub_guard_pr_create_repo_scope
   require_gh_token
 
   local args=(pr create --title "$title")

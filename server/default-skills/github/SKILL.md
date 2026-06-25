@@ -125,6 +125,9 @@ gh api graphql -f query='{ viewer { login }}'
   or commit messages.
 - Honour repository visibility: do not operate on private repos unless the
   resolved token has the required scope.
+- In an Agent Hub project spawn, only create PRs in that project's configured
+  `githubRepo`. If work belongs in another repo, create an Agent Hub ticket in
+  that repo's project instead.
 - Respect branch-protection rules: do not force-push or bypass required reviews.
 - The **Reviewer GitHub App** already wired into Agent Hub is a separate
   credential used exclusively for automated PR reviews — do **not** reuse it

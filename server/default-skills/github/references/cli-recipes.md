@@ -16,6 +16,11 @@ Back to [SKILL.md](../SKILL.md).
 
 ## Open a pull request
 
+In an Agent Hub project spawn, open PRs only in the project's configured
+`githubRepo`. If the change belongs in another repo, create an Agent Hub ticket
+in that repo's project instead of opening a cross-repo PR from the current
+session.
+
 ```bash
 # 1. Make sure you're on a feature branch with commits
 git status

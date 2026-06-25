@@ -160,6 +160,119 @@ resolve_repo() {
 }
 
 # ---------------------------------------------------------------------------
+# Agent Hub project repo guard
+#
+# Agent Hub spawns carry PROJECT_ID + AGENT_HUB_URL + AGENT_HUB_API_KEY. When a
+# project is linked to GitHub, a dev session may only create a PR in that
+# project's configured repo. Cross-repo work should be tracked as a ticket in
+# the target project, then shipped by that project's own session.
+# ---------------------------------------------------------------------------
+_normalize_github_repo_slug() {
+  printf '%s' "$1" \
+    | sed -E 's|^[[:space:]]+||; s|[[:space:]]+$||; s|.*github\.com[:/]||; s|\.git$||; s|/+$||' \
+    | tr '[:upper:]' '[:lower:]'
+}
+
+_github_repo_from_remote_url() {
+  local remote_url="$1"
+  case "$remote_url" in
+    *github.com[:/]*)
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  local stripped
+  stripped=$(printf '%s' "$remote_url" \
+    | sed -E 's|^[[:space:]]+||; s|[[:space:]]+$||; s|.*github\.com[:/]||; s|\.git$||; s|/+$||')
+  if [[ "$stripped" == */* ]]; then
+    printf '%s' "$stripped"
+    return 0
+  fi
+  return 1
+}
+
+_agent_hub_project_github_repo() {
+  [[ -n "${PROJECT_ID:-}" && -n "${AGENT_HUB_URL:-}" && -n "${AGENT_HUB_API_KEY:-}" ]] || return 1
+
+  local resp
+  resp=$(curl -fsS -m 12 -H "x-api-key: $AGENT_HUB_API_KEY" \
+    "${AGENT_HUB_URL%/}/api/projects/${PROJECT_ID}" 2>/dev/null) || return 1
+
+  printf '%s' "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('githubRepo') or ''; print(v if isinstance(v,str) else '')" 2>/dev/null
+}
+
+_agent_hub_target_github_repo() {
+  if [[ -n "${GH_REPO:-}" && "$GH_REPO" == */* ]]; then
+    printf '%s' "$GH_REPO"
+    return 0
+  fi
+
+  local remote_url
+  remote_url=$(git remote get-url origin 2>/dev/null || true)
+  if [[ -n "$remote_url" ]] && _github_repo_from_remote_url "$remote_url"; then
+    return 0
+  fi
+
+  local name_with_owner
+  name_with_owner=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+  if [[ -n "$name_with_owner" && "$name_with_owner" == */* ]]; then
+    printf '%s' "$name_with_owner"
+    return 0
+  fi
+
+  return 1
+}
+
+agent_hub_guard_pr_create_repo_scope() {
+  [[ -n "${PROJECT_ID:-}" && -n "${AGENT_HUB_URL:-}" && -n "${AGENT_HUB_API_KEY:-}" ]] || return 0
+
+  local expected target expected_norm target_norm
+  if ! expected=$(_agent_hub_project_github_repo); then
+    cat >&2 <<GUARD
+error: gh-pr.sh create is blocked: could not verify the Agent Hub project repo.
+
+This spawn has Agent Hub project context for "$PROJECT_ID", but the GitHub
+skill could not read the project's configured githubRepo from Agent Hub. To
+avoid opening a pull request in the wrong repository, direct PR creation is
+blocked. Retry after Agent Hub project lookup is healthy, or create an Agent
+Hub ticket in the target project if the work belongs elsewhere.
+GUARD
+    exit 2
+  fi
+  expected_norm=$(_normalize_github_repo_slug "$expected")
+  [[ -n "$expected_norm" ]] || return 0
+
+  target=$(_agent_hub_target_github_repo || true)
+  target_norm=$(_normalize_github_repo_slug "$target")
+  if [[ -z "$target_norm" ]]; then
+    cat >&2 <<GUARD
+error: gh-pr.sh create is blocked: cannot determine the target GitHub repo.
+
+Agent Hub project "$PROJECT_ID" is configured for GitHub repo "$expected".
+Do not open pull requests from this project session unless the current repo
+matches that configured project repo. If this work belongs in another repo,
+create an Agent Hub ticket in that repo's project and let that project ship it.
+GUARD
+    exit 2
+  fi
+
+  if [[ "$target_norm" != "$expected_norm" ]]; then
+    cat >&2 <<GUARD
+error: gh-pr.sh create is blocked: cross-repo PR creation is not allowed.
+
+Agent Hub project "$PROJECT_ID" is configured for GitHub repo "$expected",
+but this command would create a pull request in "$target".
+
+Do not open pull requests in another repo from this project session. Create an
+Agent Hub ticket in the target project instead, then let that project/session
+own its own PR.
+GUARD
+    exit 2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Reviewer-role lock — defense-in-depth write denylist for role=reviewer spawns
 #
 # Two distinct env markers govern the github skill's write surface:
@@ -354,6 +467,7 @@ jq_or_python() {
 _require_arg() {
   local flag="$1" value="$2"
   [[ -z "$value" ]] && gh_die "$flag is required"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
