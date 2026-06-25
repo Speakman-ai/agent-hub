@@ -267,6 +267,12 @@ export function realDockerOps(): AgentDocker {
         env: spec.env,
         labels: JOB_LABELS(spec),
         visibility: spec.visibility,
+        resourceProfile: spec.resourceProfile,
+        // Deploy jobs (minimalEnv) never seed the container from the fleet box's
+        // process.env. The per-step exec (buildExecJobStepArgv) already builds
+        // env from only the delivered step env, so the remote path matches the
+        // local backend's baseEnvOnly isolation end-to-end.
+        baseEnvOnly: spec.minimalEnv,
       });
       return containerName;
     },

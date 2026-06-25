@@ -82,6 +82,35 @@ describe('createRemoteRunnerBackend', () => {
     expect(getJobChannel(claimed!.id)).toBeUndefined();
   });
 
+  it('forwards minimalEnv onto the wire spec so the agent isolates deploy env', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'deploy-1',
+      jobId: 'prod',
+      matrixKey: 'deploy',
+      image: 'img:latest',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: { PATH: '/usr/bin' },
+      labels: {},
+      minimalEnv: true,
+    });
+
+    const claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
+    expect(claimed).not.toBeNull();
+    const wireSpec = JSON.parse(claimed!.specJson) as { minimalEnv?: boolean; env: unknown };
+    expect(wireSpec.minimalEnv).toBe(true);
+    expect(wireSpec.env).toEqual({ PATH: '/usr/bin' });
+
+    // Complete the handshake so the acquire promise settles (no dangling timer).
+    const channel = getJobChannel(claimed!.id)!;
+    void channel.nextDirective(1000); // first poll attaches → unblocks acquire
+    const lease = await acquireP;
+    await lease.release();
+  });
+
   it('rebundles when a fix-round advances HEAD, but shares one bundle within a round', async () => {
     // Regression for the stale-code livelock: the bundle was memoized by runId
     // alone, so across fix-dispatch rounds (stable runId) the fleet re-tested the

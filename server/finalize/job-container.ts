@@ -128,12 +128,24 @@ export function execJobStep(opts: ExecJobStepOptions): SpawnedStep {
 export function createJobScopedSpawnStep(options: {
   containerName: string;
   baseEnv?: NodeJS.ProcessEnv;
+  /**
+   * When true, steps exec from ONLY `baseEnv` (+ the runner basics
+   * `finalizeRunnerEnv` always sets), WITHOUT folding the Hub's `process.env`.
+   * Deploy jobs set this so arbitrary `deploy.yaml` commands never see the Hub
+   * server's own environment (its app/API keys, infra creds). Finalize gate
+   * jobs leave it unset: folding `process.env` gives the trusted gate the host
+   * toolchain env it relies on. Default false (legacy behaviour preserved).
+   */
+  baseEnvOnly?: boolean;
 }): SpawnStepFn {
   return ({ step, env }: SpawnStepArgs): SpawnedStep => {
+    const stepEnv = options.baseEnvOnly
+      ? finalizeRunnerEnv({ ...options.baseEnv, ...env })
+      : finalizeRunnerEnv(process.env, { ...options.baseEnv, ...env });
     return execJobStep({
       containerName: options.containerName,
       run: step.run,
-      env: finalizeRunnerEnv(process.env, { ...options.baseEnv, ...env }),
+      env: stepEnv,
     });
   };
 }

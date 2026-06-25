@@ -216,6 +216,24 @@ describe('resolveRunnerResourceProfile — repo visibility', () => {
   });
 });
 
+describe('resolveRunnerResourceProfile — forceProfile (non-gate work, e.g. deploys)', () => {
+  it('forceProfile=unconstrained wins over env override AND visibility, with no caps', () => {
+    const p = resolveRunnerResourceProfile(
+      { FINALIZE_RUNNER_RESOURCE_PROFILE: 'ubuntu-slim', FINALIZE_RUNNER_CPUS: '2' },
+      { visibility: 'private', forceProfile: 'unconstrained' },
+    );
+    expect(p.name).toBe('unconstrained');
+    expect(p.cpus).toBeNull();
+    expect(p.memoryBytes).toBeNull();
+  });
+
+  it('forceProfile=unconstrained emits no docker resource flags', () => {
+    expect(
+      resolveRunnerResourceArgs({ FINALIZE_RUNNER_CPUS: '8' }, { forceProfile: 'unconstrained' }),
+    ).toEqual([]);
+  });
+});
+
 describe('buildRunnerResourceArgs', () => {
   it('emits --cpus and a HARD memory cap (--memory == --memory-swap, no swap headroom)', () => {
     const args = buildRunnerResourceArgs(RUNNER_RESOURCE_PROFILES['ubuntu-private']);

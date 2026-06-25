@@ -163,14 +163,28 @@ export interface ResolveResourceProfileOpts {
    * ubuntu-private). An explicit valid env profile always wins over this.
    */
   visibility?: RepoVisibility;
+  /**
+   * Caller-forced profile that wins over BOTH the env override and the
+   * visibility tier. This is for work that is NOT the GitHub-parity gate and
+   * therefore must not be capped to the gate's tier — the Deployment Module
+   * orchestrator forces `'unconstrained'` here (deploys are real build/ship
+   * work needing full CPU/RAM + egress; the parity caps exist only to keep the
+   * correctness gate honest, see the epic decision `runner-profile`). Finalize
+   * gate jobs leave this unset so the env override / visibility logic applies.
+   */
+  forceProfile?: RunnerResourceProfileName;
 }
 
 /**
  * Resolve the effective resource profile from env (+ optional repo visibility).
  *
  * Base-profile precedence:
+ *   0. A caller-forced `opts.forceProfile` wins over everything below. Used by
+ *      non-gate work (the Deployment Module forces `'unconstrained'`) that must
+ *      not be throttled by the gate's parity caps even when an operator pinned
+ *      FINALIZE_RUNNER_RESOURCE_PROFILE for the gate.
  *   1. An explicit, VALID FINALIZE_RUNNER_RESOURCE_PROFILE (operator override)
- *      always wins.
+ *      wins over visibility/default.
  *   2. Otherwise the gated repo's GitHub visibility, when known, selects the
  *      matching tier (public -> ubuntu-public, private -> ubuntu-private) so a
  *      public repo gets exact GitHub parity without manual config.
@@ -187,9 +201,19 @@ export function resolveRunnerResourceProfile(
   opts: ResolveResourceProfileOpts = {},
 ): RunnerResourceProfile {
   const rawName = env.FINALIZE_RUNNER_RESOURCE_PROFILE?.trim().toLowerCase();
-  const baseName =
-    rawName && isProfileName(rawName) ? rawName : profileNameForVisibility(opts.visibility);
+  const baseName = opts.forceProfile
+    ? opts.forceProfile
+    : rawName && isProfileName(rawName)
+      ? rawName
+      : profileNameForVisibility(opts.visibility);
   const base = RUNNER_RESOURCE_PROFILES[baseName];
+
+  // A caller-forced profile is returned verbatim: the granular FINALIZE_RUNNER_*
+  // knobs configure the GATE runner, and must not silently re-cap non-gate work
+  // (e.g. a deploy that forced `'unconstrained'`).
+  if (opts.forceProfile) {
+    return base;
+  }
 
   const cpuOverride = parsePositive(env.FINALIZE_RUNNER_CPUS);
   const memOverride = parseMemoryToBytes(env.FINALIZE_RUNNER_MEMORY);
@@ -224,7 +248,7 @@ export function buildRunnerResourceArgs(profile: RunnerResourceProfile): string[
   return args;
 }
 
-/** Convenience: resolve from env (+ optional visibility) and build argv in one call. */
+/** Convenience: resolve from env (+ optional visibility / forceProfile) and build argv in one call. */
 export function resolveRunnerResourceArgs(
   env: NodeJS.ProcessEnv = process.env,
   opts: ResolveResourceProfileOpts = {},

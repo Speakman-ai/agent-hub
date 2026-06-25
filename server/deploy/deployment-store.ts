@@ -103,9 +103,12 @@ export function listDeploymentsForEnvironment(
 }
 
 /**
- * Transition a deployment to `status`. `started_at` is stamped on the first move
- * out of 'pending'; `completed_at` on a terminal state. Returns the updated row,
- * or null if no row matched. `error` is only meaningful for status='error'.
+ * Transition a deployment to `status`. `started_at` is stamped the first time the
+ * deployment enters 'running' (when its steps actually begin) — NOT when a gated
+ * deploy parks at 'awaiting_approval', so a deploy parked for approval doesn't
+ * accrue bogus run duration. `completed_at` is stamped on a terminal state.
+ * Returns the updated row, or null if no row matched. `error` is only meaningful
+ * for status='error'.
  */
 export function updateDeploymentStatus(
   id: string,

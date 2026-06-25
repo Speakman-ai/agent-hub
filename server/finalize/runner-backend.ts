@@ -14,7 +14,7 @@
  * the scheduler, and all DB/broadcast persistence unchanged.
  */
 import type { SpawnStepFn } from './step-runner.js';
-import type { RepoVisibility } from './runner-resource-profile.js';
+import type { RepoVisibility, RunnerResourceProfileName } from './runner-resource-profile.js';
 import { createLocalRunnerBackend } from './runner-backend-local.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
 import { LocalDirBundleStore, type BundleStore } from './worktree-bundle.js';
@@ -46,6 +46,23 @@ export interface JobClaimSpec {
    * keeps the stricter default tier.
    */
   visibility?: RepoVisibility;
+  /**
+   * Caller-forced runner resource profile that wins over the env override and
+   * the visibility tier. The Deployment Module orchestrator forces
+   * `'unconstrained'` so deploy jobs run with the full host (deploys are real
+   * build/ship work, NOT the GitHub-parity gate; see epic decision
+   * `runner-profile`). Finalize gate jobs omit this so visibility/env apply.
+   */
+  resourceProfile?: RunnerResourceProfileName;
+  /**
+   * When true, steps run from ONLY this spec's `env` (plus the runner basics the
+   * backend always sets), WITHOUT folding the Hub's `process.env`. The
+   * Deployment Module sets this so arbitrary `deploy.yaml` commands never see the
+   * Hub server's own environment (app/API keys, infra creds). Finalize gate jobs
+   * omit it (the trusted gate gets the host toolchain env). Honoured by the local
+   * DinD backend; the remote backend already ships only `env` over the wire.
+   */
+  minimalEnv?: boolean;
 }
 
 /** One job's runner, leased for the duration of its steps. */

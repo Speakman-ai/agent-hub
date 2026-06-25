@@ -101,6 +101,40 @@ describe('buildStartJobContainerArgv', () => {
     expect(argv).not.toContain('--memory');
     expect(argv).not.toContain('--memory-swap');
   });
+
+  it('baseEnvOnly suppresses the process.env fallback (deploy isolation)', () => {
+    const sentinel = `LEAK_SENTINEL_${Date.now()}`;
+    process.env[sentinel] = 'hub-or-agent-secret';
+    try {
+      // Default (Finalize): an undefined env falls back to process.env, so the
+      // host sentinel leaks into the container.
+      const leaky = buildStartJobContainerArgv({
+        containerName: 'finalize-run1-e2e-core',
+        image: 'agent-hub/finalize-runner:ubuntu-24.04',
+        worktreePath: '/tmp/wt',
+        composeProjectName: 'finalize-run1-e2e-core',
+        resourceEnv: { FINALIZE_RUNNER_RESOURCE_PROFILE: 'unconstrained' },
+      });
+      expect(leaky.some((a) => a.startsWith(`${sentinel}=`))).toBe(true);
+
+      // baseEnvOnly (deploy): the container env is built from ONLY opts.env, so
+      // the host/agent process.env never seeds it — even when env is empty.
+      const isolated = buildStartJobContainerArgv({
+        containerName: 'deploy-1-prod',
+        image: 'agent-hub/finalize-runner:ubuntu-24.04',
+        worktreePath: '/tmp/wt',
+        composeProjectName: 'deploy-1-prod',
+        env: { PATH: '/usr/bin' },
+        baseEnvOnly: true,
+        resourceEnv: { FINALIZE_RUNNER_RESOURCE_PROFILE: 'unconstrained' },
+      });
+      expect(isolated.some((a) => a.startsWith(`${sentinel}=`))).toBe(false);
+      // Allowlisted basics still pass through.
+      expect(isolated.some((a) => a === 'PATH=/usr/bin')).toBe(true);
+    } finally {
+      delete process.env[sentinel];
+    }
+  });
 });
 
 describe('finalizeRunnerEnv', () => {

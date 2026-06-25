@@ -104,7 +104,7 @@ describe('listing + history', () => {
 });
 
 describe('updateDeploymentStatus timing', () => {
-  it('stamps started_at on first non-pending move and completed_at on terminal', () => {
+  it('stamps started_at when entering running and completed_at on terminal', () => {
     const d = createDeployment({ projectId: P, environment: 'dev', ref: 'r' });
 
     const running = updateDeploymentStatus(d.id, 'running')!;
@@ -117,6 +117,18 @@ describe('updateDeploymentStatus timing', () => {
     expect(done.completed_at).toBeTruthy();
     // started_at is preserved (COALESCE), not overwritten on the second update.
     expect(done.started_at).toBe(startedAt);
+  });
+
+  it('does NOT stamp started_at when parking at awaiting_approval (no steps ran yet)', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'r' });
+    const parked = updateDeploymentStatus(d.id, 'awaiting_approval')!;
+    expect(parked.status).toBe('awaiting_approval');
+    expect(parked.started_at).toBeNull();
+    expect(parked.completed_at).toBeNull();
+
+    // Stamped only once the (approved) deploy actually starts running.
+    const running = updateDeploymentStatus(d.id, 'running')!;
+    expect(running.started_at).toBeTruthy();
   });
 
   it('does not stamp started_at while still pending and records an error message', () => {

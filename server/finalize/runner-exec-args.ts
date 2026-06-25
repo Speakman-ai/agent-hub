@@ -14,7 +14,11 @@
 import { FINALIZE_STEP_SHELL } from './ci-config.js';
 import { FINALIZE_RUNNER_WORKSPACE } from './runner-images.js';
 import { resolveHostMountPath } from './container-runner.js';
-import { resolveRunnerResourceArgs, type RepoVisibility } from './runner-resource-profile.js';
+import {
+  resolveRunnerResourceArgs,
+  type RepoVisibility,
+  type RunnerResourceProfileName,
+} from './runner-resource-profile.js';
 
 const STEP_SHELL_ARGV = FINALIZE_STEP_SHELL.split(/\s+/u);
 export const RUNNER_USER = 'runner';
@@ -112,6 +116,24 @@ export interface JobContainerOptions {
    * private -> ubuntu-private. Omitted/`'unknown'` keeps the stricter default.
    */
   visibility?: RepoVisibility;
+  /**
+   * Caller-forced resource profile that wins over the env override AND the
+   * visibility tier. Used by the Deployment Module orchestrator to force
+   * `'unconstrained'` — deploy jobs are real build/ship work and are NOT the
+   * GitHub-parity gate, so the parity caps must not throttle them (epic
+   * decision `runner-profile`). Left unset by Finalize gate jobs.
+   */
+  resourceProfile?: RunnerResourceProfileName;
+  /**
+   * When true, the container's baseline env is built from ONLY `opts.env` (plus
+   * the runner basics `finalizeRunnerEnv` always sets), WITHOUT falling back to —
+   * or folding in — the host/agent `process.env`. Deploy jobs set this so
+   * arbitrary `deploy.yaml` commands never inherit the Hub/runner-agent box's own
+   * environment (its infra creds), even if `opts.env` is empty/undefined.
+   * Finalize gate jobs leave it unset (the trusted gate gets the host toolchain
+   * env via the `process.env` fallback). Default false (legacy behaviour).
+   */
+  baseEnvOnly?: boolean;
 }
 
 export interface ExecJobStepOptions {
@@ -148,7 +170,10 @@ export function buildStartJobContainerArgv(opts: JobContainerOptions): string[] 
   // than the GitHub-hosted runner it stands in for (see runner-resource-profile.ts).
   // The repo's visibility picks the matching tier when no explicit override is set.
   args.push(
-    ...resolveRunnerResourceArgs(opts.resourceEnv ?? process.env, { visibility: opts.visibility }),
+    ...resolveRunnerResourceArgs(opts.resourceEnv ?? process.env, {
+      visibility: opts.visibility,
+      forceProfile: opts.resourceProfile,
+    }),
   );
 
   for (const [key, value] of Object.entries(opts.labels ?? {})) {
@@ -160,7 +185,11 @@ export function buildStartJobContainerArgv(opts: JobContainerOptions): string[] 
   args.push('-v', `${FINALIZE_IMAGE_CACHE_VOLUME}:${FINALIZE_IMAGE_CACHE_PATH}`);
   args.push('-w', FINALIZE_RUNNER_WORKSPACE);
 
-  const env = finalizeRunnerEnv(opts.env ?? process.env, {
+  // `baseEnvOnly` (deploy jobs) suppresses the process.env fallback so the
+  // Hub/agent box env can never seed the container — not even when opts.env is
+  // empty/undefined. Finalize keeps the fallback (trusted gate, host toolchain).
+  const envBase = opts.baseEnvOnly ? (opts.env ?? {}) : (opts.env ?? process.env);
+  const env = finalizeRunnerEnv(envBase, {
     COMPOSE_PROJECT_NAME: opts.composeProjectName,
   });
   pushEnvArgs(args, env);

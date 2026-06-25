@@ -3102,7 +3102,7 @@ function initDb(dataDir: string): void {
           SET status = @status,
               error = @error,
               started_at = COALESCE(started_at,
-                CASE WHEN @status != 'pending' THEN datetime('now') ELSE NULL END),
+                CASE WHEN @status = 'running' THEN datetime('now') ELSE NULL END),
               completed_at = CASE
                 WHEN @status IN ('success', 'error', 'cancelled') THEN datetime('now')
                 ELSE completed_at END,

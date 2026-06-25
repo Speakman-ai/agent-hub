@@ -14,7 +14,7 @@ import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
 import { enqueueRunnerJob, reportRunnerJob } from './runner-queue.js';
 import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
-import type { RepoVisibility } from './runner-resource-profile.js';
+import type { RepoVisibility, RunnerResourceProfileName } from './runner-resource-profile.js';
 import type { SpawnStepArgs } from './step-runner.js';
 import {
   createWorktreeBundle,
@@ -52,6 +52,21 @@ export interface RunnerJobWireSpec {
    * the Hub would (parity seam). Omitted/`'unknown'` keeps the stricter default.
    */
   visibility?: RepoVisibility;
+  /**
+   * Caller-forced resource profile, carried over the wire so the fleet
+   * runner-agent applies the same uncapped/forced tier the Hub would. The
+   * Deployment Module forces `'unconstrained'`; Finalize gate jobs omit it.
+   */
+  resourceProfile?: RunnerResourceProfileName;
+  /**
+   * When true, the agent execs steps from ONLY this spec's `env` (plus the
+   * runner basics), WITHOUT folding the runner-agent's own `process.env`. The
+   * Deployment Module sets it so arbitrary `deploy.yaml` commands never inherit
+   * the fleet box's environment (its infra creds). Carried over the wire so the
+   * remote path matches the local backend's `baseEnvOnly` isolation; Finalize
+   * gate jobs omit it.
+   */
+  minimalEnv?: boolean;
   /** Worktree bundle ref (git bundle in the shared store) the agent fetches. */
   worktreeRef?: WorktreeRef | null;
 }
@@ -121,6 +136,8 @@ export function createRemoteRunnerBackend(opts?: {
         composeProjectName: spec.composeProjectName,
         env: toEnvRecord(spec.env),
         visibility: spec.visibility,
+        resourceProfile: spec.resourceProfile,
+        minimalEnv: spec.minimalEnv,
         worktreeRef,
       };
       const queueJobId = enqueueRunnerJob({

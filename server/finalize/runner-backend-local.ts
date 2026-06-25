@@ -27,9 +27,15 @@ export function createLocalRunnerBackend(): RunnerBackend {
         env: spec.env,
         labels: spec.labels,
         visibility: spec.visibility,
+        resourceProfile: spec.resourceProfile,
+        baseEnvOnly: spec.minimalEnv,
       });
       return {
-        spawnStep: createJobScopedSpawnStep({ containerName, baseEnv: spec.env }),
+        spawnStep: createJobScopedSpawnStep({
+          containerName,
+          baseEnv: spec.env,
+          baseEnvOnly: spec.minimalEnv,
+        }),
         release: async () => {
           await stopJobContainer(containerName);
         },
