@@ -17,6 +17,7 @@ import {
   getDeploymentEnvironment,
   listDeploymentApprovals,
   listDeploymentSteps,
+  setEnvironmentCurrentRef,
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
 import { parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
@@ -174,6 +175,82 @@ describe('deployment routes', () => {
     expect(backend.acquireCalls[0].worktreePath).toBe(checkout);
     await flushBackgroundRun();
     expect(existsSync(checkout)).toBe(false);
+  });
+
+  it('renders deploy.yaml environments with live ref, last deployment, and rollback target', async () => {
+    ensureDeploymentEnvironment(PROJECT_ID, 'dev');
+    const previous = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'dev',
+      ref: 'previous-sha',
+      status: 'success',
+    });
+    const current = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'dev',
+      ref: 'current-sha',
+      status: 'success',
+    });
+    setEnvironmentCurrentRef(PROJECT_ID, 'dev', 'current-sha', current.id);
+
+    const { app } = makeApp();
+    const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/config`).expect(200);
+
+    expect(res.body).toMatchObject({
+      projectId: PROJECT_ID,
+      configPath: '.agent-hub/deploy.yaml',
+    });
+    expect(res.body.environments).toHaveLength(2);
+    expect(res.body.environments[0]).toMatchObject({
+      name: 'dev',
+      approval: false,
+      runsOn: 'ubuntu-24.04',
+      timeoutMinutes: 60,
+      currentRef: 'current-sha',
+      currentDeploymentId: current.id,
+      activeDeploymentId: null,
+      currentDeployment: { id: current.id, ref: 'current-sha', status: 'success' },
+      lastDeployment: { id: current.id, ref: 'current-sha', status: 'success' },
+      rollbackTarget: { id: previous.id, ref: 'previous-sha', status: 'success' },
+    });
+    expect(res.body.environments[0].steps).toEqual([{ name: 'deploy', run: './deploy-dev.sh' }]);
+    expect(res.body.environments[1]).toMatchObject({
+      name: 'prod',
+      approval: true,
+    });
+  });
+
+  it('renders deploy config when environment rows reference deleted deployments', async () => {
+    ensureDeploymentEnvironment(PROJECT_ID, 'dev');
+    const active = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'dev',
+      ref: 'active-sha',
+      status: 'running',
+    });
+    const current = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'dev',
+      ref: 'current-sha',
+      status: 'success',
+    });
+    acquireEnvironmentLock(PROJECT_ID, 'dev', active.id);
+    setEnvironmentCurrentRef(PROJECT_ID, 'dev', 'current-sha', current.id);
+    getDb().prepare('DELETE FROM deployments WHERE id IN (?, ?)').run(active.id, current.id);
+
+    const { app } = makeApp();
+    const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/config`).expect(200);
+
+    expect(res.body.environments[0]).toMatchObject({
+      name: 'dev',
+      currentRef: 'current-sha',
+      currentDeploymentId: current.id,
+      activeDeploymentId: active.id,
+      activeDeployment: null,
+      currentDeployment: null,
+      lastDeployment: null,
+      rollbackTarget: null,
+    });
   });
 
   it('lists deployments and returns detail with steps approvals environment and history', async () => {

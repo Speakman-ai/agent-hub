@@ -11,7 +11,12 @@ import type {
   Project,
   RouteDeps,
 } from '../types.js';
-import { DeployConfigError, loadDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
+import {
+  DeployConfigError,
+  loadDeployConfig,
+  type DeployConfig,
+  type DeployEnvironmentConfig,
+} from '../deploy/deploy-config.js';
 import {
   approveDeployment,
   cancelDeployment,
@@ -62,6 +67,16 @@ function deploymentDto(row: DeploymentRow): Record<string, unknown> {
   return { ...row, meta: parseMeta(row.meta) };
 }
 
+function nullableDeploymentDto(
+  row: DeploymentRow | null | undefined,
+): Record<string, unknown> | null {
+  return row ? deploymentDto(row) : null;
+}
+
+function projectDeployYamlPath(project: Project): string {
+  return path.join(project.cwd, '.agent-hub', 'deploy.yaml');
+}
+
 function actionResponse(deployment: DeploymentRow): {
   deployment: Record<string, unknown>;
   steps: DeploymentStepRow[];
@@ -78,6 +93,71 @@ function deploymentForProject(projectId: string, deploymentId: string): Deployme
   const deployment = getDeployment(deploymentId);
   if (!deployment || deployment.project_id !== projectId) return null;
   return deployment;
+}
+
+function configReferencedDeployment(
+  projectId: string,
+  deploymentId: string | null | undefined,
+): DeploymentRow | null {
+  if (!deploymentId) return null;
+  const deployment = getDeployment(deploymentId);
+  if (!deployment || deployment.project_id !== projectId) return null;
+  return deployment;
+}
+
+function rollbackTargetForEnvironment(
+  projectId: string,
+  environment: string,
+  currentDeploymentId: string | null | undefined,
+): DeploymentRow | null {
+  return (
+    listDeploymentsForEnvironment(projectId, environment, { limit: 50 }).find(
+      (deployment) => deployment.status === 'success' && deployment.id !== currentDeploymentId,
+    ) ?? null
+  );
+}
+
+function configEnvironmentDto(
+  projectId: string,
+  env: DeployEnvironmentConfig,
+): Record<string, unknown> {
+  const state = getDeploymentEnvironment(projectId, env.name);
+  const activeDeployment = configReferencedDeployment(projectId, state?.active_deployment_id);
+  const currentDeployment = configReferencedDeployment(projectId, state?.current_deployment_id);
+  const [lastDeployment] = listDeploymentsForEnvironment(projectId, env.name, { limit: 1 });
+  const rollbackTarget = rollbackTargetForEnvironment(
+    projectId,
+    env.name,
+    state?.current_deployment_id,
+  );
+
+  return {
+    name: env.name,
+    approval: env.approval,
+    runsOn: env.runsOn,
+    timeoutMinutes: env.timeoutMinutes,
+    steps: env.steps,
+    currentRef: state?.current_ref ?? null,
+    currentDeploymentId: state?.current_deployment_id ?? null,
+    activeDeploymentId: state?.active_deployment_id ?? null,
+    activeDeployment: nullableDeploymentDto(activeDeployment),
+    currentDeployment: nullableDeploymentDto(currentDeployment),
+    lastDeployment: nullableDeploymentDto(lastDeployment),
+    rollbackTarget: nullableDeploymentDto(rollbackTarget),
+  };
+}
+
+function deployConfigDto(
+  project: Project,
+  config: DeployConfig,
+): { projectId: string; configPath: string; environments: Record<string, unknown>[] } {
+  return {
+    projectId: project.id,
+    configPath: '.agent-hub/deploy.yaml',
+    environments: [...config.environments.values()].map((env) =>
+      configEnvironmentDto(project.id, env),
+    ),
+  };
 }
 
 async function cleanupPreparedCheckout(checkout: CheckoutResult | null): Promise<void> {
@@ -164,6 +244,21 @@ export default function createDeploymentRoutes(
     now: opts.orchestratorDeps?.now,
     env: opts.orchestratorDeps?.env,
   };
+
+  router.get('/api/projects/:projectId/deploy/config', async (req: Request, res: Response) => {
+    const projectId = req.params.projectId as string;
+    const project = deps.findProject(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    try {
+      const config = await loadConfig(projectDeployYamlPath(project));
+      return res.json(deployConfigDto(project, config));
+    } catch (err) {
+      if (err instanceof DeployConfigError) return mapConfigError(err, res);
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: message });
+    }
+  });
 
   router.get('/api/projects/:projectId/deployments', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;

@@ -3301,6 +3301,84 @@ components:
         - active_deployment_id
         - created_at
         - updated_at
+    DeployConfigStep:
+      type: object
+      properties:
+        name:
+          type: string
+        run:
+          type: string
+      required:
+        - name
+        - run
+    DeployConfigEnvironment:
+      type: object
+      properties:
+        name:
+          type: string
+        approval:
+          type: boolean
+        runsOn:
+          type: string
+        timeoutMinutes:
+          type: integer
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeployConfigStep"
+        currentRef:
+          type: string
+          nullable: true
+        currentDeploymentId:
+          type: string
+          nullable: true
+        activeDeploymentId:
+          type: string
+          nullable: true
+        activeDeployment:
+          allOf:
+            - $ref: "#/components/schemas/Deployment"
+            - nullable: true
+        currentDeployment:
+          allOf:
+            - $ref: "#/components/schemas/Deployment"
+            - nullable: true
+        lastDeployment:
+          allOf:
+            - $ref: "#/components/schemas/Deployment"
+            - nullable: true
+        rollbackTarget:
+          allOf:
+            - $ref: "#/components/schemas/Deployment"
+            - nullable: true
+      required:
+        - name
+        - approval
+        - runsOn
+        - timeoutMinutes
+        - steps
+        - currentRef
+        - currentDeploymentId
+        - activeDeploymentId
+        - activeDeployment
+        - currentDeployment
+        - lastDeployment
+        - rollbackTarget
+    DeployConfigResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        configPath:
+          type: string
+        environments:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeployConfigEnvironment"
+      required:
+        - projectId
+        - configPath
+        - environments
     DeploymentListResponse:
       type: object
       properties:
@@ -14725,6 +14803,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardErrorResponse"
+  /api/projects/{projectId}/deploy/config:
+    get:
+      tags:
+        - Deployments
+      summary: Read deploy.yaml environments and live deployment state
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Deployment environments configured in deploy.yaml with live state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployConfigResponse"
+        "400":
+          description: Invalid deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or deploy.yaml not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
   /api/projects/{projectId}/deployments:
     get:
       tags:

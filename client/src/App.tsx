@@ -64,6 +64,7 @@ import WikiBrowser from './components/WikiBrowser';
 import ThreadList from './components/ThreadList';
 import ThreadView from './components/ThreadView';
 import CustomerSupportPage from './components/CustomerSupportPage';
+import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
 import NotesEditor from './components/NotesEditor';
@@ -420,6 +421,7 @@ export default function App({ initialView }: any = {}) {
   const threadViewRef = useRef<any>(null);
   // Customer Support page state
   const [supportProjectId, setSupportProjectId] = useState<any>(null);
+  const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(null);
   const [replaysProjectId, setReplaysProjectId] = useState<any>(null);
   // Ref to push WebSocket support_ticket_* updates into CustomerSupportPage
   const supportListRef = useRef<any>(null);
@@ -2387,6 +2389,10 @@ export default function App({ initialView }: any = {}) {
           }
           break;
         }
+
+        case 'deployment_update':
+          window.dispatchEvent(new CustomEvent('agenthub-deployment-ws', { detail: data }));
+          break;
 
         case 'wiki_update':
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
@@ -4735,6 +4741,7 @@ export default function App({ initialView }: any = {}) {
                 });
               }
               if (view === 'support' && extra) setSupportProjectId(extra);
+              if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
               if (view === 'replays' && extra) setReplaysProjectId(extra);
               if (view === 'security' && extra) setSecurityProjectId(extra);
               setSidebarOpen(false);
@@ -4754,6 +4761,7 @@ export default function App({ initialView }: any = {}) {
             reviewerProjectId={reviewerProjectId}
             threadsProjectId={threadsProjectId}
             supportProjectId={supportProjectId}
+            deploymentsProjectId={deploymentsProjectId}
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
             pullsProjectId={pullsProjectId}
@@ -5080,6 +5088,11 @@ export default function App({ initialView }: any = {}) {
                   ref={supportListRef}
                   projectId={supportProjectId}
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
+                  onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
+                />
+              ) : currentView === 'deployments' && deploymentsProjectId ? (
+                <DeploymentsPage
+                  projectId={deploymentsProjectId}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
                 />
               ) : currentView === 'replays' && replaysProjectId ? (

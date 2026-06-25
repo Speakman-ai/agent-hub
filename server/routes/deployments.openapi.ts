@@ -108,6 +108,41 @@ export const DeploymentEnvironmentSchema = registerComponent(
   }),
 );
 
+const DeployConfigStepSchema = registerComponent(
+  'DeployConfigStep',
+  z.object({
+    name: z.string(),
+    run: z.string(),
+  }),
+);
+
+const DeployConfigEnvironmentSchema = registerComponent(
+  'DeployConfigEnvironment',
+  z.object({
+    name: z.string(),
+    approval: z.boolean(),
+    runsOn: z.string(),
+    timeoutMinutes: z.number().int(),
+    steps: z.array(DeployConfigStepSchema),
+    currentRef: z.string().nullable(),
+    currentDeploymentId: z.string().nullable(),
+    activeDeploymentId: z.string().nullable(),
+    activeDeployment: DeploymentSchema.nullable(),
+    currentDeployment: DeploymentSchema.nullable(),
+    lastDeployment: DeploymentSchema.nullable(),
+    rollbackTarget: DeploymentSchema.nullable(),
+  }),
+);
+
+const DeployConfigResponseSchema = registerComponent(
+  'DeployConfigResponse',
+  z.object({
+    projectId: z.string(),
+    configPath: z.string(),
+    environments: z.array(DeployConfigEnvironmentSchema),
+  }),
+);
+
 const DeploymentListResponseSchema = registerComponent(
   'DeploymentListResponse',
   z.object({
@@ -148,6 +183,22 @@ const errorResponse = (description: string) => ({
 
 const projectParams = z.object({ projectId: z.string() });
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/config',
+  tags: ['Deployments'],
+  summary: 'Read deploy.yaml environments and live deployment state',
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: 'Deployment environments configured in deploy.yaml with live state.',
+      content: jsonContent(DeployConfigResponseSchema),
+    },
+    400: errorResponse('Invalid deploy.yaml.'),
+    404: errorResponse('Project or deploy.yaml not found.'),
+  },
+});
 
 registerPath({
   method: 'get',

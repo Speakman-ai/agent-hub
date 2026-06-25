@@ -87,6 +87,7 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   supportProjectId,
+  deploymentsProjectId,
   replaysProjectId,
   securityProjectId,
   wikiProjectId,
@@ -1033,6 +1034,17 @@ export default function Sidebar({
                               <span className="truncate">Pulls</span>
                             </button>
                           )}
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('deployments', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView === 'deployments' && deploymentsProjectId === project.id,
+                            )}
+                          >
+                            <Cloud size={14} className="flex-shrink-0" />
+                            <span className="truncate">Deployments</span>
+                          </button>
 
                           <button
                             type="button"
