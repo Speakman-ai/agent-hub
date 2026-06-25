@@ -122,15 +122,8 @@ async function revParse(bare: string, ref: string): Promise<string | null> {
 }
 
 /** True when the sha was fully validated by Finalize (review + checks). */
-export function isShaFinalizeValidated(
-  stmts: Stmts,
-  projectId: string,
-  branch: string,
-  sha: string,
-): boolean {
-  const row = stmts.getValidatedFinalizeRunForSha.get(projectId, branch, sha) as
-    | { id: string }
-    | undefined;
+export function isShaFinalizeValidated(stmts: Stmts, projectId: string, sha: string): boolean {
+  const row = stmts.getValidatedFinalizeRunForSha.get(projectId, sha) as { id: string } | undefined;
   return Boolean(row);
 }
 
@@ -186,7 +179,7 @@ export function maybeRunPrCi(
 
     // The passthrough: a Finalize-validated head needs no PR-level CI —
     // checks and review already passed for this exact commit.
-    if (isShaFinalizeValidated(deps.stmts, project.id, pr.head_branch, headSha)) {
+    if (isShaFinalizeValidated(deps.stmts, project.id, headSha)) {
       console.log(
         `[push-ci] pr#${pr.number} head ${headSha.slice(0, 8)} is Finalize-validated — skipping PR CI`,
       );

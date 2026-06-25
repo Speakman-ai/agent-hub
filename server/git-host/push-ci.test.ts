@@ -344,6 +344,48 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
     expect(runRowFor(project, headSha)).toBeUndefined();
   });
 
+  it('skips when Finalize validated the same sha on the session branch', async () => {
+    const { project, headSha } = await seedHostedProject();
+    const prBranch = 'feature/replay-upload-retry';
+    git(gitHostRepoPath(project.id), `branch ${prBranch} ${headSha}`);
+
+    // Regression for PR 291: Finalize validated the session worktree branch,
+    // then pushed the currently checked-out feature branch as the native PR
+    // head. The commit object is the same and should satisfy the passthrough.
+    const finRunId = uuidv4();
+    stmts.insertFinalizeRun.run(
+      finRunId,
+      'card-x',
+      null,
+      project.id,
+      'agent-hub/agent-hub-dev/session-a93e0b3e',
+      headSha,
+      `test|${finRunId}`,
+      'queued',
+      null,
+      'agent_block',
+      null,
+      'user',
+      'Test User',
+      't@example.com',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+    stmts.markFinalizeRunReadyToPush.run(headSha, finRunId);
+
+    const runJobPhase = vi.fn();
+    await maybeRunPrCi(
+      project,
+      { number: 291, head_branch: prBranch },
+      { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
+    );
+
+    expect(runJobPhase).not.toHaveBeenCalled();
+    expect(runRowFor(project, headSha)).toBeUndefined();
+  });
+
   it('runs CI for an unvalidated head and records trigger pr_push', async () => {
     const { project, headSha } = await seedHostedProject();
     const runJobPhase = vi.fn(async () => ({

@@ -127,10 +127,7 @@ export async function maybeRunPrAutoReview(
 
     // Session-validation passthrough: Finalize already reviewed this sha.
     // A manual request overrides this — the human asked for a fresh review.
-    if (
-      !manual &&
-      deps.stmts.getValidatedFinalizeRunForSha.get(project.id, pr.head_branch, headSha)
-    ) {
+    if (!manual && deps.stmts.getValidatedFinalizeRunForSha.get(project.id, headSha)) {
       return;
     }
 

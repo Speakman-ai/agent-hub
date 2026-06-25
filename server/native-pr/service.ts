@@ -390,9 +390,7 @@ async function mergeBlockedReason(
   if (row.base_branch !== defaultBranch) return null; // protection covers the default branch
 
   const headSha = (await revParse(repoPath, `refs/heads/${row.head_branch}`)) ?? row.head_sha;
-  const validated = Boolean(
-    stmts.getValidatedFinalizeRunForSha.get(project.id, row.head_branch, headSha),
-  );
+  const validated = Boolean(stmts.getValidatedFinalizeRunForSha.get(project.id, headSha));
 
   if (prot.requiredReview && !validated) {
     const decision = reviewDecisionFor(stmts, project.id, row);
@@ -586,7 +584,7 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
       // produced (or nothing yet).
       const statusSha = headSha ?? row.head_sha;
       const finalizeValidated = Boolean(
-        stmts.getValidatedFinalizeRunForSha.get(project.id, row.head_branch, statusSha),
+        stmts.getValidatedFinalizeRunForSha.get(project.id, statusSha),
       );
       // Surface the protection verdict so the Merge button disables with
       // the same reason the merge endpoint would 409 with.

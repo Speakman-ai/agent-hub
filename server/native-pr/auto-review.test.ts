@@ -253,6 +253,52 @@ describe('maybeRunPrAutoReview', () => {
     expect(handleChat).not.toHaveBeenCalled();
   });
 
+  it('skips when Finalize validated the same sha on the session branch', async () => {
+    const { project, branch, headSha } = await hostedPrProject();
+    const handleChat = vi.fn();
+    const deps = {
+      stmts,
+      config,
+      broadcast: vi.fn(),
+      handleChat: handleChat as RouteDeps['handleChat'],
+    };
+
+    // Regression for PR 291: the Finalize run was recorded under the original
+    // session worktree branch, but the worktree had checked out a feature
+    // branch by push time. The native PR head branch points at the same
+    // validated commit and must not be treated as an external push.
+    const runId = `fin-${uuidv4().slice(0, 8)}`;
+    stmts.insertFinalizeRun.run(
+      runId,
+      'card',
+      null,
+      project.id,
+      'agent-hub/agent-hub-dev/session-a93e0b3e',
+      headSha,
+      `t|${runId}`,
+      'queued',
+      null,
+      'agent_block',
+      null,
+      'u',
+      'U',
+      'u@x',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+    stmts.markFinalizeRunReadyToPush.run(headSha, runId);
+
+    await maybeRunPrAutoReview(
+      project,
+      { number: 291, head_branch: branch, status: 'open', author: 'ryan' },
+      deps,
+      { force: true, trigger: 'pr_create' },
+    );
+    expect(handleChat).not.toHaveBeenCalled();
+  });
+
   it('is inert under the test-env guard without force', async () => {
     const { project, branch } = await hostedPrProject();
     const handleChat = vi.fn();

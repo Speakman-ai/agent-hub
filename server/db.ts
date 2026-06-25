@@ -5548,7 +5548,10 @@ function initDb(dataDir: string): void {
     // "Was this exact sha fully validated by Finalize?" — review + checks
     // both passed (mode 'full' reaching ready_to_push/pushing/pushed). Drives
     // the PR-level validation passthrough: validated heads skip PR CI and the
-    // external-push auto-reviewer.
+    // external-push auto-reviewer. This intentionally keys on the commit sha,
+    // not the branch: Finalize validates the commit object, and a session can
+    // create/switch to a different PR head branch after the session worktree
+    // was provisioned.
     //
     // 'pushing' MUST be in the accepted set. `validated_head_sha` is stamped
     // at ready_to_push (markFinalizeRunReadyToPush), before the run claims the
@@ -5563,7 +5566,7 @@ function initDb(dataDir: string): void {
     // exact — a push that ultimately fails never moved the ref to this sha.
     getValidatedFinalizeRunForSha: db.prepare(
       `SELECT * FROM finalize_runs
-        WHERE project_id = ? AND branch = ? AND validated_head_sha = ?
+        WHERE project_id = ? AND validated_head_sha = ?
           AND mode = 'full' AND status IN ('ready_to_push', 'pushing', 'pushed')
         ORDER BY started_at DESC LIMIT 1`,
     ),
