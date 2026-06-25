@@ -14,6 +14,8 @@ import type {
 import { CreateCronRequestSchema, UpdateCronRequestSchema } from './crons.openapi.js';
 import { DEFAULT_CRON_ENGINE, isSupportedEngine, resolveCronEngine } from '../cron-engine.js';
 import { ALL_SUPPORTED_ENGINES } from '../engine-availability.js';
+import type { AuthenticatedRequest } from '../auth.js';
+import { resolveOwnerUserId } from '../session-ownership.js';
 
 /**
  * Coerce an `engine` request value into the DB-friendly form: a non-empty
@@ -220,6 +222,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       normalizedModel,
       normalizedSkillPrincipal,
       normalizedEngine,
+      resolveOwnerUserId(req as AuthenticatedRequest),
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);

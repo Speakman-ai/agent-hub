@@ -2790,6 +2790,9 @@ components:
         engine:
           type: string
           nullable: true
+        owner_user_id:
+          type: string
+          nullable: true
         created_at:
           type: string
       required:
@@ -2808,8 +2811,9 @@ components:
         - model
         - skill_principal_agent_id
         - engine
+        - owner_user_id
         - created_at
-      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine` are nullable to mean "use default" — `engine` falls back to the skill principal agent's engine, then to `claude-code`.
+      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs.
     CronLog:
       type: object
       properties:

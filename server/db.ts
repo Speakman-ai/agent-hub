@@ -162,6 +162,7 @@ function initDb(dataDir: string): void {
       timeout_ms INTEGER,
       notify_on_run INTEGER NOT NULL DEFAULT 0,
       engine TEXT,
+      owner_user_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -1305,6 +1306,17 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE crons ADD COLUMN engine TEXT');
   }
+
+  // Logical user id for the Hub user that created the cron. Scheduled crons
+  // run outside an interactive session, but credentials such as AWS SSO live
+  // under per-user HOME trees, so cron execution needs this owner to build the
+  // same spawn env the creator would get.
+  try {
+    db.prepare('SELECT owner_user_id FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN owner_user_id TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_crons_owner ON crons(owner_user_id)');
 
   // Threads-as-chatroom: thread_entries grew an author identity + role so
   // humans can post into the same thread the heartbeat / cron daemon
@@ -3477,7 +3489,7 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
       'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ? WHERE id = ?',

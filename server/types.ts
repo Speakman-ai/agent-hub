@@ -384,6 +384,12 @@ export interface CronRow {
    * rejects Claude ids.
    */
   engine: string | null;
+  /**
+   * Logical user id for the Hub user that created this cron. Scheduled runs use
+   * it to build the spawn env so per-user CLI caches, including AWS SSO tokens,
+   * resolve from the creator's HOME. Null for legacy/system-created crons.
+   */
+  owner_user_id: string | null;
   created_at: string;
 }
 

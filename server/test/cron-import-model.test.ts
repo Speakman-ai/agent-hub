@@ -1,13 +1,30 @@
 import type TestAgent from 'supertest/lib/agent.js';
+import express from 'express';
+import supertest from 'supertest';
 import { getRequest, createProject } from './helpers.js';
 import type { CronRow } from '../types.js';
 import config from '../config.js';
+import type { AuthenticatedRequest } from '../auth.js';
+import createConfigRoutes from '../routes/config.js';
+import { routeDeps } from '../index.js';
+import { getStmts } from '../db.js';
 
 let request: TestAgent;
 
 beforeAll(async () => {
   request = await getRequest();
 });
+
+function configRoutesAs(userId: string): supertest.Agent {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as AuthenticatedRequest).authUserId = userId;
+    next();
+  });
+  app.use(createConfigRoutes(routeDeps));
+  return supertest(app);
+}
 
 /**
  * Regression coverage for the import paths in `server/routes/config.ts`.
@@ -106,6 +123,30 @@ describe('config import: cron `model` field', () => {
       expect(found).toBeDefined();
       expect(found?.model).toBeNull();
     });
+
+    it('stamps imported crons with the authenticated importer owner id', async () => {
+      const ownerUserId = 'legacy-import-owner';
+      const cronName = `import-owner-${Math.random().toString(36).slice(2, 8)}`;
+      await configRoutesAs(ownerUserId)
+        .post('/api/config/import')
+        .send({
+          version: 2,
+          crons: [
+            {
+              name: cronName,
+              schedule: '0 * * * *',
+              prompt: 'echo hi',
+              cwd: '/tmp',
+              enabled: false,
+            },
+          ],
+        })
+        .expect(200);
+
+      const found = (getStmts().getCrons.all() as CronRow[]).find((c) => c.name === cronName);
+      expect(found).toBeDefined();
+      expect(found?.owner_user_id).toBe(ownerUserId);
+    });
   });
 
   describe('POST /api/projects/:projectId/import (v3 project)', () => {
@@ -201,6 +242,32 @@ describe('config import: cron `model` field', () => {
       const found = (list.body as CronRow[]).find((c) => c.name === cronName);
       expect(found).toBeDefined();
       expect(found?.model).toBeNull();
+    });
+
+    it('stamps imported project crons with the authenticated importer owner id', async () => {
+      const ownerUserId = 'v3-import-owner';
+      const projectId = await someProjectId();
+      const cronName = `pimport-owner-${Math.random().toString(36).slice(2, 8)}`;
+
+      await configRoutesAs(ownerUserId)
+        .post(`/api/projects/${projectId}/import`)
+        .send({
+          version: 3,
+          type: 'project',
+          crons: [
+            {
+              name: cronName,
+              schedule: '0 * * * *',
+              prompt: 'echo hi',
+              enabled: false,
+            },
+          ],
+        })
+        .expect(200);
+
+      const found = (getStmts().getCrons.all() as CronRow[]).find((c) => c.name === cronName);
+      expect(found).toBeDefined();
+      expect(found?.owner_user_id).toBe(ownerUserId);
     });
   });
 });

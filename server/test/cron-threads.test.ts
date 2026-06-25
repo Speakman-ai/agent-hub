@@ -87,6 +87,7 @@ describe('Thread source lookup', () => {
       null,
       null,
       null,
+      null,
     );
     const cronId = cronResult.lastInsertRowid;
 

@@ -116,11 +116,12 @@ export const CronComponent = registerComponent(
       model: z.string().nullable(),
       skill_principal_agent_id: z.string().nullable(),
       engine: z.string().nullable(),
+      owner_user_id: z.string().nullable(),
       created_at: z.string(),
     })
     .openapi({
       description:
-        'A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine` are nullable to mean "use default" — `engine` falls back to the skill principal agent\'s engine, then to `claude-code`.',
+        'A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs.',
     }),
 );
 

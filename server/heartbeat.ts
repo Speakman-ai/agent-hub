@@ -602,27 +602,29 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
     // NoEnginesAvailableError bubbles into the outer catch block where
     // it's surfaced verbatim.
     const preferredCronEngine = resolveCronEngine(cronJob, cronProject);
-    // Crons are scheduled with no human in-context and carry no stored user
-    // attribution. AI auth is strictly per-account, so the per-account
-    // engines report unavailable and the resolver can only land on the
-    // host-global Gemini (or throws NoEnginesAvailableError, caught below).
-    const cronOwnerId: string | null = null;
+    // Crons run outside an interactive chat turn, but creator-owned resources
+    // such as AWS SSO caches and per-account engine auth still live under that
+    // user's spawn HOME. Legacy rows without an owner keep the historical host
+    // fallback by passing null.
+    const cronOwnerId: string | null = cronJob.owner_user_id ?? null;
     resolved = await resolveOneShotEngine(config, {
       preferred: preferredCronEngine,
       preferredModel: requestedModel,
       userId: cronOwnerId,
     });
     const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId, engine: resolved.engine });
-    if (cronProject && cronSkillAgentId) {
-      mergeSkillCredentialSpawnEnv(cronEnv, {
-        ownerId: cronOwnerId,
-        agentId: cronSkillAgentId,
-        project: cronProject,
-      });
-      // sessionId: null — crons are scheduled, not driven by an interactive
-      // chat session; decrypt-failure audit entries attribute to
-      // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
-      mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+    if (cronProject) {
+      if (cronSkillAgentId) {
+        mergeSkillCredentialSpawnEnv(cronEnv, {
+          ownerId: cronOwnerId,
+          agentId: cronSkillAgentId,
+          project: cronProject,
+        });
+        // sessionId: null — crons are scheduled, not driven by an interactive
+        // chat session; decrypt-failure audit entries attribute to
+        // system-initiated, not a missing value. See mergeProjectSecretsSpawnEnv.
+        mergeProjectSecretsSpawnEnv(cronEnv, { projectId: cronProject.id, sessionId: null });
+      }
       mergeProjectAwsSpawnEnv(cronEnv, cronProject);
     }
     if (resolved.fallbackUsed) {

@@ -16,7 +16,7 @@ import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 import { probeEngineAvailability } from '../engine-availability.js';
 import { normalizeCronEngine, normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
 import { resolveCronEngine } from '../cron-engine.js';
-import { getProjects } from '../project-model.js';
+import { resolveOwnerUserId } from '../session-ownership.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 import { syncWikiPageFts } from '../wiki.js';
@@ -182,17 +182,13 @@ interface SlackConfigData {
   }>;
 }
 
+function resolveRequestOwnerUserId(req: Request): string | null {
+  return resolveOwnerUserId(req as AuthenticatedRequest);
+}
+
 export default function createConfigRoutes(deps: RouteDeps): Router {
-  const {
-    stmts,
-    getProjects,
-    setProjects,
-    saveProjects,
-    config,
-    serverDir,
-    broadcast,
-    getProjectDataDir,
-  } = deps;
+  const { stmts, getProjects, setProjects, saveProjects, config, serverDir, getProjectDataDir } =
+    deps;
   const router = Router();
 
   router.get('/api/config', (_req: Request, res: Response) => {
@@ -705,6 +701,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
   function runProjectImport(
     targetProject: Project,
     data: ProjectExportData,
+    ownerUserId: string | null,
   ): Record<string, string | boolean> {
     const targetProjectId = targetProject.id;
     const results: Record<string, string | boolean> = {
@@ -796,6 +793,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             importedModel,
             importedSkillPrincipal,
             importedEngine,
+            ownerUserId,
           );
           imported++;
         }
@@ -1100,7 +1098,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       const targetProject = projects.find((p) => p.id === targetProjectId);
       if (!targetProject) return res.status(404).json({ error: 'Target project not found' });
 
-      const results = runProjectImport(targetProject, data);
+      const results = runProjectImport(targetProject, data, resolveRequestOwnerUserId(req));
       res.json({ message: 'Project import complete.', results });
     } catch (err: unknown) {
       const e = err as Error;
@@ -1192,7 +1190,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       projects.push(newProject);
       saveProjects();
 
-      const results = runProjectImport(newProject, data);
+      const results = runProjectImport(newProject, data, resolveRequestOwnerUserId(req));
       res
         .status(201)
         .json({ message: 'Project created from export.', project: newProject, results });
@@ -1269,6 +1267,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
         crons: false,
         slack: false,
       };
+      const importOwnerUserId = resolveRequestOwnerUserId(req);
 
       if (data.config && typeof data.config === 'object') {
         writeFileSync(
@@ -1356,6 +1355,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             importedModel,
             importedSkillPrincipal,
             importedEngine,
+            importOwnerUserId,
           );
           imported++;
         }
