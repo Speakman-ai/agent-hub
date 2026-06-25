@@ -2254,6 +2254,13 @@ components:
             - no-full-snapshot
             - upload-failed
           description: Why no session replay attached, when `replayRef` is absent. Recorded in the ticket Reporter Context so a "didn't capture replay" report is self-diagnosing. Ignored if a valid `replayRef` is present.
+        screenshotMissReason:
+          type: string
+          enum:
+            - initial-capture-failed
+            - retake-capture-failed
+            - upload-rejected
+          description: Why no screenshot attached, when the `screenshot` image part is absent or rejected. Recorded in the ticket Reporter Context so missing screenshots are diagnosable.
         screenshot:
           type: string
           format: binary

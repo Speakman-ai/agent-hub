@@ -85,8 +85,9 @@ export async function submitBugReport({
   description,
   severity,
   screenshotBlob,
+  screenshotMissReason,
 
-  projectId,
+  projectId: _projectId,
   agentId,
   replayRef,
   replayMissReason,
@@ -102,6 +103,8 @@ export async function submitBugReport({
 
   if (screenshotBlob) {
     form.append('screenshot', screenshotBlob, 'screenshot.png');
+  } else if (screenshotMissReason) {
+    form.append('screenshotMissReason', String(screenshotMissReason));
   }
 
   form.append(

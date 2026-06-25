@@ -127,6 +127,37 @@ describe('BugReportModal', () => {
     expect(fd.get('severity')).toBe('critical');
   });
 
+  it('submits the initial screenshot miss reason when no screenshot is available', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: 'received' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <BugReportModal
+        isOpen
+        onClose={() => {}}
+        initialScreenshotBlob={null}
+        initialScreenshotMissReason="initial-capture-failed"
+        projectId="p"
+        agentId="a"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/title/i as any), {
+      target: { value: 'Screenshot missing' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /submit bug report/i } as any) as any);
+
+    await waitFor(() => expect(fetchMock!).toHaveBeenCalledTimes(1));
+    const fd = (fetchMock as any).mock.calls[0][1].body;
+    expect(fd.get('screenshot')).toBeNull();
+    expect(fd.get('screenshotMissReason')).toBe('initial-capture-failed');
+  });
+
   it('renders nothing when closed', () => {
     const { container } = render(
       <BugReportModal isOpen={false} onClose={() => {}} initialScreenshotBlob={null} />,

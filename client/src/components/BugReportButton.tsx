@@ -6,12 +6,14 @@ import { captureScreenshot } from '../utils/bugReport';
 export default function BugReportButton({ projectId, agentId, onToast }: any) {
   const [isOpen, setIsOpen] = useState(false);
   const [screenshotBlob, setScreenshotBlob] = useState<any>(null);
+  const [screenshotMissReason, setScreenshotMissReason] = useState<any>(null);
   const [capturing, setCapturing] = useState(false);
 
   const handleClick = async () => {
     if (capturing) return;
     setCapturing(true);
     let blob = null;
+    let missReason = null;
     try {
       blob = await captureScreenshot();
     } catch (err: any) {
@@ -19,8 +21,10 @@ export default function BugReportButton({ projectId, agentId, onToast }: any) {
       // shows an empty-state hint and a "Retake screenshot" button.
       console.warn('Bug report screenshot capture failed:', err);
       blob = null;
+      missReason = 'initial-capture-failed';
     } finally {
       setScreenshotBlob(blob);
+      setScreenshotMissReason(missReason);
       setIsOpen(true);
       setCapturing(false);
     }
@@ -42,6 +46,7 @@ export default function BugReportButton({ projectId, agentId, onToast }: any) {
         isOpen={isOpen}
         onClose={() => setIsOpen(false)}
         initialScreenshotBlob={screenshotBlob}
+        initialScreenshotMissReason={screenshotMissReason}
         projectId={projectId}
         agentId={agentId}
         onToast={onToast}

@@ -14,6 +14,7 @@ export default function BugReportModal({
   isOpen,
   onClose,
   initialScreenshotBlob,
+  initialScreenshotMissReason,
   projectId,
   agentId,
   onToast,
@@ -22,6 +23,9 @@ export default function BugReportModal({
   const [description, setDescription] = useState('');
   const [severity, setSeverity] = useState('medium');
   const [screenshotBlob, setScreenshotBlob] = useState(initialScreenshotBlob || null);
+  const [screenshotMissReason, setScreenshotMissReason] = useState(
+    initialScreenshotMissReason || null,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [retaking, setRetaking] = useState(false);
   const [error, setError] = useState<any>(null);
@@ -34,12 +38,13 @@ export default function BugReportModal({
       setDescription('');
       setSeverity('medium');
       setScreenshotBlob(initialScreenshotBlob || null);
+      setScreenshotMissReason(initialScreenshotMissReason || null);
       setError(null);
       setSubmitting(false);
       setRetaking(false);
       setHidden(false);
     }
-  }, [isOpen, initialScreenshotBlob]);
+  }, [isOpen, initialScreenshotBlob, initialScreenshotMissReason]);
 
   // Build an object URL for the preview and revoke it when the blob changes.
   const previewUrl = useMemo(() => {
@@ -65,8 +70,10 @@ export default function BugReportModal({
       await new Promise((r: any) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const blob = await captureScreenshot();
       setScreenshotBlob(blob);
+      setScreenshotMissReason(null);
     } catch (err: any) {
       setError(`Screenshot failed: ${err?.message || String(err)}`);
+      setScreenshotMissReason('retake-capture-failed');
     } finally {
       setHidden(false);
       setRetaking(false);
@@ -100,6 +107,7 @@ export default function BugReportModal({
         description,
         severity,
         screenshotBlob,
+        screenshotMissReason: screenshotBlob ? null : screenshotMissReason,
         projectId,
         agentId,
         replayRef,

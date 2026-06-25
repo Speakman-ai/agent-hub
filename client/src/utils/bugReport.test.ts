@@ -54,6 +54,35 @@ describe('submitBugReport', () => {
     expect((fd as any).get('currentAgentId')).toBe('hub-frontend');
   });
 
+  it('sends screenshotMissReason when no screenshot blob is available', async () => {
+    await submitBugReport({
+      title: 'missing screenshot',
+      description: '',
+      severity: 'medium',
+      screenshotBlob: null,
+      screenshotMissReason: 'initial-capture-failed',
+    });
+
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('screenshot')).toBeNull();
+    expect((fd as any).get('screenshotMissReason')).toBe('initial-capture-failed');
+  });
+
+  it('omits screenshotMissReason when a screenshot blob is attached', async () => {
+    const blob = new Blob(['fake'], { type: 'image/png' });
+    await submitBugReport({
+      title: 'has screenshot',
+      description: '',
+      severity: 'medium',
+      screenshotBlob: blob,
+      screenshotMissReason: 'initial-capture-failed',
+    });
+
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('screenshot')).toBeInstanceOf(Blob);
+    expect((fd as any).get('screenshotMissReason')).toBeNull();
+  });
+
   it('sends replayMissReason (and no replayRef) when the capture was missing', async () => {
     await submitBugReport({
       title: 'no replay',

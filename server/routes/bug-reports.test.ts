@@ -19,6 +19,7 @@ import createBugReportRoutes, {
   buildBugReportTicketBody,
   sanitizeReplayRef,
   sanitizeReplayMissReason,
+  sanitizeScreenshotMissReason,
 } from './bug-reports.js';
 import { getStmts } from '../db.js';
 import { getSupportTicket, listSupportTickets } from '../support-tickets-store.js';
@@ -118,6 +119,18 @@ describe('buildBugReportTicketBody', () => {
     expect(out).not.toContain('not captured');
     expect(out).not.toContain('upload-failed');
   });
+
+  it('renders a "not captured" Screenshot line with the miss reason', () => {
+    const out = buildBugReportTicketBody({
+      title: 'x',
+      description: 'y',
+      severity: 'medium',
+      screenshotMissReason: 'initial-capture-failed',
+    });
+    expect(out).toContain('Screenshot');
+    expect(out).toContain('not captured');
+    expect(out).toContain('initial-capture-failed');
+  });
 });
 
 describe('sanitizeReplayMissReason', () => {
@@ -167,6 +180,30 @@ describe('sanitizeReplayRef', () => {
     expect(sanitizeReplayRef(undefined)).toBeNull();
     expect(sanitizeReplayRef(null)).toBeNull();
     expect(sanitizeReplayRef('')).toBeNull();
+  });
+});
+
+describe('sanitizeScreenshotMissReason', () => {
+  it('accepts a recognised reason when no screenshot attached', () => {
+    expect(sanitizeScreenshotMissReason('initial-capture-failed', false)).toBe(
+      'initial-capture-failed',
+    );
+    expect(sanitizeScreenshotMissReason('  retake-capture-failed  ', false)).toBe(
+      'retake-capture-failed',
+    );
+    expect(sanitizeScreenshotMissReason('upload-rejected', false)).toBe('upload-rejected');
+  });
+
+  it('drops unrecognised values and values that accompany a screenshot', () => {
+    expect(sanitizeScreenshotMissReason('something-else', false)).toBeNull();
+    expect(sanitizeScreenshotMissReason('<script>', false)).toBeNull();
+    expect(sanitizeScreenshotMissReason('initial-capture-failed', true)).toBeNull();
+  });
+
+  it('returns null for empty / nullish input', () => {
+    expect(sanitizeScreenshotMissReason(undefined, false)).toBeNull();
+    expect(sanitizeScreenshotMissReason(null, false)).toBeNull();
+    expect(sanitizeScreenshotMissReason('', false)).toBeNull();
   });
 });
 
@@ -343,6 +380,37 @@ describe('POST /api/bug-reports', () => {
 
     const ticket = getSupportTicket(res.body.ticketId);
     expect(ticket!.screenshot_ref).toMatch(/^\/uploads\/support-screenshot-[\w.-]+\.png$/);
+    expect(ticket!.body).not.toContain('Screenshot');
+    expect(ticket!.body).not.toContain('initial-capture-failed');
+  });
+
+  it('records the screenshot miss reason in the ticket body when no screenshot attached', async () => {
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Screenshot did not attach')
+      .field('severity', 'medium')
+      .field('screenshotMissReason', 'initial-capture-failed')
+      .expect(201);
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.screenshot_ref).toBeNull();
+    expect(ticket!.body).toContain('Screenshot');
+    expect(ticket!.body).toContain('not captured');
+    expect(ticket!.body).toContain('initial-capture-failed');
+  });
+
+  it('drops unrecognised screenshot miss reasons', async () => {
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Screenshot did not attach with junk reason')
+      .field('severity', 'medium')
+      .field('screenshotMissReason', 'totally-made-up')
+      .expect(201);
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket!.screenshot_ref).toBeNull();
+    expect(ticket!.body).not.toContain('totally-made-up');
+    expect(ticket!.body).not.toContain('Screenshot');
   });
 
   it('drops a non-image screenshot part but still lands the ticket', async () => {
@@ -357,7 +425,10 @@ describe('POST /api/bug-reports', () => {
 
     // Report still lands; the bogus attachment is simply not referenced.
     expect(listSupportTickets('agent-hub').length).toBe(before + 1);
-    expect(getSupportTicket(res.body.ticketId)!.screenshot_ref).toBeNull();
+    const ticket = getSupportTicket(res.body.ticketId)!;
+    expect(ticket.screenshot_ref).toBeNull();
+    expect(ticket.body).toContain('Screenshot');
+    expect(ticket.body).toContain('upload-rejected');
   });
 
   it('returns 400 when title is missing', async () => {

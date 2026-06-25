@@ -47,6 +47,11 @@ const VALID_REPLAY_MISS_REASONS = new Set([
   'no-full-snapshot',
   'upload-failed',
 ]);
+const VALID_SCREENSHOT_MISS_REASONS = new Set([
+  'initial-capture-failed',
+  'retake-capture-failed',
+  'upload-rejected',
+]);
 const INTAKE_PROJECT_ID = 'agent-hub';
 
 // ─── Rate limit ──────────────────────────────────────────────────
@@ -175,6 +180,7 @@ interface BugReportInput {
   currentAgentId?: string;
   replayRef?: string | null;
   replayMissReason?: string | null;
+  screenshotMissReason?: string | null;
 }
 
 /**
@@ -190,6 +196,20 @@ export function sanitizeReplayMissReason(
   if (hasReplayRef || !raw) return null;
   const reason = String(raw).trim();
   return VALID_REPLAY_MISS_REASONS.has(reason) ? reason : null;
+}
+
+/**
+ * Accept only the closed set of screenshot miss reasons emitted by the client
+ * (or this handler when an uploaded part is rejected). If a screenshot did
+ * persist, the miss reason is meaningless and is dropped.
+ */
+export function sanitizeScreenshotMissReason(
+  raw: string | undefined | null,
+  hasScreenshotRef: boolean,
+): string | null {
+  if (hasScreenshotRef || !raw) return null;
+  const reason = String(raw).trim();
+  return VALID_SCREENSHOT_MISS_REASONS.has(reason) ? reason : null;
 }
 
 /**
@@ -234,6 +254,9 @@ export function buildBugReportTicketBody(input: BugReportInput): string {
     );
   } else if (input.replayMissReason) {
     lines.push(`- **Session Replay:** _not captured_ (reason: \`${input.replayMissReason}\`)`);
+  }
+  if (input.screenshotMissReason) {
+    lines.push(`- **Screenshot:** _not captured_ (reason: \`${input.screenshotMissReason}\`)`);
   }
   return lines.join('\n');
 }
@@ -328,6 +351,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const currentAgentId = (fields.currentAgentId || '').toString();
         const replayRef = sanitizeReplayRef(fields.replayRef);
         const replayMissReason = sanitizeReplayMissReason(fields.replayMissReason, !!replayRef);
+        let screenshotMissReason = sanitizeScreenshotMissReason(fields.screenshotMissReason, false);
 
         // Persist an optional `screenshot` image part so the photo shows inline
         // in the Customer Support queue (stored as the ticket's
@@ -343,10 +367,13 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
               serverDir,
               screenshotFile.data,
             );
+            screenshotMissReason = null;
           } catch (err) {
             console.warn('[Bug Reports] screenshot dropped:', (err as Error).message);
+            screenshotMissReason ??= 'upload-rejected';
           }
         }
+        screenshotMissReason = sanitizeScreenshotMissReason(screenshotMissReason, !!screenshotRef);
 
         // ── Resolve the intake (agent-hub) project ─────────
         const project = findProject(INTAKE_PROJECT_ID);
@@ -379,6 +406,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
           // Rendered only when no replay attaches; `sanitizeReplayMissReason`
           // already forced it null whenever a replayRef was present.
           replayMissReason,
+          screenshotMissReason,
         };
 
         const ticket = await intakeSupportTicket(
