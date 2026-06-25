@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   BarChart3,
   GitPullRequest,
@@ -12,6 +12,8 @@ import {
   Folder,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { createRequestGenerationState, beginRequest } from '@shared/utils/requestGeneration';
+import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { getApiBase, getAuthHeaders } from '../utils/connection';
 import { getAuthRecord } from '../utils/auth';
 import { relativeTime } from '../utils/time';
@@ -33,7 +35,9 @@ import {
  *   - open PRs (cards with an unmerged PR link)
  *   - recent activity feed
  *
- * Refetches when `orgId` changes (so the OrgSwitcher just works).
+ * Refetches when `orgId` changes (so the OrgSwitcher just works), and
+ * auto-refreshes every {@link DASHBOARD_REFRESH_MS} while the tab is visible
+ * (paused in the background, catch-up on refocus) via `useVisibleIntervalRefresh`.
  */
 /**
  * @param {(view: string) => void} [onNavigate] — navigate to a top-level view (e.g. 'settings:account')
@@ -43,6 +47,9 @@ import {
  * @param {(url: string) => void} [onOpenExternalUrl] — open GitHub etc. (Electron uses shell)
  * @param {(projectId: string) => void} [onOpenProjectSupport] — open a project's support queue
  */
+/** How often the dashboard silently re-polls while the tab is foregrounded. */
+const DASHBOARD_REFRESH_MS = 5000;
+
 export default function DashboardView({
   orgId,
   onNavigate,
@@ -58,41 +65,94 @@ export default function DashboardView({
   const [error, setError] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
-  const load = useCallback(async () => {
-    if (!orgId) {
-      setData(null);
-      setError(null);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${getApiBase()}/orgs/${orgId}/dashboard`, {
-        headers: { ...getAuthHeaders() },
-      });
-      if (!res.ok) {
-        let detail = '';
-        try {
-          const body = await res.json();
-          detail = body.error || `HTTP ${res.status}`;
-        } catch {
-          detail = `HTTP ${res.status}`;
+  // Generation guard shared by the initial load, manual refresh, and the 5s
+  // silent poll. Invalidation is keyed on *commit order* (see
+  // `@shared/utils/requestGeneration`): a result lands unless a strictly newer
+  // request has already committed replacement data, so a silent poll that
+  // fails can't discard an older foreground load that later succeeds.
+  const mountedRef = useRef(true);
+  const genRef = useRef(createRequestGenerationState());
+  // The org a result belongs to. The commit-order guard alone can't stop an
+  // in-flight request for a *previous* org from landing (its seq is still the
+  // newest committed), so each request also confirms its org is still selected
+  // before writing — otherwise switching orgs could flash the old org's data.
+  const orgIdRef = useRef(orgId);
+  orgIdRef.current = orgId;
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+
+  const load = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      const req = beginRequest(genRef.current, { silent });
+      // Captured at call time; a result may only commit while its org is still
+      // the selected one.
+      const reqOrgId = orgId;
+      const orgStillCurrent = () => orgIdRef.current === reqOrgId;
+      if (!orgId) {
+        if (mountedRef.current && orgStillCurrent() && req.canCommit()) {
+          req.commit();
+          setData(null);
+          setError(null);
         }
-        throw new Error(detail);
+        return;
       }
-      const json = await res.json();
-      setData(json);
-    } catch (err: any) {
-      setError(err.message || String(err));
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [orgId]);
+      // Background polls refresh in place: no spinner, and a transient failure
+      // keeps the last-good dashboard on screen instead of flashing an error.
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      let committed = false;
+      try {
+        const res = await fetch(`${getApiBase()}/orgs/${orgId}/dashboard`, {
+          headers: { ...getAuthHeaders() },
+        });
+        if (!res.ok) {
+          let detail = '';
+          try {
+            const body = await res.json();
+            detail = body.error || `HTTP ${res.status}`;
+          } catch {
+            detail = `HTTP ${res.status}`;
+          }
+          throw new Error(detail);
+        }
+        const json = await res.json();
+        if (mountedRef.current && orgStillCurrent() && req.canCommit()) {
+          req.commit();
+          committed = true;
+          setData(json);
+          setError(null);
+        }
+      } catch (err: any) {
+        // Only a foreground request surfaces an error; a silent failure commits
+        // nothing, so it can't invalidate an older foreground result.
+        if (!silent && mountedRef.current && orgStillCurrent() && req.canCommit()) {
+          req.commit();
+          committed = true;
+          setError(err.message || String(err));
+          setData(null);
+        }
+      } finally {
+        // Clear the spinner once we've committed, or when this is the foreground
+        // request that still owns it (so a superseding poll doesn't strand it).
+        if (mountedRef.current && (committed || req.ownsLoading())) setLoading(false);
+      }
+    },
+    [orgId],
+  );
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useVisibleIntervalRefresh(() => load({ silent: true }), DASHBOARD_REFRESH_MS, {
+    enabled: !!orgId,
+  });
 
   if (!orgId) {
     return (
@@ -126,7 +186,7 @@ export default function DashboardView({
           </div>
           <button
             type="button"
-            onClick={load}
+            onClick={() => load()}
             disabled={loading}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50"
             aria-label="Refresh dashboard"
@@ -469,26 +529,53 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api
-      .getAllSupportTickets({ status: 'new', unread: true })
-      .then((data: any) => {
-        if (cancelled) return;
+  // Generation guard keyed on commit order (see the main dashboard load and
+  // `@shared/utils/requestGeneration`): a result lands unless a strictly newer
+  // request has already committed replacement tickets, so a failing silent poll
+  // can't discard an older foreground load that later succeeds.
+  const mountedRef = useRef(true);
+  const genRef = useRef(createRequestGenerationState());
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+
+  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    const req = beginRequest(genRef.current, { silent });
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
+    let committed = false;
+    try {
+      const data = await api.getAllSupportTickets({ status: 'new', unread: true });
+      if (mountedRef.current && req.canCommit()) {
+        req.commit();
+        committed = true;
         setTickets(Array.isArray(data?.tickets) ? data.tickets : []);
-      })
-      .catch((err: any) => {
-        if (!cancelled) setError(err.message || String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+        setError(null);
+      }
+    } catch (err: any) {
+      // Keep the last triage list (and any prior error) on a transient
+      // background-poll failure — only a foreground load surfaces a new error,
+      // and a silent failure commits nothing so it can't drop an older result.
+      if (!silent && mountedRef.current && req.canCommit()) {
+        req.commit();
+        committed = true;
+        setError(err.message || String(err));
+      }
+    } finally {
+      if (mountedRef.current && (committed || req.ownsLoading())) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useVisibleIntervalRefresh(() => load({ silent: true }), DASHBOARD_REFRESH_MS);
 
   const sorted = useMemo(() => sortSupportBySeverity(tickets), [tickets]);
 

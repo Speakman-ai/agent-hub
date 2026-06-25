@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useMemo, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Linking, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -14,8 +14,12 @@ import { groupSessionsByState } from '@shared/utils/sessionState';
 import { ALL_OWNERS, ownerKeyForUser, defaultOwnerFilter, buildOwnerOptions, filterSessionsByOwner, } from '@shared/utils/sessionOwnerFilter';
 import { getAuthRecord } from '../utils/auth';
 import { api } from '../utils/api';
+import { createRequestGenerationState, beginRequest } from '@shared/utils/requestGeneration';
+import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { openPrDashboardStatusBadge } from '../utils/prFormatting';
 import { activityLabel, filterActivity, countByType, ACTIVITY_TYPE_KEYS, sortSupportBySeverity, SUPPORT_SEVERITY_DOT, PR_PRIORITY_DOT, resolveActivityTarget, activityIsActionable, resolveOpenPrTarget, openPrIsActionable, } from '../utils/dashboard';
+/** How often the dashboard silently re-polls while the app is foregrounded. */
+const DASHBOARD_REFRESH_MS = 5000;
 const ACTIVITY_DOT: Record<string, any> = {
     card_created: colors.emerald400,
     card_updated: colors.amber400,
@@ -40,6 +44,17 @@ export default function DashboardScreen() {
     const currentUserKey = ownerKeyForUser(currentUser);
     const currentUserName = (currentUser && currentUser.username) || null;
     const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
+    // Generation guards keyed on commit order (see
+    // `@shared/utils/requestGeneration`): a result lands unless a strictly newer
+    // request has already committed replacement data. A silent poll that fails
+    // commits nothing, so it can't discard a slow foreground load / pull-to-
+    // refresh that later succeeds.
+    const mountedRef = useRef(true);
+    const dashGenRef = useRef(createRequestGenerationState());
+    const supportGenRef = useRef(createRequestGenerationState());
+    useEffect(() => () => {
+        mountedRef.current = false;
+    }, []);
     const toggleActivityType = useCallback((key: any) => {
         setActiveTypes((prev: any) => {
             const next = new Set(prev);
@@ -118,17 +133,32 @@ export default function DashboardScreen() {
     const openPr = useCallback((pr: any) => {
         followTarget(resolveOpenPrTarget(pr));
     }, [followTarget]);
-    const load = useCallback(async ({ asRefresh }: any = {}) => {
+    const load = useCallback(async ({ asRefresh, silent }: any = {}) => {
+        const req = beginRequest(dashGenRef.current, { silent });
         const org = getActiveOrg();
+        // Identity of the org this `/orgs/active/dashboard` result belongs to.
+        // The commit-order guard alone can't stop a slow response for a
+        // *previous* active org from landing once the user switches orgs, so
+        // each commit also confirms the active org is still the same — matching
+        // the web `orgIdRef` check.
+        const reqOrgId = org ? org.id : null;
+        const orgStillCurrent = () => (getActiveOrg()?.id ?? null) === reqOrgId;
         if (!org) {
-            setError('No active organization.');
+            if (!silent && mountedRef.current && req.canCommit()) {
+                req.commit();
+                setError('No active organization.');
+            }
             return;
         }
+        // Background polls refresh in place: no spinner, and a transient failure
+        // keeps the last-good dashboard on screen instead of flashing an error.
         if (asRefresh)
             setRefreshing(true);
-        else
+        else if (!silent)
             setLoading(true);
-        setError(null);
+        if (!silent)
+            setError(null);
+        let committed = false;
         try {
             const base = getApiBaseUrl();
             const res = await fetch(`${base}/orgs/active/dashboard`, {
@@ -146,29 +176,64 @@ export default function DashboardScreen() {
                 throw new Error(detail);
             }
             const json = await res.json();
-            setData(json);
+            if (mountedRef.current && orgStillCurrent() && req.canCommit()) {
+                req.commit();
+                committed = true;
+                setData(json);
+                setError(null);
+            }
         }
         catch (err: any) {
-            setError(err.message || String(err));
+            // Only a foreground request surfaces an error; a silent failure
+            // commits nothing, so it can't invalidate an older foreground result.
+            if (!silent && mountedRef.current && orgStillCurrent() && req.canCommit()) {
+                req.commit();
+                committed = true;
+                setError(err.message || String(err));
+            }
         }
         finally {
-            setLoading(false);
-            setRefreshing(false);
+            // Clear the spinners once we've committed, or for the foreground
+            // request that still owns them — so a superseding poll can't strand
+            // a slow foreground load / pull-to-refresh.
+            if (mountedRef.current && (committed || req.ownsLoading())) {
+                setLoading(false);
+                setRefreshing(false);
+            }
         }
     }, []);
-    const loadSupport = useCallback(async () => {
-        setSupportLoading(true);
-        setSupportError(null);
+    const loadSupport = useCallback(async ({ silent }: any = {}) => {
+        const req = beginRequest(supportGenRef.current, { silent });
+        // Mirror the web path: only clear the error on a non-silent start or on
+        // success. Clearing it unconditionally would make a foreground support
+        // error blink away every 5s even when the background retry also fails.
+        if (!silent) {
+            setSupportLoading(true);
+            setSupportError(null);
+        }
+        let committed = false;
         try {
             const payload = await api.getAllSupportTickets({ status: 'new', unread: true });
-            setSupportTickets(Array.isArray(payload?.tickets) ? payload.tickets : []);
+            if (mountedRef.current && req.canCommit()) {
+                req.commit();
+                committed = true;
+                setSupportTickets(Array.isArray(payload?.tickets) ? payload.tickets : []);
+                setSupportError(null);
+            }
         }
         catch (err: any) {
-            setSupportError(err.message || String(err));
-            setSupportTickets([]);
+            // Keep the last triage list on a transient background-poll failure; a
+            // silent failure commits nothing so it can't drop an older result.
+            if (!silent && mountedRef.current && req.canCommit()) {
+                req.commit();
+                committed = true;
+                setSupportError(err.message || String(err));
+                setSupportTickets([]);
+            }
         }
         finally {
-            setSupportLoading(false);
+            if (mountedRef.current && (committed || req.ownsLoading()))
+                setSupportLoading(false);
         }
     }, []);
     useEffect(() => {
@@ -177,6 +242,9 @@ export default function DashboardScreen() {
     useEffect(() => {
         loadSupport();
     }, [loadSupport]);
+    // Return the combined promise so the hook's in-flight guard waits for both
+    // requests — a slow poll then skips the next 5s tick instead of stacking.
+    useVisibleIntervalRefresh(() => Promise.all([load({ silent: true }), loadSupport({ silent: true })]), DASHBOARD_REFRESH_MS);
     const sortedSupport = useMemo<any>(() => sortSupportBySeverity(supportTickets), [supportTickets]);
     const allActivity = data?.recentActivity || [];
     const activity = filterActivity(allActivity, activeTypes);

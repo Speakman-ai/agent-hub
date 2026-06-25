@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
 import DashboardView, { sortSupportBySeverity } from './DashboardView';
 
 const SAMPLE = {
@@ -723,6 +723,139 @@ describe('DashboardView — account profile chip', () => {
   });
 });
 
+describe('DashboardView — 5s auto-refresh', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      writable: true,
+      value: 'visible',
+    });
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const dashCalls = () =>
+    (fetch as any).mock.calls.filter((c: any) => /\/orgs\/org-1\/dashboard$/.test(String(c[0])));
+
+  it('re-polls the org dashboard every 5s while the tab is visible', async () => {
+    vi.stubGlobal('fetch', routedFetch());
+    render(<DashboardView orgId="org-1" />);
+
+    // Initial mount load.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dashCalls()).toHaveLength(1);
+
+    // Each 5s tick triggers another silent fetch.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(dashCalls()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(dashCalls()).toHaveLength(3);
+  });
+
+  it('pauses polling while the tab is hidden and refetches when it returns', async () => {
+    vi.stubGlobal('fetch', routedFetch());
+    render(<DashboardView orgId="org-1" />);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dashCalls()).toHaveLength(1);
+
+    // Background the tab: the interval is cleared, so time passing does nothing.
+    (document as any).visibilityState = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(dashCalls()).toHaveLength(1);
+
+    // Returning to the foreground triggers an immediate catch-up refetch.
+    (document as any).visibilityState = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dashCalls()).toHaveLength(2);
+  });
+
+  it('skips overlapping polls while a refresh is still in flight (no stacked requests)', async () => {
+    let hang = false;
+    const pending: any[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(SUPPORT_SAMPLE) });
+        }
+        if (hang) {
+          // Dashboard poll hangs until the test releases it.
+          return new Promise((resolve) => {
+            pending.push(() => resolve({ ok: true, json: () => Promise.resolve(SAMPLE) }));
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dashCalls()).toHaveLength(1); // initial load resolved
+
+    // From now, dashboard polls hang. The first tick fires one request…
+    hang = true;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(dashCalls()).toHaveLength(2);
+
+    // …and while it is still in flight, the in-flight guard skips every later
+    // tick instead of stacking concurrent requests.
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(dashCalls()).toHaveLength(2);
+
+    // Once the pending poll resolves the guard releases and polling resumes.
+    pending.forEach((r) => r());
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(dashCalls()).toHaveLength(3);
+  });
+
+  it('keeps the last-good dashboard (no spinner, no error) when a background poll fails', async () => {
+    let failDashboard = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve(SUPPORT_SAMPLE) });
+        }
+        if (failDashboard) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'transient' }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText('Acme')).toBeInTheDocument();
+
+    // Next background poll fails — the dashboard stays on screen and no error
+    // banner replaces it.
+    failDashboard = true;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(screen.getByText('Acme')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
 describe('sortSupportBySeverity', () => {
   it('orders critical → high → medium → low, newest within a severity', () => {
     const sorted = sortSupportBySeverity([
@@ -825,5 +958,288 @@ describe('DashboardView — Support issues panel', () => {
       expect(screen.getByText(/No new support issues/i)).toBeInTheDocument();
     });
     expect(screen.queryAllByTestId('support-issue-row')).toHaveLength(0);
+  });
+});
+
+/**
+ * The dashboard and Support panel both poll every 5s. These guard the contracts
+ * a reviewer flagged after the polling landed:
+ *   1. A stale/superseded response (dashboard OR support) must not overwrite a
+ *      newer one — the cancellation/generation guard on every load path.
+ *   2. A silent background poll must not clear a foreground error unless it
+ *      actually succeeds — so an error can't blink away every 5s.
+ */
+describe('DashboardView — polling staleness guards', () => {
+  function deferred() {
+    let resolve!: (v: any) => void;
+    const promise = new Promise<any>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  const ticket = (id: any, subject: any, severity: any) => ({
+    id,
+    subject,
+    severity,
+    status: 'new',
+    project_id: 'proj-dash',
+    project_name: 'Hub Web',
+    created_at: '2026-06-25T00:00:00Z',
+  });
+
+  // Resolve a deferred fetch and drain the chained microtasks (fetch → json →
+  // setState → re-render) inside act so the panel commits before we assert.
+  async function resolveAndFlush(deferredObj: any, payload: any) {
+    await act(async () => {
+      deferredObj.resolve({ ok: true, json: () => Promise.resolve(payload) });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      writable: true,
+      value: 'visible',
+    });
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('ignores a stale dashboard response that resolves after a newer poll', async () => {
+    const dashDeferreds: any[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ tickets: [] }) });
+        }
+        const d = deferred();
+        dashDeferreds.push(d);
+        return d.promise;
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    // Mount issues dashboard request #0 (still pending).
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dashDeferreds.length).toBe(1);
+
+    // A 5s poll issues request #1 while #0 is still in flight.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(dashDeferreds.length).toBeGreaterThanOrEqual(2);
+
+    // The newer request (#1) resolves first with fresh data.
+    await resolveAndFlush(dashDeferreds[1], { ...SAMPLE, orgName: 'FreshOrg' });
+    expect(screen.getByText('FreshOrg')).toBeInTheDocument();
+
+    // The older mount request (#0) resolves later — the generation guard must
+    // drop it so it can't overwrite the fresher dashboard.
+    await resolveAndFlush(dashDeferreds[0], { ...SAMPLE, orgName: 'StaleOrg' });
+    expect(screen.getByText('FreshOrg')).toBeInTheDocument();
+    expect(screen.queryByText('StaleOrg')).not.toBeInTheDocument();
+  });
+
+  it('does not commit a previous org response after orgId changes', async () => {
+    const byOrg: Record<string, any[]> = { 'org-1': [], 'org-2': [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ tickets: [] }) });
+        }
+        const m = u.match(/\/orgs\/([^/]+)\/dashboard/);
+        const org = m ? m[1] : 'unknown';
+        const d = deferred();
+        (byOrg[org] ||= []).push(d);
+        return d.promise;
+      }),
+    );
+
+    const { rerender } = render(<DashboardView orgId="org-1" />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(byOrg['org-1'].length).toBe(1);
+
+    // Switch orgs before org-1's request resolves.
+    rerender(<DashboardView orgId="org-2" />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(byOrg['org-2'].length).toBe(1);
+
+    // The previous org (org-1) resolves first — it must NOT be shown in the
+    // org-2 view, even though no newer request has committed yet.
+    await resolveAndFlush(byOrg['org-1'][0], { ...SAMPLE, orgName: 'OldOrgA' });
+    expect(screen.queryByText('OldOrgA')).not.toBeInTheDocument();
+
+    // org-2 resolves and its data lands.
+    await resolveAndFlush(byOrg['org-2'][0], { ...SAMPLE, orgName: 'NewOrgB' });
+    expect(screen.getByText('NewOrgB')).toBeInTheDocument();
+    expect(screen.queryByText('OldOrgA')).not.toBeInTheDocument();
+  });
+
+  it('commits a slow foreground dashboard load even if a silent poll failed first', async () => {
+    const dashDeferreds: any[] = [];
+    let pollShouldFail = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ tickets: [] }) });
+        }
+        if (pollShouldFail) {
+          pollShouldFail = false; // only the first poll after arming fails
+          return Promise.reject(new Error('poll boom'));
+        }
+        const d = deferred();
+        dashDeferreds.push(d);
+        return d.promise;
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    // Mount foreground load (#1) is issued and stays pending.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(dashDeferreds.length).toBe(1);
+
+    // The 5s silent poll (#2) fires and fails — it commits nothing.
+    pollShouldFail = true;
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // The foreground load now succeeds: a failed background poll must NOT have
+    // invalidated it, so its data still lands (and no error is surfaced).
+    await resolveAndFlush(dashDeferreds[0], { ...SAMPLE, orgName: 'ForegroundOrg' });
+    expect(screen.getByText('ForegroundOrg')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('commits a slow initial support load even if a silent support poll failed first', async () => {
+    const supportDeferreds: any[] = [];
+    let pollShouldFail = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          if (pollShouldFail) {
+            pollShouldFail = false;
+            return Promise.reject(new Error('support poll boom'));
+          }
+          const d = deferred();
+          supportDeferreds.push(d);
+          return d.promise;
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    // Initial foreground support load is issued and stays pending.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(supportDeferreds.length).toBe(1);
+
+    // The 5s silent support poll fires and fails — it commits nothing.
+    pollShouldFail = true;
+    await vi.advanceTimersByTimeAsync(5000);
+
+    // The initial load now succeeds and its tickets still land; the panel is
+    // neither stuck loading nor showing an error.
+    await resolveAndFlush(supportDeferreds[0], {
+      tickets: [ticket('init', 'Initial issue', 'high')],
+    });
+    expect(screen.getByText('Initial issue')).toBeInTheDocument();
+    expect(screen.queryByText(/Loading support issues/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Failed to load support issues/i)).not.toBeInTheDocument();
+  });
+
+  it('ignores a stale support response that resolves after a newer poll', async () => {
+    const supportDeferreds: any[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          const d = deferred();
+          supportDeferreds.push(d);
+          return d.promise;
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    // Mount issues support request #0 (still pending).
+    await vi.advanceTimersByTimeAsync(0);
+    expect(supportDeferreds.length).toBe(1);
+
+    // A 5s poll issues request #1 while #0 is still in flight.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(supportDeferreds.length).toBeGreaterThanOrEqual(2);
+
+    // The newer request (#1) resolves first with fresh data.
+    await resolveAndFlush(supportDeferreds[1], {
+      tickets: [ticket('fresh', 'FRESH issue', 'critical')],
+    });
+    expect(screen.getByText('FRESH issue')).toBeInTheDocument();
+
+    // The older request (#0) resolves later with stale data — the generation
+    // guard must drop it so it can't overwrite the fresher list.
+    await resolveAndFlush(supportDeferreds[0], {
+      tickets: [ticket('stale', 'STALE issue', 'low')],
+    });
+    expect(screen.getByText('FRESH issue')).toBeInTheDocument();
+    expect(screen.queryByText('STALE issue')).not.toBeInTheDocument();
+  });
+
+  it('keeps a shown support error through a failing silent poll and clears it on success', async () => {
+    let mode: 'fail' | 'ok' = 'fail';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any) => {
+        const u = String(url);
+        if (u.includes('/support-tickets')) {
+          if (mode === 'fail') return Promise.reject(new Error('support boom'));
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ tickets: [ticket('ok', 'Recovered issue', 'high')] }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(SAMPLE) });
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" />);
+
+    // The non-silent mount load fails and surfaces an error.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.getByText(/Failed to load support issues/i)).toBeInTheDocument();
+
+    // A silent 5s poll also fails — the error must persist (not blink away).
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(screen.getByText(/Failed to load support issues/i)).toBeInTheDocument();
+
+    // A later silent poll succeeds — only now is the error cleared.
+    mode = 'ok';
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(screen.queryByText(/Failed to load support issues/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Recovered issue')).toBeInTheDocument();
   });
 });
