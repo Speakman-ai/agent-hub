@@ -254,6 +254,74 @@ export interface RumClientRow {
   revoked_at: string | null;
 }
 
+/** Deployment Module — one deploy run (pipeline execution against a ref). */
+export interface DeploymentRow {
+  id: string;
+  project_id: string;
+  /** Environment name (matches a deploy.yaml env + a deployment_environments row). */
+  environment: string;
+  /** Git ref/sha being deployed. */
+  ref: string;
+  status: 'pending' | 'awaiting_approval' | 'running' | 'success' | 'error' | 'cancelled';
+  /** How the deploy was triggered. Known v1 values: manual, push, rollback. */
+  trigger: string;
+  /** User id that triggered the deploy; NULL for system/push-driven runs. */
+  triggered_by: string | null;
+  /** For trigger='rollback': the historical deployment whose ref this run re-runs. */
+  source_deployment_id: string | null;
+  /** RunnerBackend job id once the orchestrator acquires a lease. */
+  runner_job_id: string | null;
+  /** Terminal failure message when status='error'. */
+  error: string | null;
+  /** Free-form JSON stash for forward-compat. */
+  meta: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+/** Deployment Module — per-step state for a deploy run. */
+export interface DeploymentStepRow {
+  id: string;
+  deployment_id: string;
+  name: string;
+  step_order: number;
+  status: 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'cancelled';
+  exit_code: number | null;
+  error: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+/** Deployment Module — durable per-environment live-ref record + concurrency lock. */
+export interface DeploymentEnvironmentRow {
+  id: string;
+  project_id: string;
+  name: string;
+  /** Ref currently live in this environment; NULL until the first success. */
+  current_ref: string | null;
+  /** Deployment that put current_ref live (last successful deploy). */
+  current_deployment_id: string | null;
+  /** Concurrency lock: in-flight deployment id, or NULL when idle. */
+  active_deployment_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Deployment Module — approver audit trail for gated environments. */
+export interface DeploymentApprovalRow {
+  id: string;
+  deployment_id: string;
+  approver_user_id: string;
+  /** Org role held at approval time (Owner / Admin). */
+  approver_role: string;
+  decision: 'approved' | 'rejected';
+  note: string | null;
+  created_at: string;
+}
+
 export interface HeartbeatLogRow {
   id: number;
   agent_id: string;
@@ -1373,6 +1441,25 @@ export interface Stmts {
   listRumClientsByProject: Stmt;
   revokeRumClient: Stmt;
   touchRumClientLastUsed: Stmt;
+  // Deployment Module (deployments / steps / environments / approvals)
+  insertDeployment: Stmt;
+  getDeployment: Stmt;
+  listDeploymentsByProject: Stmt;
+  listDeploymentsByEnvironment: Stmt;
+  updateDeploymentStatus: Stmt;
+  setDeploymentRunnerJob: Stmt;
+  insertDeploymentStep: Stmt;
+  getDeploymentStep: Stmt;
+  listDeploymentSteps: Stmt;
+  updateDeploymentStepStatus: Stmt;
+  upsertDeploymentEnvironment: Stmt;
+  getDeploymentEnvironment: Stmt;
+  listDeploymentEnvironments: Stmt;
+  acquireDeploymentEnvironmentLock: Stmt;
+  releaseDeploymentEnvironmentLock: Stmt;
+  setDeploymentEnvironmentCurrentRef: Stmt;
+  insertDeploymentApproval: Stmt;
+  listDeploymentApprovals: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;

@@ -10,6 +10,7 @@ import {
 import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schema.js';
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
+import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import {
   SECURITY_AUDIT_SCHEMA,
   migrateSecurityFindingsAddLastScanId,
@@ -2667,6 +2668,12 @@ function initDb(dataDir: string): void {
   // preview spawns. Schema is co-located with `preview-secrets-store.ts`.
   db.exec(WORKTREE_PREVIEW_SECRETS_SCHEMA);
 
+  // Deployment Module: deployments / steps / environments / approvals. Schema
+  // is co-located with the deploy store so deployment-schema.test.ts can spin
+  // up an in-memory DB without the full bootstrap path. These tables are new
+  // (no legacy installs), so CREATE TABLE IF NOT EXISTS is the whole migration.
+  db.exec(DEPLOYMENT_SCHEMA);
+
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
   // "In Progress" and the column dropped (there is no in-UI column editor
@@ -3039,6 +3046,111 @@ function initDb(dataDir: string): void {
     ),
     touchRumClientLastUsed: db.prepare(
       "UPDATE project_rum_clients SET last_used_at = datetime('now') WHERE id = ?",
+    ),
+    // Deployment Module (deploy/deployment-store.ts)
+    insertDeployment: db.prepare(
+      `INSERT INTO deployments
+         (id, project_id, environment, ref, status, trigger, triggered_by,
+          source_deployment_id, runner_job_id, meta)
+       VALUES (@id, @project_id, @environment, @ref, @status, @trigger, @triggered_by,
+          @source_deployment_id, @runner_job_id, @meta)`,
+    ),
+    getDeployment: db.prepare('SELECT * FROM deployments WHERE id = ?'),
+    // rowid tiebreak (monotonic insertion order): created_at has 1-second
+    // resolution, so same-second rows must fall back to insertion order, not
+    // the random UUID id, for a stable newest-first history.
+    listDeploymentsByProject: db.prepare(
+      `SELECT * FROM deployments
+        WHERE project_id = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ? OFFSET ?`,
+    ),
+    listDeploymentsByEnvironment: db.prepare(
+      `SELECT * FROM deployments
+        WHERE project_id = ? AND environment = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ? OFFSET ?`,
+    ),
+    // Stamps started_at on the first transition into a non-pending state and
+    // completed_at on a terminal state; updated_at always bumps.
+    updateDeploymentStatus: db.prepare(
+      `UPDATE deployments
+          SET status = @status,
+              error = @error,
+              started_at = COALESCE(started_at,
+                CASE WHEN @status != 'pending' THEN datetime('now') ELSE NULL END),
+              completed_at = CASE
+                WHEN @status IN ('success', 'error', 'cancelled') THEN datetime('now')
+                ELSE completed_at END,
+              updated_at = datetime('now')
+        WHERE id = @id`,
+    ),
+    setDeploymentRunnerJob: db.prepare(
+      "UPDATE deployments SET runner_job_id = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
+    insertDeploymentStep: db.prepare(
+      `INSERT INTO deployment_steps (id, deployment_id, name, step_order, status)
+       VALUES (?, ?, ?, ?, ?)`,
+    ),
+    getDeploymentStep: db.prepare('SELECT * FROM deployment_steps WHERE id = ?'),
+    listDeploymentSteps: db.prepare(
+      'SELECT * FROM deployment_steps WHERE deployment_id = ? ORDER BY step_order ASC, rowid ASC',
+    ),
+    updateDeploymentStepStatus: db.prepare(
+      `UPDATE deployment_steps
+          SET status = @status,
+              exit_code = @exit_code,
+              error = @error,
+              started_at = COALESCE(started_at,
+                CASE WHEN @status != 'pending' THEN datetime('now') ELSE NULL END),
+              completed_at = CASE
+                WHEN @status IN ('success', 'error', 'skipped', 'cancelled') THEN datetime('now')
+                ELSE completed_at END
+        WHERE id = @id`,
+    ),
+    // Idempotent registration of an environment row (created on first deploy or
+    // first config sync). Leaves live-ref / lock columns untouched on conflict.
+    upsertDeploymentEnvironment: db.prepare(
+      `INSERT INTO deployment_environments (id, project_id, name)
+       VALUES (?, ?, ?)
+       ON CONFLICT(project_id, name) DO NOTHING`,
+    ),
+    getDeploymentEnvironment: db.prepare(
+      'SELECT * FROM deployment_environments WHERE project_id = ? AND name = ?',
+    ),
+    listDeploymentEnvironments: db.prepare(
+      'SELECT * FROM deployment_environments WHERE project_id = ? ORDER BY name ASC',
+    ),
+    // Concurrency lock acquire: only succeeds (changes=1) when no deploy is
+    // in-flight for this env. A non-zero result means the lock is held → 409.
+    acquireDeploymentEnvironmentLock: db.prepare(
+      `UPDATE deployment_environments
+          SET active_deployment_id = @deployment_id, updated_at = datetime('now')
+        WHERE project_id = @project_id AND name = @name
+          AND active_deployment_id IS NULL`,
+    ),
+    // Release clears the lock only if WE hold it (defends against clearing a
+    // lock acquired by a newer deploy).
+    releaseDeploymentEnvironmentLock: db.prepare(
+      `UPDATE deployment_environments
+          SET active_deployment_id = NULL, updated_at = datetime('now')
+        WHERE project_id = @project_id AND name = @name
+          AND active_deployment_id = @deployment_id`,
+    ),
+    setDeploymentEnvironmentCurrentRef: db.prepare(
+      `UPDATE deployment_environments
+          SET current_ref = @current_ref,
+              current_deployment_id = @current_deployment_id,
+              updated_at = datetime('now')
+        WHERE project_id = @project_id AND name = @name`,
+    ),
+    insertDeploymentApproval: db.prepare(
+      `INSERT INTO deployment_approvals
+         (id, deployment_id, approver_user_id, approver_role, decision, note)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    listDeploymentApprovals: db.prepare(
+      'SELECT * FROM deployment_approvals WHERE deployment_id = ? ORDER BY created_at ASC, rowid ASC',
     ),
     // Sessions
     createSession: db.prepare(
