@@ -71,6 +71,18 @@ export function unregisterFinalizeRunAbort(runId: string): void {
 }
 
 /**
+ * Is an orchestrator currently driving this run in THIS process? True iff an
+ * abort handle is registered (kickoff registers one and `.finally`
+ * unregisters when `runFinalize` settles — including on throw). The runtime
+ * stuck-run reaper (`stuck-run-reaper.ts`) uses this as its liveness oracle:
+ * a non-terminal DB row with NO live handle is, under the single-process
+ * architecture, definitively not being driven and is safe to reap once idle.
+ */
+export function isFinalizeRunLive(runId: string): boolean {
+  return abortFns.has(runId);
+}
+
+/**
  * Abort an in-process run by id. Returns true if a live run was found and
  * tripped; false if nothing was registered (already settled, or this run is
  * owned by a different process — the DB flip still stands either way).

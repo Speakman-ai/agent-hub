@@ -4609,6 +4609,85 @@ function initDb(dataDir: string): void {
            ended_at = COALESCE(ended_at, unixepoch() * 1000)
        WHERE state IN ('queued','running')`,
     ),
+    // ── Runtime stuck-run reaper (stuck-run-reaper.ts) ──────────────────────
+    // Steady-state analog to the boot sweep above. boot-recovery only fires on
+    // Hub boot; an `agent_block` run whose orchestrator dies/hangs mid-process
+    // (e.g. a transient runner-lease-expiry blip, with NO restart) otherwise
+    // hangs in `status='running'` forever. Scoped to `status='running'` ON
+    // PURPOSE: that is the step-execution phase where the stall happens, and it
+    // EXCLUDES the pre-start statuses (`queued`/`rebasing`/`reviewing`) whose
+    // dispatched-but-not-started steps share the reapable shape (`queued_steps`
+    // > 0, `running_steps = 0`) — reaping those would fail a pending run on the
+    // happy path. `started_at` can't be the gate (it is stamped at INSERT, so it
+    // is always set). Signals the reaper needs to classify WITHOUT a restart:
+    //   - last_activity_ms: newest of run.started_at and any step start/end —
+    //     a live orchestrator bumps this by transitioning steps, so it goes
+    //     stale exactly when the run stops making progress.
+    //   - queued_steps / running_steps: a real stall has stranded `queued`
+    //     work with NOTHING `running` (a genuinely-executing long step keeps a
+    //     `running` row, so we never reap an in-flight step).
+    selectRuntimeStuckFinalizeRunCandidates: db.prepare(
+      `SELECT r.id, r.status, r.session_id, r.card_id, r.project_id, r.head_sha, r.started_at,
+              MAX(
+                COALESCE(r.started_at, 0),
+                COALESCE((SELECT MAX(s.started_at) FROM finalize_run_steps s WHERE s.run_id = r.id), 0),
+                COALESCE((SELECT MAX(s.ended_at)   FROM finalize_run_steps s WHERE s.run_id = r.id), 0)
+              ) AS last_activity_ms,
+              (SELECT COUNT(*) FROM finalize_run_steps s WHERE s.run_id = r.id AND s.state = 'queued')  AS queued_steps,
+              (SELECT COUNT(*) FROM finalize_run_steps s WHERE s.run_id = r.id AND s.state = 'running') AS running_steps
+         FROM finalize_runs r
+        WHERE r.status = 'running'`,
+    ),
+    // Flip ONE stalled run to infra_error — but ONLY if it STILL has the
+    // reapable shape, REVALIDATED ATOMICALLY here so the select→reap gap can't
+    // fail a run that made progress in the meantime (TOCTOU). The candidate
+    // SELECT is a snapshot; between it and this write a live orchestrator could
+    // (a) advance the run off `running` (e.g. to `pushing`), (b) start a queued
+    // step (now `running`), or (c) finish a step (bumping last activity). Each
+    // is real progress that must veto the reap. The WHERE re-checks all of it
+    // against current rows: still `running`, NOTHING currently `running` in
+    // steps, still has stranded `queued` work, AND still idle past @cutoff (the
+    // reaper passes nowMs − the idle threshold it classified the run under, so
+    // this mirrors the same idle predicate). Any miss → 0 changes → caller
+    // skips. failure_reason keeps the 'Finalize run interrupted%' prefix so the
+    // boot-retrigger crash-loop counter
+    // (countInterruptedFinalizeRunsForSessionHead) bounds runtime reaps too:
+    // reap → auto-retrigger → stall → reap can't loop forever.
+    failRuntimeStuckFinalizeRun: db.prepare(
+      `UPDATE finalize_runs
+          SET status = 'infra_error',
+              failure_reason = 'Finalize run interrupted (stalled with no live orchestrator)',
+              phase = NULL,
+              ended_at = COALESCE(ended_at, unixepoch() * 1000)
+        WHERE id = @id
+          AND status = 'running'
+          AND NOT EXISTS (
+                SELECT 1 FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'running'
+              )
+          AND EXISTS (
+                SELECT 1 FROM finalize_run_steps s
+                 WHERE s.run_id = finalize_runs.id AND s.state = 'queued'
+              )
+          AND MAX(
+                COALESCE(finalize_runs.started_at, 0),
+                COALESCE((SELECT MAX(s.started_at) FROM finalize_run_steps s WHERE s.run_id = finalize_runs.id), 0),
+                COALESCE((SELECT MAX(s.ended_at)   FROM finalize_run_steps s WHERE s.run_id = finalize_runs.id), 0)
+              ) <= @cutoff`,
+    ),
+    // Sweep the reaped run's stranded steps so its timeline reads cleanly. Only
+    // `queued` steps are swept: the reap-guard above already proved no step was
+    // `running` at flip time, so there is nothing in-flight to skip — and
+    // scoping to `queued` means that even if a step somehow started in the
+    // (synchronous, same-process) gap before this write, we never force a
+    // legitimately-running step to `skipped`.
+    failRuntimeStuckFinalizeRunSteps: db.prepare(
+      `UPDATE finalize_run_steps
+          SET state = 'skipped',
+              ended_at = COALESCE(ended_at, unixepoch() * 1000)
+        WHERE run_id = ?
+          AND state = 'queued'`,
+    ),
     // After the boot retrigger successfully starts a FRESH run for an interrupted
     // session, annotate the just-swept (old) run so its terminal bubble no longer
     // reads as an unresolved infra failure — it now self-describes that a fresh

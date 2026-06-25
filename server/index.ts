@@ -205,6 +205,7 @@ import { parsePreviewSubdomainHost } from './preview/preview-subdomain-host.js';
 import { getSessionPreviewPort } from './preview/session-preview-port.js';
 import { runPreviewReaper, PREVIEW_REAPER_CRON } from './preview/preview-reaper.js';
 import { runFinalizeReaper, FINALIZE_REAPER_CRON } from './finalize/finalize-reaper.js';
+import { runStuckRunReaper, STUCK_RUN_REAPER_CRON } from './finalize/stuck-run-reaper.js';
 import {
   runRunnerJobLogReaper,
   RUNNER_JOB_LOG_REAPER_CRON,
@@ -989,6 +990,33 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       { name: 'finalize-reaper' },
     );
   }
+
+  // Runtime stuck-run reaper — steady-state analog to boot-recovery. boot only
+  // fails stuck run ROWS on Hub start; an autonomous (`agent_block`) run whose
+  // orchestrator dies/hangs mid-process (e.g. a transient runner-lease-expiry
+  // blip, NO restart) otherwise hangs in `status=running` forever — the stall
+  // watchdog only arms in live mode and the container reaper never touches the
+  // row. This once-a-minute sweep flips such runs to infra_error (+ stranded
+  // steps skipped, terminal broadcast) and re-triggers a fresh, non-destructive
+  // run via the boot-retrigger path (its crash-loop cap bounds reap→retrigger).
+  // Pure SQLite + broadcast, so NOT docker-gated. See stuck-run-reaper.ts.
+  cron.schedule(
+    STUCK_RUN_REAPER_CRON,
+    () => {
+      void runStuckRunReaper({
+        stmts: stmts!,
+        broadcast,
+        onReaped:
+          process.env.NODE_ENV === 'test'
+            ? undefined
+            : (reaped) =>
+                retriggerInterruptedFinalizeRunsOnBoot(routeDeps, reaped).then(() => undefined),
+      }).catch((err) => {
+        console.warn('[finalize-stuck-reaper] tick failed:', (err as Error).message);
+      });
+    },
+    { name: 'finalize-stuck-reaper' },
+  );
 
   // Runner job-log retention reaper — prune transient CI stdout/stderr frames
   // from `runner_job_logs` (orgs.db) older than the TTL. Append-only and never

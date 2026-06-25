@@ -1968,6 +1968,9 @@ export interface Stmts {
   countInterruptedFinalizeRunsForSessionHead: Stmt;
   failStuckActiveFinalizeRunsOnBoot: Stmt;
   failStuckActiveFinalizeRunStepsOnBoot: Stmt;
+  selectRuntimeStuckFinalizeRunCandidates: Stmt;
+  failRuntimeStuckFinalizeRun: Stmt;
+  failRuntimeStuckFinalizeRunSteps: Stmt;
   markFinalizeRunSupersededByBootRetrigger: Stmt;
   getWorkflowStepRun: Stmt;
   getWorkflowRunScoped: Stmt;
