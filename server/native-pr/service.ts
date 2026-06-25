@@ -22,7 +22,6 @@ import {
   type PrListState,
 } from './store.js';
 import {
-  blobExistsAtCommit,
   mergeTree,
   prCommits,
   prDiff,
@@ -34,6 +33,7 @@ import {
 } from './git-read.js';
 import { hostedRepoDefaultBranch } from '../git-host/repo-store.js';
 import { parseCiConfig } from '../finalize/ci-config.js';
+import { expandJobInstances } from '../finalize/ci-config-v2.js';
 import { isKnownHubUserId } from './author-user.js';
 import { NativePrError } from './errors.js';
 import { execFile } from 'child_process';
@@ -41,21 +41,27 @@ import { promisify } from 'util';
 
 const execFileP = promisify(execFile);
 
-/**
- * Why are there no checks on this PR? Read the ci.yaml at the head sha
- * and explain the empty state — "No checks reported" with no reason is
- * how "CI didn't run" support mysteries happen.
- */
-async function ciEmptyStateNote(repoPath: string, sha: string): Promise<string | null> {
-  let text: string;
+async function ciConfigTextAtCommit(repoPath: string, sha: string): Promise<string | null> {
   try {
     const { stdout } = await execFileP(
       'git',
       ['-C', repoPath, 'show', `${sha}:.agent-hub/ci.yaml`],
       { timeout: 15_000, maxBuffer: 1024 * 1024 },
     );
-    text = stdout;
+    return stdout;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Why are there no checks on this PR? Read the ci.yaml at the head sha
+ * and explain the empty state — "No checks reported" with no reason is
+ * how "CI didn't run" support mysteries happen.
+ */
+async function ciEmptyStateNote(repoPath: string, sha: string): Promise<string | null> {
+  const text = await ciConfigTextAtCommit(repoPath, sha);
+  if (text === null) {
     return 'No CI is configured on this branch (.agent-hub/ci.yaml not found).';
   }
   const parsed = parseCiConfig(text);
@@ -272,6 +278,7 @@ function checksForSha(
         // Re-run plumbing (client buttons) — only CI-engine runs re-run here.
         run_id: run.id,
         job_id: j.job_id,
+        matrix_key: j.matrix_key,
       });
     }
   }
@@ -312,6 +319,58 @@ function ciRunForSha(
   return { id: run.id, trigger_source: run.trigger_source, status: run.status };
 }
 
+function requiredChecksBlockReasonFromRows(
+  checks: Array<Record<string, unknown>>,
+  requiredJobs: Array<{ jobId: string; matrixKey: string }> | null = null,
+): string | null {
+  if (checks.length === 0) {
+    return 'Branch protection: checks have not run for the head commit yet.';
+  }
+  if (requiredJobs && requiredJobs.length > 0) {
+    const checkedJobs = new Set(
+      checks
+        .map((c) => {
+          if (typeof c.job_id !== 'string') return null;
+          const matrixKey = typeof c.matrix_key === 'string' ? c.matrix_key : '';
+          return `${c.job_id}\0${matrixKey}`;
+        })
+        .filter((jobKey): jobKey is string => jobKey !== null),
+    );
+    const missing = requiredJobs.filter(
+      (job) => !checkedJobs.has(`${job.jobId}\0${job.matrixKey}`),
+    );
+    if (missing.length > 0) {
+      return 'Branch protection: checks have not run for every required job on the head commit yet.';
+    }
+  }
+  if (
+    checks.some((c) => {
+      const status = String(c.status ?? '').toLowerCase();
+      return status === 'queued' || status === 'in_progress';
+    })
+  ) {
+    return 'Branch protection: checks are still running for the head commit.';
+  }
+  const allPassing = checks.every((c) => {
+    const conclusion = String(c.conclusion ?? '').toLowerCase();
+    return conclusion === 'success' || conclusion === 'skipped' || conclusion === 'neutral';
+  });
+  return allPassing
+    ? null
+    : 'Branch protection: checks failed for the head commit — fix and re-run before merging.';
+}
+
+function requiredJobsFromCiConfigText(
+  text: string,
+): Array<{ jobId: string; matrixKey: string }> | null {
+  const parsed = parseCiConfig(text);
+  if (!parsed.ok || parsed.config.version !== 2) return null;
+  return expandJobInstances(parsed.config, {}).map((instance) => ({
+    jobId: instance.jobId,
+    matrixKey: instance.matrixKey,
+  }));
+}
+
 /**
  * Branch-protection merge gate for PRs targeting the protected (default)
  * branch. Returns a human-readable block reason, or null when the merge
@@ -348,22 +407,14 @@ async function mergeBlockedReason(
   if (prot.requiredChecks && !validated) {
     // No ci.yaml at the head commit → the requirement is vacuous (there
     // is nothing configured to run).
-    const hasCiConfig = await blobExistsAtCommit(repoPath, headSha, '.agent-hub/ci.yaml');
-    if (hasCiConfig) {
-      const run = stmts.getLatestFinalizeRunForSha.get(project.id, headSha, headSha) as
-        | { status: string }
-        | undefined;
-      if (!run) {
-        return 'Branch protection: checks have not run for the head commit yet.';
-      }
-      if (run.status === 'queued' || run.status === 'running') {
-        return 'Branch protection: checks are still running for the head commit.';
-      }
-      const passing =
-        run.status === 'succeeded' || run.status === 'ready_to_push' || run.status === 'pushed';
-      if (!passing) {
-        return 'Branch protection: checks failed for the head commit — fix and re-run before merging.';
-      }
+    const ciConfigText = await ciConfigTextAtCommit(repoPath, headSha);
+    if (ciConfigText !== null) {
+      const checks = checksForSha(stmts, project.id, headSha);
+      const blocked = requiredChecksBlockReasonFromRows(
+        checks,
+        requiredJobsFromCiConfigText(ciConfigText),
+      );
+      if (blocked) return blocked;
     }
   }
 

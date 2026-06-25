@@ -556,6 +556,206 @@ describe('branch protection', () => {
       .expect(200);
   });
 
+  it('gates merge on the merged per-job check verdicts after single-job reruns', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    mkdirSync(path.join(work, '.agent-hub'), { recursive: true });
+    writeFileSync(
+      path.join(work, '.agent-hub', 'ci.yaml'),
+      [
+        'version: 2',
+        'on: [push]',
+        'jobs:',
+        '  backend:',
+        '    runs-on: ubuntu-24.04',
+        '    steps:',
+        '      - run: echo backend',
+        '  frontend:',
+        '    runs-on: ubuntu-24.04',
+        '    steps:',
+        '      - run: echo frontend',
+        '',
+      ].join('\n'),
+    );
+    git(work, 'add -A');
+    git(work, 'commit -m "add ci"');
+    git(work, `push origin ${branch}`);
+
+    await authedPatch(`/api/projects/${id}`)
+      .send({ branchProtection: { requiredChecks: true } })
+      .expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Protected checks' }).expect(201);
+
+    const { stmts } = await import('../db.js');
+    const bare = gitHostRepoPath(id);
+    const headSha = execSync(`git -C "${bare}" rev-parse refs/heads/${branch}`, { stdio: 'pipe' })
+      .toString()
+      .trim();
+
+    stmts!.insertFinalizeRun.run(
+      'rerun-base',
+      'ci-push',
+      null,
+      id,
+      branch,
+      headSha,
+      'rerun|base',
+      'queued',
+      null,
+      'pr_push',
+      null,
+      'system',
+      'CI',
+      'ci@x',
+      null,
+      Date.now() - 60_000,
+      'checks',
+      null,
+    );
+    stmts!.failFinalizeRun.run('failed', 'checks_failed', 'rerun-base');
+    stmts!.upsertFinalizeRunJob.run('rerun-base', 'backend', '', 'failed', 1, 1, 2);
+    stmts!.upsertFinalizeRunJob.run('rerun-base', 'frontend', '', 'failed', 1, 1, 2);
+
+    stmts!.insertFinalizeRun.run(
+      'rerun-frontend',
+      'ci-push',
+      null,
+      id,
+      branch,
+      headSha,
+      'rerun|frontend',
+      'queued',
+      null,
+      'pr_push',
+      null,
+      'system',
+      'CI',
+      'ci@x',
+      null,
+      Date.now() - 30_000,
+      'checks',
+      null,
+    );
+    stmts!.failFinalizeRun.run('succeeded', null, 'rerun-frontend');
+    stmts!.upsertFinalizeRunJob.run('rerun-frontend', 'frontend', '', 'passed', 0, 3, 4);
+
+    const blocked = await authedPost('/api/pr/merge')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(409);
+    expect(blocked.body.error).toMatch(/checks failed/);
+
+    stmts!.insertFinalizeRun.run(
+      'rerun-backend',
+      'ci-push',
+      null,
+      id,
+      branch,
+      headSha,
+      'rerun|backend',
+      'queued',
+      null,
+      'pr_push',
+      null,
+      'system',
+      'CI',
+      'ci@x',
+      null,
+      Date.now(),
+      'checks',
+      null,
+    );
+    stmts!.failFinalizeRun.run('succeeded', null, 'rerun-backend');
+    stmts!.upsertFinalizeRunJob.run('rerun-backend', 'backend', '', 'passed', 0, 5, 6);
+
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(
+      Object.fromEntries(
+        (detail.body.checks as Array<{ name: string; conclusion: string }>).map((c) => [
+          c.name,
+          c.conclusion,
+        ]),
+      ),
+    ).toEqual({
+      'ci/backend': 'success',
+      'ci/frontend': 'success',
+    });
+
+    await authedPost('/api/pr/merge')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(200);
+  });
+
+  it('does not satisfy required checks with a partial successful job row', async () => {
+    const { id, branch, work } = await hostedProjectWithBranch();
+    mkdirSync(path.join(work, '.agent-hub'), { recursive: true });
+    writeFileSync(
+      path.join(work, '.agent-hub', 'ci.yaml'),
+      [
+        'version: 2',
+        'on: [push]',
+        'jobs:',
+        '  backend:',
+        '    runs-on: ubuntu-24.04',
+        '    steps:',
+        '      - run: echo backend',
+        '  frontend:',
+        '    runs-on: ubuntu-24.04',
+        '    steps:',
+        '      - run: echo frontend',
+        '',
+      ].join('\n'),
+    );
+    git(work, 'add -A');
+    git(work, 'commit -m "add ci"');
+    git(work, `push origin ${branch}`);
+
+    await authedPatch(`/api/projects/${id}`)
+      .send({ branchProtection: { requiredChecks: true } })
+      .expect(200);
+    await postPulls(id).send({ headBranch: branch, title: 'Partial checks' }).expect(201);
+
+    const { stmts } = await import('../db.js');
+    const bare = gitHostRepoPath(id);
+    const headSha = execSync(`git -C "${bare}" rev-parse refs/heads/${branch}`, { stdio: 'pipe' })
+      .toString()
+      .trim();
+
+    stmts!.insertFinalizeRun.run(
+      'partial-frontend',
+      'ci-push',
+      null,
+      id,
+      branch,
+      headSha,
+      'partial|frontend',
+      'queued',
+      null,
+      'pr_push',
+      null,
+      'system',
+      'CI',
+      'ci@x',
+      null,
+      Date.now(),
+      'checks',
+      null,
+    );
+    stmts!.failFinalizeRun.run('succeeded', null, 'partial-frontend');
+    stmts!.upsertFinalizeRunJob.run('partial-frontend', 'frontend', '', 'passed', 0, 1, 2);
+
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.checks).toHaveLength(1);
+    expect(detail.body.checks[0]).toMatchObject({
+      name: 'ci/frontend',
+      conclusion: 'success',
+    });
+    expect(detail.body.pr.merge_blocked_reason).toMatch(/every required job/);
+
+    const blocked = await authedPost('/api/pr/merge')
+      .send({ prUrl: `/projects/${id}/pulls/1` })
+      .expect(409);
+    expect(blocked.body.error).toMatch(/every required job/);
+  });
+
   it('blockDirectPushes rejects pushes to the default branch but merges still land', async () => {
     const { id, branch, work } = await hostedProjectWithBranch();
     await authedPatch(`/api/projects/${id}`)
