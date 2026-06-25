@@ -3,6 +3,8 @@ import { Bug, Camera, Loader2, X } from 'lucide-react';
 import { captureScreenshot, submitBugReport } from '../utils/bugReport';
 import { flushSessionReplayRefWithReason } from '../utils/sessionReplay';
 
+const BUG_REPORT_REPLAY_FLUSH_TIMEOUT_MS = 30_000;
+
 const SEVERITIES = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
@@ -87,20 +89,32 @@ export default function BugReportModal({
     setError(null);
     try {
       // Flush the trailing replay window (if recording is active) and attach
-      // the ref so the intake agent can investigate the session. Best-effort —
-      // never let a replay failure block the report.
+      // the ref so the intake agent can investigate the session.
       let replayRef = null;
-      // When no replay attaches, record WHY (recorder-inactive,
-      // buffer-too-small, no-full-snapshot, upload-failed, …) so a recurring
-      // "didn't capture replay" report is self-diagnosing on the ticket.
+      // When no replay attaches because capture was inactive or unreplayable,
+      // record why so the ticket is self-diagnosing. A replayable buffer that
+      // fails to upload must not become a no-replay ticket.
       let replayMissReason = null;
       try {
-        const flush = await flushSessionReplayRefWithReason({ trigger: 'bug-report' });
+        let flush = await flushSessionReplayRefWithReason(
+          { trigger: 'bug-report' },
+          BUG_REPORT_REPLAY_FLUSH_TIMEOUT_MS,
+        );
+        if (!flush.ref && flush.reason === 'upload-failed') {
+          flush = await flushSessionReplayRefWithReason(
+            { trigger: 'bug-report', retry: true },
+            BUG_REPORT_REPLAY_FLUSH_TIMEOUT_MS,
+          );
+        }
+        if (!flush.ref && flush.reason === 'upload-failed') {
+          throw new Error('Session replay upload failed. Try submitting the bug report again.');
+        }
         replayRef = flush.ref;
         replayMissReason = flush.reason;
-      } catch {
-        replayRef = null;
-        replayMissReason = 'upload-failed';
+      } catch (err: any) {
+        throw new Error(
+          err?.message || 'Session replay upload failed. Try submitting the bug report again.',
+        );
       }
       await submitBugReport({
         title,

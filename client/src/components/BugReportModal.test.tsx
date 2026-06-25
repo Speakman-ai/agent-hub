@@ -3,8 +3,21 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import BugReportModal from './BugReportModal';
 import { BUG_REPORT_ENDPOINT, BUG_REPORT_PROJECT_ID } from '../utils/bugReport';
 
+const replayMocks = vi.hoisted(() => ({
+  flushSessionReplayRefWithReason: vi.fn(),
+}));
+
+vi.mock('../utils/sessionReplay', () => ({
+  flushSessionReplayRefWithReason: replayMocks.flushSessionReplayRefWithReason,
+}));
+
 // Polyfill a no-op Object URL API in jsdom for the preview image.
 beforeEach(() => {
+  replayMocks.flushSessionReplayRefWithReason.mockReset();
+  replayMocks.flushSessionReplayRefWithReason.mockResolvedValue({
+    ref: null,
+    reason: 'recorder-not-initialized',
+  });
   if (!('createObjectURL' in (URL as any))) (URL as any).createObjectURL = () => 'blob:mock';
   if (!('revokeObjectURL' in (URL as any))) (URL as any).revokeObjectURL = () => {};
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
@@ -92,6 +105,81 @@ describe('BugReportModal', () => {
 
     await waitFor(() => expect(onClose!).toHaveBeenCalled());
     expect(onToast!).toHaveBeenCalledWith(expect.stringContaining('Bug reported'), 'info');
+  });
+
+  it('retries a failed replay upload and submits the retry ref', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ sessionId: 'sess-42', status: 'dispatched' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    replayMocks.flushSessionReplayRefWithReason
+      .mockResolvedValueOnce({ ref: null, reason: 'upload-failed' })
+      .mockResolvedValueOnce({ ref: '/uploads/replay-retry.json', reason: null });
+
+    render(
+      <BugReportModal
+        isOpen
+        onClose={() => {}}
+        initialScreenshotBlob={makeBlob()}
+        projectId="proj-1"
+        agentId="agent-1"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: 'Replay should attach' },
+    } as any);
+    fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }) as any);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(replayMocks.flushSessionReplayRefWithReason).toHaveBeenCalledTimes(2);
+    expect(replayMocks.flushSessionReplayRefWithReason).toHaveBeenNthCalledWith(
+      1,
+      { trigger: 'bug-report' },
+      30_000,
+    );
+    expect(replayMocks.flushSessionReplayRefWithReason).toHaveBeenNthCalledWith(
+      2,
+      { trigger: 'bug-report', retry: true },
+      30_000,
+    );
+
+    const fd = fetchMock.mock.calls[0][1].body;
+    expect(fd.get('replayRef')).toBe('/uploads/replay-retry.json');
+    expect(fd.get('replayMissReason')).toBeNull();
+  });
+
+  it('does not submit a no-replay report when replay upload fails twice', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    replayMocks.flushSessionReplayRefWithReason.mockResolvedValue({
+      ref: null,
+      reason: 'upload-failed',
+    });
+
+    render(
+      <BugReportModal
+        isOpen
+        onClose={() => {}}
+        initialScreenshotBlob={makeBlob()}
+        projectId="proj-1"
+        agentId="agent-1"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: 'Replay should not be lost' },
+    } as any);
+    fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }) as any);
+
+    await waitFor(() => {
+      expect(screen.getByText(/session replay upload failed/i)).toBeInTheDocument();
+    });
+    expect(replayMocks.flushSessionReplayRefWithReason).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('includes the selected severity in FormData', async () => {
