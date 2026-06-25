@@ -154,6 +154,20 @@ function jobStateIcon(state: any) {
   return <CircleDashed size={12} className="text-gray-500" aria-label="pending" />;
 }
 
+export function formatCiStepLogLine(line: any) {
+  if (line == null) return '';
+  if (typeof line === 'string') return line;
+  if (typeof line.text === 'string') return line.text;
+  if (typeof line.data === 'string') return line.data;
+  if (typeof line.line === 'string') return line.line;
+  if (typeof line.message === 'string') return line.message;
+  try {
+    return JSON.stringify(line);
+  } catch {
+    return String(line);
+  }
+}
+
 function StepLog({ projectId, runId, step }: any) {
   const [lines, setLines] = useState<any>(null);
   useEffect(() => {
@@ -170,7 +184,7 @@ function StepLog({ projectId, runId, step }: any) {
   }
   return (
     <pre className="text-[11px] font-mono text-gray-400 bg-gray-950/60 rounded-lg p-2 ml-6 max-h-72 overflow-auto">
-      {lines.join('\n')}
+      {lines.map(formatCiStepLogLine).join('\n')}
     </pre>
   );
 }

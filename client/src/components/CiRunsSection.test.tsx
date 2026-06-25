@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import CiRunsSection, { groupStepsByJob, runHasWorkInFlight } from './CiRunsSection';
+import CiRunsSection, {
+  formatCiStepLogLine,
+  groupStepsByJob,
+  runHasWorkInFlight,
+} from './CiRunsSection';
 import { api } from '../utils/api';
 
 (vi as any).mock('../utils/api.js', () => ({
@@ -146,6 +150,30 @@ describe('CiRunsSection', () => {
       expect(api.getFinalizeStepOutput).toHaveBeenCalledWith('proj-1', 'run-1', 1),
     );
     expect(await screen.findByText('[stdout] all green')).toBeInTheDocument();
+  });
+
+  it('renders object-shaped step output as log text', async () => {
+    (api.getFinalizeStepOutput as any).mockResolvedValue({
+      lines: [
+        { stream: 'stdout', text: 'backend migration check' },
+        { stream: 'stderr', text: 'relation missing' },
+      ],
+    });
+    render(<CiRunsSection project={hostedProject} />);
+    fireEvent.click(await screen.findByTestId('ci-run-run-1' as any));
+    fireEvent.click((await screen.findByTestId('ci-run-step-run-1-1' as any)) as any);
+
+    expect(await screen.findByText(/backend migration check/)).toBeInTheDocument();
+    expect(screen.getByText(/relation missing/)).toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/)).toBeNull();
+  });
+
+  it('formats legacy CI step log line shapes without object coercion', () => {
+    expect(formatCiStepLogLine({ text: 'from text' })).toBe('from text');
+    expect(formatCiStepLogLine({ data: 'from data' })).toBe('from data');
+    expect(formatCiStepLogLine({ line: 'from line' })).toBe('from line');
+    expect(formatCiStepLogLine({ message: 'from message' })).toBe('from message');
+    expect(formatCiStepLogLine({ nested: true })).toBe('{"nested":true}');
   });
 
   it('nests each step under its parent job for a matrix run', async () => {
