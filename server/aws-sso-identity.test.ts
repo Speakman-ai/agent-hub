@@ -175,4 +175,52 @@ describe('checkAwsSsoStatusAcrossHomes', () => {
     });
     expect(seen).toEqual(['/path/to/aws.config', '/path/to/aws.config']);
   });
+
+  it('threads AWS_SHARED_CREDENTIALS_FILE into every probe env when provided', async () => {
+    const seen: Array<string | undefined> = [];
+    const run = vi.fn(async (env: NodeJS.ProcessEnv): Promise<AwsSsoIdentity> => {
+      seen.push(env.AWS_SHARED_CREDENTIALS_FILE);
+      return { ...FAIL };
+    });
+    await checkAwsSsoStatusAcrossHomes({
+      userId: USER_A,
+      configPath: '/path/to/aws.config',
+      credentialsPath: '/path/to/aws.credentials',
+      profile: 'agenthub',
+      dataDir: DATA_DIR,
+      run,
+      buildEnv: fakeBuildEnv,
+    });
+    expect(seen).toEqual(['/path/to/aws.credentials', '/path/to/aws.credentials']);
+  });
+
+  it('scrubs direct AWS credential env vars that would override the profile files', async () => {
+    const seen: NodeJS.ProcessEnv[] = [];
+    const buildEnv = (_userId: string | null): NodeJS.ProcessEnv => ({
+      HOME: HOME_A,
+      AWS_ACCESS_KEY_ID: 'inherited-key',
+      AWS_SECRET_ACCESS_KEY: 'inherited-secret',
+      AWS_SESSION_TOKEN: 'inherited-token',
+      AWS_PROFILE: 'other-project',
+    });
+    const run = vi.fn(async (env: NodeJS.ProcessEnv): Promise<AwsSsoIdentity> => {
+      seen.push({ ...env });
+      return { ...FAIL };
+    });
+    await checkAwsSsoStatusAcrossHomes({
+      userId: USER_A,
+      configPath: '/path/to/aws.config',
+      credentialsPath: '/path/to/aws.credentials',
+      profile: 'agenthub',
+      dataDir: DATA_DIR,
+      run,
+      buildEnv,
+    });
+    expect(seen[0].AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(seen[0].AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(seen[0].AWS_SESSION_TOKEN).toBeUndefined();
+    expect(seen[0].AWS_PROFILE).toBeUndefined();
+    expect(seen[0].AWS_CONFIG_FILE).toBe('/path/to/aws.config');
+    expect(seen[0].AWS_SHARED_CREDENTIALS_FILE).toBe('/path/to/aws.credentials');
+  });
 });

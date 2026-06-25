@@ -21,7 +21,7 @@ describe('buildProjectAwsPromptSection', () => {
 
   it('lists the configured profile names', () => {
     const out = buildProjectAwsPromptSection('agent-hub', ['agenthub', 'staging']);
-    expect(out).toContain('## Project AWS (IAM Identity Center)');
+    expect(out).toContain('## Project AWS');
     expect(out).toContain('agenthub, staging');
   });
 

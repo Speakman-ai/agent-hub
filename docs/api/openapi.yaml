@@ -5063,6 +5063,11 @@ components:
     ProjectAwsSsoProfile:
       type: object
       properties:
+        type:
+          type: string
+          enum:
+            - sso
+          description: Profile kind. Omitted legacy profiles are treated as SSO profiles.
         sso_account_id:
           type: string
           description: 12-digit AWS account id.
@@ -5092,25 +5097,60 @@ components:
         - sso_role_name
         - region
       description: One AWS IAM Identity Center (SSO) profile stanza. Rendered into the per-spawn `AWS_CONFIG_FILE` as a `[profile <name>]` section. Not credentials — SSO tokens still live under the spawning user's `~/.aws/sso/cache`.
-    ProjectAwsSsoProfilesMap:
+    ProjectAwsStaticProfile:
+      type: object
+      properties:
+        type:
+          type: string
+          enum:
+            - static
+        aws_access_key_id:
+          type: string
+          description: AWS access key id for this project-scoped profile.
+          example: AKIAIOSFODNN7EXAMPLE
+        aws_secret_access_key:
+          type: string
+          description: AWS secret access key. Returned by the current admin API because project config is editable by Owners; callers must treat it as secret material.
+        aws_session_token:
+          type: string
+          description: Optional temporary session token.
+        region:
+          type: string
+          description: AWS region code, e.g. `us-east-2`.
+          example: us-east-2
+        output:
+          type: string
+          description: AWS CLI default output format; defaults to `json` on render.
+      required:
+        - type
+        - aws_access_key_id
+        - aws_secret_access_key
+        - region
+      description: One static-credential profile. Rendered into the project-scoped `AWS_SHARED_CREDENTIALS_FILE` as a `[name]` section and paired with a `[profile name]` config section for region/output.
+    ProjectAwsProfile:
+      anyOf:
+        - $ref: "#/components/schemas/ProjectAwsSsoProfile"
+        - $ref: "#/components/schemas/ProjectAwsStaticProfile"
+      description: An AWS profile stanza, either IAM Identity Center (SSO) or static credentials.
+    ProjectAwsProfilesMap:
       type: object
       additionalProperties:
-        $ref: "#/components/schemas/ProjectAwsSsoProfile"
+        $ref: "#/components/schemas/ProjectAwsProfile"
       description: Map of profile name → profile stanza.
     ProjectAwsProfilesResponse:
       type: object
       properties:
         profiles:
-          $ref: "#/components/schemas/ProjectAwsSsoProfilesMap"
+          $ref: "#/components/schemas/ProjectAwsProfilesMap"
       required:
         - profiles
-      description: Current AWS SSO profiles configured on the project.
+      description: Current AWS profiles configured on the project.
     ProjectAwsProfilesRequest:
       type: object
       properties:
         profiles:
           anyOf:
-            - $ref: "#/components/schemas/ProjectAwsSsoProfilesMap"
+            - $ref: "#/components/schemas/ProjectAwsProfilesMap"
             - type: array
               items:
                 nullable: true
@@ -5136,6 +5176,10 @@ components:
               type: boolean
               enum:
                 - true
+            credentialType:
+              type: string
+              enum:
+                - sso
             account:
               type: string
             arn:
@@ -5161,6 +5205,10 @@ components:
               type: boolean
               enum:
                 - false
+            credentialType:
+              type: string
+              enum:
+                - sso
             error:
               type: string
             needsLogin:
@@ -5176,7 +5224,51 @@ components:
             - profile
             - loggedIn
             - homeSource
-      description: "`aws sts get-caller-identity` result for the named profile. The caller HOME is probed first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). `homeSource` reports where the reported identity (or last failed probe) lives. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login."
+        - type: object
+          properties:
+            profile:
+              type: string
+            loggedIn:
+              type: boolean
+              enum:
+                - true
+            credentialType:
+              type: string
+              enum:
+                - static
+            account:
+              type: string
+            arn:
+              type: string
+            userId:
+              type: string
+          required:
+            - profile
+            - loggedIn
+            - credentialType
+        - type: object
+          properties:
+            profile:
+              type: string
+            loggedIn:
+              type: boolean
+              enum:
+                - false
+            credentialType:
+              type: string
+              enum:
+                - static
+            error:
+              type: string
+            needsLogin:
+              type: boolean
+              enum:
+                - false
+          required:
+            - profile
+            - loggedIn
+            - credentialType
+      description: "`aws sts get-caller-identity` result for the named profile. SSO profiles probe the caller HOME first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). Static profiles use the project-scoped credentials file and do not require SSO login."
     ProjectAwsSsoLoginRequest:
       type: object
       properties:
@@ -19042,8 +19134,8 @@ paths:
     get:
       tags:
         - Projects
-      summary: List AWS SSO profiles configured on a project
-      description: Returns the project's AWS IAM Identity Center profile map. Not credentials — only the static stanza fields (`sso_account_id`, `sso_start_url`, `sso_region`, `sso_role_name`, `region`). SSO tokens themselves live under the spawning user's `~/.aws/sso/cache` and are never returned.
+      summary: List AWS profiles configured on a project
+      description: Returns the project's AWS profile map. SSO token caches are never returned. Static profile access keys are part of this owner-managed project config and must be treated as secret material.
       parameters:
         - schema:
             type: string
@@ -19068,8 +19160,8 @@ paths:
     put:
       tags:
         - Projects
-      summary: Replace the AWS SSO profiles configured on a project
-      description: Wholesale replace the project's AWS SSO profile map. Pass an empty map to clear all profiles. After a successful save the server regenerates the on-disk `AWS_CONFIG_FILE` template that future spawns reference.
+      summary: Replace the AWS profiles configured on a project
+      description: Wholesale replace the project's AWS profile map. Pass an empty map to clear all profiles. After a successful save the server regenerates the on-disk `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` templates that future spawns reference.
       parameters:
         - schema:
             type: string
@@ -19106,8 +19198,8 @@ paths:
     get:
       tags:
         - Projects
-      summary: Check whether the cached SSO token for a profile is still valid
-      description: Runs `aws sts get-caller-identity --profile <name>` against the project's rendered `AWS_CONFIG_FILE` and reports whether the cached SSO token can authenticate. Use this from the UI to decide whether to surface a "Log in" CTA, and from agents to decide whether to call `POST /aws-sso/login` before making AWS calls.
+      summary: Check whether an AWS profile can authenticate
+      description: Runs `aws sts get-caller-identity --profile <name>` against the project's rendered AWS config and credentials files. SSO profiles report whether cached SSO tokens can authenticate. Static profiles report whether the stored project credentials can authenticate.
       parameters:
         - schema:
             type: string
@@ -19131,7 +19223,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProjectAwsSsoStatusResponse"
         "400":
-          description: Project has no AWS SSO profiles configured, or the profile name is unknown.
+          description: Project has no AWS profiles configured, or the profile name is unknown.
           content:
             application/json:
               schema:
@@ -19172,7 +19264,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProjectAwsSsoLoginResponse"
         "400":
-          description: Project has no AWS SSO profiles configured, or the profile name is unknown.
+          description: Project has no AWS profiles configured, the profile name is unknown, or the profile uses static credentials.
           content:
             application/json:
               schema:

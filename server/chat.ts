@@ -100,7 +100,7 @@ import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantContr
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
-import { writeProjectAwsConfigFile } from './project-aws-config-file.js';
+import { type ProjectAwsFiles, writeProjectAwsFiles } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
@@ -670,8 +670,8 @@ export function compressSkillDescription(
 // ─── buildEnrichedPrompt ───────────────────────────────────────────
 
 /**
- * Render the `## Project AWS (IAM Identity Center)` system-prompt section for a
- * project that has configured SSO profiles. Returns `''` when there are none.
+ * Render the `## Project AWS` system-prompt section for a project that has
+ * configured AWS profiles. Returns `''` when there are none.
  *
  * Behavioral contract (see card 6f7014c9): agents must NOT initiate their own
  * `aws sso login` device-code flow when the status probe reports `loggedIn:
@@ -688,14 +688,14 @@ export function compressSkillDescription(
  */
 export function buildProjectAwsPromptSection(projectId: string, profileNames: string[]): string {
   if (profileNames.length === 0) return '';
-  return `\n\n## Project AWS (IAM Identity Center)
-Configured SSO profiles for this project: ${profileNames.join(', ')}.
-This session sets \`AWS_CONFIG_FILE\` to the project-specific config. SSO tokens cache under the HOME of whoever logged in — the web **AWS** settings module logs the user in under their own HOME, which your status probe (it runs under the shared host HOME) usually can't read.
+  return `\n\n## Project AWS
+Configured AWS profiles for this project: ${profileNames.join(', ')}.
+This session sets \`AWS_CONFIG_FILE\` and \`AWS_SHARED_CREDENTIALS_FILE\` to project-specific files. Static profiles use the project credentials file directly. SSO tokens cache under the HOME of whoever logged in. The web **AWS** settings module logs the user in under their own HOME, which your status probe (it runs under the shared host HOME) usually can't read.
 
 **Before any AWS CLI work:**
 1. Ask which profile to use if the user did not say (e.g. dev, staging, prod).
 2. Check login: \`GET $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/status?profile=<name>\` with \`Authorization: Bearer $AGENT_HUB_API_KEY\`. If \`loggedIn\` is true, proceed.
-3. If \`loggedIn\` is false, **do not start an SSO login yourself** — do not kick off any login endpoint, do not surface a device-code URL, do not run an interactive sign-in. A false result usually just means the user is already signed in under a HOME your probe can't see. Point them to the project's **AWS** settings module (the **AWS** entry in project settings), have them click **Check login** / **SSO login** there, then re-check status.
+3. If \`loggedIn\` is false, **do not start an SSO login yourself**. Do not kick off any login endpoint, do not surface a device-code URL, do not run an interactive sign-in. For SSO profiles, a false result usually just means the user is already signed in under a HOME your probe can't see. For static profiles, it means the saved credentials failed. Point them to the project's **AWS** settings module (the **AWS** entry in project settings), have them click **Check login** / **SSO login** there when applicable, then re-check status.
 4. Use \`scripts/aws-whoami.sh --profile <name>\` and \`scripts/aws-q.sh\` with \`--profile <name>\` for reads; confirm profile/region in output.
 
 Do not print access keys or session tokens.`;
@@ -3016,13 +3016,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
       }
 
       const awsSsoEnabledForProject = projectHasAwsSsoProfiles(project);
-      let projectAwsConfigPath: string | undefined;
+      let projectAwsFiles: ProjectAwsFiles | undefined;
       if (awsSsoEnabledForProject) {
         try {
-          projectAwsConfigPath = writeProjectAwsConfigFile(
-            project.id,
-            getProjectAwsSsoProfiles(project),
-          );
+          projectAwsFiles = writeProjectAwsFiles(project.id, getProjectAwsSsoProfiles(project));
         } catch {
           /* mergeProjectAwsSpawnEnv logs when applying env */
         }
@@ -3171,10 +3168,10 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           dangerBypass: !!config.codexDangerBypass,
           awsSsoEnabled: awsSsoEnabledForProject,
         });
-        if (awsSsoEnabledForProject && projectAwsConfigPath) {
+        if (awsSsoEnabledForProject && projectAwsFiles) {
           appendCodexAwsAccessDirs(args, {
             HOME: sessionCliEnv.HOME,
-            AWS_CONFIG_FILE: projectAwsConfigPath,
+            AWS_CONFIG_FILE: projectAwsFiles.configPath,
           });
         }
         // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
@@ -3542,7 +3539,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         }
         mergeSkillCredentialSpawnEnv(base, { ownerId, agentId: agent.id, project });
         mergeProjectSecretsSpawnEnv(base, { projectId: project.id, sessionId });
-        mergeProjectAwsSpawnEnv(base, project, { configPath: projectAwsConfigPath });
+        mergeProjectAwsSpawnEnv(base, project, projectAwsFiles);
         applySessionGitGuards(base, session!.worktree_path);
         return base;
       })();

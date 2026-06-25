@@ -56,6 +56,8 @@ export interface CheckAwsSsoStatusOpts {
   userId: string | null;
   /** Rendered `AWS_CONFIG_FILE` for the project's profiles. */
   configPath: string;
+  /** Rendered `AWS_SHARED_CREDENTIALS_FILE` for the project's static profiles. */
+  credentialsPath?: string;
   /** Configured profile name to probe. */
   profile: string;
   /** Data dir override (tests). Defaults to `config.dataDir`. */
@@ -64,6 +66,15 @@ export interface CheckAwsSsoStatusOpts {
   run?: RunAwsStsIdentity;
   /** Env builder override (tests). Defaults to `buildSpawnEnv(config, ...)`. */
   buildEnv?: BuildAwsSpawnEnv;
+}
+
+function scrubAwsCredentialEnv(env: NodeJS.ProcessEnv): void {
+  delete env.AWS_ACCESS_KEY_ID;
+  delete env.AWS_SECRET_ACCESS_KEY;
+  delete env.AWS_SESSION_TOKEN;
+  delete env.AWS_SECURITY_TOKEN;
+  delete env.AWS_PROFILE;
+  delete env.AWS_DEFAULT_PROFILE;
 }
 
 /**
@@ -93,7 +104,9 @@ export async function checkAwsSsoStatusAcrossHomes(
   const hostHome = hostCliHomePath(dataDir);
 
   const callerEnv = buildEnv(opts.userId);
+  scrubAwsCredentialEnv(callerEnv);
   callerEnv.AWS_CONFIG_FILE = opts.configPath;
+  if (opts.credentialsPath) callerEnv.AWS_SHARED_CREDENTIALS_FILE = opts.credentialsPath;
   const callerHome = (callerEnv.HOME ?? '').trim();
   // When there is no owning user, or the per-user HOME resolution fell back to
   // the shared host HOME, the caller IS the host — there is no second HOME to
@@ -111,8 +124,10 @@ export async function checkAwsSsoStatusAcrossHomes(
   // Caller was a per-user HOME and did not authenticate. Fall back to ONLY the
   // shared host/operator HOME — never another user's per-user tree.
   const hostEnv = buildEnv(null);
+  scrubAwsCredentialEnv(hostEnv);
   hostEnv.HOME = hostHome;
   hostEnv.AWS_CONFIG_FILE = opts.configPath;
+  if (opts.credentialsPath) hostEnv.AWS_SHARED_CREDENTIALS_FILE = opts.credentialsPath;
   const fallback = await run(hostEnv, opts.profile);
   if (fallback.ok) {
     return { ...fallback, homeSource: 'host' };

@@ -1,5 +1,5 @@
 /**
- * Zod schemas + OpenAPI registrations for the per-project AWS SSO routes.
+ * Zod schemas + OpenAPI registrations for the per-project AWS routes.
  *
  * Companion to `server/routes/project-aws.ts`. Loaded for its side
  * effects by `server/openapi/generate.ts` to populate the public spec
@@ -24,6 +24,9 @@ const ProjectAwsSsoProfile = registerComponent(
   'ProjectAwsSsoProfile',
   z
     .object({
+      type: z.literal('sso').optional().openapi({
+        description: 'Profile kind. Omitted legacy profiles are treated as SSO profiles.',
+      }),
       sso_account_id: z
         .string()
         .openapi({ description: '12-digit AWS account id.', example: '123456789012' }),
@@ -45,9 +48,45 @@ const ProjectAwsSsoProfile = registerComponent(
     }),
 );
 
-const ProjectAwsSsoProfilesMap = registerComponent(
-  'ProjectAwsSsoProfilesMap',
-  z.record(z.string(), ProjectAwsSsoProfile).openapi({
+const ProjectAwsStaticProfile = registerComponent(
+  'ProjectAwsStaticProfile',
+  z
+    .object({
+      type: z.literal('static'),
+      aws_access_key_id: z.string().openapi({
+        description: 'AWS access key id for this project-scoped profile.',
+        example: 'AKIAIOSFODNN7EXAMPLE',
+      }),
+      aws_secret_access_key: z.string().openapi({
+        description:
+          'AWS secret access key. Returned by the current admin API because project config is editable by Owners; callers must treat it as secret material.',
+      }),
+      aws_session_token: z
+        .string()
+        .optional()
+        .openapi({ description: 'Optional temporary session token.' }),
+      region: AwsRegion,
+      output: z
+        .string()
+        .optional()
+        .openapi({ description: 'AWS CLI default output format; defaults to `json` on render.' }),
+    })
+    .openapi({
+      description:
+        'One static-credential profile. Rendered into the project-scoped `AWS_SHARED_CREDENTIALS_FILE` as a `[name]` section and paired with a `[profile name]` config section for region/output.',
+    }),
+);
+
+const ProjectAwsProfile = registerComponent(
+  'ProjectAwsProfile',
+  z.union([ProjectAwsSsoProfile, ProjectAwsStaticProfile]).openapi({
+    description: 'An AWS profile stanza, either IAM Identity Center (SSO) or static credentials.',
+  }),
+);
+
+const ProjectAwsProfilesMap = registerComponent(
+  'ProjectAwsProfilesMap',
+  z.record(z.string(), ProjectAwsProfile).openapi({
     description: 'Map of profile name → profile stanza.',
   }),
 );
@@ -56,10 +95,10 @@ const ProfilesEnvelope = registerComponent(
   'ProjectAwsProfilesResponse',
   z
     .object({
-      profiles: ProjectAwsSsoProfilesMap,
+      profiles: ProjectAwsProfilesMap,
     })
     .openapi({
-      description: 'Current AWS SSO profiles configured on the project.',
+      description: 'Current AWS profiles configured on the project.',
     }),
 );
 
@@ -67,7 +106,7 @@ const PutProfilesBody = registerComponent(
   'ProjectAwsProfilesRequest',
   z
     .object({
-      profiles: z.union([ProjectAwsSsoProfilesMap, z.array(z.unknown())]).openapi({
+      profiles: z.union([ProjectAwsProfilesMap, z.array(z.unknown())]).openapi({
         description:
           'Replacement set of profiles. Accepts either a `{ name: stanza }` map or an array of `{ name, ...stanza }` objects. Pass `{}` to clear all profiles.',
       }),
@@ -91,6 +130,7 @@ const SsoStatusResponse = registerComponent(
       z.object({
         profile: z.string(),
         loggedIn: z.literal(true),
+        credentialType: z.literal('sso').optional(),
         account: z.string().optional(),
         arn: z.string().optional(),
         userId: z.string().optional(),
@@ -102,6 +142,7 @@ const SsoStatusResponse = registerComponent(
       z.object({
         profile: z.string(),
         loggedIn: z.literal(false),
+        credentialType: z.literal('sso').optional(),
         error: z.string().optional(),
         needsLogin: z.boolean().optional(),
         homeSource: z.enum(['caller', 'host', 'per-user']).openapi({
@@ -109,10 +150,25 @@ const SsoStatusResponse = registerComponent(
             "Which HOME the caller should log into to authenticate this profile: 'per-user' (the requesting user's own HOME) or 'host' (the shared break-glass/operator HOME). Run POST /aws-sso/login under that HOME. (Not the last-probed HOME — both caller and host caches were checked and neither held a valid token.)",
         }),
       }),
+      z.object({
+        profile: z.string(),
+        loggedIn: z.literal(true),
+        credentialType: z.literal('static'),
+        account: z.string().optional(),
+        arn: z.string().optional(),
+        userId: z.string().optional(),
+      }),
+      z.object({
+        profile: z.string(),
+        loggedIn: z.literal(false),
+        credentialType: z.literal('static'),
+        error: z.string().optional(),
+        needsLogin: z.literal(false).optional(),
+      }),
     ])
     .openapi({
       description:
-        '`aws sts get-caller-identity` result for the named profile. The caller HOME is probed first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). `homeSource` reports where the reported identity (or last failed probe) lives. `loggedIn: false` with `needsLogin: true` means the cached SSO token is missing or expired and the caller should POST /aws-sso/login.',
+        '`aws sts get-caller-identity` result for the named profile. SSO profiles probe the caller HOME first, then the shared host HOME as a fallback (never other users’ per-user HOMEs). Static profiles use the project-scoped credentials file and do not require SSO login.',
     }),
 );
 
@@ -172,9 +228,9 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/aws-profiles',
   tags: ['Projects'],
-  summary: 'List AWS SSO profiles configured on a project',
+  summary: 'List AWS profiles configured on a project',
   description:
-    "Returns the project's AWS IAM Identity Center profile map. Not credentials — only the static stanza fields (`sso_account_id`, `sso_start_url`, `sso_region`, `sso_role_name`, `region`). SSO tokens themselves live under the spawning user's `~/.aws/sso/cache` and are never returned.",
+    "Returns the project's AWS profile map. SSO token caches are never returned. Static profile access keys are part of this owner-managed project config and must be treated as secret material.",
   request: { params: ProjectIdParam },
   responses: {
     200: {
@@ -193,9 +249,9 @@ registerPath({
   method: 'put',
   path: '/api/projects/{projectId}/aws-profiles',
   tags: ['Projects'],
-  summary: 'Replace the AWS SSO profiles configured on a project',
+  summary: 'Replace the AWS profiles configured on a project',
   description:
-    "Wholesale replace the project's AWS SSO profile map. Pass an empty map to clear all profiles. After a successful save the server regenerates the on-disk `AWS_CONFIG_FILE` template that future spawns reference.",
+    "Wholesale replace the project's AWS profile map. Pass an empty map to clear all profiles. After a successful save the server regenerates the on-disk `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` templates that future spawns reference.",
   request: {
     params: ProjectIdParam,
     body: { content: jsonContent(PutProfilesBody) },
@@ -222,9 +278,9 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/aws-sso/status',
   tags: ['Projects'],
-  summary: 'Check whether the cached SSO token for a profile is still valid',
+  summary: 'Check whether an AWS profile can authenticate',
   description:
-    'Runs `aws sts get-caller-identity --profile <name>` against the project\'s rendered `AWS_CONFIG_FILE` and reports whether the cached SSO token can authenticate. Use this from the UI to decide whether to surface a "Log in" CTA, and from agents to decide whether to call `POST /aws-sso/login` before making AWS calls.',
+    "Runs `aws sts get-caller-identity --profile <name>` against the project's rendered AWS config and credentials files. SSO profiles report whether cached SSO tokens can authenticate. Static profiles report whether the stored project credentials can authenticate.",
   request: {
     params: ProjectIdParam,
     query: z.object({
@@ -238,7 +294,7 @@ registerPath({
       content: jsonContent(SsoStatusResponse),
     },
     400: {
-      description: 'Project has no AWS SSO profiles configured, or the profile name is unknown.',
+      description: 'Project has no AWS profiles configured, or the profile name is unknown.',
       content: jsonContent(ErrorEnvelope),
     },
     404: {
@@ -267,7 +323,8 @@ registerPath({
       content: jsonContent(SsoLoginResponse),
     },
     400: {
-      description: 'Project has no AWS SSO profiles configured, or the profile name is unknown.',
+      description:
+        'Project has no AWS profiles configured, the profile name is unknown, or the profile uses static credentials.',
       content: jsonContent(ErrorEnvelope),
     },
     404: {

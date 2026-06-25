@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 
-const FIELDS = [
+const SSO_FIELDS = [
   { key: 'sso_account_id', label: 'Account ID', placeholder: '123456789012' },
   { key: 'sso_start_url', label: 'SSO start URL', placeholder: 'https://….awsapps.com/start' },
   { key: 'sso_region', label: 'SSO region', placeholder: 'us-east-2' },
@@ -19,15 +19,30 @@ const FIELDS = [
   { key: 'region', label: 'Default region', placeholder: 'us-east-2' },
 ];
 
-function emptyProfile() {
+const STATIC_FIELDS = [
+  { key: 'aws_access_key_id', label: 'Access key ID', placeholder: 'AKIA…' },
+  { key: 'aws_secret_access_key', label: 'Secret access key', placeholder: 'secret' },
+  { key: 'aws_session_token', label: 'Session token', placeholder: 'optional' },
+  { key: 'region', label: 'Default region', placeholder: 'us-east-2' },
+];
+
+export function emptyProfile() {
   return {
+    type: 'sso',
     name: '',
     sso_account_id: '',
     sso_start_url: '',
     sso_region: 'us-east-2',
     sso_role_name: 'AdministratorAccess',
+    aws_access_key_id: '',
+    aws_secret_access_key: '',
+    aws_session_token: '',
     region: 'us-east-2',
   };
+}
+
+function trimmed(value: any) {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function profilesToRows(profiles: any) {
@@ -35,32 +50,50 @@ function profilesToRows(profiles: any) {
     .sort(([a]: any, [b]: any) => a.localeCompare(b))
     .map(([name, p]: any) => ({
       name,
+      type: p.type === 'static' ? 'static' : 'sso',
       sso_account_id: p.sso_account_id || '',
       sso_start_url: p.sso_start_url || '',
       sso_region: p.sso_region || '',
       sso_role_name: p.sso_role_name || '',
+      aws_access_key_id: p.aws_access_key_id || '',
+      aws_secret_access_key: p.aws_secret_access_key || '',
+      aws_session_token: p.aws_session_token || '',
       region: p.region || '',
     }));
 }
 
-function rowsToProfiles(rows: any) {
+export function rowsToProfiles(rows: any) {
   const out: Record<string, any> = {};
   for (const row of rows) {
-    const name = row.name.trim();
+    const name = trimmed(row.name);
     if (!name) continue;
-    out[name] = {
-      sso_account_id: row.sso_account_id.trim(),
-      sso_start_url: row.sso_start_url.trim(),
-      sso_region: row.sso_region.trim(),
-      sso_role_name: row.sso_role_name.trim(),
-      region: row.region.trim(),
-    };
+    if (row.type === 'static') {
+      const sessionToken = trimmed(row.aws_session_token);
+      out[name] = {
+        type: 'static',
+        aws_access_key_id: trimmed(row.aws_access_key_id),
+        aws_secret_access_key: trimmed(row.aws_secret_access_key),
+        region: trimmed(row.region),
+      };
+      if (sessionToken) {
+        out[name].aws_session_token = sessionToken;
+      }
+    } else {
+      out[name] = {
+        type: 'sso',
+        sso_account_id: trimmed(row.sso_account_id),
+        sso_start_url: trimmed(row.sso_start_url),
+        sso_region: trimmed(row.sso_region),
+        sso_role_name: trimmed(row.sso_role_name),
+        region: trimmed(row.region),
+      };
+    }
   }
   return out;
 }
 
 /**
- * Per-project AWS IAM Identity Center (SSO) profile editor.
+ * Per-project AWS profile editor.
  */
 export default function ProjectAwsProfilesEditor({ projectId }: any) {
   const [rows, setRows] = useState<any[]>([]);
@@ -160,13 +193,12 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
     <div className="space-y-3" data-testid={`project-aws-profiles-${projectId}`}>
       <div>
         <h5 className="text-xs font-medium text-gray-300 flex items-center gap-1.5 mb-1">
-          <Cloud size={12} /> AWS SSO profiles
+          <Cloud size={12} /> AWS profiles
         </h5>
         <p className="text-xs text-gray-500">
-          IAM Identity Center profiles for this project. Spawned sessions receive{' '}
-          <code className="font-mono">AWS_CONFIG_FILE</code> pointing here; SSO tokens stay in your
-          user cache. Agents check login via the Hub API and can start browser-less SSO with a link
-          for you to open.
+          IAM Identity Center or static profiles for this project. Spawned sessions receive
+          project-scoped AWS config and credentials files, so profiles stay isolated to this
+          project.
         </p>
       </div>
 
@@ -185,6 +217,8 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
           const profileName = row.name.trim();
           const st = statusState[profileName];
           const lg = loginState[profileName];
+          const isStatic = row.type === 'static';
+          const fields = isStatic ? STATIC_FIELDS : SSO_FIELDS;
           return (
             <div
               key={idx}
@@ -206,23 +240,42 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                     placeholder="dev"
                   />
                 </div>
+                <div className="min-w-[120px]">
+                  <label className={labelClass}>Type</label>
+                  <select
+                    value={row.type}
+                    onChange={(e: any) =>
+                      setRows((prev: any) =>
+                        prev.map((r: any, i: any) =>
+                          i === idx ? { ...r, type: e.target.value } : r,
+                        ),
+                      )
+                    }
+                    className={inputClass}
+                  >
+                    <option value="sso">SSO</option>
+                    <option value="static">Static</option>
+                  </select>
+                </div>
                 <button
                   type="button"
                   disabled={!profileName}
                   onClick={() => checkStatus(profileName)}
                   className="text-xs px-2 py-1.5 rounded border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-40"
                 >
-                  Check login
+                  {isStatic ? 'Check credentials' : 'Check login'}
                 </button>
-                <button
-                  type="button"
-                  disabled={!profileName || lg?.loading}
-                  onClick={() => startLogin(profileName)}
-                  className="text-xs px-2 py-1.5 rounded bg-amber-700/80 hover:bg-amber-600 text-white disabled:opacity-40 flex items-center gap-1"
-                >
-                  {lg?.loading ? <Loader2 size={12} className="animate-spin" /> : null}
-                  SSO login
-                </button>
+                {!isStatic && (
+                  <button
+                    type="button"
+                    disabled={!profileName || lg?.loading}
+                    onClick={() => startLogin(profileName)}
+                    className="text-xs px-2 py-1.5 rounded bg-amber-700/80 hover:bg-amber-600 text-white disabled:opacity-40 flex items-center gap-1"
+                  >
+                    {lg?.loading ? <Loader2 size={12} className="animate-spin" /> : null}
+                    SSO login
+                  </button>
+                )}
                 <button
                   type="button"
                   className="text-gray-500 hover:text-red-400 p-1.5"
@@ -233,7 +286,7 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                 </button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                {FIELDS.map((f: any) => (
+                {fields.map((f: any) => (
                   <div key={f.key}>
                     <label className={labelClass}>{f.label}</label>
                     <input
@@ -256,8 +309,8 @@ export default function ProjectAwsProfilesEditor({ projectId }: any) {
                   className={`text-xs ${st.data.loggedIn ? 'text-emerald-400' : 'text-amber-400'}`}
                 >
                   {st.data.loggedIn
-                    ? `Logged in — account ${st.data.account}`
-                    : `Not logged in${st.data.error ? `: ${st.data.error}` : ''}`}
+                    ? `${isStatic ? 'Credentials valid' : 'Logged in'}: account ${st.data.account}`
+                    : `${isStatic ? 'Credentials invalid' : 'Not logged in'}${st.data.error ? `: ${st.data.error}` : ''}`}
                 </p>
               )}
               {lg?.loginUrl && (

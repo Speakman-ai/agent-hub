@@ -80,10 +80,21 @@ function makeFakeProc(): FakeProc {
 
 const PROFILE: ProjectAwsSsoProfilesMap = {
   dev: {
+    type: 'sso',
     sso_account_id: '120569607241',
     sso_start_url: 'https://d-9a670b4c46.awsapps.com/start/',
     sso_region: 'us-east-2',
     sso_role_name: 'AdministratorAccess',
+    region: 'us-east-2',
+  },
+};
+
+const STATIC_PROFILE: ProjectAwsSsoProfilesMap = {
+  staticdev: {
+    type: 'static',
+    aws_access_key_id: 'AKIATESTKEY',
+    aws_secret_access_key: 'secret-test-key',
+    aws_session_token: 'session-token',
     region: 'us-east-2',
   },
 };
@@ -165,6 +176,7 @@ describe('GET /api/projects/:projectId/aws-sso/status', () => {
     expect(res.body).toEqual({
       profile: 'dev',
       loggedIn: true,
+      credentialType: 'sso',
       account: '120569607241',
       arn: expect.stringContaining('AdministratorAccess'),
       userId: 'AROAEXAMPLE:test',
@@ -183,6 +195,64 @@ describe('GET /api/projects/:projectId/aws-sso/status', () => {
     // wrong account.
     const opts = spawnMock.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
     expect(opts.env.AWS_CONFIG_FILE).toContain(`project-aws-config/${project.id}/config`);
+    expect(opts.env.AWS_SHARED_CREDENTIALS_FILE).toContain(
+      `project-aws-config/${project.id}/credentials`,
+    );
+  });
+
+  it('returns loggedIn true for a static profile using only the project credentials file', async () => {
+    const project = projectWith(STATIC_PROFILE);
+    const app = buildApp(project);
+    const oldKey = process.env.AWS_ACCESS_KEY_ID;
+    const oldSecret = process.env.AWS_SECRET_ACCESS_KEY;
+    process.env.AWS_ACCESS_KEY_ID = 'inherited-other-project-key';
+    process.env.AWS_SECRET_ACCESS_KEY = 'inherited-other-project-secret';
+
+    spawnMock.mockImplementation(() => {
+      const proc = makeFakeProc();
+      queueMicrotask(() => {
+        proc.stdout.emit(
+          'data',
+          Buffer.from(
+            JSON.stringify({
+              Account: '120569607241',
+              Arn: 'arn:aws:iam::120569607241:user/static-dev',
+              UserId: 'AIDSTATIC',
+            }),
+          ),
+        );
+        proc.emit('close', 0);
+      });
+      return proc as unknown as ChildProcess;
+    });
+
+    try {
+      const res = await request(app)
+        .get(`/api/projects/${project.id}/aws-sso/status?profile=staticdev`)
+        .expect(200);
+
+      expect(res.body).toEqual({
+        profile: 'staticdev',
+        loggedIn: true,
+        credentialType: 'static',
+        account: '120569607241',
+        arn: 'arn:aws:iam::120569607241:user/static-dev',
+        userId: 'AIDSTATIC',
+      });
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      const opts = spawnMock.mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+      expect(opts.env.AWS_CONFIG_FILE).toContain(`project-aws-config/${project.id}/config`);
+      expect(opts.env.AWS_SHARED_CREDENTIALS_FILE).toContain(
+        `project-aws-config/${project.id}/credentials`,
+      );
+      expect(opts.env.AWS_ACCESS_KEY_ID).toBeUndefined();
+      expect(opts.env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    } finally {
+      if (oldKey === undefined) delete process.env.AWS_ACCESS_KEY_ID;
+      else process.env.AWS_ACCESS_KEY_ID = oldKey;
+      if (oldSecret === undefined) delete process.env.AWS_SECRET_ACCESS_KEY;
+      else process.env.AWS_SECRET_ACCESS_KEY = oldSecret;
+    }
   });
 
   it('returns { loggedIn: false, needsLogin: true } when aws sts exits non-zero with an expired-token hint', async () => {
@@ -204,6 +274,7 @@ describe('GET /api/projects/:projectId/aws-sso/status', () => {
 
     expect(res.body.profile).toBe('dev');
     expect(res.body.loggedIn).toBe(false);
+    expect(res.body.credentialType).toBe('sso');
     expect(res.body.needsLogin).toBe(true);
     expect(res.body.error).toMatch(/expired/i);
   });
@@ -220,7 +291,7 @@ describe('GET /api/projects/:projectId/aws-sso/status', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it('returns 400 when the project has no AWS SSO profiles configured', async () => {
+  it('returns 400 when the project has no AWS profiles configured', async () => {
     const project = projectWith({});
     const app = buildApp(project);
 
@@ -228,7 +299,7 @@ describe('GET /api/projects/:projectId/aws-sso/status', () => {
       .get(`/api/projects/${project.id}/aws-sso/status?profile=dev`)
       .expect(400);
 
-    expect(res.body.error).toMatch(/no AWS SSO profiles/i);
+    expect(res.body.error).toMatch(/no AWS profiles/i);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
@@ -280,6 +351,9 @@ describe('POST /api/projects/:projectId/aws-sso/login', () => {
       cwd: string;
     };
     expect(opts.env.AWS_CONFIG_FILE).toContain(`project-aws-config/${project.id}/config`);
+    expect(opts.env.AWS_SHARED_CREDENTIALS_FILE).toContain(
+      `project-aws-config/${project.id}/credentials`,
+    );
     expect(opts.detached).toBe(true);
     // Regression: cwd must be the always-existing server-process HOME, not the
     // per-user env.HOME — which may not exist on disk yet and would ENOENT-fail
@@ -318,6 +392,19 @@ describe('POST /api/projects/:projectId/aws-sso/login', () => {
     expect(res.body.loginUrl).toBe(
       'https://device.sso.us-east-2.amazonaws.com/?user_code=WXYZ-9876',
     );
+  });
+
+  it('rejects SSO login for static profiles before spawning anything', async () => {
+    const project = projectWith(STATIC_PROFILE);
+    const app = buildApp(project);
+
+    const res = await request(app)
+      .post(`/api/projects/${project.id}/aws-sso/login`)
+      .send({ profile: 'staticdev' })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/static credentials/i);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('times out after 30 s when no device URL is emitted, kills the proc, and returns an error', async () => {
@@ -431,7 +518,7 @@ describe('POST /api/projects/:projectId/aws-sso/login', () => {
       .send({ profile: 'dev' })
       .expect(400);
 
-    expect(res.body.error).toMatch(/no AWS SSO profiles/i);
+    expect(res.body.error).toMatch(/no AWS profiles/i);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });

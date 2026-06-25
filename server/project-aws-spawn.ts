@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, symlinkSync } from 'fs';
 import path from 'path';
 import type { Project } from './types.js';
 import config from './config.js';
-import { writeProjectAwsConfigFile } from './project-aws-config-file.js';
+import { writeProjectAwsFiles } from './project-aws-config-file.js';
 import { hostCliHomePath } from './host-cli-home.js';
 import type { ProjectAwsSsoProfilesMap } from './project-aws-profiles.js';
 
@@ -27,6 +27,17 @@ export interface MergeProjectAwsSpawnEnvOpts {
    * planning), pass the path here to avoid a second `writeFileSync`.
    */
   configPath?: string;
+  /** Pre-written project credentials file path paired with `configPath`. */
+  credentialsPath?: string;
+}
+
+export function scrubAwsCredentialEnv(env: NodeJS.ProcessEnv): void {
+  delete env.AWS_ACCESS_KEY_ID;
+  delete env.AWS_SECRET_ACCESS_KEY;
+  delete env.AWS_SESSION_TOKEN;
+  delete env.AWS_SECURITY_TOKEN;
+  delete env.AWS_PROFILE;
+  delete env.AWS_DEFAULT_PROFILE;
 }
 
 /**
@@ -84,8 +95,14 @@ export function mergeProjectAwsSpawnEnv(
   const names = Object.keys(profiles);
   if (names.length === 0) return null;
   try {
-    const configPath = opts?.configPath?.trim() || writeProjectAwsConfigFile(project.id, profiles);
+    const written =
+      opts?.configPath?.trim() && opts.credentialsPath?.trim()
+        ? { configPath: opts.configPath.trim(), credentialsPath: opts.credentialsPath.trim() }
+        : writeProjectAwsFiles(project.id, profiles);
+    const { configPath, credentialsPath } = written;
+    scrubAwsCredentialEnv(base);
     base.AWS_CONFIG_FILE = configPath;
+    base.AWS_SHARED_CREDENTIALS_FILE = credentialsPath;
     base.AGENT_HUB_AWS_PROFILE_NAMES = names.join(',');
     return configPath;
   } catch (err) {

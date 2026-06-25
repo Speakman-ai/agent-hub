@@ -1,5 +1,5 @@
 /**
- * Per-project AWS SSO profile config + interactive login helpers.
+ * Per-project AWS profile config + interactive SSO login helpers.
  *
  *   GET  /api/projects/:projectId/aws-profiles
  *   PUT  /api/projects/:projectId/aws-profiles
@@ -14,11 +14,16 @@ import { trackChild, killProcessGroup } from '../process-groups.js';
 import {
   validateProjectAwsSsoProfiles,
   ProjectAwsProfileValidationError,
+  isProjectAwsStaticProfile,
   type ProjectAwsSsoProfilesMap,
 } from '../project-aws-profiles.js';
-import { writeProjectAwsConfigFile } from '../project-aws-config-file.js';
-import { getProjectAwsSsoProfiles } from '../project-aws-spawn.js';
-import { checkAwsSsoStatusAcrossHomes, spawnAwsSsoLogin } from '../aws-sso-identity.js';
+import { writeProjectAwsFiles } from '../project-aws-config-file.js';
+import { getProjectAwsSsoProfiles, scrubAwsCredentialEnv } from '../project-aws-spawn.js';
+import {
+  checkAwsSsoStatusAcrossHomes,
+  runAwsStsIdentity,
+  spawnAwsSsoLogin,
+} from '../aws-sso-identity.js';
 import { resolveAwsProbeUserId } from '../aws-sso-caller-identity.js';
 import { extractAwsSsoLoginUrl } from '../aws-sso-login-parse.js';
 import {
@@ -44,9 +49,14 @@ function resolveProfileName(project: ProjectWithAws, raw: unknown): string {
   return name;
 }
 
-function awsSpawnEnv(userId: string | null, configPath: string): NodeJS.ProcessEnv {
+function awsSpawnEnv(
+  userId: string | null,
+  files: { configPath: string; credentialsPath: string },
+): NodeJS.ProcessEnv {
   const env = buildSpawnEnv(config, { userId });
-  env.AWS_CONFIG_FILE = configPath;
+  scrubAwsCredentialEnv(env);
+  env.AWS_CONFIG_FILE = files.configPath;
+  env.AWS_SHARED_CREDENTIALS_FILE = files.credentialsPath;
   return env;
 }
 
@@ -89,9 +99,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
           project.awsSsoProfiles = profiles;
         }
         saveProjects();
-        if (Object.keys(profiles).length > 0) {
-          writeProjectAwsConfigFile(project.id, profiles);
-        }
+        writeProjectAwsFiles(project.id, profiles);
         res.json({ profiles });
       } catch (err) {
         if (err instanceof ProjectAwsProfileValidationError) {
@@ -114,18 +122,47 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       }
       const profiles = getProjectAwsSsoProfiles(project);
       if (Object.keys(profiles).length === 0) {
-        res.status(400).json({ error: 'Project has no AWS SSO profiles configured' });
+        res.status(400).json({ error: 'Project has no AWS profiles configured' });
         return;
       }
       try {
         const profile = resolveProfileName(project, req.query.profile);
         const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
-        const configPath = writeProjectAwsConfigFile(project.id, profiles);
-        const out = await checkAwsSsoStatusAcrossHomes({ userId, configPath, profile });
+        const files = writeProjectAwsFiles(project.id, profiles);
+        const configuredProfile = profiles[profile];
+        if (isProjectAwsStaticProfile(configuredProfile)) {
+          const out = await runAwsStsIdentity(awsSpawnEnv(userId, files), profile);
+          if (out.ok) {
+            res.json({
+              profile,
+              loggedIn: true,
+              credentialType: 'static',
+              account: out.account,
+              arn: out.arn,
+              userId: out.userId,
+            });
+            return;
+          }
+          res.json({
+            profile,
+            loggedIn: false,
+            credentialType: 'static',
+            error: out.error,
+            needsLogin: false,
+          });
+          return;
+        }
+        const out = await checkAwsSsoStatusAcrossHomes({
+          userId,
+          configPath: files.configPath,
+          credentialsPath: files.credentialsPath,
+          profile,
+        });
         if (out.ok) {
           res.json({
             profile,
             loggedIn: true,
+            credentialType: 'sso',
             account: out.account,
             arn: out.arn,
             userId: out.userId,
@@ -136,6 +173,7 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
         res.json({
           profile,
           loggedIn: false,
+          credentialType: 'sso',
           error: out.error,
           needsLogin: out.needsLogin,
           homeSource: out.homeSource,
@@ -161,13 +199,19 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       }
       const profiles = getProjectAwsSsoProfiles(project);
       if (Object.keys(profiles).length === 0) {
-        res.status(400).json({ error: 'Project has no AWS SSO profiles configured' });
+        res.status(400).json({ error: 'Project has no AWS profiles configured' });
         return;
       }
 
       let profile: string;
       try {
         profile = resolveProfileName(project, (req.body as Record<string, unknown>)?.profile);
+        if (isProjectAwsStaticProfile(profiles[profile])) {
+          res.status(400).json({
+            error: `profile "${profile}" uses static credentials; SSO login is not supported`,
+          });
+          return;
+        }
       } catch (err) {
         if (err instanceof ProjectAwsProfileValidationError) {
           res.status(err.statusCode).json({ error: err.message });
@@ -191,8 +235,8 @@ export default function createProjectAwsRoutes(deps: RouteDeps): Router {
       }
 
       const userId = resolveAwsProbeUserId(req, { stmts, findAgent, projectId: project.id });
-      const configPath = writeProjectAwsConfigFile(project.id, profiles);
-      const env = awsSpawnEnv(userId, configPath);
+      const files = writeProjectAwsFiles(project.id, profiles);
+      const env = awsSpawnEnv(userId, files);
       const loginId = Date.now().toString(36);
 
       const proc = spawnAwsSsoLogin(env, profile);

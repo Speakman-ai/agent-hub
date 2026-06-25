@@ -60,8 +60,9 @@ modify, scale, rotate, enable, disable, tag, untag) **must be confirmed by
 the user first** — show the exact command and the resources that will change.
 
 **Destructive-specific rules:**
+
 - Never run `delete`, `terminate`, `destroy`, `remove`, or `purge`
-  without a user-typed confirmation *in the current turn*.
+  without a user-typed confirmation _in the current turn_.
 - For bulk operations (e.g. deleting all objects in a bucket), list affected
   resources first, then ask for confirmation.
 - Always prefer `--dry-run` (where supported by the service) and show the
@@ -113,6 +114,7 @@ environment (see `references/profiles-and-regions.md`) and formats output.
 ## Profile & Region Resolution
 
 Resolved in this order (see `scripts/_common.sh:resolve_profile()`):
+
 1. `--profile <name>` flag passed to the script
 2. `AWS_PROFILE` env var
 3. `AWS_DEFAULT_PROFILE` env var
@@ -130,20 +132,21 @@ Full details: `references/profiles-and-regions.md`
 
 ### Project-configured profiles (Agent Hub)
 
-When `AGENT_HUB_AWS_PROFILE_NAMES` is set, this project has SSO profiles in Hub
-Settings → Projects → **AWS SSO profiles**. `AWS_CONFIG_FILE` points at the
-generated config — use `--profile <name>` on every script.
+When `AGENT_HUB_AWS_PROFILE_NAMES` is set, this project has AWS profiles in Hub
+Settings → Projects → **AWS**. `AWS_CONFIG_FILE` and
+`AWS_SHARED_CREDENTIALS_FILE` point at generated project-scoped files. Use
+`--profile <name>` on every script.
 
 **Login workflow (interactive sessions):**
 
-1. `scripts/aws-whoami.sh --profile <name>` — if credentials work, proceed.
+1. `scripts/aws-whoami.sh --profile <name>`. If credentials work, proceed.
 2. If not, check status:
    `GET $AGENT_HUB_URL/api/projects/$PROJECT_ID/aws-sso/status?profile=<name>`
    (Bearer `$AGENT_HUB_API_KEY`).
-3. If `loggedIn` is false, start browser-less SSO:
-   `POST $AGENT_HUB_URL/api/projects/$PROJECT_ID/aws-sso/login`
-   body `{"profile":"<name>"}` → give the user `loginUrl` to open; wait, then
-   re-check status.
+3. If `loggedIn` is false, do not start SSO login yourself. For SSO profiles,
+   ask the user to refresh from the project's AWS settings module; for static
+   profiles, ask them to update the saved credentials there. Then re-check
+   status.
 4. Run AWS reads via `scripts/aws-q.sh` with `--profile <name>`.
 
 Ask the user which profile (dev, staging, prod, …) when ambiguous.
@@ -233,8 +236,8 @@ or doesn't fit the infra-audit frame.
 
 ## Available Scripts
 
-| Script | Purpose |
-|---|---|
-| `scripts/aws-whoami.sh` | STS identity + resolved profile/region |
-| `scripts/aws-q.sh` | Generic read-query helper with profile/region injection |
-| `scripts/_common.sh` | Profile/region resolution, secret masking, error helpers |
+| Script                  | Purpose                                                  |
+| ----------------------- | -------------------------------------------------------- |
+| `scripts/aws-whoami.sh` | STS identity + resolved profile/region                   |
+| `scripts/aws-q.sh`      | Generic read-query helper with profile/region injection  |
+| `scripts/_common.sh`    | Profile/region resolution, secret masking, error helpers |

@@ -75,8 +75,7 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
       <ProjectScreenHeader title="AWS" project={project} onBack={() => navigation.goBack()}/>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.desc}>
-          IAM Identity Center profiles for this project. Agents use these for AWS SSO; tap Login to
-          refresh your session.
+          AWS profiles for this project. Agents use project-scoped config and credentials files.
         </Text>
         {loading && <ActivityIndicator color={colors.gray400}/>}
         {error && <Text style={styles.error}>{error}</Text>}
@@ -85,21 +84,24 @@ export default function AwsProfilesScreen({ route, navigation }: any) {
             const st = statusByProfile[row.name];
             const lg = loginByProfile[row.name];
             const loggedIn = st?.data?.loggedIn;
+            const isStatic = row.type === 'static';
             return (<View key={row.name} style={styles.card}>
               <Text style={styles.profileName}>{row.name}</Text>
-              <Text style={styles.meta}>Account: {row.sso_account_id || '—'}</Text>
-              <Text style={styles.meta}>Role: {row.sso_role_name || '—'}</Text>
-              <Text style={styles.meta}>Region: {row.region || '—'}</Text>
+              <Text style={styles.meta}>Type: {isStatic ? 'static' : 'SSO'}</Text>
+              {!isStatic && <Text style={styles.meta}>Account: {row.sso_account_id || '-'}</Text>}
+              {!isStatic && <Text style={styles.meta}>Role: {row.sso_role_name || '-'}</Text>}
+              {isStatic && <Text style={styles.meta}>Access key: {row.aws_access_key_id || '-'}</Text>}
+              <Text style={styles.meta}>Region: {row.region || '-'}</Text>
               <View style={styles.actions}>
                 <TouchableOpacity style={styles.btn} onPress={() => checkStatus(row.name)} disabled={st?.loading}>
-                  <Text style={styles.btnText}>{st?.loading ? 'Checking…' : 'Check SSO'}</Text>
+                  <Text style={styles.btnText}>{st?.loading ? 'Checking…' : isStatic ? 'Check credentials' : 'Check SSO'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.btn} onPress={() => startLogin(row.name)} disabled={lg?.loading}>
+                {!isStatic && (<TouchableOpacity style={styles.btn} onPress={() => startLogin(row.name)} disabled={lg?.loading}>
                   <Text style={styles.btnText}>{lg?.loading ? 'Starting…' : 'Login'}</Text>
-                </TouchableOpacity>
+                </TouchableOpacity>)}
               </View>
               {loggedIn != null && (<Text style={[styles.status, loggedIn ? styles.ok : styles.warn]}>
-                  {loggedIn ? 'SSO session active' : 'Not logged in'}
+                  {loggedIn ? (isStatic ? 'Credentials valid' : 'SSO session active') : (isStatic ? 'Credentials invalid' : 'Not logged in')}
                 </Text>)}
               {st?.error && <Text style={styles.error}>{st.error}</Text>}
               {lg?.error && <Text style={styles.error}>{lg.error}</Text>}

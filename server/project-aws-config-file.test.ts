@@ -16,7 +16,7 @@ import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import config from './config.js';
-import { writeProjectAwsConfigFile } from './project-aws-config-file.js';
+import { writeProjectAwsConfigFile, writeProjectAwsFiles } from './project-aws-config-file.js';
 import {
   renderProjectAwsConfigIni,
   type ProjectAwsSsoProfilesMap,
@@ -37,6 +37,13 @@ const SAMPLE: ProjectAwsSsoProfilesMap = {
     sso_role_name: 'ReadOnlyAccess',
     region: 'us-east-1',
     output: 'yaml',
+  },
+  staticdev: {
+    type: 'static',
+    aws_access_key_id: 'AKIATESTKEY',
+    aws_secret_access_key: 'secret-test-key',
+    aws_session_token: 'session-token',
+    region: 'us-west-2',
   },
 };
 
@@ -77,11 +84,31 @@ describe('writeProjectAwsConfigFile', () => {
     // back to the default profile (a security-relevant misconfig).
     expect(actual).toContain('[profile dev]');
     expect(actual).toContain('[profile prod]');
+    expect(actual).toContain('[profile staticdev]');
     expect(actual.indexOf('[profile dev]')).toBeLessThan(actual.indexOf('[profile prod]'));
     expect(actual).toContain('sso_account_id = 120569607241');
     expect(actual).toContain('output = yaml');
     // `dev` omitted `output`, so the renderer must default it to `json`.
     expect(actual).toContain('output = json');
+    expect(actual).not.toContain('secret-test-key');
+  });
+
+  it('writes a project-scoped credentials file for static profiles', () => {
+    const projectId = freshProjectId();
+    const files = writeProjectAwsFiles(projectId, SAMPLE);
+    expect(files.configPath).toBe(
+      path.join(config.dataDir, 'project-aws-config', projectId, 'config'),
+    );
+    expect(files.credentialsPath).toBe(
+      path.join(config.dataDir, 'project-aws-config', projectId, 'credentials'),
+    );
+    const credentials = readFileSync(files.credentialsPath, 'utf-8');
+    expect(credentials).toContain('[staticdev]');
+    expect(credentials).toContain('aws_access_key_id = AKIATESTKEY');
+    expect(credentials).toContain('aws_secret_access_key = secret-test-key');
+    expect(credentials).toContain('aws_session_token = session-token');
+    expect(credentials).not.toContain('[dev]');
+    expect(statSync(files.credentialsPath).mode & 0o777).toBe(0o600);
   });
 
   it('writes the file with mode 0o600 (owner read/write only)', () => {

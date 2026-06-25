@@ -2911,20 +2911,31 @@ export interface Project {
    */
   cronSkillPrincipalAgentId?: string;
   /**
-   * IAM Identity Center (SSO) profiles for this project. Rendered to
-   * `AWS_CONFIG_FILE` at spawn time; tokens cache under the user's HOME.
+   * AWS profiles for this project. Rendered to project-scoped
+   * `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` files at spawn time.
+   * SSO tokens cache under the user's HOME; static credentials stay scoped
+   * to this project's generated credentials file.
    * See `project-aws-profiles.ts`.
    */
   awsSsoProfiles?: Record<
     string,
-    {
-      sso_account_id: string;
-      sso_start_url: string;
-      sso_region: string;
-      sso_role_name: string;
-      region: string;
-      output?: string;
-    }
+    | {
+        type?: 'sso';
+        sso_account_id: string;
+        sso_start_url: string;
+        sso_region: string;
+        sso_role_name: string;
+        region: string;
+        output?: string;
+      }
+    | {
+        type: 'static';
+        aws_access_key_id: string;
+        aws_secret_access_key: string;
+        aws_session_token?: string;
+        region: string;
+        output?: string;
+      }
   >;
   /**
    * When true, AWS IAM Identity Center (SSO) support is surfaced for this
