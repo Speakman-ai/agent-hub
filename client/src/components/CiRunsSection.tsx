@@ -37,6 +37,21 @@ const TERMINAL_STATUSES = new Set([
   'cancelled',
 ]);
 
+// Job states that mean the job hasn't finished yet. The runner writes states
+// as `queued | running | passed | failed | skipped` (job-runner.ts); anything
+// not yet settled keeps the run "alive" for stop/poll purposes.
+const IN_FLIGHT_JOB_STATES = new Set(['queued', 'running']);
+
+// A run is still doing work if its own status is non-terminal OR any of its
+// jobs/shards is still queued/running. The run-level status can flip to a
+// terminal `failed` the moment one shard goes red while the rest keep running
+// (the runner picks the genuine failure early — see the multi-shard failure
+// selection), so we cannot rely on run.status alone to know nothing is live.
+export function runHasWorkInFlight(run: any) {
+  if (!TERMINAL_STATUSES.has(run?.status)) return true;
+  return (run?.jobs || []).some((j: any) => IN_FLIGHT_JOB_STATES.has(j?.state));
+}
+
 function triggerBadge(trigger: any) {
   if (trigger === 'git_push')
     return { label: 'push', cls: 'border-sky-500/25 bg-sky-500/10 text-sky-300' };
@@ -169,15 +184,21 @@ function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   const [resources, setResources] = useState<any>(null);
   const { Icon, cls, label } = statusVisual(run.status);
   const trig = triggerBadge(run.trigger_source);
+  // A run is re-runnable only once it has fully settled. Gating on
+  // !runHasWorkInFlight(run) (not just run.status) closes the same
+  // partial-failure window the stop button addresses: a shard failure flips a
+  // push run's status to `failed` while other shards are still queued/running,
+  // and exposing rerun then would let a duplicate CI run start before the
+  // current one actually stops or settles.
   const rerunnable =
     typeof onRerun === 'function' &&
     (run.trigger_source === 'git_push' || run.trigger_source === 'pr_push') &&
-    run.status !== 'queued' &&
-    run.status !== 'running';
-  // A run is stoppable while it is still in flight (not yet terminal). Stopping
-  // it signals termination of every job/test in the group via the run-level
-  // cancel endpoint.
-  const stoppable = typeof onStop === 'function' && !TERMINAL_STATUSES.has(run.status);
+    !runHasWorkInFlight(run);
+  // A run is stoppable while it is still doing work — either its own status is
+  // non-terminal, or the run-level status already flipped to a terminal value
+  // (e.g. `failed` from one red shard) but other jobs are still running. As
+  // long as tests are running there must be a way to terminate them.
+  const stoppable = typeof onStop === 'function' && runHasWorkInFlight(run);
 
   useEffect(() => {
     if (!expanded || steps) return;
@@ -433,7 +454,7 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
-    const hasLive = (runs || []).some((r: any) => !TERMINAL_STATUSES.has(r.status));
+    const hasLive = (runs || []).some((r: any) => runHasWorkInFlight(r));
     if (hasLive) {
       pollRef.current = setInterval(refresh, 10_000);
     }

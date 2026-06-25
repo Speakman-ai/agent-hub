@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import CiRunsSection, { groupStepsByJob } from './CiRunsSection';
+import CiRunsSection, { groupStepsByJob, runHasWorkInFlight } from './CiRunsSection';
 import { api } from '../utils/api';
 
 (vi as any).mock('../utils/api.js', () => ({
@@ -324,6 +324,94 @@ describe('CiRunsSection', () => {
     expect(await screen.findByTestId('ci-run-stop-run-3')).toBeInTheDocument();
     expect(screen.queryByTestId('ci-run-stop-run-1')).toBeNull();
     expect(screen.queryByTestId('ci-run-stop-run-2')).toBeNull();
+  });
+
+  it('keeps the Stop-all control on a terminal run while a job is still running', async () => {
+    // Regression: the run-level status flips to `failed` the moment one shard
+    // goes red, but other shards keep running. The Stop button must stay so the
+    // still-running jobs can be terminated. Previously `stoppable` keyed only on
+    // run.status, so the button vanished while tests were still executing.
+    const partiallyFailedRun = {
+      id: 'run-partial',
+      branch: 'agent-hub/dev/session-partial',
+      head_sha: 'd'.repeat(40),
+      status: 'failed',
+      mode: 'full',
+      trigger_source: 'ui_button',
+      failure_reason: 'checks_failed',
+      started_at: Date.now() - 30_000,
+      ended_at: null,
+      jobs: [
+        { job_id: 'unit', matrix_key: 'default', state: 'failed', exit_code: 1 },
+        { job_id: 'e2e', matrix_key: 'shard-1', state: 'running', exit_code: null },
+      ],
+    };
+    (api.getCiRuns as any).mockResolvedValue({ runs: [partiallyFailedRun] });
+    render(<CiRunsSection project={hostedProject} />);
+    expect(await screen.findByTestId('ci-run-stop-run-partial')).toBeInTheDocument();
+  });
+
+  it('hides Re-run (but keeps Stop) on a push run that is failed-but-still-running', async () => {
+    // Regression: `rerunnable` keyed only on run.status, so a push/pr run whose
+    // status flipped to `failed` from one red shard — while other shards were
+    // still queued/running — exposed Re-run. Clicking it would start a
+    // duplicate CI run before the current one settled. Rerun must wait until
+    // the run has no work in flight; Stop stays available meanwhile.
+    const pushPartial = {
+      id: 'run-push-partial',
+      branch: 'main',
+      head_sha: 'e'.repeat(40),
+      status: 'failed',
+      mode: 'checks',
+      trigger_source: 'git_push',
+      failure_reason: 'checks_failed',
+      started_at: Date.now() - 30_000,
+      ended_at: null,
+      jobs: [
+        { job_id: 'unit', matrix_key: 'default', state: 'failed', exit_code: 1 },
+        { job_id: 'e2e', matrix_key: 'shard-1', state: 'running', exit_code: null },
+      ],
+    };
+    (api.getCiRuns as any).mockResolvedValue({ runs: [pushPartial] });
+    render(<CiRunsSection project={hostedProject} />);
+    expect(await screen.findByTestId('ci-run-stop-run-push-partial')).toBeInTheDocument();
+    expect(screen.queryByTestId('ci-run-rerun-run-push-partial')).toBeNull();
+  });
+
+  it('shows Re-run on a fully-settled push run', async () => {
+    const pushSettled = {
+      id: 'run-push-done',
+      branch: 'main',
+      head_sha: 'f'.repeat(40),
+      status: 'failed',
+      mode: 'checks',
+      trigger_source: 'git_push',
+      failure_reason: 'checks_failed',
+      started_at: Date.now() - 60_000,
+      ended_at: Date.now() - 30_000,
+      jobs: [
+        { job_id: 'unit', matrix_key: 'default', state: 'failed', exit_code: 1 },
+        { job_id: 'e2e', matrix_key: 'shard-1', state: 'passed', exit_code: 0 },
+      ],
+    };
+    (api.getCiRuns as any).mockResolvedValue({ runs: [pushSettled] });
+    render(<CiRunsSection project={hostedProject} />);
+    expect(await screen.findByTestId('ci-run-rerun-run-push-done')).toBeInTheDocument();
+    expect(screen.queryByTestId('ci-run-stop-run-push-done')).toBeNull();
+  });
+
+  it('runHasWorkInFlight: terminal status with an in-flight job is still live', () => {
+    expect(
+      runHasWorkInFlight({ status: 'failed', jobs: [{ state: 'running' }, { state: 'failed' }] }),
+    ).toBe(true);
+    expect(runHasWorkInFlight({ status: 'failed', jobs: [{ state: 'queued' }] })).toBe(true);
+    // Fully terminal: status terminal and every job settled.
+    expect(
+      runHasWorkInFlight({ status: 'failed', jobs: [{ state: 'failed' }, { state: 'passed' }] }),
+    ).toBe(false);
+    expect(runHasWorkInFlight({ status: 'succeeded', jobs: [] })).toBe(false);
+    // Non-terminal run status is always live, jobs notwithstanding.
+    expect(runHasWorkInFlight({ status: 'running', jobs: [] })).toBe(true);
   });
 
   it('Stop-all cancels the run without expanding the row', async () => {
