@@ -52,6 +52,9 @@ import { setup as setupHubAuth } from '../utils/auth';
 (vi as any).mock('./MyCodexAuthSection', () => ({
   default: () => <div data-testid="codex-auth-panel">codex login</div>,
 }));
+(vi as any).mock('./MyGrokAuthSection', () => ({
+  default: () => <div data-testid="grok-auth-panel">grok login</div>,
+}));
 
 import SetupWizard from './SetupWizard';
 import { api } from '../utils/api';
@@ -130,6 +133,65 @@ describe('SetupWizard — Hub account step', () => {
     await waitFor(() => {
       expect(screen.getByText(/Welcome to Agent Hub/i)).toBeInTheDocument();
     });
+  });
+});
+
+describe('SetupWizard — welcome copy positioning', () => {
+  it('positions Hub-hosted git as primary and GitHub as an optional mirror', () => {
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    const welcome = screen.getByText(/self-hosted home for teams of AI agents/i);
+    expect(welcome).toBeInTheDocument();
+    // Hub git is primary; GitHub is an optional mirror, not a requirement.
+    expect(welcome.textContent).toMatch(/mirror any Hub repo to GitHub/i);
+    expect(welcome.textContent).toMatch(/optional, not required/i);
+  });
+
+  it('lists the four CLI engines (Grok included, Gemini excluded)', () => {
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    const welcome = screen.getByText(/self-hosted home for teams of AI agents/i);
+    expect(welcome.textContent).toMatch(/Claude, Cursor, Codex, or Grok/i);
+    // Gemini is RAG/embeddings only — it must NOT appear as a selectable engine.
+    expect(welcome.textContent).not.toMatch(/Gemini/i);
+  });
+
+  it('labels the GitHub step as optional in the step indicator', () => {
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    expect(screen.getByText(/GitHub \(optional\)/i)).toBeInTheDocument();
+  });
+});
+
+describe('SetupWizard — Grok engine card', () => {
+  it('renders a Grok CLI engine card on the AI engines step', async () => {
+    render(
+      <SetupWizard
+        setupStatus={{ engines: { 'grok-cli': { available: true, path: '/usr/bin/grok' } } }}
+        onComplete={() => {}}
+      />,
+    );
+    await advancePastWelcome();
+    expect(screen.getByText('Grok CLI')).toBeInTheDocument();
+    expect(screen.getByText(/Detected at \/usr\/bin\/grok/i)).toBeInTheDocument();
+    // A detected Grok engine alone satisfies the "enable one engine" gate.
+    expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
+    // Detected engines need no manual path field.
+    expect(screen.queryByLabelText(/grok cli binary path/i)).not.toBeInTheDocument();
+  });
+
+  it('lets the user enter a Grok binary path when grok-cli is not auto-detected', async () => {
+    // No engines detected at all — the wizard must still let the user enable
+    // Grok and type its binary path, otherwise Save & Continue is a dead end.
+    render(<SetupWizard setupStatus={{ engines: {} }} onComplete={() => {}} />);
+    await advancePastWelcome();
+
+    // Enabling Grok with no detected binary leaves Save blocked (pathsOk false).
+    fireEvent.click(screen.getByRole('switch', { name: /enable grok cli/i }));
+    expect(screen.getByRole('button', { name: /save & continue/i })).toBeDisabled();
+
+    // The manual path input appears; entering a path unblocks Save.
+    const input = screen.getByLabelText(/grok cli binary path/i);
+    fireEvent.change(input, { target: { value: '/opt/grok' } });
+    expect((input as HTMLInputElement).value).toBe('/opt/grok');
+    expect(screen.getByRole('button', { name: /save & continue/i })).not.toBeDisabled();
   });
 });
 

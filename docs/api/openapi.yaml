@@ -5064,10 +5064,28 @@ components:
                 - authenticated
                 - path
               description: Availability + auth state for a single agent engine.
+            grok-cli:
+              type: object
+              properties:
+                available:
+                  type: boolean
+                  description: Whether the engine binary responded to `<bin> --version` within the probe timeout.
+                authenticated:
+                  type: boolean
+                  description: Whether the requesting user has working credentials for this engine (per-account; no host fallback).
+                path:
+                  type: string
+                  description: Resolved path to the engine binary.
+              required:
+                - available
+                - authenticated
+                - path
+              description: Availability + auth state for a single agent engine.
           required:
             - claude-code
             - cursor-agent
             - codex-cli
+            - grok-cli
           description: Per-engine binary availability + auth + resolved path.
         dataDir:
           type: string

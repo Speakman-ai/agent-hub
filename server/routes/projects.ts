@@ -35,6 +35,7 @@ import { normalizeReplayConfig } from '../replays/replay-config.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
+import { userHasEngineCreds } from '../per-user-cli-spawn.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isEligibleSecurityActor } from '../security-audit/actor-user.js';
 import {
@@ -1141,6 +1142,8 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     setCursorBin,
     getCodexBin,
     setCodexBin,
+    getGrokBin,
+    setGrokBin,
   } = deps;
 
   /** Remove a partially-created project after disk + `projects.json` were persisted but a later step failed (specialist seeding, workflow scaffolding). */
@@ -1548,6 +1551,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     // stays responsive throughout.
     const cursorBinResolved = getCursorBin?.() ?? config.cursorBin;
     const codexBinResolved = getCodexBin?.() ?? config.codexBin;
+    const grokBinResolved = getGrokBin?.() ?? config.grokBin;
     const probeEngine = async (bin: string): Promise<boolean> => {
       try {
         await execFileAsync(bin, ['--version'], { timeout: 5000 });
@@ -1556,10 +1560,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
         return false;
       }
     };
-    const [claudeAvailable, cursorAvailable, codexAvailable] = await Promise.all([
+    const [claudeAvailable, cursorAvailable, codexAvailable, grokAvailable] = await Promise.all([
       probeEngine(getClaudeBin()),
       probeEngine(cursorBinResolved),
       probeEngine(codexBinResolved),
+      probeEngine(grokBinResolved),
     ]);
 
     // `hasAnyAiCredentials` mirrors the auth-resolution that `buildSpawnEnv`
@@ -1579,6 +1584,21 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       });
     } catch {
       engineAuth = { claude: false, cursor: false, codex: false, any: false };
+    }
+
+    // Grok per-account credential check. `getEngineAuthStatus` covers
+    // Claude/Cursor/Codex (the engines that gate `hasAnyAiCredentials`); Grok
+    // auth is a simple per-user cred-file presence check, so resolve it
+    // directly here for the wizard's Grok card. Strictly per-account — no host
+    // fallback, mirroring `probeEngineAvailability` in engine-availability.ts.
+    let grokAuthenticated = false;
+    try {
+      const grokUserId = authedReq.authUserId ?? null;
+      grokAuthenticated = grokUserId
+        ? userHasEngineCreds('grok-cli', grokUserId, config.dataDir)
+        : false;
+    } catch {
+      grokAuthenticated = false;
     }
 
     // `authConfigured` reflects whether the Agent Hub Owner record exists.
@@ -1621,6 +1641,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
           authenticated: engineAuth.codex,
           path: codexBinResolved,
         },
+        'grok-cli': {
+          available: grokAvailable,
+          authenticated: grokAuthenticated,
+          path: grokBinResolved,
+        },
       },
       dataDir: config.dataDir,
       projectsDir: config.projectsDir,
@@ -1628,10 +1653,11 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
   });
 
   router.post('/api/setup/configure', (req: Request, res: Response) => {
-    const { claudeBin, cursorBin, codexBin } = req.body as {
+    const { claudeBin, cursorBin, codexBin, grokBin } = req.body as {
       claudeBin?: string;
       cursorBin?: string;
       codexBin?: string;
+      grokBin?: string;
     };
 
     const configPath = path.join(config.dataDir, 'config.json');
@@ -1643,6 +1669,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (claudeBin !== undefined) fileConfig.claudeBin = claudeBin;
     if (cursorBin !== undefined) fileConfig.cursorBin = cursorBin;
     if (codexBin !== undefined) fileConfig.codexBin = codexBin;
+    if (grokBin !== undefined) fileConfig.grokBin = grokBin;
 
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2) + '\n');
 
@@ -1663,6 +1690,10 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     if (codexBin !== undefined && setCodexBin) {
       setCodexBin(codexBin);
       config.codexBin = codexBin;
+    }
+    if (grokBin !== undefined && setGrokBin) {
+      setGrokBin(grokBin);
+      config.grokBin = grokBin;
     }
 
     res.json({ ok: true, message: 'Configuration updated.' });

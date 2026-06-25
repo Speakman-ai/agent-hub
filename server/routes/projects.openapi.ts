@@ -290,6 +290,7 @@ export const SetupStatusComponent = registerComponent(
           'claude-code': EngineSetupStatusSchema,
           'cursor-agent': EngineSetupStatusSchema,
           'codex-cli': EngineSetupStatusSchema,
+          'grok-cli': EngineSetupStatusSchema,
         })
         .openapi({ description: 'Per-engine binary availability + auth + resolved path.' }),
       dataDir: z.string().openapi({ description: 'Resolved Agent Hub data directory.' }),

@@ -2065,6 +2065,14 @@ describe('Setup', () => {
           'codex-cli': expect.objectContaining({
             path: expect.any(String),
           }),
+          // Grok is a first-class CLI engine offered in the setup wizard, so
+          // it must appear in the engines map (with availability + path)
+          // alongside the others. Regression guard for the wizard's Grok card.
+          'grok-cli': expect.objectContaining({
+            path: expect.any(String),
+            available: expect.any(Boolean),
+            authenticated: expect.any(Boolean),
+          }),
         }),
       );
     });
@@ -2097,6 +2105,27 @@ describe('Setup', () => {
           .patch('/api/config')
           .send({ cursorBin: restoreCursorBin, codexBin: restoreCodexBin })
           .expect(200);
+      }
+    });
+
+    it('round-trips grokBin so the wizard can enable the Grok engine', async () => {
+      const beforeCfg = await request.get('/api/config').expect(200);
+      const restoreGrokBin = beforeCfg.body.grokBin as string;
+
+      const suffix = `${Date.now()}-${++_uniqueCounter}`;
+      const grokBin = `/tmp/agent-hub-setup-grok-${suffix}`;
+
+      try {
+        await request.post('/api/setup/configure').send({ grokBin }).expect(200);
+
+        const cfg = await request.get('/api/config').expect(200);
+        expect(cfg.body.grokBin).toBe(grokBin);
+
+        const status = await request.get('/api/setup/status').expect(200);
+        expect(status.body.engines['grok-cli'].path).toBe(grokBin);
+        expect(typeof status.body.engines['grok-cli'].available).toBe('boolean');
+      } finally {
+        await request.patch('/api/config').send({ grokBin: restoreGrokBin }).expect(200);
       }
     });
   });

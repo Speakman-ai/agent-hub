@@ -7,6 +7,7 @@ import GithubConnectionSection from './GithubConnectionSection';
 import MyClaudeAuthSection from './MyClaudeAuthSection';
 import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
+import MyGrokAuthSection from './MyGrokAuthSection';
 
 const DEFAULT_ORG_NAME = 'Personal';
 
@@ -17,8 +18,8 @@ export function getSetupWizardStepPlan(setupStatus: any) {
     ? ['account', 'welcome', 'credentials', 'github', 'project']
     : ['welcome', 'credentials', 'github', 'project'];
   const stepLabels = needsHubAccount
-    ? ['Hub account', 'Welcome', 'AI engines', 'Connect GitHub', 'First Project']
-    : ['Welcome', 'AI engines', 'Connect GitHub', 'First Project'];
+    ? ['Hub account', 'Welcome', 'AI engines', 'GitHub (optional)', 'First Project']
+    : ['Welcome', 'AI engines', 'GitHub (optional)', 'First Project'];
   return { stepKeys, stepLabels, needsHubAccount };
 }
 
@@ -132,6 +133,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const claudeEngine = setupStatus?.engines?.['claude-code'] || {};
   const cursorEngine = setupStatus?.engines?.['cursor-agent'] || {};
   const codexEngine = setupStatus?.engines?.['codex-cli'] || {};
+  const grokEngine = setupStatus?.engines?.['grok-cli'] || {};
 
   const [claudePath, setClaudePath] = useState(claudeEngine.path || '');
   const [claudeEnabled, setClaudeEnabled] = useState(claudeEngine.available || false);
@@ -139,20 +141,25 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const [cursorEnabled, setCursorEnabled] = useState(cursorEngine.available || false);
   const [codexPath, setCodexPath] = useState(codexEngine.path || '');
   const [codexEnabled, setCodexEnabled] = useState(codexEngine.available || false);
+  const [grokPath, setGrokPath] = useState(grokEngine.path || '');
+  const [grokEnabled, setGrokEnabled] = useState(grokEngine.available || false);
 
   useEffect(() => {
     const c = setupStatus?.engines?.['claude-code'];
     const u = setupStatus?.engines?.['cursor-agent'];
     const x = setupStatus?.engines?.['codex-cli'];
+    const g = setupStatus?.engines?.['grok-cli'];
     if (c?.path != null && c.path !== '') setClaudePath(c.path);
     if (typeof c?.available === 'boolean') setClaudeEnabled(c.available);
     if (u?.path != null && u.path !== '') setCursorPath(u.path);
     if (typeof u?.available === 'boolean') setCursorEnabled(u.available);
     if (x?.path != null && x.path !== '') setCodexPath(x.path);
     if (typeof x?.available === 'boolean') setCodexEnabled(x.available);
+    if (g?.path != null && g.path !== '') setGrokPath(g.path);
+    if (typeof g?.available === 'boolean') setGrokEnabled(g.available);
   }, [setupStatus]);
 
-  const anyEngineEnabled = claudeEnabled || cursorEnabled || codexEnabled;
+  const anyEngineEnabled = claudeEnabled || cursorEnabled || codexEnabled || grokEnabled;
 
   /** Ensure a default local org exists (no naming step in first-run wizard). */
   const ensureDefaultOrg = async () => {
@@ -229,6 +236,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
           claudeBin: claudeEnabled ? claudePath.trim() : '',
           cursorBin: cursorEnabled ? cursorPath.trim() : '',
           codexBin: codexEnabled ? codexPath.trim() : '',
+          grokBin: grokEnabled ? grokPath.trim() : '',
         }),
       });
       if (!res.ok) {
@@ -247,7 +255,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
   const pathsOk =
     (!claudeEnabled || claudePath.trim()) &&
     (!cursorEnabled || cursorPath.trim()) &&
-    (!codexEnabled || codexPath.trim());
+    (!codexEnabled || codexPath.trim()) &&
+    (!grokEnabled || grokPath.trim());
 
   const credentialsCanContinue = anyEngineEnabled && pathsOk && !saving;
 
@@ -338,9 +347,12 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
             <div>
               <h1 className="text-2xl font-bold text-white mb-3">Welcome to Agent Hub</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-md mx-auto">
-                We&apos;ll pick which AI engines (Claude, Cursor, or Codex) to enable. Each user
-                signs in to their own AI account later in Settings → Account. If your first project
-                is a code repo, we&apos;ll connect GitHub next so clones and PRs work.
+                Your self-hosted home for teams of AI agents — and their git. Host projects right
+                here: clone, push, open and review pull requests, and run CI, all on the Hub. Agents
+                take work from idea to reviewed, tested, merged code without leaving it. First
+                we&apos;ll enable your AI engines (Claude, Cursor, Codex, or Grok); you&apos;ll sign
+                in to your own account later in Settings → Account. Want a GitHub presence too? You
+                can mirror any Hub repo to GitHub — it&apos;s optional, not required.
               </p>
             </div>
             {error && (
@@ -416,6 +428,16 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   </>
                 )}
               </div>
+              {claudeEnabled && !claudeEngine.available && (
+                <input
+                  type="text"
+                  value={claudePath}
+                  onChange={(e: any) => setClaudePath(e.target.value)}
+                  placeholder="/path/to/claude"
+                  aria-label="Claude Code binary path"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              )}
             </div>
 
             {/* Sign in to Claude inline once the engine is enabled. */}
@@ -463,6 +485,16 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   </>
                 )}
               </div>
+              {cursorEnabled && !cursorEngine.available && (
+                <input
+                  type="text"
+                  value={cursorPath}
+                  onChange={(e: any) => setCursorPath(e.target.value)}
+                  placeholder="/path/to/cursor-agent"
+                  aria-label="Cursor Agent binary path"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              )}
             </div>
 
             {/* Sign in to Cursor inline once the engine is enabled. */}
@@ -510,14 +542,82 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
                   </>
                 )}
               </div>
+              {codexEnabled && !codexEngine.available && (
+                <input
+                  type="text"
+                  value={codexPath}
+                  onChange={(e: any) => setCodexPath(e.target.value)}
+                  placeholder="/path/to/codex"
+                  aria-label="Codex CLI binary path"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              )}
             </div>
 
             {/* Sign in to Codex inline once the engine is enabled. */}
             {codexEnabled && <MyCodexAuthSection />}
 
+            {/* Grok CLI card */}
+            <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full bg-gray-300 inline-block" />
+                  <span className="font-medium text-white text-sm">Grok CLI</span>
+                </div>
+                <ToggleSwitch
+                  enabled={grokEnabled}
+                  onChange={setGrokEnabled}
+                  label="Enable Grok CLI"
+                />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs">
+                {grokEngine.available ? (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-emerald-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={3}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-emerald-400">Detected at {grokEngine.path}</span>
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-3.5 h-3.5 text-red-400"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-red-400">Not found</span>
+                  </>
+                )}
+              </div>
+              {grokEnabled && !grokEngine.available && (
+                <input
+                  type="text"
+                  value={grokPath}
+                  onChange={(e: any) => setGrokPath(e.target.value)}
+                  placeholder="/path/to/grok"
+                  aria-label="Grok CLI binary path"
+                  className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                />
+              )}
+            </div>
+
+            {/* Sign in to Grok inline once the engine is enabled. */}
+            {grokEnabled && <MyGrokAuthSection />}
+
             {!anyEngineEnabled && (
               <p className="text-yellow-400 text-xs text-center">
-                Turn on at least one engine (Claude Code, Cursor Agent, or Codex CLI) to continue.
+                Turn on at least one engine (Claude Code, Cursor Agent, Codex CLI, or Grok CLI) to
+                continue.
               </p>
             )}
 
@@ -575,13 +675,13 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
         {currentKey === 'github' && (
           <div className="space-y-5">
             <div className="text-center mb-2">
-              <h1 className="text-xl font-bold text-white mb-1">Connect GitHub</h1>
+              <h1 className="text-xl font-bold text-white mb-1">GitHub (optional)</h1>
               <p className="text-gray-400 text-sm">
-                This is the right moment if your first project will be a{' '}
-                <strong className="text-gray-300">GitHub codebase</strong>— clones, PRs, and
-                reviewer bots need your GitHub login. Paste a personal access token to connect your
-                account. Skip if you&apos;re starting non-repo work; you can finish this later in
-                Settings.
+                Agent Hub hosts your repo natively — clone, push, PRs, reviews, and CI all work
+                without GitHub. If you also want a GitHub presence (for downstream Actions or
+                deploys), paste a personal access token to connect your account and mirror Hub repos
+                one-way to GitHub. Each user connects their own account. You can skip this and
+                finish it later in Settings.
               </p>
             </div>
 
@@ -617,8 +717,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
             <div>
               <h1 className="text-xl font-bold text-white mb-2">Open Your First Project</h1>
               <p className="text-gray-400 text-sm leading-relaxed max-w-sm mx-auto">
-                If you use GitHub or the clone-from-URL path, you should have finished the previous
-                step. We&apos;ll launch the project wizard next.
+                Host a new repo on the Hub, import an existing one, or clone from a URL — the
+                project wizard walks you through it next.
               </p>
             </div>
             <div className="flex flex-col items-center gap-3">
