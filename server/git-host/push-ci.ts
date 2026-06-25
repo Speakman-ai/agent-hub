@@ -59,6 +59,26 @@ export interface PushCiDeps {
   mergeSecrets?: typeof mergeProjectSecretsSpawnEnv;
 }
 
+/**
+ * Fired when a CI run (`git_push` / `pr_push`) for a hosted-repo head
+ * concludes **success**. The native Auto-Merge re-attempt subscribes to this
+ * so a PR whose one-shot auto-merge raced an in-flight required check still
+ * merges once the check goes green (native PRs have no `gh pr merge --auto`).
+ */
+export type ChecksPassedHook = (args: {
+  project: Project;
+  branch: string;
+  headSha: string;
+  trigger: 'git_push' | 'pr_push';
+}) => void;
+
+let checksPassedHook: ChecksPassedHook | null = null;
+
+/** Register (or clear with `null`) the checks-passed hook. Wired once at boot. */
+export function setChecksPassedHook(fn: ChecksPassedHook | null): void {
+  checksPassedHook = fn;
+}
+
 /** Per-project serialization so two rapid pushes don't race a clone dir. */
 const queues = new Map<string, Promise<void>>();
 
@@ -417,6 +437,17 @@ async function runCiForSha(
         status: 'succeeded',
       });
       console.log(`[push-ci] run=${runId} succeeded ${branch}@${shortSha}`);
+      // Checks for this head just went green — let a deferred native
+      // Auto-Merge complete. Never let a hook error fail the CI run.
+      try {
+        checksPassedHook?.({ project, branch, headSha, trigger });
+      } catch (err: unknown) {
+        console.warn(
+          `[push-ci] checksPassedHook threw for ${project.id} ${branch}@${shortSha}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     } else {
       // Report-only by design: record the red/infra outcome and stop —
       // no fix-dispatch, no reviewer (the commit already landed).

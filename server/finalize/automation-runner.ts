@@ -4,8 +4,17 @@
  */
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { FinalizeRunRow, KanbanCardRow, Project, RouteDeps, SessionRow } from '../types.js';
+import type {
+  FinalizeRunRow,
+  KanbanCardRow,
+  Project,
+  PullRequestRow,
+  RouteDeps,
+  SessionRow,
+} from '../types.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
+import { buildNativePrUrl } from '../native-pr/url.js';
+import { isRetryableMergeBlock } from '../native-pr/merge-block.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
 import { autoMergeReadyPr } from './auto-merge-ready-pr.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
@@ -62,8 +71,63 @@ async function autoMergeFinalizedPr(
     console.log(`[finalize-automation] ${outcome.note}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[finalize-automation] Auto-merge failed for ${prUrl}: ${msg}`);
+    // A "checks still running" block is NOT a failure — native PRs have no
+    // `gh pr merge --auto`, so we defer and re-attempt from the checks-passed
+    // hook (maybeAutoMergeAfterChecks) once the in-flight run goes green.
+    // Without this, a one-shot auto-merge that raced an in-flight required
+    // check left the PR stranded open forever.
+    if (isRetryableMergeBlock(msg)) {
+      console.log(
+        `[finalize-automation] Auto-merge deferred for ${prUrl}: ${msg} — ` +
+          `will retry when checks pass`,
+      );
+    } else {
+      console.warn(`[finalize-automation] Auto-merge failed for ${prUrl}: ${msg}`);
+    }
   }
+}
+
+/**
+ * Re-attempt a deferred native Auto-Merge once a PR head's checks pass.
+ *
+ * Fired from the CI-completion seam (`push-ci.ts` `setChecksPassedHook`) when a
+ * `git_push`/`pr_push` run for a hosted-repo head concludes success. Native
+ * PRs have no `gh pr merge --auto`, so a one-shot auto-merge that raced an
+ * in-flight required check would otherwise leave the PR open with no recovery.
+ *
+ * Gated on the PR's ORIGINATING session being at automation level `merge`: the
+ * full push run is the one row carrying this PR's url, and its session sets the
+ * level. The re-attempt re-evaluates `mergeBlockedReason` against the live
+ * head, so it only merges when genuinely mergeable (checks green + review
+ * satisfied) — a head that advanced past validation stays gated, never
+ * stale-merged. Idempotent: once merged the PR is closed and the head branch
+ * gone, so a later checks-passed event finds no open PR and no-ops.
+ */
+export async function maybeAutoMergeAfterChecks(args: {
+  project: Project;
+  branch: string;
+}): Promise<void> {
+  if (!routeDeps) return;
+  const deps = routeDeps;
+  if (args.project.gitHost !== 'agenthub') return;
+
+  const pr = deps.stmts.getOpenPullRequestByHeadBranch.get(args.project.id, args.branch) as
+    | PullRequestRow
+    | undefined;
+  if (!pr) return;
+
+  const prUrl = buildNativePrUrl(args.project.id, pr.number);
+  const pushRun = deps.stmts.getFinalizeRunByPrUrl.get(prUrl) as FinalizeRunRow | undefined;
+  if (!pushRun?.session_id) return;
+
+  const session = deps.stmts.getSession.get(pushRun.session_id) as SessionRow | undefined;
+  if (!session) return;
+  if (!shouldEnableAutoMergeForAutomation(resolveSessionFinalizeAutomation(session))) return;
+
+  console.log(
+    `[finalize-automation] checks passed for ${prUrl} — re-attempting deferred auto-merge`,
+  );
+  await autoMergeFinalizedPr(prUrl, args.project, true, session.worktree_path ?? process.cwd());
 }
 
 /**

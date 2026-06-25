@@ -25,7 +25,12 @@ import { refreshGitHostNotifyConfigs } from './git-host/lifecycle.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
 import { notifyMirrorPush } from './git-host/mirror.js';
 import { startMirrorReconcilePoller } from './git-host/reconcile.js';
-import { maybeRunPushCi, maybeRunPrCi, handleHostedRepoPush } from './git-host/push-ci.js';
+import {
+  maybeRunPushCi,
+  maybeRunPrCi,
+  handleHostedRepoPush,
+  setChecksPassedHook,
+} from './git-host/push-ci.js';
 import { maybeRunPushSecurityScan } from './security-audit/on-push.js';
 import { startScheduledSecurityScanner } from './security-audit/scheduled-scan.js';
 import { recordRecentPush } from './git-host/recent-pushes.js';
@@ -183,6 +188,7 @@ import {
 import { setReadyToPushAutomationHook } from './finalize/orchestrator.js';
 import {
   maybeAutoPushReadyFinalizeRun,
+  maybeAutoMergeAfterChecks,
   setFinalizeAutomationRouteDeps,
 } from './finalize/automation-runner.js';
 
@@ -1264,6 +1270,22 @@ setTriggerAutoSessionShip(async ({ sessionId, project, agent, session }) => {
 setFinalizeAutomationRouteDeps(routeDeps);
 setReadyToPushAutomationHook((sessionId, runId) => {
   void maybeAutoPushReadyFinalizeRun({ sessionId, runId });
+});
+// When a hosted-repo head's checks pass, complete any deferred native
+// Auto-Merge that earlier raced an in-flight required check. The work is
+// intentionally detached (we don't block CI-run completion on the merge), so
+// attach a rejection handler here: push-ci's hook invocation only guards
+// SYNCHRONOUS throws, and any async failure before autoMergeFinalizedPr's
+// internal catch (e.g. a prepared-statement shape issue) would otherwise
+// surface as an unhandled rejection.
+setChecksPassedHook(({ project, branch }) => {
+  maybeAutoMergeAfterChecks({ project, branch }).catch((err: unknown) => {
+    console.warn(
+      `[finalize-automation] checks-passed auto-merge hook failed for ${project.id} ${branch}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  });
 });
 
 function handleCancel(sessionId: string): void {

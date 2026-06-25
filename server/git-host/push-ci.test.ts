@@ -16,6 +16,7 @@ let maybeRunPushCi: typeof import('./push-ci.js').maybeRunPushCi;
 let maybeRunPrCi: typeof import('./push-ci.js').maybeRunPrCi;
 let rerunCiRun: typeof import('./push-ci.js').rerunCiRun;
 let __clearPushCiQueues: typeof import('./push-ci.js').__clearPushCiQueues;
+let setChecksPassedHook: typeof import('./push-ci.js').setChecksPassedHook;
 let createHostedRepo: typeof import('./repo-store.js').createHostedRepo;
 let gitHostRepoPath: typeof import('./repo-store.js').gitHostRepoPath;
 let configDataDir: string;
@@ -24,7 +25,7 @@ beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
   await helpers.getRequest(); // boots app + initDb into the test data dir
   stmts = (await import('../db.js')).stmts!;
-  ({ maybeRunPushCi, maybeRunPrCi, rerunCiRun, __clearPushCiQueues } =
+  ({ maybeRunPushCi, maybeRunPrCi, rerunCiRun, __clearPushCiQueues, setChecksPassedHook } =
     await import('./push-ci.js'));
   ({ createHostedRepo, gitHostRepoPath } = await import('./repo-store.js'));
   configDataDir = (await import('../config.js')).default.dataDir;
@@ -125,6 +126,53 @@ describe('push CI engine', () => {
     expect(
       broadcasts.some((b) => b.type === 'finalize_run_phase_changed' && b.status === 'succeeded'),
     ).toBe(true);
+  });
+
+  it('fires the checks-passed hook on a successful run (drives deferred auto-merge)', async () => {
+    const { project, headSha } = await seedHostedProject();
+    const calls: Array<{ branch: string; headSha: string; trigger: string }> = [];
+    setChecksPassedHook((a) => {
+      calls.push({ branch: a.branch, headSha: a.headSha, trigger: a.trigger });
+    });
+    try {
+      await maybeRunPushCi(project, ['refs/heads/main'], {
+        stmts,
+        broadcast: () => {},
+        runJobPhase: vi.fn(async () => ({
+          status: 'success' as const,
+          stepResults: [],
+          activeSecondsBilled: 1,
+        })) as never,
+        mergeSecrets: () => {},
+      });
+    } finally {
+      setChecksPassedHook(null); // don't leak the hook into sibling tests
+    }
+    expect(calls).toEqual([{ branch: 'main', headSha, trigger: 'git_push' }]);
+  });
+
+  it('does NOT fire the checks-passed hook when jobs fail', async () => {
+    const { project, headSha } = await seedHostedProject();
+    let fired = false;
+    setChecksPassedHook(() => {
+      fired = true;
+    });
+    try {
+      await maybeRunPushCi(project, ['refs/heads/main'], {
+        stmts,
+        broadcast: () => {},
+        runJobPhase: vi.fn(async () => ({
+          status: 'failure' as const,
+          stepResults: [],
+          activeSecondsBilled: 1,
+        })) as never,
+        mergeSecrets: () => {},
+      });
+    } finally {
+      setChecksPassedHook(null);
+    }
+    expect(fired).toBe(false);
+    expect(runRowFor(project, headSha)?.status).toBe('failed');
   });
 
   it('records checks_failed when jobs fail — report-only, no fix dispatch', async () => {
