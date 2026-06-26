@@ -95,6 +95,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  getProjectBranches: (projectId: any) => fetchJSON(`/projects/${projectId}/branches`),
   // Agent Hub-hosted git (gitHost: 'agenthub') — see server/routes/git-host.ts
   getGitHostStatus: (projectId: any) => fetchJSON(`/projects/${projectId}/git-host`),
   enableGitHost: (projectId: any, importFrom?: any) =>

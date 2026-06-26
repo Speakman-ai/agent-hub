@@ -172,6 +172,12 @@ describe('api deployment helpers — URL + body parity with web client', () => {
         expect(url).toBe('https://example.test/api/projects/agent-hub/deploy/config');
         expect(init.method ?? 'GET').toBe('GET');
     });
+    it('getProjectBranches(projectId) → GET /projects/:id/branches', async () => {
+        await api.getProjectBranches('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/branches');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
     it('startDeployWizard(projectId) → POST /projects/:id/deploy/setup-wizard', async () => {
         await api.startDeployWizard('agent-hub');
         const [url, init] = lastCall();

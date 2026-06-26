@@ -174,6 +174,7 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
     }),
+    getProjectBranches: (projectId: any) => fetchJSON(`/projects/${projectId}/branches`),
     deleteProject: (projectId: any) => fetch(`${getApiBaseUrl()}/projects/${projectId}`, {
         method: 'DELETE',
         headers: { ...getAuthHeaders() } as Record<string, string> as Record<string, string>,

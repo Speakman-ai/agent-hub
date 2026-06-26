@@ -18,6 +18,7 @@ import { api } from '../utils/api';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
 const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled']);
+const CUSTOM_REF_VALUE = '__custom__';
 
 function shortRef(ref: any): string {
   const s = String(ref || '');
@@ -119,8 +120,29 @@ function isMissingDeployConfigError(err: any): boolean {
   return message.includes('deploy.yaml not found');
 }
 
+function branchNames(branchData: any): string[] {
+  return Array.isArray(branchData?.branches)
+    ? branchData.branches.map((branch: any) => branch?.name).filter(Boolean)
+    : [];
+}
+
+function defaultDeployRef(env: any, branchData: any): string {
+  const defaultBranch =
+    branchData?.defaultBranch ||
+    branchData?.branches?.find((branch: any) => branch?.isDefault)?.name ||
+    null;
+  return defaultBranch || env.currentRef || 'HEAD';
+}
+
+function loadDeployBranches(projectId: string): Promise<any> {
+  return api
+    .getProjectBranches(projectId)
+    .catch(() => api.getGitHostBranches(projectId).catch(() => null));
+}
+
 export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: any) {
   const [config, setConfig] = useState<any>(null);
+  const [branchData, setBranchData] = useState<any>(null);
   const [selected, setSelected] = useState<any>(null);
   const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<any[]>([]);
@@ -166,13 +188,17 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         setError(null);
       }
       try {
-        const res = await api.getDeployConfig(projectId);
+        const [res, branches] = await Promise.all([
+          api.getDeployConfig(projectId),
+          loadDeployBranches(projectId),
+        ]);
         setConfig(res);
+        setBranchData(branches);
         setMissingConfig(false);
         setRefByEnv((prev) => {
           const next = { ...prev };
           for (const env of res.environments || []) {
-            if (!next[env.name]) next[env.name] = env.currentRef || 'HEAD';
+            if (!next[env.name]) next[env.name] = defaultDeployRef(env, branches);
           }
           return next;
         });
@@ -183,6 +209,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
       } catch (e: any) {
         if (isMissingDeployConfigError(e)) {
           setConfig(null);
+          setBranchData(null);
           setMissingConfig(true);
           setError(null);
         } else {
@@ -220,6 +247,8 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   useEffect(() => {
     selectedIdRef.current = null;
     setSelected(null);
+    setRefByEnv({});
+    setBranchData(null);
     setEvents([]);
     load();
   }, [load]);
@@ -358,7 +387,12 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                 const last = env.lastDeployment;
                 const busy = Boolean(active && !isTerminalStatus(active.status));
                 const awaitingApproval = active?.status === 'awaiting_approval';
-                const refValue = refByEnv[env.name] ?? env.currentRef ?? 'HEAD';
+                const refValue = refByEnv[env.name] ?? defaultDeployRef(env, branchData);
+                const branches = branchNames(branchData);
+                const hasBranches = branches.length > 0;
+                const selectedBranchValue = branches.includes(refValue)
+                  ? refValue
+                  : CUSTOM_REF_VALUE;
                 const rollbackTargetId = env.rollbackTarget?.id;
                 return (
                   <section
@@ -392,15 +426,42 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                     </div>
 
                     <div className="mt-4 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
-                      <input
-                        aria-label={`Ref for ${env.name}`}
-                        value={refValue}
-                        onChange={(e) =>
-                          setRefByEnv((prev) => ({ ...prev, [env.name]: e.target.value }))
-                        }
-                        className="min-h-[34px] rounded-md border border-gray-700 bg-gray-950 px-2 text-sm text-gray-200 outline-none focus:border-sky-500"
-                        disabled={busy}
-                      />
+                      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-2">
+                        {hasBranches ? (
+                          <select
+                            aria-label={`Ref for ${env.name}`}
+                            value={selectedBranchValue}
+                            onChange={(e) => {
+                              if (e.target.value === CUSTOM_REF_VALUE) return;
+                              setRefByEnv((prev) => ({ ...prev, [env.name]: e.target.value }));
+                            }}
+                            className="min-h-[34px] rounded-md border border-gray-700 bg-gray-950 px-2 text-sm text-gray-200 outline-none focus:border-sky-500"
+                            disabled={busy}
+                          >
+                            {branches.map((branch) => (
+                              <option key={branch} value={branch}>
+                                {branch}
+                                {branch === defaultDeployRef({ currentRef: null }, branchData)
+                                  ? ' (default)'
+                                  : ''}
+                              </option>
+                            ))}
+                            <option value={CUSTOM_REF_VALUE}>Custom ref</option>
+                          </select>
+                        ) : null}
+                        <input
+                          aria-label={
+                            hasBranches ? `Manual ref for ${env.name}` : `Ref for ${env.name}`
+                          }
+                          value={refValue}
+                          onChange={(e) =>
+                            setRefByEnv((prev) => ({ ...prev, [env.name]: e.target.value }))
+                          }
+                          placeholder="Branch, tag, or SHA"
+                          className="min-h-[34px] rounded-md border border-gray-700 bg-gray-950 px-2 text-sm text-gray-200 outline-none focus:border-sky-500"
+                          disabled={busy}
+                        />
+                      </div>
                       <button
                         type="button"
                         onClick={() =>

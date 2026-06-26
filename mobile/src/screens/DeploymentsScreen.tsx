@@ -91,11 +91,32 @@ function StepIcon({ status }: any) {
   return <Clock size={16} color={colors.gray500} />;
 }
 
+function branchNames(branchData: any): string[] {
+  return Array.isArray(branchData?.branches)
+    ? branchData.branches.map((branch: any) => branch?.name).filter(Boolean)
+    : [];
+}
+
+function defaultDeployRef(env: any, branchData: any): string {
+  const defaultBranch =
+    branchData?.defaultBranch ||
+    branchData?.branches?.find((branch: any) => branch?.isDefault)?.name ||
+    null;
+  return defaultBranch || env.currentRef || 'HEAD';
+}
+
+function loadDeployBranches(projectId: string): Promise<any> {
+  return api
+    .getProjectBranches(projectId)
+    .catch(() => api.getGitHostBranches(projectId).catch(() => null));
+}
+
 export default function DeploymentsScreen({ route, navigation }: any) {
   const { projects, lastDeploymentEvent } = useApp();
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = route?.params?.project || projects?.find((p: any) => p.id === projectId);
   const [config, setConfig] = useState<any>(null);
+  const [branchData, setBranchData] = useState<any>(null);
   const [selected, setSelected] = useState<any>(null);
   const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<any[]>([]);
@@ -137,13 +158,17 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         setError(null);
       }
       try {
-        const res = await api.getDeployConfig(projectId);
+        const [res, branches] = await Promise.all([
+          api.getDeployConfig(projectId),
+          loadDeployBranches(projectId),
+        ]);
         setConfig(res);
+        setBranchData(branches);
         setMissingConfig(false);
         setRefByEnv((prev) => {
           const next = { ...prev };
           for (const env of res.environments || []) {
-            if (!next[env.name]) next[env.name] = env.currentRef || 'HEAD';
+            if (!next[env.name]) next[env.name] = defaultDeployRef(env, branches);
           }
           return next;
         });
@@ -154,6 +179,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
       } catch (err: any) {
         if (isMissingDeployConfigError(err)) {
           setConfig(null);
+          setBranchData(null);
           setMissingConfig(true);
           setError(null);
         } else {
@@ -188,6 +214,8 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   useEffect(() => {
     selectedIdRef.current = null;
     setSelected(null);
+    setRefByEnv({});
+    setBranchData(null);
     setEvents([]);
     load();
   }, [load]);
@@ -311,7 +339,8 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           const last = env.lastDeployment;
           const busy = Boolean(active && !isTerminalDeploymentStatus(active.status));
           const awaitingApproval = active?.status === 'awaiting_approval';
-          const refValue = refByEnv[env.name] ?? env.currentRef ?? 'HEAD';
+          const refValue = refByEnv[env.name] ?? defaultDeployRef(env, branchData);
+          const branches = branchNames(branchData);
           const rollbackTargetId = env.rollbackTarget?.id;
           const deployKey = `deploy:${env.name}`;
           const rollbackKey = `rollback:${env.name}`;
@@ -339,6 +368,44 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                 </View>
                 <StatusBadge status={active?.status || last?.status || 'idle'} />
               </View>
+
+              {branches.length > 0 ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.branchPicker}
+                  accessibilityLabel={`Branches for ${env.name}`}
+                >
+                  {branches.map((branch) => {
+                    const activeBranch = branch === refValue;
+                    return (
+                      <TouchableOpacity
+                        key={branch}
+                        style={[styles.branchChip, activeBranch && styles.branchChipActive]}
+                        onPress={() =>
+                          setRefByEnv((prev) => ({ ...prev, [env.name]: branch }))
+                        }
+                        disabled={busy}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Deploy ${env.name} from ${branch}`}
+                      >
+                        <Text
+                          style={[
+                            styles.branchChipText,
+                            activeBranch && styles.branchChipTextActive,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {branch}
+                          {branch === defaultDeployRef({ currentRef: null }, branchData)
+                            ? ' (default)'
+                            : ''}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
 
               <View style={styles.deployRow}>
                 <TextInput
@@ -588,6 +655,22 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
   },
   statusBadgeText: { fontSize: 11, fontWeight: '700', textTransform: 'lowercase' },
+  branchPicker: { maxHeight: 38 },
+  branchChip: {
+    maxWidth: 220,
+    minHeight: 32,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    backgroundColor: colors.gray950,
+  },
+  branchChipActive: { borderColor: colors.emerald400, backgroundColor: colors.emerald900_40 },
+  branchChipText: { color: colors.gray300, fontSize: 12, fontFamily: 'monospace' },
+  branchChipTextActive: { color: colors.emerald300 },
   deployRow: { flexDirection: 'row', gap: 8 },
   refInput: {
     flex: 1,

@@ -6,6 +6,8 @@ import { api } from '../utils/api';
 (vi as any).mock('../utils/api.js', () => ({
   api: {
     getDeployConfig: vi.fn(),
+    getProjectBranches: vi.fn(),
+    getGitHostBranches: vi.fn(),
     getDeployment: vi.fn(),
     startDeployWizard: vi.fn(),
     triggerDeployment: vi.fn(),
@@ -88,6 +90,14 @@ function config(environments: any[] = [env()]) {
 beforeEach(() => {
   vi.clearAllMocks();
   (api.getDeployConfig as any).mockResolvedValue(config());
+  (api.getProjectBranches as any).mockResolvedValue({
+    defaultBranch: 'main',
+    branches: [
+      { name: 'main', isDefault: true },
+      { name: 'release-1', isDefault: false },
+    ],
+  });
+  (api.getGitHostBranches as any).mockRejectedValue(new Error('not hosted'));
   (api.getDeployment as any).mockResolvedValue(snapshot());
   (api.startDeployWizard as any).mockResolvedValue({
     sessionId: 'setup-session-1',
@@ -112,8 +122,26 @@ describe('DeploymentsPage', () => {
     expect(within(card).getByText('dev')).toBeInTheDocument();
     expect(within(card).getByText(/live sha-live/)).toBeInTheDocument();
     expect(within(card).getByText('success')).toBeInTheDocument();
-    expect(within(card).getByLabelText('Ref for dev')).toHaveValue('sha-live');
+    expect(within(card).getByLabelText('Ref for dev')).toHaveValue('main');
+    expect(within(card).getByLabelText('Manual ref for dev')).toHaveValue('main');
     expect(await screen.findByText('1. build')).toBeInTheDocument();
+  });
+
+  it('defaults deployment targets to the repo default branch instead of the live SHA', async () => {
+    (api.getDeployConfig as any).mockResolvedValue(
+      config([env({ currentRef: 'abcdef1234567890' })]),
+    );
+
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const card = await screen.findByTestId('deploy-env-dev');
+    expect(within(card).getByText(/live abcdef123456/)).toBeInTheDocument();
+    expect(within(card).getByLabelText('Ref for dev')).toHaveValue('main');
+    fireEvent.click(within(card).getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() =>
+      expect(api.triggerDeployment).toHaveBeenCalledWith('proj-1', 'dev', { ref: 'main' }),
+    );
   });
 
   it('triggers a deployment with the typed ref', async () => {
@@ -130,6 +158,48 @@ describe('DeploymentsPage', () => {
       expect(api.triggerDeployment).toHaveBeenCalledWith('proj-1', 'dev', { ref: 'release-1' }),
     );
     expect(onNotify).toHaveBeenCalledWith('Deploy started for dev', 'success');
+  });
+
+  it('keeps a manual ref input when branch lookup fails', async () => {
+    (api.getProjectBranches as any).mockRejectedValue(new Error('branch lookup failed'));
+    const onNotify = vi.fn();
+    render(<DeploymentsPage projectId="proj-1" onNotify={onNotify} />);
+
+    const card = await screen.findByTestId('deploy-env-dev');
+    const refInput = within(card).getByLabelText('Ref for dev');
+    expect(refInput).toHaveValue('sha-live');
+    fireEvent.change(refInput, { target: { value: 'v2.0.0' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() =>
+      expect(api.triggerDeployment).toHaveBeenCalledWith('proj-1', 'dev', { ref: 'v2.0.0' }),
+    );
+  });
+
+  it('falls back to hosted git branches when generic branch lookup fails', async () => {
+    (api.getProjectBranches as any).mockRejectedValue(new Error('no origin'));
+    (api.getGitHostBranches as any).mockResolvedValue({
+      defaultBranch: 'trunk',
+      branches: [
+        { name: 'trunk', isDefault: true },
+        { name: 'release-hosted', isDefault: false },
+      ],
+    });
+
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const card = await screen.findByTestId('deploy-env-dev');
+    expect(within(card).getByLabelText('Ref for dev')).toHaveValue('trunk');
+    fireEvent.change(within(card).getByLabelText('Ref for dev'), {
+      target: { value: 'release-hosted' },
+    });
+    fireEvent.click(within(card).getByRole('button', { name: 'Deploy' }));
+
+    await waitFor(() =>
+      expect(api.triggerDeployment).toHaveBeenCalledWith('proj-1', 'dev', {
+        ref: 'release-hosted',
+      }),
+    );
   });
 
   it('shows deploy.yaml setup when the config is missing', async () => {
@@ -163,7 +233,7 @@ describe('DeploymentsPage', () => {
     render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
 
     const card = await screen.findByTestId('deploy-env-dev');
-    const refInput = within(card).getByLabelText('Ref for dev');
+    const refInput = within(card).getByLabelText('Manual ref for dev');
     const deployButton = within(card).getByRole('button', { name: 'Deploy' });
     const rollbackButton = within(card).getByRole('button', { name: 'Rollback' });
     expect(refInput).not.toBeDisabled();
