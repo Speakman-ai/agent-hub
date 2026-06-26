@@ -10,6 +10,7 @@ import { api } from '../utils/api';
 (vi as any).mock('../utils/api.js', () => ({
   api: {
     getCiRuns: vi.fn(),
+    getCiRunStats: vi.fn(),
     getCiRunDetail: vi.fn(),
     getFinalizeStepOutput: vi.fn(),
     getFinalizeRunResources: vi.fn(),
@@ -77,6 +78,33 @@ const runs = [
 beforeEach(() => {
   vi.clearAllMocks();
   (api.getCiRuns as any).mockResolvedValue({ runs });
+  (api.getCiRunStats as any).mockResolvedValue({
+    overall: {
+      average_seconds: 90,
+      total_runs: 4,
+      failed_runs: 1,
+      failure_rate: 0.25,
+      total_errors: 1,
+      infra_errors: 0,
+      infra_error_rate: 0,
+    },
+    tests: [
+      {
+        job_id: 'test',
+        matrix_key: 'server',
+        name: 'test / server',
+        configured: true,
+        average_seconds: 120,
+        total_runs: 3,
+        failed_runs: 1,
+        failure_rate: 1 / 3,
+        total_errors: 1,
+        infra_errors: 0,
+        infra_error_rate: 0,
+      },
+    ],
+    ci_config: { found: true, version: 2, error: null },
+  });
   (api.getCiRunDetail as any).mockResolvedValue({
     run: runs[0],
     steps: [
@@ -104,6 +132,38 @@ describe('CiRunsSection', () => {
     expect(screen.getByTestId('ci-run-run-2')).toHaveTextContent('finalize');
     expect(screen.getByTestId('ci-run-run-2')).toHaveTextContent('checks_failed');
     expect(api.getCiRuns).toHaveBeenCalledWith('proj-1', { limit: 30 });
+  });
+
+  it('renders runner stats above recent runs', async () => {
+    render(<CiRunsSection project={hostedProject} />);
+    const stats = await screen.findByTestId('ci-run-stats');
+
+    expect(stats).toHaveTextContent('Overall');
+    expect(stats).toHaveTextContent('1m 30s');
+    expect(stats).toHaveTextContent('25%');
+    expect(stats).toHaveTextContent('Tests in ci.yaml');
+    expect(stats).toHaveTextContent('test / server');
+    expect(stats).toHaveTextContent('2m 0s');
+    expect(stats).toHaveTextContent('33%');
+    expect(api.getCiRunStats).toHaveBeenCalledWith('proj-1');
+  });
+
+  it('renders stats as unavailable instead of spinning forever when stats fail', async () => {
+    (api.getCiRunStats as any).mockRejectedValue(new Error('stats unavailable'));
+    render(<CiRunsSection project={hostedProject} />);
+
+    expect(await screen.findByTestId('ci-run-stats-unavailable')).toHaveTextContent('unavailable');
+    expect(screen.queryByText(/Loading runner stats/i)).toBeNull();
+  });
+
+  it('keeps successful stats visible when recent runs fail', async () => {
+    (api.getCiRuns as any).mockRejectedValue(new Error('runs unavailable'));
+    render(<CiRunsSection project={hostedProject} />);
+
+    const stats = await screen.findByTestId('ci-run-stats');
+    expect(stats).toHaveTextContent('Overall');
+    expect(stats).toHaveTextContent('test / server');
+    expect(await screen.findByText(/No runs yet/)).toBeInTheDocument();
   });
 
   it('shows the session title when present, falling back to the branch otherwise', async () => {

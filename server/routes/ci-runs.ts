@@ -9,11 +9,16 @@
  * existing `GET .../finalize/:runId/steps/:stepIndex/output` route.
  */
 
+import path from 'path';
 import { Router, type Request, type Response } from 'express';
 import type { FinalizeRunRow, Project, RouteDeps } from '../types.js';
 import { getDb } from '../db.js';
 import { rerunCiRun } from '../git-host/push-ci.js';
 import { z, registerPath } from '../openapi/registry.js';
+import { loadCiConfigFromFile, type AnyCiConfig } from '../finalize/ci-config.js';
+import { matrixKeyFromRow } from '../finalize/ci-config-v2.js';
+import { DEFAULT_CI_CONFIG_RELATIVE_PATH } from '../finalize/finalize-keys.js';
+import { isInfraFailureReason } from '../finalize/infra-retry.js';
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
@@ -61,6 +66,23 @@ const CiRunStepSchema = z.object({
   matrix_key: z.string().nullable(),
 });
 
+const CiRunStatsBucketSchema = z.object({
+  average_seconds: z.number().nullable(),
+  total_runs: z.number().int(),
+  failed_runs: z.number().int(),
+  failure_rate: z.number().nullable(),
+  total_errors: z.number().int(),
+  infra_errors: z.number().int(),
+  infra_error_rate: z.number().nullable(),
+});
+
+const CiRunTestStatsSchema = CiRunStatsBucketSchema.extend({
+  job_id: z.string(),
+  matrix_key: z.string(),
+  name: z.string(),
+  configured: z.boolean(),
+});
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/ci-runs',
@@ -81,6 +103,34 @@ registerPath({
       content: jsonContent(z.object({ runs: z.array(CiRunSchema) })),
     },
     404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/ci-runs/stats',
+  tags: ['Projects'],
+  summary: 'Runner card completion and failure-rate stats',
+  description:
+    'Aggregates completed Runner runs and per-ci.yaml job instances for the Runners page. Configured ci.yaml jobs are returned even before they have historical samples.',
+  request: { params: z.object({ projectId: z.string() }) },
+  responses: {
+    200: {
+      description: 'Runner stats.',
+      content: jsonContent(
+        z.object({
+          overall: CiRunStatsBucketSchema,
+          tests: z.array(CiRunTestStatsSchema),
+          ci_config: z.object({
+            found: z.boolean(),
+            version: z.number().nullable(),
+            error: z.string().nullable(),
+          }),
+        }),
+      ),
+    },
+    404: { description: 'Unknown project.', content: jsonContent(ErrorResponse) },
+    500: { description: 'Stats could not be read.', content: jsonContent(ErrorResponse) },
   },
 });
 
@@ -169,6 +219,244 @@ function serializeRun(
   };
 }
 
+interface StatsBucket {
+  average_seconds: number | null;
+  total_runs: number;
+  failed_runs: number;
+  failure_rate: number | null;
+  total_errors: number;
+  infra_errors: number;
+  infra_error_rate: number | null;
+}
+
+interface MutableStatsBucket {
+  durationSecondsTotal: number;
+  durationSamples: number;
+  totalRuns: number;
+  failedRuns: number;
+  totalErrors: number;
+  infraErrors: number;
+}
+
+interface ConfiguredTest {
+  job_id: string;
+  matrix_key: string;
+  name: string;
+}
+
+const SUCCESS_RUN_STATUSES = new Set(['succeeded', 'ready_to_push', 'pushed']);
+const IN_FLIGHT_JOB_STATES = new Set(['queued', 'running']);
+
+function emptyMutableStats(): MutableStatsBucket {
+  return {
+    durationSecondsTotal: 0,
+    durationSamples: 0,
+    totalRuns: 0,
+    failedRuns: 0,
+    totalErrors: 0,
+    infraErrors: 0,
+  };
+}
+
+function serializeStats(bucket: MutableStatsBucket): StatsBucket {
+  return {
+    average_seconds:
+      bucket.durationSamples > 0 ? bucket.durationSecondsTotal / bucket.durationSamples : null,
+    total_runs: bucket.totalRuns,
+    failed_runs: bucket.failedRuns,
+    failure_rate: bucket.totalRuns > 0 ? bucket.failedRuns / bucket.totalRuns : null,
+    total_errors: bucket.totalErrors,
+    infra_errors: bucket.infraErrors,
+    infra_error_rate: bucket.totalErrors > 0 ? bucket.infraErrors / bucket.totalErrors : null,
+  };
+}
+
+function addDuration(bucket: MutableStatsBucket, startedAt: number | null, endedAt: number | null) {
+  if (typeof startedAt !== 'number' || typeof endedAt !== 'number' || endedAt < startedAt) return;
+  bucket.durationSecondsTotal += (endedAt - startedAt) / 1000;
+  bucket.durationSamples++;
+}
+
+function runFailed(status: string): boolean {
+  return !SUCCESS_RUN_STATUSES.has(status);
+}
+
+function runInfraFailed(status: string, failureReason: string | null): boolean {
+  return status === 'infra_error' || isInfraFailureReason(failureReason);
+}
+
+function jobFailed(state: string, exitCode: number | null): boolean {
+  if (state === 'passed' || state === 'success' || state === 'skipped') return false;
+  if (IN_FLIGHT_JOB_STATES.has(state)) return false;
+  return state === 'failed' || state === 'failure' || state === 'timeout' || exitCode !== 0;
+}
+
+function statsKey(jobId: string, matrixKey: string): string {
+  return `${jobId}\u0000${matrixKey}`;
+}
+
+function configuredTestsFromCi(config: AnyCiConfig): ConfiguredTest[] {
+  if (config.version === 1) {
+    return config.steps.map((step, i) => ({
+      job_id: step.name || `step ${i + 1}`,
+      matrix_key: '',
+      name: step.name || `step ${i + 1}`,
+    }));
+  }
+  const tests: ConfiguredTest[] = [];
+  for (const [jobId, job] of Object.entries(config.jobs)) {
+    const matrixRows = job.matrixInclude.length > 0 ? job.matrixInclude : [{}];
+    for (const matrixRow of matrixRows) {
+      const matrixKey = matrixKeyFromRow(matrixRow);
+      const label = matrixRow.label || matrixRow.name || matrixRow.group || matrixKey;
+      tests.push({
+        job_id: jobId,
+        matrix_key: matrixKey,
+        name: label ? `${jobId} / ${label}` : jobId,
+      });
+    }
+  }
+  return tests;
+}
+
+async function loadConfiguredTests(project: Project): Promise<{
+  tests: ConfiguredTest[];
+  ciConfig: { found: boolean; version: number | null; error: string | null };
+}> {
+  const ciPath = path.join(project.cwd, DEFAULT_CI_CONFIG_RELATIVE_PATH);
+  let parsed: Awaited<ReturnType<typeof loadCiConfigFromFile>>;
+  try {
+    parsed = await loadCiConfigFromFile(ciPath);
+  } catch (err) {
+    return {
+      tests: [],
+      ciConfig: {
+        found: true,
+        version: null,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    };
+  }
+  if (!parsed.ok) {
+    return {
+      tests: [],
+      ciConfig: {
+        found: parsed.error.message.includes('file not found') ? false : true,
+        version: null,
+        error: parsed.error.message,
+      },
+    };
+  }
+  return {
+    tests: configuredTestsFromCi(parsed.config),
+    ciConfig: { found: true, version: parsed.config.version, error: null },
+  };
+}
+
+async function buildCiRunStats(project: Project) {
+  const configured = await loadConfiguredTests(project);
+  const overall = emptyMutableStats();
+  const byTest = new Map<string, MutableStatsBucket>();
+  const names = new Map<string, ConfiguredTest>();
+  for (const test of configured.tests) {
+    const key = statsKey(test.job_id, test.matrix_key);
+    byTest.set(key, emptyMutableStats());
+    names.set(key, test);
+  }
+
+  const rows = getDb()
+    .prepare(
+      `SELECT
+          r.id AS run_id,
+          r.status AS run_status,
+          r.failure_reason AS failure_reason,
+          r.started_at AS run_started_at,
+          r.ended_at AS run_ended_at,
+          j.job_id AS job_id,
+          j.matrix_key AS matrix_key,
+          j.state AS job_state,
+          j.exit_code AS job_exit_code,
+          j.started_at AS job_started_at,
+          j.ended_at AS job_ended_at
+        FROM finalize_runs r
+        LEFT JOIN finalize_run_jobs j ON j.run_id = r.id
+        WHERE r.project_id = ?
+          AND r.ended_at IS NOT NULL
+        ORDER BY r.started_at ASC, j.job_id ASC, j.matrix_key ASC`,
+    )
+    .all(project.id) as Array<{
+    run_id: string;
+    run_status: string;
+    failure_reason: string | null;
+    run_started_at: number;
+    run_ended_at: number | null;
+    job_id: string | null;
+    matrix_key: string | null;
+    job_state: string | null;
+    job_exit_code: number | null;
+    job_started_at: number | null;
+    job_ended_at: number | null;
+  }>;
+
+  const seenRuns = new Set<string>();
+  for (const row of rows) {
+    if (!seenRuns.has(row.run_id)) {
+      seenRuns.add(row.run_id);
+      overall.totalRuns++;
+      addDuration(overall, row.run_started_at, row.run_ended_at);
+      if (runFailed(row.run_status)) {
+        overall.failedRuns++;
+        overall.totalErrors++;
+        if (runInfraFailed(row.run_status, row.failure_reason)) overall.infraErrors++;
+      }
+    }
+
+    if (!row.job_id || !row.job_state || IN_FLIGHT_JOB_STATES.has(row.job_state)) continue;
+    const matrixKey = row.matrix_key ?? '';
+    const key = statsKey(row.job_id, matrixKey);
+    let bucket = byTest.get(key);
+    if (!bucket) {
+      bucket = emptyMutableStats();
+      byTest.set(key, bucket);
+      names.set(key, {
+        job_id: row.job_id,
+        matrix_key: matrixKey,
+        name: matrixKey ? `${row.job_id} / ${matrixKey}` : row.job_id,
+      });
+    }
+    bucket.totalRuns++;
+    addDuration(bucket, row.job_started_at, row.job_ended_at);
+    if (jobFailed(row.job_state, row.job_exit_code)) {
+      bucket.failedRuns++;
+      bucket.totalErrors++;
+      if (runInfraFailed(row.run_status, row.failure_reason)) bucket.infraErrors++;
+    }
+  }
+
+  const configuredKeys = new Set(
+    configured.tests.map((test) => statsKey(test.job_id, test.matrix_key)),
+  );
+  const tests = [...byTest.entries()]
+    .map(([key, bucket]) => {
+      const info = names.get(key)!;
+      return {
+        ...info,
+        configured: configuredKeys.has(key),
+        ...serializeStats(bucket),
+      };
+    })
+    .sort((a, b) => {
+      if (a.configured !== b.configured) return a.configured ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+  return {
+    overall: serializeStats(overall),
+    tests,
+    ci_config: configured.ciConfig,
+  };
+}
+
 export default function createCiRunsRoutes(deps: RouteDeps): Router {
   const router = Router();
 
@@ -198,6 +486,18 @@ export default function createCiRunsRoutes(deps: RouteDeps): Router {
     ) as FinalizeRunRow[];
     const sessionTitles = loadSessionTitles(rows);
     res.json({ runs: rows.map((r) => serializeRun(deps, r, sessionTitles)) });
+  });
+
+  router.get('/api/projects/:projectId/ci-runs/stats', async (req: Request, res: Response) => {
+    const project = findProjectOr404(req, res);
+    if (!project) return;
+    try {
+      res.json(await buildCiRunStats(project));
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to read CI run stats',
+      });
+    }
   });
 
   router.get('/api/projects/:projectId/ci-runs/:runId', (req: Request, res: Response) => {

@@ -21,6 +21,7 @@ import {
   History,
   Zap,
   Square,
+  BarChart3,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { relativePrTime } from '../utils/prFormatting';
@@ -88,6 +89,147 @@ function durationFromTimes(started: any, ended: any) {
 
 function durationLabel(run: any) {
   return durationFromTimes(run.started_at, run.ended_at);
+}
+
+function formatStatsDuration(seconds: any) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return '-';
+  const sec = Math.max(0, Math.round(seconds));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return `${hr}h ${remMin}m`;
+}
+
+function formatRate(rate: any) {
+  if (typeof rate !== 'number' || !Number.isFinite(rate)) return '-';
+  return `${Math.round(rate * 100)}%`;
+}
+
+function rateDetail(numerator: any, denominator: any, empty = '-') {
+  if (!denominator) return empty;
+  return `${numerator || 0} / ${denominator}`;
+}
+
+function StatsCell({ label, value, detail }: any) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] uppercase tracking-wide text-gray-600">{label}</div>
+      <div className="text-sm font-medium text-gray-200 tabular-nums">{value}</div>
+      {detail && <div className="text-[11px] text-gray-600 tabular-nums">{detail}</div>}
+    </div>
+  );
+}
+
+function RunnerStats({ stats }: any) {
+  if (stats === undefined) {
+    return (
+      <div className="border-t border-gray-700/70 pt-4">
+        <p className="text-xs text-gray-500 flex items-center gap-1.5">
+          <Loader2 size={12} className="animate-spin" /> Loading runner stats...
+        </p>
+      </div>
+    );
+  }
+  if (stats === null) {
+    return (
+      <div className="border-t border-gray-700/70 pt-4" data-testid="ci-run-stats-unavailable">
+        <div className="flex items-center gap-2">
+          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
+            <BarChart3 size={14} className="text-gray-500" />
+            Stats
+          </h4>
+          <span className="text-[11px] text-amber-300">unavailable</span>
+        </div>
+      </div>
+    );
+  }
+  const overall = stats.overall || {};
+  const tests = Array.isArray(stats.tests) ? stats.tests : [];
+  return (
+    <div className="border-t border-gray-700/70 pt-4 space-y-3" data-testid="ci-run-stats">
+      <div className="flex items-center gap-2">
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
+          <BarChart3 size={14} className="text-gray-500" />
+          Stats
+        </h4>
+        {stats.ci_config?.error && (
+          <span className="text-[11px] text-amber-300 truncate" title={stats.ci_config.error}>
+            ci.yaml unavailable
+          </span>
+        )}
+      </div>
+
+      <div>
+        <div className="text-xs font-medium text-gray-400 mb-2">Overall</div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <StatsCell
+            label="Avg completion"
+            value={formatStatsDuration(overall.average_seconds)}
+            detail={rateDetail(overall.total_runs, overall.total_runs, 'no completed runs')}
+          />
+          <StatsCell
+            label="Failure rate"
+            value={formatRate(overall.failure_rate)}
+            detail={rateDetail(overall.failed_runs, overall.total_runs, '0 / 0 runs')}
+          />
+          <StatsCell
+            label="Infra/container"
+            value={formatRate(overall.infra_error_rate)}
+            detail={rateDetail(overall.infra_errors, overall.total_errors, '0 / 0 errors')}
+          />
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs font-medium text-gray-400 mb-2">Tests in ci.yaml</div>
+        {tests.length === 0 ? (
+          <p className="text-xs text-gray-600 italic">No configured tests found.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-[10px] uppercase tracking-wide text-gray-600">
+                <tr>
+                  <th className="font-medium py-1.5 pr-3">Test</th>
+                  <th className="font-medium py-1.5 px-3 whitespace-nowrap">Avg completion</th>
+                  <th className="font-medium py-1.5 px-3 whitespace-nowrap">Failure rate</th>
+                  <th className="font-medium py-1.5 pl-3 whitespace-nowrap">Infra/container</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800/80">
+                {tests.map((test: any) => (
+                  <tr key={`${test.job_id}-${test.matrix_key}`}>
+                    <td className="py-2 pr-3 min-w-48">
+                      <div className="font-mono text-gray-300 truncate">{test.name}</div>
+                      {!test.configured && (
+                        <div className="text-[10px] text-gray-600">historical only</div>
+                      )}
+                    </td>
+                    <td className="py-2 px-3 tabular-nums text-gray-400 whitespace-nowrap">
+                      {formatStatsDuration(test.average_seconds)}
+                    </td>
+                    <td className="py-2 px-3 tabular-nums text-gray-400 whitespace-nowrap">
+                      {formatRate(test.failure_rate)}
+                      <span className="text-gray-600 ml-1">
+                        ({rateDetail(test.failed_runs, test.total_runs, '0 / 0')})
+                      </span>
+                    </td>
+                    <td className="py-2 pl-3 tabular-nums text-gray-400 whitespace-nowrap">
+                      {formatRate(test.infra_error_rate)}
+                      <span className="text-gray-600 ml-1">
+                        ({rateDetail(test.infra_errors, test.total_errors, '0 / 0')})
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // Step names are often emitted fully-qualified ("unit / default / test").
@@ -443,6 +585,7 @@ function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
 
 export default function CiRunsSection({ project, onProjectsChange, showToast }: any) {
   const [runs, setRuns] = useState<any>(null);
+  const [stats, setStats] = useState<any>(undefined);
   const [loading, setLoading] = useState(false);
   const [savingToggle, setSavingToggle] = useState(false);
   const pollRef = useRef<any>(null);
@@ -455,10 +598,19 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     if (!projectId) return;
     setLoading(true);
     try {
-      const d = await api.getCiRuns(projectId, { limit: 30 });
-      setRuns(Array.isArray(d?.runs) ? d.runs : []);
+      const [runsResult, statsResult] = await Promise.allSettled([
+        api.getCiRuns(projectId, { limit: 30 }),
+        api.getCiRunStats(projectId),
+      ]);
+      if (runsResult.status === 'fulfilled') {
+        setRuns(Array.isArray(runsResult.value?.runs) ? runsResult.value.runs : []);
+      } else {
+        setRuns([]);
+      }
+      setStats(statsResult.status === 'fulfilled' ? statsResult.value : null);
     } catch {
       setRuns([]);
+      setStats(null);
     } finally {
       setLoading(false);
     }
@@ -466,6 +618,7 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
 
   useEffect(() => {
     setRuns(null);
+    setStats(undefined);
     refresh();
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -534,6 +687,8 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
           </button>
         </div>
       )}
+
+      <RunnerStats stats={stats} />
 
       <div className="flex items-center gap-2">
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">

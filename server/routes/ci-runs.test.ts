@@ -6,7 +6,11 @@ import '../test/setup.js';
 import type supertest from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import { getRequest } from '../test/helpers.js';
+import { getDb } from '../db.js';
 import type { Stmts } from '../types.js';
 
 let request: supertest.Agent;
@@ -17,12 +21,9 @@ beforeAll(async () => {
   stmts = (await import('../db.js')).stmts!;
 });
 
-async function freshProject(): Promise<string> {
+async function freshProject(cwd = '/tmp'): Promise<string> {
   const id = `ci-runs-test-${uuidv4().slice(0, 8)}`;
-  await request
-    .post('/api/projects')
-    .send({ id, name: id, cwd: '/tmp', color: '#3B82F6' })
-    .expect(201);
+  await request.post('/api/projects').send({ id, name: id, cwd, color: '#3B82F6' }).expect(201);
   return id;
 }
 
@@ -34,7 +35,14 @@ function seedSession(name: string): string {
 
 function seedRun(
   projectId: string,
-  overrides: { trigger?: string; status?: string; startedAt?: number; sessionId?: string } = {},
+  overrides: {
+    trigger?: string;
+    status?: string;
+    startedAt?: number;
+    endedAt?: number;
+    sessionId?: string;
+    failureReason?: string | null;
+  } = {},
 ): string {
   const runId = uuidv4();
   stmts.insertFinalizeRun.run(
@@ -57,6 +65,11 @@ function seedRun(
     'checks',
     null,
   );
+  if (typeof overrides.endedAt === 'number' || overrides.failureReason !== undefined) {
+    getDb()
+      .prepare('UPDATE finalize_runs SET ended_at = ?, failure_reason = ? WHERE id = ?')
+      .run(overrides.endedAt ?? null, overrides.failureReason ?? null, runId);
+  }
   stmts.upsertFinalizeRunJob.run(runId, 'unit', 'default', 'success', 0, Date.now(), Date.now());
   stmts.upsertFinalizeRunStep.run(
     runId,
@@ -70,6 +83,13 @@ function seedRun(
     'default',
   );
   return runId;
+}
+
+function freshRepoWithCiYaml(content: string): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'agent-hub-ci-runs-'));
+  mkdirSync(path.join(root, '.agent-hub'), { recursive: true });
+  writeFileSync(path.join(root, '.agent-hub', 'ci.yaml'), content, 'utf8');
+  return root;
 }
 
 describe('GET /api/projects/:projectId/ci-runs', () => {
@@ -155,5 +175,109 @@ describe('GET /api/projects/:projectId/ci-runs', () => {
     expect(res.body.steps[0]).toMatchObject({ step_index: 1, state: 'success', job_id: 'unit' });
 
     await request.get(`/api/projects/${otherProject}/ci-runs/${runId}`).expect(404);
+  });
+
+  it('summarizes overall and per-ci.yaml test stats', async () => {
+    const cwd = freshRepoWithCiYaml(`
+version: 2
+on: [finalize]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm run build
+  test:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: server
+        - group: client
+    steps:
+      - run: npm test
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm run lint
+`);
+    const projectId = await freshProject(cwd);
+    const runA = seedRun(projectId, { status: 'succeeded', startedAt: 1_000, endedAt: 61_000 });
+    const runB = seedRun(projectId, {
+      status: 'failed',
+      startedAt: 101_000,
+      endedAt: 161_000,
+      failureReason: 'step_failed',
+    });
+    const runC = seedRun(projectId, {
+      status: 'infra_error',
+      startedAt: 201_000,
+      endedAt: 261_000,
+      failureReason: 'container_unavailable',
+    });
+
+    // Replace the default seed helper's unit job with ci.yaml-shaped jobs.
+    getDb()
+      .prepare('DELETE FROM finalize_run_jobs WHERE run_id IN (?, ?, ?)')
+      .run(runA, runB, runC);
+    stmts.upsertFinalizeRunJob.run(runA, 'build', '', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(runA, 'test', 'server', 'passed', 0, 2_000, 32_000);
+    stmts.upsertFinalizeRunJob.run(runA, 'test', 'client', 'passed', 0, 2_000, 42_000);
+    stmts.upsertFinalizeRunJob.run(runB, 'build', '', 'passed', 0, 102_000, 112_000);
+    stmts.upsertFinalizeRunJob.run(runB, 'test', 'server', 'failed', 1, 102_000, 142_000);
+    stmts.upsertFinalizeRunJob.run(runB, 'test', 'client', 'passed', 0, 102_000, 132_000);
+    stmts.upsertFinalizeRunJob.run(runC, 'test', 'client', 'failed', -1, 202_000, 252_000);
+
+    const res = await request.get(`/api/projects/${projectId}/ci-runs/stats`).expect(200);
+    expect(res.body.overall).toMatchObject({
+      average_seconds: 60,
+      total_runs: 3,
+      failed_runs: 2,
+      total_errors: 2,
+      infra_errors: 1,
+    });
+    expect(res.body.overall.failure_rate).toBeCloseTo(2 / 3);
+    expect(res.body.overall.infra_error_rate).toBeCloseTo(1 / 2);
+
+    const byName = new Map<string, Record<string, unknown>>(
+      res.body.tests.map((t: Record<string, unknown>) => [String(t.name), t]),
+    );
+    expect(byName.get('build')).toMatchObject({
+      configured: true,
+      average_seconds: 10,
+      total_runs: 2,
+      failed_runs: 0,
+    });
+    expect(byName.get('test / server')).toMatchObject({
+      configured: true,
+      average_seconds: 35,
+      total_runs: 2,
+      failed_runs: 1,
+      infra_errors: 0,
+    });
+    expect(byName.get('test / client')).toMatchObject({
+      configured: true,
+      total_runs: 3,
+      failed_runs: 1,
+      total_errors: 1,
+      infra_errors: 1,
+    });
+    expect(byName.get('test / client')?.infra_error_rate).toBe(1);
+    expect(byName.get('lint')).toMatchObject({
+      configured: true,
+      average_seconds: null,
+      total_runs: 0,
+    });
+  });
+
+  it('returns ci_config.error instead of failing when ci.yaml is invalid', async () => {
+    const cwd = freshRepoWithCiYaml('version: [\n');
+    const projectId = await freshProject(cwd);
+
+    const res = await request.get(`/api/projects/${projectId}/ci-runs/stats`).expect(200);
+    expect(res.body.ci_config).toMatchObject({
+      found: true,
+      version: null,
+    });
+    expect(res.body.ci_config.error).toMatch(/could not parse/i);
+    expect(res.body.tests).toEqual([]);
   });
 });

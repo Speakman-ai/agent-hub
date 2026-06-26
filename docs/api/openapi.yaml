@@ -13874,6 +13874,137 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/ci-runs/stats:
+    get:
+      tags:
+        - Projects
+      summary: Runner card completion and failure-rate stats
+      description: Aggregates completed Runner runs and per-ci.yaml job instances for the Runners page. Configured ci.yaml jobs are returned even before they have historical samples.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Runner stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overall:
+                    type: object
+                    properties:
+                      average_seconds:
+                        type: number
+                        nullable: true
+                      total_runs:
+                        type: integer
+                      failed_runs:
+                        type: integer
+                      failure_rate:
+                        type: number
+                        nullable: true
+                      total_errors:
+                        type: integer
+                      infra_errors:
+                        type: integer
+                      infra_error_rate:
+                        type: number
+                        nullable: true
+                    required:
+                      - average_seconds
+                      - total_runs
+                      - failed_runs
+                      - failure_rate
+                      - total_errors
+                      - infra_errors
+                      - infra_error_rate
+                  tests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        average_seconds:
+                          type: number
+                          nullable: true
+                        total_runs:
+                          type: integer
+                        failed_runs:
+                          type: integer
+                        failure_rate:
+                          type: number
+                          nullable: true
+                        total_errors:
+                          type: integer
+                        infra_errors:
+                          type: integer
+                        infra_error_rate:
+                          type: number
+                          nullable: true
+                        job_id:
+                          type: string
+                        matrix_key:
+                          type: string
+                        name:
+                          type: string
+                        configured:
+                          type: boolean
+                      required:
+                        - average_seconds
+                        - total_runs
+                        - failed_runs
+                        - failure_rate
+                        - total_errors
+                        - infra_errors
+                        - infra_error_rate
+                        - job_id
+                        - matrix_key
+                        - name
+                        - configured
+                  ci_config:
+                    type: object
+                    properties:
+                      found:
+                        type: boolean
+                      version:
+                        type: number
+                        nullable: true
+                      error:
+                        type: string
+                        nullable: true
+                    required:
+                      - found
+                      - version
+                      - error
+                required:
+                  - overall
+                  - tests
+                  - ci_config
+        "404":
+          description: Unknown project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "500":
+          description: Stats could not be read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/projects/{projectId}/ci-runs/{runId}:
     get:
       tags:
