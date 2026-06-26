@@ -268,6 +268,70 @@ jobs:
     });
   });
 
+  it('limits stats to runs completed in the last 24 hours when requested', async () => {
+    const cwd = freshRepoWithCiYaml(`
+version: 2
+on: [finalize]
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm test
+`);
+    const projectId = await freshProject(cwd);
+    const now = Date.now();
+    const oldRun = seedRun(projectId, {
+      status: 'failed',
+      startedAt: now - 49 * 60 * 60 * 1000,
+      endedAt: now - 48 * 60 * 60 * 1000,
+      failureReason: 'step_failed',
+    });
+    const recentRun = seedRun(projectId, {
+      status: 'succeeded',
+      startedAt: now - 60 * 60 * 1000,
+      endedAt: now - 30 * 60 * 1000,
+    });
+
+    getDb().prepare('DELETE FROM finalize_run_jobs WHERE run_id IN (?, ?)').run(oldRun, recentRun);
+    stmts.upsertFinalizeRunJob.run(
+      oldRun,
+      'unit',
+      '',
+      'failed',
+      1,
+      now - 49 * 60 * 60 * 1000,
+      now - 48 * 60 * 60 * 1000,
+    );
+    stmts.upsertFinalizeRunJob.run(
+      recentRun,
+      'unit',
+      '',
+      'passed',
+      0,
+      now - 60 * 60 * 1000,
+      now - 30 * 60 * 1000,
+    );
+
+    const all = await request
+      .get(`/api/projects/${projectId}/ci-runs/stats`)
+      .query({ range: 'all' })
+      .expect(200);
+    expect(all.body.range).toBe('all');
+    expect(all.body.overall).toMatchObject({ total_runs: 2, failed_runs: 1 });
+
+    const recent = await request
+      .get(`/api/projects/${projectId}/ci-runs/stats`)
+      .query({ range: '24h' })
+      .expect(200);
+    expect(recent.body.range).toBe('24h');
+    expect(recent.body.overall).toMatchObject({ total_runs: 1, failed_runs: 0 });
+    expect(recent.body.tests[0]).toMatchObject({
+      job_id: 'unit',
+      total_runs: 1,
+      failed_runs: 0,
+    });
+  });
+
   it('excludes historical-only test cards that are no longer in ci.yaml', async () => {
     const cwd = freshRepoWithCiYaml(`
 version: 2

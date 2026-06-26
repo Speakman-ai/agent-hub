@@ -532,7 +532,8 @@ export const api = {
   // Run history (Runners page) — finalize + push-CI runs.
   getCiRuns: (projectId: any, { trigger = 'all', limit = 30 }: any = {}) =>
     fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
-  getCiRunStats: (projectId: any) => fetchJSON(`/projects/${projectId}/ci-runs/stats`),
+  getCiRunStats: (projectId: any, { range = 'all' }: any = {}) =>
+    fetchJSON(`/projects/${projectId}/ci-runs/stats?range=${encodeURIComponent(range)}`),
   getCiRunDetail: (projectId: any, runId: any) =>
     fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
   getFinalizeStepOutput: (projectId: any, runId: any, stepIndex: any, opts: any = {}) =>

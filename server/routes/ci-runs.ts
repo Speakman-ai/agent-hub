@@ -23,6 +23,7 @@ import { isInfraFailureReason } from '../finalize/infra-retry.js';
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
 const TRIGGERS = new Set(['all', 'ui_button', 'agent_block', 'git_push', 'pr_push']);
+const STATS_RANGES = new Set(['all', '24h']);
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
@@ -83,6 +84,8 @@ const CiRunTestStatsSchema = CiRunStatsBucketSchema.extend({
   configured: z.boolean(),
 });
 
+const CiRunStatsRangeSchema = z.enum(['all', '24h']);
+
 registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/ci-runs',
@@ -113,12 +116,16 @@ registerPath({
   summary: 'Runner card completion and failure-rate stats',
   description:
     'Aggregates completed Runner runs for the Runners page. Per-test stats are limited to jobs currently configured in ci.yaml; configured jobs are returned even before they have historical samples.',
-  request: { params: z.object({ projectId: z.string() }) },
+  request: {
+    params: z.object({ projectId: z.string() }),
+    query: z.object({ range: CiRunStatsRangeSchema.optional() }),
+  },
   responses: {
     200: {
       description: 'Runner stats.',
       content: jsonContent(
         z.object({
+          range: CiRunStatsRangeSchema,
           overall: CiRunStatsBucketSchema,
           tests: z.array(CiRunTestStatsSchema),
           ci_config: z.object({
@@ -244,6 +251,8 @@ interface ConfiguredTest {
   name: string;
 }
 
+type CiRunStatsRange = z.infer<typeof CiRunStatsRangeSchema>;
+
 const SUCCESS_RUN_STATUSES = new Set(['succeeded', 'ready_to_push', 'pushed']);
 const IN_FLIGHT_JOB_STATES = new Set(['queued', 'running']);
 
@@ -353,7 +362,7 @@ async function loadConfiguredTests(project: Project): Promise<{
   };
 }
 
-async function buildCiRunStats(project: Project) {
+async function buildCiRunStats(project: Project, range: CiRunStatsRange) {
   const configured = await loadConfiguredTests(project);
   const overall = emptyMutableStats();
   const byTest = new Map<string, MutableStatsBucket>();
@@ -367,6 +376,7 @@ async function buildCiRunStats(project: Project) {
     names.set(key, test);
   }
 
+  const completedAfter = range === '24h' ? Date.now() - 24 * 60 * 60 * 1000 : null;
   const rows = getDb()
     .prepare(
       `SELECT
@@ -385,9 +395,10 @@ async function buildCiRunStats(project: Project) {
         LEFT JOIN finalize_run_jobs j ON j.run_id = r.id
         WHERE r.project_id = ?
           AND r.ended_at IS NOT NULL
+          AND (? IS NULL OR r.ended_at >= ?)
         ORDER BY r.started_at ASC, j.job_id ASC, j.matrix_key ASC`,
     )
-    .all(project.id) as Array<{
+    .all(project.id, completedAfter, completedAfter) as Array<{
     run_id: string;
     run_status: string;
     failure_reason: string | null;
@@ -443,6 +454,7 @@ async function buildCiRunStats(project: Project) {
     });
 
   return {
+    range,
     overall: serializeStats(overall),
     tests,
     ci_config: configured.ciConfig,
@@ -483,8 +495,10 @@ export default function createCiRunsRoutes(deps: RouteDeps): Router {
   router.get('/api/projects/:projectId/ci-runs/stats', async (req: Request, res: Response) => {
     const project = findProjectOr404(req, res);
     if (!project) return;
+    const rangeRaw = typeof req.query.range === 'string' ? req.query.range : 'all';
+    const range = STATS_RANGES.has(rangeRaw) ? (rangeRaw as CiRunStatsRange) : 'all';
     try {
-      res.json(await buildCiRunStats(project));
+      res.json(await buildCiRunStats(project, range));
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Failed to read CI run stats',

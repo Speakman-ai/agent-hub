@@ -114,34 +114,64 @@ function rateDetail(numerator: any, denominator: any, empty = '-') {
 
 function StatsCell({ label, value, detail }: any) {
   return (
-    <div className="min-w-0">
-      <div className="text-[10px] uppercase tracking-wide text-gray-600">{label}</div>
-      <div className="text-sm font-medium text-gray-200 tabular-nums">{value}</div>
+    <div className="min-w-0 rounded-lg border border-gray-700/60 bg-gray-900/40 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div>
+      <div className="text-base font-semibold text-gray-100 tabular-nums">{value}</div>
       {detail && <div className="text-[11px] text-gray-600 tabular-nums">{detail}</div>}
     </div>
   );
 }
 
-function RunnerStats({ stats }: any) {
+function StatsRangeControl({ range, onRangeChange }: any) {
+  const ranges = [
+    { value: 'all', label: 'All time' },
+    { value: '24h', label: 'Last 24 hours' },
+  ];
+  return (
+    <div className="inline-flex rounded-lg border border-gray-700 bg-gray-900/50 p-0.5">
+      {ranges.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={range === option.value}
+          onClick={() => onRangeChange(option.value)}
+          className={`px-2.5 py-1 text-[11px] rounded-md transition-colors ${
+            range === option.value
+              ? 'bg-gray-700 text-gray-100 shadow-sm'
+              : 'text-gray-500 hover:text-gray-300'
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RunnerStats({ stats, range, onRangeChange }: any) {
   if (stats === undefined) {
     return (
       <div className="border-t border-gray-700/70 pt-4">
-        <p className="text-xs text-gray-500 flex items-center gap-1.5">
-          <Loader2 size={12} className="animate-spin" /> Loading runner stats...
-        </p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-gray-500 flex items-center gap-1.5">
+            <Loader2 size={12} className="animate-spin" /> Loading runner stats...
+          </p>
+          <StatsRangeControl range={range} onRangeChange={onRangeChange} />
+        </div>
       </div>
     );
   }
   if (stats === null) {
     return (
       <div className="border-t border-gray-700/70 pt-4" data-testid="ci-run-stats-unavailable">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-3">
           <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
             <BarChart3 size={14} className="text-gray-500" />
             Stats
           </h4>
-          <span className="text-[11px] text-amber-300">unavailable</span>
+          <StatsRangeControl range={range} onRangeChange={onRangeChange} />
         </div>
+        <span className="mt-1 block text-[11px] text-amber-300">unavailable</span>
       </div>
     );
   }
@@ -149,16 +179,19 @@ function RunnerStats({ stats }: any) {
   const tests = Array.isArray(stats.tests) ? stats.tests : [];
   return (
     <div className="border-t border-gray-700/70 pt-4 space-y-3" data-testid="ci-run-stats">
-      <div className="flex items-center gap-2">
-        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
-          <BarChart3 size={14} className="text-gray-500" />
-          Stats
-        </h4>
-        {stats.ci_config?.error && (
-          <span className="text-[11px] text-amber-300 truncate" title={stats.ci_config.error}>
-            ci.yaml unavailable
-          </span>
-        )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">
+            <BarChart3 size={14} className="text-gray-500" />
+            Stats
+          </h4>
+          {stats.ci_config?.error && (
+            <span className="text-[11px] text-amber-300 truncate" title={stats.ci_config.error}>
+              ci.yaml unavailable
+            </span>
+          )}
+        </div>
+        <StatsRangeControl range={range} onRangeChange={onRangeChange} />
       </div>
 
       <div>
@@ -187,34 +220,47 @@ function RunnerStats({ stats }: any) {
         {tests.length === 0 ? (
           <p className="text-xs text-gray-600 italic">No configured tests found.</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto rounded-lg border border-gray-700/60">
             <table className="w-full text-left text-xs">
-              <thead className="text-[10px] uppercase tracking-wide text-gray-600">
+              <thead className="bg-gray-900/70 text-[10px] uppercase tracking-wide text-gray-500">
                 <tr>
-                  <th className="font-medium py-1.5 pr-3">Test</th>
-                  <th className="font-medium py-1.5 px-3 whitespace-nowrap">Avg completion</th>
-                  <th className="font-medium py-1.5 px-3 whitespace-nowrap">Failure rate</th>
-                  <th className="font-medium py-1.5 pl-3 whitespace-nowrap">Infra/container</th>
+                  <th className="font-medium py-2 pl-3 pr-4">Test</th>
+                  <th className="font-medium py-2 px-3 text-right whitespace-nowrap">Runs</th>
+                  <th className="font-medium py-2 px-3 text-right whitespace-nowrap">Avg</th>
+                  <th className="font-medium py-2 px-3 text-right whitespace-nowrap">Failures</th>
+                  <th className="font-medium py-2 pl-3 pr-3 text-right whitespace-nowrap">Infra</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-800/80">
+              <tbody className="divide-y divide-gray-800/80 bg-gray-950/20">
                 {tests.map((test: any) => (
-                  <tr key={`${test.job_id}-${test.matrix_key}`}>
-                    <td className="py-2 pr-3 min-w-48">
-                      <div className="font-mono text-gray-300 truncate">{test.name}</div>
+                  <tr key={`${test.job_id}-${test.matrix_key}`} className="hover:bg-gray-900/50">
+                    <td className="py-2.5 pl-3 pr-4 min-w-48">
+                      <div className="font-mono text-gray-200 truncate">{test.name}</div>
+                      {test.matrix_key && test.matrix_key !== 'default' && (
+                        <div className="mt-0.5 text-[10px] text-gray-600 font-mono truncate">
+                          {test.matrix_key}
+                        </div>
+                      )}
                     </td>
-                    <td className="py-2 px-3 tabular-nums text-gray-400 whitespace-nowrap">
+                    <td className="py-2.5 px-3 tabular-nums text-gray-400 text-right whitespace-nowrap">
+                      {test.total_runs || 0}
+                    </td>
+                    <td className="py-2.5 px-3 tabular-nums text-gray-300 text-right whitespace-nowrap">
                       {formatStatsDuration(test.average_seconds)}
                     </td>
-                    <td className="py-2 px-3 tabular-nums text-gray-400 whitespace-nowrap">
-                      {formatRate(test.failure_rate)}
-                      <span className="text-gray-600 ml-1">
+                    <td className="py-2.5 px-3 tabular-nums text-gray-400 text-right whitespace-nowrap">
+                      <span className={test.failed_runs > 0 ? 'text-red-300' : 'text-gray-400'}>
+                        {formatRate(test.failure_rate)}
+                      </span>
+                      <span className="text-gray-600 ml-1.5">
                         ({rateDetail(test.failed_runs, test.total_runs, '0 / 0')})
                       </span>
                     </td>
-                    <td className="py-2 pl-3 tabular-nums text-gray-400 whitespace-nowrap">
-                      {formatRate(test.infra_error_rate)}
-                      <span className="text-gray-600 ml-1">
+                    <td className="py-2.5 pl-3 pr-3 tabular-nums text-gray-400 text-right whitespace-nowrap">
+                      <span className={test.infra_errors > 0 ? 'text-amber-300' : 'text-gray-400'}>
+                        {formatRate(test.infra_error_rate)}
+                      </span>
+                      <span className="text-gray-600 ml-1.5">
                         ({rateDetail(test.infra_errors, test.total_errors, '0 / 0')})
                       </span>
                     </td>
@@ -583,6 +629,7 @@ function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
 export default function CiRunsSection({ project, onProjectsChange, showToast }: any) {
   const [runs, setRuns] = useState<any>(null);
   const [stats, setStats] = useState<any>(undefined);
+  const [statsRange, setStatsRange] = useState('all');
   const [loading, setLoading] = useState(false);
   const [savingToggle, setSavingToggle] = useState(false);
   const pollRef = useRef<any>(null);
@@ -597,7 +644,7 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     try {
       const [runsResult, statsResult] = await Promise.allSettled([
         api.getCiRuns(projectId, { limit: 30 }),
-        api.getCiRunStats(projectId),
+        api.getCiRunStats(projectId, { range: statsRange }),
       ]);
       if (runsResult.status === 'fulfilled') {
         setRuns(Array.isArray(runsResult.value?.runs) ? runsResult.value.runs : []);
@@ -611,7 +658,7 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, statsRange]);
 
   useEffect(() => {
     setRuns(null);
@@ -685,7 +732,15 @@ export default function CiRunsSection({ project, onProjectsChange, showToast }: 
         </div>
       )}
 
-      <RunnerStats stats={stats} />
+      <RunnerStats
+        stats={stats}
+        range={statsRange}
+        onRangeChange={(nextRange: any) => {
+          if (nextRange === statsRange) return;
+          setStats(undefined);
+          setStatsRange(nextRange);
+        }}
+      />
 
       <div className="flex items-center gap-2">
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-1.5">

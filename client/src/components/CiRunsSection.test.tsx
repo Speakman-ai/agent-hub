@@ -145,7 +145,20 @@ describe('CiRunsSection', () => {
     expect(stats).toHaveTextContent('test / server');
     expect(stats).toHaveTextContent('2m 0s');
     expect(stats).toHaveTextContent('33%');
-    expect(api.getCiRunStats).toHaveBeenCalledWith('proj-1');
+    expect(stats).toHaveTextContent('Runs');
+    expect(api.getCiRunStats).toHaveBeenCalledWith('proj-1', { range: 'all' });
+  });
+
+  it('reloads runner stats for the selected time range', async () => {
+    render(<CiRunsSection project={hostedProject} />);
+    await screen.findByTestId('ci-run-stats');
+    expect(api.getCiRunStats).toHaveBeenCalledWith('proj-1', { range: 'all' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Last 24 hours' }));
+
+    await waitFor(() =>
+      expect(api.getCiRunStats).toHaveBeenLastCalledWith('proj-1', { range: '24h' }),
+    );
   });
 
   it('renders stats as unavailable instead of spinning forever when stats fail', async () => {
