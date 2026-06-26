@@ -1,0 +1,23 @@
+# Agent Hub deployment environments (schema v1).
+#
+# Single source of truth for *how* Agent Hub ships remains GitHub Actions +
+# AWS SSM + PM2. This file makes the Hub Deployment module a trigger surface:
+# the production step dispatches the existing `release-all.yml` workflow
+# (semver bump -> tag + GitHub release -> SSM rollout + ECR docker dev + mac
+# DMGs) via the `gh` CLI rather than re-implementing the pipeline.
+#
+# Requirements on the runner:
+#   - `gh` CLI authenticated (GH_TOKEN / gh auth) with `actions:write` on the repo.
+#   - The repo is auto-detected from the checkout's `origin` remote.
+#
+# To change the semver bump, edit `-f bump=` below (patch | minor | major).
+version: 1
+environments:
+  production:
+    # Gated: an Admin/Owner must approve before the release workflow is dispatched.
+    approval: true
+    runs-on: ubuntu-24.04
+    timeout_minutes: 30
+    steps:
+      - name: trigger-release-all
+        run: gh workflow run release-all.yml --ref main -f bump=patch
