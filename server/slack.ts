@@ -12,6 +12,7 @@ import { getProjects } from './project-model.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
+import { appendCodexShellEnvironmentPolicyArgs } from './codex-exec-sandbox.js';
 import type { EnrichedAgent, Stmts, SlackMessageRow, SlackBotRow } from './types.js';
 import { decryptSecret } from './secret-crypto.js';
 
@@ -279,6 +280,11 @@ function runAgent(
           project: proj,
         });
       }
+    }
+    if (engine === 'codex-cli') {
+      const promptArg = args.pop();
+      appendCodexShellEnvironmentPolicyArgs(args, spawnEnv);
+      if (promptArg !== undefined) args.push(promptArg);
     }
 
     const proc = spawn(bin, args, {

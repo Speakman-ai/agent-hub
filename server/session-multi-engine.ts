@@ -3,7 +3,10 @@
  * read-only advisor turns in multi-agent sessions.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import { appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import {
+  appendCodexExecSandboxFlags,
+  appendCodexShellEnvironmentPolicyArgs,
+} from './codex-exec-sandbox.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
   applyArgvPromptCap,
@@ -57,6 +60,7 @@ export interface BuildSessionMultiSpawnArgsInput {
   advisory?: boolean;
   /** Used for `--system-prompt-file` temp paths and argv-cap logging. */
   sessionId?: string;
+  codexEnv?: NodeJS.ProcessEnv;
 }
 
 export interface SessionMultiSpawnPlan {
@@ -135,6 +139,7 @@ export function buildSessionMultiSpawnArgs(
       askMode: advisory,
       dangerBypass: !advisory && !!codexDangerBypass,
     });
+    appendCodexShellEnvironmentPolicyArgs(args, input.codexEnv);
     const codexAuth = detectCodexAuthMode();
     if (model && shouldPassModelFlag(codexAuth.mode, model)) {
       args.push('--model', model);

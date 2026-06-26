@@ -100,7 +100,11 @@ import {
 } from './action-block-parsing.js';
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
 import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
-import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import {
+  appendCodexAwsAccessDirs,
+  appendCodexExecSandboxFlags,
+  appendCodexShellEnvironmentPolicyArgs,
+} from './codex-exec-sandbox.js';
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import { type ProjectAwsFiles, writeProjectAwsFiles } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
@@ -3198,6 +3202,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
             AWS_CONFIG_FILE: projectAwsFiles.configPath,
           });
         }
+        appendCodexShellEnvironmentPolicyArgs(args, sessionCliEnv);
         // Auth-mode-aware --model gating. Under ChatGPT OAuth the Codex backend
         // rejects most explicit `--model` IDs (HTTP 400 "not supported when
         // using Codex with a ChatGPT account"). shouldPassModelFlag() filters

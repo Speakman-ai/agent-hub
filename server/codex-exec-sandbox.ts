@@ -40,6 +40,32 @@ export function appendCodexExecSandboxFlags(args: string[], opts: CodexExecSandb
   args.push('--full-auto');
 }
 
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+/**
+ * Codex applies `shell_environment_policy` when running model-requested shell
+ * commands. Agent Hub already passes `PATH` to the Codex process, but Codex's
+ * default tool env can narrow it and drop the bundled skill wrapper directory.
+ * Force only the non-secret wrapper location through argv config; credentials
+ * such as AGENT_HUB_API_KEY remain env-only so they never appear in process
+ * listings.
+ */
+export function appendCodexShellEnvironmentPolicyArgs(
+  args: string[],
+  env: NodeJS.ProcessEnv | undefined,
+): void {
+  const pathValue = env?.PATH?.trim();
+  if (pathValue) {
+    args.push('-c', `shell_environment_policy.set.PATH=${tomlString(pathValue)}`);
+  }
+  const skillsDir = env?.AGENT_HUB_SKILLS_DIR?.trim();
+  if (skillsDir) {
+    args.push('-c', `shell_environment_policy.set.AGENT_HUB_SKILLS_DIR=${tomlString(skillsDir)}`);
+  }
+}
+
 /**
  * Legacy hook for AWS config dirs outside the agent workspace.
  *

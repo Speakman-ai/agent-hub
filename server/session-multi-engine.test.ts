@@ -58,7 +58,14 @@ describe('buildSessionMultiSpawnArgs', () => {
       bins,
       codexProfile: 'sandbox-strict',
       advisory: true,
+      codexEnv: {
+        PATH: '/app/server/default-skills/agent-hub/scripts:/usr/bin',
+        AGENT_HUB_SKILLS_DIR: '/app/server/default-skills/agent-hub',
+      },
     });
+    expect(plan.args).toContain(
+      'shell_environment_policy.set.PATH="/app/server/default-skills/agent-hub/scripts:/usr/bin"',
+    );
     const idx = plan.args.indexOf('--profile');
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(plan.args[idx + 1]).toBe('sandbox-strict');

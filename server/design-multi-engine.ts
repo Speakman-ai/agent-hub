@@ -5,7 +5,11 @@
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import config, { resolveGrokSpawnModel } from './config.js';
-import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import {
+  appendCodexAwsAccessDirs,
+  appendCodexExecSandboxFlags,
+  appendCodexShellEnvironmentPolicyArgs,
+} from './codex-exec-sandbox.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { DESIGN_SKILL_PRINCIPAL_AGENT_ID } from './design-skill-principal.js';
@@ -113,6 +117,7 @@ export interface BuildDesignSpawnArgsInput {
   codexProfile?: string | null;
   awsSsoEnabled?: boolean;
   awsAccessEnv?: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'>;
+  codexEnv?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -137,6 +142,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     codexProfile,
     awsSsoEnabled,
     awsAccessEnv,
+    codexEnv,
   } = input;
 
   const needsHistoryBootstrap = isNewEngineSession && priorMessages.length > 0;
@@ -215,6 +221,7 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     if (awsSsoEnabled && awsAccessEnv) {
       appendCodexAwsAccessDirs(args, awsAccessEnv);
     }
+    appendCodexShellEnvironmentPolicyArgs(args, codexEnv);
     const codexAuth = detectCodexAuthMode();
     if (model && shouldPassModelFlag(codexAuth.mode, model)) {
       args.push('--model', model);

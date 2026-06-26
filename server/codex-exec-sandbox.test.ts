@@ -1,6 +1,10 @@
 import { spawnSync } from 'child_process';
 import { describe, it, expect } from 'vitest';
-import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import {
+  appendCodexAwsAccessDirs,
+  appendCodexExecSandboxFlags,
+  appendCodexShellEnvironmentPolicyArgs,
+} from './codex-exec-sandbox.js';
 
 describe('appendCodexExecSandboxFlags', () => {
   it('uses read-only sandbox in ask mode regardless of dangerBypass', () => {
@@ -60,6 +64,36 @@ describe('appendCodexAwsAccessDirs', () => {
   });
 });
 
+describe('appendCodexShellEnvironmentPolicyArgs', () => {
+  it('forces Codex tool subprocess PATH to include Agent Hub skill wrappers', () => {
+    const args: string[] = ['exec', '--json'];
+    appendCodexShellEnvironmentPolicyArgs(args, {
+      PATH: '/app/server/default-skills/agent-hub/scripts:/usr/local/bin:/usr/bin',
+      AGENT_HUB_SKILLS_DIR: '/app/server/default-skills/agent-hub',
+    });
+
+    expect(args).toContain('-c');
+    expect(args).toContain(
+      'shell_environment_policy.set.PATH="/app/server/default-skills/agent-hub/scripts:/usr/local/bin:/usr/bin"',
+    );
+    expect(args).toContain(
+      'shell_environment_policy.set.AGENT_HUB_SKILLS_DIR="/app/server/default-skills/agent-hub"',
+    );
+  });
+
+  it('does not copy Agent Hub API keys into argv config', () => {
+    const args: string[] = ['exec'];
+    appendCodexShellEnvironmentPolicyArgs(args, {
+      PATH: '/usr/bin',
+      AGENT_HUB_SKILLS_DIR: '/skills',
+      AGENT_HUB_API_KEY: 'secret',
+    } as NodeJS.ProcessEnv);
+
+    expect(args.join('\n')).not.toContain('AGENT_HUB_API_KEY');
+    expect(args.join('\n')).not.toContain('secret');
+  });
+});
+
 /** Mirrors chat.ts codex resume argv assembly (session-87ecfed2 regression). */
 function buildCodexChatResumeArgv(
   engineSessionId: string,
@@ -75,6 +109,10 @@ function buildCodexChatResumeArgv(
     HOME: '/data/per-user-creds/u1/home',
     AWS_CONFIG_FILE: '/data/project-aws-config/agent-hub/config',
   });
+  appendCodexShellEnvironmentPolicyArgs(args, {
+    PATH: '/app/server/default-skills/agent-hub/scripts:/usr/bin',
+    AGENT_HUB_SKILLS_DIR: '/app/server/default-skills/agent-hub',
+  });
   args.push('-');
   return args;
 }
@@ -85,6 +123,9 @@ describe('codex exec resume + AWS (regression)', () => {
     expect(argv).not.toContain('--add-dir');
     expect(argv[0]).toBe('exec');
     expect(argv[1]).toBe('resume');
+    expect(argv).toContain(
+      'shell_environment_policy.set.PATH="/app/server/default-skills/agent-hub/scripts:/usr/bin"',
+    );
   });
 
   it('mocked codex wrapper exits 0 for resume argv (not 2 from clap)', () => {

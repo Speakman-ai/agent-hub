@@ -130,7 +130,17 @@ describe('buildOneShotSpawnArgs — grok-cli', () => {
 describe('buildOneShotSpawnArgs — codex-cli', () => {
   it('emits exec --json --skip-git-repo-check --sandbox read-only and the body', () => {
     const out = buildOneShotSpawnArgs(
-      { engine: 'codex-cli', model: '', prompt: 'P', systemPrompt: 'S' },
+      {
+        engine: 'codex-cli',
+        model: '',
+        prompt: 'P',
+        systemPrompt: 'S',
+        env: {
+          HOME: '/tmp/agent-hub-home',
+          PATH: '/app/server/default-skills/agent-hub/scripts:/usr/bin',
+          AGENT_HUB_SKILLS_DIR: '/app/server/default-skills/agent-hub',
+        },
+      },
       CFG,
     );
     expect(out.bin).toBe('/bin/codex');
@@ -143,6 +153,9 @@ describe('buildOneShotSpawnArgs — codex-cli', () => {
     ]);
     // Body is the last positional and includes the system prompt.
     expect(out.args[out.args.length - 1]).toBe('S\n\nP');
+    expect(out.args).toContain(
+      'shell_environment_policy.set.PATH="/app/server/default-skills/agent-hub/scripts:/usr/bin"',
+    );
   });
 
   it('appends --profile when cfg.codexProfile is set', () => {

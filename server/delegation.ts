@@ -5,7 +5,11 @@ import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
-import { appendCodexAwsAccessDirs, appendCodexExecSandboxFlags } from './codex-exec-sandbox.js';
+import {
+  appendCodexAwsAccessDirs,
+  appendCodexExecSandboxFlags,
+  appendCodexShellEnvironmentPolicyArgs,
+} from './codex-exec-sandbox.js';
 import {
   mergeProjectAwsSpawnEnv,
   projectHasAwsSsoProfiles,
@@ -189,6 +193,7 @@ function buildDelegateCliSpec(
   codexDangerBypass: boolean,
   awsSsoEnabled: boolean,
   awsAccessEnv: Pick<NodeJS.ProcessEnv, 'HOME' | 'AWS_CONFIG_FILE'> | null,
+  codexEnv: NodeJS.ProcessEnv,
 ): DelegateCliSpec {
   const engine = subAgent.engine || 'claude-code';
   const model = resolveEffectiveModel(cfg, engine, {
@@ -226,6 +231,7 @@ function buildDelegateCliSpec(
       if (awsSsoEnabled && awsAccessEnv) {
         appendCodexAwsAccessDirs(args, awsAccessEnv);
       }
+      appendCodexShellEnvironmentPolicyArgs(args, codexEnv);
       if (model && shouldPassModelFlag(codexAuth.mode, model)) {
         args.push('--model', model);
       }
@@ -621,6 +627,7 @@ export async function handleDelegation(
             delegateAwsSso
               ? { HOME: spawnEnv.HOME, AWS_CONFIG_FILE: spawnEnv.AWS_CONFIG_FILE }
               : null,
+            spawnEnv,
           );
 
           console.warn(
@@ -1083,6 +1090,7 @@ export async function synthesizeResults(
             AWS_CONFIG_FILE: synthEnv.AWS_CONFIG_FILE,
           });
         }
+        appendCodexShellEnvironmentPolicyArgs(args, synthEnv);
         if (sessionModel && shouldPassModelFlag(codexAuth.mode, sessionModel)) {
           args.push('--model', sessionModel);
         }

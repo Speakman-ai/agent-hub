@@ -455,6 +455,7 @@ You are an **advisory participant** in a multi-agent session. The primary agent 
           codexProfile: config.codexProfile,
           advisory: true,
           sessionId,
+          codexEnv: spawnEnv,
         });
         bin = plan.bin;
         args = plan.args;

@@ -24,6 +24,7 @@ import {
 } from '../session-mode.js';
 import { listSessionDesignFiles } from '../session-design-files.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
+import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
 import { markSessionTermination } from '../process-termination.js';
 import { getDb } from '../db.js';
 import {
@@ -337,6 +338,11 @@ export function summarizeTranscript(
         sessionId: null,
       });
       mergeProjectAwsSpawnEnv(spawnEnv, skillCredentialMerge.project);
+    }
+    if (engine === 'codex-cli') {
+      const promptArg = args.pop();
+      appendCodexShellEnvironmentPolicyArgs(args, spawnEnv);
+      if (promptArg !== undefined) args.push(promptArg);
     }
 
     const proc = spawn(bin, args, {

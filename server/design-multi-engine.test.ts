@@ -242,10 +242,18 @@ describe('buildDesignSpawnArgs', () => {
       model: 'gpt-5.3-codex',
       engineSessionId: null,
       isNewEngineSession: true,
+      codexEnv: {
+        PATH: '/app/server/default-skills/agent-hub/scripts:/usr/bin',
+        AGENT_HUB_SKILLS_DIR: '/app/server/default-skills/agent-hub',
+      },
     });
     expect(bin).toBe(bins.codex);
     expect(args[0]).toBe('exec');
     expect(args.includes('resume')).toBe(false);
+    expect(args).toContain(
+      'shell_environment_policy.set.PATH="/app/server/default-skills/agent-hub/scripts:/usr/bin"',
+    );
+    expect(args.indexOf('-c')).toBeLessThan(args.length - 1);
     expect(args[args.length - 1]).toContain('SYS');
   });
 

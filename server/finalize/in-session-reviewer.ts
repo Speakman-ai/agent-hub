@@ -555,6 +555,7 @@ async function runOneTurn(args: OneTurnArgs): Promise<string> {
           codexProfile: args.codexProfile,
           advisory: true,
           sessionId: args.sessionId,
+          codexEnv: args.spawnEnv,
         });
       } catch (err) {
         reject(err instanceof Error ? err : new Error(String(err)));

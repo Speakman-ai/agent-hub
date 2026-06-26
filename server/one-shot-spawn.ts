@@ -36,6 +36,7 @@ import { existsSync } from 'fs';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import { shouldPassModelFlag, detectCodexAuthMode } from './codex-auth.js';
+import { appendCodexShellEnvironmentPolicyArgs } from './codex-exec-sandbox.js';
 import { resolveGrokSpawnModel } from './config.js';
 import type { AppConfig } from './types.js';
 import { resolveCodexHomeForProbe } from './host-cli-home.js';
@@ -146,6 +147,7 @@ export function buildOneShotSpawnArgs(
     if (codexProfile) {
       args.push('--profile', codexProfile);
     }
+    appendCodexShellEnvironmentPolicyArgs(args, input.env);
     args.push(body);
     return { bin: cfg.codexBin, args };
   }

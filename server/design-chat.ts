@@ -353,6 +353,7 @@ export async function handleDesignChat(
         awsAccessEnv: designAwsSsoEnabled
           ? { HOME: spawnEnv.HOME, AWS_CONFIG_FILE: spawnEnv.AWS_CONFIG_FILE }
           : undefined,
+        codexEnv: spawnEnv,
       }));
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
