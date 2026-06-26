@@ -20,6 +20,7 @@ import {
   heartbeatRunnerJob,
   markRunnerJobRunning,
   markRunnerJobSpotInterruption,
+  reportRunnerJob,
 } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
 import {
@@ -366,6 +367,31 @@ export default function createRunnerRoutes(opts: RunnerRoutesOptions = {}): Rout
       .run(Date.now(), req.agent!.agentId);
     // Job done → release the task so deploys / dynamic scale-in can reclaim this
     // now-idle agent. Fire-and-forget.
+    void clearHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg);
+    res.status(204).end();
+  });
+
+  // The agent could not run the claimed job to completion (a throw out of
+  // runAgentJob — bring-up failure before/around the first step). Fail the channel
+  // so the backend's acquire/step wait unblocks NOW (→ infra_error → retry on a
+  // fresh agent) and mark the queue row terminal, instead of leaving the shard
+  // orphaned until the lease reaper notices the missing heartbeat. Idempotent and
+  // safe if the channel is already gone (Hub restart) or the row already terminal.
+  router.post('/api/runners/jobs/:jobId/error', requireAgent, (req: RunnerReq, res: Response) => {
+    const jobId = req.params.jobId as string;
+    if (!authorizeJob(req.agent!, jobId, res)) return;
+    const detailRaw = (req.body as { detail?: unknown } | undefined)?.detail;
+    const detail =
+      typeof detailRaw === 'string' && detailRaw.trim()
+        ? detailRaw.slice(0, 2000)
+        : 'runner agent reported a job error';
+    getJobChannel(jobId)?.fail(new Error(`runner agent lost — ${detail}`));
+    reportRunnerJob({ jobId, state: 'lost', detail, now: Date.now() });
+    getOrgsDb()
+      .prepare(
+        "UPDATE runner_agents SET state='idle', current_job_id=NULL, last_seen_at=? WHERE id=?",
+      )
+      .run(Date.now(), req.agent!.agentId);
     void clearHubTaskProtection(agentTaskArn(req.agent!.agentId), taskProtectionCfg);
     res.status(204).end();
   });

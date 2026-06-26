@@ -166,8 +166,20 @@ export function createRemoteRunnerBackend(opts?: {
       // by the job's remaining run budget so acquisition cannot keep a checks
       // row queued longer than the Finalize run itself.
       const timeoutMs = effectiveAcquireTimeoutMs(acquireTimeoutMs, spec.acquireTimeoutMs);
+      // `ready` resolves on attach, REJECTS if the channel failed before any attach
+      // (agent claimed then died during bring-up — the lease reaper or the agent's
+      // own error report calls channel.fail()). Map that rejection to a distinct
+      // "lost before attach" detail so the loss surfaces the instant we know it,
+      // not after the full `timeoutMs` (which is ≈ the whole remaining run budget).
+      let lostBeforeAttach: string | null = null;
       const attached = await Promise.race([
-        channel.ready.then(() => true),
+        channel.ready.then(
+          () => true,
+          (err: unknown) => {
+            lostBeforeAttach = err instanceof Error ? err.message : String(err);
+            return false;
+          },
+        ),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
       ]);
       if (!attached) {
@@ -175,11 +187,13 @@ export function createRemoteRunnerBackend(opts?: {
         reportRunnerJob({
           jobId: queueJobId,
           state: 'lost',
-          detail: 'no runner-agent claimed in time',
+          detail: lostBeforeAttach ?? 'no runner-agent claimed in time',
           now: now(),
         });
         throw new Error(
-          `no runner-agent claimed job ${spec.jobId} (${queueJobId}) within ${timeoutMs}ms`,
+          lostBeforeAttach
+            ? `runner-agent lost before attach for job ${spec.jobId} (${queueJobId}): ${lostBeforeAttach}`
+            : `no runner-agent claimed job ${spec.jobId} (${queueJobId}) within ${timeoutMs}ms`,
         );
       }
 

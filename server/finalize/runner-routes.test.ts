@@ -21,7 +21,9 @@ vi.mock('./hub-task-protection.js', async (importOriginal) => {
 });
 import { armHubTaskProtection } from './hub-task-protection.js';
 import { createRemoteRunnerBackend } from './runner-backend-remote.js';
+import { httpTransport } from './runner-agent.js';
 import { getJobChannel } from './runner-job-channel.js';
+import type { AddressInfo } from 'net';
 import createRunnerRoutes, {
   parseResourceSummary,
   type JobResourcesEvent,
@@ -313,6 +315,96 @@ describe('runner-routes (HTTP control plane)', () => {
       .set('Authorization', `Bearer ${token}`)
       .send();
     expect(gone.status).toBe(410);
+  });
+
+  // Regression (card #1184): the stall this whole card fixes. An agent claims a
+  // job, dies during container bring-up BEFORE its first poll (never attaches),
+  // and reports the loss via POST /error (#3a). The backend's acquire() is parked
+  // on channel.ready; that report must reject `ready` (#1) so acquire fails FAST
+  // (→ infra_error → retry) instead of waiting out acquireTimeoutMs (≈ the whole
+  // run budget). acquireTimeoutMs is set deliberately huge here: if the fix
+  // regresses, this test hangs to the vitest timeout instead of passing.
+  it('agent POST /error before attach makes acquire reject immediately, not after the budget', async () => {
+    const token = await register();
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 600_000 });
+    const acquireP = backend.acquire(SPEC);
+    // Swallow the expected rejection on a second handle so it can't surface as an
+    // unhandled rejection while we drive the HTTP calls.
+    const settled = acquireP.then(
+      () => ({ ok: true as const }),
+      (err: Error) => ({ ok: false as const, err }),
+    );
+
+    const claim = await request(app)
+      .post('/api/runners/claim')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(claim.status).toBe(200);
+    const jobId = claim.body.jobId as string;
+    expect(getJobChannel(jobId)?.isAttached).toBe(false); // never polled → not attached
+
+    // Agent's runAgentJob threw during bring-up; it reports the loss.
+    const errRes = await request(app)
+      .post(`/api/runners/jobs/${jobId}/error`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ detail: 'inner dockerd not ready within 120s' });
+    expect(errRes.status).toBe(204);
+
+    const outcome = await settled;
+    expect(outcome.ok).toBe(false);
+    expect((outcome as { err: Error }).err.message).toMatch(/lost before attach/);
+    expect((outcome as { err: Error }).err.message).toContain('inner dockerd not ready');
+
+    // Queue row is terminal and the channel is cleaned up.
+    const row = getOrgsDb()
+      .prepare('SELECT state, detail FROM runner_jobs WHERE id=?')
+      .get(jobId) as { state: string; detail: string | null };
+    expect(row.state).toBe('lost');
+    expect(getJobChannel(jobId)).toBeUndefined();
+  });
+
+  // Reviewer ask (card #1184): exercise the REAL httpTransport.reportError against
+  // the REAL route over real HTTP — not supertest's .send() defaults — so the wire
+  // contract is proven end-to-end: the transport's application/json content type
+  // must make express.json() populate req.body.detail, otherwise the route silently
+  // drops the bring-up detail and falls back to a generic message.
+  it('real httpTransport.reportError reaches the route and its detail is parsed (not dropped)', async () => {
+    const server = app.listen(0);
+    try {
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const reg = await request(app).post('/api/runners/register').send({ fleetToken: FLEET });
+      expect(reg.status).toBe(200);
+      const token = reg.body.token as string;
+      enqueueRunnerJob({
+        orgId: 'orgA',
+        projectId: 'p1',
+        runId: 'r1',
+        jobId: 'e2e',
+        matrixKey: '',
+        image: 'img:latest',
+        specJson: '{}',
+        now: Date.now(),
+      });
+      const claim = await request(app)
+        .post('/api/runners/claim')
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+      expect(claim.status).toBe(200);
+      const jobId = claim.body.jobId as string;
+
+      // The real transport: real fetch, real headers (content type via shared auth).
+      await httpTransport(base, token).reportError(jobId, 'inner dockerd not ready within 120s');
+
+      const row = getOrgsDb()
+        .prepare('SELECT state, detail FROM runner_jobs WHERE id=?')
+        .get(jobId) as { state: string; detail: string | null };
+      expect(row.state).toBe('lost');
+      // The crux: req.body.detail was parsed (content type honored) → the specific
+      // detail is persisted, NOT the 'runner agent reported a job error' fallback.
+      expect(row.detail).toBe('inner dockerd not ready within 120s');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it('reports a job resource summary on finish, resolved to its run/job context', async () => {

@@ -90,4 +90,64 @@ describe('RunnerJobChannel', () => {
 
     removeJobChannel('job2');
   });
+
+  // Regression (card #1184): an agent that claimed a job then died during
+  // container bring-up — BEFORE its first directive poll — never attaches. The
+  // lease reaper / agent error report calls fail(); that MUST settle `ready` by
+  // rejecting it, otherwise the backend's acquire-phase `Promise.race` on
+  // channel.ready hangs until its timeout (≈ the whole run budget), stranding the
+  // Finalize run even though the queue row is already `lost`.
+  it('fail() before attach rejects ready so the acquire wait unblocks immediately', async () => {
+    const ch = createJobChannel('job-preattach');
+    expect(ch.isAttached).toBe(false);
+
+    let rejected: Error | null = null;
+    const waiter = ch.ready.catch((e: Error) => {
+      rejected = e;
+    });
+
+    ch.fail(new Error('runner agent lost — inner dockerd not ready'));
+    await waiter;
+
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as unknown as Error).message).toContain('inner dockerd not ready');
+    // Never falsely reports an attach just because it failed.
+    expect(ch.isAttached).toBe(false);
+
+    removeJobChannel('job-preattach');
+  });
+
+  it('fail() after a real attach leaves ready resolved (no late rejection)', async () => {
+    const ch = createJobChannel('job-attached');
+    // First poll attaches → ready resolves.
+    await ch.nextDirective(5);
+    expect(ch.isAttached).toBe(true);
+    await expect(ch.ready).resolves.toBeUndefined();
+
+    // A subsequent fail() must NOT turn the already-resolved ready into a
+    // rejection (which would surface as an unhandled rejection). It still fails
+    // in-flight steps via the existing path.
+    const step = ch.runStep(0, 'sleep 1', {});
+    const closes: Array<number | null> = [];
+    step.on('close', (c) => closes.push(c));
+    ch.fail(new Error('transport dropped mid-run'));
+    await tick();
+    await expect(ch.ready).resolves.toBeUndefined();
+    expect(closes).toEqual([null]); // step force-closed, step-runner unblocks
+
+    removeJobChannel('job-attached');
+  });
+
+  it('fail() with no awaiter on ready does not raise an unhandled rejection', async () => {
+    const ch = createJobChannel('job-noawaiter');
+    // Nobody awaits ch.ready. fail() rejects it internally — the constructor's
+    // no-op catch must absorb it so the process never sees an unhandledRejection.
+    ch.fail(new Error('lost before anyone awaited'));
+    await tick();
+    await tick();
+    // If this test completes without the vitest unhandled-rejection guard firing,
+    // the absorb worked.
+    expect(ch.isAttached).toBe(false);
+    removeJobChannel('job-noawaiter');
+  });
 });

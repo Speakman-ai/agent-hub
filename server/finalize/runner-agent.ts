@@ -56,6 +56,16 @@ export interface AgentTransport {
    * lease as `spot_reclaimed` rather than a generic crash.
    */
   heartbeat(jobId: string, spotInterruption?: boolean): Promise<void>;
+  /**
+   * Report that this agent could not run the claimed job to completion (a throw
+   * out of `runAgentJob` — worktree materialize error, inner dockerd never ready,
+   * image pull failure, …). The Hub fails the job channel (unblocking the waiting
+   * acquire/step immediately → infra_error → retry on a fresh agent) and marks the
+   * queue row terminal, so the job is recovered NOW instead of waiting out the
+   * lease reaper. Best-effort — the lease reaper is still the backstop if the
+   * agent dies so hard it can't make this call.
+   */
+  reportError(jobId: string, detail: string): Promise<void>;
 }
 
 export interface AgentDocker {
@@ -344,6 +354,13 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
         body: JSON.stringify(spotInterruption ? { spotInterruption: true } : {}),
       });
     },
+    async reportError(jobId, detail) {
+      await fetch(`${base}/api/runners/jobs/${jobId}/error`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ detail }),
+      });
+    },
   };
 }
 
@@ -425,18 +442,48 @@ export async function runAgentMain(): Promise<void> {
     }
     if (!claimed) continue;
     console.log(`[runner-agent] claimed job ${claimed.jobId} (${claimed.spec.jobId})`);
-    try {
-      await runAgentJob({
-        jobId: claimed.jobId,
-        spec: claimed.spec,
+    const job = claimed;
+    await runClaimedJobWithRecovery(transport, job.jobId, () =>
+      runAgentJob({
+        jobId: job.jobId,
+        spec: job.spec,
         workspaceDir,
         transport,
         docker,
         materialize,
         protection,
-      });
-    } catch (err) {
-      console.error(`[runner-agent] job ${claimed.jobId} failed: ${(err as Error).message}`);
+      }),
+    );
+  }
+}
+
+/**
+ * Run one claimed job to completion; on a thrown failure (bring-up error — the
+ * worktree materialize, inner dockerd readiness, image pull, …), report the loss
+ * to the Hub before returning so the job is recovered NOW (the Hub fails its job
+ * channel → infra_error → retry on a fresh agent). Without this the agent's loop
+ * would silently swallow the throw and claim the NEXT job, orphaning the thrown
+ * one until the lease reaper notices the missing heartbeat (~one lease window).
+ * The report is best-effort: a failed report must never wedge the agent loop — the
+ * reaper remains the backstop for an agent that dies too hard to make the call.
+ * Exported for unit-testing the recovery contract.
+ */
+export async function runClaimedJobWithRecovery(
+  transport: AgentTransport,
+  jobId: string,
+  run: () => Promise<unknown>,
+): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    const detail = (err as Error).message;
+    console.error(`[runner-agent] job ${jobId} failed: ${detail}`);
+    try {
+      await transport.reportError(jobId, detail);
+    } catch (reportErr) {
+      console.error(
+        `[runner-agent] reportError for job ${jobId} failed: ${(reportErr as Error).message}`,
+      );
     }
   }
 }

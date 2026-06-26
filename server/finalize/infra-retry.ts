@@ -449,6 +449,12 @@ export function openInfraRetryRun(
       parent.author_email,
       parent.id,
       startedAt,
+      // insertFinalizeRun binds 18 columns (… started_at, mode, job_filter).
+      // Omitting these two threw "Too few parameter values were provided", which
+      // aborted every reclaim retry. Inherit the parent's scope so the retry
+      // reproduces the same run (a job-filtered debug run stays job-filtered).
+      parent.mode,
+      parent.job_filter,
     );
   } catch (err) {
     log(

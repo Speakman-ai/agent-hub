@@ -3,6 +3,7 @@ import {
   httpTransport,
   resolveEcsTaskArn,
   runAgentJob,
+  runClaimedJobWithRecovery,
   type AgentDocker,
   type AgentLogFrame,
   type AgentPollResult,
@@ -56,6 +57,9 @@ function fakes(polls: AgentPollResult[], exitFor: (run: string) => number) {
       finishArgs.push(summary ?? null);
     },
     heartbeat: async () => {},
+    reportError: async (jobId, detail) => {
+      events.push(`error:${jobId}:${detail}`);
+    },
   };
   const docker: AgentDocker = {
     startContainer: async (_spec, mount) => {
@@ -423,6 +427,36 @@ describe('httpTransport.heartbeat', () => {
   });
 });
 
+describe('httpTransport.reportError (card #1184)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the detail as JSON with the application/json content type', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url, init });
+        return { ok: true, status: 204 } as Response;
+      }),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+
+    await transport.reportError('job-1', 'inner dockerd not ready within 120s');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('http://hub.test/api/runners/jobs/job-1/error');
+    const headers = calls[0].init.headers as Record<string, string>;
+    // Without this content type Express's json() leaves req.body undefined, so the
+    // route would drop the specific bring-up detail and fall back to a generic one.
+    expect(headers['content-type']).toBe('application/json');
+    expect(headers['Authorization']).toBe('Bearer tok');
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+      detail: 'inner dockerd not ready within 120s',
+    });
+  });
+});
+
 describe('resolveEcsTaskArn', () => {
   const saved = process.env.ECS_CONTAINER_METADATA_URI_V4;
   afterEach(() => {
@@ -459,5 +493,55 @@ describe('resolveEcsTaskArn', () => {
       throw new Error('network');
     });
     expect(await resolveEcsTaskArn(threw as unknown as typeof fetch)).toBeNull();
+  });
+});
+
+describe('runClaimedJobWithRecovery (card #1184)', () => {
+  function recorder(): AgentTransport & { errors: Array<{ jobId: string; detail: string }> } {
+    const errors: Array<{ jobId: string; detail: string }> = [];
+    return {
+      claim: async () => null,
+      poll: async () => ({ type: 'finish' }),
+      postLogs: async () => {},
+      postStepResult: async () => {},
+      postFinish: async () => {},
+      heartbeat: async () => {},
+      reportError: async (jobId, detail) => {
+        errors.push({ jobId, detail });
+      },
+      errors,
+    };
+  }
+
+  it('reports the job error to the Hub when the run throws (bring-up failure)', async () => {
+    const t = recorder();
+    await runClaimedJobWithRecovery(t, 'job-bringup', async () => {
+      throw new Error('inner dockerd not ready within 120s');
+    });
+    // The thrown job is reported immediately so the Hub fails its channel
+    // (→ infra_error → retry) instead of leaving it orphaned until the reaper.
+    expect(t.errors).toEqual([
+      { jobId: 'job-bringup', detail: 'inner dockerd not ready within 120s' },
+    ]);
+  });
+
+  it('does NOT report when the job runs to completion', async () => {
+    const t = recorder();
+    await runClaimedJobWithRecovery(t, 'job-ok', async () => undefined);
+    expect(t.errors).toEqual([]);
+  });
+
+  it('never lets a failed error-report throw out of the loop step (reaper is the backstop)', async () => {
+    const t = recorder();
+    t.reportError = async () => {
+      throw new Error('hub unreachable');
+    };
+    // Must resolve (not reject) even though both the job and the report failed,
+    // so the agent loop keeps claiming instead of crashing.
+    await expect(
+      runClaimedJobWithRecovery(t, 'job-x', async () => {
+        throw new Error('materialize failed');
+      }),
+    ).resolves.toBeUndefined();
   });
 });

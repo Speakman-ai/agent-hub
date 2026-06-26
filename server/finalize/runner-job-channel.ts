@@ -22,9 +22,20 @@ export type RunnerDirective =
   | { type: 'finish' };
 
 export class RunnerJobChannel implements RemoteStepSink {
+  /**
+   * Resolves when the agent attaches (first poll); REJECTS if the channel fails
+   * before any attach (agent claimed the job then died during container bring-up,
+   * before its first directive poll). The acquire-phase `Promise.race` in the
+   * remote backend awaits this — without the reject path a pre-attach loss would
+   * keep that race pending until its timeout (≈ the whole run budget), stranding
+   * the Finalize run even though the lease reaper already marked the job `lost`.
+   */
   readonly ready: Promise<void>;
   private readyResolve!: () => void;
+  private readyReject!: (err: Error) => void;
   private attached = false;
+  /** True once `ready` has settled (resolved via attach OR rejected via fail). */
+  private settled = false;
   private disposed = false;
 
   private readonly outbound: RunnerDirective[] = [];
@@ -32,15 +43,22 @@ export class RunnerJobChannel implements RemoteStepSink {
   private readonly steps = new Map<number, RemoteSpawnedStep>();
 
   constructor(readonly jobId: string) {
-    this.ready = new Promise<void>((resolve) => {
+    this.ready = new Promise<void>((resolve, reject) => {
       this.readyResolve = resolve;
+      this.readyReject = reject;
     });
+    // The remote backend is the normal awaiter, but a channel can fail() with no
+    // one yet awaiting `ready` (e.g. reaper fires between createJobChannel and the
+    // acquire race). Attach a no-op catch so that rejection never surfaces as an
+    // unhandledRejection; real awaiters still observe it via their own handlers.
+    this.ready.catch(() => {});
   }
 
   /** Called by the routes layer when the agent first polls — the runner is live. */
   attach(): void {
-    if (!this.attached) {
+    if (!this.settled) {
       this.attached = true;
+      this.settled = true;
       this.readyResolve();
     }
   }
@@ -123,6 +141,14 @@ export class RunnerJobChannel implements RemoteStepSink {
       const w = this.directiveWaiter;
       this.directiveWaiter = null;
       w(null);
+    }
+    // If the agent died before it ever attached, settle `ready` by rejecting it so
+    // the acquire-phase wait unblocks immediately (→ infra_error → retry on a fresh
+    // agent) instead of hanging until the acquire timeout. After a real attach this
+    // is a no-op: `ready` already resolved and in-flight steps carry the failure.
+    if (!this.settled) {
+      this.settled = true;
+      this.readyReject(err);
     }
   }
 
