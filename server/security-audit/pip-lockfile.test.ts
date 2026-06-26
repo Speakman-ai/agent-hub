@@ -273,7 +273,8 @@ describe('pipLockfileParsers registration', () => {
     expect(requirementsParser?.matchesFilename?.('requirements-base.txt')).toBe(true);
     expect(requirementsParser?.matchesFilename?.('requirements_docker.txt')).toBe(true);
     expect(requirementsParser?.matchesFilename?.('requirements.local.txt')).toBe(true);
-    expect(requirementsParser?.matchesFilename?.('dev-requirements.txt')).toBe(false);
+    expect(requirementsParser?.matchesFilename?.('dev-requirements.txt')).toBe(true);
+    expect(requirementsParser?.matchesFilename?.('prod_requirements.txt')).toBe(true);
     expect(requirementsParser?.matchesFilename?.('requirements.in')).toBe(false);
   });
 });

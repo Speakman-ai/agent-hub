@@ -37,7 +37,7 @@ export interface RepoFileReader {
  * All lockfile parsers the scanner knows about. npm (`package-lock.json`,
  * `npm-shrinkwrap.json`) plus Python/PyPI (`requirements.txt`, `poetry.lock`,
  * `Pipfile.lock`). The requirements parser also matches common
- * `requirements-*.txt` variants. Each new ecosystem is a parser registration
+ * `*requirements*.txt` variants. Each new ecosystem is a parser registration
  * here — the scanner, OSV query layer, store, and findings UI are all
  * ecosystem-generic.
  */

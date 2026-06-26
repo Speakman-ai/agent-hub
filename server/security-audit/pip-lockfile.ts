@@ -5,7 +5,7 @@
  * ecosystem that queries OSV's `PyPI` database.
  *
  * Three formats are supported, one parser per basename:
- *   - `requirements*.txt` — pip / pip-tools. A line-oriented format. Only
+ *   - `*requirements*.txt` — pip / pip-tools. A line-oriented format. Only
  *     EXACT pins (`name==version`) are audited; unpinned requirements have no
  *     single installed version to check, so they are skipped (honest
  *     under-reporting rather than guessing). Options lines (`-r`, `-e`,
@@ -254,7 +254,7 @@ export const pipLockfileParsers: readonly LockfileParser[] = [
   {
     ecosystem: 'pip',
     filenames: ['requirements.txt'],
-    matchesFilename: (basename) => /^requirements(?:[-_.].*)?\.txt$/i.test(basename),
+    matchesFilename: (basename) => /(?:^|[-_.])requirements(?:[-_.].*)?\.txt$/i.test(basename),
     parse: parseRequirementsTxt,
   },
   { ecosystem: 'pip', filenames: ['poetry.lock'], parse: parsePoetryLock },

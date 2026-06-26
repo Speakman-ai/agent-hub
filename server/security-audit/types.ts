@@ -51,14 +51,14 @@ export interface ResolvedDependency {
 /**
  * Parses one lockfile format into resolved dependencies. A parser is
  * registered for the basenames it recognises; optionally it can also provide
- * a basename matcher for families such as requirements-*.txt. The scanner
+ * a basename matcher for families such as *requirements*.txt. The scanner
  * walks the repo tree and routes each matching file to its parser.
  */
 export interface LockfileParser {
   ecosystem: Ecosystem;
   /** Lockfile basenames this parser handles (lowercase), e.g. `package-lock.json`. */
   filenames: readonly string[];
-  /** Optional lowercase basename matcher for lockfile families, e.g. `requirements-*.txt`. */
+  /** Optional lowercase basename matcher for lockfile families, e.g. `*requirements*.txt`. */
   matchesFilename?: (basename: string) => boolean;
   /**
    * Parse lockfile `content` into resolved dependencies. `manifestPath` is

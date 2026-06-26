@@ -222,18 +222,19 @@ describe('scanResolvedDependencies', () => {
     const reader = fakeReader({
       'backend/opensign/requirements-base.txt': 'Django==4.2.30\nrequests==2.25.1\n',
       'backend/opensign/requirements-docker.txt': 'gunicorn==22.0.0\n',
+      'backend/opensign/dev-requirements.txt': 'pypdf==6.13.0\n',
     });
     const source = new CapturingSource((deps) =>
       deps
-        .filter((d) => d.name === 'django')
+        .filter((d) => d.name === 'django' || d.name === 'pypdf')
         .map((d) => ({
           dependency: d,
           advisory: {
-            id: 'PYSEC-django',
+            id: d.name === 'django' ? 'PYSEC-django' : 'GHSA-jm82-fx9c-mx94',
             summary: 'vuln',
             severity: 'high' as const,
             aliases: [],
-            fixedVersion: null,
+            fixedVersion: d.name === 'pypdf' ? '6.13.3' : null,
             url: '',
           },
         })),
@@ -241,21 +242,35 @@ describe('scanResolvedDependencies', () => {
     const result = await scanResolvedDependencies({ reader, ref: 'main', advisorySource: source });
 
     expect(result.scannedManifests.sort()).toEqual([
+      'backend/opensign/dev-requirements.txt',
       'backend/opensign/requirements-base.txt',
       'backend/opensign/requirements-docker.txt',
     ]);
     expect(source.seen.map((d) => `${d.ecosystem}:${d.name}@${d.version}`).sort()).toEqual([
       'pip:django@4.2.30',
       'pip:gunicorn@22.0.0',
+      'pip:pypdf@6.13.0',
       'pip:requests@2.25.1',
     ]);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]?.dependency).toMatchObject({
-      ecosystem: 'pip',
-      name: 'django',
-      version: '4.2.30',
-      manifestPath: 'backend/opensign/requirements-base.txt',
-    });
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.map((f) => f.dependency.manifestPath).sort()).toEqual([
+      'backend/opensign/dev-requirements.txt',
+      'backend/opensign/requirements-base.txt',
+    ]);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        dependency: expect.objectContaining({
+          ecosystem: 'pip',
+          name: 'pypdf',
+          version: '6.13.0',
+          manifestPath: 'backend/opensign/dev-requirements.txt',
+        }),
+        advisory: expect.objectContaining({
+          id: 'GHSA-jm82-fx9c-mx94',
+          fixedVersion: '6.13.3',
+        }),
+      }),
+    );
   });
 
   it('records a corrupt poetry.lock (no [[package]] blocks) as failed, preserving findings', async () => {
