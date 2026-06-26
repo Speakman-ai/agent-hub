@@ -128,6 +128,24 @@ const STEP_SHELL_FLAGS = STEP_SHELL_ARGV.slice(1);
 export const STEP_SPAWN_HARD_TIMEOUT_MS = 60 * 60 * 1_000;
 
 /**
+ * Grace window between a step process's `'exit'` and our force-settling the
+ * step when `'close'` never arrives.
+ *
+ * Normally we settle on `'close'`, which fires once every stdio descriptor is
+ * closed. That guarantees we've drained all buffered stdout/stderr. But
+ * `'close'` can hang forever if the step shell forks a background process that
+ * inherits the stdout/stderr pipe and outlives the shell. In that case the
+ * shell has exited, but the pipe FD stays open and the finalize run stalls on
+ * a step the UI still shows as running.
+ *
+ * We also listen for `'exit'` and start this short timer. If `'close'` arrives
+ * within the window, we settle from it as usual. If it does not, we settle from
+ * the captured exit code and accept that a small tail of output may still be
+ * buffered in the leaked pipe.
+ */
+export const STEP_POST_EXIT_FLUSH_GRACE_MS = 2_000;
+
+/**
  * How many trailing lines of mixed stdout/stderr we keep for the §7
  * fix-dispatch body. Mirrors the "Last output (40 lines)" wording in the
  * design doc. The full output is captured in the stored log blob — the
@@ -303,6 +321,7 @@ export interface SpawnedStep {
   stdout: NodeJS.ReadableStream | null;
   stderr: NodeJS.ReadableStream | null;
   on(event: 'close', listener: (code: number | null) => void): unknown;
+  on(event: 'exit', listener: (code: number | null) => void): unknown;
   on(event: 'error', listener: (err: Error) => void): unknown;
   kill(signal?: NodeJS.Signals): boolean;
 }
@@ -919,6 +938,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
     let stderrBuffer = '';
     let settled = false;
     let timedOut = false;
+    let postExitTimer: ReturnType<typeof setTimeout> | undefined;
 
     let child: SpawnedStep;
     try {
@@ -1011,8 +1031,18 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       }
     };
 
-    child.stdout?.on('data', (chunk: Buffer | string) => consume(chunk, 'stdout'));
-    child.stderr?.on('data', (chunk: Buffer | string) => consume(chunk, 'stderr'));
+    const onStdoutData = (chunk: Buffer | string): void => consume(chunk, 'stdout');
+    const onStderrData = (chunk: Buffer | string): void => consume(chunk, 'stderr');
+
+    child.stdout?.on('data', onStdoutData);
+    child.stderr?.on('data', onStderrData);
+
+    const detachOutputStreams = (): void => {
+      child.stdout?.removeListener('data', onStdoutData);
+      child.stderr?.removeListener('data', onStderrData);
+      (child.stdout as (NodeJS.ReadableStream & { destroy?: () => void }) | null)?.destroy?.();
+      (child.stderr as (NodeJS.ReadableStream & { destroy?: () => void }) | null)?.destroy?.();
+    };
 
     const flushTrailingFragments = (): void => {
       if (stdoutBuffer.length > 0) {
@@ -1033,6 +1063,7 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(postExitTimer);
       const detail = err.message || String(err);
       const line = `[spawn-error] ${detail}`;
       stderrLines += 1;
@@ -1056,10 +1087,15 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       });
     });
 
-    child.on('close', (code: number | null) => {
+    const settleFromCode = (
+      code: number | null,
+      opts: { detachOpenOutput?: boolean } = {},
+    ): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(postExitTimer);
+      if (opts.detachOpenOutput) detachOutputStreams();
       flushTrailingFragments();
       const exitCode = code ?? -1;
       const durationMs = now() - startedAt;
@@ -1100,6 +1136,24 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         failureExcerpt: excerpt.snapshot(),
         logSnapshot,
       });
+    };
+
+    child.on('exit', (code: number | null) => {
+      if (settled || postExitTimer) return;
+      postExitTimer = setTimeout(() => {
+        if (settled) return;
+        emit(
+          'stderr',
+          '[finalize] step process exited but its output pipe stayed open ' +
+            `(likely a leaked background child); force-settling after ${STEP_POST_EXIT_FLUSH_GRACE_MS}ms.`,
+        );
+        settleFromCode(code, { detachOpenOutput: true });
+      }, STEP_POST_EXIT_FLUSH_GRACE_MS);
+      postExitTimer.unref?.();
+    });
+
+    child.on('close', (code: number | null) => {
+      settleFromCode(code);
     });
   });
 }
@@ -1461,7 +1515,7 @@ export const defaultSpawnStep: SpawnStepFn = ({ step, cwd, env }) => {
   return {
     stdout: child.stdout,
     stderr: child.stderr,
-    on(event: 'close' | 'error', listener: (arg: never) => void) {
+    on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
       child.on(event, listener as never);
       return child;
     },

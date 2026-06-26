@@ -105,7 +105,7 @@ function wrapChild(child: ChildProcess): SpawnedStep {
   return {
     stdout: child.stdout,
     stderr: child.stderr,
-    on(event: 'close' | 'error', listener: (arg: never) => void) {
+    on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
       child.on(event, listener as never);
       return child;
     },

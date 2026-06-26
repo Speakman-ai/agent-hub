@@ -24,7 +24,7 @@ vi.mock('./job-container.js', async (importOriginal) => {
         const child: SpawnedStep = {
           stdout: null,
           stderr: null,
-          on(event: 'close' | 'error', listener: (arg: never) => void) {
+          on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
             if (event === 'close')
               queueMicrotask(() => (listener as (code: number | null) => void)(0));
             return child;
@@ -46,7 +46,7 @@ function makeFakeSpawnStep(onRun?: (run: string) => void): SpawnStepFn {
     const child: SpawnedStep = {
       stdout: null,
       stderr: null,
-      on(event: 'close' | 'error', listener: (arg: never) => void) {
+      on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
         if (event === 'close') queueMicrotask(() => (listener as (code: number | null) => void)(0));
         return child;
       },
@@ -315,7 +315,7 @@ jobs:
       const child: SpawnedStep = {
         stdout: null,
         stderr: null,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close')
             queueMicrotask(() => (listener as (c: number | null) => void)(code));
           return child;
@@ -370,7 +370,7 @@ jobs:
       const child: SpawnedStep = {
         stdout,
         stderr,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close') {
             queueMicrotask(() => {
               if (isCollateral) {
@@ -432,7 +432,7 @@ jobs:
       const child: SpawnedStep = {
         stdout,
         stderr,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close') {
             queueMicrotask(() => {
               if (step.run.includes('backend')) {
@@ -509,7 +509,7 @@ jobs:
       const child: SpawnedStep = {
         stdout,
         stderr,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close') {
             if (isFastFail) {
               queueMicrotask(() => {
@@ -579,7 +579,7 @@ jobs:
       const child: SpawnedStep = {
         stdout: null,
         stderr: null,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close') queueMicrotask(() => (listener as (c: number | null) => void)(0));
           return child;
         },
@@ -665,7 +665,7 @@ jobs:
       const child: SpawnedStep = {
         stdout: null,
         stderr: null,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close')
             queueMicrotask(() => (listener as (c: number | null) => void)(code));
           return child;

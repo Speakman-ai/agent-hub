@@ -41,7 +41,7 @@ describe('runJobPhase', () => {
       const child: SpawnedStep = {
         stdout: null,
         stderr: null,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           if (event === 'close')
             queueMicrotask(() => (listener as (code: number | null) => void)(0));
           return child;

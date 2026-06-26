@@ -16,6 +16,7 @@ import { spotReclaimDetail } from './spot-interruption.js';
 import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
+  STEP_POST_EXIT_FLUSH_GRACE_MS,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
   __test,
   defaultSpawnStep,
@@ -148,7 +149,7 @@ function makeFakeChild(): {
   const child: SpawnedStep = {
     stdout,
     stderr,
-    on(event: 'close' | 'error', listener: (arg: never) => void) {
+    on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
       emitter.on(event, listener as never);
       return child;
     },
@@ -756,6 +757,126 @@ describe('runStepPhase — timeout (fake timers)', () => {
     expect(result.failedStep!.name).toBe('sleeper');
     expect(fakes[0].killed[0]).toBe('SIGTERM');
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
+  });
+});
+
+describe('runStepPhase — exit without close (leaked-grandchild pipe)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('force-settles a successful step on exit when close never fires', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: () => Date.now(),
+    };
+    const config = makeConfig([{ name: 'Typecheck', run: 'npm run typecheck' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    fakes[0].stdout.emit('data', Buffer.from('buffered-before-exit'));
+    fakes[0].emitter.emit('exit', 0);
+    await vi.advanceTimersByTimeAsync(STEP_POST_EXIT_FLUSH_GRACE_MS + 10);
+
+    const result = await resultP;
+    expect(result.status).toBe('success');
+    expect(result.stepResults).toHaveLength(1);
+    expect(result.stepResults[0]).toMatchObject({
+      name: 'Typecheck',
+      exitCode: 0,
+      stdoutLines: 1,
+    });
+    expect(fakes[0].stdout.listenerCount('data')).toBe(0);
+    expect(fakes[0].stderr.listenerCount('data')).toBe(0);
+    expect(fakes[0].stdout.destroyed).toBe(true);
+    expect(fakes[0].stderr.destroyed).toBe(true);
+  });
+
+  it('settles from close when it arrives within the grace window', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: () => Date.now(),
+    };
+    const config = makeConfig([{ name: 'Build', run: 'npm run build' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    fakes[0].emitter.emit('exit', 2);
+    await vi.advanceTimersByTimeAsync(STEP_POST_EXIT_FLUSH_GRACE_MS / 2);
+    fakes[0].emitter.emit('close', 2);
+    await vi.advanceTimersByTimeAsync(STEP_POST_EXIT_FLUSH_GRACE_MS);
+
+    const result = await resultP;
+    expect(result.status).toBe('failure');
+    expect(result.failedStep).toMatchObject({ name: 'Build', exitCode: 2 });
+  });
+
+  it('force-settles a timed-out step on exit when close never fires after SIGKILL', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: () => Date.now(),
+      spawnHardTimeoutMs: 100,
+    };
+    const config = makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_200);
+    fakes[0].emitter.emit('exit', null);
+    await vi.advanceTimersByTimeAsync(STEP_POST_EXIT_FLUSH_GRACE_MS + 10);
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
+    expect(result.failedStep!.name).toBe('sleeper');
+    expect(fakes[0].killed[0]).toBe('SIGTERM');
   });
 });
 

@@ -90,7 +90,7 @@ function makeFakeBackend(
       const child: SpawnedStep = {
         stdout,
         stderr,
-        on(event: 'close' | 'error', listener: (arg: never) => void) {
+        on(event: 'close' | 'exit' | 'error', listener: (arg: never) => void) {
           emitter.on(event, listener as never);
           return child;
         },
