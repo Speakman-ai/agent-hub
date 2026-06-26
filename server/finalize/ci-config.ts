@@ -76,7 +76,30 @@ export type CiTrigger = (typeof SUPPORTED_TRIGGERS)[number];
 const SUPPORTED_TOP_LEVEL_KEYS = new Set(['version', 'on', 'timeout_minutes', 'steps']);
 
 /** Step-level keys the parser accepts. Anything else fails closed. */
-const SUPPORTED_STEP_KEYS = new Set(['name', 'run']);
+const SUPPORTED_STEP_KEYS = new Set(['name', 'run', 'timeout_minutes']);
+
+/**
+ * Validate a step-level `timeout_minutes` (GHA parity — a per-step wall-clock
+ * cap). Shared by the v1 and v2 parsers. Must be a positive integer no larger
+ * than the pipeline ceiling: a per-step cap can only TIGHTEN the bound, never
+ * raise it above {@link FINALIZE_TIMEOUT_MAX_MINUTES}. The remote runner agent
+ * enforces it locally (kills the container exec on expiry); the pipeline budget
+ * is always the outer ceiling regardless.
+ */
+export function validateStepTimeoutMinutes(
+  raw: unknown,
+): { ok: true; value: number } | { ok: false; message: string } {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    return { ok: false, message: `must be a positive integer; got ${describeValue(raw)}` };
+  }
+  if (raw > FINALIZE_TIMEOUT_MAX_MINUTES) {
+    return {
+      ok: false,
+      message: `= ${raw} exceeds the pipeline ceiling of ${FINALIZE_TIMEOUT_MAX_MINUTES} minutes`,
+    };
+  }
+  return { ok: true, value: raw };
+}
 
 export interface CiStep {
   /**
@@ -97,6 +120,15 @@ export interface CiStep {
    * the step declared no `env:`.
    */
   env?: Record<string, string>;
+  /**
+   * Optional per-step wall-clock cap in minutes (GHA `timeout-minutes` parity).
+   * When set, the step is killed if it runs longer than this — the remote runner
+   * agent enforces it locally on the container exec. It can only TIGHTEN the
+   * per-step deadline: the defensive per-spawn hard cap remains an upper bound,
+   * so a value above it is clamped to the cap (it never extends a step past it).
+   * Omitted → only the pipeline budget / per-spawn cap bound the step.
+   */
+  timeoutMinutes?: number;
 }
 
 export interface CiConfig {
@@ -146,6 +178,7 @@ export type CiConfigErrorCode =
   | 'missing_step_run'
   | 'invalid_step_run'
   | 'invalid_step_name'
+  | 'invalid_step_timeout'
   | 'unknown_step_key'
   | import('./ci-config-v2.js').CiConfigV2ErrorCode;
 
@@ -371,7 +404,23 @@ export function parseCiConfig(text: string): CiConfigParseResult {
       // Default to "step <1-indexed-position>". Matches design §5 wording.
       name = `step ${i + 1}`;
     }
-    steps.push({ name, run: runRaw });
+    let stepTimeoutMinutes: number | undefined;
+    if ('timeout_minutes' in stepObj) {
+      const v = validateStepTimeoutMinutes(stepObj.timeout_minutes);
+      if (!v.ok) {
+        return err_(
+          'invalid_step_timeout',
+          `ci.yaml '${stepPath}.timeout_minutes' ${v.message}.`,
+          `${stepPath}.timeout_minutes`,
+        );
+      }
+      stepTimeoutMinutes = v.value;
+    }
+    steps.push({
+      name,
+      run: runRaw,
+      ...(stepTimeoutMinutes !== undefined ? { timeoutMinutes: stepTimeoutMinutes } : {}),
+    });
   }
 
   return {

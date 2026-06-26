@@ -198,8 +198,8 @@ export function createRemoteRunnerBackend(opts?: {
       }
 
       return {
-        spawnStep: ({ step, index, env }: SpawnStepArgs) =>
-          channel.runStep(index, step.run, toEnvRecord(env)),
+        spawnStep: ({ step, index, env, deadlineMs }: SpawnStepArgs) =>
+          channel.runStep(index, step.run, toEnvRecord(env), deadlineMs),
         release: async () => {
           channel.finish();
           // Queue-level "the runner completed its lease" — the authoritative

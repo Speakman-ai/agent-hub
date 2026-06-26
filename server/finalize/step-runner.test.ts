@@ -175,6 +175,87 @@ const WORKTREE = '/tmp/finalize-step-runner-fake';
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
+describe('runStepPhase — per-step timeout_minutes', () => {
+  it('passes a step-level timeout_minutes as the spawn deadline, tightening the budget', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const seen: Array<number | undefined> = [];
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = (a) => {
+      seen.push(a.deadlineMs);
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      logStore: makeLogStore().store,
+      now: makeMonoClock(),
+    };
+    // 60-min pipeline budget; step 1 caps itself at 1 min, step 2 is uncapped.
+    const config = makeConfig([
+      { name: 'Capped', run: 'npm test', timeoutMinutes: 1 },
+      { name: 'Uncapped', run: 'npm run lint' },
+    ]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    await microtaskTick();
+    fakes[1].emitter.emit('close', 0);
+    await resultP;
+
+    expect(seen[0]).toBe(60_000); // 1-min per-step cap wins over the 60-min budget
+    expect(seen[1]).toBeGreaterThan(60_000); // uncapped → only the pipeline budget bounds it
+  });
+
+  // Regression (reviewer feedback): a per-step timeout_minutes ABOVE the
+  // defensive per-spawn hard cap must NOT raise the ceiling — it is clamped to
+  // the cap. Otherwise `timeout_minutes: 120` would let a step run 2h past the
+  // 60-min containment ceiling, re-opening the hang gap this change closes.
+  it('clamps a step timeout_minutes above the per-spawn hard cap down to the cap', async () => {
+    const stmts = makeStmts();
+    const seen: Array<number | undefined> = [];
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = (a) => {
+      seen.push(a.deadlineMs);
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      logStore: makeLogStore().store,
+      now: makeMonoClock(),
+      spawnHardTimeoutMs: 30_000, // 30s defensive per-spawn ceiling
+    };
+    // Step asks for 5 min — far above the 30s spawn cap — under a generous budget.
+    const config = makeConfig([{ name: 'Long', run: 'npm run e2e', timeoutMinutes: 5 }], 60);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 0);
+    await resultP;
+
+    // Clamped to the 30s spawn cap, NOT the requested 300_000ms.
+    expect(seen[0]).toBe(30_000);
+  });
+});
+
 describe('runStepPhase — happy path', () => {
   it('runs every step sequentially, streams stdout/stderr line-by-line, returns success', async () => {
     const stmts = makeStmts();

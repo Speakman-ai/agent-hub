@@ -17,7 +17,25 @@
 import { RemoteSpawnedStep, type RemoteStepSink } from './remote-spawned-step.js';
 
 export type RunnerDirective =
-  | { type: 'run_step'; stepIndex: number; run: string; env: Record<string, string> }
+  | {
+      type: 'run_step';
+      stepIndex: number;
+      run: string;
+      env: Record<string, string>;
+      /**
+       * Hard wall-clock cap (ms) the AGENT enforces locally on this step's
+       * container exec. The Hub already computes this per step
+       * (`min(remainingBudget, STEP_SPAWN_HARD_TIMEOUT_MS)`); carrying it in the
+       * directive makes it the single source of truth. The agent kills the exec
+       * and tears the container down when it lapses, so a hung or runaway remote
+       * step can never outlive its budget — the Hub-side `kill()` only QUEUES a
+       * `cancel` the busy agent can't read mid-step, so without this an unbounded
+       * step pins the agent in `execStep` forever while its heartbeat keeps the
+       * lease fresh (the reaper never fires). Omitted → the agent's own default
+       * ceiling applies (it never runs a step unbounded).
+       */
+      deadlineMs?: number;
+    }
   | { type: 'cancel'; stepIndex: number; signal?: string }
   | { type: 'finish' };
 
@@ -70,10 +88,21 @@ export class RunnerJobChannel implements RemoteStepSink {
   // ── Backend → agent ────────────────────────────────────────────────────
 
   /** Queue a step for the agent and return its SpawnedStep handle. */
-  runStep(stepIndex: number, run: string, env: Record<string, string>): RemoteSpawnedStep {
+  runStep(
+    stepIndex: number,
+    run: string,
+    env: Record<string, string>,
+    deadlineMs?: number,
+  ): RemoteSpawnedStep {
     const step = new RemoteSpawnedStep(stepIndex, this);
     this.steps.set(stepIndex, step);
-    this.pushDirective({ type: 'run_step', stepIndex, run, env });
+    this.pushDirective({
+      type: 'run_step',
+      stepIndex,
+      run,
+      env,
+      ...(typeof deadlineMs === 'number' && deadlineMs > 0 ? { deadlineMs } : {}),
+    });
     return step;
   }
 

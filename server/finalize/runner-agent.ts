@@ -75,9 +75,34 @@ export interface AgentDocker {
     run: string,
     env: Record<string, string>,
     onLog: (stream: 'stdout' | 'stderr', data: string) => void,
+    /**
+     * Aborted when the step must stop before its own exit: the local hard
+     * deadline lapsed, or the Hub asked to cancel/finish (delivered to the
+     * concurrent watch poll). The implementation must kill the exec child so a
+     * hung or runaway step is actually terminated — this is the ONLY place the
+     * container exec can be stopped.
+     */
+    signal?: AbortSignal,
   ): Promise<number>;
   stopContainer(containerName: string): Promise<void>;
 }
+
+/**
+ * Exit code the agent reports when it kills a step locally because its hard
+ * wall-clock deadline lapsed. 124 mirrors GNU `timeout(1)` so the Hub's failure
+ * classification and the human reading the log see an unambiguous timeout, not a
+ * generic non-zero exit.
+ */
+export const STEP_DEADLINE_EXIT_CODE = 124;
+
+/**
+ * Backstop ceiling (ms) applied to a step whose `run_step` directive carries no
+ * `deadlineMs` (older Hub, or a directive that omitted it). Matches the Hub's
+ * `STEP_SPAWN_HARD_TIMEOUT_MS` so the agent never runs a step truly unbounded —
+ * the invariant this whole path exists to guarantee. The Hub normally sends a
+ * tighter, budget-derived deadline that wins over this.
+ */
+export const DEFAULT_STEP_DEADLINE_MS = 60 * 60 * 1_000;
 
 /**
  * Run a single claimed job to completion. Returns the per-step exit codes.
@@ -196,22 +221,67 @@ export async function runAgentJob(args: {
         const d = await transport.poll(jobId);
         if (d.type === 'idle') continue;
         if (d.type === 'finish' || d.type === 'gone') break;
-        if (d.type === 'cancel') continue; // container teardown handles cancellation
-        // run_step: exec, streaming logs (batched), then report the exit code.
+        if (d.type === 'cancel') continue; // no step in flight here; nothing to cancel
+        // run_step: exec under a LOCAL hard deadline, streaming logs (batched),
+        // then report the exit code.
         const buffer: AgentLogFrame[] = [];
         const flush = async (): Promise<void> => {
           if (buffer.length === 0) return;
           await transport.postLogs(jobId, buffer.splice(0));
         };
         const timer = setInterval(() => void flush(), args.logFlushMs ?? 200);
+
+        // The step MUST be stoppable from outside its own exit: this agent is the
+        // ONLY machine that can kill the container. Without a local deadline a hung
+        // or runaway step pins us in execStep forever while the background
+        // heartbeat keeps the lease fresh — so the Hub's lease reaper never fires
+        // and the whole run hangs indefinitely. The Hub-side per-step timeout only
+        // QUEUES a `cancel` directive, which the agent can't read mid-step (it
+        // isn't polling while a step runs), so it can't stop a remote step on its
+        // own. Enforcing the SAME budget-derived deadline here is what finally makes
+        // the per-step ceiling effective for remote jobs. The AbortController is the
+        // kill switch; execStep kills the exec child when it trips.
+        const ac = new AbortController();
+        const deadlineMs =
+          d.deadlineMs && d.deadlineMs > 0 ? d.deadlineMs : DEFAULT_STEP_DEADLINE_MS;
+        let deadlineHit = false;
+        const deadline = setTimeout(() => {
+          deadlineHit = true;
+          ac.abort();
+        }, deadlineMs);
+        unref(deadline);
+
         let exitCode: number | null;
         try {
-          exitCode = await docker.execStep(containerName, d.run, d.env, (stream, data) => {
-            buffer.push({ seq: seq++, stepIndex: d.stepIndex, stream, data });
-          });
+          exitCode = await docker.execStep(
+            containerName,
+            d.run,
+            d.env,
+            (stream, data) => {
+              buffer.push({ seq: seq++, stepIndex: d.stepIndex, stream, data });
+            },
+            ac.signal,
+          );
         } finally {
+          clearTimeout(deadline);
           clearInterval(timer);
           await flush();
+        }
+        // A killed step reports a deterministic terminal code so the Hub's
+        // runSingleStep resolves on the reported exit (instead of waiting on one
+        // that never comes) and the failure is classified as a timeout, not a
+        // generic non-zero exit.
+        if (deadlineHit) {
+          buffer.push({
+            seq: seq++,
+            stepIndex: d.stepIndex,
+            stream: 'stderr',
+            data: `\n[runner-agent] step ${d.stepIndex} exceeded its ${Math.round(
+              deadlineMs / 1000,
+            )}s deadline — killed\n`,
+          });
+          await flush();
+          exitCode = STEP_DEADLINE_EXIT_CODE;
         }
         stepExits.push({ stepIndex: d.stepIndex, exitCode });
         await transport.postStepResult(jobId, d.stepIndex, exitCode);
@@ -286,20 +356,123 @@ export function realDockerOps(): AgentDocker {
       });
       return containerName;
     },
-    execStep(containerName, run, env, onLog) {
-      return new Promise<number>((resolve, reject) => {
-        const argv = buildExecJobStepArgv({ containerName, run, env });
-        const child = spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
-        child.stdout?.on('data', (d) => onLog('stdout', d.toString()));
-        child.stderr?.on('data', (d) => onLog('stderr', d.toString()));
-        child.on('error', reject);
-        child.on('close', (code) => resolve(code ?? -1));
+    execStep(containerName, run, env, onLog, signal) {
+      return runExecStepChild({
+        argv: buildExecJobStepArgv({ containerName, run, env }),
+        onLog,
+        signal,
       });
     },
     async stopContainer(containerName) {
       await stopJobContainer(containerName);
     },
   };
+}
+
+/**
+ * Grace (ms) after a step's process EXITS before we stop waiting for its stdio
+ * to flush. We resolve on process exit, not on stdout `close`: a leftover child
+ * that inherited the exec's stdout/stderr can hold those pipes open long after
+ * the step's main command exited, and waiting on `close` would hang us there
+ * (GHA reaps such leftovers at job teardown rather than blocking the step). We
+ * take the exit code, give the streams this brief window to drain buffered
+ * output, then proceed regardless — anything still alive is reclaimed when the
+ * job container is force-removed.
+ */
+export const STEP_EXIT_DRAIN_GRACE_MS = 2_000;
+
+/** Grace (ms) between SIGTERM and SIGKILL when force-killing a step. */
+export const STEP_KILL_GRACE_MS = 2_000;
+
+/**
+ * Run a step's child process to completion, returning its exit code.
+ *
+ * Two GHA-parity behaviors live here:
+ *   1. **Resolve on process exit, not stdio close** (see STEP_EXIT_DRAIN_GRACE_MS)
+ *      so a lingering pipe-holder can't wedge a step whose command already exited.
+ *   2. **Process-GROUP termination on abort** — the child is spawned `detached`
+ *      so it leads its own group; an abort SIGTERMs (then SIGKILLs) the whole
+ *      group, killing the `docker exec` client plus anything it forked, rather
+ *      than signalling only the leader.
+ *
+ * `spawnFn` is injectable for unit tests (defaults to the real `child_process`
+ * spawn); tests pass a fake child so no real process is spawned.
+ */
+export function runExecStepChild(args: {
+  argv: string[];
+  onLog: (stream: 'stdout' | 'stderr', data: string) => void;
+  signal?: AbortSignal;
+  spawnFn?: typeof spawn;
+  exitDrainGraceMs?: number;
+  killGraceMs?: number;
+}): Promise<number> {
+  const spawnFn = args.spawnFn ?? spawn;
+  const exitDrainGraceMs = args.exitDrainGraceMs ?? STEP_EXIT_DRAIN_GRACE_MS;
+  const killGraceMs = args.killGraceMs ?? STEP_KILL_GRACE_MS;
+  return new Promise<number>((resolve, reject) => {
+    const child = spawnFn(args.argv[0], args.argv.slice(1), {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    child.stdout?.on('data', (d) => args.onLog('stdout', d.toString()));
+    child.stderr?.on('data', (d) => args.onLog('stderr', d.toString()));
+
+    let settled = false;
+    const cleanupSignal = (): void => {
+      if (args.signal) args.signal.removeEventListener('abort', onAbort);
+    };
+    const done = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      cleanupSignal();
+      resolve(code);
+    };
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      cleanupSignal();
+      reject(err);
+    });
+    // Exit fires when the process terminates; close fires after its stdio drains.
+    // Prefer close (full output) but never wait past the grace window for it.
+    child.on('exit', (code) => {
+      const exit = code ?? -1;
+      let drained = false;
+      const finish = (): void => {
+        if (drained) return;
+        drained = true;
+        done(exit);
+      };
+      child.once('close', finish);
+      setTimeout(finish, exitDrainGraceMs).unref?.();
+    });
+
+    const killGroup = (sig: NodeJS.Signals): void => {
+      try {
+        // Negative pid → signal the whole process group (child is group leader
+        // because it was spawned detached). Falls back to the bare child if the
+        // group send fails (pid already gone, or no group on this platform).
+        if (typeof child.pid === 'number') process.kill(-child.pid, sig);
+        else child.kill(sig);
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {
+          /* best-effort: the process/group is already gone */
+        }
+      }
+    };
+    const onAbort = (): void => {
+      killGroup('SIGTERM');
+      setTimeout(() => {
+        if (!settled) killGroup('SIGKILL');
+      }, killGraceMs).unref?.();
+    };
+    if (args.signal) {
+      if (args.signal.aborted) onAbort();
+      else args.signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
 }
 
 export function httpTransport(hubUrl: string, token: string): AgentTransport {

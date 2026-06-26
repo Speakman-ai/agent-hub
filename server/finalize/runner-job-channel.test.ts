@@ -67,6 +67,8 @@ describe('RunnerJobChannel', () => {
     // agent's first poll picks up the directive AND attaches (ready resolves)
     const d = await ch.nextDirective(1000);
     expect(d).toEqual({ type: 'run_step', stepIndex: 0, run: 'echo hi', env: { FOO: 'bar' } });
+    // No deadline passed → directive omits it (agent applies its own ceiling).
+    expect((d as { deadlineMs?: number }).deadlineMs).toBeUndefined();
     await ch.ready;
     expect(ready).toBe(true);
     expect(ch.isAttached).toBe(true);
@@ -78,6 +80,27 @@ describe('RunnerJobChannel', () => {
     expect(closes).toEqual([0]);
 
     removeJobChannel('job1');
+  });
+
+  it('runStep forwards a positive deadlineMs into the run_step directive', async () => {
+    const ch = createJobChannel('job1d');
+    ch.runStep(2, 'npm test', { A: '1' }, 30_000);
+    expect(await ch.nextDirective(1000)).toEqual({
+      type: 'run_step',
+      stepIndex: 2,
+      run: 'npm test',
+      env: { A: '1' },
+      deadlineMs: 30_000,
+    });
+    // A non-positive / undefined deadline is omitted, never sent as 0.
+    ch.runStep(3, 'npm run lint', {}, 0);
+    expect(await ch.nextDirective(1000)).toEqual({
+      type: 'run_step',
+      stepIndex: 3,
+      run: 'npm run lint',
+      env: {},
+    });
+    removeJobChannel('job1d');
   });
 
   it('nextDirective long-polls: null after timeout, resolves when a directive is pushed', async () => {

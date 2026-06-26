@@ -340,3 +340,35 @@ jobs:
     expect(step.env).not.toHaveProperty('AWS_S3_REGION');
   });
 });
+
+describe('ci-config-v2 — per-step timeout_minutes', () => {
+  const cfg = (stepTail: string) => `
+version: 2
+on: [finalize]
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Test
+        run: npm test
+${stepTail}
+`;
+
+  it('parses a valid per-step timeout_minutes onto the v2 step', () => {
+    const r = parseCiConfig(cfg('        timeout_minutes: 8'));
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 2) return;
+    expect(r.config.jobs.backend.steps[0]).toEqual({
+      name: 'Test',
+      run: 'npm test',
+      timeoutMinutes: 8,
+    });
+  });
+
+  it('rejects an invalid v2 step timeout with invalid_step_timeout_v2', () => {
+    const r = parseCiConfig(cfg('        timeout_minutes: 0'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('invalid_step_timeout_v2');
+  });
+});

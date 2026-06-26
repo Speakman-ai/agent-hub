@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'events';
 import {
   httpTransport,
   resolveEcsTaskArn,
   runAgentJob,
   runClaimedJobWithRecovery,
+  runExecStepChild,
+  STEP_DEADLINE_EXIT_CODE,
   type AgentDocker,
   type AgentLogFrame,
   type AgentPollResult,
@@ -383,6 +386,113 @@ describe('runAgentJob', () => {
     });
     expect(materialized).toEqual(['/ws/repo']);
   });
+
+  // Regression: a hung/runaway remote step used to pin the agent in execStep
+  // forever — the agent kept heartbeating, so the Hub lease reaper never fired
+  // and the whole run hung. The agent now enforces the directive's per-step
+  // deadline locally, aborting the exec and reporting a deterministic timeout.
+  describe('per-step hard deadline (hang/runaway containment)', () => {
+    /** A docker fake whose `execStep` hangs until its abort signal fires. */
+    function hangingDocker(onAbortExit = 137): {
+      docker: AgentDocker;
+      sawSignal: () => boolean;
+      events: string[];
+    } {
+      const events: string[] = [];
+      let signalSeen = false;
+      const docker: AgentDocker = {
+        startContainer: async () => 'c1',
+        execStep: (_c, run, _env, onLog, signal) => {
+          if (run !== 'hang') {
+            onLog('stdout', `out:${run}\n`);
+            return Promise.resolve(0);
+          }
+          if (signal) signalSeen = true;
+          // Never resolves on its own — only the abort (deadline) ends it,
+          // exactly like a wedged or never-terminating CI step.
+          return new Promise<number>((resolve) => {
+            const finish = (): void => resolve(onAbortExit);
+            if (signal?.aborted) finish();
+            else signal?.addEventListener('abort', finish, { once: true });
+          });
+        },
+        stopContainer: async (c) => {
+          events.push(`stop:${c}`);
+        },
+      };
+      return { docker, sawSignal: () => signalSeen, events };
+    }
+
+    it('kills a step that blows its deadline and reports STEP_DEADLINE_EXIT_CODE', async () => {
+      const { docker, sawSignal, events } = hangingDocker();
+      const results: Array<{ stepIndex: number; exitCode: number | null }> = [];
+      const transport: AgentTransport = {
+        claim: async () => null,
+        poll: async () => ({ type: 'finish' }),
+        postLogs: async () => {},
+        postStepResult: async (_j, stepIndex, exitCode) => {
+          results.push({ stepIndex, exitCode });
+        },
+        postFinish: async () => {},
+        heartbeat: async () => {},
+        reportError: async () => {},
+      };
+      // First poll returns the hung step with a tiny deadline; subsequent polls
+      // (after the deadline kills it) return `finish` so the job loop ends.
+      let n = 0;
+      transport.poll = async () =>
+        n++ === 0
+          ? { type: 'run_step', stepIndex: 0, run: 'hang', env: {}, deadlineMs: 15 }
+          : { type: 'finish' };
+
+      const { stepExits } = await runAgentJob({
+        jobId: 'j',
+        spec: wire(),
+        workspaceDir: '/ws',
+        transport,
+        docker,
+        startSampler: () => ({ stop: () => null }),
+      });
+
+      // The job COMPLETED (did not hang) and the step was force-killed.
+      expect(sawSignal()).toBe(true);
+      expect(events).toContain('stop:c1'); // container torn down
+      expect(results).toEqual([{ stepIndex: 0, exitCode: STEP_DEADLINE_EXIT_CODE }]);
+      expect(stepExits).toEqual([{ stepIndex: 0, exitCode: STEP_DEADLINE_EXIT_CODE }]);
+    });
+
+    it('does NOT kill a step that finishes before its deadline (deadline cleared)', async () => {
+      // `run:'ok'` resolves immediately; a generous deadline must never fire and
+      // the real exit code must be preserved.
+      const { docker, sawSignal } = hangingDocker();
+      const results: Array<{ stepIndex: number; exitCode: number | null }> = [];
+      let n = 0;
+      const transport: AgentTransport = {
+        claim: async () => null,
+        poll: async () =>
+          n++ === 0
+            ? { type: 'run_step', stepIndex: 0, run: 'ok', env: {}, deadlineMs: 60_000 }
+            : { type: 'finish' },
+        postLogs: async () => {},
+        postStepResult: async (_j, stepIndex, exitCode) => {
+          results.push({ stepIndex, exitCode });
+        },
+        postFinish: async () => {},
+        heartbeat: async () => {},
+        reportError: async () => {},
+      };
+      await runAgentJob({
+        jobId: 'j',
+        spec: wire(),
+        workspaceDir: '/ws',
+        transport,
+        docker,
+        startSampler: () => ({ stop: () => null }),
+      });
+      expect(sawSignal()).toBe(false); // never aborted
+      expect(results).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+    });
+  });
 });
 
 describe('httpTransport.heartbeat', () => {
@@ -543,5 +653,97 @@ describe('runClaimedJobWithRecovery (card #1184)', () => {
         throw new Error('materialize failed');
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('runExecStepChild (exit-vs-close + process-group kill)', () => {
+  /** Minimal ChildProcess stand-in: EventEmitter + stdout/stderr emitters. */
+  class FakeChild extends EventEmitter {
+    stdout = new EventEmitter();
+    stderr = new EventEmitter();
+    killed: string[] = [];
+    constructor(public pid: number | undefined = undefined) {
+      super();
+    }
+    kill(sig: NodeJS.Signals): boolean {
+      this.killed.push(sig);
+      return true;
+    }
+  }
+  const spawnReturning = (fc: FakeChild) =>
+    (() => fc) as unknown as Parameters<typeof runExecStepChild>[0]['spawnFn'];
+
+  it('resolves on process exit, streaming output, when close follows promptly', async () => {
+    const fc = new FakeChild();
+    const out: string[] = [];
+    const p = runExecStepChild({
+      argv: ['docker', 'exec'],
+      onLog: (_s, d) => out.push(d),
+      spawnFn: spawnReturning(fc),
+      exitDrainGraceMs: 1_000,
+    });
+    fc.stdout.emit('data', Buffer.from('hello\n'));
+    fc.emit('exit', 0);
+    fc.emit('close', 0);
+    await expect(p).resolves.toBe(0);
+    expect(out.join('')).toBe('hello\n');
+  });
+
+  // The core fix: a leftover child holds the pipe open so `close` NEVER fires —
+  // we must still resolve (on exit + grace), not hang the step forever.
+  it('resolves after the drain grace when close never fires (lingering pipe-holder)', async () => {
+    const fc = new FakeChild();
+    const out: string[] = [];
+    const p = runExecStepChild({
+      argv: ['x'],
+      onLog: (_s, d) => out.push(d),
+      spawnFn: spawnReturning(fc),
+      exitDrainGraceMs: 15,
+    });
+    fc.stdout.emit('data', Buffer.from('partial output'));
+    fc.emit('exit', 3); // process exited; close intentionally never emitted
+    await expect(p).resolves.toBe(3);
+    expect(out.join('')).toContain('partial output');
+  });
+
+  it('SIGTERMs then SIGKILLs the process on abort (group kill via child.kill when pid is unknown)', async () => {
+    const fc = new FakeChild(undefined); // no pid → falls back to child.kill (no real process.kill)
+    const ac = new AbortController();
+    const p = runExecStepChild({
+      argv: ['x'],
+      onLog: () => {},
+      signal: ac.signal,
+      spawnFn: spawnReturning(fc),
+      killGraceMs: 10,
+      exitDrainGraceMs: 5,
+    });
+    ac.abort();
+    expect(fc.killed).toEqual(['SIGTERM']); // immediate
+    await new Promise((r) => setTimeout(r, 25));
+    expect(fc.killed).toContain('SIGKILL'); // after the grace, since it didn't exit
+    // The process finally dies; the promise settles with the kill exit code.
+    fc.emit('exit', 137);
+    fc.emit('close', 137);
+    await expect(p).resolves.toBe(137);
+  });
+
+  it('does not SIGKILL if the process exits within the kill grace', async () => {
+    const fc = new FakeChild(undefined);
+    const ac = new AbortController();
+    const p = runExecStepChild({
+      argv: ['x'],
+      onLog: () => {},
+      signal: ac.signal,
+      spawnFn: spawnReturning(fc),
+      killGraceMs: 50,
+      exitDrainGraceMs: 5,
+    });
+    ac.abort();
+    expect(fc.killed).toEqual(['SIGTERM']);
+    fc.emit('exit', 143); // exits on SIGTERM within the grace
+    fc.emit('close', 143);
+    await expect(p).resolves.toBe(143);
+    await new Promise((r) => setTimeout(r, 70));
+    expect(fc.killed).toEqual(['SIGTERM']); // no stray SIGKILL after it settled
   });
 });

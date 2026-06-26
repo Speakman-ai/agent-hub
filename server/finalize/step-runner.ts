@@ -312,6 +312,14 @@ export interface SpawnStepArgs {
   index: number;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Hard wall-clock cap (ms) for this step. The local backend ignores it (the
+   * Hub-side timer in {@link runSingleStep} already kills its real child). The
+   * remote backend forwards it to the agent in the `run_step` directive so the
+   * agent enforces the SAME ceiling locally on its container exec — the only
+   * place a hung/runaway remote step can actually be stopped.
+   */
+  deadlineMs?: number;
 }
 
 export type SpawnStepFn = (args: SpawnStepArgs) => SpawnedStep;
@@ -565,7 +573,18 @@ export async function runStepsSequence(
       );
     }
 
-    const stepHardTimeoutMs = Math.min(remainingBudgetMs, spawnHardTimeoutMs);
+    // The step's hard ceiling is the tightest of: the remaining pipeline budget,
+    // the defensive per-spawn cap, and (when the author set one) the step's own
+    // `timeout_minutes` (GHA parity). The per-spawn cap is ALWAYS an upper bound:
+    // a per-step `timeout_minutes` can only TIGHTEN below it — a larger value is
+    // clamped to the cap, never raising the ceiling above it. Otherwise a step
+    // with `timeout_minutes` greater than the cap would run past it and re-open
+    // the hang-containment gap this whole change exists to close.
+    const perStepCapMs =
+      typeof step.timeoutMinutes === 'number' && step.timeoutMinutes > 0
+        ? step.timeoutMinutes * 60_000
+        : Number.POSITIVE_INFINITY;
+    const stepHardTimeoutMs = Math.min(remainingBudgetMs, spawnHardTimeoutMs, perStepCapMs);
     // announceStepStart mints this execution's log nonce and clears any prior
     // log location; thread it to the (detached) upload so its blob key + guarded
     // attach are tied to THIS execution.
@@ -908,7 +927,13 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       // `docker exec -e` args, so secret values never land in the persisted
       // `run` string.
       const stepEnv = step.env ? { ...(args.env ?? {}), ...step.env } : args.env;
-      child = spawnStep({ step, index: stepIndex, cwd: args.cwd, env: stepEnv });
+      child = spawnStep({
+        step,
+        index: stepIndex,
+        cwd: args.cwd,
+        env: stepEnv,
+        deadlineMs: hardTimeoutMs,
+      });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       const line = `[spawn-error] ${detail}`;

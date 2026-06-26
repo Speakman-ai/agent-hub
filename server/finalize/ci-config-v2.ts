@@ -9,6 +9,7 @@ import {
   FINALIZE_TIMEOUT_MAX_MINUTES,
   FINALIZE_TIMEOUT_MIN_MINUTES,
   SUPPORTED_TRIGGERS,
+  validateStepTimeoutMinutes,
   type CiConfigParseError,
   type CiConfigParseResult,
   type CiTrigger,
@@ -19,6 +20,13 @@ export interface CiStepV2 {
   run: string;
   /** Static env map; values may contain ${VAR} placeholders. */
   env?: Record<string, string>;
+  /**
+   * Optional per-step wall-clock cap in minutes (GHA `timeout-minutes` parity).
+   * Enforced locally by the remote runner agent (kills the container exec on
+   * expiry). It can only TIGHTEN the per-step deadline — the defensive per-spawn
+   * hard cap stays an upper bound, so a value above it is clamped to the cap.
+   */
+  timeoutMinutes?: number;
 }
 
 export interface CiJobV2 {
@@ -91,7 +99,7 @@ const V2_JOB_KEYS = new Set([
   'env',
   'steps',
 ]);
-const V2_STEP_KEYS = new Set(['name', 'run', 'env']);
+const V2_STEP_KEYS = new Set(['name', 'run', 'env', 'timeout_minutes']);
 
 export type CiConfigV2ErrorCode =
   | 'missing_jobs'
@@ -120,7 +128,8 @@ export type CiConfigV2ErrorCode =
   | 'unknown_step_key_v2'
   | 'missing_step_run_v2'
   | 'invalid_step_run_v2'
-  | 'invalid_step_name_v2';
+  | 'invalid_step_name_v2'
+  | 'invalid_step_timeout_v2';
 
 type V2ErrorCode = CiConfigV2ErrorCode | import('./ci-config.js').CiConfigErrorCode;
 
@@ -241,7 +250,24 @@ function parseStepsV2(
       if (!parsed.ok) return parsed;
       if (Object.keys(parsed.env).length > 0) stepEnv = parsed.env;
     }
-    steps.push({ name, run: stepObj.run, ...(stepEnv ? { env: stepEnv } : {}) });
+    let stepTimeoutMinutes: number | undefined;
+    if ('timeout_minutes' in stepObj) {
+      const v = validateStepTimeoutMinutes(stepObj.timeout_minutes);
+      if (!v.ok) {
+        return err(
+          'invalid_step_timeout_v2',
+          `'${stepPath}.timeout_minutes' ${v.message}.`,
+          `${stepPath}.timeout_minutes`,
+        );
+      }
+      stepTimeoutMinutes = v.value;
+    }
+    steps.push({
+      name,
+      run: stepObj.run,
+      ...(stepEnv ? { env: stepEnv } : {}),
+      ...(stepTimeoutMinutes !== undefined ? { timeoutMinutes: stepTimeoutMinutes } : {}),
+    });
   }
   return { ok: true, steps };
 }

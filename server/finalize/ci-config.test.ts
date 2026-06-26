@@ -721,3 +721,48 @@ describe('loadCiConfigFromFile — arbitrary path', () => {
     expect(result.error.code).toBe('missing_jobs');
   });
 });
+
+describe('parseCiConfig — per-step timeout_minutes (v1)', () => {
+  const cfg = (stepLine: string) => `
+version: 1
+on: [finalize]
+steps:
+  - name: Test
+    run: npm test
+${stepLine}
+`;
+
+  it('parses a valid per-step timeout_minutes onto the step', () => {
+    const r = parseCiConfig(cfg('    timeout_minutes: 10'));
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 1) return;
+    expect(r.config.steps[0]).toEqual({ name: 'Test', run: 'npm test', timeoutMinutes: 10 });
+  });
+
+  it('leaves timeoutMinutes undefined when the step omits it', () => {
+    const r = parseCiConfig(cfg(''));
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.config.version !== 1) return;
+    expect(r.config.steps[0].timeoutMinutes).toBeUndefined();
+  });
+
+  it('rejects a non-positive or non-integer step timeout', () => {
+    for (const bad of [
+      '    timeout_minutes: 0',
+      '    timeout_minutes: -3',
+      '    timeout_minutes: 1.5',
+    ]) {
+      const r = parseCiConfig(cfg(bad));
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe('invalid_step_timeout');
+    }
+  });
+
+  it('rejects a step timeout above the pipeline ceiling (240)', () => {
+    const r = parseCiConfig(cfg('    timeout_minutes: 999'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.code).toBe('invalid_step_timeout');
+  });
+});

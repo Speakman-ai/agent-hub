@@ -82,6 +82,47 @@ describe('createRemoteRunnerBackend', () => {
     expect(getJobChannel(claimed!.id)).toBeUndefined();
   });
 
+  // The production seam: step-runner computes the per-step deadline and hands it
+  // to spawnStep, which must forward it into the run_step directive so the agent
+  // enforces it locally. Without this the deadline silently never reaches the
+  // remote runner and a hung step hangs forever.
+  it('forwards SpawnStepArgs.deadlineMs into the run_step directive', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r-deadline',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    const claimed = claimRunnerJob({ agentId: 'agent-d', leaseMs: 60_000, now: Date.now() });
+    const channel = getJobChannel(claimed!.id)!;
+    const pollP = channel.nextDirective(1000);
+    const lease = await acquireP;
+
+    lease.spawnStep({
+      step: { name: 's', run: 'npm test' },
+      index: 2,
+      cwd: '/tmp/wt',
+      env: {},
+      deadlineMs: 90_000,
+    });
+    expect(await pollP).toEqual({
+      type: 'run_step',
+      stepIndex: 2,
+      run: 'npm test',
+      env: {},
+      deadlineMs: 90_000,
+    });
+
+    await lease.release();
+  });
+
   it('forwards minimalEnv onto the wire spec so the agent isolates deploy env', async () => {
     const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
     const acquireP = backend.acquire({
