@@ -51,6 +51,7 @@ function wireRouteDeps(run: FinalizeRunRow): void {
         // Autonomous/assigned session — only these auto-fire Finalize.
         get: () => ({ id: 's1', agent_id: 'a1', worktree_path: '/wt', auto_ship_on_complete: 1 }),
       },
+      getPushedFinalizeRunForSession: { get: () => undefined },
       getFinalizeRun: { get: () => run },
     },
     findAgent: () => ({ project: { id: 'p1' } }),

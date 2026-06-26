@@ -30,6 +30,12 @@ import { readFinalizeLoopRound, writeFinalizeRunTerminalTimeline } from './timel
 import type { ReviewerVerdict } from './reviewer-dispatch.js';
 import { resolveNativePrAuthorUserId } from '../native-pr/author-user.js';
 import { postFinalizeApprovalReview } from './post-finalize-approval-review.js';
+import {
+  hasPushedFinalizeRun,
+  lockSessionAfterFinalizePush,
+  POST_FINALIZE_PUSH_LOCK_ERROR,
+  POST_FINALIZE_PUSH_LOCK_MESSAGE,
+} from './post-push-session-lock.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -274,6 +280,7 @@ async function executePush(args: {
   try {
     writeFinalizeRunPrUrl({ stmts: stmts as Stmts }, { runId: run.id, prUrl: pushResult.prUrl });
     stmts.markFinalizeRunPushed.run(run.id);
+    lockSessionAfterFinalizePush(stmts as Stmts, session.id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(
@@ -385,6 +392,15 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     };
   }
 
+  if (hasPushedFinalizeRun(deps.stmts as Stmts, session.id)) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: POST_FINALIZE_PUSH_LOCK_ERROR,
+      message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
+    };
+  }
+
   const committable = await getSessionCommittableChanges(session.worktree_path);
   if (!committable.ok) {
     return {
@@ -453,6 +469,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
             { runId: run.id, prUrl: peer.pr_url },
           );
           deps.stmts.markFinalizeRunPushed.run(run.id);
+          lockSessionAfterFinalizePush(deps.stmts as Stmts, session.id);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return {
@@ -534,6 +551,14 @@ export async function runSessionPushToGithub(
 ): Promise<FinalizePushOutcome> {
   const { deps, project, session, card } = args;
   const resolveHead = args.resolveHeadSha ?? defaultResolveHeadSha;
+  if (hasPushedFinalizeRun(deps.stmts as Stmts, session.id)) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: POST_FINALIZE_PUSH_LOCK_ERROR,
+      message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
+    };
+  }
   if (!session.worktree_path || !session.worktree_branch) {
     return {
       ok: false,

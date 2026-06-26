@@ -63,6 +63,11 @@ import { listFinalizeRunSteps, loadFinalizeStepOutput } from '../finalize/step-o
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { parseFlakeGate } from '../finalize/flake-recovery.js';
 import {
+  hasPushedFinalizeRun,
+  POST_FINALIZE_PUSH_LOCK_ERROR,
+  POST_FINALIZE_PUSH_LOCK_MESSAGE,
+} from '../finalize/post-push-session-lock.js';
+import {
   aggregateMetrics,
   isMetricName,
   METRIC_NAMES,
@@ -312,6 +317,12 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
           .status(400)
           .json({ error: 'no_session', message: 'Linked session was not found.' });
       }
+      if (hasPushedFinalizeRun(stmts, session.id)) {
+        return res.status(409).json({
+          error: POST_FINALIZE_PUSH_LOCK_ERROR,
+          message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
+        });
+      }
 
       const outcome = await triggerFinalizeRun(deps, {
         req: req as AuthenticatedRequest,
@@ -351,6 +362,12 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       const lookup = deps.findAgent(session.agent_id);
       if (!lookup || lookup.project.id !== project.id) {
         return res.status(404).json({ error: 'Session not found' });
+      }
+      if (hasPushedFinalizeRun(stmts, session.id)) {
+        return res.status(409).json({
+          error: POST_FINALIZE_PUSH_LOCK_ERROR,
+          message: POST_FINALIZE_PUSH_LOCK_MESSAGE,
+        });
       }
 
       const { card, created: cardCreated } = ensureKanbanCardForSession(

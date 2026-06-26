@@ -21,6 +21,7 @@ import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
+import { hasPushedFinalizeRun } from './post-push-session-lock.js';
 import {
   resolveSessionFinalizeAutomation,
   shouldAutoPushAfterReady,
@@ -170,6 +171,19 @@ function sessionTurnErrorBlocksAutomation(
   return true;
 }
 
+function sessionPostFinalizePushBlocksAutomation(
+  sessionId: string,
+  action: 'auto-start' | 'auto-push',
+): boolean {
+  if (!routeDeps) return true;
+  if (!hasPushedFinalizeRun(routeDeps.stmts, sessionId)) return false;
+  console.warn(
+    `[finalize-automation] Skipping ${action} session=${sessionId}: session already pushed ` +
+      `code through Finalize and is locked in ask mode.`,
+  );
+  return true;
+}
+
 async function loadSessionContext(sessionId: string): Promise<{
   session: SessionRow;
   project: Project;
@@ -202,6 +216,7 @@ async function loadSessionContext(sessionId: string): Promise<{
  */
 export async function maybeAutoStartFinalizeForSession(sessionId: string): Promise<void> {
   if (!routeDeps) return;
+  if (sessionPostFinalizePushBlocksAutomation(sessionId, 'auto-start')) return;
   const ctx = await loadSessionContext(sessionId);
   if (!ctx) return;
 
@@ -247,6 +262,7 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   runId: string;
 }): Promise<void> {
   if (!routeDeps) return;
+  if (sessionPostFinalizePushBlocksAutomation(args.sessionId, 'auto-push')) return;
   const ctx = await loadSessionContext(args.sessionId);
   if (!ctx) return;
 

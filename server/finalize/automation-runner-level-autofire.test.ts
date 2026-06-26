@@ -54,11 +54,14 @@ function makeSession(overrides: Partial<SessionRow>): SessionRow {
   } as unknown as SessionRow;
 }
 
-function wireRouteDeps(session: SessionRow): void {
+function wireRouteDeps(session: SessionRow, pushedRun?: Partial<FinalizeRunRow>): void {
   setFinalizeAutomationRouteDeps({
     stmts: {
       getSession: { get: () => session },
       getLatestFinalizeRunForSession: { get: () => undefined },
+      getPushedFinalizeRunForSession: {
+        get: () => (pushedRun ? ({ id: 'pushed', ...pushedRun } as FinalizeRunRow) : undefined),
+      },
       getFinalizeRun: {
         get: () =>
           ({ id: 'run1', status: 'ready_to_push', flake_recovered_jobs: null }) as FinalizeRunRow,
@@ -106,5 +109,17 @@ describe('finalize automation — level drives end-of-turn auto-fire', () => {
     wireRouteDeps(makeSession({ auto_ship_on_complete: 0 }));
     await maybeAutoStartFinalizeForSession('s1');
     expect(startFinalizeRunBackground).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not auto-start after the session has pushed through Finalize', async () => {
+    wireRouteDeps(makeSession({ auto_ship_on_complete: 1 }), { status: 'pushed' });
+    await maybeAutoStartFinalizeForSession('s1');
+    expect(startFinalizeRunBackground).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-push after the session has pushed through Finalize', async () => {
+    wireRouteDeps(makeSession({ auto_ship_on_complete: 1 }), { status: 'pushed' });
+    await maybeAutoPushReadyFinalizeRun({ sessionId: 's1', runId: 'run1' });
+    expect(runFinalizePush).not.toHaveBeenCalled();
   });
 });

@@ -4963,6 +4963,14 @@ function initDb(dataDir: string): void {
         ORDER BY started_at DESC, id DESC
         LIMIT 1`,
     ),
+    getPushedFinalizeRunForSession: db.prepare(
+      `SELECT *
+         FROM finalize_runs
+        WHERE session_id = ?
+          AND status = 'pushed'
+        ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+        LIMIT 1`,
+    ),
     // Per-phase pickers. The split "Run Tests" / "Reviewer" buttons each
     // surface their own done-state, which may come from a phase-scoped run
     // (mode 'checks' / 'review') OR from a combined 'full' run that

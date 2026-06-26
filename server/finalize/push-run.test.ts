@@ -61,9 +61,13 @@ function makeDeps() {
         claimFinalizeRunPush: { run: vi.fn(() => ({ changes: 1 })) },
         failFinalizeRun: { run: vi.fn() },
         markFinalizeRunPushed: { run: vi.fn() },
+        updateSessionAskMode: { run: vi.fn() },
+        updateSessionFinalizeAutomation: { run: vi.fn() },
         updateFinalizeRunPrUrl: { run: vi.fn() },
         getFinalizeRun: { get: vi.fn(() => ({ ...baseRun(), status: 'pushing' })) },
         getFinalizePushPeerForSessionHead: { get: vi.fn(() => undefined) },
+        getLatestFinalizeRunForSession: { get: vi.fn(() => undefined) },
+        getPushedFinalizeRunForSession: { get: vi.fn(() => undefined) },
         getLatestChecksRunForSession: { get: vi.fn(() => baseRun()) },
         getLatestReviewRunForSession: { get: vi.fn(() => baseRun()) },
         // Timeline-message writes (terminal block) need these.
@@ -272,6 +276,52 @@ describe('runFinalizePush force', () => {
       ok: true,
       prUrl: 'https://github.com/o/r/pull/10',
     });
+  });
+
+  it('locks the session in ask mode after a successful Finalize push', async () => {
+    const { deps } = makeDeps();
+    const pushAndCreatePr = vi.fn().mockResolvedValue({ prUrl: 'https://github.com/o/r/pull/1' });
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(deps.stmts.updateSessionAskMode.run).toHaveBeenCalledWith(1, 'sess-1');
+    expect(deps.stmts.updateSessionFinalizeAutomation.run).toHaveBeenCalledWith('manual', 'sess-1');
+  });
+
+  it('refuses a follow-up Finalize push after the session already pushed code', async () => {
+    const { deps } = makeDeps();
+    (deps.stmts.getPushedFinalizeRunForSession.get as ReturnType<typeof vi.fn>).mockReturnValue({
+      ...baseRun(),
+      status: 'pushed',
+    });
+    const pushAndCreatePr = vi.fn();
+
+    const outcome = await runFinalizePush({
+      deps: deps as never,
+      project,
+      run: baseRun(),
+      card,
+      session,
+      resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
+      pushAndCreatePr,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.httpStatus).toBe(409);
+      expect(outcome.error).toBe('session_finalized_pushed');
+    }
+    expect(deps.stmts.claimFinalizeRunPush.run).not.toHaveBeenCalled();
+    expect(pushAndCreatePr).not.toHaveBeenCalled();
   });
 
   it('does not push a second finalize run while another push for the session is in flight', async () => {

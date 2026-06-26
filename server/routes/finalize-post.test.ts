@@ -95,6 +95,7 @@ function makeStmts() {
     getKanbanBoard: { get: vi.fn() },
     getSession: { get: vi.fn() },
     listReviewerThreadsForRun: { all: vi.fn().mockReturnValue([]) },
+    getPushedFinalizeRunForSession: { get: vi.fn() },
     failFinalizeRun: { run: vi.fn() },
   };
 }
@@ -219,6 +220,34 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       .send({})
       .expect(400);
     expect(res.body.error).toBe('no_branch');
+  });
+
+  it('409 when the linked session already pushed code through Finalize', async () => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+    });
+    stmts.getPushedFinalizeRunForSession.get.mockReturnValue({
+      id: 'run-pushed',
+      status: 'pushed',
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({ mode: 'checks' })
+      .expect(409);
+
+    expect(res.body).toMatchObject({ error: 'session_finalized_pushed' });
+    expect(runFinalize).not.toHaveBeenCalled();
   });
 
   it('404 when caller does not own the session (no leak)', async () => {

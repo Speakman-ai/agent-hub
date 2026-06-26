@@ -2045,6 +2045,7 @@ export interface Stmts {
    * the client to track run lifecycle events.
    */
   getLatestFinalizeRunForSession: Stmt;
+  getPushedFinalizeRunForSession: Stmt;
   /**
    * Most-recent `finalize_runs` row for a session that exercised the CI
    * checks phase — `mode IN ('checks', 'full')`. Drives the "Tested"

@@ -51,6 +51,7 @@ function wireRouteDeps(session: SessionRow, run?: Partial<FinalizeRunRow>): void
     stmts: {
       getSession: { get: () => session },
       getLatestFinalizeRunForSession: { get: () => undefined },
+      getPushedFinalizeRunForSession: { get: () => undefined },
       getFinalizeRun: {
         get: () =>
           ({
