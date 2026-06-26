@@ -1,5 +1,6 @@
 import { stripAnsi } from '../ansi-strip.js';
 import type { FinalizeRunStepRow, MessageRow, Stmts } from '../types.js';
+import { getOrgsDb } from '../orgs.js';
 
 export interface FinalizeStepOutputLine {
   stream: 'stdout' | 'stderr';
@@ -72,4 +73,137 @@ export function loadFinalizeStepOutput(
     out.push({ stream, text: stripAnsi(raw), created_at: row.created_at });
   }
   return out;
+}
+
+interface RunnerJobLogRow {
+  stream: 'stdout' | 'stderr';
+  data: string;
+  at: number;
+}
+
+interface RunnerQueueJobRow {
+  id: string;
+}
+
+interface RunnerJobLogCountRow {
+  n: number;
+}
+
+export interface FinalizeStepOutputResult {
+  lines: FinalizeStepOutputLine[];
+  truncated: boolean;
+  totalLines: number;
+}
+
+const RUNNER_QUEUE_STEP_OUTPUT_MAX_LINES = 5_000;
+const RUNNER_QUEUE_STEP_OUTPUT_TAIL_LINES = 40;
+
+/**
+ * Load remote-runner log frames for a finalize step from the runner queue spool.
+ *
+ * Remote fleet agents persist stdout/stderr into `orgs.runner_job_logs`, while
+ * the Runners page reads this finalize-step endpoint. The finalize step row
+ * stores the logical job id + matrix key, so we bridge that to the newest queue
+ * job for the same project/run/job/matrix and return the frames for the step.
+ */
+export function loadRunnerQueueStepOutput(args: {
+  projectId: string;
+  runId: string;
+  step: Pick<FinalizeRunStepRow, 'step_index' | 'job_id' | 'matrix_key'>;
+  maxLines?: number;
+}): FinalizeStepOutputResult {
+  if (!args.step.job_id) return { lines: [], truncated: false, totalLines: 0 };
+  const matrixKey = args.step.matrix_key ?? '';
+  const job = getOrgsDb()
+    .prepare(
+      `SELECT id
+         FROM runner_jobs
+        WHERE project_id = @projectId
+          AND run_id = @runId
+          AND job_id = @jobId
+          AND matrix_key = @matrixKey
+        ORDER BY enqueued_at DESC
+        LIMIT 1`,
+    )
+    .get({
+      projectId: args.projectId,
+      runId: args.runId,
+      jobId: args.step.job_id,
+      matrixKey,
+    }) as RunnerQueueJobRow | undefined;
+  if (!job) return { lines: [], truncated: false, totalLines: 0 };
+
+  const maxLines =
+    typeof args.maxLines === 'number' && Number.isFinite(args.maxLines) && args.maxLines > 0
+      ? Math.floor(args.maxLines)
+      : RUNNER_QUEUE_STEP_OUTPUT_MAX_LINES;
+  const totalLines = (
+    getOrgsDb()
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM runner_job_logs
+          WHERE job_id = @jobId AND step_index = @stepIndex`,
+      )
+      .get({ jobId: job.id, stepIndex: args.step.step_index }) as RunnerJobLogCountRow
+  ).n;
+  if (totalLines <= 0) return { lines: [], truncated: false, totalLines: 0 };
+
+  const loadRows = (sql: string, limit: number): RunnerJobLogRow[] => {
+    if (limit <= 0) return [];
+    return getOrgsDb()
+      .prepare(sql)
+      .all({ jobId: job.id, stepIndex: args.step.step_index, limit }) as RunnerJobLogRow[];
+  };
+  const mapRows = (rows: RunnerJobLogRow[]): FinalizeStepOutputLine[] =>
+    rows.map((row) => ({
+      stream: row.stream === 'stderr' ? 'stderr' : 'stdout',
+      text: stripAnsi(row.data),
+      created_at: new Date(row.at).toISOString(),
+    }));
+
+  if (totalLines <= maxLines) {
+    const rows = loadRows(
+      `SELECT stream, data, at
+         FROM runner_job_logs
+        WHERE job_id = @jobId AND step_index = @stepIndex
+        ORDER BY seq ASC
+        LIMIT @limit`,
+      maxLines,
+    );
+    return { lines: mapRows(rows), truncated: false, totalLines };
+  }
+
+  const tailLimit = Math.min(
+    RUNNER_QUEUE_STEP_OUTPUT_TAIL_LINES,
+    Math.max(0, Math.floor((maxLines - 1) / 2)),
+  );
+  const headLimit = Math.max(0, maxLines - tailLimit - 1);
+  const headRows = loadRows(
+    `SELECT stream, data, at
+       FROM runner_job_logs
+      WHERE job_id = @jobId AND step_index = @stepIndex
+      ORDER BY seq ASC
+      LIMIT @limit`,
+    headLimit,
+  );
+  const tailRows = loadRows(
+    `SELECT stream, data, at
+       FROM runner_job_logs
+      WHERE job_id = @jobId AND step_index = @stepIndex
+      ORDER BY seq DESC
+      LIMIT @limit`,
+    tailLimit,
+  ).reverse();
+  const dropped = Math.max(0, totalLines - headRows.length - tailRows.length);
+  const lines = mapRows(headRows);
+  lines.push({
+    stream: 'stderr',
+    text:
+      `[output truncated] ${dropped} of ${totalLines} lines omitted ` +
+      `(runner spool response limited to ${maxLines} lines)` +
+      (tailRows.length ? `; last ${tailRows.length} lines follow` : ''),
+    created_at: '',
+  });
+  lines.push(...mapRows(tailRows));
+  return { lines, truncated: true, totalLines };
 }

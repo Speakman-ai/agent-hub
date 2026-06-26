@@ -18,8 +18,10 @@ import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
 import { getDb, getStmts } from '../db.js';
+import { getOrgsDb } from '../orgs.js';
 import type { AppConfig, FinalizeRunStepRow } from '../types.js';
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
+import { appendRunnerJobLog, enqueueRunnerJob } from '../finalize/runner-queue.js';
 
 let request: supertest.Agent;
 
@@ -664,6 +666,110 @@ describe('GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output',
     ]);
     expect(res.body.truncated).toBe(true);
     expect(res.body.total_lines).toBe(9000);
+  });
+
+  it('serves remote runner spool output for a finalize step without a log blob', async () => {
+    const projectId = await freshProject();
+    const runId = seedFinalizeRun({ projectId, sessionId: null, mode: 'checks' });
+    const stmts = getStmts();
+    stmts.upsertFinalizeRunStep.run(
+      runId,
+      1,
+      'component / shard 0 / tests',
+      'running',
+      null,
+      1000,
+      null,
+      'component',
+      'shard=0',
+    );
+
+    const queueJobId = enqueueRunnerJob({
+      orgId: 'org-test',
+      projectId,
+      runId,
+      jobId: 'component',
+      matrixKey: 'shard=0',
+      image: 'runner:latest',
+      specJson: '{}',
+      now: 2000,
+    });
+    appendRunnerJobLog({
+      jobId: queueJobId,
+      seq: 0,
+      stepIndex: 1,
+      stream: 'stdout',
+      data: '\u001b[32mtests started\u001b[0m',
+      now: 3000,
+    });
+    appendRunnerJobLog({
+      jobId: queueJobId,
+      seq: 1,
+      stepIndex: 1,
+      stream: 'stderr',
+      data: 'warning from runner',
+      now: 3001,
+    });
+
+    const res = await request
+      .get(`/api/projects/${projectId}/finalize/${runId}/steps/1/output`)
+      .expect(200);
+    expect(res.body.lines).toEqual([
+      { stream: 'stdout', text: 'tests started', created_at: new Date(3000).toISOString() },
+      { stream: 'stderr', text: 'warning from runner', created_at: new Date(3001).toISOString() },
+    ]);
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.total_lines).toBe(2);
+  });
+
+  it('caps remote runner spool output and reports total lines', async () => {
+    const projectId = await freshProject();
+    const runId = seedFinalizeRun({ projectId, sessionId: null, mode: 'checks' });
+    const stmts = getStmts();
+    stmts.upsertFinalizeRunStep.run(
+      runId,
+      1,
+      'component / shard 1 / tests',
+      'running',
+      null,
+      1000,
+      null,
+      'component',
+      'shard=1',
+    );
+
+    const queueJobId = enqueueRunnerJob({
+      orgId: 'org-test',
+      projectId,
+      runId,
+      jobId: 'component',
+      matrixKey: 'shard=1',
+      image: 'runner:latest',
+      specJson: '{}',
+      now: 2000,
+    });
+    const insert = getOrgsDb().prepare(
+      `INSERT INTO runner_job_logs (job_id, seq, step_index, stream, data, at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const seedLogs = getOrgsDb().transaction(() => {
+      for (let i = 0; i < 5002; i++) {
+        insert.run(queueJobId, i, 1, 'stdout', `line-${i}`, 3000 + i);
+      }
+    });
+    seedLogs();
+
+    const res = await request
+      .get(`/api/projects/${projectId}/finalize/${runId}/steps/1/output`)
+      .expect(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total_lines).toBe(5002);
+    expect(res.body.lines).toHaveLength(5000);
+    expect(res.body.lines[0]).toMatchObject({ stream: 'stdout', text: 'line-0' });
+    expect(res.body.lines[4958]).toMatchObject({ stream: 'stdout', text: 'line-4958' });
+    expect(res.body.lines[4959].text).toContain('3 of 5002 lines omitted');
+    expect(res.body.lines[4960]).toMatchObject({ stream: 'stdout', text: 'line-4962' });
+    expect(res.body.lines[4999]).toMatchObject({ stream: 'stdout', text: 'line-5001' });
   });
 });
 

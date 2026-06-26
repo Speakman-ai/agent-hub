@@ -59,7 +59,11 @@ import { cancelSessionChatRun } from '../session-chat-cancel.js';
 import { runFinalizePush, runSessionPushToGithub } from '../finalize/push-run.js';
 import { evaluateFinalizeShipGate, type FinalizeShipGateAction } from '../finalize/ship-gate.js';
 import { resolveSessionPrUrl } from '../session-title-pr.js';
-import { listFinalizeRunSteps, loadFinalizeStepOutput } from '../finalize/step-output.js';
+import {
+  listFinalizeRunSteps,
+  loadFinalizeStepOutput,
+  loadRunnerQueueStepOutput,
+} from '../finalize/step-output.js';
 import { createFinalizeStepLogStore } from '../finalize/finalize-log-store.js';
 import { parseFlakeGate } from '../finalize/flake-recovery.js';
 import {
@@ -572,6 +576,19 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
             total_lines: stepRow.log_lines ?? stored.length,
           });
         }
+      }
+
+      const runnerOutput = stepRow
+        ? loadRunnerQueueStepOutput({ projectId: project.id, runId, step: stepRow })
+        : null;
+      if (runnerOutput && runnerOutput.totalLines > 0) {
+        return res.json({
+          run_id: runId,
+          step_index: stepIndex,
+          lines: runnerOutput.lines,
+          truncated: runnerOutput.truncated,
+          total_lines: runnerOutput.totalLines,
+        });
       }
 
       // Legacy fallback: runs predating the log store streamed output into
