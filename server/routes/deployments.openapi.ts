@@ -143,6 +143,16 @@ const DeployConfigResponseSchema = registerComponent(
   }),
 );
 
+const DeploySetupWizardResponseSchema = registerComponent(
+  'DeploySetupWizardResponse',
+  z.object({
+    sessionId: z.string(),
+    agentId: z.string(),
+    session: z.object({}).passthrough(),
+    configPath: z.string(),
+  }),
+);
+
 const DeploymentListResponseSchema = registerComponent(
   'DeploymentListResponse',
   z.object({
@@ -183,6 +193,28 @@ const errorResponse = (description: string) => ({
 
 const projectParams = z.object({ projectId: z.string() });
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deploy/setup-wizard',
+  tags: ['Deployments'],
+  summary: 'Start an AI deploy.yaml setup workflow',
+  description:
+    'Admin+. Spawns a worktree-backed setup session loaded with the `deploy-setup` skill so an agent can author `.agent-hub/deploy.yaml` on a reviewable branch.',
+  request: {
+    params: projectParams,
+    body: { content: jsonContent(z.object({}).passthrough()) },
+  },
+  responses: {
+    201: {
+      description: 'Deploy setup wizard session created.',
+      content: jsonContent(DeploySetupWizardResponseSchema),
+    },
+    400: errorResponse('Project has no cwd or no agent to host the wizard.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project not found.'),
+  },
+});
 
 registerPath({
   method: 'get',

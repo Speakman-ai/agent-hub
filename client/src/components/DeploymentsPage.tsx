@@ -11,6 +11,7 @@ import {
   RotateCcw,
   ShieldCheck,
   Terminal,
+  Wrench,
   XCircle,
 } from 'lucide-react';
 import { api } from '../utils/api';
@@ -113,7 +114,12 @@ function preferredDeploymentFromConfig(config: any) {
   return null;
 }
 
-export default function DeploymentsPage({ projectId, onNotify }: any) {
+function isMissingDeployConfigError(err: any): boolean {
+  const message = String(err?.message || err || '').toLowerCase();
+  return message.includes('deploy.yaml not found');
+}
+
+export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: any) {
   const [config, setConfig] = useState<any>(null);
   const [selected, setSelected] = useState<any>(null);
   const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
@@ -121,7 +127,9 @@ export default function DeploymentsPage({ projectId, onNotify }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [missingConfig, setMissingConfig] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [setupStarting, setSetupStarting] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -160,6 +168,7 @@ export default function DeploymentsPage({ projectId, onNotify }: any) {
       try {
         const res = await api.getDeployConfig(projectId);
         setConfig(res);
+        setMissingConfig(false);
         setRefByEnv((prev) => {
           const next = { ...prev };
           for (const env of res.environments || []) {
@@ -172,7 +181,14 @@ export default function DeploymentsPage({ projectId, onNotify }: any) {
           selectDeployment(preferred);
         }
       } catch (e: any) {
-        setError(e?.message || 'Failed to load deployments');
+        if (isMissingDeployConfigError(e)) {
+          setConfig(null);
+          setMissingConfig(true);
+          setError(null);
+        } else {
+          setMissingConfig(false);
+          setError(e?.message || 'Failed to load deployments');
+        }
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -180,6 +196,26 @@ export default function DeploymentsPage({ projectId, onNotify }: any) {
     },
     [projectId, selectDeployment],
   );
+
+  const startSetup = useCallback(async () => {
+    if (setupStarting) return;
+    setSetupStarting(true);
+    try {
+      const res = await api.startDeployWizard(projectId);
+      if (!res?.sessionId) {
+        notify('Server did not return a setup session id', 'error');
+        return;
+      }
+      notify('Deploy setup walkthrough started', 'success');
+      if (typeof onOpenSession === 'function') {
+        onOpenSession({ sessionId: res.sessionId, agentId: res.agentId });
+      }
+    } catch (e: any) {
+      notify(e?.message || 'Failed to start deploy setup', 'error');
+    } finally {
+      setSetupStarting(false);
+    }
+  }, [notify, onOpenSession, projectId, setupStarting]);
 
   useEffect(() => {
     selectedIdRef.current = null;
@@ -278,6 +314,38 @@ export default function DeploymentsPage({ projectId, onNotify }: any) {
             <AlertCircle size={16} />
             {error}
           </div>
+        ) : missingConfig ? (
+          <section className="rounded-lg border border-gray-800 bg-gray-900/55 p-6">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-sky-500/30 bg-sky-500/10 text-sky-200">
+                <Wrench size={17} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-base font-semibold text-gray-100">
+                  Set up deployment environments
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm text-gray-400">
+                  This project does not have{' '}
+                  <span className="font-mono">.agent-hub/deploy.yaml</span> yet. Start an AI setup
+                  session to inspect the repo, choose environments, and author the config on a
+                  reviewable branch.
+                </p>
+                <button
+                  type="button"
+                  onClick={startSetup}
+                  disabled={setupStarting}
+                  className="mt-4 inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-md border border-sky-500/40 bg-sky-500/15 px-3 text-sm text-sky-100 hover:bg-sky-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {setupStarting ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <Wrench size={14} />
+                  )}
+                  Start AI setup
+                </button>
+              </div>
+            </div>
+          </section>
         ) : environments.length === 0 ? (
           <div className="p-12 text-center text-gray-500 text-sm border border-dashed border-gray-800 rounded-lg">
             No deployment environments found.

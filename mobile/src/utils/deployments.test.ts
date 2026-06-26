@@ -5,6 +5,7 @@ import {
   deploymentEventFromSnapshot,
   formatDeploymentLogEntry,
   isTerminalDeploymentStatus,
+  isMissingDeployConfigError,
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
   shortDeploymentRef,
@@ -113,6 +114,15 @@ describe('deployment state helpers', () => {
     expect(shortDeploymentRef('abcdef1234567890')).toBe('abcdef123456');
     expect(shortDeploymentRef('short')).toBe('short');
     expect(shortDeploymentRef('')).toBe('-');
+  });
+
+  it('identifies the missing deploy.yaml setup state', () => {
+    expect(
+      isMissingDeployConfigError(
+        new Error('404: deploy.yaml not found at /repo/.agent-hub/deploy.yaml.'),
+      ),
+    ).toBe(true);
+    expect(isMissingDeployConfigError(new Error('500: failed to read config'))).toBe(false);
   });
 
   it('formats structured log entries without [object Object]', () => {

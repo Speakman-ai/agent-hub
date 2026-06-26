@@ -50,6 +50,11 @@ export function preferredDeploymentFromConfig(config: any) {
   return null;
 }
 
+export function isMissingDeployConfigError(err: any) {
+  const message = String(err?.message || err || '').toLowerCase();
+  return message.includes('deploy.yaml not found');
+}
+
 export function deploymentEventFromSnapshot(snapshot: any, at = new Date().toISOString()) {
   const deployment = snapshot?.deployment;
   if (!deployment) return null;

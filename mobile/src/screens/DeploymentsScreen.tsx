@@ -19,6 +19,7 @@ import {
   RotateCcw,
   ShieldCheck,
   Terminal,
+  Wrench,
   XCircle,
 } from 'lucide-react-native';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
@@ -29,6 +30,7 @@ import {
   deploymentEventFromSnapshot,
   deploymentStepLogText,
   isTerminalDeploymentStatus,
+  isMissingDeployConfigError,
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
   shortDeploymentRef,
@@ -100,7 +102,9 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<any>(null);
+  const [missingConfig, setMissingConfig] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [setupStarting, setSetupStarting] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -135,6 +139,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
       try {
         const res = await api.getDeployConfig(projectId);
         setConfig(res);
+        setMissingConfig(false);
         setRefByEnv((prev) => {
           const next = { ...prev };
           for (const env of res.environments || []) {
@@ -147,7 +152,14 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           selectDeployment(preferred);
         }
       } catch (err: any) {
-        setError(err?.message || 'Failed to load deployments');
+        if (isMissingDeployConfigError(err)) {
+          setConfig(null);
+          setMissingConfig(true);
+          setError(null);
+        } else {
+          setMissingConfig(false);
+          setError(err?.message || 'Failed to load deployments');
+        }
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -155,6 +167,23 @@ export default function DeploymentsScreen({ route, navigation }: any) {
     },
     [projectId, selectDeployment],
   );
+
+  const startSetup = useCallback(async () => {
+    if (!projectId || setupStarting) return;
+    setSetupStarting(true);
+    try {
+      const res = await api.startDeployWizard(projectId);
+      if (!res?.sessionId) {
+        Alert.alert('Deployments', 'Server did not return a setup session id');
+        return;
+      }
+      Alert.alert('Deployments', `Deploy setup walkthrough started: ${res.sessionId}`);
+    } catch (err: any) {
+      Alert.alert('Deploy setup failed', err?.message || 'Failed to start deploy setup');
+    } finally {
+      setSetupStarting(false);
+    }
+  }, [projectId, setupStarting]);
 
   useEffect(() => {
     selectedIdRef.current = null;
@@ -244,7 +273,34 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         {loading && !config ? <ActivityIndicator color={colors.gray400} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        {!loading && !error && environments.length === 0 ? (
+        {!loading && !error && missingConfig ? (
+          <View style={styles.setupCard}>
+            <View style={styles.setupIcon}>
+              <Wrench size={18} color={colors.blue300} />
+            </View>
+            <View style={styles.setupBody}>
+              <Text style={styles.setupTitle}>Set up deployment environments</Text>
+              <Text style={styles.setupText}>
+                This project does not have .agent-hub/deploy.yaml yet. Start an AI setup session to
+                inspect the repo, choose environments, and author the config on a reviewable branch.
+              </Text>
+              <TouchableOpacity
+                onPress={startSetup}
+                disabled={setupStarting}
+                style={[styles.primaryButton, styles.setupButton, setupStarting && styles.disabled]}
+              >
+                {setupStarting ? (
+                  <ActivityIndicator color={colors.white} size="small" />
+                ) : (
+                  <Wrench size={14} color={colors.white} />
+                )}
+                <Text style={styles.primaryButtonText}>Start AI setup</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
+
+        {!loading && !error && !missingConfig && environments.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>No deployment environments found.</Text>
           </View>
@@ -467,6 +523,29 @@ const styles = StyleSheet.create({
     backgroundColor: colors.gray900,
   },
   error: { color: colors.red400, fontSize: 13 },
+  setupCard: {
+    flexDirection: 'row',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    padding: 14,
+    backgroundColor: colors.gray900,
+  },
+  setupIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.blue500,
+    backgroundColor: colors.blue900_40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  setupBody: { flex: 1, minWidth: 0 },
+  setupTitle: { color: colors.white, fontSize: 15, fontWeight: '700' },
+  setupText: { marginTop: 6, color: colors.gray400, fontSize: 13, lineHeight: 18 },
+  setupButton: { alignSelf: 'flex-start', marginTop: 12, paddingHorizontal: 12 },
   emptyCard: {
     minHeight: 96,
     borderRadius: 8,

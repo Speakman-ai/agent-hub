@@ -2103,6 +2103,9 @@ export default function App({ initialView }: any = {}) {
             new CustomEvent('agenthub:finalize_wizard_complete', { detail: data }),
           );
           break;
+        case 'deploy_wizard_started':
+          window.dispatchEvent(new CustomEvent('agenthub:deploy_wizard_started', { detail: data }));
+          break;
         case 'workflow_run':
         case 'workflow_run_status':
         case 'workflow_update':
@@ -5094,6 +5097,9 @@ export default function App({ initialView }: any = {}) {
                 <DeploymentsPage
                   projectId={deploymentsProjectId}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
+                  onOpenSession={({ sessionId, agentId }: any) => {
+                    if (sessionId) focusAgentSession(agentId, sessionId);
+                  }}
                 />
               ) : currentView === 'replays' && replaysProjectId ? (
                 <ReplaysDashboardPage

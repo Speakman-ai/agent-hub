@@ -3383,6 +3383,25 @@ components:
         - projectId
         - configPath
         - environments
+    DeploySetupWizardResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        session:
+          type: object
+          properties: {}
+          additionalProperties:
+            nullable: true
+        configPath:
+          type: string
+      required:
+        - sessionId
+        - agentId
+        - session
+        - configPath
     DeploymentListResponse:
       type: object
       properties:
@@ -14903,6 +14922,51 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardErrorResponse"
+  /api/projects/{projectId}/deploy/setup-wizard:
+    post:
+      tags:
+        - Deployments
+      summary: Start an AI deploy.yaml setup workflow
+      description: Admin+. Spawns a worktree-backed setup session loaded with the `deploy-setup` skill so an agent can author `.agent-hub/deploy.yaml` on a reviewable branch.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties:
+                nullable: true
+      responses:
+        "201":
+          description: Deploy setup wizard session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploySetupWizardResponse"
+        "400":
+          description: Project has no cwd or no agent to host the wizard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
   /api/projects/{projectId}/deploy/config:
     get:
       tags:

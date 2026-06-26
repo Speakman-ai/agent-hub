@@ -233,6 +233,10 @@ export const api = {
     getWorkflowRunDetail: (projectId: any, workflowId: any, runId: any) => fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs/${runId}`),
     // Deployment Module — deploy.yaml environments + run actions.
     getDeployConfig: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/config`),
+    startDeployWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
     listDeployments: (projectId: any, { environment, limit, offset }: any = {}) => {
         const params = new URLSearchParams();
         if (environment)

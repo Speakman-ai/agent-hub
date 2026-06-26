@@ -1,15 +1,20 @@
 import path from 'path';
 import { rm } from 'fs/promises';
 import { Router, type Request, type Response } from 'express';
+import { v4 as uuidv4 } from 'uuid';
 import type { AuthenticatedRequest } from '../auth.js';
 import { requireRole, type Role } from '../roles.js';
-import { resolveOwnerUserId } from '../session-ownership.js';
+import { resolveEffectiveModel } from '../effective-model.js';
+import { resolveOwnerUserId, setSessionOwner } from '../session-ownership.js';
+import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import type {
+  Agent,
   DeploymentApprovalRow,
   DeploymentRow,
   DeploymentStepRow,
   Project,
   RouteDeps,
+  SessionRow,
 } from '../types.js';
 import {
   DeployConfigError,
@@ -75,6 +80,126 @@ function nullableDeploymentDto(
 
 function projectDeployYamlPath(project: Project): string {
   return path.join(project.cwd, '.agent-hub', 'deploy.yaml');
+}
+
+function pickWizardAgent(project: Project): string | null {
+  if (!project.agents || !Array.isArray(project.agents) || project.agents.length === 0) {
+    return null;
+  }
+  const codingAgent = project.agents.find((agent) => {
+    if (agent.active === false) return false;
+    const role = typeof agent.role === 'string' ? agent.role.trim() : '';
+    return (role || agent.isDev === true) && agentAcceptsAutonomousTickets(agent);
+  });
+  return codingAgent?.id ?? null;
+}
+
+export function isDeploySetupWizardSession(session: { name?: string | null }): boolean {
+  return typeof session.name === 'string' && session.name.startsWith('[Deploy Setup]');
+}
+
+export function buildDeploySetupKickoffPrompt(
+  projectId: string,
+  projectCwd: string,
+  sessionId: string,
+): string {
+  return [
+    '# Deploy Setup - guided walkthrough (required)',
+    '',
+    'You are the default setup path for `.agent-hub/deploy.yaml`, and you run as a normal worktree-backed session. Author the deployment config in this session worktree, validate it, commit it locally, and stop. Finalize Code Changes handles review and push.',
+    '',
+    '## Bound values',
+    '',
+    `- PROJECT_ID: \`${projectId}\``,
+    `- PROJECT_CWD: \`${projectCwd}\``,
+    `- YOUR SESSION_ID: \`${sessionId}\``,
+    '- `$AGENT_HUB_URL`, `$AGENT_HUB_API_KEY`: use these for Hub API calls. If any call returns HTTP 401 or 403, halt and report the auth failure. Never ask the operator to paste a token into chat.',
+    '',
+    '## Required output file',
+    '',
+    'Write `.agent-hub/deploy.yaml` with schema version 1:',
+    '',
+    '```yaml',
+    'version: 1',
+    'environments:',
+    '  staging:',
+    '    runs-on: ubuntu-24.04',
+    '    timeout_minutes: 60',
+    '    steps:',
+    '      - name: deploy',
+    '        run: ./scripts/deploy-staging.sh',
+    '  production:',
+    '    approval: true',
+    '    runs-on: ubuntu-24.04',
+    '    timeout_minutes: 60',
+    '    steps:',
+    '      - name: deploy',
+    '        run: ./scripts/deploy-production.sh',
+    '```',
+    '',
+    'Supported keys: top-level `version`, `environments`; environment keys `approval`, `runs-on`, `timeout_minutes`, `steps`; step keys `name`, `run`. Unknown keys fail validation. `version` must be `1`; each environment needs at least one step with a non-empty `run` command.',
+    '',
+    '## Required walkthrough order',
+    '',
+    '1. Read `README.md`, `package.json`, `.github/workflows/*`, deploy scripts, Docker files, Terraform or infra folders, and any release docs that exist. Summarize how the app is shipped today.',
+    '2. Ask which environments to configure. Offer common choices with fenced `agenthub:ask` JSON: `staging + production`, `dev + staging + production`, or `production only`.',
+    '3. For each environment, identify the deploy command and required secrets. If unclear, ask with `agenthub:ask` and include concrete options from the repo scan.',
+    '4. Default `approval: true` for production and false for non-production unless the user chooses otherwise.',
+    '5. Create or edit `.agent-hub/deploy.yaml` in this session worktree. Do not mutate the project primary checkout.',
+    '6. Validate by running a small parser check or the relevant server deploy-config test if this is Agent Hub itself. Then run formatting for touched files if applicable.',
+    '7. Commit the setup change locally on this session branch. Do not push or open a PR.',
+    '8. Report the configured environments and user-visible behavior change, then close the linked card only after the config is committed.',
+    '',
+    'Ask JSON must use `question`, `header`, `options[].label`, and `options[].description`; do not use `prompt`, `id`, or `type`.',
+    '',
+    '<agenthub:skill>',
+    JSON.stringify({
+      name: 'deploy-setup',
+      reason: 'guided deploy.yaml setup',
+    }),
+    '</agenthub:skill>',
+  ].join('\n');
+}
+
+function persistDeploySetupKickoffFailure(
+  deps: RouteDeps,
+  args: {
+    sessionId: string;
+    agent: Agent;
+    engine: string;
+    model: string;
+    error: unknown;
+  },
+): void {
+  const message =
+    args.error instanceof Error ? args.error.message : args.error ? String(args.error) : 'unknown';
+  const content = `Deploy setup kickoff failed before instructions could be sent: ${message}`;
+  const messageId = uuidv4();
+  try {
+    deps.stmts.addMessage.run(
+      messageId,
+      args.sessionId,
+      'assistant',
+      content,
+      args.engine,
+      args.model,
+      null,
+      JSON.stringify({ kind: 'deploy_setup_kickoff_failure' }),
+      args.agent.id,
+      args.agent.name,
+      typeof args.agent.color === 'string' ? args.agent.color : null,
+    );
+    deps.stmts.touchSession.run(args.sessionId);
+    const inserted = deps.stmts.getMessageById.get(messageId);
+    if (inserted) {
+      deps.broadcast({ type: 'message', sessionId: args.sessionId, message: inserted });
+    }
+  } catch (err: unknown) {
+    const persistMessage = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[deploy-wizard] failed to persist kickoff failure for session ${args.sessionId}: ${persistMessage}`,
+    );
+  }
 }
 
 function actionResponse(deployment: DeploymentRow): {
@@ -244,6 +369,85 @@ export default function createDeploymentRoutes(
     now: opts.orchestratorDeps?.now,
     env: opts.orchestratorDeps?.env,
   };
+
+  router.post(
+    '/api/projects/:projectId/deploy/setup-wizard',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const cwd = project.cwd;
+      if (!cwd || typeof cwd !== 'string') {
+        return res.status(400).json({ error: 'Project has no cwd configured' });
+      }
+      const agentId = pickWizardAgent(project);
+      if (!agentId) {
+        return res
+          .status(400)
+          .json({ error: 'Project has no active coding/dev agents to host the wizard session' });
+      }
+      const agentLookup = deps.findAgent(agentId);
+      if (!agentLookup)
+        return res.status(500).json({ error: 'Wizard agent could not be resolved' });
+
+      const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
+      const sessionId = uuidv4();
+      const engine = agentLookup.agent.engine || 'claude-code';
+      const model = resolveEffectiveModel(deps.config, engine, {
+        agentModel: agentLookup.agent.model,
+        ownerUserId: ownerUid,
+      });
+      const sessionName = `[Deploy Setup] ${project.name || project.id}`;
+      const useWorktree = 1;
+      const askMode = 0;
+      deps.stmts.createSession.run(
+        sessionId,
+        agentId,
+        sessionName,
+        engine,
+        model,
+        useWorktree,
+        askMode,
+        1,
+      );
+      setSessionOwner(sessionId, ownerUid);
+
+      const prompt = buildDeploySetupKickoffPrompt(project.id, cwd, sessionId);
+      void deps
+        .handleChat(null, {
+          type: 'chat',
+          agentId,
+          sessionId,
+          content: prompt,
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[deploy-wizard] handleChat failed for session ${sessionId}: ${message}`);
+          persistDeploySetupKickoffFailure(deps, {
+            sessionId,
+            agent: agentLookup.agent,
+            engine,
+            model,
+            error: err,
+          });
+        });
+
+      const session = deps.stmts.getSession.get(sessionId) as SessionRow;
+      deps.broadcast({
+        type: 'deploy_wizard_started',
+        projectId: project.id,
+        sessionId,
+        agentId,
+      });
+      return res.status(201).json({
+        sessionId,
+        agentId,
+        session,
+        configPath: '.agent-hub/deploy.yaml',
+      });
+    },
+  );
 
   router.get('/api/projects/:projectId/deploy/config', async (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;

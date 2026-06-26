@@ -21,7 +21,10 @@ import {
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
 import { parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
-import createDeploymentRoutes from './deployments.js';
+import createDeploymentRoutes, {
+  buildDeploySetupKickoffPrompt,
+  isDeploySetupWizardSession,
+} from './deployments.js';
 
 const PROJECT_ID = 'deploy-route-proj';
 
@@ -103,6 +106,8 @@ function makeApp(
     config?: DeployConfig;
     autoCloseSteps?: boolean;
     closeOnKill?: boolean;
+    agents?: Project['agents'];
+    handleChat?: RouteDeps['handleChat'];
     prepareCheckout?: (args: { project: Project; ref: string }) => Promise<{
       worktreePath: string;
       resolvedRef: string;
@@ -110,16 +115,92 @@ function makeApp(
   } = {},
 ) {
   const backend = makeBackend({ autoClose: opts.autoCloseSteps, closeOnKill: opts.closeOnKill });
+  const sessions = new Map<string, Record<string, unknown>>();
+  const messages = new Map<string, Record<string, unknown>>();
   const project = {
     id: PROJECT_ID,
     name: 'Deploy Route Project',
     cwd: '/tmp/project',
     ahw: '/tmp/project',
+    agents: opts.agents ?? [
+      { id: 'agent-1', name: 'Dev', role: 'dev', engine: 'claude-code', model: 'claude-test' },
+    ],
   } as Project;
   const deps = {
-    stmts: {} as RouteDeps['stmts'],
+    stmts: {
+      createSession: {
+        run(
+          id: string,
+          agentId: string,
+          name: string,
+          engine: string,
+          model: string,
+          useWorktree: number,
+          askMode: number,
+          wikiHybridRagBudgetVersion: number,
+        ) {
+          sessions.set(id, {
+            id,
+            agent_id: agentId,
+            name,
+            engine,
+            model,
+            use_worktree: useWorktree,
+            ask_mode: askMode,
+            wiki_hybrid_rag_budget_version: wikiHybridRagBudgetVersion,
+          });
+        },
+      },
+      getSession: {
+        get(id: string) {
+          return sessions.get(id) ?? null;
+        },
+      },
+      addMessage: {
+        run(
+          id: string,
+          sessionId: string,
+          role: string,
+          content: string,
+          engine: string,
+          model: string,
+          attachments: string | null,
+          metadata: string | null,
+          agentId: string | null,
+          agentName: string | null,
+          agentColor: string | null,
+        ) {
+          messages.set(id, {
+            id,
+            session_id: sessionId,
+            role,
+            content,
+            engine,
+            model,
+            attachments,
+            metadata,
+            agent_id: agentId,
+            agent_name: agentName,
+            agent_color: agentColor,
+          });
+        },
+      },
+      touchSession: {
+        run() {},
+      },
+      getMessageById: {
+        get(id: string) {
+          return messages.get(id) ?? null;
+        },
+      },
+    } as unknown as RouteDeps['stmts'],
     broadcast: vi.fn(),
     findProject: (id: string) => (id === PROJECT_ID ? project : null),
+    findAgent: (id: string) => {
+      const agent = project.agents.find((candidate) => candidate.id === id);
+      return agent ? { project, agent } : null;
+    },
+    handleChat: opts.handleChat ?? vi.fn(async () => undefined),
     config: { dataDir: '/tmp' },
   } as unknown as RouteDeps;
   const app = express();
@@ -139,7 +220,7 @@ function makeApp(
       orchestratorDeps: { runnerBackend: backend.backend, env: { PATH: '/usr/bin' } },
     }),
   );
-  return { app, backend };
+  return { app, backend, deps, sessions, messages };
 }
 
 beforeEach(() => {
@@ -151,6 +232,117 @@ beforeEach(() => {
 });
 
 describe('deployment routes', () => {
+  it('matches deploy setup wizard session names', () => {
+    expect(isDeploySetupWizardSession({ name: '[Deploy Setup] demo' })).toBe(true);
+    expect(isDeploySetupWizardSession({ name: '[Preview Setup] demo' })).toBe(false);
+  });
+
+  it('builds a deploy setup prompt that loads the deploy setup skill', () => {
+    const prompt = buildDeploySetupKickoffPrompt(PROJECT_ID, '/tmp/project', 'session-1');
+
+    expect(prompt).toContain('.agent-hub/deploy.yaml');
+    expect(prompt).toContain('version: 1');
+    expect(prompt).toContain('"name":"deploy-setup"');
+    expect(prompt).toContain('session-1');
+  });
+
+  it('starts a worktree-backed deploy setup wizard session', async () => {
+    const { app, deps } = makeApp();
+
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deploy/setup-wizard`)
+      .send({})
+      .expect(201);
+
+    expect(res.body.sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.body.agentId).toBe('agent-1');
+    expect(res.body.configPath).toBe('.agent-hub/deploy.yaml');
+    expect(res.body.session).toMatchObject({
+      id: res.body.sessionId,
+      agent_id: 'agent-1',
+      name: '[Deploy Setup] Deploy Route Project',
+      use_worktree: 1,
+      ask_mode: 0,
+    });
+    expect(deps.handleChat).toHaveBeenCalledWith(null, {
+      type: 'chat',
+      agentId: 'agent-1',
+      sessionId: res.body.sessionId,
+      content: expect.stringContaining('"name":"deploy-setup"'),
+    });
+    expect(deps.broadcast).toHaveBeenCalledWith({
+      type: 'deploy_wizard_started',
+      projectId: PROJECT_ID,
+      sessionId: res.body.sessionId,
+      agentId: 'agent-1',
+    });
+  });
+
+  it('selects an active coding agent instead of the first project agent', async () => {
+    const { app } = makeApp({
+      agents: [
+        { id: 'reviewer-1', name: 'Reviewer', role: 'reviewer', engine: 'claude-code' },
+        { id: 'ceo-1', name: 'CEO', engine: 'claude-code' },
+        { id: 'dev-1', name: 'Dev', role: 'dev', engine: 'claude-code' },
+      ],
+    });
+
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deploy/setup-wizard`)
+      .send({})
+      .expect(201);
+
+    expect(res.body.agentId).toBe('dev-1');
+  });
+
+  it('rejects deploy setup when the project has no coding agent', async () => {
+    const { app } = makeApp({
+      agents: [
+        { id: 'reviewer-1', name: 'Reviewer', role: 'reviewer', engine: 'claude-code' },
+        { id: 'ceo-1', name: 'CEO', engine: 'claude-code' },
+      ],
+    });
+
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deploy/setup-wizard`)
+      .send({})
+      .expect(400);
+
+    expect(res.body.error).toContain('no active coding/dev agents');
+  });
+
+  it('persists kickoff failures into the setup session', async () => {
+    const { app, messages } = makeApp({
+      handleChat: vi.fn(async () => {
+        throw new Error('skill deploy-setup not found');
+      }),
+    });
+
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deploy/setup-wizard`)
+      .send({})
+      .expect(201);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const failure = [...messages.values()].find(
+      (message) => message.session_id === res.body.sessionId,
+    );
+    expect(failure).toMatchObject({
+      role: 'assistant',
+      content:
+        'Deploy setup kickoff failed before instructions could be sent: skill deploy-setup not found',
+      metadata: JSON.stringify({ kind: 'deploy_setup_kickoff_failure' }),
+      agent_id: 'agent-1',
+      agent_name: 'Dev',
+    });
+  });
+
+  it('rejects deploy setup wizard starts below Admin role', async () => {
+    const { app } = makeApp({ role: 'User' });
+
+    await request(app).post(`/api/projects/${PROJECT_ID}/deploy/setup-wizard`).send({}).expect(403);
+  });
+
   it('triggers a deployment and returns a status payload', async () => {
     const checkout = makeCheckoutDir('deploy-route-trigger-');
     const { app, backend } = makeApp({

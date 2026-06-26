@@ -7,6 +7,7 @@ import { api } from '../utils/api';
   api: {
     getDeployConfig: vi.fn(),
     getDeployment: vi.fn(),
+    startDeployWizard: vi.fn(),
     triggerDeployment: vi.fn(),
     rollbackDeployment: vi.fn(),
     approveDeployment: vi.fn(),
@@ -88,6 +89,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   (api.getDeployConfig as any).mockResolvedValue(config());
   (api.getDeployment as any).mockResolvedValue(snapshot());
+  (api.startDeployWizard as any).mockResolvedValue({
+    sessionId: 'setup-session-1',
+    agentId: 'agent-1',
+  });
   (api.triggerDeployment as any).mockResolvedValue(
     snapshot(deployment({ id: 'dep-new', ref: 'release-1' })),
   );
@@ -125,6 +130,30 @@ describe('DeploymentsPage', () => {
       expect(api.triggerDeployment).toHaveBeenCalledWith('proj-1', 'dev', { ref: 'release-1' }),
     );
     expect(onNotify).toHaveBeenCalledWith('Deploy started for dev', 'success');
+  });
+
+  it('shows deploy.yaml setup when the config is missing', async () => {
+    const onNotify = vi.fn();
+    const onOpenSession = vi.fn();
+    (api.getDeployConfig as any).mockRejectedValue(
+      new Error('404: deploy.yaml not found at /repo/.agent-hub/deploy.yaml.'),
+    );
+
+    render(
+      <DeploymentsPage projectId="proj-1" onNotify={onNotify} onOpenSession={onOpenSession} />,
+    );
+
+    expect(await screen.findByText('Set up deployment environments')).toBeInTheDocument();
+    expect(screen.queryByText(/404:/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start AI setup' }));
+
+    await waitFor(() => expect(api.startDeployWizard).toHaveBeenCalledWith('proj-1'));
+    expect(onNotify).toHaveBeenCalledWith('Deploy setup walkthrough started', 'success');
+    expect(onOpenSession).toHaveBeenCalledWith({
+      sessionId: 'setup-session-1',
+      agentId: 'agent-1',
+    });
   });
 
   it('does not lock actions when activeDeploymentId is stale without an active deployment', async () => {
