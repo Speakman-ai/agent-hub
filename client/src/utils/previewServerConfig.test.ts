@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isPreviewMode,
   buildPreviewServerConfig,
+  PREVIEW_WATCH_IGNORED,
   resolvePreviewAllowedHosts,
   resolvePreviewUpstreamAllowedHost,
 } from './previewServerConfig';
@@ -34,7 +35,7 @@ describe('buildPreviewServerConfig', () => {
       // always allowed (Vite still also allows loopback).
       allowedHosts: ['host.docker.internal'],
       hmr: { protocol: 'wss', clientPort: 443 },
-      watch: { usePolling: true, interval: 300 },
+      watch: { usePolling: true, interval: 300, ignored: PREVIEW_WATCH_IGNORED },
     });
     // Same-origin /api proxied to the compose `server` service by default.
     expect(cfg!.proxy['/api']).toBe('http://server:3051');
@@ -42,6 +43,11 @@ describe('buildPreviewServerConfig', () => {
     expect(cfg!.proxy['/design-files']).toBe('http://server:3051');
     // The nested app's live WebSocket (/ws) must be upgraded to the server too.
     expect(cfg!.proxy['/ws']).toEqual({ target: 'http://server:3051', ws: true });
+  });
+
+  it('ignores the nested Hub preview data directory so runtime writes do not thrash HMR', () => {
+    const cfg = buildPreviewServerConfig({ AGENT_HUB_PREVIEW: '1' });
+    expect(cfg!.watch.ignored).toContain('**/.agent-hub-preview/**');
   });
 
   it('honors FRONTEND_PORT and override envs', () => {

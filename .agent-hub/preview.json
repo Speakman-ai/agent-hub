@@ -5,9 +5,7 @@
     "enabled": false,
     "preview": {
       "enabled": true,
-      "captureRoutes": [
-        "/"
-      ],
+      "captureRoutes": ["/"],
       "idleTTL": 1800,
       "compose": {
         "entryService": "client",
@@ -16,7 +14,14 @@
         "healthPath": "/",
         "entryWorkdir": "/app",
         "entrySourceDir": ".",
-        "shadowDirs": []
+        "shadowDirs": [
+          "node_modules",
+          "client/node_modules",
+          "server/node_modules",
+          "shared/node_modules",
+          "mobile/node_modules",
+          "electron/node_modules"
+        ]
       }
     }
   }

@@ -69,6 +69,8 @@ export function resolvePreviewAllowedHosts(env: any) {
   return withUpstream(hosts);
 }
 
+export const PREVIEW_WATCH_IGNORED = ['**/.agent-hub-preview/**'];
+
 /**
  * Build the Vite `server` config for preview/HMR mode, or null when not in a
  * preview container. Kept a pure function of `env` so it is unit-testable
@@ -98,7 +100,7 @@ export function buildPreviewServerConfig(env: any) {
     hmr: { protocol: hmrProtocol, clientPort: hmrClientPort },
     // The worktree is bind-mounted in; inotify can miss events across the mount,
     // so poll to keep HMR reliable.
-    watch: { usePolling: true, interval: 300 },
+    watch: { usePolling: true, interval: 300, ignored: PREVIEW_WATCH_IGNORED },
     proxy: {
       '/api': apiTarget,
       '/uploads': apiTarget,
