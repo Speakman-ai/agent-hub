@@ -152,13 +152,53 @@ describe('BugReportModal', () => {
     expect(fd.get('replayMissReason')).toBeNull();
   });
 
-  it('does not submit a no-replay report when replay upload fails twice', async () => {
-    const fetchMock = vi.fn();
+  it('submits the bug report with a miss reason when replay upload fails twice', async () => {
+    const onClose = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ sessionId: 'sess-42', status: 'dispatched' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
     vi.stubGlobal('fetch', fetchMock);
     replayMocks.flushSessionReplayRefWithReason.mockResolvedValue({
       ref: null,
       reason: 'upload-failed',
     });
+
+    render(
+      <BugReportModal
+        isOpen
+        onClose={onClose}
+        initialScreenshotBlob={makeBlob()}
+        projectId="proj-1"
+        agentId="agent-1"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: 'Replay should not be lost' },
+    } as any);
+    fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }) as any);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(replayMocks.flushSessionReplayRefWithReason).toHaveBeenCalledTimes(2);
+    const fd = fetchMock.mock.calls[0][1].body;
+    expect(fd.get('replayRef')).toBeNull();
+    expect(fd.get('replayMissReason')).toBe('upload-failed');
+    expect(screen.queryByText(/session replay upload failed/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('submits the bug report with a miss reason when replay flush throws', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ sessionId: 'sess-42', status: 'dispatched' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    replayMocks.flushSessionReplayRefWithReason.mockRejectedValue(new Error('network failed'));
 
     render(
       <BugReportModal
@@ -171,15 +211,14 @@ describe('BugReportModal', () => {
     );
 
     fireEvent.change(screen.getByLabelText(/title/i), {
-      target: { value: 'Replay should not be lost' },
+      target: { value: 'Replay upload exception should not block' },
     } as any);
     fireEvent.click(screen.getByRole('button', { name: /submit bug report/i }) as any);
 
-    await waitFor(() => {
-      expect(screen.getByText(/session replay upload failed/i)).toBeInTheDocument();
-    });
-    expect(replayMocks.flushSessionReplayRefWithReason).toHaveBeenCalledTimes(2);
-    expect(fetchMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const fd = fetchMock.mock.calls[0][1].body;
+    expect(fd.get('replayRef')).toBeNull();
+    expect(fd.get('replayMissReason')).toBe('upload-failed');
   });
 
   it('includes the selected severity in FormData', async () => {

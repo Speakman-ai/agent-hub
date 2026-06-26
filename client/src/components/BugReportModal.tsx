@@ -92,8 +92,8 @@ export default function BugReportModal({
       // the ref so the intake agent can investigate the session.
       let replayRef = null;
       // When no replay attaches because capture was inactive or unreplayable,
-      // record why so the ticket is self-diagnosing. A replayable buffer that
-      // fails to upload must not become a no-replay ticket.
+      // record why so the ticket is self-diagnosing. Replay upload is
+      // best-effort; it must never block the bug report itself.
       let replayMissReason = null;
       try {
         let flush = await flushSessionReplayRefWithReason(
@@ -106,15 +106,10 @@ export default function BugReportModal({
             BUG_REPORT_REPLAY_FLUSH_TIMEOUT_MS,
           );
         }
-        if (!flush.ref && flush.reason === 'upload-failed') {
-          throw new Error('Session replay upload failed. Try submitting the bug report again.');
-        }
         replayRef = flush.ref;
         replayMissReason = flush.reason;
-      } catch (err: any) {
-        throw new Error(
-          err?.message || 'Session replay upload failed. Try submitting the bug report again.',
-        );
+      } catch {
+        replayMissReason = 'upload-failed';
       }
       await submitBugReport({
         title,
