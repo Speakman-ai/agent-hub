@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import type { RouteDeps } from '../types.js';
+import type { Project, RouteDeps } from '../types.js';
 
-function buildApp(): Promise<express.Express> {
+function buildApp(overrides: Partial<RouteDeps> = {}): Promise<express.Express> {
   return (async () => {
     vi.resetModules();
     const { default: createPrActionRoutes } = await import('./pr-actions.js');
@@ -26,6 +26,7 @@ function buildApp(): Promise<express.Express> {
       serverDir: '/tmp',
       buildTranscript: vi.fn(),
       summarizeTranscript: vi.fn(),
+      ...overrides,
     } as unknown as RouteDeps;
     const app = express();
     app.use(express.json());
@@ -117,6 +118,62 @@ describe('PR Actions route', () => {
       );
       expect(res.status).toBe(401);
       expect(res.body.error).toMatch(/Connect your GitHub account/i);
+    });
+  });
+
+  describe('GitHub merge card metadata', () => {
+    it('fetches PR metadata after merging before marking the linked card done', async () => {
+      const calls: Array<{ endpoint: string; method?: string }> = [];
+      const handleGithubCardOnMerge = vi.fn();
+
+      vi.doMock('../github-oauth.js', () => ({
+        githubUserApiRequest: vi.fn(
+          async (args: { endpoint: string; method?: string; body?: unknown }) => {
+            calls.push({ endpoint: args.endpoint, method: args.method });
+            if (args.endpoint.endsWith('/merge')) return {};
+            if (args.endpoint === '/repos/owner/repo/pulls/42') {
+              return { title: 'Tracked card', head: { ref: 'agent-hub/dev/session-abcdef12' } };
+            }
+            if (args.endpoint.includes('/git/refs/heads/')) return {};
+            throw new Error(`unexpected endpoint ${args.endpoint}`);
+          },
+        ),
+      }));
+      vi.doMock('./pr-list.js', () => ({
+        resolveUserToken: vi.fn(async () => 'token-1'),
+        parseRepoFullName: (value: string | null | undefined) => {
+          if (!value) return null;
+          const match = value.match(/^([^/]+)\/([^/]+)$/);
+          return match ? { owner: match[1], repo: match[2] } : null;
+        },
+      }));
+      vi.doMock('../github-card-on-merge.js', () => ({ handleGithubCardOnMerge }));
+
+      const project = { id: 'proj-1', githubRepo: 'owner/repo' } as Project;
+      const app = await buildApp({ getProjects: vi.fn(() => [project]) as never });
+
+      const res = await request(app)
+        .post('/api/pr/merge')
+        .send({ prUrl: 'https://github.com/owner/repo/pull/42', mergeMethod: 'squash' });
+
+      expect(res.status).toBe(200);
+      expect(calls[0]).toMatchObject({
+        endpoint: '/repos/owner/repo/pulls/42/merge',
+        method: 'PUT',
+      });
+      expect(calls[1]).toMatchObject({ endpoint: '/repos/owner/repo/pulls/42' });
+      expect(handleGithubCardOnMerge).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          projectId: 'proj-1',
+          prTitle: 'Tracked card',
+          headRef: 'agent-hub/dev/session-abcdef12',
+        }),
+      );
+
+      vi.doUnmock('../github-oauth.js');
+      vi.doUnmock('./pr-list.js');
+      vi.doUnmock('../github-card-on-merge.js');
     });
   });
 });

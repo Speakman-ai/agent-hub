@@ -16,7 +16,8 @@ import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { buildNativePrUrl } from '../native-pr/url.js';
 import { isRetryableMergeBlock } from '../native-pr/merge-block.js';
 import { autoGitChildEnv, resolveOrgOwnerGithubToken } from '../auto-git.js';
-import { autoMergeReadyPr } from './auto-merge-ready-pr.js';
+import { AUTO_MERGE_ACTOR, autoMergeReadyPr } from './auto-merge-ready-pr.js';
+import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
 import { ensureKanbanCardForSession } from './ensure-kanban-card.js';
 import { runFinalizePush } from './push-run.js';
 import { startFinalizeRunBackground } from './trigger-run.js';
@@ -35,6 +36,13 @@ let routeDeps: RouteDeps | null = null;
 
 export function setFinalizeAutomationRouteDeps(deps: RouteDeps): void {
   routeDeps = deps;
+}
+
+function prNumberFromUrl(prUrl: string): number | undefined {
+  const match = prUrl.match(/\/pulls?\/(\d+)/);
+  if (!match) return undefined;
+  const n = Number.parseInt(match[1], 10);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 /**
@@ -69,6 +77,18 @@ async function autoMergeFinalizedPr(
       },
     });
     console.log(`[finalize-automation] ${outcome.note}`);
+    if (outcome.source === 'github' && outcome.merged) {
+      handleGithubCardOnMerge(
+        { stmts: deps.stmts, broadcast: deps.broadcast },
+        {
+          projectId: project.id,
+          prUrl,
+          prNumber: prNumberFromUrl(prUrl),
+          mergedBy: AUTO_MERGE_ACTOR,
+          mergeMethod: 'squash',
+        },
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // A "checks still running" block is NOT a failure — native PRs have no

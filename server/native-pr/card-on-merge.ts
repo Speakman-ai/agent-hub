@@ -26,6 +26,7 @@ import type {
 } from '../types.js';
 import { findKanbanCardForIncomingPr, linkKanbanCardPrUrl } from '../kanban-pr-link.js';
 import { getOrCreateBoard } from '../routes/board.js';
+import { pickDoneColumn } from '../card-auto-close.js';
 import { buildNativePrUrl } from './url.js';
 
 export interface CardOnMergeDeps {
@@ -70,8 +71,10 @@ export function handleCardOnMerge(
 
   if (card) {
     try {
-      const doneName = deps.doneColumnName ?? 'Done';
-      const done = cols.find((c) => c.name === doneName);
+      const freshBoard = getOrCreateBoard(stmts, projectId);
+      cols = freshBoard.columns;
+      const doneName = deps.doneColumnName;
+      const done = doneName ? cols.find((c) => c.name === doneName) : pickDoneColumn(cols);
       const fresh = stmts.getKanbanCard.get(card.id) as KanbanCardRow | undefined;
       if (done && fresh && fresh.column_id !== done.id) {
         stmts.moveKanbanCard.run(done.id, 0, card.id);

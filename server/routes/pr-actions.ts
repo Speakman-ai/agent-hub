@@ -26,6 +26,8 @@ import { NativePrError } from '../native-pr/errors.js';
 import type { NativePrService } from '../native-pr/service.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { parseRepoFullName } from './pr-list.js';
+import { handleGithubCardOnMerge } from '../github-card-on-merge.js';
 
 interface PrActionBody {
   prUrl: string;
@@ -36,6 +38,11 @@ interface ParsedPR {
   owner: string;
   repo: string;
   number: string;
+}
+
+interface GithubPrMetadata {
+  title?: string;
+  head?: { ref?: string };
 }
 
 /** Native PR reference (Agent Hub-hosted project) resolved from a prUrl. */
@@ -49,6 +56,56 @@ function parsePrUrl(prUrl: string | null | undefined): ParsedPR | null {
   const match = prUrl?.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
   if (!match) return null;
   return { owner: match[1], repo: match[2], number: match[3] };
+}
+
+function resolveGithubProjectForPr(deps: RouteDeps, pr: ParsedPR): Project | null {
+  const ownerRepo = `${pr.owner}/${pr.repo}`.toLowerCase();
+  return (
+    deps.getProjects().find((project) => {
+      const parsed = parseRepoFullName(project.githubRepo);
+      return parsed ? `${parsed.owner}/${parsed.repo}`.toLowerCase() === ownerRepo : false;
+    }) ?? null
+  );
+}
+
+function markGithubCardMerged(
+  deps: RouteDeps,
+  args: {
+    project: Project | null;
+    prUrl: string;
+    pr: ParsedPR;
+    metadata: GithubPrMetadata | null;
+    mergedBy: string;
+    mergeMethod: string;
+  },
+): void {
+  if (!args.project) return;
+  handleGithubCardOnMerge(
+    { stmts: deps.stmts, broadcast: deps.broadcast },
+    {
+      projectId: args.project.id,
+      prUrl: args.prUrl,
+      prNumber: Number.parseInt(args.pr.number, 10),
+      prTitle: args.metadata?.title ?? null,
+      headRef: args.metadata?.head?.ref ?? null,
+      mergedBy: args.mergedBy,
+      mergeMethod: args.mergeMethod,
+    },
+  );
+}
+
+async function fetchGithubPrMetadata(
+  accessToken: string,
+  pr: ParsedPR,
+): Promise<GithubPrMetadata | null> {
+  try {
+    return await githubUserApiRequest<GithubPrMetadata>({
+      accessToken,
+      endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -125,6 +182,7 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
     if (!pr) {
       return res.status(400).json({ error: 'Invalid PR URL' });
     }
+    const project = resolveGithubProjectForPr(deps, pr);
 
     const userToken = await resolveUserToken(req, config);
     if (!userToken) {
@@ -138,12 +196,9 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
         method: 'PUT',
         body: { merge_method: mergeMethod },
       });
+      const prData = await fetchGithubPrMetadata(userToken, pr);
       try {
-        const prData = await githubUserApiRequest<{ head?: { ref?: string } }>({
-          accessToken: userToken,
-          endpoint: `/repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
-        });
-        if (prData.head?.ref) {
+        if (prData?.head?.ref) {
           await githubUserApiRequest({
             accessToken: userToken,
             endpoint: `/repos/${pr.owner}/${pr.repo}/git/refs/heads/${prData.head.ref}`,
@@ -153,10 +208,27 @@ export default function createPrActionRoutes(deps: RouteDeps): Router {
       } catch {
         /* branch deletion is best-effort */
       }
+      markGithubCardMerged(deps, {
+        project,
+        prUrl,
+        pr,
+        metadata: prData,
+        mergedBy: nativeActor(req),
+        mergeMethod,
+      });
       return res.json({ ok: true, method: 'user-oauth', pr: pr.number });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/already.*merged/i.test(msg)) {
+        const prData = await fetchGithubPrMetadata(userToken, pr);
+        markGithubCardMerged(deps, {
+          project,
+          prUrl,
+          pr,
+          metadata: prData,
+          mergedBy: nativeActor(req),
+          mergeMethod,
+        });
         return res.json({ ok: true, alreadyMerged: true, pr: pr.number });
       }
       return res.status(500).json({ error: `Merge failed: ${msg.split('\n')[0]}` });

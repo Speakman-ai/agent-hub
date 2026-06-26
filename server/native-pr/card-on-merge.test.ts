@@ -9,6 +9,7 @@
  */
 import '../test/setup.js';
 import { describe, it, expect, beforeAll } from 'vitest';
+import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import { handleCardOnMerge } from './card-on-merge.js';
 import { getOrCreateBoard } from '../routes/board.js';
@@ -16,12 +17,14 @@ import { buildNativePrUrl } from './url.js';
 import type { BroadcastFn, KanbanColumnRow, PullRequestRow, Stmts } from '../types.js';
 
 let stmts: Stmts;
+let db: Database.Database;
 
 beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
   await helpers.getRequest(); // boots the app + initDb
   const dbModule = await import('../db.js');
   stmts = dbModule.stmts!;
+  db = dbModule.getDb();
 });
 
 function makePr(projectId: string, number: number, overrides: Partial<PullRequestRow> = {}) {
@@ -126,5 +129,56 @@ describe('handleCardOnMerge — Done means merged, not pushed', () => {
     const after = stmts.getKanbanCard.get(cardId) as { column_id: string };
     expect(after.column_id).toBe(done.id);
     expect(events.find((e) => e.type === 'card_moved')).toBeFalsy();
+  });
+
+  it('moves to a renamed Done column on merge', () => {
+    const projectId = `np-merge-${uuidv4().slice(0, 8)}`;
+    const board = getOrCreateBoard(stmts, projectId);
+    const cols = board.columns as KanbanColumnRow[];
+    const done = cols.find((c) => c.name.toLowerCase() === 'done')!;
+    db.prepare('UPDATE kanban_columns SET name = ? WHERE id = ?').run('Deployed / Done', done.id);
+    const refreshed = getOrCreateBoard(stmts, projectId);
+    const renamedDone = refreshed.columns.find((c) => c.id === done.id)!;
+    const start = refreshed.columns.find((c) => c.id !== done.id)!;
+
+    const cardId = uuidv4();
+    const prNumber = 11;
+    const prUrl = buildNativePrUrl(projectId, prNumber);
+    stmts.createKanbanCard.run(
+      cardId,
+      start.id,
+      refreshed.board.id,
+      'Renamed done card',
+      null,
+      'medium',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      0,
+    );
+    stmts.setCardPrUrl.run(prUrl, cardId);
+
+    const events: Array<Record<string, unknown>> = [];
+    handleCardOnMerge(
+      {
+        stmts,
+        broadcast: (e) => {
+          events.push(e as Record<string, unknown>);
+        },
+      },
+      projectId,
+      makePr(projectId, prNumber),
+      'tester',
+    );
+
+    const after = stmts.getKanbanCard.get(cardId) as { column_id: string };
+    expect(after.column_id).toBe(done.id);
+    expect(events.find((e) => e.type === 'card_moved')).toMatchObject({
+      cardId,
+      columnName: renamedDone.name,
+    });
   });
 });

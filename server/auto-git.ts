@@ -46,6 +46,7 @@ import {
   clearChangesReadyAndNotifyPrCreated,
 } from './session-ship.js';
 import { rebaseOntoBase } from './pre-push-rebase.js';
+import { handleGithubCardOnMerge } from './github-card-on-merge.js';
 
 /** Max full check passes (initial + post-heal retries). */
 const DEFAULT_CHECK_HEAL_MAX_ROUNDS = 2;
@@ -1468,6 +1469,21 @@ async function enableAutoMergeIfNeeded(
       runGh(args, cwd, 15000, githubToken),
     );
     console.log(`[auto-merge] ${outcome.note}`);
+    if (outcome.merged) {
+      const d = getDeps();
+      const match = prUrl.match(/\/pulls?\/(\d+)/);
+      const prNumber = match ? Number.parseInt(match[1], 10) : undefined;
+      handleGithubCardOnMerge(
+        { stmts: d.stmts, broadcast: d.broadcast },
+        {
+          projectId: project.id,
+          prUrl,
+          prNumber,
+          mergedBy: 'auto-merge',
+          mergeMethod: 'squash',
+        },
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[auto-merge] ${msg}`);
