@@ -32,6 +32,7 @@ re-run scanners** unless the user changed files mid-session.
 
 | Field | Use |
 |-------|-----|
+| `webRoot` | Subdirectory under `PROJECT_CWD` where the browser app lives (`.` = repo root) |
 | `framework` | Drives which injection recipe below applies |
 | `plan.targetFile` | The file to inject the recorder init into |
 | `plan.injectionStyle` | `module-init` \| `client-component` \| `script-tag` |

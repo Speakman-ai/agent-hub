@@ -87,4 +87,56 @@ describe('PUT /api/sessions/:sessionId/mode', () => {
       .expect(200);
     expect(res.body.session_mode).toBe('chat');
   });
+
+  it('allows skill-builder mode on a dev agent session', async () => {
+    const session = await createSession({ agentId, name: 'mode-skill-builder-dev' });
+    const res = await request
+      .put(`/api/sessions/${session.id}/mode`)
+      .send({ mode: 'skill-builder' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('skill-builder');
+  });
+});
+
+describe('skill-builder mode is rejected on helper agents', () => {
+  it('PUT /mode 400s skill-builder for a docs helper and does not persist', async () => {
+    const docs = await createAgent({
+      id: 'session-mode-docs-helper',
+      name: 'Docs Helper',
+      role: 'docs',
+      engine: 'claude-code',
+    });
+    const session = await createSession({ agentId: docs.id as string, name: 'docs-skill-builder' });
+
+    const res = await request
+      .put(`/api/sessions/${session.id}/mode`)
+      .send({ mode: 'skill-builder' })
+      .expect(400);
+    expect(res.body.error).toBe('skill_builder_requires_dev_agent');
+
+    const fetched = await request.get(`/api/sessions/${session.id}`).expect(200);
+    expect(fetched.body.session_mode).toBe('chat');
+  });
+
+  it('PATCH session 400s skill-builder for a helper agent', async () => {
+    const helper = await createAgent({
+      id: 'session-mode-patch-helper',
+      name: 'Docs Helper 2',
+      role: 'docs',
+      engine: 'claude-code',
+    });
+    const session = await createSession({
+      agentId: helper.id as string,
+      name: 'patch-helper-skill-builder',
+    });
+
+    const res = await request
+      .patch(`/api/sessions/${session.id}`)
+      .send({ session_mode: 'skill-builder' })
+      .expect(400);
+    expect(res.body.error).toBe('skill_builder_requires_dev_agent');
+
+    const fetched = await request.get(`/api/sessions/${session.id}`).expect(200);
+    expect(fetched.body.session_mode).toBe('chat');
+  });
 });

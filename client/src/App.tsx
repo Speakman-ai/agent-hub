@@ -110,6 +110,7 @@ import {
 } from '@shared/utils/queuedMessageAttachments';
 import { attachTailPinResizeObserver } from './utils/chatScrollResizeObserver';
 import { parseWorkflowEditView } from './utils/workflowEditView';
+import { pruneSessionScopedMap } from './utils/pruneSessionScopedMap';
 import {
   awaitingInputNotification,
   cardStartedNotification,
@@ -167,6 +168,7 @@ import {
   isSessionWorkspaceReady,
   isSessionWorktreeEnabled,
   prependSessionDeduped,
+  planCreatedSessionCaches,
 } from './utils/sessionDerivedState';
 import { appendPreviewLogTail, mergePreviewEventLogTail } from './utils/previewLogTail';
 import { mergeBrowserActivityScreenshot } from '@shared/utils/browserScreensBySessionMerge';
@@ -196,6 +198,11 @@ export default function App({ initialView }: any = {}) {
     _setActiveAgentId(id);
   }, []);
   const [sessions, setSessions] = useState<any[]>([]);
+  /** Sidebar cache: session lists fetched when an agent row is expanded (without switching chat). */
+  const [sessionsByAgentId, setSessionsByAgentId] = useState<Record<string, any[]>>({});
+  const [archivedSessionsByAgentId, setArchivedSessionsByAgentId] = useState<Record<string, any[]>>(
+    {},
+  );
   // Soft-deleted sessions within the 24-hour recovery window for the active
   // agent. Shape: Array<SessionRow & { message_count:number, deleted_at:string }>.
   // Server filters to 24h window + newest-first; client just renders.
@@ -561,6 +568,56 @@ export default function App({ initialView }: any = {}) {
     indexSessionsById(sessionsByIdRef.current, sessions);
     bumpSessionsIndex();
   }, [sessions, bumpSessionsIndex]);
+  // The agent id the current `sessions` / `archivedSessions` arrays were fetched
+  // for. These are NOT necessarily `activeAgentId`: during an agent switch React
+  // can render with the new `activeAgentId` while these arrays still hold the
+  // previous agent's rows (the new fetch hasn't resolved yet). Keying the cache
+  // warm-up on `activeAgentId` would then stamp the previous agent's rows under
+  // the new agent id, corrupting the sidebar list / bulk-clear inputs. So the
+  // fetch success/catch paths set these to the agent they loaded, and the
+  // cache-warming effects below write under THAT id. Live WebSocket mutations to
+  // `sessions` leave the loaded-agent id unchanged, so they still sync correctly.
+  const [loadedSessionsAgentId, setLoadedSessionsAgentId] = useState<any>(null);
+  const [loadedArchivedAgentId, setLoadedArchivedAgentId] = useState<any>(null);
+  const loadedSessionsAgentIdRef = useRef(loadedSessionsAgentId);
+  loadedSessionsAgentIdRef.current = loadedSessionsAgentId;
+  const sessionsByAgentIdRef = useRef(sessionsByAgentId);
+  sessionsByAgentIdRef.current = sessionsByAgentId;
+  // Keep the sidebar per-agent cache warm for the agent whose list is loaded into chat state.
+  useEffect(() => {
+    if (!loadedSessionsAgentId) return;
+    setSessionsByAgentId((prev: any) => ({ ...prev, [loadedSessionsAgentId]: sessions }));
+  }, [loadedSessionsAgentId, sessions]);
+  useEffect(() => {
+    if (!loadedArchivedAgentId) return;
+    setArchivedSessionsByAgentId((prev: any) => ({
+      ...prev,
+      [loadedArchivedAgentId]: archivedSessions,
+    }));
+  }, [loadedArchivedAgentId, archivedSessions]);
+
+  // Optimistically insert a freshly-created session for `agentId`. Always writes
+  // the per-agent sidebar cache; only mutates the live `sessions` array when that
+  // array currently belongs to `agentId` (i.e. it is the loaded agent). Without
+  // the guard, creating a session for a NOT-yet-loaded agent would prepend it
+  // onto the previous agent's `sessions`, and the warm-up effect would then cache
+  // that row under the previous agent — the cross-agent pollution this tracking
+  // prevents. When switching agents, `setActiveAgentId` triggers a fresh fetch
+  // that surfaces the persisted row anyway.
+  const insertCreatedSession = useCallback((agentId: any, session: any) => {
+    if (!agentId || !session) return;
+    const plan = planCreatedSessionCaches({
+      targetAgentId: agentId,
+      loadedSessionsAgentId: loadedSessionsAgentIdRef.current,
+      session,
+      sessionsByAgentId: sessionsByAgentIdRef.current,
+      sessions: sessionsRef.current,
+    });
+    setSessionsByAgentId(plan.sessionsByAgentId);
+    // `plan.sessions` is the SAME reference when the live list does not belong
+    // to `agentId`, so React skips the update (no spurious re-render).
+    setSessions(plan.sessions);
+  }, []);
   useEffect(() => {
     indexSessionsById(sessionsByIdRef.current, cronSessions);
     bumpSessionsIndex();
@@ -855,6 +912,11 @@ export default function App({ initialView }: any = {}) {
     }
   }, [currentView]);
 
+  // Legacy `/skills` route — global skills moved to Settings → Global Skills.
+  useEffect(() => {
+    if (currentView === 'skills') setCurrentView('settings:global-skills');
+  }, [currentView]);
+
   const navigateFromProjectWorkflows = useCallback((view: any, extra: any) => {
     if (extra?.expandProjectId) {
       setCurrentView(`project-settings:${extra.expandProjectId}`);
@@ -1130,6 +1192,10 @@ export default function App({ initialView }: any = {}) {
       ]);
       setSessions(data);
       setArchivedSessions(Array.isArray(archivedRows) ? archivedRows : []);
+      // Tag these arrays with the agent they were loaded for so the per-agent
+      // cache warm-up writes them under the right id (not a since-switched one).
+      setLoadedSessionsAgentId(agentId);
+      setLoadedArchivedAgentId(agentId);
 
       setChangesReady((prev: any) => {
         const next = { ...prev };
@@ -1270,6 +1336,15 @@ export default function App({ initialView }: any = {}) {
   }, [activeSessionId, sessions, refreshDiffFileCount]);
 
   // WebSocket handler
+  const reloadActiveAgentSkills = useCallback(() => {
+    const agentId = activeAgentIdRef.current;
+    if (!agentId || !projectDataReady) return;
+    api
+      .getSkills(agentId)
+      .then(setSkills)
+      .catch(() => setSkills([]));
+  }, [projectDataReady]);
+
   const handleWsMessage = useCallback(
     (data: any) => {
       // Is this event for the session the user is currently viewing?
@@ -2340,6 +2415,20 @@ export default function App({ initialView }: any = {}) {
           refreshAgents();
           break;
 
+        case 'skills_update': {
+          // Project/global skill install/update/delete — refresh slash-command
+          // autocomplete for the active agent when the change applies.
+          const payload = data.payload || {};
+          const agentId = activeAgentIdRef.current;
+          if (!agentId) break;
+          if (payload.projectId) {
+            const agent = agentsRef.current.find((a: any) => a.id === agentId);
+            if (agent?.projectId !== payload.projectId) break;
+          }
+          reloadActiveAgentSkills();
+          break;
+        }
+
         case 'dispatch_failure': {
           const dispatchMsg = `Dispatch failed (${data.source}): ${data.cardTitle} — ${data.reason}`;
           const toast = {
@@ -2895,6 +2984,7 @@ export default function App({ initialView }: any = {}) {
     [
       notify,
       refreshAgents,
+      reloadActiveAgentSkills,
       showToast,
       pinChatTail,
       refreshDiffFileCount,
@@ -3072,10 +3162,12 @@ export default function App({ initialView }: any = {}) {
       .then((rows: any) => {
         if (cancelled) return;
         setArchivedSessions(Array.isArray(rows) ? rows : []);
+        setLoadedArchivedAgentId(agentId);
       })
       .catch(() => {
         if (cancelled) return;
         setArchivedSessions([]);
+        setLoadedArchivedAgentId(agentId);
       });
 
     api
@@ -3083,6 +3175,7 @@ export default function App({ initialView }: any = {}) {
       .then((data: any) => {
         if (cancelled) return;
         setSessions(data);
+        setLoadedSessionsAgentId(agentId);
 
         // Hydrate changesReady from persisted session data so the PR button
         // survives page refreshes and WebSocket reconnects.
@@ -3153,6 +3246,7 @@ export default function App({ initialView }: any = {}) {
         if (cancelled) return;
         console.error('[Sessions] Failed to load sessions:', err);
         setSessions([]);
+        setLoadedSessionsAgentId(agentId);
       })
       .finally(() => {
         if (!cancelled) {
@@ -3166,7 +3260,7 @@ export default function App({ initialView }: any = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- .then() uses `activeAgent` for defaults; agents[] churn should not re-fetch sessions
   }, [activeAgentId, modelConfig, projectDataReady]);
 
-  // Load skills for slash-command autocomplete when agent changes
+  // Load skills for slash-command autocomplete when agent changes or chat opens
   useEffect(() => {
     if (!activeAgentId) {
       setSkills([]);
@@ -3176,11 +3270,14 @@ export default function App({ initialView }: any = {}) {
       setSkills([]);
       return;
     }
-    api
-      .getSkills(activeAgentId)
-      .then(setSkills)
-      .catch(() => setSkills([]));
-  }, [activeAgentId, projectDataReady]);
+    reloadActiveAgentSkills();
+  }, [activeAgentId, projectDataReady, reloadActiveAgentSkills]);
+
+  useEffect(() => {
+    if (currentView === 'chat') {
+      reloadActiveAgentSkills();
+    }
+  }, [currentView, reloadActiveAgentSkills]);
 
   // Update session engine/model when session changes
   useEffect(() => {
@@ -3869,13 +3966,46 @@ export default function App({ initialView }: any = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView, activeDesign?.id, activeDesign?.imported_session_id]);
 
-  const handleNewSession = async () => {
-    if (!activeAgentId) return;
-    // Reviewer agents are spawned exclusively by the Finalize review phase.
-    // The server rejects manual session creation with role=reviewer; we
-    // short-circuit here so the keyboard shortcut / swipe handler /
-    // other indirect call sites don't produce a noisy 403.
-    if (activeAgent?.role === 'reviewer') {
+  const loadSidebarAgentSessions = useCallback(
+    async (agentId: any) => {
+      if (!agentId) return;
+      // The live and archived caches are populated independently (warm-up,
+      // `insertCreatedSession`, the agent-switch fetch). Guard each side on its
+      // OWN cache so a pre-populated live list never suppresses the archived
+      // fetch — otherwise an agent's recoverable/archived sessions stay hidden
+      // when its session list was warmed first.
+      const needSessions = !sessionsByAgentId[agentId];
+      const needArchived = !archivedSessionsByAgentId[agentId];
+      if (!needSessions && !needArchived) return;
+      try {
+        const [data, archived] = await Promise.all([
+          needSessions ? api.getSessions(agentId) : Promise.resolve(null),
+          needArchived ? api.getArchivedSessions(agentId) : Promise.resolve(null),
+        ]);
+        if (needSessions) {
+          setSessionsByAgentId((prev: any) => ({
+            ...prev,
+            [agentId]: Array.isArray(data) ? data : [],
+          }));
+        }
+        if (needArchived) {
+          setArchivedSessionsByAgentId((prev: any) => ({
+            ...prev,
+            [agentId]: Array.isArray(archived) ? archived : [],
+          }));
+        }
+      } catch (err: any) {
+        console.error('[Sidebar] Failed to load sessions for agent:', agentId, err);
+      }
+    },
+    [sessionsByAgentId, archivedSessionsByAgentId],
+  );
+
+  const handleNewSession = async (agentIdOverride?: any) => {
+    const agentId = agentIdOverride || activeAgentId;
+    if (!agentId) return;
+    const agent = agents.find((a: any) => a.id === agentId);
+    if (agent?.role === 'reviewer') {
       showToast(
         'Reviewer agents only run from the Finalize review phase — sessions cannot be started manually.',
         'info',
@@ -3883,15 +4013,16 @@ export default function App({ initialView }: any = {}) {
       );
       return;
     }
-    const session = await api.createSession(activeAgentId, undefined, { askMode: sessionAskMode });
-    setSessions((prev: any) => prependSessionDeduped(prev, session));
+    const session = await api.createSession(agentId, undefined, {
+      askMode: agentId === activeAgentId ? sessionAskMode : false,
+    });
+    insertCreatedSession(agentId, session);
+    setActiveAgentId(agentId);
     setActiveSessionId(session.id);
-    setSessionEngine(session.engine || activeAgent?.engine || 'claude-code');
+    setSessionEngine(session.engine || agent?.engine || 'claude-code');
     setSessionModel(
       session.model ||
-        modelConfig?.engineDefaultModels?.[
-          session.engine || activeAgent?.engine || 'claude-code'
-        ] ||
+        modelConfig?.engineDefaultModels?.[session.engine || agent?.engine || 'claude-code'] ||
         'claude-opus-4-8',
     );
     setSessionAskMode(isSessionAskModeEnabled(session));
@@ -3899,9 +4030,60 @@ export default function App({ initialView }: any = {}) {
     setCurrentView('chat');
   };
 
+  // Start chat in Skill Builder mode for a project (replaces the legacy Skill Builder agent).
+  const handleStartSkillBuilderMode = useCallback(
+    async (projectId: any) => {
+      // Skill Builder is a DEV-agent mode. Only a non-helper agent gets the
+      // builder prompt/role; helper agents (skill-builder/reviewer/docs) must
+      // NOT be silently used as a fallback — running the builder on a docs or
+      // reviewer agent would apply the wrong prompt/role. Reject helper-only
+      // (or empty) rosters instead of falling back to inProject[0].
+      const pickAgent = () =>
+        agents.find(
+          (a: any) =>
+            a.projectId === projectId &&
+            a.active !== false &&
+            a.role !== 'skill-builder' &&
+            a.role !== 'reviewer' &&
+            a.role !== 'docs',
+        );
+      const agent = pickAgent();
+      if (!agent) {
+        showToast(
+          'Skill Builder needs a dev agent — this project has no eligible agent.',
+          'error',
+          4000,
+        );
+        return;
+      }
+      try {
+        const session = await api.createSession(agent.id, '[Skill Builder]', { askMode: false });
+        const updated = await api.updateSession(session.id, {
+          session_mode: 'skill-builder',
+          ask_mode: false,
+          finalize_automation: 'manual',
+        });
+        setActiveAgentId(agent.id);
+        insertCreatedSession(agent.id, updated);
+        setActiveSessionId(updated.id);
+        setSessionEngine(updated.engine || agent.engine || 'claude-code');
+        setSessionModel(
+          updated.model ||
+            modelConfig?.engineDefaultModels?.[updated.engine || agent.engine || 'claude-code'] ||
+            'claude-opus-4-8',
+        );
+        setSessionAskMode(false);
+        setMessages([]);
+        setCurrentView('chat');
+      } catch (err: any) {
+        showToast(err?.message || 'Failed to start Skill Builder session', 'error', 4000);
+      }
+    },
+    [agents, modelConfig, showToast, insertCreatedSession],
+  );
+
   // Start a chat session with a SPECIFIC agent (not necessarily the active one)
-  // and navigate into it. Used by the Skills page "Build a skill" button to open
-  // a conversation with the project's Skill Builder coach.
+  // and navigate into it.
   const handleStartSessionWithAgent = useCallback(
     async (agentId: any) => {
       if (!agentId) return;
@@ -3917,7 +4099,7 @@ export default function App({ initialView }: any = {}) {
       try {
         const session = await api.createSession(agentId, undefined, { askMode: sessionAskMode });
         setActiveAgentId(agentId);
-        setSessions((prev: any) => prependSessionDeduped(prev, session));
+        insertCreatedSession(agentId, session);
         setActiveSessionId(session.id);
         setSessionEngine(session.engine || agent?.engine || 'claude-code');
         setSessionModel(
@@ -3932,7 +4114,7 @@ export default function App({ initialView }: any = {}) {
         showToast(err?.message || 'Failed to start session', 'error', 4000);
       }
     },
-    [agents, sessionAskMode, modelConfig, setActiveAgentId],
+    [agents, sessionAskMode, modelConfig, setActiveAgentId, insertCreatedSession, showToast],
   );
 
   const defaultModelForEngine = useCallback(
@@ -4064,24 +4246,37 @@ export default function App({ initialView }: any = {}) {
     }
   };
 
-  const handleClearAllSessions = async () => {
-    if (!activeAgentId) return;
+  const handleClearAllSessions = async (agentIdOverride?: any) => {
+    const agentId = agentIdOverride || activeAgentId;
+    if (!agentId) return;
+    const agentSessions = agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || [];
     setDeletingBulk('all');
-    for (const s of sessions) tearDownSessionPreview(s.id);
+    for (const s of agentSessions) tearDownSessionPreview(s.id);
     try {
-      const result = await api.clearAllSessions(activeAgentId);
+      const result = await api.clearAllSessions(agentId);
       if (result.ok) {
-        setBrowserScreensBySession({});
-        setSessions([]);
-        setActiveSessionId(null);
+        // Only drop browser-screen state for the sessions we actually removed.
+        // `agentId` may be an inactive sidebar agent, so wiping the whole map
+        // would blank the active chat's screens for unrelated sessions.
+        const removedIds = new Set(agentSessions.map((s: any) => s.id));
+        setBrowserScreensBySession((prev: any) => pruneSessionScopedMap(prev, removedIds));
+        setSessionsByAgentId((prev: any) => ({ ...prev, [agentId]: [] }));
+        if (agentId === activeAgentId) {
+          setSessions([]);
+          setActiveSessionId(null);
+        } else if (activeSessionId && agentSessions.some((s: any) => s.id === activeSessionId)) {
+          setActiveSessionId(null);
+        }
       }
     } finally {
       setDeletingBulk(null);
     }
   };
 
-  const handleClearMergedSessions = async () => {
-    if (!activeAgentId) return;
+  const handleClearMergedSessions = async (agentIdOverride?: any) => {
+    const agentId = agentIdOverride || activeAgentId;
+    if (!agentId) return;
+    const agentSessions = agentId === activeAgentId ? sessions : sessionsByAgentId[agentId] || [];
     setDeletingBulk('merged');
     // Resolve which sessions the server will archive (state === 'merged') using
     // the same shared resolver the sidebar status icon uses, so the optimistic
@@ -4091,15 +4286,24 @@ export default function App({ initialView }: any = {}) {
         activeTaskSessionIds: activeTasks,
         finalizeStatusBySession,
       }) === 'merged';
-    const mergedIds = new Set(sessions.filter(isMerged).map((s: any) => s.id));
+    const mergedIds = new Set(agentSessions.filter(isMerged).map((s: any) => s.id));
     for (const id of mergedIds) tearDownSessionPreview(id);
     try {
-      const result = await api.clearMergedSessions(activeAgentId);
+      const result = await api.clearMergedSessions(agentId);
       if (result.ok) {
-        // Drop only the merged sessions; everything else stays.
-        setSessions((prev: any) => prev.filter((s: any) => !mergedIds.has(s.id)));
-        if (activeSessionId && mergedIds.has(activeSessionId)) {
-          const remaining = sessions.filter((s: any) => !mergedIds.has(s.id));
+        const dropMerged = (prev: any[]) => prev.filter((s: any) => !mergedIds.has(s.id));
+        setSessionsByAgentId((prev: any) => ({
+          ...prev,
+          [agentId]: dropMerged(prev[agentId] || []),
+        }));
+        if (agentId === activeAgentId) {
+          setSessions((prev: any) => dropMerged(prev));
+          if (activeSessionId && mergedIds.has(activeSessionId)) {
+            const remaining = dropMerged(agentSessions);
+            setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
+          }
+        } else if (activeSessionId && mergedIds.has(activeSessionId)) {
+          const remaining = dropMerged(agentSessions);
           setActiveSessionId(remaining.length > 0 ? remaining[0].id : null);
         }
       }
@@ -4319,9 +4523,14 @@ export default function App({ initialView }: any = {}) {
       ? 'design'
       : activeSession?.session_mode === 'scoping'
         ? 'scoping'
-        : 'chat';
+        : activeSession?.session_mode === 'skill-builder'
+          ? 'skill-builder'
+          : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
+  // Skill Builder mode is purely conversational (the coach runs in chat and
+  // writes skills via the API) — it has no dedicated side pane like Design /
+  // Scoping, so there is no `skillBuilderModeActive` flag to render here.
 
   // Atomic multi-axis session-control change for the Finalize automation picker
   // (Design / Ask / Build / …). The picker can change session_mode + ask_mode +
@@ -4667,7 +4876,7 @@ export default function App({ initialView }: any = {}) {
       'go-to-wiki': goToWiki,
       'go-to-notes': goToNotes,
       'go-to-pulls': goToPulls,
-      'go-to-skills': () => setCurrentView('skills'),
+      'go-to-skills': () => setCurrentView('settings:global-skills'),
       'go-to-settings': () => setCurrentView('settings'),
       'go-to-next-project': goToNextProject,
       'toggle-microphone': () => messageInputRef.current?.toggleRecording(),
@@ -4814,6 +5023,11 @@ export default function App({ initialView }: any = {}) {
               setActiveAgentId(id);
               setSidebarOpen(false);
             }}
+            onExpandAgent={loadSidebarAgentSessions}
+            sessionsByAgentId={sessionsByAgentId}
+            archivedSessionsByAgentId={archivedSessionsByAgentId}
+            loadedSessionsAgentId={loadedSessionsAgentId}
+            loadedArchivedAgentId={loadedArchivedAgentId}
             onFocusSession={focusAgentSession}
             onOrchestrationSave={async (body: any) => {
               if (!activeSessionId) return null;
@@ -5286,11 +5500,12 @@ export default function App({ initialView }: any = {}) {
                     setSidebarOpen(false);
                   }}
                 />
-              ) : currentView === 'skills' || currentView.startsWith('skills:') ? (
+              ) : currentView.startsWith('skills:') ? (
                 <SkillsPage
                   agents={agents}
                   projects={projects}
-                  onStartCoachSession={handleStartSessionWithAgent}
+                  initialProjectId={currentView.slice('skills:'.length)}
+                  onStartSkillBuilderMode={handleStartSkillBuilderMode}
                 />
               ) : currentView === 'designs' ? (
                 <DesignsList
@@ -5779,6 +5994,7 @@ export default function App({ initialView }: any = {}) {
                                 <FinalizeAutomationSelect
                                   sessionId={activeSessionId}
                                   session={activeSession}
+                                  agent={activeAgent}
                                   disabled={!connected}
                                   askMode={sessionAskMode}
                                   onControlChange={handleSessionControlChange}

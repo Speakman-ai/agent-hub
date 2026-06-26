@@ -27,4 +27,33 @@ describe('collectPreviewEnvironmentDraft', () => {
     }
     expect(draft.composeChecklist.some((i) => i.id === 'compose-file-readable')).toBe(true);
   });
+
+  it('detects compose.preview.yml and prefers it over a generic docker-compose.yml stub', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ah-env-draft-preview-'));
+    writeFileSync(
+      path.join(dir, 'docker-compose.yml'),
+      ['services:', '  web:', '    image: node:22', '    ports:', '      - "3000:3000"'].join('\n'),
+    );
+    writeFileSync(
+      path.join(dir, 'compose.preview.yml'),
+      [
+        'services:',
+        '  frontend:',
+        '    image: node:22',
+        '    ports:',
+        '      - "${AGENTHUB_HOST_PORT:-4200}:${FRONTEND_PORT:-4200}"',
+        '  db:',
+        '    image: postgres:16',
+      ].join('\n'),
+    );
+
+    const draft = collectPreviewEnvironmentDraft(dir);
+    expect(draft.phase).toBe('confirm_compose');
+    expect(draft.detected?.compose.file).toBe('compose.preview.yml');
+    expect(draft.detected?.compose.entryService).toBe('frontend');
+    expect(draft.composeCandidates[0]?.file).toBe('compose.preview.yml');
+    expect(draft.composeChecklist.find((i) => i.id === 'compose-file-readable')?.status).toBe(
+      'pass',
+    );
+  });
 });

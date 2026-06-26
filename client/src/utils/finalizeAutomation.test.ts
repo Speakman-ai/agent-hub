@@ -9,6 +9,8 @@ import {
   sessionControlLabel,
   planSessionControlChange,
   sessionControlPatch,
+  sessionControlOptionsForAgent,
+  isSkillBuilderEligibleAgent,
 } from './finalizeAutomation';
 
 describe('parseFinalizeAutomation', () => {
@@ -26,6 +28,7 @@ describe('SESSION_CONTROL_OPTIONS', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => (o as any).value)).toEqual([
       'design',
       'scoping',
+      'skill-builder',
       'ask',
       'manual',
       'review',
@@ -214,5 +217,30 @@ describe('sessionControlPatch', () => {
     expect(
       sessionControlPatch({ sessionMode: 'design', askMode: false, automation: 'manual' }, 'push'),
     ).toEqual({ session_mode: 'chat', finalize_automation: 'push' });
+  });
+});
+
+describe('sessionControlOptionsForAgent / isSkillBuilderEligibleAgent', () => {
+  it('keeps the Skill Builder option for a dev agent', () => {
+    const opts = sessionControlOptionsForAgent({ role: 'sub' });
+    expect(opts).toBe(SESSION_CONTROL_OPTIONS);
+    expect(opts.some((o: any) => o.value === 'skill-builder')).toBe(true);
+  });
+
+  it('hides the Skill Builder option for helper agents (docs/reviewer/skill-builder)', () => {
+    for (const role of ['docs', 'reviewer', 'skill-builder']) {
+      const opts = sessionControlOptionsForAgent({ role });
+      expect(opts.some((o: any) => o.value === 'skill-builder')).toBe(false);
+      // Other options (design, ask, ship levels) are untouched.
+      expect(opts.some((o: any) => o.value === 'design')).toBe(true);
+      expect(opts.length).toBe(SESSION_CONTROL_OPTIONS.length - 1);
+    }
+  });
+
+  it('hides Skill Builder when the agent is unknown (cannot prove eligibility)', () => {
+    expect(sessionControlOptionsForAgent(null).some((o: any) => o.value === 'skill-builder')).toBe(
+      false,
+    );
+    expect(isSkillBuilderEligibleAgent(undefined)).toBe(false);
   });
 });

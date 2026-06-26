@@ -3,27 +3,37 @@ import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 
 (vi as any).mock('../utils/api.js', () => ({
   api: {
-    getSkills: vi.fn(),
+    getProjectSkills: vi.fn(),
+    getProjectSkill: vi.fn(),
     getContext: vi.fn(),
     getSkillOverrides: vi.fn(),
     getSkill: vi.fn(),
+    getGlobalSkill: vi.fn(),
     toggleSkill: vi.fn(),
     uninstallSkill: vi.fn(),
     saveContext: vi.fn(),
     getSkillCredentials: vi.fn(),
     createProjectSkill: vi.fn(),
+    createGlobalSkill: vi.fn(),
     updateProjectSkill: vi.fn(),
+    updateGlobalSkill: vi.fn(),
   },
 }));
 
 import SkillsPage from './SkillsPage';
 import { api } from '../utils/api';
 
-const AGENT = { id: 'a1', name: 'A1', color: '#22d3ee', workspace: '/tmp/ws' } as Record<
-  string,
-  any
->;
-const PROJECTS = [{ id: 'proj-1', agents: [{ id: 'a1' }] }];
+// The agent must belong to the active project so SkillsPage resolves a
+// reference agent (drives the agent-scoped getSkill call in the edit flow).
+const AGENT = {
+  id: 'a1',
+  name: 'A1',
+  projectId: 'proj-1',
+  color: '#22d3ee',
+  workspace: '/tmp/ws',
+} as Record<string, any>;
+const PROJECTS = [{ id: 'proj-1', name: 'Proj 1', agents: [{ id: 'a1' }] }];
+const PROPS = { agents: [AGENT], projects: PROJECTS, initialProjectId: 'proj-1' };
 
 async function flush() {
   await act(async () => {
@@ -43,10 +53,10 @@ describe('SkillsPage — project skill editor', () => {
   afterEach(() => vi.clearAllMocks());
 
   it('opens the create editor and posts content to createProjectSkill', async () => {
-    (api.getSkills as any).mockResolvedValue([]);
+    (api.getProjectSkills as any).mockResolvedValue([]);
     (api.createProjectSkill as any).mockResolvedValue({ id: 'my-skill' });
 
-    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
+    render(<SkillsPage {...PROPS} />);
     await flush();
 
     fireEvent.click(screen.getByRole('button', { name: /Write raw/i } as any) as any);
@@ -63,13 +73,13 @@ describe('SkillsPage — project skill editor', () => {
     expect(projectId!).toBe('proj-1');
     expect(body.content).toContain('name: my-skill');
     // After save, the list reloads.
-    await waitFor(() => expect(api.getSkills).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.getProjectSkills).toHaveBeenCalledTimes(2));
   });
 
   it('blocks save and shows an error when the frontmatter is invalid', async () => {
-    (api.getSkills as any).mockResolvedValue([]);
+    (api.getProjectSkills as any).mockResolvedValue([]);
 
-    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
+    render(<SkillsPage {...PROPS} />);
     await flush();
 
     fireEvent.click(screen.getByRole('button', { name: /Write raw/i } as any) as any);
@@ -86,22 +96,25 @@ describe('SkillsPage — project skill editor', () => {
     expect(api.createProjectSkill).not.toHaveBeenCalled();
   });
 
-  it('opens the edit editor for a project skill, seeded from getSkill', async () => {
-    (api.getSkills as any).mockResolvedValue([
+  it('opens the edit editor for a project skill, seeded from the project read', async () => {
+    (api.getProjectSkills as any).mockResolvedValue([
       { id: 'editable', name: 'editable', description: 'd', source: 'project' },
     ]);
-    (api.getSkill as any).mockResolvedValue({
+    // Project skills are read through the PROJECT-owned endpoint, not the
+    // agent-scoped one, so editing works even without a reference agent.
+    (api.getProjectSkill as any).mockResolvedValue({
       content: '---\nname: editable\ndescription: existing\n---\n# Body\n',
     });
     (api.updateProjectSkill as any).mockResolvedValue({ id: 'editable' });
 
-    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
+    render(<SkillsPage {...PROPS} />);
     await flush();
 
     fireEvent.click(screen.getByRole('button', { name: /Edit skill/i } as any) as any);
     await flush();
 
-    expect(api.getSkill).toHaveBeenCalledWith('a1', 'editable');
+    expect(api.getProjectSkill).toHaveBeenCalledWith('proj-1', 'editable');
+    expect(api.getSkill).not.toHaveBeenCalled();
     const textarea = screen.getByRole('dialog').querySelector('textarea');
     expect((textarea as any).value).toContain('description: existing');
 
@@ -115,12 +128,35 @@ describe('SkillsPage — project skill editor', () => {
     expect(body.name).toBe('editable');
   });
 
+  it('edits a project skill for an AGENTLESS project (no reference agent)', async () => {
+    // Regression: an agentless project with skills could render Edit but the
+    // agent-scoped read would call /agents/null/skills/:id. The project-owned
+    // read must be used so editing still loads the body.
+    (api.getProjectSkills as any).mockResolvedValue([
+      { id: 'editable', name: 'editable', description: 'd', source: 'project' },
+    ]);
+    (api.getProjectSkill as any).mockResolvedValue({
+      content: '---\nname: editable\ndescription: existing\n---\n# Body\n',
+    });
+
+    render(<SkillsPage agents={[]} projects={PROJECTS} initialProjectId="proj-1" />);
+    await flush();
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit skill/i } as any) as any);
+    await flush();
+
+    expect(api.getProjectSkill).toHaveBeenCalledWith('proj-1', 'editable');
+    expect(api.getSkill).not.toHaveBeenCalled();
+    const textarea = screen.getByRole('dialog').querySelector('textarea');
+    expect((textarea as any).value).toContain('description: existing');
+  });
+
   it('does not offer an edit button for built-in (default) skills', async () => {
-    (api.getSkills as any).mockResolvedValue([
+    (api.getProjectSkills as any).mockResolvedValue([
       { id: 'kanban', name: 'kanban', description: 'd', source: 'default' },
     ]);
 
-    render(<SkillsPage agents={[AGENT]} projects={PROJECTS} />);
+    render(<SkillsPage {...PROPS} />);
     await flush();
 
     expect(screen.queryByRole('button', { name: /Edit skill/i })).not.toBeInTheDocument();

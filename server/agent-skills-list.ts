@@ -97,6 +97,32 @@ export function listMergedSkills(skillsDir: string): SkillWithSource[] {
   return merged;
 }
 
+/** Project-authored skills only — `<project.ahw>/skills`. */
+export function listProjectSkills(skillsDir: string): SkillWithSource[] {
+  return collectSkillsFromDir(skillsDir).map((s) => ({ ...s, source: 'project' as const }));
+}
+
+/**
+ * Shared catalog for Settings → Global Skills: user global tier + bundled defaults
+ * (no project tier). Precedence on same-id conflict: global shadows default.
+ */
+export function listGlobalCatalogSkills(): SkillWithSource[] {
+  const tiers: Array<{ source: SkillWithSource['source']; dir: string }> = [
+    { source: 'global', dir: resolveGlobalSkillsDir() },
+    { source: 'default', dir: DEFAULT_SKILLS_DIR },
+  ];
+  const seen = new Set<string>();
+  const merged: SkillWithSource[] = [];
+  for (const { source, dir } of tiers) {
+    for (const s of collectSkillsFromDir(dir)) {
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      merged.push({ ...s, source });
+    }
+  }
+  return merged;
+}
+
 /**
  * The filtered runtime/prompt list: the unfiltered merge (`listMergedSkills`)
  * with the agent's enable/disable overrides AND allowlist layered on top.

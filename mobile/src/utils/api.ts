@@ -311,6 +311,8 @@ export const api = {
     deleteCron: (id: any) => fetchJSON(`/crons/${id}`, { method: 'DELETE' }),
     runCron: (id: any) => fetchJSON(`/crons/${id}/run`, { method: 'POST' }),
     // Skills & Context
+    getProjectSkills: (projectId: any) => fetchJSON(`/projects/${projectId}/skills`),
+    getProjectSkill: (projectId: any, skillId: any) => fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}`),
     getSkills: (agentId: any) => fetchJSON(`/agents/${agentId}/skills`),
     getSkill: (agentId: any, skillId: any) => fetchJSON(`/agents/${agentId}/skills/${skillId}`),
     getContext: (agentId: any) => fetchJSON(`/agents/${agentId}/context`),

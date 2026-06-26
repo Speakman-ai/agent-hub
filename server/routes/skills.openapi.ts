@@ -166,6 +166,37 @@ const projectIdParam = z.object({
   projectId: z.string().openapi({ description: 'Project ID (slug).' }),
 });
 
+const ProjectSkillListItemSchema = registerComponent(
+  'ProjectSkillListItem',
+  z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      category: z.string().optional(),
+      source: z.enum(['project', 'global', 'default']),
+    })
+    .openapi({ description: 'A project-authored skill in `<project.ahw>/skills`.' }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/skills',
+  tags: ['Skills'],
+  summary: 'List project skills library',
+  description:
+    'Returns project-authored skills only (`<project.ahw>/skills`). Built-in and shared global skills are listed via `GET /api/global-skills`.',
+  request: { params: projectIdParam },
+  responses: {
+    200: {
+      description: 'Project-authored skills.',
+      content: jsonContent(z.array(ProjectSkillListItemSchema)),
+    },
+    404: errorResponse('Project not found.'),
+    500: errorResponse('Filesystem read error.'),
+  },
+});
+
 registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/skills',
@@ -197,9 +228,9 @@ const GlobalSkillListItemSchema = registerComponent(
       name: z.string(),
       description: z.string(),
       path: z.string(),
-      source: z.literal('global'),
+      source: z.enum(['global', 'default']),
     })
-    .openapi({ description: 'A global (shared) skill discovered under <dataDir>/skills.' }),
+    .openapi({ description: 'A built-in or user-authored global (shared) skill.' }),
 );
 
 const GlobalSkillDetailSchema = registerComponent(
@@ -240,12 +271,12 @@ registerPath({
   method: 'get',
   path: '/api/global-skills',
   tags: ['Skills'],
-  summary: 'List global (shared) skills',
+  summary: 'List global skills catalog',
   description:
-    "Lists every skill authored in the writable global tier (`<dataDir>/skills`). These are merged into every agent's skill list between the project tier and the bundled defaults.",
+    'Returns the shared skills catalog: user-authored global skills (`<dataDir>/skills`) plus bundled built-in defaults. Project-authored skills are listed per project via `GET /api/projects/{projectId}/skills`.',
   responses: {
     200: {
-      description: 'Global skills.',
+      description: 'Global skills catalog (shared + built-in).',
       content: jsonContent(z.array(GlobalSkillListItemSchema)),
     },
     500: errorResponse('Filesystem read error.'),
@@ -315,6 +346,44 @@ registerPath({
     400: errorResponse('Invalid skill id.'),
     500: errorResponse('Filesystem error.'),
     503: errorResponse('Global skills directory unavailable (server data dir not configured).'),
+  },
+});
+
+const ProjectSkillDetailSchema = registerComponent(
+  'ProjectSkillDetail',
+  z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string(),
+      content: z.string().openapi({ description: 'Raw SKILL.md text (frontmatter + body).' }),
+      path: z.string(),
+      credentials: z.array(SkillCredentialSpecSchema),
+      source: z.literal('project'),
+    })
+    .openapi({ description: 'A single project-authored skill with its raw SKILL.md content.' }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/skills/{skillId}',
+  tags: ['Skills'],
+  summary: 'Read a project skill',
+  description:
+    "Returns a single project-authored skill's raw `SKILL.md` (frontmatter + body) plus its credential schema. Project-owned read — does NOT require an agent and does NOT fall back to bundled defaults, so the editor can load a project skill even for an agentless project. Resolves directory (`<slug>/SKILL.md`) or flat (`<slug>.md`) form.",
+  request: {
+    params: projectIdParam.extend({
+      skillId: z.string().openapi({ description: 'Project skill slug (folder id).' }),
+    }),
+  },
+  responses: {
+    200: {
+      description: 'The project skill with its raw SKILL.md content.',
+      content: jsonContent(ProjectSkillDetailSchema),
+    },
+    400: errorResponse('Invalid skill id or malformed credentials frontmatter.'),
+    404: errorResponse('Project, workspace, or project skill not found.'),
+    500: errorResponse('Filesystem read error.'),
   },
 });
 

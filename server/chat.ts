@@ -90,6 +90,8 @@ import {
   ensureRealDesignDir,
 } from './design-mode-prompt.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
+import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
+import { isSkillBuilderModeActive } from './session-mode.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
 import {
   detectTagBlockInLastFence,
@@ -2528,6 +2530,28 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           projectId,
         });
         enrichedPrompt = `${scopingPreamble}\n\n${enrichedPrompt}`;
+      }
+
+      if (isSkillBuilderModeActive(session!)) {
+        if (!isAutoContinuation) {
+          for (const requiredId of requiredSkillIdsForSession(session!)) {
+            if (loadedRoutedSkillIds.has(requiredId)) continue;
+            const injection = loadSkillByName({
+              name: requiredId,
+              reason: 'session_mode=skill-builder (required)',
+              paths: { skillsDir: paths.skillsDir },
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            enrichedPrompt += `\n\n${injection}`;
+            loadedRoutedSkillIds.add(requiredId);
+          }
+        }
+        const skillBuilderPreamble = buildSkillBuilderModePreamble({
+          project: project as Project,
+        });
+        enrichedPrompt = `${skillBuilderPreamble}\n\n${enrichedPrompt}`;
       }
 
       let linkedEpicForBudgets: KanbanEpicRow | null = null;

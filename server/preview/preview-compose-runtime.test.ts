@@ -2175,7 +2175,7 @@ describe('PreviewComposeRuntime — log streaming', () => {
     expect(harness.spawned).toHaveLength(1);
   });
 
-  it('starts `docker compose logs --follow` at the READY transition (not on build exit)', async () => {
+  it('starts `docker compose logs --follow` when the build (up) exits cleanly, before ready', async () => {
     const db = freshDb();
     const harness = makeSpawn();
     const { runtime, logs, clock, setHealthy } = makeLogRuntime(db, harness);
@@ -2188,21 +2188,11 @@ describe('PreviewComposeRuntime — log streaming', () => {
     up.exitWith(0);
     await flushImmediate();
     await flushMicrotasks();
-    // Still `starting` → NO runtime follower yet (only the `up` spawn).
+    // Still `starting`, but the runtime follower is already attached.
     expect(runtime.getById(result.previewId)?.status).toBe('starting');
-    expect(harness.spawned).toHaveLength(1);
-
-    // Health passes → group flips `ready` → THIS is when the follower starts.
-    setHealthy(true);
-    await driveToReady(runtime, clock, result.previewId);
-    expect(runtime.getById(result.previewId)?.status).toBe('ready');
-
     expect(harness.spawned).toHaveLength(2);
     const followCall = harness.calls.find((c) => c.args.includes('--follow'));
     expect(followCall?.command).toBe('docker');
-    // `--tail 4000`: at `ready` the tail holds only the build child's
-    // build/orchestration output (`up -d` never streams container stdout),
-    // so seeding container logs from startup is additive, not duplicative.
     expect(followCall?.args).toEqual([
       'compose',
       '-p',
@@ -2217,23 +2207,29 @@ describe('PreviewComposeRuntime — log streaming', () => {
     ]);
     expect(followCall?.cwd).toBe('/wt/follow');
 
-    // Runtime stdout streams through the same appender — appended to the
-    // tail AND fanned out live, with db-service noise filtered out.
     const follow = harness.spawned[1];
-    follow.stdout.emit('data', 'web-1  | GET /health 200\n');
+    follow.stdout.emit('data', 'web-1  | Compiling Angular…\n');
     follow.stdout.emit('data', 'db-1  | LOG: checkpoint complete\n');
-    follow.stdout.emit('data', 'web-1  | GET / 200\n');
+    follow.stdout.emit('data', 'web-1  | Application bundle generation complete\n');
 
     expect(noBanner(runtime.getLogTail(result.previewId))).toEqual([
       'Container web Started',
-      'web-1  | GET /health 200',
-      'web-1  | GET / 200',
+      '==> [preview] containers up — streaming service logs while waiting for health check…',
+      'web-1  | Compiling Angular…',
+      'web-1  | Application bundle generation complete',
     ]);
     expect(noBanner(logs.map((l) => l.line))).toEqual([
       'Container web Started',
-      'web-1  | GET /health 200',
-      'web-1  | GET / 200',
+      '==> [preview] containers up — streaming service logs while waiting for health check…',
+      'web-1  | Compiling Angular…',
+      'web-1  | Application bundle generation complete',
     ]);
+
+    // Health passes → group flips `ready` → follower already running (no-op).
+    setHealthy(true);
+    await driveToReady(runtime, clock, result.previewId);
+    expect(runtime.getById(result.previewId)?.status).toBe('ready');
+    expect(harness.spawned).toHaveLength(2);
   });
 
   it('does NOT start a follower when the build (up) exits non-zero', async () => {

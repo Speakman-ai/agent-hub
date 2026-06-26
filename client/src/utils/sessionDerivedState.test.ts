@@ -4,6 +4,7 @@ import {
   isSessionWorktreeEnabled,
   isSessionWorkspaceReady,
   prependSessionDeduped,
+  planCreatedSessionCaches,
 } from './sessionDerivedState';
 
 describe('sessionDerivedState', () => {
@@ -82,6 +83,75 @@ describe('sessionDerivedState', () => {
     it('ignores a session without id', () => {
       const prev = [a];
       expect(prependSessionDeduped(prev, {})).toBe(prev);
+    });
+  });
+
+  describe('planCreatedSessionCaches', () => {
+    const rowA = { id: 's-a' };
+    const created = { id: 's-new' };
+
+    it('caches the new session under the target agent without touching another agent', () => {
+      // Creating a session for agent-2 while agent-1 is the loaded list must NOT
+      // prepend the row onto agent-1's `sessions` (which would later be cached
+      // under agent-1 — cross-agent pollution).
+      const sessions = [rowA];
+      const out = planCreatedSessionCaches({
+        targetAgentId: 'agent-2',
+        loadedSessionsAgentId: 'agent-1',
+        session: created,
+        sessionsByAgentId: { 'agent-1': [rowA] },
+        sessions,
+      });
+      // agent-2's cache gains the new row.
+      expect(out.sessionsByAgentId['agent-2']).toEqual([created]);
+      // agent-1's cache entry is untouched.
+      expect(out.sessionsByAgentId['agent-1']).toEqual([rowA]);
+      // The live `sessions` array is returned by the SAME reference (no mutate).
+      expect(out.sessions).toBe(sessions);
+    });
+
+    it('returns the SAME `sessions` reference when the list is not the target agent (no re-render)', () => {
+      const sessions = [rowA];
+      const out = planCreatedSessionCaches({
+        targetAgentId: 'agent-2',
+        loadedSessionsAgentId: 'agent-1',
+        session: created,
+        sessionsByAgentId: {},
+        sessions,
+      });
+      expect(out.sessions).toBe(sessions);
+    });
+
+    it('updates the live `sessions` only when it belongs to the target agent', () => {
+      const out = planCreatedSessionCaches({
+        targetAgentId: 'agent-1',
+        loadedSessionsAgentId: 'agent-1',
+        session: created,
+        sessionsByAgentId: { 'agent-1': [rowA] },
+        sessions: [rowA],
+      });
+      expect(out.sessions).toEqual([created, rowA]);
+      expect(out.sessionsByAgentId['agent-1']).toEqual([created, rowA]);
+    });
+
+    it('is a no-op for a missing agent id or session', () => {
+      const state = { sessionsByAgentId: { x: [rowA] }, sessions: [rowA] };
+      expect(
+        planCreatedSessionCaches({
+          targetAgentId: '',
+          loadedSessionsAgentId: 'x',
+          session: created,
+          ...state,
+        }),
+      ).toEqual(state);
+      expect(
+        planCreatedSessionCaches({
+          targetAgentId: 'x',
+          loadedSessionsAgentId: 'x',
+          session: {},
+          ...state,
+        }),
+      ).toEqual(state);
     });
   });
 });

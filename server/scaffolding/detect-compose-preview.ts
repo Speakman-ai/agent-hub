@@ -59,6 +59,8 @@ export interface DetectedComposePreview {
 }
 
 const COMPOSE_FILENAMES = [
+  'compose.preview.yml',
+  'compose.preview.yaml',
   'docker-compose.yml',
   'compose.yml',
   'docker-compose.yaml',

@@ -232,6 +232,14 @@ export function AppProvider({ children }: any) {
             /* expo-notifications unavailable (e.g. web / test) — no banner */
         }
     }, []);
+    const reloadActiveAgentSkills = useCallback(() => {
+        const agentId = activeAgentIdRef.current;
+        if (!configReady || !agentId || !getApiBaseUrl())
+            return;
+        api.getSkills(agentId)
+            .then(setSkills)
+            .catch(() => setSkills([]));
+    }, [configReady]);
     // WebSocket handler
     const handleWsMessage = useCallback((data: any) => {
         // Fan out to the in-app banner first so every mapped type gets a
@@ -786,8 +794,21 @@ export function AppProvider({ children }: any) {
                     bump: Date.now(),
                 });
                 break;
+            case 'skills_update': {
+                const payload = data.payload || {};
+                const agentId = activeAgentIdRef.current;
+                if (!agentId)
+                    break;
+                if (payload.projectId) {
+                    const agent = agentsRef.current.find((a: any) => a.id === agentId);
+                    if (agent?.projectId !== payload.projectId)
+                        break;
+                }
+                reloadActiveAgentSkills();
+                break;
+            }
         }
-    }, [presentForegroundFor]);
+    }, [presentForegroundFor, reloadActiveAgentSkills]);
     const { send, connected, reconnecting, reconnect } = useWebSocket(handleWsMessage);
     // Mirror `sessions` into a ref so the notification-response listener —
     // which registers once on mount — can read the latest list without being
@@ -1112,10 +1133,8 @@ export function AppProvider({ children }: any) {
             setSkills([]);
             return;
         }
-        api.getSkills(activeAgentId)
-            .then(setSkills)
-            .catch(() => setSkills([]));
-    }, [configReady, activeAgentId]);
+        reloadActiveAgentSkills();
+    }, [configReady, activeAgentId, reloadActiveAgentSkills]);
     // Update session engine/model/worktree state when session changes
     useEffect(() => {
         if (!activeSessionId)
@@ -1346,6 +1365,29 @@ export function AppProvider({ children }: any) {
         setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
         setMessages([]);
     }, [agents, sessionAskMode]);
+    const handleStartSkillBuilderMode = useCallback(async (projectId: any) => {
+        // Skill Builder is a DEV-agent mode — only a non-helper agent gets the
+        // builder prompt/role. Reject helper-only (or empty) rosters instead of
+        // falling back to inProject[0] (which could be a docs/reviewer/skill-
+        // builder helper running with the wrong prompt).
+        const agent = agents.find((a: any) => a.projectId === projectId && a.active !== false && a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs');
+        if (!agent)
+            return;
+        const session = await api.createSession(agent.id, '[Skill Builder]', { askMode: false });
+        const updated = await api.updateSession(session.id, {
+            session_mode: 'skill-builder',
+            ask_mode: false,
+            finalize_automation: 'manual',
+        });
+        setActiveAgentId(agent.id);
+        setSessions((prev: any) => (prev.some((s: any) => s.id === updated.id) ? prev : [updated, ...prev]));
+        setActiveSessionId(updated.id);
+        setSessionEngine(updated.engine || agent.engine || 'claude-code');
+        setSessionModel(updated.model || defaultModelForEngine(updated.engine || agent.engine || 'claude-code'));
+        setSessionAskMode(false);
+        setSessionReasoningEffort(updated.reasoning_effort === 'pro' ? 'pro' : 'high');
+        setMessages([]);
+    }, [agents]);
     // `handleWorktreeChange` was removed when Agent Hub locked to
     // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
     // endpoint no longer exists.
@@ -1866,6 +1908,7 @@ export function AppProvider({ children }: any) {
         finalizeStatusBySession,
         handleNewSession,
         handleStartSessionWithAgent,
+        handleStartSkillBuilderMode,
         handleEngineChange,
         handleModelChange,
         handleDeleteSession,

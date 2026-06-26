@@ -36,6 +36,11 @@ import { api } from '../utils/api';
     deleteMyAgentEngineOverride: vi.fn().mockResolvedValue({ agentEngineOverrides: {} }),
     getMcpServers: vi.fn().mockResolvedValue({ mcpServers: {} }),
     getSkills: vi.fn().mockResolvedValue([]),
+    getGlobalSkills: vi.fn().mockResolvedValue([]),
+    getGlobalSkill: vi.fn().mockResolvedValue({ content: '' }),
+    createGlobalSkill: vi.fn().mockResolvedValue({ id: 'new-skill' }),
+    updateGlobalSkill: vi.fn().mockResolvedValue({ id: 'skill' }),
+    deleteGlobalSkill: vi.fn().mockResolvedValue({ ok: true }),
   },
 }));
 
@@ -433,6 +438,7 @@ describe('SettingsPage — sidebar navigation', () => {
     const { getAllByText, queryByText } = render(<SettingsPage projects={[]} agents={[]} />);
     expect(getAllByText('General').length).toBeGreaterThan(0);
     expect(getAllByText('Account').length).toBeGreaterThan(0);
+    expect(getAllByText('Global Skills').length).toBeGreaterThan(0);
     expect(getAllByText('GitHub').length).toBeGreaterThan(0);
     expect(queryByText('Workspace')).toBeNull();
     expect(queryByText('Agents & Auth')).toBeNull();

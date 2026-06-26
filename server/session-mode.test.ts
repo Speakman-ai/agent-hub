@@ -5,12 +5,14 @@ import {
   isSessionMode,
   normalizeSessionMode,
   isDesignModeActive,
+  isSkillBuilderModeActive,
+  isSkillBuilderEligibleAgent,
   sessionHasUsableWorktree,
 } from './session-mode.js';
 
 describe('session-mode helpers', () => {
   it('exposes the canonical mode list with chat as the default', () => {
-    expect(SESSION_MODES).toEqual(['chat', 'design', 'scoping']);
+    expect(SESSION_MODES).toEqual(['chat', 'design', 'scoping', 'skill-builder']);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);
   });
@@ -20,6 +22,7 @@ describe('session-mode helpers', () => {
       expect(isSessionMode('chat')).toBe(true);
       expect(isSessionMode('design')).toBe(true);
       expect(isSessionMode('scoping')).toBe(true);
+      expect(isSessionMode('skill-builder')).toBe(true);
     });
 
     it('rejects unknown strings and non-strings', () => {
@@ -38,6 +41,7 @@ describe('session-mode helpers', () => {
       expect(normalizeSessionMode('chat')).toBe('chat');
       expect(normalizeSessionMode('design')).toBe('design');
       expect(normalizeSessionMode('scoping')).toBe('scoping');
+      expect(normalizeSessionMode('skill-builder')).toBe('skill-builder');
     });
 
     it('collapses null / undefined / unknown to the default (legacy rows)', () => {
@@ -61,6 +65,33 @@ describe('session-mode helpers', () => {
       expect(isDesignModeActive(null)).toBe(false);
       expect(isDesignModeActive(undefined)).toBe(false);
       expect(isDesignModeActive({ session_mode: 'whatever' })).toBe(false);
+    });
+  });
+
+  describe('isSkillBuilderModeActive', () => {
+    it('is true only when the row is explicitly in skill-builder mode', () => {
+      expect(isSkillBuilderModeActive({ session_mode: 'skill-builder' })).toBe(true);
+      expect(isSkillBuilderModeActive({ session_mode: 'design' })).toBe(false);
+      expect(isSkillBuilderModeActive({ session_mode: 'chat' })).toBe(false);
+    });
+  });
+
+  describe('isSkillBuilderEligibleAgent', () => {
+    it('is true for a regular dev agent (no role / sub / lead)', () => {
+      expect(isSkillBuilderEligibleAgent({ role: 'sub' })).toBe(true);
+      expect(isSkillBuilderEligibleAgent({ role: 'lead' })).toBe(true);
+      expect(isSkillBuilderEligibleAgent({})).toBe(true);
+    });
+
+    it('is false for helper roles that get the wrong prompt/role', () => {
+      expect(isSkillBuilderEligibleAgent({ role: 'docs' })).toBe(false);
+      expect(isSkillBuilderEligibleAgent({ role: 'reviewer' })).toBe(false);
+      expect(isSkillBuilderEligibleAgent({ role: 'skill-builder' })).toBe(false);
+    });
+
+    it('is false for a missing agent', () => {
+      expect(isSkillBuilderEligibleAgent(null)).toBe(false);
+      expect(isSkillBuilderEligibleAgent(undefined)).toBe(false);
     });
   });
 

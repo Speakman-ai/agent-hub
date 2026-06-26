@@ -99,8 +99,8 @@ export const WEB_DEFAULT_SHORTCUTS = [
   },
   {
     id: 'go-to-skills',
-    label: 'Skills',
-    description: 'Open the skills browser',
+    label: 'Global Skills',
+    description: 'Open shared global skills in Settings',
     binding: 'Mod+Alt+Shift+K',
     group: 'Navigate',
   },

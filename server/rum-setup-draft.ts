@@ -22,7 +22,7 @@
  * injection session + per-project client token). Keeping detection pure
  * makes it exhaustively unit-testable.
  */
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { scanReadme, type ReadmeScanResult } from './preview-readme-scan.js';
 
@@ -91,6 +91,13 @@ export interface RumInstrumentationPlan {
 }
 
 export interface RumSetupDraft {
+  /**
+   * Directory (relative to `project.cwd`) where the browser app was found.
+   * `.` when the UI lives at the repo root; `frontend`, `client`, `apps/web`, …
+   * for monorepos. All `entryCandidates` / `cspHits` / `plan.targetFile` paths
+   * are relative to the project root (prefixed with `webRoot` when not `.`).
+   */
+  webRoot: string;
   framework: RumFramework;
   /** Dependency names / files that drove the framework decision. */
   frameworkEvidence: string[];
@@ -123,6 +130,9 @@ export interface CollectRumSetupDraftOptions {
 
 const MAX_SCAN_FILE_BYTES = 256 * 1024;
 const DEFAULT_INGEST_ORIGIN = '${AGENT_HUB_URL}';
+
+/** Shallow monorepo subdirs probed when the repo root has no browser surface. */
+const MONOREPO_SUBDIR_CANDIDATES = ['frontend', 'client', 'web'] as const;
 
 /** Recorder packages that signal the page is (or will be) instrumented. */
 const RECORDER_DEP_NAMES = ['rrweb', 'rrweb-snapshot', '@rrweb/record', '@agent-hub/rum'];
@@ -259,12 +269,34 @@ function readPackageJson(workspaceDir: string): ParsedPackageJson | null {
   return { deps };
 }
 
-function detectPackageManager(workspaceDir: string): RumPackageManager {
-  if (existsSync(path.join(workspaceDir, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (existsSync(path.join(workspaceDir, 'yarn.lock'))) return 'yarn';
-  if (existsSync(path.join(workspaceDir, 'bun.lockb'))) return 'bun';
-  if (existsSync(path.join(workspaceDir, 'package-lock.json'))) return 'npm';
-  if (existsSync(path.join(workspaceDir, 'package.json'))) return 'npm';
+/** Package-manager evidence from a lockfile in `dir` ONLY (no package.json fallback). */
+function detectLockfilePackageManager(dir: string): RumPackageManager {
+  if (existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (existsSync(path.join(dir, 'yarn.lock'))) return 'yarn';
+  if (existsSync(path.join(dir, 'bun.lockb'))) return 'bun';
+  if (existsSync(path.join(dir, 'package-lock.json'))) return 'npm';
+  return null;
+}
+
+/**
+ * Resolve the package manager for a (possibly nested) web root.
+ *
+ * A monorepo web root (`frontend/`, `apps/web/`, …) usually has its own
+ * `package.json` but NO lockfile — the lockfile (`pnpm-lock.yaml` / `yarn.lock`
+ * / …) lives at the workspace ROOT. Detecting only from the subdir would then
+ * fall through to `npm`, making the RUM flow install with the wrong manager or
+ * write a stray lockfile. So: prefer a lockfile in the web root, else fall back
+ * to the workspace root's lockfile evidence, and only assume `npm` when a
+ * `package.json` exists but no lockfile is found anywhere up the chain.
+ */
+function detectPackageManager(scanDir: string, workspaceDir: string = scanDir): RumPackageManager {
+  const local = detectLockfilePackageManager(scanDir);
+  if (local) return local;
+  if (path.resolve(scanDir) !== path.resolve(workspaceDir)) {
+    const root = detectLockfilePackageManager(workspaceDir);
+    if (root) return root;
+  }
+  if (existsSync(path.join(scanDir, 'package.json'))) return 'npm';
   return null;
 }
 
@@ -381,7 +413,122 @@ function isNextAppRouterLayout(relPath: string): boolean {
   return /^(?:src\/)?app\/layout\.(?:tsx|jsx|ts|js)$/.test(relPath);
 }
 
+function joinWebRoot(webRoot: string, relPath: string): string {
+  if (webRoot === '.') return relPath;
+  return `${webRoot}/${relPath}`;
+}
+
+function absoluteScanDir(workspaceDir: string, webRoot: string): string {
+  return webRoot === '.' ? workspaceDir : path.join(workspaceDir, webRoot);
+}
+
+function prefixRelativePaths<T extends { path: string }>(webRoot: string, items: T[]): T[] {
+  if (webRoot === '.') return items;
+  return items.map((item) => ({ ...item, path: joinWebRoot(webRoot, item.path) }));
+}
+
+/** Candidate scan roots, shallowest first — mirrors preview-setup scanners. */
+export function collectMonorepoScanRoots(workspaceDir: string): string[] {
+  const roots: string[] = ['.'];
+  const seen = new Set<string>(['.']);
+
+  for (const name of MONOREPO_SUBDIR_CANDIDATES) {
+    if (seen.has(name)) continue;
+    if (fileExists(path.join(workspaceDir, name, 'package.json'))) {
+      roots.push(name);
+      seen.add(name);
+    }
+  }
+
+  const appsDir = path.join(workspaceDir, 'apps');
+  try {
+    if (statSync(appsDir).isDirectory()) {
+      for (const entry of readdirSync(appsDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const rel = `apps/${entry.name}`;
+        if (seen.has(rel)) continue;
+        if (fileExists(path.join(workspaceDir, rel, 'package.json'))) {
+          roots.push(rel);
+          seen.add(rel);
+        }
+      }
+    }
+  } catch {
+    // apps/ absent — skip
+  }
+
+  return roots;
+}
+
+interface RumSubdirScanResult {
+  webRoot: string;
+  framework: RumFramework;
+  frameworkEvidence: string[];
+  packageManager: RumPackageManager;
+  typescript: boolean;
+  entryCandidates: RumEntryCandidate[];
+  cspHits: RumCspHit[];
+  recorder: { dependencyPresent: boolean; initDetected: boolean };
+}
+
+const FRAMEWORK_SCAN_SCORE: Record<RumFramework, number> = {
+  next: 90,
+  nuxt: 90,
+  sveltekit: 90,
+  remix: 90,
+  astro: 90,
+  angular: 80,
+  vue: 80,
+  react: 80,
+  vanilla: 40,
+  unknown: 0,
+};
+
+function scoreRumSubdirScan(scan: RumSubdirScanResult): number {
+  let score = FRAMEWORK_SCAN_SCORE[scan.framework] ?? 0;
+  if (scan.entryCandidates.length > 0) score += 30 + scan.entryCandidates.length;
+  if (scan.recorder.initDetected) score += 5;
+  return score;
+}
+
+function webRootDepth(webRoot: string): number {
+  return webRoot === '.' ? 0 : webRoot.split('/').length;
+}
+
+function pickBestRumSubdirScan(scans: RumSubdirScanResult[]): RumSubdirScanResult {
+  return [...scans].sort((a, b) => {
+    const scoreDiff = scoreRumSubdirScan(b) - scoreRumSubdirScan(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    return webRootDepth(a.webRoot) - webRootDepth(b.webRoot);
+  })[0]!;
+}
+
+function scanRumSubdir(workspaceDir: string, webRoot: string): RumSubdirScanResult {
+  const scanDir = absoluteScanDir(workspaceDir, webRoot);
+  const pkg = readPackageJson(scanDir);
+  const { framework, evidence } = detectFramework(scanDir, pkg);
+  // Paths are kept WEB-ROOT-RELATIVE (local) here so framework-specific planner
+  // matchers (e.g. isNextAppRouterLayout, which expects `app/layout.tsx`) see the
+  // real relative path even in a monorepo subdir. The webRoot prefix is applied
+  // only to the final returned draft (collectRumSetupDraft / buildPlan output).
+  const localEntries = findEntryCandidates(scanDir);
+  return {
+    webRoot,
+    framework,
+    frameworkEvidence: evidence,
+    packageManager: detectPackageManager(scanDir, workspaceDir),
+    typescript: existsSync(path.join(scanDir, 'tsconfig.json')),
+    entryCandidates: localEntries,
+    cspHits: findCspHits(scanDir),
+    recorder: {
+      dependencyPresent: pkg ? RECORDER_DEP_NAMES.some((name) => name in pkg.deps) : false,
+      initDetected: detectRecorderInit(scanDir, localEntries),
+    },
+  };
+}
+
 function buildPlan(args: {
+  webRoot: string;
   framework: RumFramework;
   entryCandidates: RumEntryCandidate[];
   cspHits: RumCspHit[];
@@ -389,13 +536,17 @@ function buildPlan(args: {
   initDetected: boolean;
   ingestOrigin: string;
 }): RumInstrumentationPlan {
-  const { entryCandidates, cspHits, dependencyPresent, initDetected, ingestOrigin } = args;
+  const { webRoot, entryCandidates, cspHits, dependencyPresent, initDetected, ingestOrigin } = args;
   // Only treat the app as instrumented when BOTH a recorder dependency and an
   // init/ingest reference are present. A dependency without a wired init is
   // exactly the case that still needs setup, so it must NOT be flagged done.
   const alreadyInstrumented = dependencyPresent && initDetected;
+  // `entryCandidates`/`cspHits` are WEB-ROOT-RELATIVE here. The framework
+  // matchers run against that local path so a monorepo layout (e.g.
+  // `frontend/app/layout.tsx`) is recognized exactly like a root one. Only the
+  // OUTPUT paths (targetFile + the paths embedded in notes) are prefixed.
   const target = entryCandidates[0] ?? null;
-  const targetFile = target?.path ?? null;
+  const targetFile = target ? joinWebRoot(webRoot, target.path) : null;
   let injectionStyle: RumInstrumentationPlan['injectionStyle'] = null;
   if (target) {
     if (target.kind === 'html-entry' || target.kind === 'document') {
@@ -410,6 +561,11 @@ function buildPlan(args: {
   }
 
   const notes: string[] = [];
+  if (webRoot !== '.') {
+    notes.push(
+      `Browser app detected under ${webRoot}/ — file paths below are relative to the project root.`,
+    );
+  }
   if (args.framework === 'unknown') {
     notes.push(
       'No frontend framework or HTML document detected — confirm this project has a browser-rendered surface before instrumenting.',
@@ -437,7 +593,7 @@ function buildPlan(args: {
   }
   if (cspHits.length > 0) {
     notes.push(
-      `Existing CSP found in ${cspHits.map((h) => h.path).join(', ')} — add connect-src ${ingestOrigin} so replay uploads are not blocked.`,
+      `Existing CSP found in ${cspHits.map((h) => joinWebRoot(webRoot, h.path)).join(', ')} — add connect-src ${ingestOrigin} so replay uploads are not blocked.`,
     );
   } else {
     notes.push(
@@ -461,35 +617,35 @@ export function collectRumSetupDraft(
   opts: CollectRumSetupDraftOptions = {},
 ): RumSetupDraft {
   const ingestOrigin = opts.ingestOrigin?.trim() || DEFAULT_INGEST_ORIGIN;
-  const pkg = readPackageJson(workspaceDir);
-  const { framework, evidence } = detectFramework(workspaceDir, pkg);
-  const packageManager = detectPackageManager(workspaceDir);
-  const typescript = existsSync(path.join(workspaceDir, 'tsconfig.json'));
-  const entryCandidates = findEntryCandidates(workspaceDir);
-  const cspHits = findCspHits(workspaceDir);
-
-  const dependencyPresent = pkg ? RECORDER_DEP_NAMES.some((name) => name in pkg.deps) : false;
-  const initDetected = detectRecorderInit(workspaceDir, entryCandidates);
+  const scanRoots = collectMonorepoScanRoots(workspaceDir);
+  const best = pickBestRumSubdirScan(
+    scanRoots.map((webRoot) => scanRumSubdir(workspaceDir, webRoot)),
+  );
 
   const plan = buildPlan({
-    framework,
-    entryCandidates,
-    cspHits,
-    dependencyPresent,
-    initDetected,
+    webRoot: best.webRoot,
+    framework: best.framework,
+    entryCandidates: best.entryCandidates,
+    cspHits: best.cspHits,
+    dependencyPresent: best.recorder.dependencyPresent,
+    initDetected: best.recorder.initDetected,
     ingestOrigin,
   });
 
   const readme = scanReadme(workspaceDir);
 
   return {
-    framework,
-    frameworkEvidence: evidence,
-    packageManager,
-    typescript,
-    entryCandidates,
-    cspHits,
-    recorder: { dependencyPresent, initDetected },
+    webRoot: best.webRoot,
+    framework: best.framework,
+    frameworkEvidence: best.frameworkEvidence,
+    packageManager: best.packageManager,
+    typescript: best.typescript,
+    // The scan kept paths web-root-relative for planning; prefix them with the
+    // webRoot now so the returned draft paths are project-root-relative (the
+    // plan's targetFile + note paths were already prefixed by buildPlan).
+    entryCandidates: prefixRelativePaths(best.webRoot, best.entryCandidates),
+    cspHits: prefixRelativePaths(best.webRoot, best.cspHits),
+    recorder: best.recorder,
     plan,
     readme,
   };

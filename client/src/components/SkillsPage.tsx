@@ -14,16 +14,16 @@ import {
   FileText,
   Pencil,
   PenLine,
-  ExternalLink,
   ToggleLeft,
   ToggleRight,
   X,
-  Shield,
   Trash2,
   AlertTriangle,
   RefreshCw,
   Sparkles,
   Globe,
+  Shield,
+  ExternalLink,
 } from 'lucide-react';
 
 function SkillsLoadError({ section, message, onRetry }: any) {
@@ -87,12 +87,17 @@ generalizes. Keep it under ~500 lines.
  * validates the frontmatter and returns a clear error on failure. For an
  * existing skill we fetch its current SKILL.md and seed the textarea.
  */
-function SkillEditor({ projectId, agentId, skill, onClose, onSaved }: any) {
+export function SkillEditor({
+  projectId,
+  agentId,
+  skill,
+  onClose,
+  onSaved,
+  globalOnly = false,
+}: any) {
   const isEdit = !!skill;
-  // On edit, the scope is fixed by where the skill already lives (its source).
-  // On create, the author chooses: project-only vs shared across all projects.
-  const editScope = isEdit && skill.source === 'global' ? 'global' : 'project';
-  const [scope, setScope] = useState('project');
+  const editScope = globalOnly || (isEdit && skill.source === 'global') ? 'global' : 'project';
+  const [scope, setScope] = useState(globalOnly ? 'global' : 'project');
   const effectiveScope = isEdit ? editScope : scope;
   const [content, setContent] = useState(isEdit ? '' : NEW_SKILL_TEMPLATE);
   const [loading, setLoading] = useState(isEdit);
@@ -103,10 +108,19 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }: any) {
     if (!isEdit) return undefined;
     let cancelled = false;
     setLoading(true);
-    // A global skill isn't found by the agent-scoped read (it searches project →
-    // default), so fetch it from the global tier directly.
+    // Read from the tier the skill actually lives in:
+    //   - global  → the global tier directly (the agent-scoped read searches
+    //     project → default and would miss a user-authored global skill);
+    //   - project → the PROJECT-owned read, so editing works even when the page
+    //     has no reference agent (agentless project with existing skills) —
+    //     the agent-scoped read would hit `/agents/null/skills/:id` and fail;
+    //   - otherwise (default/built-in) → the agent-scoped merged read.
     const fetchSkill =
-      skill.source === 'global' ? api.getGlobalSkill(skill.id) : api.getSkill(agentId, skill.id);
+      globalOnly || skill.source === 'global'
+        ? api.getGlobalSkill(skill.id)
+        : skill.source === 'project' && projectId
+          ? api.getProjectSkill(projectId, skill.id)
+          : api.getSkill(agentId, skill.id);
     fetchSkill
       .then((data: any) => {
         if (!cancelled) setContent(data.content || '');
@@ -120,7 +134,7 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }: any) {
     return () => {
       cancelled = true;
     };
-  }, [isEdit, agentId, skill]);
+  }, [isEdit, agentId, skill, projectId, globalOnly]);
 
   // Light client-side validation; the server is the source of truth.
   const clientError = (() => {
@@ -155,7 +169,7 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }: any) {
             : await api.updateProjectSkill(projectId, skill.id, { name: skill.id, content });
       } else {
         saved =
-          scope === 'global'
+          effectiveScope === 'global' || globalOnly
             ? await api.createGlobalSkill({ content })
             : await api.createProjectSkill(projectId, { content });
       }
@@ -201,7 +215,7 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }: any) {
             <code className="bg-gray-800 px-1 rounded">name</code> in the frontmatter is the slug
             you load with <code className="bg-gray-800 px-1 rounded">&lt;agenthub:skill&gt;</code>.
           </p>
-          {!isEdit && (
+          {!isEdit && !globalOnly && (
             <div className="mb-3">
               <span className="block text-[11px] font-medium text-gray-400 mb-1.5">
                 Where should this skill live?
@@ -275,10 +289,20 @@ function SkillEditor({ projectId, agentId, skill, onClose, onSaved }: any) {
   );
 }
 
-function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, isInstalled }: any) {
+export function SkillCard({
+  skill,
+  agentId,
+  projectId,
+  overrides,
+  onToggle,
+  onUninstall,
+  onEdit,
+  isInstalled,
+}: any) {
   const [expanded, setExpanded] = useState(false);
   const [fullContent, setFullContent] = useState(skill.content || null);
   const [loading, setLoading] = useState(false);
+  const [schemaLoaded, setSchemaLoaded] = useState(false);
   const [credentialSchema, setCredentialSchema] = useState<any[]>([]);
   const [credentialRows, setCredentialRows] = useState<any[]>([]);
   const [credLoading, setCredLoading] = useState(false);
@@ -294,6 +318,8 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, i
     [credentialSchema],
   );
 
+  // Load the per-user saved credential rows once the schema is known and the
+  // card is expanded. Keyed on the schema so it refetches if the schema changes.
   useEffect(() => {
     if (!expanded || credentialSchemaKey === '[]' || !agentId) return;
     let cancelled = false;
@@ -374,12 +400,32 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, onEdit, i
       setExpanded(false);
       return;
     }
-    if (agentId) {
+    // Fetch content + credential schema on first expand. `schemaLoaded` guards
+    // the refetch (content alone may be seeded from `skill.content`, but the
+    // credential schema only comes from the read). Read from the tier the skill
+    // lives in:
+    //   - global  → the global tier directly (the agent-scoped read searches
+    //     project → default and would miss a user-authored global skill);
+    //   - project → the PROJECT-owned read, so inspect/credential-schema work
+    //     even when no reference agent exists (agentless project) — the
+    //     agent-scoped read would hit `/agents/null/skills/:id`;
+    //   - otherwise (default/built-in) → the agent-scoped merged read.
+    const canReadProject = skill.source === 'project' && projectId;
+    if (
+      (agentId || skill.source === 'global' || canReadProject) &&
+      (!fullContent || !schemaLoaded)
+    ) {
       setLoading(true);
       try {
-        const data = await api.getSkill(agentId, skill.id);
+        const data =
+          skill.source === 'global'
+            ? await api.getGlobalSkill(skill.id)
+            : canReadProject
+              ? await api.getProjectSkill(projectId, skill.id)
+              : await api.getSkill(agentId, skill.id);
         setFullContent(data.content);
         setCredentialSchema(Array.isArray(data.credentials) ? data.credentials : []);
+        setSchemaLoaded(true);
       } catch (err: any) {
         const detail = err?.message ? `: ${err.message}` : '.';
         setFullContent(`Failed to load skill content${detail}`);
@@ -699,8 +745,13 @@ function ContextFilePanel({ filename, content, agentId, onSaved }: any) {
   );
 }
 
-export default function SkillsPage({ agents, projects, onStartCoachSession }: any) {
-  const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
+export default function SkillsPage({
+  agents,
+  projects,
+  onStartSkillBuilderMode,
+  initialProjectId = null,
+}: any) {
+  const activeProjectId = initialProjectId;
   const [skills, setSkills] = useState<any[]>([]);
   const [context, setContext] = useState<Record<string, any>>({});
   const [overrides, setOverrides] = useState<any[]>([]);
@@ -709,36 +760,71 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
   const [skillsError, setSkillsError] = useState<any>(null);
   const [contextError, setContextError] = useState<any>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // null = follow the default reference agent; otherwise the user-picked agent
+  // whose overrides + context this page is currently inspecting.
+  const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
 
-  const activeAgent = agents.find((a: any) => a.id === activeAgentId);
-  // Derive the project from the active agent
-  const currentProjectId = (() => {
-    if (!activeAgent || !projects) return null;
-    const proj = projects.find((p: any) => p.agents?.some((a: any) => a.id === activeAgentId));
-    return proj?.id || projects[0]?.id || null;
-  })();
+  const currentProject = (projects || []).find((p: any) => p.id === activeProjectId) || null;
 
-  // The project's seeded Skill Builder coach (role 'skill-builder'). Resolved
-  // from the canonical flat `agents` list filtered by `projectId` — NOT from
-  // embedded `project.agents`, which the projects payload may not hydrate
-  // (that would hide the entry point even when the seeded coach exists). Older
-  // projects created before the coach was seeded won't have one — in that case
-  // the conversational entry point is hidden and the raw editor is the primary
-  // action.
-  const coachAgent =
-    agents.find((a: any) => a.role === 'skill-builder' && a.projectId === currentProjectId) || null;
-  const canCoach = !!(coachAgent && onStartCoachSession);
+  // Every active agent in this project, in a stable order. Per-agent skill
+  // overrides and context files are inspected/edited one agent at a time, so a
+  // multi-agent project needs a selector (below) to reach the others.
+  const projectAgents = useMemo(
+    () => (agents || []).filter((a: any) => a.projectId === activeProjectId && a.active !== false),
+    [agents, activeProjectId],
+  );
 
-  // Load installed skills + overrides + context
+  // The default pick: a non-helper agent (skill-builder/reviewer/docs run their
+  // own allowlists), else the first agent in the project.
+  const referenceAgent = useMemo(() => {
+    if (!activeProjectId) return null;
+    return (
+      projectAgents.find(
+        (a: any) => a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs',
+      ) ||
+      projectAgents[0] ||
+      null
+    );
+  }, [projectAgents, activeProjectId]);
+
+  // Skill Builder is a dev-agent mode; the "Build a skill" affordance is only
+  // valid when the project has a non-helper agent to run it on (mirrors the
+  // guard in App.handleStartSkillBuilderMode).
+  const hasDevAgent = useMemo(
+    () =>
+      projectAgents.some(
+        (a: any) => a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs',
+      ),
+    [projectAgents],
+  );
+
+  // The agent currently in focus: the explicit selection when it still belongs
+  // to this project, otherwise the default reference agent. Keeps a stale
+  // selection from a previously-viewed project from leaking through.
+  const activeAgent = useMemo(() => {
+    if (selectedAgentId) {
+      const picked = projectAgents.find((a: any) => a.id === selectedAgentId);
+      if (picked) return picked;
+    }
+    return referenceAgent;
+  }, [selectedAgentId, projectAgents, referenceAgent]);
+
+  const referenceAgentId = activeAgent?.id || null;
+
+  // Reset the selection whenever the project changes so the selector starts on
+  // that project's default agent rather than a carried-over id.
   useEffect(() => {
-    if (!activeAgentId) return;
+    setSelectedAgentId(null);
+  }, [activeProjectId]);
+
+  // Load project skills + per-agent overrides + context for the reference agent.
+  useEffect(() => {
+    if (!activeProjectId) return;
     setLoadingSkills(true);
-    setLoadingContext(true);
     setSkillsError(null);
-    setContextError(null);
 
     api
-      .getSkills(activeAgentId)
+      .getProjectSkills(activeProjectId)
       .then((data: any) => {
         setSkills(data);
         setSkillsError(null);
@@ -749,8 +835,18 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
         console.error('Failed to load skills:', err);
       })
       .finally(() => setLoadingSkills(false));
+
+    if (!referenceAgentId) {
+      setOverrides([]);
+      setContext({});
+      setLoadingContext(false);
+      return;
+    }
+
+    setLoadingContext(true);
+    setContextError(null);
     api
-      .getContext(activeAgentId)
+      .getContext(referenceAgentId)
       .then((data: any) => {
         setContext(data);
         setContextError(null);
@@ -762,13 +858,13 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
       })
       .finally(() => setLoadingContext(false));
     api
-      .getSkillOverrides(activeAgentId)
+      .getSkillOverrides(referenceAgentId)
       .then(setOverrides)
       .catch((err: any) => {
         setOverrides([]);
         console.error('Failed to load skill overrides:', err);
       });
-  }, [activeAgentId, reloadKey]);
+  }, [activeProjectId, referenceAgentId, reloadKey]);
 
   const retryInstalledLoad = useCallback(() => setReloadKey((k: any) => k + 1), []);
 
@@ -782,7 +878,7 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
   const handleToggle = useCallback(
     async (skillId: any, enabled: any) => {
       try {
-        await api.toggleSkill(activeAgentId, skillId, enabled);
+        await api.toggleSkill(referenceAgentId, skillId, enabled);
         setOverrides((prev: any) => {
           const existing = prev.findIndex((o: any) => o.skill_id === skillId);
           if (existing >= 0) {
@@ -792,7 +888,7 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
           }
           return [
             ...prev,
-            { agent_id: activeAgentId, skill_id: skillId, enabled: enabled ? 1 : 0 },
+            { agent_id: referenceAgentId, skill_id: skillId, enabled: enabled ? 1 : 0 },
           ];
         });
       } catch (err: any) {
@@ -800,37 +896,22 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
         setActionError(`Failed to toggle skill ${skillId}: ${err?.message || 'unknown error'}`);
       }
     },
-    [activeAgentId],
+    [referenceAgentId],
   );
 
   const handleUninstall = useCallback(
     async (skillId: any, source: any) => {
-      // Global skills are shared across EVERY project — deleting one is a
-      // cross-project, irreversible action, so gate it behind an explicit
-      // confirmation that spells out the blast radius. Project skills only
-      // affect the current project, so they delete without a prompt (unchanged).
-      if (source === 'global') {
-        const confirmed = window.confirm(
-          `Delete the shared skill "${skillId}" for ALL projects?\n\n` +
-            'This is a shared (global) skill. Removing it deletes it for every agent ' +
-            'in every project — not just this one — and cannot be undone.',
-        );
-        if (!confirmed) return;
-      }
+      if (source !== 'project') return;
       try {
-        if (source === 'global') {
-          await api.deleteGlobalSkill(skillId);
-        } else {
-          if (!currentProjectId) return;
-          await api.uninstallSkill(currentProjectId, skillId);
-        }
+        if (!activeProjectId) return;
+        await api.uninstallSkill(activeProjectId, skillId);
         setSkills((prev: any) => prev.filter((s: any) => s.id !== skillId));
       } catch (err: any) {
         console.error('Failed to uninstall:', err);
         setActionError(`Failed to uninstall skill ${skillId}: ${err?.message || 'unknown error'}`);
       }
     },
-    [currentProjectId],
+    [activeProjectId],
   );
 
   const handleContextSaved = (filename: any, newContent: any) => {
@@ -847,9 +928,16 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
   return (
     <div className="flex-1 overflow-y-auto p-4 md:p-6">
       <div className="max-w-4xl mx-auto">
-        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+        <h2 className="text-2xl font-bold mb-2 flex items-center gap-2">
           <BookOpen size={20} /> Skills & Context
         </h2>
+        {currentProject ? (
+          <p className="text-sm text-gray-500 mb-6" data-testid="skills-project-label">
+            {currentProject.name || currentProject.id}
+          </p>
+        ) : (
+          <div className="mb-6" />
+        )}
 
         {actionError && (
           <div
@@ -871,61 +959,76 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
           </div>
         )}
 
-        {/* Agent tabs */}
-        <div className="flex gap-1.5 sm:gap-2 mb-6 overflow-x-auto pb-1 -mx-1 px-1">
-          {agents.map((agent: any) => (
-            <button
-              key={agent.id}
-              onClick={() => setActiveAgentId(agent.id)}
-              className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors flex items-center gap-2 min-h-[44px] ${
-                activeAgentId === agent.id
-                  ? 'bg-gray-800 text-white'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-              }`}
-            >
-              <span
-                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                style={{ backgroundColor: agent.color }}
-              />
-              {agent.name}
-            </button>
-          ))}
-        </div>
-
-        {activeAgent && (
+        {activeProjectId && (
           <>
-            {/* Skills Section */}
             <div className="mb-8">
               <div className="flex items-center justify-between mb-4 gap-2">
                 <h3 className="text-lg font-semibold flex items-center gap-2">
                   <Puzzle size={18} /> Skills
                   <span className="text-xs text-gray-500 font-normal">({skills.length} total)</span>
                 </h3>
-                {currentProjectId && (
-                  <div className="flex items-center gap-2">
-                    {canCoach && (
-                      <button
-                        onClick={() => onStartCoachSession(coachAgent.id)}
-                        className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
-                        title="Chat with the Skill Builder coach to create a skill"
-                      >
-                        <Sparkles size={13} /> Build a skill
-                      </button>
-                    )}
+                <div className="flex items-center gap-2">
+                  {onStartSkillBuilderMode && hasDevAgent ? (
                     <button
-                      onClick={() => setEditorState({ skill: null })}
-                      className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
-                        canCoach
-                          ? 'border border-gray-700 text-gray-300 hover:bg-gray-800'
-                          : 'bg-indigo-600 text-white hover:bg-indigo-500'
-                      }`}
-                      title="Write a skill's SKILL.md directly"
+                      type="button"
+                      onClick={() => onStartSkillBuilderMode(activeProjectId)}
+                      className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+                      data-testid="skills-build-skill"
+                      title="Open chat in Skill Builder mode to create a skill"
                     >
-                      <PenLine size={13} /> Write raw
+                      <Sparkles size={13} /> Build a skill
                     </button>
-                  </div>
-                )}
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setEditorState({ skill: null })}
+                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-gray-700 text-gray-300 hover:bg-gray-800 transition-colors"
+                    title="Write a skill's SKILL.md directly"
+                  >
+                    <PenLine size={13} /> Write raw
+                  </button>
+                </div>
               </div>
+              {projectAgents.length > 1 ? (
+                <div
+                  className="mb-3 flex flex-wrap items-center gap-1.5"
+                  data-testid="skills-agent-selector"
+                  role="tablist"
+                  aria-label="Inspect skill overrides for agent"
+                >
+                  <span className="text-[11px] text-gray-500 mr-1">Overrides for:</span>
+                  {projectAgents.map((agent: any) => {
+                    const selected = agent.id === referenceAgentId;
+                    return (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={selected}
+                        onClick={() => setSelectedAgentId(agent.id)}
+                        className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                          selected
+                            ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
+                            : 'border-gray-700 text-gray-400 hover:bg-gray-800'
+                        }`}
+                      >
+                        <span
+                          className="inline-block w-2 h-2 rounded-full"
+                          style={{ backgroundColor: agent.color || '#6b7280' }}
+                        />
+                        {agent.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {referenceAgent ? (
+                <p className="text-[11px] text-gray-500 mb-3">
+                  Per-agent enable toggles apply to{' '}
+                  <span className="text-gray-400">{activeAgent?.name}</span>. Change allowlists in
+                  Settings → Agents.
+                </p>
+              ) : null}
               {loadingSkills ? (
                 <p className="text-sm text-gray-500">Loading skills...</p>
               ) : skillsError ? (
@@ -936,23 +1039,23 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
                 />
               ) : skills.length === 0 ? (
                 <div className="bg-gray-800 rounded-xl p-6 text-center">
-                  <p className="text-gray-500 text-sm">No skills installed</p>
+                  <p className="text-gray-500 text-sm">No skills found for this project</p>
                   <p className="text-gray-600 text-xs mt-1">
-                    Add skills to{' '}
-                    <code className="bg-gray-900 px-1 rounded">
-                      {activeAgent.workspace}/skills/
-                    </code>
+                    Use <strong className="text-gray-400">Build a skill</strong> or add files under{' '}
+                    <code className="bg-gray-900 px-1 rounded">skills/</code> in the project
+                    workspace.
                   </p>
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 gap-2" data-testid="skills-library">
                   {skills.map((skill: any) => (
                     <SkillCard
                       key={skill.id}
                       skill={skill}
-                      agentId={activeAgentId}
+                      agentId={referenceAgentId}
+                      projectId={activeProjectId}
                       overrides={overrides}
-                      onToggle={handleToggle}
+                      onToggle={referenceAgentId ? handleToggle : undefined}
                       onUninstall={handleUninstall}
                       onEdit={(s: any) => setEditorState({ skill: s })}
                       isInstalled
@@ -962,49 +1065,56 @@ export default function SkillsPage({ agents, projects, onStartCoachSession }: an
               )}
             </div>
 
-            {/* Context Files Section */}
-            <div>
-              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <ClipboardList size={18} /> Context Files
-                <span className="text-xs text-gray-500 font-normal">(workspace identity)</span>
-              </h3>
-              {loadingContext ? (
-                <p className="text-sm text-gray-500">Loading context files...</p>
-              ) : contextError ? (
-                <SkillsLoadError
-                  section="context files"
-                  message={contextError}
-                  onRetry={retryInstalledLoad}
-                />
-              ) : Object.keys(context).length === 0 ? (
-                <div className="bg-gray-800 rounded-xl p-6 text-center">
-                  <p className="text-gray-500 text-sm">No context files found</p>
-                  <p className="text-gray-600 text-xs mt-1">
-                    Add .md files to{' '}
-                    <code className="bg-gray-900 px-1 rounded">{activeAgent.workspace}/</code>
+            {activeAgent ? (
+              <div>
+                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                  <ClipboardList size={18} /> Context Files
+                  <span className="text-xs text-gray-500 font-normal">(workspace identity)</span>
+                </h3>
+                {projectAgents.length > 1 ? (
+                  <p className="text-[11px] text-gray-500 -mt-2 mb-3">
+                    Showing <span className="text-gray-400">{activeAgent.name}</span>&apos;s
+                    workspace files — use the agent selector above to switch.
                   </p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {Object.entries(context).map(([filename, content]: any) => (
-                    <ContextFilePanel
-                      key={filename}
-                      filename={filename}
-                      content={content}
-                      agentId={activeAgentId}
-                      onSaved={handleContextSaved}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+                ) : null}
+                {loadingContext ? (
+                  <p className="text-sm text-gray-500">Loading context files...</p>
+                ) : contextError ? (
+                  <SkillsLoadError
+                    section="context files"
+                    message={contextError}
+                    onRetry={retryInstalledLoad}
+                  />
+                ) : Object.keys(context).length === 0 ? (
+                  <div className="bg-gray-800 rounded-xl p-6 text-center">
+                    <p className="text-gray-500 text-sm">No context files found</p>
+                    <p className="text-gray-600 text-xs mt-1">
+                      Add .md files to{' '}
+                      <code className="bg-gray-900 px-1 rounded">{activeAgent.workspace}/</code>
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {Object.entries(context).map(([filename, content]: any) => (
+                      <ContextFilePanel
+                        key={filename}
+                        filename={filename}
+                        content={content}
+                        agentId={referenceAgentId}
+                        onSaved={handleContextSaved}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </>
         )}
 
-        {editorState && currentProjectId && (
+        {editorState && activeProjectId && (
           <SkillEditor
-            projectId={currentProjectId}
-            agentId={activeAgentId}
+            projectId={activeProjectId}
+            agentId={referenceAgentId}
             skill={editorState.skill}
             onClose={() => setEditorState(null)}
             onSaved={handleSkillSaved}

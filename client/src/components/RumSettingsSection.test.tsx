@@ -37,6 +37,7 @@ import {
 const projects = [{ id: 'demo', name: 'Demo' }];
 
 const draft = {
+  webRoot: '.',
   framework: 'next',
   typescript: true,
   packageManager: 'pnpm',
@@ -135,6 +136,27 @@ describe('RumSettingsSection', () => {
     expect(summary!).toHaveTextContent('Next.js');
     expect(summary!).toHaveTextContent('app/layout.tsx');
     expect(summary!).toHaveTextContent(/client component/i);
+  });
+
+  it('shows web app root when the scan found a monorepo subdir', async () => {
+    (api.getRumSetupDraft as any).mockResolvedValue({
+      projectId: 'demo',
+      draft: {
+        ...draft,
+        webRoot: 'frontend',
+        framework: 'angular',
+        plan: {
+          alreadyInstrumented: false,
+          targetFile: 'frontend/src/main.ts',
+          injectionStyle: 'module-init',
+        },
+      },
+    });
+    render(<RumSettingsSection projects={projects} />);
+    const root = await screen.findByTestId('rum-draft-web-root');
+    expect(root).toHaveTextContent('frontend/');
+    expect(screen.getByTestId('rum-draft-summary')).toHaveTextContent('Angular');
+    expect(screen.getByTestId('rum-draft-summary')).toHaveTextContent('frontend/src/main.ts');
   });
 
   // Regression: a successful scan that returns no draft (empty body / unreadable

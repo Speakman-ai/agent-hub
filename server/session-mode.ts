@@ -25,7 +25,7 @@
  */
 
 /** Canonical, ordered list of session modes. Order is display order. */
-export const SESSION_MODES = ['chat', 'design', 'scoping'] as const;
+export const SESSION_MODES = ['chat', 'design', 'scoping', 'skill-builder'] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
 
@@ -66,6 +66,43 @@ export function isScopingModeActive(
   session: { session_mode?: string | null } | null | undefined,
 ): boolean {
   return normalizeSessionMode(session?.session_mode) === 'scoping';
+}
+
+/**
+ * Whether skill-builder mode (conversational skill authoring) should be active.
+ * Replaces the legacy per-project Skill Builder agent — same coach behavior,
+ * folded into the session mode picker on any dev agent.
+ */
+export function isSkillBuilderModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'skill-builder';
+}
+
+/**
+ * Agent roles that may NOT run Skill Builder mode. Skill Builder prepends a
+ * dev-oriented coach prompt and force-loads skill-authoring skills, so it only
+ * makes sense on a regular dev agent — running it on a docs / reviewer / legacy
+ * skill-builder helper applies the wrong prompt + role assumptions.
+ */
+export const SKILL_BUILDER_INELIGIBLE_ROLES: readonly string[] = [
+  'skill-builder',
+  'reviewer',
+  'docs',
+];
+
+/**
+ * Whether an agent (by role) is eligible to run Skill Builder mode. The single
+ * source of truth shared by the entry points (App.handleStartSkillBuilderMode,
+ * extract-skill), the server mode-update guards, and the web/mobile mode pickers
+ * so eligibility never drifts between where the option is offered and where the
+ * mode is persisted.
+ */
+export function isSkillBuilderEligibleAgent(
+  agent: { role?: string | null } | null | undefined,
+): boolean {
+  if (!agent) return false;
+  return !SKILL_BUILDER_INELIGIBLE_ROLES.includes(agent.role ?? '');
 }
 
 /**

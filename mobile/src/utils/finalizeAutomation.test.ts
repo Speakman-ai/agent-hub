@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { FINALIZE_AUTOMATION_LEVELS, parseFinalizeAutomation, finalizeAutomationFromSession, finalizeAutomationLabel, deriveSessionFinalizeMode, SESSION_CONTROL_OPTIONS, sessionControlValue, sessionControlLabel, planSessionControlChange, sessionControlPatch, } from './finalizeAutomation';
+import { FINALIZE_AUTOMATION_LEVELS, parseFinalizeAutomation, finalizeAutomationFromSession, finalizeAutomationLabel, deriveSessionFinalizeMode, SESSION_CONTROL_OPTIONS, sessionControlValue, sessionControlLabel, planSessionControlChange, sessionControlPatch, sessionControlOptionsForAgent, } from './finalizeAutomation';
 describe('parseFinalizeAutomation', () => {
     it('passes through known levels', () => {
         for (const lvl of FINALIZE_AUTOMATION_LEVELS) {
@@ -52,9 +52,11 @@ describe('deriveSessionFinalizeMode', () => {
     });
 });
 describe('SESSION_CONTROL_OPTIONS', () => {
-    it('lists Design first, then Ask, then the four finalize levels', () => {
+    it('lists Design, Scoping, Skill Builder, Ask, then the four finalize levels', () => {
         expect(SESSION_CONTROL_OPTIONS.map((o: any) => o.value)).toEqual([
             'design',
+            'scoping',
+            'skill-builder',
             'ask',
             'manual',
             'review',
@@ -139,5 +141,14 @@ describe('sessionControlPatch', () => {
     });
     it('collapses leaving Design for a ship level (mode reset + level)', () => {
         expect(sessionControlPatch({ sessionMode: 'design', askMode: false, automation: 'manual' }, 'push')).toEqual({ session_mode: 'chat', finalize_automation: 'push' });
+    });
+});
+describe('sessionControlOptionsForAgent', () => {
+    it('keeps Skill Builder for a dev agent and hides it for helpers', () => {
+        expect(sessionControlOptionsForAgent({ role: 'sub' }).some((o) => o.value === 'skill-builder')).toBe(true);
+        for (const role of ['docs', 'reviewer', 'skill-builder']) {
+            expect(sessionControlOptionsForAgent({ role }).some((o) => o.value === 'skill-builder')).toBe(false);
+        }
+        expect(sessionControlOptionsForAgent(null).some((o) => o.value === 'skill-builder')).toBe(false);
     });
 });

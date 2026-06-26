@@ -769,6 +769,14 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         {!loadingDraft && !draftError && draft && (
           <div className="space-y-3" data-testid="rum-draft-summary">
             <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs">
+              {draft.webRoot && draft.webRoot !== '.' ? (
+                <>
+                  <dt className="text-gray-500">Web app root</dt>
+                  <dd className="text-gray-300 font-mono" data-testid="rum-draft-web-root">
+                    {draft.webRoot}/
+                  </dd>
+                </>
+              ) : null}
               <dt className="text-gray-500">Framework</dt>
               <dd className="text-gray-300">
                 {FRAMEWORK_LABELS[draft.framework] || draft.framework}

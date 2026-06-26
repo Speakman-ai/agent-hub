@@ -1078,13 +1078,14 @@ export class PreviewComposeRuntime {
       this.liveLogChildren.set(groupId, child);
       this.wireComposeChildStdio(groupId, child);
       // `up -d --build` exits once containers are *created/started* — which
-      // is BEFORE the app health check passes. We do NOT start the runtime
-      // `logs --follow` here: a stack the product still treats as `starting`
-      // must not be followed (it may yet time out and be marked failed), and
-      // this keeps the handoff on the same readiness signal as the
-      // getLogTail reattach invariant. The runtime follower is started by
-      // the `ready` transition in runHealthCheck. Here we only drop the
-      // build child from the live-producer map when it exits.
+      // is BEFORE the app health check passes. Start streaming container
+      // logs immediately on a clean exit so the boot pane shows service
+      // output (ng serve, migrations, etc.) during the health-check wait,
+      // not only synthetic heartbeats. The `ready` transition still calls
+      // startComposeLogFollow idempotently — if the follower is already
+      // attached it is a no-op. On non-zero exit we deliberately do NOT
+      // follow: the stack never came up and the health loop will fail the
+      // group on the original deadline.
       child.on('exit', (code) => {
         if (this.liveLogChildren.get(groupId) === child) {
           this.liveLogChildren.delete(groupId);
@@ -1098,6 +1099,15 @@ export class PreviewComposeRuntime {
         // never earn a fresh readiness window.
         if (code === 0) {
           this.buildCompletedAtMs.set(groupId, this.clock.nowMs());
+          if (!this.stoppingGroups.has(groupId)) {
+            this.appendComposeLog(
+              groupId,
+              '==> [preview] containers up — streaming service logs while waiting for health check…',
+              'stdout',
+              false,
+            );
+            this.startComposeLogFollow(groupId, { tailLines: this.logTailLines });
+          }
         }
       });
     } catch (err) {
@@ -1815,14 +1825,10 @@ export class PreviewComposeRuntime {
           // we'd otherwise emit a phantom `preview` event for a row that's
           // already failed/cleaned up.
           if (update.changes > 0) {
-            // The stack is now a proven-running, `ready` stack — THIS is the
-            // point we start the runtime `logs --follow` stream (not the
-            // build child's exit, which fires while still `starting`). The
-            // in-memory tail holds only the build child's build/orchestration
-            // output at this point — `up -d` is detached and never streamed
-            // container application stdout — so seeding the follower with
-            // `--tail N` replays container logs from startup through ready
-            // additively, without duplicating anything already in the tail.
+            // The stack is now a proven-running, `ready` stack. If the
+            // build-exit handoff already attached a `logs --follow` producer,
+            // this is a no-op; otherwise seed container logs from startup
+            // (the tail still holds only build/orchestration output).
             this.startComposeLogFollow(opts.groupId, { tailLines: this.logTailLines });
             this.fireNotifyStatus(opts.groupId, 'ready');
           }

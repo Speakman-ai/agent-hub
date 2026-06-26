@@ -56,6 +56,12 @@ export const SCOPING_AUTOMATION_OPTION = {
   description: 'Plan work as Epic → Phase → Ticket with a live flowchart panel',
 } as Record<string, any>;
 
+export const SKILL_BUILDER_AUTOMATION_OPTION = {
+  value: 'skill-builder',
+  label: 'Skill Builder',
+  description: 'Author or refine project skills conversationally — nothing ships',
+} as Record<string, any>;
+
 export const ASK_AUTOMATION_OPTION = {
   value: 'ask',
   label: 'Ask',
@@ -69,9 +75,35 @@ export const ASK_AUTOMATION_OPTION = {
 export const SESSION_CONTROL_OPTIONS = [
   DESIGN_AUTOMATION_OPTION,
   SCOPING_AUTOMATION_OPTION,
+  SKILL_BUILDER_AUTOMATION_OPTION,
   ASK_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
+
+/**
+ * Agent roles that may NOT run Skill Builder mode. Mirror of
+ * `server/session-mode.ts` `SKILL_BUILDER_INELIGIBLE_ROLES` — Skill Builder
+ * prepends a dev coach prompt and force-loads skill-authoring skills, so it
+ * only makes sense on a regular dev agent.
+ */
+export const SKILL_BUILDER_INELIGIBLE_ROLES = ['skill-builder', 'reviewer', 'docs'];
+
+/** Whether an agent (by role) is eligible to run Skill Builder mode. */
+export function isSkillBuilderEligibleAgent(agent: any): boolean {
+  if (!agent) return false;
+  return !SKILL_BUILDER_INELIGIBLE_ROLES.includes(agent.role ?? '');
+}
+
+/**
+ * The session-control options for a given agent: the full list, minus the Skill
+ * Builder entry when the agent is a helper (docs / reviewer / skill-builder).
+ * The server rejects the mode for those roles too — hiding it here keeps the
+ * picker honest instead of offering an option that 400s.
+ */
+export function sessionControlOptionsForAgent(agent: any): typeof SESSION_CONTROL_OPTIONS {
+  if (isSkillBuilderEligibleAgent(agent)) return SESSION_CONTROL_OPTIONS;
+  return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
+}
 
 /**
  * Resolve which single dropdown value is active given the three underlying
@@ -84,6 +116,7 @@ export const SESSION_CONTROL_OPTIONS = [
 export function sessionControlValue({ sessionMode, askMode, automation }: any = {}) {
   if (sessionMode === 'design') return 'design';
   if (sessionMode === 'scoping') return 'scoping';
+  if (sessionMode === 'skill-builder') return 'skill-builder';
   if (askMode) return 'ask';
   return parseFinalizeAutomation(automation);
 }
@@ -123,7 +156,9 @@ export function planSessionControlChange(current: any, target: any) {
       ? 'design'
       : current?.sessionMode === 'scoping'
         ? 'scoping'
-        : 'chat';
+        : current?.sessionMode === 'skill-builder'
+          ? 'skill-builder'
+          : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -144,8 +179,15 @@ export function planSessionControlChange(current: any, target: any) {
     return steps;
   }
 
-  // Any non-design/scoping target: drop out of special modes first.
-  if (sessionMode === 'design' || sessionMode === 'scoping') {
+  if (target === 'skill-builder') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
+    steps.push({ type: 'mode', value: 'skill-builder' });
+    return steps;
+  }
+
+  // Any non-design/scoping/skill-builder target: drop out of special modes first.
+  if (sessionMode === 'design' || sessionMode === 'scoping' || sessionMode === 'skill-builder') {
     steps.push({ type: 'mode', value: 'chat' });
   }
   if (target === 'ask') {

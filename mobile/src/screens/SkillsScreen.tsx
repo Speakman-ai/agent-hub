@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, Alert, } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import Markdown from 'react-native-markdown-display';
@@ -33,7 +33,7 @@ function CategoryBadge({ category }: any) {
       <Text style={[styles.categoryBadgeText, { color: style.fg }]}>{category}</Text>
     </View>);
 }
-function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstalled }: any) {
+function SkillCard({ skill, agentId, projectId, overrides, onToggle, onUninstall, isInstalled }: any) {
     const [expanded, setExpanded] = useState(false);
     const [fullContent, setFullContent] = useState(skill.content || null);
     const [loading, setLoading] = useState(false);
@@ -44,10 +44,18 @@ function SkillCard({ skill, agentId, overrides, onToggle, onUninstall, isInstall
             setExpanded(false);
             return;
         }
-        if (!fullContent && agentId) {
+        const canReadProject = skill.source === 'project' && projectId;
+        if (!fullContent && (agentId || skill.source === 'global' || canReadProject)) {
             setLoading(true);
             try {
-                const data = await api.getSkill(agentId, skill.id);
+                // Read from the tier the skill lives in: global → global tier;
+                // project → the project-owned read (works without an agent);
+                // otherwise → the agent-scoped merged read.
+                const data = skill.source === 'global'
+                    ? await api.getGlobalSkill(skill.id)
+                    : canReadProject
+                        ? await api.getProjectSkill(projectId, skill.id)
+                        : await api.getSkill(agentId, skill.id);
                 setFullContent(data.content);
             }
             catch {
@@ -155,63 +163,95 @@ function ContextFilePanel({ filename, content, agentId, onSaved }: any) {
     </View>);
 }
 export default function SkillsScreen() {
-    const { agents, projects, handleStartSessionWithAgent } = useApp();
+    const { agents, projects, handleStartSkillBuilderMode } = useApp();
     const navigation = useNavigation<any>();
-    const [activeAgentId, setActiveAgentId] = useState(agents[0]?.id || null);
+    const visibleProjects = useMemo(() => (projects || []).filter((p: any) => p?.id), [projects]);
+    const [activeProjectId, setActiveProjectId] = useState(visibleProjects[0]?.id || null);
+    // null = follow the default reference agent; otherwise the user-picked agent
+    // whose overrides + context this screen is inspecting.
+    const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
     const [skills, setSkills] = useState<any[]>([]);
+    // Built-in (default) + shared (global) skills catalog — the same list the
+    // web Settings → Global Skills page shows. Kept reachable on mobile so the
+    // project/global split doesn't hide built-in/shared skills entirely.
+    const [globalSkills, setGlobalSkills] = useState<any[]>([]);
     const [context, setContext] = useState<any>({});
     const [overrides, setOverrides] = useState<any[]>([]);
     const [loadingSkills, setLoadingSkills] = useState(false);
     const [loadingContext, setLoadingContext] = useState(false);
-    const activeAgent = agents.find((a: any) => a.id === activeAgentId);
-    // Derive project from the active agent
-    const currentProjectId = useMemo<any>(() => {
-        if (!activeAgent || !projects)
+    useEffect(() => {
+        if (!activeProjectId && visibleProjects[0]?.id)
+            setActiveProjectId(visibleProjects[0].id);
+    }, [activeProjectId, visibleProjects]);
+    // Every active agent in the selected project, in a stable order.
+    const projectAgents = useMemo(() => (agents || []).filter((a: any) => a.projectId === activeProjectId && a.active !== false), [agents, activeProjectId]);
+    // Default pick: a non-helper agent, else the first in the project.
+    const referenceAgent = useMemo(() => {
+        if (!activeProjectId)
             return null;
-        const proj = projects.find((p: any) => p.agents?.some((a: any) => a.id === activeAgentId));
-        return proj?.id || projects[0]?.id || null;
-    }, [activeAgentId, activeAgent, projects]);
-    // The project's seeded Skill Builder coach (role 'skill-builder'), if any.
-    // Resolved from the canonical flat `agents` collection filtered by
-    // `projectId` — NOT from embedded `project.agents`, which the projects
-    // payload may not hydrate (that would hide the entry point even when the
-    // seeded coach exists).
-    const coachAgent = useMemo<any>(() => agents.find((a: any) => a.role === 'skill-builder' && a.projectId === currentProjectId) || null, [agents, currentProjectId]);
-    const startCoach = useCallback(async () => {
-        if (!coachAgent || !handleStartSessionWithAgent)
+        return projectAgents.find((a: any) => a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs') || projectAgents[0] || null;
+    }, [projectAgents, activeProjectId]);
+    // Skill Builder is a dev-agent mode; only offer "Build a skill" when the
+    // project has a non-helper agent to run it on.
+    const hasDevAgent = useMemo(() => projectAgents.some((a: any) => a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs'), [projectAgents]);
+    // Agent in focus: explicit selection when still in this project, else the default.
+    const activeAgent = useMemo(() => {
+        if (selectedAgentId) {
+            const picked = projectAgents.find((a: any) => a.id === selectedAgentId);
+            if (picked)
+                return picked;
+        }
+        return referenceAgent;
+    }, [selectedAgentId, projectAgents, referenceAgent]);
+    const referenceAgentId = activeAgent?.id || null;
+    // Reset the agent selection when the project changes so a stale id from a
+    // previously-viewed project does not leak through.
+    useEffect(() => {
+        setSelectedAgentId(null);
+    }, [activeProjectId]);
+    const startSkillBuilder = useCallback(async () => {
+        if (!activeProjectId || !handleStartSkillBuilderMode)
             return;
         try {
-            await handleStartSessionWithAgent(coachAgent.id);
+            await handleStartSkillBuilderMode(activeProjectId);
             navigation.navigate('Chat');
         }
         catch (err: any) {
             console.error('Failed to start Skill Builder session:', err);
         }
-    }, [coachAgent, handleStartSessionWithAgent, navigation]);
-    // Load installed skills + context + overrides
+    }, [activeProjectId, handleStartSkillBuilderMode, navigation]);
     useEffect(() => {
-        if (!activeAgentId)
+        if (!activeProjectId)
             return;
         setLoadingSkills(true);
-        setLoadingContext(true);
-        api
-            .getSkills(activeAgentId)
+        api.getProjectSkills(activeProjectId)
             .then(setSkills)
             .catch(() => setSkills([]))
             .finally(() => setLoadingSkills(false));
-        api
-            .getContext(activeAgentId)
+        // The global catalog (built-in + shared) is project-independent.
+        api.getGlobalSkills()
+            .then((rows: any) => setGlobalSkills(Array.isArray(rows) ? rows : []))
+            .catch(() => setGlobalSkills([]));
+        if (!referenceAgentId) {
+            setOverrides([]);
+            setContext({});
+            setLoadingContext(false);
+            return;
+        }
+        setLoadingContext(true);
+        api.getContext(referenceAgentId)
             .then(setContext)
             .catch(() => setContext({}))
             .finally(() => setLoadingContext(false));
-        api
-            .getSkillOverrides(activeAgentId)
+        api.getSkillOverrides(referenceAgentId)
             .then(setOverrides)
             .catch(() => setOverrides([]));
-    }, [activeAgentId]);
+    }, [activeProjectId, referenceAgentId]);
     const handleToggle = useCallback(async (skillId: any, enabled: any) => {
+        if (!referenceAgentId)
+            return;
         try {
-            await api.toggleSkill(activeAgentId, skillId, enabled);
+            await api.toggleSkill(referenceAgentId, skillId, enabled);
             setOverrides((prev: any) => {
                 const existing = prev.findIndex((o: any) => o.skill_id === skillId);
                 if (existing >= 0) {
@@ -221,43 +261,27 @@ export default function SkillsScreen() {
                 }
                 return [
                     ...prev,
-                    { agent_id: activeAgentId, skill_id: skillId, enabled: enabled ? 1 : 0 },
+                    { agent_id: referenceAgentId, skill_id: skillId, enabled: enabled ? 1 : 0 },
                 ];
             });
         }
         catch (err: any) {
             console.error('Failed to toggle skill:', err);
         }
-    }, [activeAgentId]);
+    }, [referenceAgentId]);
     const handleUninstall = useCallback(async (skillId: any, source: any) => {
-        const doDelete = async () => {
-            try {
-                if (source === 'global') {
-                    await api.deleteGlobalSkill(skillId);
-                }
-                else {
-                    if (!currentProjectId)
-                        return;
-                    await api.uninstallSkill(currentProjectId, skillId);
-                }
-                setSkills((prev: any) => prev.filter((s: any) => s.id !== skillId));
-            }
-            catch (err: any) {
-                console.error('Failed to uninstall:', err);
-            }
-        };
-        // Global skills are shared across every project — gate the irreversible
-        // cross-project delete behind an explicit destructive confirmation.
-        // Project skills only affect this project, so they delete directly.
-        if (source === 'global') {
-            Alert.alert('Delete shared skill?', `"${skillId}" is a shared (global) skill. Deleting it removes it for every agent in every project — not just this one — and cannot be undone.`, [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete everywhere', style: 'destructive', onPress: doDelete },
-            ]);
+        if (source !== 'project')
             return;
+        try {
+            if (!activeProjectId)
+                return;
+            await api.uninstallSkill(activeProjectId, skillId);
+            setSkills((prev: any) => prev.filter((s: any) => s.id !== skillId));
         }
-        await doDelete();
-    }, [currentProjectId]);
+        catch (err: any) {
+            console.error('Failed to uninstall:', err);
+        }
+    }, [activeProjectId]);
     const handleContextSaved = (filename: any, newContent: any) => {
         setContext((prev: any) => ({ ...prev, [filename]: newContent }));
     };
@@ -265,55 +289,76 @@ export default function SkillsScreen() {
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <Text style={styles.pageTitle}>Skills & Context</Text>
 
-        {/* Agent tabs */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.agentTabs} contentContainerStyle={styles.agentTabsContent}>
-          {agents.map((agent: any) => (<TouchableOpacity key={agent.id} style={[styles.agentTab, activeAgentId === agent.id && styles.agentTabActive]} onPress={() => setActiveAgentId(agent.id)}>
-              <View style={[styles.tabDot, { backgroundColor: agent.color }]}/>
-              <Text style={[
-                styles.agentTabText,
-                activeAgentId === agent.id && styles.agentTabTextActive,
-            ]}>
-                {agent.name}
-              </Text>
-            </TouchableOpacity>))}
-        </ScrollView>
+        {/* Project selector — multi-project users pick which project's skills to manage */}
+        {visibleProjects.length > 1 ? (<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.agentTabs} contentContainerStyle={styles.agentTabsContent} accessibilityLabel="Select project">
+            {visibleProjects.map((project: any) => (<TouchableOpacity key={project.id} style={[styles.agentTab, activeProjectId === project.id && styles.agentTabActive]} onPress={() => setActiveProjectId(project.id)}>
+                <View style={[styles.tabDot, { backgroundColor: project.color || colors.gray500 }]}/>
+                <Text style={[styles.agentTabText, activeProjectId === project.id && styles.agentTabTextActive]}>
+                  {project.name || project.id}
+                </Text>
+              </TouchableOpacity>))}
+          </ScrollView>) : null}
 
-        {activeAgent && (<>
-                {/* Skills section */}
-                <View style={styles.section}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Skills</Text>
-                    <Text style={styles.sectionCount}>({skills.length} total)</Text>
-                    {coachAgent && handleStartSessionWithAgent && (<TouchableOpacity style={styles.buildSkillButton} onPress={startCoach} accessibilityLabel="Build a skill">
-                        <Text style={styles.buildSkillButtonText}>+ Build a skill</Text>
-                      </TouchableOpacity>)}
-                  </View>
-                  {loadingSkills ? (<ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 20 }}/>) : skills.length === 0 ? (<View style={styles.emptyCard}>
-                      <Text style={styles.emptyText}>No skills installed</Text>
-                      <Text style={styles.emptyHint}>
-                        Add skills to {activeAgent.workspace}/skills/
-                      </Text>
-                    </View>) : (<View style={styles.cardList}>
-                      {skills.map((skill: any) => (<SkillCard key={skill.id} skill={skill} agentId={activeAgentId} overrides={overrides} onToggle={handleToggle} onUninstall={handleUninstall} isInstalled/>))}
-                    </View>)}
-                </View>
+        {/* Agent selector — per-agent skill overrides + context are inspected one agent at a time */}
+        {projectAgents.length > 1 ? (<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.agentTabs} contentContainerStyle={styles.agentTabsContent} accessibilityLabel="Select agent for overrides">
+            {projectAgents.map((agent: any) => (<TouchableOpacity key={agent.id} style={[styles.agentTab, referenceAgentId === agent.id && styles.agentTabActive]} onPress={() => setSelectedAgentId(agent.id)}>
+                <View style={[styles.tabDot, { backgroundColor: agent.color || colors.gray500 }]}/>
+                <Text style={[styles.agentTabText, referenceAgentId === agent.id && styles.agentTabTextActive]}>
+                  {agent.name}
+                </Text>
+              </TouchableOpacity>))}
+          </ScrollView>) : null}
 
-                {/* Context Files section */}
-                <View style={styles.section}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Context Files</Text>
-                    <Text style={styles.sectionCount}>(workspace identity)</Text>
-                  </View>
-                  {loadingContext ? (<ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 20 }}/>) : Object.keys(context).length === 0 ? (<View style={styles.emptyCard}>
-                      <Text style={styles.emptyText}>No context files found</Text>
-                      <Text style={styles.emptyHint}>
-                        Add .md files to {activeAgent.workspace}/
-                      </Text>
-                    </View>) : (<View style={styles.cardList}>
-                      {Object.entries(context).map(([filename, content]: any) => (<ContextFilePanel key={filename} filename={filename} content={content} agentId={activeAgentId} onSaved={handleContextSaved}/>))}
-                    </View>)}
-                </View>
-              </>)}
+        {/* Project skills — gated on the PROJECT only (project-owned), so an
+            agentless project with skills still shows them. The per-agent toggle
+            is a no-op without an agent, and editing/inspect reads project-owned. */}
+        {activeProjectId ? (<View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Skills</Text>
+              <Text style={styles.sectionCount}>({skills.length} total)</Text>
+              {handleStartSkillBuilderMode && hasDevAgent ? (<TouchableOpacity style={styles.buildSkillButton} onPress={startSkillBuilder} accessibilityLabel="Build a skill">
+                  <Text style={styles.buildSkillButtonText}>+ Build a skill</Text>
+                </TouchableOpacity>) : null}
+            </View>
+            {loadingSkills ? (<ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 20 }}/>) : skills.length === 0 ? (<View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>No skills found</Text>
+                <Text style={styles.emptyHint}>
+                  Use Build a skill or add files under skills/ in the project workspace
+                </Text>
+              </View>) : (<View style={styles.cardList}>
+                {skills.map((skill: any) => (<SkillCard key={skill.id} skill={skill} agentId={referenceAgentId} projectId={activeProjectId} overrides={overrides} onToggle={referenceAgentId ? handleToggle : undefined} onUninstall={handleUninstall} isInstalled/>))}
+              </View>)}
+          </View>) : null}
+
+        {/* Context Files — needs a reference agent (workspace identity). */}
+        {activeProjectId && activeAgent ? (<View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Context Files</Text>
+              <Text style={styles.sectionCount}>(workspace identity)</Text>
+            </View>
+            {loadingContext ? (<ActivityIndicator size="small" color={colors.gray500} style={{ marginVertical: 20 }}/>) : Object.keys(context).length === 0 ? (<View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>No context files found</Text>
+                <Text style={styles.emptyHint}>
+                  Add .md files to {activeAgent.workspace}/
+                </Text>
+              </View>) : (<View style={styles.cardList}>
+                {Object.entries(context).map(([filename, content]: any) => (<ContextFilePanel key={filename} filename={filename} content={content} agentId={referenceAgentId} onSaved={handleContextSaved}/>))}
+              </View>)}
+          </View>) : null}
+
+        {/* Built-in & Shared skills — the global catalog (project-independent), so
+            built-in/shared skills stay inspectable/toggleable on mobile after the
+            project/global split. Shown whenever a project is selected (an agent
+            is only needed for the per-agent enable/disable toggle). */}
+        {activeProjectId && globalSkills.length > 0 ? (<View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Built-in &amp; Shared</Text>
+              <Text style={styles.sectionCount}>({globalSkills.length})</Text>
+            </View>
+            <View style={styles.cardList}>
+              {globalSkills.map((skill: any) => (<SkillCard key={`global-${skill.id}`} skill={skill} agentId={referenceAgentId} overrides={overrides} onToggle={referenceAgentId ? handleToggle : undefined} isInstalled/>))}
+            </View>
+          </View>) : null}
       </ScrollView>
     </SafeAreaView>);
 }
@@ -410,6 +455,13 @@ const styles = StyleSheet.create({
     sectionCount: {
         fontSize: 12,
         color: colors.gray500,
+    },
+    sectionSubtitle: {
+        fontSize: 11,
+        fontWeight: '600',
+        color: colors.gray500,
+        textTransform: 'uppercase',
+        marginBottom: 6,
     },
     buildSkillButton: {
         marginLeft: 'auto',

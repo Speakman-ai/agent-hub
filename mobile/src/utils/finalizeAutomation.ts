@@ -50,6 +50,16 @@ export const DESIGN_AUTOMATION_OPTION: Record<string, any> = {
     label: 'Design',
     description: 'Iterate on a live canvas with the app as context — nothing ships',
 };
+export const SCOPING_AUTOMATION_OPTION: Record<string, any> = {
+    value: 'scoping',
+    label: 'Scoping',
+    description: 'Plan work as Epic → Phase → Ticket with a live flowchart panel',
+};
+export const SKILL_BUILDER_AUTOMATION_OPTION: Record<string, any> = {
+    value: 'skill-builder',
+    label: 'Skill Builder',
+    description: 'Author or refine project skills conversationally — nothing ships',
+};
 export const ASK_AUTOMATION_OPTION: Record<string, any> = {
     value: 'ask',
     label: 'Ask',
@@ -57,9 +67,33 @@ export const ASK_AUTOMATION_OPTION: Record<string, any> = {
 };
 export const SESSION_CONTROL_OPTIONS = [
     DESIGN_AUTOMATION_OPTION,
+    SCOPING_AUTOMATION_OPTION,
+    SKILL_BUILDER_AUTOMATION_OPTION,
     ASK_AUTOMATION_OPTION,
     ...FINALIZE_AUTOMATION_OPTIONS,
 ];
+/**
+ * Agent roles that may NOT run Skill Builder mode. Mirror of
+ * server/session-mode.ts — Skill Builder prepends a dev coach prompt and
+ * force-loads skill-authoring skills, so it only makes sense on a dev agent.
+ */
+export const SKILL_BUILDER_INELIGIBLE_ROLES = ['skill-builder', 'reviewer', 'docs'];
+/** Whether an agent (by role) is eligible to run Skill Builder mode. */
+export function isSkillBuilderEligibleAgent(agent: any): boolean {
+    if (!agent)
+        return false;
+    return !SKILL_BUILDER_INELIGIBLE_ROLES.includes(agent.role ?? '');
+}
+/**
+ * Session-control options for a given agent: the full list minus Skill Builder
+ * when the agent is a helper (docs / reviewer / skill-builder). The server
+ * rejects the mode for those roles too, so hiding it keeps the picker honest.
+ */
+export function sessionControlOptionsForAgent(agent: any) {
+    if (isSkillBuilderEligibleAgent(agent))
+        return SESSION_CONTROL_OPTIONS;
+    return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
+}
 /**
  * Resolve the active dropdown value from the three underlying axes. Design >
  * Ask > finalize automation level, matching their mutual exclusivity.
@@ -70,6 +104,10 @@ export const SESSION_CONTROL_OPTIONS = [
 export function sessionControlValue({ sessionMode, askMode, automation }: any = {}) {
     if (sessionMode === 'design')
         return 'design';
+    if (sessionMode === 'scoping')
+        return 'scoping';
+    if (sessionMode === 'skill-builder')
+        return 'skill-builder';
     if (askMode)
         return 'ask';
     return parseFinalizeAutomation(automation);
@@ -97,7 +135,13 @@ export function sessionControlLabel(value: any) {
  * @returns {Array<{ type: 'mode'|'ask'|'automation', value: any }>}
  */
 export function planSessionControlChange(current: any, target: any) {
-    const sessionMode = current?.sessionMode === 'design' ? 'design' : 'chat';
+    const sessionMode = current?.sessionMode === 'design'
+        ? 'design'
+        : current?.sessionMode === 'scoping'
+            ? 'scoping'
+            : current?.sessionMode === 'skill-builder'
+                ? 'skill-builder'
+                : 'chat';
     const askMode = !!current?.askMode;
     const automation = parseFinalizeAutomation(current?.automation);
     const currentValue = sessionControlValue({ sessionMode, askMode, automation });
@@ -112,7 +156,23 @@ export function planSessionControlChange(current: any, target: any) {
         steps.push({ type: 'mode', value: 'design' });
         return steps;
     }
-    if (sessionMode === 'design')
+    if (target === 'scoping') {
+        if (askMode)
+            steps.push({ type: 'ask', value: false });
+        if (automation !== 'manual')
+            steps.push({ type: 'automation', value: 'manual' });
+        steps.push({ type: 'mode', value: 'scoping' });
+        return steps;
+    }
+    if (target === 'skill-builder') {
+        if (askMode)
+            steps.push({ type: 'ask', value: false });
+        if (automation !== 'manual')
+            steps.push({ type: 'automation', value: 'manual' });
+        steps.push({ type: 'mode', value: 'skill-builder' });
+        return steps;
+    }
+    if (sessionMode === 'design' || sessionMode === 'scoping' || sessionMode === 'skill-builder')
         steps.push({ type: 'mode', value: 'chat' });
     if (target === 'ask') {
         steps.push({ type: 'ask', value: true });

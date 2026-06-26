@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React from 'react';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
 import DashboardView, { sortSupportBySeverity } from './DashboardView';
 
@@ -203,6 +204,19 @@ describe('DashboardView', () => {
     );
     expect(dashCalls!).toHaveLength(1);
     expect((fetch as any).mock.calls[0][0]).toMatch(/\/orgs\/org-1\/dashboard$/);
+  });
+
+  it('loads under React.StrictMode (mountedRef survives dev remount)', async () => {
+    render(
+      <React.StrictMode>
+        <DashboardView orgId="org-1" />
+      </React.StrictMode>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Acme')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Loading dashboard/i)).not.toBeInTheDocument();
   });
 
   it('no longer renders the headline counter tiles', async () => {

@@ -10,10 +10,18 @@ import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import SessionSummarySheet from './SessionSummarySheet';
-import { SESSION_CONTROL_OPTIONS, sessionControlValue, sessionControlLabel, sessionControlPatch, deriveSessionFinalizeMode, } from '../utils/finalizeAutomation';
+import { sessionControlValue, sessionControlLabel, sessionControlPatch, deriveSessionFinalizeMode, sessionControlOptionsForAgent, } from '../utils/finalizeAutomation';
 import { deriveFinalizeButton, canPush, isFullyValidated } from '../utils/finalizeView';
 import { describeRunPhase } from '../utils/finalizeRun';
 const PURPLE = '#7C3AED';
+
+function resolveSessionModeFromRow(session: any) {
+    const m = session?.session_mode;
+    if (m === 'design' || m === 'scoping' || m === 'skill-builder')
+        return m;
+    return 'chat';
+}
+
 export default function FinalizeBar({ projectId, sessionId, cardId, session, sessionAgents = [], hosted = false, hasChanges = true, showViewChanges = true, onViewChanges, showFinalize = true, status, phase, phases, run, onChanged, onError, }: any) {
     const [showSummary, setShowSummary] = useState(false);
     const [automation, setAutomation] = useState(() => deriveSessionFinalizeMode(session).automation);
@@ -21,11 +29,7 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
     const [menuOpen, setMenuOpen] = useState(false);
     const [busy, setBusy] = useState(false); // finalize/cancel in flight (optimistic)
     const [pushing, setPushing] = useState(false);
-    // Optimistic `session_mode` (chat | design) for the segmented picker, synced
-    // from the session row below. The server broadcasts a `session-updated` event
-    // on change so the context row (and the design-files panel keyed off it) also
-    // updates — the optimistic copy just keeps the toggle snappy.
-    const [mode, setMode] = useState(() => session?.session_mode === 'design' ? 'design' : 'chat');
+    const [mode, setMode] = useState(() => resolveSessionModeFromRow(session));
     // Re-sync the dropdown from the session whenever the session changes (the bar
     // is reused across sessions) or these fields change (e.g. session arrived
     // null and loaded later, or another surface updated the mode). Without this,
@@ -36,13 +40,17 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
         const next = deriveSessionFinalizeMode(session);
         setAutomation(next.automation);
         setAskMode(next.askMode);
-        setMode(session?.session_mode === 'design' ? 'design' : 'chat');
+        setMode(resolveSessionModeFromRow(session));
         // Keyed on the session id + the fields the bar mirrors; intentionally
         // not the whole session object, so unrelated session updates don't clobber
         // an in-flight optimistic selection.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, session?.finalize_automation, session?.ask_mode, session?.session_mode]);
     const canDesignMode = !!session?.can_design_mode;
+    // Skill Builder is a dev-agent mode; hide it from the picker when this
+    // session's agent is a helper (the server rejects it for those roles too).
+    const sessionAgent = (sessionAgents || []).find((a: any) => a.id === session?.agent_id) || (sessionAgents || [])[0] || null;
+    const controlOptions = sessionControlOptionsForAgent(sessionAgent);
     const fullyValidated = isFullyValidated(phases);
     const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
     const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
@@ -191,7 +199,7 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
         <Pressable style={styles.menuBackdrop} onPress={() => setMenuOpen(false)}>
           <View style={styles.menu}>
             <ScrollView>
-              {SESSION_CONTROL_OPTIONS.map((opt: any) => {
+              {controlOptions.map((opt: any) => {
                 const active = opt.value === selectedValue;
                 const optDisabled = opt.value === 'design' && !canDesignMode;
                 return (<TouchableOpacity key={opt.value} style={[

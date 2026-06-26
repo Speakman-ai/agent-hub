@@ -41,8 +41,21 @@ describe('Global skills routes — fail closed when the global dir is unavailabl
     await request.get('/api/global-skills/cwd-escape').expect(503);
   });
 
-  it('GET list still degrades gracefully to an empty array (no path computed)', async () => {
+  it('GET list degrades gracefully: bundled defaults still listed, no user-global tier', async () => {
+    // The list endpoint serves the global CATALOG = bundled defaults + the
+    // user-writable global tier. The defaults live in the repo (independent of
+    // config.dataDir), so they must still surface even when the writable global
+    // dir is unavailable. What MUST be absent is any `source: 'global'` entry —
+    // that tier needs the (unavailable) dir, so it contributes nothing. The
+    // point of this case is that the reader never computes a path under an empty
+    // dir (no crash / no `./slug` escape), not that the whole catalog is empty.
     const res = await request.get('/api/global-skills').expect(200);
-    expect(res.body).toEqual([]);
+    const body = res.body as Array<{ id: string; source: string }>;
+    expect(Array.isArray(body)).toBe(true);
+    // Bundled defaults are still served (graceful degradation, not a crash).
+    expect(body.length).toBeGreaterThan(0);
+    expect(body.every((s) => s.source === 'default')).toBe(true);
+    // The unavailable user-global tier leaks nothing.
+    expect(body.some((s) => s.source === 'global')).toBe(false);
   });
 });

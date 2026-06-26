@@ -7,8 +7,6 @@ import {
   existsSync,
   statSync,
   mkdirSync,
-  unlinkSync,
-  rmdirSync,
   rmSync,
   cpSync,
 } from 'fs';
@@ -23,8 +21,13 @@ import { validateAndComposeSkill, validateSkillSlug } from '../skill-write.js';
 // the seam prompt-builder tests mock. (agent-skills-list re-imports that
 // primitive from this module — an ESM-safe cycle: both bindings are only read
 // inside functions, never at module top level.)
-import { listMergedSkills } from '../agent-skills-list.js';
+import {
+  listMergedSkills,
+  listProjectSkills,
+  listGlobalCatalogSkills,
+} from '../agent-skills-list.js';
 import { resolveGlobalSkillsDir } from '../global-skills-dir.js';
+import { resolveProjectSkillsDir } from '../project-model.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SKILLS_DIR = path.join(__dirname, '..', 'default-skills');
@@ -294,7 +297,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
   const projectSkillDirs = (): string[] =>
     deps
       .getProjects()
-      .map((p) => (p.ahw ? path.join(p.ahw, 'skills') : ''))
+      .map((p) => resolveProjectSkillsDir(p))
       .filter((d): d is string => !!d);
 
   // Resolve the writable global skills dir or fail CLOSED. resolveGlobalSkillsDir
@@ -323,8 +326,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       // editor — it MUST stay the UNFILTERED merge so operators can re-add a
       // previously denied skill. Deliberately uses `listMergedSkills`, NOT
       // `listEnabledSkills` (which applies the agent's overrides + allowlist).
-      const skillsDir = project.ahw ? path.join(project.ahw, 'skills') : '';
-      res.json(listMergedSkills(skillsDir));
+      res.json(listMergedSkills(resolveProjectSkillsDir(project)));
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -347,9 +349,10 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
   router.get('/api/agents/:agentId/skills/:skillId', (req: Request, res: Response) => {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
-    if (!found.project.ahw) return res.status(404).json({ error: 'No workspace configured' });
+    const projectSkillsDir = resolveProjectSkillsDir(found.project);
+    if (!projectSkillsDir) return res.status(404).json({ error: 'No workspace configured' });
 
-    const skillPath = path.join(found.project.ahw, 'skills', req.params.skillId as string);
+    const skillPath = path.join(projectSkillsDir, req.params.skillId as string);
     try {
       if (existsSync(skillPath) && statSync(skillPath).isDirectory()) {
         const skillMd = path.join(skillPath, 'SKILL.md');
@@ -416,12 +419,67 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
+  router.get('/api/projects/:projectId/skills', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    try {
+      // Same resolver the create/update/delete paths use, so the list never
+      // disagrees with what a save just wrote.
+      res.json(listProjectSkills(resolveProjectSkillsDir(project)));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Read a single project skill's raw SKILL.md. Project skills are PROJECT-owned,
+  // so reads must not depend on an agent: the editor uses this instead of the
+  // agent-scoped `/api/agents/:agentId/skills/:skillId` so an agentless project
+  // (referenceAgentId === null) can still load a skill for editing.
+  router.get('/api/projects/:projectId/skills/:skillId', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
+    if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
+    const projectSkillsDir = resolveProjectSkillsDir(project);
+    if (!projectSkillsDir) return res.status(404).json({ error: 'No workspace configured' });
+    // Resolve directory OR flat form so a flat <slug>.md project skill is
+    // editable too. No fallback to bundled defaults: this reads project-owned
+    // skills only.
+    const resolved = resolveSkillInDir(projectSkillsDir, slugRes.slug);
+    if (!resolved || !existsSync(resolved.mdPath)) {
+      return res.status(404).json({ error: 'Project skill not found' });
+    }
+    try {
+      const raw = readFileSync(resolved.mdPath, 'utf-8');
+      const { data } = matter(raw);
+      const credPack = extractCredentialsFromSkillContent(raw);
+      if (credPack.error) {
+        return res
+          .status(400)
+          .json({ error: `invalid credentials in SKILL.md frontmatter: ${credPack.error}` });
+      }
+      res.json({
+        id: slugRes.slug,
+        name: (data.name as string) || slugRes.slug,
+        description: (data.description as string) || '',
+        content: raw,
+        path: resolved.kind === 'dir' ? resolved.dir : resolved.mdPath,
+        credentials: credPack.credentials,
+        source: 'project',
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Create a project skill. Writes <project.ahw>/skills/<slug>/SKILL.md.
   // Phase 1 of the Skill Builder epic — see wiki `skill-builder-architecture`.
   router.post('/api/projects/:projectId/skills', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    if (!project.ahw) return res.status(400).json({ error: 'No workspace configured for project' });
+    const projectSkillsDir = resolveProjectSkillsDir(project);
+    if (!projectSkillsDir)
+      return res.status(400).json({ error: 'No workspace configured for project' });
 
     const composed = validateAndComposeSkill(req.body ?? {});
     if (!composed.ok) return res.status(400).json({ error: composed.error });
@@ -435,7 +493,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       });
     }
 
-    const skillDir = path.join(project.ahw, 'skills', slug);
+    const skillDir = path.join(projectSkillsDir, slug);
     if (existsSync(skillDir)) {
       return res.status(409).json({
         error: `A project skill "${slug}" already exists — use PUT to update it`,
@@ -452,7 +510,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       // Best-effort: register the new skill with the Claude Code CLI plugin dir
       // so it is loadable in already-running sessions without a server restart.
       try {
-        syncSkillsToClaude([path.join(project.ahw, 'skills')]);
+        syncSkillsToClaude([projectSkillsDir]);
       } catch {
         /* non-fatal — discovery still works via the merge list */
       }
@@ -472,7 +530,9 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
   router.put('/api/projects/:projectId/skills/:skillId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    if (!project.ahw) return res.status(400).json({ error: 'No workspace configured for project' });
+    const projectSkillsDir = resolveProjectSkillsDir(project);
+    if (!projectSkillsDir)
+      return res.status(400).json({ error: 'No workspace configured for project' });
 
     const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
     if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
@@ -484,8 +544,12 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
       });
     }
 
-    const skillDir = path.join(project.ahw, 'skills', skillId);
-    if (!existsSync(skillDir) || !statSync(skillDir).isDirectory()) {
+    // Resolve directory OR flat form and rewrite whichever the skill already
+    // uses — the GET/list paths present flat (`<slug>.md`) project skills as
+    // editable, so the update path must accept them too (otherwise edit loads
+    // but save 404s). Mirrors the global PUT.
+    const resolved = resolveSkillInDir(projectSkillsDir, skillId);
+    if (!resolved) {
       return res.status(404).json({ error: 'Project skill not found' });
     }
 
@@ -493,13 +557,13 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     if (!composed.ok) return res.status(400).json({ error: composed.error });
 
     try {
-      writeFileSync(path.join(skillDir, 'SKILL.md'), composed.content);
+      writeFileSync(resolved.mdPath, composed.content);
       broadcast({
         type: 'skills_update',
         payload: { action: 'updated', skillId, projectId: req.params.projectId },
       });
       try {
-        syncSkillsToClaude([path.join(project.ahw, 'skills')]);
+        syncSkillsToClaude([projectSkillsDir]);
       } catch {
         /* non-fatal */
       }
@@ -508,7 +572,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
         id: skillId,
         name: (data.name as string) || skillId,
         description: (data.description as string) || '',
-        path: skillDir,
+        path: resolved.kind === 'dir' ? resolved.dir : resolved.mdPath,
       });
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message });
@@ -518,23 +582,36 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
   router.delete('/api/projects/:projectId/skills/:skillId', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    if (!project.ahw) return res.status(400).json({ error: 'No workspace' });
+    const projectSkillsDir = resolveProjectSkillsDir(project);
+    if (!projectSkillsDir) return res.status(400).json({ error: 'No workspace' });
 
-    const skillDir = path.join(project.ahw, 'skills', req.params.skillId as string);
+    const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
+    if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
     try {
-      if (existsSync(skillDir)) {
-        const files = readdirSync(skillDir);
-        for (const f of files) unlinkSync(path.join(skillDir, f));
-        rmdirSync(skillDir);
+      // Remove whichever form exists. Directory form: rmSync recursively so
+      // nested resources (references/, scripts/) go too — a flat unlink+rmdir
+      // would throw EISDIR/ENOTEMPTY. Flat form (`<slug>.md`): remove the file —
+      // otherwise a deletable flat project skill returns ok but stays installed.
+      const resolved = resolveSkillInDir(projectSkillsDir, slugRes.slug);
+      if (resolved) {
+        rmSync(resolved.kind === 'dir' ? resolved.dir : resolved.mdPath, {
+          recursive: true,
+          force: true,
+        });
       }
       broadcast({
         type: 'skills_update',
         payload: {
           action: 'uninstalled',
-          skillId: req.params.skillId,
+          skillId: slugRes.slug,
           projectId: req.params.projectId,
         },
       });
+      try {
+        syncSkillsToClaude([projectSkillsDir]);
+      } catch {
+        /* non-fatal */
+      }
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -549,11 +626,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
 
   router.get('/api/global-skills', (_req: Request, res: Response) => {
     try {
-      const skills: SkillWithSource[] = collectSkillsFromDir(resolveGlobalSkillsDir()).map((s) => ({
-        ...s,
-        source: 'global',
-      }));
-      res.json(skills);
+      res.json(listGlobalCatalogSkills());
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

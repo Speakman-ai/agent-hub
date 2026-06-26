@@ -1352,3 +1352,112 @@ describe('KanbanBoard right-click context menu', () => {
     await waitFor(() => expect(screen.queryByTestId('card-context-menu')).not.toBeInTheDocument());
   });
 });
+
+describe('KanbanBoard multi-select', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+    (api.moveCard as any).mockReset();
+    (api.updateCard as any).mockReset();
+    (api.deleteCard as any).mockReset();
+    (api.deleteCard as any).mockResolvedValue({});
+    (api.updateCard as any).mockResolvedValue({});
+    (api.moveCard as any).mockResolvedValue({});
+  });
+
+  it('select mode toggles cards and shows the bulk action bar', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'Alpha', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Beta', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByText('Alpha'));
+    fireEvent.click(screen.getByText('Beta'));
+
+    expect(screen.getByTestId('kanban-bulk-bar')).toHaveTextContent('2 selected');
+    expect(screen.getByTestId('card-select-card-1')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('Cmd+click toggles selection without opening the detail modal', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 'card-1', title: 'Solo card', column_id: 'col-todo', position: 0 }]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Solo card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Solo card'), { metaKey: true });
+    expect(screen.getByTestId('kanban-bulk-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('card-detail-modal')).not.toBeInTheDocument();
+  });
+
+  it('bulk move sends moveCard for each selected card', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'One', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Two', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'));
+
+    fireEvent.change(screen.getByLabelText('Move selected cards'), {
+      target: { value: 'col-done' },
+    });
+
+    await waitFor(() => expect(api.moveCard).toHaveBeenCalled());
+    expect((api.moveCard as any).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('bulk priority update calls updateCard for each selected card', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'One', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Two', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'));
+
+    fireEvent.change(screen.getByLabelText('Set priority'), { target: { value: 'high' } });
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'high' }),
+    );
+    expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-2', { priority: 'high' });
+  });
+
+  it('column select-all toggles every visible card in that column', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'One', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Two', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByTestId('column-select-all-col-todo'));
+
+    expect(screen.getByTestId('kanban-bulk-bar')).toHaveTextContent('2 selected');
+  });
+});

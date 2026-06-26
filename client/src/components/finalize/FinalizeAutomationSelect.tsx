@@ -6,6 +6,7 @@ import {
   finalizeAutomationFromSession,
   sessionControlValue,
   sessionControlPatch,
+  sessionControlOptionsForAgent,
 } from '../../utils/finalizeAutomation';
 
 /**
@@ -24,6 +25,7 @@ import {
 export default function FinalizeAutomationSelect({
   sessionId,
   session,
+  agent,
   disabled = false,
   askMode = false,
   onControlChange,
@@ -36,7 +38,9 @@ export default function FinalizeAutomationSelect({
       ? 'design'
       : session?.session_mode === 'scoping'
         ? 'scoping'
-        : 'chat';
+        : session?.session_mode === 'skill-builder'
+          ? 'skill-builder'
+          : 'chat';
   const canDesign = !!session?.can_design_mode;
   const [pending, setPending] = useState(false);
   const [open, setOpen] = useState(false);
@@ -75,6 +79,11 @@ export default function FinalizeAutomationSelect({
 
   const compact = variant === 'compact';
   const selectedValue = sessionControlValue({ sessionMode, askMode, automation: level });
+  // The currently-active label is resolved against the FULL list so a session
+  // already in skill-builder mode still renders correctly even on an ineligible
+  // agent; the dropdown itself only OFFERS the options the agent is allowed to
+  // switch into (Skill Builder hidden for docs / reviewer / skill-builder).
+  const optionList = sessionControlOptionsForAgent(agent);
   const selected =
     SESSION_CONTROL_OPTIONS.find((o: any) => o.value === selectedValue) ??
     SESSION_CONTROL_OPTIONS[2];
@@ -112,7 +121,7 @@ export default function FinalizeAutomationSelect({
             aria-label="Runner automation"
             className="absolute left-0 bottom-full mb-1 z-50 min-w-[220px] rounded-lg border border-slate-700/80 bg-slate-950 shadow-xl py-1"
           >
-            {SESSION_CONTROL_OPTIONS.map((option: any) => {
+            {optionList.map((option: any) => {
               const active = option.value === selectedValue;
               const optionDisabled = option.value === 'design' && !canDesign;
               return (

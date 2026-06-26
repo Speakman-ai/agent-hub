@@ -14,6 +14,7 @@ import AccountSection from './AccountSection';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
 import AuthUpgradeBanner from './AuthUpgradeBanner';
+import GlobalSkillsSection from './GlobalSkillsSection';
 import PerUserModelSelect from './PerUserModelSelect';
 import PerUserEngineSelect from './PerUserEngineSelect';
 import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOverride';
@@ -6965,6 +6966,7 @@ const SETTINGS_TABS = [
   // `visibleSettingsTabs` below. Sole-source-of-truth for the tab id is
   // `claude-auth` (historical — predates the renaming).
   { id: 'claude-auth', iconName: 'Key', text: 'Global API Keys' },
+  { id: 'global-skills', iconName: 'Globe', text: 'Global Skills' },
   { id: 'github', iconName: 'GitBranch', text: 'GitHub' },
   { id: 'slack', iconName: 'MessageSquare', text: 'Slack' },
   { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
@@ -6979,6 +6981,7 @@ const SETTINGS_ICONS = {
   Building2,
   Bot,
   Key,
+  Globe,
   GitBranch,
   HeartPulse,
   Clock,
@@ -7184,6 +7187,9 @@ export default function SettingsPage({
               {tab === 'general' && <GeneralSection />}
               {tab === 'account' && <AccountSection />}
               {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}
+              {tab === 'global-skills' && (
+                <GlobalSkillsSection agents={agents} projects={projects} />
+              )}
               {tab === 'github' && <GitHubSection />}
               {tab === 'orgs' && electronShell && <OrganizationsSection />}
 

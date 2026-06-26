@@ -1816,6 +1816,7 @@ components:
             - chat
             - design
             - scoping
+            - skill-builder
             - null
           description: "Session mode picker dimension: `chat` (default), `design`, or `scoping`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         reasoning_effort:
@@ -6082,6 +6083,9 @@ components:
     RumSetupDraft:
       type: object
       properties:
+        webRoot:
+          type: string
+          description: Directory relative to project.cwd where the browser app lives (`.` = repo root).
         framework:
           type: string
           enum:
@@ -6133,6 +6137,7 @@ components:
         readme:
           nullable: true
       required:
+        - webRoot
         - framework
         - frameworkEvidence
         - packageManager
@@ -6903,6 +6908,29 @@ components:
       required:
         - error
       description: Error envelope.
+    ProjectSkillListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        source:
+          type: string
+          enum:
+            - project
+            - global
+            - default
+      required:
+        - id
+        - name
+        - description
+        - source
+      description: A project-authored skill in `<project.ahw>/skills`.
     GlobalSkillListItem:
       type: object
       properties:
@@ -6918,13 +6946,14 @@ components:
           type: string
           enum:
             - global
+            - default
       required:
         - id
         - name
         - description
         - path
         - source
-      description: A global (shared) skill discovered under <dataDir>/skills.
+      description: A built-in or user-authored global (shared) skill.
     GlobalSkillDetail:
       type: object
       properties:
@@ -7003,6 +7032,60 @@ components:
         - path
         - source
       description: The created / updated global (shared) skill.
+    ProjectSkillDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        content:
+          type: string
+          description: Raw SKILL.md text (frontmatter + body).
+        path:
+          type: string
+        credentials:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: POSIX env var name the credential is injected as.
+                example: LINEAR_API_KEY
+              label:
+                type: string
+              description:
+                type: string
+              required:
+                type: boolean
+              type:
+                type: string
+                enum:
+                  - string
+                  - secret
+                  - file
+                  - json
+              docs_url:
+                type: string
+            required:
+              - name
+            description: A single declarative credential the skill needs at spawn time.
+        source:
+          type: string
+          enum:
+            - project
+      required:
+        - id
+        - name
+        - description
+        - content
+        - path
+        - credentials
+        - source
+      description: A single project-authored skill with its raw SKILL.md content.
     SupportRequestsErrorResponse:
       type: object
       properties:
@@ -12373,6 +12456,7 @@ paths:
                     - chat
                     - design
                     - scoping
+                    - skill-builder
                 ask_mode:
                   type: boolean
       responses:
@@ -12971,6 +13055,7 @@ paths:
                     - chat
                     - design
                     - scoping
+                    - skill-builder
               required:
                 - mode
       responses:
@@ -22030,6 +22115,40 @@ paths:
               schema:
                 $ref: "#/components/schemas/SkillEvalsError"
   /api/projects/{projectId}/skills:
+    get:
+      tags:
+        - Skills
+      summary: List project skills library
+      description: Returns project-authored skills only (`<project.ahw>/skills`). Built-in and shared global skills are listed via `GET /api/global-skills`.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Project-authored skills.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectSkillListItem"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem read error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
     post:
       tags:
         - Skills
@@ -22083,11 +22202,11 @@ paths:
     get:
       tags:
         - Skills
-      summary: List global (shared) skills
-      description: Lists every skill authored in the writable global tier (`<dataDir>/skills`). These are merged into every agent's skill list between the project tier and the bundled defaults.
+      summary: List global skills catalog
+      description: "Returns the shared skills catalog: user-authored global skills (`<dataDir>/skills`) plus bundled built-in defaults. Project-authored skills are listed per project via `GET /api/projects/{projectId}/skills`."
       responses:
         "200":
-          description: Global skills.
+          description: Global skills catalog (shared + built-in).
           content:
             application/json:
               schema:
@@ -22285,6 +22404,51 @@ paths:
               schema:
                 $ref: "#/components/schemas/SkillWriteError"
   /api/projects/{projectId}/skills/{skillId}:
+    get:
+      tags:
+        - Skills
+      summary: Read a project skill
+      description: Returns a single project-authored skill's raw `SKILL.md` (frontmatter + body) plus its credential schema. Project-owned read — does NOT require an agent and does NOT fall back to bundled defaults, so the editor can load a project skill even for an agentless project. Resolves directory (`<slug>/SKILL.md`) or flat (`<slug>.md`) form.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Project skill slug (folder id).
+          required: true
+          description: Project skill slug (folder id).
+          name: skillId
+          in: path
+      responses:
+        "200":
+          description: The project skill with its raw SKILL.md content.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectSkillDetail"
+        "400":
+          description: Invalid skill id or malformed credentials frontmatter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "404":
+          description: Project, workspace, or project skill not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
+        "500":
+          description: Filesystem read error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillWriteError"
     put:
       tags:
         - Skills

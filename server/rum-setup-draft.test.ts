@@ -303,3 +303,131 @@ describe('collectRumSetupDraft — recorder + CSP detection', () => {
     expect(collectRumSetupDraft(dir).plan.recommendedConnectSrc).toBe('${AGENT_HUB_URL}');
   });
 });
+
+describe('collectRumSetupDraft — monorepo subdirs', () => {
+  it('detects Angular under frontend/ when the repo root has no package.json', () => {
+    const dir = makeRepo({
+      'README.md': '# monorepo',
+      'backend/manage.py': '# django',
+      'frontend/package.json': pkg({ '@angular/core': '18.0.0' }),
+      'frontend/tsconfig.json': '{}',
+      'frontend/src/main.ts': 'platformBrowserDynamic().bootstrapModule(AppModule);',
+      'frontend/src/index.html': '<!doctype html><html></html>',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('frontend');
+    expect(draft.framework).toBe('angular');
+    expect(draft.plan.targetFile).toBe('frontend/src/main.ts');
+    expect(draft.plan.injectionStyle).toBe('module-init');
+    expect(draft.plan.notes.some((n) => /frontend\//.test(n))).toBe(true);
+  });
+
+  it('detects React CRA under frontend/ (scoreboard-style layout)', () => {
+    const dir = makeRepo({
+      'README.md': '# scoreboard',
+      'backend/package.json': pkg({ express: '4.0.0' }),
+      'frontend/package.json': pkg({ react: '18.0.0', 'react-dom': '18.0.0' }),
+      'frontend/tsconfig.json': '{}',
+      'frontend/src/index.tsx': 'createRoot(el).render(<App/>);',
+      'frontend/public/index.html': '<!doctype html><html></html>',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('frontend');
+    expect(draft.framework).toBe('react');
+    expect(draft.plan.targetFile).toBe('frontend/src/index.tsx');
+  });
+
+  it('prefers a root Next app over a nested frontend package', () => {
+    const dir = makeRepo({
+      'package.json': pkg({ next: '14.0.0', react: '18.0.0' }),
+      'app/layout.tsx': 'export default function L() {}',
+      'frontend/package.json': pkg({ react: '18.0.0' }),
+      'frontend/src/main.tsx': 'createRoot(el).render(<App/>);',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('.');
+    expect(draft.framework).toBe('next');
+    expect(draft.plan.targetFile).toBe('app/layout.tsx');
+  });
+
+  it('plans a NESTED Next app-router layout as a client-component (matcher sees web-root-relative path)', () => {
+    // Regression: planner matchers must run against the web-root-relative path.
+    // A monorepo Next app-router layout at frontend/app/layout.tsx must still be
+    // recognized as an app-router layout (client-component injection), not fall
+    // through to module-init because the matcher saw the prefixed path.
+    const dir = makeRepo({
+      'README.md': '# monorepo',
+      'frontend/package.json': pkg({ next: '14.0.0', react: '18.0.0' }),
+      'frontend/app/layout.tsx': 'export default function RootLayout() { return null; }',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('frontend');
+    expect(draft.framework).toBe('next');
+    // Output path is project-root-relative…
+    expect(draft.plan.targetFile).toBe('frontend/app/layout.tsx');
+    // …but the injection style was decided from the local path.
+    expect(draft.plan.injectionStyle).toBe('client-component');
+    expect(draft.entryCandidates[0].path).toBe('frontend/app/layout.tsx');
+  });
+
+  it('plans a NESTED Next src/app-router layout as a client-component', () => {
+    const dir = makeRepo({
+      'apps/web/package.json': pkg({ next: '14.0.0', react: '18.0.0' }),
+      'apps/web/src/app/layout.tsx': 'export default function RootLayout() { return null; }',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('apps/web');
+    expect(draft.plan.targetFile).toBe('apps/web/src/app/layout.tsx');
+    expect(draft.plan.injectionStyle).toBe('client-component');
+  });
+
+  it('detects apps/web in an apps/* monorepo', () => {
+    const dir = makeRepo({
+      'README.md': '# turbo',
+      'apps/web/package.json': pkg({ react: '18.0.0', 'react-dom': '18.0.0' }),
+      'apps/web/src/main.tsx': 'createRoot(el).render(<App/>);',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('apps/web');
+    expect(draft.framework).toBe('react');
+    expect(draft.plan.targetFile).toBe('apps/web/src/main.tsx');
+  });
+
+  it('uses the workspace-root lockfile when the web subdir has none (pnpm monorepo)', () => {
+    // Common monorepo layout: a single pnpm-lock.yaml at the repo root and only
+    // a package.json under apps/web. The PM must be reported as pnpm, not npm.
+    const dir = makeRepo({
+      'README.md': '# turbo',
+      'pnpm-lock.yaml': '',
+      'pnpm-workspace.yaml': 'packages:\n  - apps/*',
+      'apps/web/package.json': pkg({ react: '18.0.0', 'react-dom': '18.0.0' }),
+      'apps/web/src/main.tsx': 'createRoot(el).render(<App/>);',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('apps/web');
+    expect(draft.packageManager).toBe('pnpm');
+  });
+
+  it('uses the workspace-root yarn.lock when the web subdir has none', () => {
+    const dir = makeRepo({
+      'yarn.lock': '',
+      'frontend/package.json': pkg({ react: '18.0.0', 'react-dom': '18.0.0' }),
+      'frontend/src/main.tsx': 'createRoot(el).render(<App/>);',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('frontend');
+    expect(draft.packageManager).toBe('yarn');
+  });
+
+  it("prefers the web subdir's own lockfile over the root (independent installs)", () => {
+    const dir = makeRepo({
+      'pnpm-lock.yaml': '',
+      'frontend/package.json': pkg({ react: '18.0.0', 'react-dom': '18.0.0' }),
+      'frontend/yarn.lock': '',
+      'frontend/src/main.tsx': 'createRoot(el).render(<App/>);',
+    });
+    const draft = collectRumSetupDraft(dir);
+    expect(draft.webRoot).toBe('frontend');
+    expect(draft.packageManager).toBe('yarn');
+  });
+});

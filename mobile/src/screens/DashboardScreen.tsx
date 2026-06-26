@@ -52,8 +52,11 @@ export default function DashboardScreen() {
     const mountedRef = useRef(true);
     const dashGenRef = useRef(createRequestGenerationState());
     const supportGenRef = useRef(createRequestGenerationState());
-    useEffect(() => () => {
-        mountedRef.current = false;
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
     }, []);
     const toggleActivityType = useCallback((key: any) => {
         setActiveTypes((prev: any) => {

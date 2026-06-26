@@ -31,7 +31,11 @@ import {
   unlinkSync,
 } from 'fs';
 import path from 'path';
-import { isDesignModeActive, isScopingModeActive } from './session-mode.js';
+import {
+  isDesignModeActive,
+  isScopingModeActive,
+  isSkillBuilderModeActive,
+} from './session-mode.js';
 import type { Project } from './types.js';
 
 /** Subdirectory of the session worktree that holds design artifacts. */
@@ -52,11 +56,15 @@ export const DESIGN_SKILL_ID = 'design';
  * Pure: derives only from `session_mode` via the canonical `isDesignModeActive`
  * (the single normalization path — no second looser lowercase/trim check).
  */
+/** Bundled skills force-loaded in skill-builder mode. */
+export const SKILL_BUILDER_REQUIRED_SKILL_IDS = ['skill-creator', 'agent-hub'] as const;
+
 export function requiredSkillIdsForSession(
   session: { session_mode?: string | null } | null | undefined,
 ): string[] {
   if (isDesignModeActive(session)) return [DESIGN_SKILL_ID];
   if (isScopingModeActive(session)) return ['agent-hub-kanban'];
+  if (isSkillBuilderModeActive(session)) return [...SKILL_BUILDER_REQUIRED_SKILL_IDS];
   return [];
 }
 

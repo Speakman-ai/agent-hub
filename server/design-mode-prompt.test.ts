@@ -15,6 +15,7 @@ import {
   buildDesignModePreamble,
   listDesignModeFiles,
   readProjectDesignDocs,
+  SKILL_BUILDER_REQUIRED_SKILL_IDS,
   requiredSkillIdsForSession,
   ensureRealDesignDir,
   DESIGN_MODE_SUBDIR,
@@ -173,6 +174,12 @@ describe('readProjectDesignDocs', () => {
 describe('requiredSkillIdsForSession', () => {
   it('force-loads the design skill only when session_mode is design', () => {
     expect(requiredSkillIdsForSession({ session_mode: 'design' })).toEqual([DESIGN_SKILL_ID]);
+  });
+
+  it('force-loads skill-creator + agent-hub in skill-builder mode', () => {
+    expect(requiredSkillIdsForSession({ session_mode: 'skill-builder' })).toEqual([
+      ...SKILL_BUILDER_REQUIRED_SKILL_IDS,
+    ]);
   });
 
   it('loads nothing for chat / default / missing mode', () => {

@@ -22,4 +22,21 @@ describe('discoverComposeFiles', () => {
     expect(found.some((f) => f.file.includes('apps/api'))).toBe(true);
     expect(inferMonorepo(dir, found)).toBe(true);
   });
+
+  it('finds compose.preview.yml and ranks it before docker-compose.yml', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'ah-discover-preview-'));
+    writeFileSync(
+      path.join(dir, 'docker-compose.yml'),
+      ['services:', '  web:', '    image: nginx', '    ports:', '      - "3000:80"'].join('\n'),
+    );
+    writeFileSync(
+      path.join(dir, 'compose.preview.yml'),
+      ['services:', '  frontend:', '    image: node:22', '    ports:', '      - "4200:4200"'].join(
+        '\n',
+      ),
+    );
+    const found = discoverComposeFiles(dir);
+    expect(found.map((f) => f.file)).toEqual(['compose.preview.yml', 'docker-compose.yml']);
+    expect(found[0].suggestedEntryService).toBe('frontend');
+  });
 });

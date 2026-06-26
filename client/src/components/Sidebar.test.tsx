@@ -40,13 +40,24 @@ const buildProps = (overrides: any = {}) => {
   ];
 
   const onSelectAgent = overrides.onSelectAgent || vi.fn();
+  const onExpandAgent = overrides.onExpandAgent || vi.fn();
   const onSelectSession = overrides.onSelectSession || vi.fn();
   const onNavigate = overrides.onNavigate || vi.fn();
+  const sessionsByAgentId = overrides.sessionsByAgentId || {
+    [AGENT_ID]: sessions,
+  };
   return {
     projects,
     agents: [],
     activeAgentId: AGENT_ID,
+    // Steady state: the live `sessions`/`archivedSessions` arrays were loaded for
+    // the active agent. Tests simulating a mid-switch override loadedSessionsAgentId.
+    loadedSessionsAgentId: AGENT_ID,
+    loadedArchivedAgentId: AGENT_ID,
     onSelectAgent,
+    onExpandAgent,
+    sessionsByAgentId,
+    archivedSessionsByAgentId: overrides.archivedSessionsByAgentId || {},
     onFocusSession:
       overrides.onFocusSession ||
       ((agentId: any, sessionId: any) => {
@@ -103,6 +114,127 @@ describe('Sidebar — bulk clear affordance', () => {
     // The abandoned pushed-clear action must never fire from this button.
     expect(onClearPushedSessions!).not.toHaveBeenCalled();
   });
+
+  it('scopes the confirm dialog to the triggering agent when two agents are expanded', async () => {
+    // Regression: the confirm state is global. Without a `confirmAgentId === agent.id`
+    // guard the dialog renders under EVERY expanded agent, and confirming under the
+    // wrong one would clear the other agent's sessions.
+    const onClearMergedSessions = vi.fn();
+    render(
+      <Sidebar
+        {...buildProps({
+          onClearMergedSessions,
+          sessionsByAgentId: {
+            [AGENT_ID]: [{ id: 'a-s1', name: 'A session' }],
+            [OTHER_AGENT_ID]: [{ id: 'b-s1', name: 'B session' }],
+          },
+        })}
+      />,
+    );
+
+    // The active agent (A) is expanded by default; expand the second agent (B)
+    // via its chevron control (the row click now selects/navigates instead).
+    fireEvent.click(
+      screen.getByRole('button', { name: /Expand Secondary Agent sessions/i } as any) as any,
+    );
+
+    // Both expanded agents now offer a "Clear pushed" button.
+    const clearButtons = screen.getAllByRole('button', { name: 'Clear pushed' });
+    expect(clearButtons.length).toBe(2);
+
+    // Trigger the bulk-clear under agent A (first in DOM order).
+    fireEvent.click(clearButtons[0] as any);
+
+    // The confirmation must render exactly once — only under agent A.
+    expect(screen.getAllByText(/Delete all sessions with pushed changes\?/i)).toHaveLength(1);
+
+    // Confirming clears A's sessions, not B's.
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Pushed' } as any) as any);
+    await waitFor(() => expect(onClearMergedSessions!).toHaveBeenCalledTimes(1));
+    expect(onClearMergedSessions!).toHaveBeenCalledWith(AGENT_ID);
+  });
+});
+
+describe('Sidebar — agent row select vs expand', () => {
+  it('clicking the agent row selects the agent and navigates to chat', () => {
+    const onSelectAgent = vi.fn();
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onSelectAgent, onNavigate })} />);
+
+    // The row (named exactly after the agent) is the primary switch affordance;
+    // the chevron's accessible name ("Expand …") is excluded by the exact match.
+    fireEvent.click(screen.getByRole('button', { name: 'Secondary Agent' } as any) as any);
+    expect(onSelectAgent).toHaveBeenCalledWith(OTHER_AGENT_ID);
+    expect(onNavigate).toHaveBeenCalledWith('chat');
+  });
+
+  it('the expand chevron toggles the session list without selecting the agent', () => {
+    const onSelectAgent = vi.fn();
+    const onNavigate = vi.fn();
+    const onExpandAgent = vi.fn();
+    render(
+      <Sidebar
+        {...buildProps({
+          onSelectAgent,
+          onNavigate,
+          onExpandAgent,
+          sessionsByAgentId: {
+            [AGENT_ID]: [{ id: 'a-s1', name: 'A session' }],
+            [OTHER_AGENT_ID]: [{ id: 'b-only', name: 'B only session' }],
+          },
+        })}
+      />,
+    );
+
+    // B is not active and collapsed; its session is hidden initially.
+    expect(screen.queryByText('B only session')).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Expand Secondary Agent sessions/i } as any) as any,
+    );
+
+    // Expanding reveals B's sessions and warms its cache, but does NOT switch.
+    expect(screen.getByText('B only session')).toBeInTheDocument();
+    expect(onExpandAgent).toHaveBeenCalledWith(OTHER_AGENT_ID);
+    expect(onSelectAgent).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalledWith('chat');
+  });
+});
+
+describe('Sidebar — live sessions fallback keyed by loaded agent', () => {
+  it('does NOT show the live `sessions` for the active agent when those rows belong to another agent (mid-switch)', () => {
+    // Mid-switch: agent A is active, but `sessions` still holds the rows fetched
+    // for agent B (its fetch hasn't resolved). The active agent must not render
+    // B's stale rows via the fallback, or they could feed the clear controls.
+    render(
+      <Sidebar
+        {...buildProps({
+          activeAgentId: AGENT_ID,
+          loadedSessionsAgentId: OTHER_AGENT_ID,
+          sessions: [{ id: 'stale-b', name: 'Stale B session' }],
+          sessionsByAgentId: {}, // no per-agent cache yet for the active agent
+        })}
+      />,
+    );
+
+    // Active agent (auto-expanded) shows nothing — the stale rows belong to B.
+    expect(screen.queryByText('Stale B session')).not.toBeInTheDocument();
+  });
+
+  it('shows the live `sessions` for the active agent when they were loaded for it', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          activeAgentId: AGENT_ID,
+          loadedSessionsAgentId: AGENT_ID,
+          sessions: [{ id: 'live-a', name: 'Live A session' }],
+          sessionsByAgentId: {}, // fallback to `sessions` for the loaded agent
+        })}
+      />,
+    );
+
+    expect(screen.getByText('Live A session')).toBeInTheDocument();
+  });
 });
 
 describe('Sidebar — actionable session visibility', () => {
@@ -131,9 +263,8 @@ describe('Sidebar — actionable session visibility', () => {
   it('hides idle sessions but keeps running and PR-ready ones when the agent is collapsed', () => {
     render(<Sidebar {...buildProps()} />);
 
-    // Collapse the active agent by clicking its ▾ chevron.
-    const collapseBtn = screen.getByRole('button', { name: '▾' });
-    fireEvent.click(collapseBtn as any);
+    // Collapse to actionable-only via the filter toggle (not the agent expand chevron).
+    fireEvent.click(screen.getByTitle('Show actionable only') as any);
 
     // Actionable sessions remain visible.
     expect(screen.getByText('Running task')).toBeInTheDocument();
@@ -155,8 +286,7 @@ describe('Sidebar — actionable session visibility', () => {
     // Before collapse — session is visible.
     expect(screen.getByText('Only idle session')).toBeInTheDocument();
 
-    const collapseBtn = screen.getByRole('button', { name: '▾' });
-    fireEvent.click(collapseBtn as any);
+    fireEvent.click(screen.getByTitle('Show actionable only') as any);
 
     expect(screen.queryByText('Only idle session')).not.toBeInTheDocument();
     expect(screen.queryByTestId('agent-sessions-list')).not.toBeInTheDocument();
@@ -209,7 +339,7 @@ describe('Sidebar — actionable session visibility', () => {
 
     expect(screen.getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '▾' } as any) as any);
+    fireEvent.click(screen.getByTitle('Show actionable only') as any);
 
     // Session row remains rendered after collapse.
     expect(screen.getByText('[Resolve PR #77] Fix thing')).toBeInTheDocument();
@@ -378,7 +508,7 @@ describe('Sidebar — always-on session state icon', () => {
     render(<Sidebar {...props} />);
 
     // Collapse the active agent.
-    fireEvent.click(screen.getByRole('button', { name: '▾' } as any) as any);
+    fireEvent.click(screen.getByTitle('Show actionable only') as any);
 
     // The awaiting-input session must remain visible, idle one is hidden.
     expect(screen.getByText('Awaiting input')).toBeInTheDocument();
@@ -869,6 +999,7 @@ describe('Sidebar — per-project settings menu', () => {
     // Lifecycle links are always visible (no Settings expand needed).
     expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Epics' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Skills' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
@@ -889,6 +1020,9 @@ describe('Sidebar — per-project settings menu', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Epics' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`epics:${PROJECT_ID}`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' } as any) as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`skills:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Threads' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith('threads', PROJECT_ID);
@@ -922,6 +1056,26 @@ describe('Sidebar — per-project settings menu', () => {
     expect(wiki!).toBeInTheDocument();
     fireEvent.click(wiki as any);
     expect(onNavigate!).toHaveBeenCalledWith('wiki', PROJECT_ID);
+  });
+
+  it('renders a top-level Skills link that navigates to the project skills view', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+
+    const skills = screen.getByRole('button', { name: 'Skills' });
+    expect(skills!).toBeInTheDocument();
+    fireEvent.click(skills as any);
+    expect(onNavigate!).toHaveBeenCalledWith(`skills:${PROJECT_ID}`);
+  });
+
+  it('highlights the Skills link only on the matching project skills view', () => {
+    const { rerender } = render(
+      <Sidebar {...buildProps({ currentView: `skills:${PROJECT_ID}` })} />,
+    );
+    expect(screen.getByRole('button', { name: 'Skills' }).className).toContain('text-white');
+
+    rerender(<Sidebar {...buildProps({ currentView: 'skills:other-project' })} />);
+    expect(screen.getByRole('button', { name: 'Skills' }).className).not.toContain('text-white');
   });
 
   it('highlights the Wiki link only on the matching project wiki view', () => {

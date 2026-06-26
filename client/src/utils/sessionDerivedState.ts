@@ -33,3 +33,39 @@ export function prependSessionDeduped(prev: any, session: any) {
   if (prev.some((s: any) => s.id === session.id)) return prev;
   return [session, ...prev];
 }
+
+/**
+ * Compute the next per-agent session cache and the next live `sessions` array
+ * after a session is created for `targetAgentId`.
+ *
+ * The cache entry for the target agent ALWAYS gains the new session. The live
+ * `sessions` array (the chat column's list) is only updated when it currently
+ * belongs to the target agent — i.e. `loadedSessionsAgentId === targetAgentId`.
+ *
+ * Why the guard: `sessions` is tagged with the agent it was fetched for, not
+ * `activeAgentId`. Creating a session for a not-yet-loaded agent (e.g. starting
+ * Skill Builder for another project's dev agent) must NOT prepend the new row
+ * onto the previously-loaded agent's `sessions`, because the cache-warming
+ * effect would then stamp it under that previous agent — cross-agent cache
+ * pollution. When the caller switches to the target agent, its fresh fetch
+ * surfaces the persisted row anyway.
+ */
+export function planCreatedSessionCaches(args: {
+  targetAgentId: string;
+  loadedSessionsAgentId: string | null | undefined;
+  session: any;
+  sessionsByAgentId: Record<string, any[]>;
+  sessions: any[];
+}): { sessionsByAgentId: Record<string, any[]>; sessions: any[] } {
+  const { targetAgentId, loadedSessionsAgentId, session, sessionsByAgentId, sessions } = args;
+  if (!targetAgentId || !session?.id) {
+    return { sessionsByAgentId, sessions };
+  }
+  const nextCache = {
+    ...sessionsByAgentId,
+    [targetAgentId]: prependSessionDeduped(sessionsByAgentId[targetAgentId] || [], session),
+  };
+  const nextSessions =
+    loadedSessionsAgentId === targetAgentId ? prependSessionDeduped(sessions, session) : sessions;
+  return { sessionsByAgentId: nextCache, sessions: nextSessions };
+}

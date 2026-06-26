@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type supertest from 'supertest';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import { getRequest, createProject } from './helpers.js';
@@ -78,6 +78,107 @@ describe('Project skills — write API (POST/PUT)', () => {
 
     const skill = await request.get(`/api/agents/${agentId}/skills/findable-skill`).expect(200);
     expect((skill.body as { content: string }).content).toContain('name: findable-skill');
+  });
+
+  it('a created skill appears in the project skills list endpoint (read/write parity)', async () => {
+    // Regression: GET /api/projects/:id/skills must resolve the SAME writable
+    // skills dir the POST wrote to. Previously it derived the dir differently
+    // (`project.ahw ? … : ''`) and could return "No skills found" right after a
+    // successful save.
+    const proj = await newProject();
+    await request
+      .post(`/api/projects/${proj.id}/skills`)
+      .send({ name: 'listed-skill', description: 'List me on the project page.' })
+      .expect(201);
+    created.push(path.join(proj.ahw, 'skills', 'listed-skill'));
+
+    const list = await request.get(`/api/projects/${proj.id}/skills`).expect(200);
+    const rows = list.body as Array<{ id: string; source?: string }>;
+    const found = rows.find((s) => s.id === 'listed-skill');
+    expect(found).toBeTruthy();
+    expect(found?.source).toBe('project');
+  });
+
+  it('GET project skill reads its SKILL.md without an agent (project-owned read)', async () => {
+    // The editor uses this so an agentless project can still load a skill for
+    // editing — the agent-scoped read would hit /agents/null/skills/:id.
+    const proj = await newProject();
+    await request
+      .post(`/api/projects/${proj.id}/skills`)
+      .send({ name: 'editable-proj-skill', description: 'Edit me.', body: '# Body here' })
+      .expect(201);
+    created.push(path.join(proj.ahw, 'skills', 'editable-proj-skill'));
+
+    const res = await request
+      .get(`/api/projects/${proj.id}/skills/editable-proj-skill`)
+      .expect(200);
+    const body = res.body as { id: string; source: string; content: string };
+    expect(body.id).toBe('editable-proj-skill');
+    expect(body.source).toBe('project');
+    expect(body.content).toContain('name: editable-proj-skill');
+    expect(body.content).toContain('# Body here');
+  });
+
+  it('GET project skill 404s for an unknown id (no fallback to bundled defaults)', async () => {
+    const proj = await newProject();
+    // `agent-hub` IS a bundled default skill, but a project read must not surface
+    // it — this endpoint reads the project tier only.
+    await request.get(`/api/projects/${proj.id}/skills/agent-hub`).expect(404);
+    await request.get(`/api/projects/${proj.id}/skills/does-not-exist`).expect(404);
+  });
+
+  it('a FLAT (<slug>.md) project skill round-trips GET → PUT → DELETE (stays flat)', async () => {
+    // `collectSkillsFromDir` discovers flat skills and the list/GET present them
+    // as editable, so the write paths must accept them too — otherwise edit
+    // loads but save 404s.
+    const proj = await newProject();
+    const skillsDir = path.join(proj.ahw, 'skills');
+    const flatPath = path.join(skillsDir, 'flat-skill.md');
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(
+      flatPath,
+      '---\nname: flat-skill\ndescription: A flat-form project skill.\n---\n# Flat body\n',
+    );
+    created.push(flatPath);
+
+    // GET resolves the flat form.
+    const read = await request.get(`/api/projects/${proj.id}/skills/flat-skill`).expect(200);
+    expect((read.body as { content: string }).content).toContain('# Flat body');
+
+    // PUT updates it IN PLACE (no directory created) — previously 404'd.
+    const put = await request
+      .put(`/api/projects/${proj.id}/skills/flat-skill`)
+      .send({
+        name: 'flat-skill',
+        description: 'Updated flat skill.',
+        body: '# Updated flat body',
+      })
+      .expect(200);
+    expect((put.body as { path: string }).path).toBe(flatPath);
+    expect(existsSync(path.join(skillsDir, 'flat-skill'))).toBe(false); // no dir created
+    expect(readFileSync(flatPath, 'utf-8')).toContain('# Updated flat body');
+
+    // DELETE removes the flat file.
+    await request.delete(`/api/projects/${proj.id}/skills/flat-skill`).expect(200);
+    expect(existsSync(flatPath)).toBe(false);
+  });
+
+  it('DELETE recursively removes a directory-form project skill with nested resources', async () => {
+    // The old delete (readdir + unlink + rmdir) threw EISDIR/ENOTEMPTY on a
+    // skill dir that contained a subfolder (references/). The recursive rmSync
+    // must remove it cleanly.
+    const proj = await newProject();
+    const skillDir = path.join(proj.ahw, 'skills', 'nested-skill');
+    mkdirSync(path.join(skillDir, 'references'), { recursive: true });
+    writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: nested-skill\ndescription: Has nested resources.\n---\n# Body\n',
+    );
+    writeFileSync(path.join(skillDir, 'references', 'guide.md'), '# Guide');
+    created.push(skillDir);
+
+    await request.delete(`/api/projects/${proj.id}/skills/nested-skill`).expect(200);
+    expect(existsSync(skillDir)).toBe(false);
   });
 
   it('POST accepts a raw `content`-only body (no structured fields)', async () => {

@@ -29,6 +29,7 @@ import {
   Bot,
   GitBranch,
   StickyNote,
+  Puzzle,
   LifeBuoy,
   MonitorPlay,
   ShieldAlert,
@@ -54,7 +55,20 @@ export default function Sidebar({
   agents: _agents,
   activeAgentId,
   onSelectAgent,
+  /** Fetch session lists for sidebar expand without switching the open chat. */
+  onExpandAgent,
+  sessionsByAgentId = {},
+  archivedSessionsByAgentId = {},
   sessions,
+  /**
+   * The agent ids the live `sessions` / `archivedSessions` arrays were actually
+   * FETCHED for. These are NOT always `activeAgentId`: during an agent switch
+   * the new agent is active while these arrays still hold the previous agent's
+   * rows (its fetch hasn't resolved). The per-agent fallbacks below key on these
+   * so the freshly-active agent never renders (or bulk-clears) stale rows.
+   */
+  loadedSessionsAgentId = null,
+  loadedArchivedAgentId = null,
   activeSessionId,
   onSelectSession,
   /** When set (from App), switches to the session's agent then opens chat. */
@@ -136,6 +150,8 @@ export default function Sidebar({
   const [hoveredSession, setHoveredSession] = useState<any>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, any>>({});
   const [collapsedAgents, setCollapsedAgents] = useState<Record<string, any>>({});
+  /** Agent rows whose session list is expanded in the sidebar (independent of the open chat). */
+  const [expandedAgents, setExpandedAgents] = useState<Record<string, any>>({});
   /** Per-project settings menu — default collapsed (`undefined` → collapsed). */
   const [collapsedProjectMenus, setCollapsedProjectMenus] = useState<Record<string, any>>({});
   // Project drag-and-drop state. `draggedProjectId` is the row the user
@@ -146,10 +162,17 @@ export default function Sidebar({
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [editingSessionId, setEditingSessionId] = useState<any>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
-  const [confirmAction, setConfirmAction] = useState<any>(null); // 'clear-all' | 'clear-pushed' | 'clear-merged' | null
+  const [confirmAction, setConfirmAction] = useState<any>(null); // 'clear-all' | 'clear-merged' | null
+  const [confirmAgentId, setConfirmAgentId] = useState<any>(null);
   const [serverVersion, setServerVersion] = useState<any>(null);
   const [serverGitHash, setServerGitHash] = useState<any>(null);
   const renameSavedRef = useRef(false);
+  useEffect(() => {
+    if (!activeAgentId) return;
+    setExpandedAgents((prev: any) =>
+      prev[activeAgentId] ? prev : { ...prev, [activeAgentId]: true },
+    );
+  }, [activeAgentId]);
 
   const focusSession = (agentId: any, sessionId: any) => {
     if (onFocusSession) {
@@ -195,6 +218,25 @@ export default function Sidebar({
     setCollapsedAgents((prev: any) => ({ ...prev, [agentId]: !prev[agentId] }));
   };
 
+  const toggleAgentExpanded = (agentId: any) => {
+    setExpandedAgents((prev: any) => {
+      const next = !prev[agentId];
+      if (next) onExpandAgent?.(agentId);
+      return { ...prev, [agentId]: next };
+    });
+  };
+
+  // Fall back to the live arrays ONLY for the agent they were loaded for, not
+  // for whichever agent is merely active right now — otherwise a mid-switch
+  // render (new agent active, old `sessions` still in state) would show the old
+  // agent's rows and feed them into the per-agent clear controls.
+  const sessionsForAgent = (agentId: any) =>
+    sessionsByAgentId[agentId] ?? (agentId === loadedSessionsAgentId ? sessions : []);
+
+  const archivedForAgent = (agentId: any) =>
+    archivedSessionsByAgentId[agentId] ??
+    (agentId === loadedArchivedAgentId ? archivedSessions : []);
+
   const toggleProjectMenuCollapse = (projectId: any, e: any) => {
     e.stopPropagation();
     setCollapsedProjectMenus((prev: any) => ({
@@ -208,8 +250,8 @@ export default function Sidebar({
   };
 
   // Routes that live inside the collapsible "<project> Settings" group. The
-  // lifecycle links (Repository, Pulls, Board, Epics, Notes, Threads, Support,
-  // Wiki) are now top-level and intentionally excluded so the Settings toggle
+  // lifecycle links (Repository, Pulls, Board, Epics, Skills, Notes, Threads,
+  // Support, Wiki) are now top-level and intentionally excluded so the Settings toggle
   // for configuration sub-routes.
   const isProjectMenuRoute = (view: any, pid: any) =>
     view === `project-settings:${pid}` ||
@@ -529,10 +571,8 @@ export default function Sidebar({
                   )}
                   <button
                     onClick={(e: any) => {
-                      // If project only has one agent, select it directly
                       if (activeAgents.length === 1) {
-                        onSelectAgent(activeAgents[0].id);
-                        onNavigate('chat');
+                        toggleAgentExpanded(activeAgents[0].id);
                       } else {
                         toggleProjectCollapse(project.id, e);
                       }
@@ -569,438 +609,9 @@ export default function Sidebar({
                   </button>
                 </div>
 
-                {/* Agents within project (auto-expand if single agent) */}
+                {/* Project links (Board, Wiki, Skills, …) */}
                 {(!isCollapsed || activeAgents.length === 1) && (
                   <div className={activeAgents.length > 1 ? 'ml-3' : ''}>
-                    {(() => {
-                      // Hide the reviewer agent row; it's edited via the per-project Reviewer page below.
-                      const topLevel = activeAgents.filter(
-                        (a: any) => !a.parentAgentId && a.role !== 'reviewer',
-                      );
-                      const subAgentMap: Record<string, any> = {};
-                      activeAgents.forEach((a: any) => {
-                        if (a.parentAgentId) {
-                          if (!subAgentMap[a.parentAgentId]) subAgentMap[a.parentAgentId] = [];
-                          subAgentMap[a.parentAgentId].push(a);
-                        }
-                      });
-
-                      const renderAgent = (agent: any, indent: any = 0) => {
-                        const isActive = activeAgentId === agent.id;
-                        const subs = subAgentMap[agent.id] || [];
-                        const isTopLevel =
-                          agent.role === 'lead' ||
-                          agent.role === 'docs' ||
-                          agent.role === 'intake' ||
-                          subs.length > 0;
-                        const isLead = agent.role === 'lead' || subs.length > 0;
-
-                        return (
-                          <div
-                            key={agent.id}
-                            style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}
-                          >
-                            <div
-                              className={`w-full flex items-center gap-1 rounded-lg mb-0.5 transition-colors ${
-                                isActive && currentView === 'chat'
-                                  ? 'bg-gray-800 text-white'
-                                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-                              }`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onSelectAgent(agent.id);
-                                  onNavigate('chat');
-                                }}
-                                className={`flex-1 min-w-0 text-left px-3 py-2 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer ${
-                                  isActive && currentView === 'chat'
-                                    ? 'text-white'
-                                    : 'text-gray-400 hover:text-gray-200'
-                                }`}
-                              >
-                                <div className="relative flex-shrink-0">
-                                  {indent > 0 && (
-                                    <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
-                                  )}
-                                  {agent.avatar ? (
-                                    <AgentAvatar
-                                      avatar={agent.avatar}
-                                      color={agent.color}
-                                      size={20}
-                                      apiBase={getServerBase()}
-                                    />
-                                  ) : (
-                                    <span
-                                      className={`block ${isTopLevel ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
-                                      style={{ backgroundColor: agent.color }}
-                                    />
-                                  )}
-                                  {isRecent(agent.lastActivity) && (
-                                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
-                                  )}
-                                </div>
-                                <span className="flex-1 truncate text-sm">
-                                  {agent.name}
-                                  {isLead && (
-                                    <span className="text-xs text-gray-600 ml-1">lead</span>
-                                  )}
-                                </span>
-                              </button>
-                              {project.mode !== 'workflow' && activeReviews[agent.name] && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const sid = activeReviews[agent.name]?.sessionId;
-                                    if (sid) focusSession(agent.id, sid);
-                                  }}
-                                  className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-1 mr-1 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse cursor-pointer hover:bg-amber-500/30"
-                                  title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}
-                                >
-                                  reviewing PR
-                                </button>
-                              )}
-                              {isActive && (
-                                <button
-                                  type="button"
-                                  onClick={(e: any) => toggleAgentCollapse(agent.id, e)}
-                                  className="flex-shrink-0 pr-2 text-gray-500 hover:text-gray-300 text-2xl leading-none flex items-center cursor-pointer"
-                                >
-                                  {collapsedAgents[agent.id] ? '▸' : '▾'}
-                                </button>
-                              )}
-                            </div>
-
-                            {/* Sessions for active agent.
-                                When the agent row is collapsed we still render
-                                "actionable" sessions (running / PR-ready) so users
-                                don't miss them behind the ▸ toggle. */}
-                            {isActive &&
-                              (() => {
-                                const agentCollapsed = !!collapsedAgents[agent.id];
-                                const visibleSessions = agentCollapsed
-                                  ? sessions.filter(isSessionActionable)
-                                  : sessions;
-                                if (agentCollapsed && visibleSessions.length === 0) return null;
-                                return (
-                                  <div className="ml-5 mb-2" data-testid="agent-sessions-list">
-                                    {visibleSessions.map((session: any) => {
-                                      const sessionState = deriveSessionState(session, {
-                                        activeTaskSessionIds,
-                                        finalizeStatusBySession,
-                                      });
-                                      const isEditing = editingSessionId === session.id;
-                                      const prReady = changesReadyBySession[session.id];
-                                      const resolvePrHref =
-                                        prReady && isResolvePrSessionTitle(session.name)
-                                          ? inferPrUrlFromSessionTitle(
-                                              session.name,
-                                              project.githubRepo,
-                                            )
-                                          : null;
-                                      return (
-                                        <div
-                                          key={session.id}
-                                          onMouseEnter={() => setHoveredSession(session.id)}
-                                          onMouseLeave={() => setHoveredSession(null)}
-                                          className={`group relative flex items-center rounded-md mb-0.5 transition-colors ${
-                                            activeSessionId === session.id
-                                              ? 'bg-gray-800 text-white'
-                                              : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
-                                          }`}
-                                        >
-                                          {isEditing ? (
-                                            <input
-                                              autoFocus
-                                              value={editingSessionName}
-                                              onChange={(e: any) =>
-                                                setEditingSessionName(e.target.value)
-                                              }
-                                              onKeyDown={(e: any) => {
-                                                if (
-                                                  e.key === 'Enter' &&
-                                                  editingSessionName.trim()
-                                                ) {
-                                                  renameSavedRef.current = true;
-                                                  onRenameSession(
-                                                    session.id,
-                                                    editingSessionName.trim(),
-                                                  );
-                                                  setEditingSessionId(null);
-                                                } else if (e.key === 'Escape') {
-                                                  renameSavedRef.current = true;
-                                                  setEditingSessionId(null);
-                                                }
-                                              }}
-                                              onBlur={() => {
-                                                if (renameSavedRef.current) {
-                                                  renameSavedRef.current = false;
-                                                  return;
-                                                }
-                                                if (
-                                                  editingSessionName.trim() &&
-                                                  editingSessionName.trim() !== session.name
-                                                ) {
-                                                  onRenameSession(
-                                                    session.id,
-                                                    editingSessionName.trim(),
-                                                  );
-                                                }
-                                                setEditingSessionId(null);
-                                              }}
-                                              className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
-                                            />
-                                          ) : (
-                                            <>
-                                              {resolvePrHref && (
-                                                <button
-                                                  type="button"
-                                                  data-testid="resolve-pr-external-link"
-                                                  className="flex-shrink-0 p-1 mr-0.5 rounded text-sky-400 hover:text-sky-300 hover:bg-gray-700/50"
-                                                  title="Open existing PR on GitHub"
-                                                  onClick={(e: any) => {
-                                                    e.stopPropagation();
-                                                    window.open(
-                                                      resolvePrHref,
-                                                      '_blank',
-                                                      'noopener,noreferrer',
-                                                    );
-                                                  }}
-                                                >
-                                                  <ExternalLink size={11} />
-                                                </button>
-                                              )}
-                                              <button
-                                                type="button"
-                                                onClick={() => focusSession(agent.id, session.id)}
-                                                onDoubleClick={(e: any) => {
-                                                  e.stopPropagation();
-                                                  setEditingSessionId(session.id);
-                                                  setEditingSessionName(session.name);
-                                                }}
-                                                className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
-                                              >
-                                                <SessionStateIcon
-                                                  state={sessionState}
-                                                  size={12}
-                                                  testId={`session-state-icon-${session.id}`}
-                                                />
-                                                {subagentsBySession[session.id]?.running > 0 && (
-                                                  <span
-                                                    className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
-                                                    title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
-                                                  >
-                                                    <GitFork size={10} />
-                                                    {subagentsBySession[session.id].running}
-                                                  </span>
-                                                )}
-                                                <span className="truncate">{session.name}</span>
-                                                {session.advisor_count > 0 && (
-                                                  <span
-                                                    className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50"
-                                                    title={`${session.advisor_count} advisor${session.advisor_count !== 1 ? 's' : ''}`}
-                                                  >
-                                                    +{session.advisor_count}
-                                                  </span>
-                                                )}
-                                              </button>
-                                            </>
-                                          )}
-                                          {deletingSessionIds.has(session.id) ? (
-                                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs animate-spin pointer-events-none">
-                                              ⟳
-                                            </span>
-                                          ) : hoveredSession === session.id && !isEditing ? (
-                                            <button
-                                              type="button"
-                                              onClick={(e: any) => {
-                                                e.stopPropagation();
-                                                onDeleteSession(session.id);
-                                              }}
-                                              className="absolute right-1 top-1/2 -translate-y-1/2 z-10 p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
-                                              title="Delete session"
-                                            >
-                                              ✕
-                                            </button>
-                                          ) : null}
-                                        </div>
-                                      );
-                                    })}
-                                    {!agentCollapsed && (
-                                      <>
-                                        <div className="flex items-center gap-1 mt-1">
-                                          <button
-                                            onClick={onNewSession}
-                                            className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
-                                          >
-                                            + New Session
-                                          </button>
-                                          {sessions.length > 0 && (
-                                            <div className="ml-auto flex items-center gap-0.5 pr-1">
-                                              {/* Single bulk-clear affordance. The
-                                                  underlying action clears sessions whose
-                                                  work has merged (the settled terminal
-                                                  state once per-session auto-merge runs);
-                                                  it is labelled "Clear pushed" because that
-                                                  is the term users think in ("pushed =
-                                                  shipped"). */}
-                                              <button
-                                                onClick={() => setConfirmAction('clear-merged')}
-                                                disabled={!!deletingBulk}
-                                                className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                title="Clear sessions with pushed changes"
-                                              >
-                                                {deletingBulk === 'merged' ? '...' : 'Clear pushed'}
-                                              </button>
-                                              <button
-                                                onClick={() => setConfirmAction('clear-all')}
-                                                disabled={!!deletingBulk}
-                                                className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                title="Clear all sessions"
-                                              >
-                                                {deletingBulk === 'all' ? (
-                                                  <span className="text-xs animate-spin inline-block">
-                                                    ⟳
-                                                  </span>
-                                                ) : (
-                                                  <Trash2 size={12} />
-                                                )}
-                                              </button>
-                                            </div>
-                                          )}
-                                        </div>
-                                        {/* Archived (soft-deleted) sessions —
-                                            recovery window is 24 hours, server
-                                            enforces the cut-off. Collapsed by
-                                            default to keep the sidebar quiet
-                                            when nothing is pending recovery. */}
-                                        {archivedSessions.length > 0 && (
-                                          <div
-                                            className="mt-2 border-t border-gray-800/50 pt-1"
-                                            data-testid="archived-sessions-section"
-                                          >
-                                            <button
-                                              onClick={() => setArchivedExpanded((v: any) => !v)}
-                                              className="w-full text-left px-2 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-600 hover:text-gray-400 transition-colors"
-                                            >
-                                              <Archive size={10} />
-                                              <span className="flex-1">
-                                                Archived ({archivedSessions.length})
-                                              </span>
-                                              <span className="text-gray-600">
-                                                {archivedExpanded ? '▾' : '▸'}
-                                              </span>
-                                            </button>
-                                            {archivedExpanded && (
-                                              <div data-testid="archived-sessions-list">
-                                                {archivedSessions.map((a: any) => {
-                                                  const purge = daysUntilPurge(a.deleted_at);
-                                                  // App.jsx always passes a Set; optional chaining
-                                                  // tolerates a stale consumer that forgot the prop.
-                                                  const isRestoring = restoringSessionIds.has(a.id);
-                                                  const urgent = purge && purge.daysLeft <= 1;
-                                                  return (
-                                                    <div
-                                                      key={a.id}
-                                                      className="group flex items-center rounded-md mb-0.5 px-2 py-1 text-xs text-gray-500 hover:bg-gray-800/40"
-                                                    >
-                                                      <div className="flex-1 min-w-0">
-                                                        <div className="truncate">{a.name}</div>
-                                                        {purge && (
-                                                          <div
-                                                            className={`text-[10px] ${
-                                                              urgent
-                                                                ? 'text-amber-400'
-                                                                : 'text-gray-600'
-                                                            }`}
-                                                          >
-                                                            {purge.label}
-                                                          </div>
-                                                        )}
-                                                      </div>
-                                                      <button
-                                                        onClick={() =>
-                                                          onRestoreSession && onRestoreSession(a.id)
-                                                        }
-                                                        disabled={isRestoring}
-                                                        className="ml-2 flex items-center gap-1 text-[10px] text-gray-500 hover:text-emerald-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                        title="Restore session"
-                                                      >
-                                                        {isRestoring ? (
-                                                          <span className="animate-spin inline-block">
-                                                            ⟳
-                                                          </span>
-                                                        ) : (
-                                                          <RotateCcw size={11} />
-                                                        )}
-                                                        Restore
-                                                      </button>
-                                                    </div>
-                                                  );
-                                                })}
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                        {/* Confirmation dialog */}
-                                        {confirmAction && (
-                                          <div className="mx-1 mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg">
-                                            <p className="text-xs text-gray-300 mb-2">
-                                              {confirmAction === 'clear-all'
-                                                ? `Delete all ${sessions.length} session${sessions.length !== 1 ? 's' : ''}? This cannot be undone.`
-                                                : `Delete all sessions with pushed changes? Sessions in any other state will be kept.`}
-                                            </p>
-                                            <div className="flex gap-2 justify-end">
-                                              <button
-                                                onClick={() => setConfirmAction(null)}
-                                                className="text-xs px-2 py-1 text-gray-400 hover:text-gray-200 transition-colors"
-                                              >
-                                                Cancel
-                                              </button>
-                                              <button
-                                                onClick={async () => {
-                                                  if (confirmAction === 'clear-all') {
-                                                    await onClearAllSessions();
-                                                  } else {
-                                                    await onClearMergedSessions();
-                                                  }
-                                                  setConfirmAction(null);
-                                                }}
-                                                disabled={!!deletingBulk}
-                                                className={`text-xs px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                                                  confirmAction === 'clear-all'
-                                                    ? 'bg-red-600 hover:bg-red-500 text-white'
-                                                    : 'bg-amber-600 hover:bg-amber-500 text-white'
-                                                }`}
-                                              >
-                                                {deletingBulk
-                                                  ? 'Deleting...'
-                                                  : confirmAction === 'clear-all'
-                                                    ? 'Delete All'
-                                                    : 'Delete Pushed'}
-                                              </button>
-                                            </div>
-                                          </div>
-                                        )}
-                                      </>
-                                    )}
-                                  </div>
-                                );
-                              })()}
-
-                            {/* Render sub-agents nested under lead */}
-                            {subs.length > 0 && (!collapsedAgents[agent.id] || isActive) && (
-                              <div className="border-l border-gray-700/50 ml-3">
-                                {subs.map((sub: any) => renderAgent(sub, indent + 1))}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      };
-
-                      return topLevel.map((agent: any) => renderAgent(agent, 0));
-                    })()}
-
                     {(() => {
                       const isMenuCollapsed = collapsedProjectMenus[project.id] ?? true;
                       const menuActive = isProjectMenuRoute(currentView, project.id);
@@ -1066,6 +677,15 @@ export default function Sidebar({
                           >
                             <Target size={14} className="flex-shrink-0" />
                             <span className="truncate">Epics</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate(`skills:${project.id}`)}
+                            className={projectMenuLinkClass(currentView === `skills:${project.id}`)}
+                          >
+                            <Puzzle size={14} className="flex-shrink-0" />
+                            <span className="truncate">Skills</span>
                           </button>
 
                           <button
@@ -1306,6 +926,478 @@ export default function Sidebar({
                   </div>
                 )}
 
+                {/* Agents within project (auto-expand if single agent) */}
+                {(!isCollapsed || activeAgents.length === 1) && (
+                  <div className={activeAgents.length > 1 ? 'ml-3' : ''}>
+                    {(() => {
+                      // Hide the reviewer agent row; it's edited via the per-project Reviewer page below.
+                      const topLevel = activeAgents.filter(
+                        (a: any) =>
+                          !a.parentAgentId && a.role !== 'reviewer' && a.role !== 'skill-builder',
+                      );
+                      const subAgentMap: Record<string, any> = {};
+                      activeAgents.forEach((a: any) => {
+                        if (a.parentAgentId) {
+                          if (!subAgentMap[a.parentAgentId]) subAgentMap[a.parentAgentId] = [];
+                          subAgentMap[a.parentAgentId].push(a);
+                        }
+                      });
+
+                      const renderAgent = (agent: any, indent: any = 0) => {
+                        const isActive = activeAgentId === agent.id;
+                        const isExpanded = !!expandedAgents[agent.id];
+                        const agentSessions = sessionsForAgent(agent.id);
+                        const subs = subAgentMap[agent.id] || [];
+                        const isTopLevel =
+                          agent.role === 'lead' ||
+                          agent.role === 'docs' ||
+                          agent.role === 'intake' ||
+                          subs.length > 0;
+                        const isLead = agent.role === 'lead' || subs.length > 0;
+
+                        return (
+                          <div
+                            key={agent.id}
+                            style={indent > 0 ? { marginLeft: `${indent * 12}px` } : {}}
+                          >
+                            <div
+                              className={`w-full flex items-center gap-1 rounded-lg mb-0.5 transition-colors ${
+                                isActive && currentView === 'chat'
+                                  ? 'bg-gray-800 text-white'
+                                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  // Primary affordance: make this the active chat
+                                  // agent and jump to chat. The chevron beside it
+                                  // (separate button) expands/collapses the session
+                                  // list WITHOUT switching, so a non-active agent's
+                                  // sessions can be peeked at too.
+                                  onSelectAgent(agent.id);
+                                  onNavigate('chat');
+                                }}
+                                className={`flex-1 min-w-0 text-left px-3 py-2 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer ${
+                                  isActive && currentView === 'chat'
+                                    ? 'text-white'
+                                    : 'text-gray-400 hover:text-gray-200'
+                                }`}
+                              >
+                                <div className="relative flex-shrink-0">
+                                  {indent > 0 && (
+                                    <span className="absolute -left-3 top-1/2 w-2 border-t border-gray-700" />
+                                  )}
+                                  {agent.avatar ? (
+                                    <AgentAvatar
+                                      avatar={agent.avatar}
+                                      color={agent.color}
+                                      size={20}
+                                      apiBase={getServerBase()}
+                                    />
+                                  ) : (
+                                    <span
+                                      className={`block ${isTopLevel ? 'w-2.5 h-2.5 rounded-sm' : 'w-2.5 h-2.5 rounded-full'}`}
+                                      style={{ backgroundColor: agent.color }}
+                                    />
+                                  )}
+                                  {isRecent(agent.lastActivity) && (
+                                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-500 rounded-full border border-gray-900" />
+                                  )}
+                                </div>
+                                <span className="flex-1 truncate text-sm">
+                                  {agent.name}
+                                  {isLead && (
+                                    <span className="text-xs text-gray-600 ml-1">lead</span>
+                                  )}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e: any) => {
+                                  e.stopPropagation();
+                                  toggleAgentExpanded(agent.id);
+                                }}
+                                aria-expanded={isExpanded}
+                                aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${agent.name} sessions`}
+                                title={isExpanded ? 'Hide sessions' : 'Show sessions'}
+                                className="flex-shrink-0 px-2 py-2 text-gray-500 hover:text-gray-200 transition-colors"
+                              >
+                                <span className="text-lg leading-none">
+                                  {isExpanded ? '▾' : '▸'}
+                                </span>
+                              </button>
+                              {project.mode !== 'workflow' && activeReviews[agent.name] && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const sid = activeReviews[agent.name]?.sessionId;
+                                    if (sid) focusSession(agent.id, sid);
+                                  }}
+                                  className="flex-shrink-0 inline-flex items-center gap-1 px-1.5 py-1 mr-1 rounded text-[10px] font-medium bg-amber-500/20 text-amber-400 animate-pulse cursor-pointer hover:bg-amber-500/30"
+                                  title={`Reviewing: ${activeReviews[agent.name].cardTitle}`}
+                                >
+                                  reviewing PR
+                                </button>
+                              )}
+                              {isExpanded && (
+                                <button
+                                  type="button"
+                                  onClick={(e: any) => toggleAgentCollapse(agent.id, e)}
+                                  className="flex-shrink-0 pr-2 text-gray-500 hover:text-gray-300 text-xs leading-none flex items-center cursor-pointer"
+                                  title={
+                                    collapsedAgents[agent.id]
+                                      ? 'Show all sessions'
+                                      : 'Show actionable only'
+                                  }
+                                >
+                                  {collapsedAgents[agent.id] ? '···' : '≡'}
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Sessions for expanded agent. */}
+                            {isExpanded &&
+                              (() => {
+                                const agentCollapsed = !!collapsedAgents[agent.id];
+                                const visibleSessions = agentCollapsed
+                                  ? agentSessions.filter(isSessionActionable)
+                                  : agentSessions;
+                                if (agentCollapsed && visibleSessions.length === 0) return null;
+                                return (
+                                  <div className="ml-5 mb-2" data-testid="agent-sessions-list">
+                                    {visibleSessions.map((session: any) => {
+                                      const sessionState = deriveSessionState(session, {
+                                        activeTaskSessionIds,
+                                        finalizeStatusBySession,
+                                      });
+                                      const isEditing = editingSessionId === session.id;
+                                      const prReady = changesReadyBySession[session.id];
+                                      const resolvePrHref =
+                                        prReady && isResolvePrSessionTitle(session.name)
+                                          ? inferPrUrlFromSessionTitle(
+                                              session.name,
+                                              project.githubRepo,
+                                            )
+                                          : null;
+                                      return (
+                                        <div
+                                          key={session.id}
+                                          onMouseEnter={() => setHoveredSession(session.id)}
+                                          onMouseLeave={() => setHoveredSession(null)}
+                                          className={`group relative flex items-center rounded-md mb-0.5 transition-colors ${
+                                            activeSessionId === session.id
+                                              ? 'bg-gray-800 text-white'
+                                              : 'text-gray-500 hover:bg-gray-800/50 hover:text-gray-300'
+                                          }`}
+                                        >
+                                          {isEditing ? (
+                                            <input
+                                              autoFocus
+                                              value={editingSessionName}
+                                              onChange={(e: any) =>
+                                                setEditingSessionName(e.target.value)
+                                              }
+                                              onKeyDown={(e: any) => {
+                                                if (
+                                                  e.key === 'Enter' &&
+                                                  editingSessionName.trim()
+                                                ) {
+                                                  renameSavedRef.current = true;
+                                                  onRenameSession(
+                                                    session.id,
+                                                    editingSessionName.trim(),
+                                                  );
+                                                  setEditingSessionId(null);
+                                                } else if (e.key === 'Escape') {
+                                                  renameSavedRef.current = true;
+                                                  setEditingSessionId(null);
+                                                }
+                                              }}
+                                              onBlur={() => {
+                                                if (renameSavedRef.current) {
+                                                  renameSavedRef.current = false;
+                                                  return;
+                                                }
+                                                if (
+                                                  editingSessionName.trim() &&
+                                                  editingSessionName.trim() !== session.name
+                                                ) {
+                                                  onRenameSession(
+                                                    session.id,
+                                                    editingSessionName.trim(),
+                                                  );
+                                                }
+                                                setEditingSessionId(null);
+                                              }}
+                                              className="flex-1 text-xs bg-gray-700 text-gray-200 px-2 py-1.5 md:py-1 rounded outline-none focus:ring-1 focus:ring-indigo-500 mx-1"
+                                            />
+                                          ) : (
+                                            <>
+                                              {resolvePrHref && (
+                                                <button
+                                                  type="button"
+                                                  data-testid="resolve-pr-external-link"
+                                                  className="flex-shrink-0 p-1 mr-0.5 rounded text-sky-400 hover:text-sky-300 hover:bg-gray-700/50"
+                                                  title="Open existing PR on GitHub"
+                                                  onClick={(e: any) => {
+                                                    e.stopPropagation();
+                                                    window.open(
+                                                      resolvePrHref,
+                                                      '_blank',
+                                                      'noopener,noreferrer',
+                                                    );
+                                                  }}
+                                                >
+                                                  <ExternalLink size={11} />
+                                                </button>
+                                              )}
+                                              <button
+                                                type="button"
+                                                onClick={() => focusSession(agent.id, session.id)}
+                                                onDoubleClick={(e: any) => {
+                                                  e.stopPropagation();
+                                                  setEditingSessionId(session.id);
+                                                  setEditingSessionName(session.name);
+                                                }}
+                                                className="flex-1 min-w-0 text-left px-2 py-2 md:py-1.5 pr-7 truncate text-xs flex items-center gap-1.5 cursor-pointer"
+                                              >
+                                                <SessionStateIcon
+                                                  state={sessionState}
+                                                  size={12}
+                                                  testId={`session-state-icon-${session.id}`}
+                                                />
+                                                {subagentsBySession[session.id]?.running > 0 && (
+                                                  <span
+                                                    className="flex items-center gap-0.5 text-[9px] text-indigo-400 flex-shrink-0"
+                                                    title={`${subagentsBySession[session.id].running} subagent${subagentsBySession[session.id].running === 1 ? '' : 's'} running`}
+                                                  >
+                                                    <GitFork size={10} />
+                                                    {subagentsBySession[session.id].running}
+                                                  </span>
+                                                )}
+                                                <span className="truncate">{session.name}</span>
+                                                {session.advisor_count > 0 && (
+                                                  <span
+                                                    className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-800/50"
+                                                    title={`${session.advisor_count} advisor${session.advisor_count !== 1 ? 's' : ''}`}
+                                                  >
+                                                    +{session.advisor_count}
+                                                  </span>
+                                                )}
+                                              </button>
+                                            </>
+                                          )}
+                                          {deletingSessionIds.has(session.id) ? (
+                                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 text-xs animate-spin pointer-events-none">
+                                              ⟳
+                                            </span>
+                                          ) : hoveredSession === session.id && !isEditing ? (
+                                            <button
+                                              type="button"
+                                              onClick={(e: any) => {
+                                                e.stopPropagation();
+                                                onDeleteSession(session.id);
+                                              }}
+                                              className="absolute right-1 top-1/2 -translate-y-1/2 z-10 p-1.5 text-gray-600 hover:text-red-400 text-xs rounded hover:bg-gray-700/80"
+                                              title="Delete session"
+                                            >
+                                              ✕
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                    {!agentCollapsed && (
+                                      <>
+                                        <div className="flex items-center gap-1 mt-1">
+                                          <button
+                                            onClick={() => onNewSession(agent.id)}
+                                            className="text-xs text-gray-600 hover:text-gray-400 px-2 py-1 transition-colors"
+                                          >
+                                            + New Session
+                                          </button>
+                                          {agentSessions.length > 0 && (
+                                            <div className="ml-auto flex items-center gap-0.5 pr-1">
+                                              {/* Single bulk-clear affordance. The
+                                                  underlying action clears sessions whose
+                                                  work has merged (the settled terminal
+                                                  state once per-session auto-merge runs);
+                                                  it is labelled "Clear pushed" because that
+                                                  is the term users think in ("pushed =
+                                                  shipped"). */}
+                                              <button
+                                                onClick={() => {
+                                                  setConfirmAgentId(agent.id);
+                                                  setConfirmAction('clear-merged');
+                                                }}
+                                                disabled={!!deletingBulk}
+                                                className="text-[10px] text-gray-600 hover:text-amber-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                title="Clear sessions with pushed changes"
+                                              >
+                                                {deletingBulk === 'merged' ? '...' : 'Clear pushed'}
+                                              </button>
+                                              <button
+                                                onClick={() => {
+                                                  setConfirmAgentId(agent.id);
+                                                  setConfirmAction('clear-all');
+                                                }}
+                                                disabled={!!deletingBulk}
+                                                className="text-gray-600 hover:text-red-400 p-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                title="Clear all sessions"
+                                              >
+                                                {deletingBulk === 'all' ? (
+                                                  <span className="text-xs animate-spin inline-block">
+                                                    ⟳
+                                                  </span>
+                                                ) : (
+                                                  <Trash2 size={12} />
+                                                )}
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                        {/* Archived (soft-deleted) sessions —
+                                            recovery window is 24 hours, server
+                                            enforces the cut-off. Collapsed by
+                                            default to keep the sidebar quiet
+                                            when nothing is pending recovery. */}
+                                        {archivedForAgent(agent.id).length > 0 && (
+                                          <div
+                                            className="mt-2 border-t border-gray-800/50 pt-1"
+                                            data-testid="archived-sessions-section"
+                                          >
+                                            <button
+                                              onClick={() => setArchivedExpanded((v: any) => !v)}
+                                              className="w-full text-left px-2 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-600 hover:text-gray-400 transition-colors"
+                                            >
+                                              <Archive size={10} />
+                                              <span className="flex-1">
+                                                Archived ({archivedForAgent(agent.id).length})
+                                              </span>
+                                              <span className="text-gray-600">
+                                                {archivedExpanded ? '▾' : '▸'}
+                                              </span>
+                                            </button>
+                                            {archivedExpanded && (
+                                              <div data-testid="archived-sessions-list">
+                                                {archivedForAgent(agent.id).map((a: any) => {
+                                                  const purge = daysUntilPurge(a.deleted_at);
+                                                  // App.jsx always passes a Set; optional chaining
+                                                  // tolerates a stale consumer that forgot the prop.
+                                                  const isRestoring = restoringSessionIds.has(a.id);
+                                                  const urgent = purge && purge.daysLeft <= 1;
+                                                  return (
+                                                    <div
+                                                      key={a.id}
+                                                      className="group flex items-center rounded-md mb-0.5 px-2 py-1 text-xs text-gray-500 hover:bg-gray-800/40"
+                                                    >
+                                                      <div className="flex-1 min-w-0">
+                                                        <div className="truncate">{a.name}</div>
+                                                        {purge && (
+                                                          <div
+                                                            className={`text-[10px] ${
+                                                              urgent
+                                                                ? 'text-amber-400'
+                                                                : 'text-gray-600'
+                                                            }`}
+                                                          >
+                                                            {purge.label}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                      <button
+                                                        onClick={() =>
+                                                          onRestoreSession && onRestoreSession(a.id)
+                                                        }
+                                                        disabled={isRestoring}
+                                                        className="ml-2 flex items-center gap-1 text-[10px] text-gray-500 hover:text-emerald-400 px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                        title="Restore session"
+                                                      >
+                                                        {isRestoring ? (
+                                                          <span className="animate-spin inline-block">
+                                                            ⟳
+                                                          </span>
+                                                        ) : (
+                                                          <RotateCcw size={11} />
+                                                        )}
+                                                        Restore
+                                                      </button>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                        {/* Confirmation dialog — scoped to the agent the
+                                            action was triggered on. The confirm state is
+                                            global, so without the `confirmAgentId === agent.id`
+                                            guard the dialog would also render under any OTHER
+                                            expanded agent and could clear the wrong agent's
+                                            sessions. */}
+                                        {confirmAction && confirmAgentId === agent.id && (
+                                          <div className="mx-1 mt-1 p-2 bg-gray-800 border border-gray-700 rounded-lg">
+                                            <p className="text-xs text-gray-300 mb-2">
+                                              {confirmAction === 'clear-all'
+                                                ? `Delete all ${agentSessions.length} session${agentSessions.length !== 1 ? 's' : ''}? This cannot be undone.`
+                                                : `Delete all sessions with pushed changes? Sessions in any other state will be kept.`}
+                                            </p>
+                                            <div className="flex gap-2 justify-end">
+                                              <button
+                                                onClick={() => setConfirmAction(null)}
+                                                className="text-xs px-2 py-1 text-gray-400 hover:text-gray-200 transition-colors"
+                                              >
+                                                Cancel
+                                              </button>
+                                              <button
+                                                onClick={async () => {
+                                                  const targetAgentId = confirmAgentId || agent.id;
+                                                  if (confirmAction === 'clear-all') {
+                                                    await onClearAllSessions(targetAgentId);
+                                                  } else {
+                                                    await onClearMergedSessions(targetAgentId);
+                                                  }
+                                                  setConfirmAction(null);
+                                                  setConfirmAgentId(null);
+                                                }}
+                                                disabled={!!deletingBulk}
+                                                className={`text-xs px-2 py-1 rounded transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                                                  confirmAction === 'clear-all'
+                                                    ? 'bg-red-600 hover:bg-red-500 text-white'
+                                                    : 'bg-amber-600 hover:bg-amber-500 text-white'
+                                                }`}
+                                              >
+                                                {deletingBulk
+                                                  ? 'Deleting...'
+                                                  : confirmAction === 'clear-all'
+                                                    ? 'Delete All'
+                                                    : 'Delete Pushed'}
+                                              </button>
+                                            </div>
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+
+                            {/* Render sub-agents nested under lead */}
+                            {subs.length > 0 && (!collapsedAgents[agent.id] || isExpanded) && (
+                              <div className="border-l border-gray-700/50 ml-3">
+                                {subs.map((sub: any) => renderAgent(sub, indent + 1))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      };
+
+                      return topLevel.map((agent: any) => renderAgent(agent, 0));
+                    })()}
+                  </div>
+                )}
+
                 {/* When the project is collapsed we still surface any actionable
                     sessions (running / PR-ready) belonging to the active agent in
                     this project, so users never miss a running task or a PR that's
@@ -1459,19 +1551,6 @@ export default function Sidebar({
 
       {/* Bottom nav */}
       <div className="border-t border-gray-800 p-3 space-y-1">
-        <button
-          onClick={() => onNavigate('skills')}
-          className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${
-            currentView === 'skills' || currentView.startsWith('skills:')
-              ? 'bg-gray-800 text-white'
-              : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <BookOpen size={16} />
-            <span>Skills</span>
-          </span>
-        </button>
         <button
           onClick={() => onNavigate('settings')}
           className={`w-full text-left px-3 py-3 md:py-2 rounded-lg flex items-center gap-2 text-sm transition-colors min-h-[44px] ${

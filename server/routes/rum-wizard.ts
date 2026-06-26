@@ -169,6 +169,7 @@ export function buildRumKickoffPrompt(
   const target = draft.plan.targetFile ?? '(none detected — pick from entryCandidates)';
   const style = draft.plan.injectionStyle ?? '(undetermined)';
   const cspCount = draft.cspHits.length;
+  const webRootLabel = draft.webRoot && draft.webRoot !== '.' ? draft.webRoot : 'repo root';
   const maskingPolicy = maskAllText
     ? 'mask ALL text and inputs — only structure, layout, navigation and interaction timing are recorded (strictest)'
     : 'mask password and PII fields only — other input values and visible text are recorded verbatim';
@@ -179,7 +180,9 @@ export function buildRumKickoffPrompt(
     '`agent-hub/…` branch. Inject the rrweb recorder, commit, and let Finalize',
     'Code Changes push and open the PR. **Do not** create a new branch.',
     '',
-    'This repo scan detected framework **' +
+    'This repo scan detected web app root **' +
+      webRootLabel +
+      '**, framework **' +
       draft.framework +
       '**, target file **' +
       target +
@@ -203,7 +206,7 @@ export function buildRumKickoffPrompt(
     draftJson,
     '```',
     '',
-    'Key fields: `framework`, `plan.targetFile`, `plan.injectionStyle` (`module-init` | `client-component` | `script-tag`), `plan.recommendedConnectSrc` (ingest origin for `connect-src`), `plan.alreadyInstrumented`, `cspHits[]`, `entryCandidates[]`, `typescript`.',
+    'Key fields: `webRoot`, `framework`, `plan.targetFile`, `plan.injectionStyle` (`module-init` | `client-component` | `script-tag`), `plan.recommendedConnectSrc` (ingest origin for `connect-src`), `plan.alreadyInstrumented`, `cspHits[]`, `entryCandidates[]`, `typescript`.',
     '',
     '## Required walkthrough order',
     '',

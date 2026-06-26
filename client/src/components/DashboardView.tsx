@@ -78,28 +78,30 @@ export default function DashboardView({
   // before writing — otherwise switching orgs could flash the old org's data.
   const orgIdRef = useRef(orgId);
   orgIdRef.current = orgId;
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Strict Mode runs effect cleanup before the second mount; reset to true on
+    // each mount so async loads are not permanently ignored after remount.
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const load = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
-      const req = beginRequest(genRef.current, { silent });
       // Captured at call time; a result may only commit while its org is still
       // the selected one.
       const reqOrgId = orgId;
       const orgStillCurrent = () => orgIdRef.current === reqOrgId;
       if (!orgId) {
-        if (mountedRef.current && orgStillCurrent() && req.canCommit()) {
-          req.commit();
+        if (mountedRef.current && orgStillCurrent()) {
           setData(null);
           setError(null);
+          setLoading(false);
         }
         return;
       }
+      const req = beginRequest(genRef.current, { silent });
       // Background polls refresh in place: no spinner, and a transient failure
       // keeps the last-good dashboard on screen instead of flashing an error.
       if (!silent) {
@@ -535,12 +537,12 @@ function SupportIssuesPanel({ onOpenProjectSupport }: any) {
   // can't discard an older foreground load that later succeeds.
   const mountedRef = useRef(true);
   const genRef = useRef(createRequestGenerationState());
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     const req = beginRequest(genRef.current, { silent });

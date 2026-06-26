@@ -55,6 +55,10 @@ const RumSetupDraft = registerComponent(
   'RumSetupDraft',
   z
     .object({
+      webRoot: z.string().openapi({
+        description:
+          'Directory relative to project.cwd where the browser app lives (`.` = repo root).',
+      }),
       framework: z.enum([
         'next',
         'nuxt',

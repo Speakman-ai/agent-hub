@@ -16,6 +16,8 @@ import {
   Check,
   Eye,
   Unlink,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import {
   DndContext,
@@ -40,6 +42,12 @@ import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { epicFormToUpdateBody } from '../utils/epics';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { cardShortLabel, assigneeInitials, assigneeColorClass } from '../utils/kanbanCard';
+import {
+  toggleKanbanCardSelection,
+  setKanbanColumnSelection,
+  pruneKanbanSelection,
+  isKanbanColumnFullySelected,
+} from '../utils/kanbanSelection';
 import { shortDate, formatDateTime } from '../utils/time';
 import { filterAgentsByProject } from '../utils/kanbanAgents';
 import { MarkdownContent } from './MarkdownRenderer';
@@ -204,23 +212,55 @@ function ColumnLoadMoreSentinel({ columnId, onLoadMore }: any) {
  * that follows the cursor during a drag. `overlay` lifts it with a shadow/scale
  * so the dragged card visibly "pops" off the board.
  */
-function KanbanCard({ card, board, epics, dragging = false, overlay = false }: any) {
+function KanbanCard({
+  card,
+  board,
+  epics,
+  dragging = false,
+  overlay = false,
+  selected = false,
+  showCheckbox = false,
+  onToggleSelect,
+}: any) {
   const cardEpic = card.epic_id ? epics.find((e: any) => e.id === card.epic_id) : null;
   const shortLabel = cardShortLabel(board?.card_prefix, card.short_id);
   const cardLabels = card.labels ? card.labels.split(',').filter(Boolean) : [];
   return (
     <div
-      className={`group w-full rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-colors border-l-[3px] ${
-        PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium
-      } ${dragging ? 'opacity-40' : ''} ${
+      className={`group w-full rounded-xl border bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-colors border-l-[3px] ${
+        selected
+          ? 'border-indigo-400/60 ring-1 ring-indigo-400/30 bg-indigo-500/[0.08]'
+          : 'border-white/[0.08]'
+      } ${PRIORITY_ACCENT[card.priority] || PRIORITY_ACCENT.medium} ${dragging ? 'opacity-40' : ''} ${
         overlay
           ? 'shadow-2xl shadow-black/60 ring-1 ring-indigo-400/40 rotate-[1.5deg] scale-[1.02]'
           : ''
       }`}
+      data-selected={selected ? 'true' : undefined}
     >
       <div className="p-3">
         {/* Header: priority glyph + short id (left) · status glyphs (right). */}
         <div className="flex items-center gap-1.5">
+          {showCheckbox ? (
+            <button
+              type="button"
+              aria-label={selected ? 'Deselect card' : 'Select card'}
+              aria-pressed={selected}
+              data-testid={`card-select-${card.id}`}
+              onClick={(e: any) => {
+                e.stopPropagation();
+                onToggleSelect?.(card.id, { shiftKey: e.shiftKey });
+              }}
+              onPointerDown={(e: any) => e.stopPropagation()}
+              className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 transition-colors ${
+                selected
+                  ? 'text-indigo-300'
+                  : 'text-gray-600 opacity-0 group-hover:opacity-100 hover:text-gray-400'
+              }`}
+            >
+              {selected ? <CheckSquare size={14} /> : <Square size={14} />}
+            </button>
+          ) : null}
           <PriorityIcon priority={card.priority} />
           {shortLabel && (
             <span
@@ -351,13 +391,38 @@ function KanbanCard({ card, board, epics, dragging = false, overlay = false }: a
  * PointerSensor's distance activation (see KanbanBoard) means a plain click
  * still falls through to `onOpen` instead of starting a drag.
  */
-function SortableCard({ card, board, epics, onOpen, onContextMenu }: any) {
+function SortableCard({
+  card,
+  board,
+  epics,
+  onOpen,
+  onContextMenu,
+  selected,
+  showCheckbox,
+  onToggleSelect,
+  selectionMode,
+  selectedCount,
+  dragDisabled,
+  onClearSelection,
+}: any) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
+    disabled: dragDisabled,
   });
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
+  };
+  const handleClick = (e: any) => {
+    const modifier = e.metaKey || e.ctrlKey || e.shiftKey;
+    if (selectionMode || modifier) {
+      onToggleSelect(card.id, { shiftKey: e.shiftKey });
+      return;
+    }
+    if (selectedCount > 0) {
+      onClearSelection?.();
+    }
+    onOpen(card);
   };
   return (
     <div
@@ -367,10 +432,103 @@ function SortableCard({ card, board, epics, onOpen, onContextMenu }: any) {
       className="w-full touch-none"
       {...attributes}
       {...listeners}
-      onClick={() => onOpen(card)}
+      onClick={handleClick}
       onContextMenu={(e: any) => onContextMenu(e, card)}
     >
-      <KanbanCard card={card} board={board} epics={epics} dragging={isDragging} />
+      <KanbanCard
+        card={card}
+        board={board}
+        epics={epics}
+        dragging={isDragging}
+        selected={selected}
+        showCheckbox={showCheckbox}
+        onToggleSelect={onToggleSelect}
+      />
+    </div>
+  );
+}
+
+/** Floating toolbar for bulk actions on selected cards. */
+function KanbanBulkActionBar({
+  count,
+  columns,
+  onMove,
+  onSetPriority,
+  onDelete,
+  onClear,
+  busy,
+}: any) {
+  return (
+    <div
+      data-testid="kanban-bulk-bar"
+      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-2 rounded-xl border border-white/[0.1] bg-gray-900/95 backdrop-blur-md shadow-2xl shadow-black/50"
+    >
+      <span className="text-xs font-medium text-gray-200 tabular-nums px-1">{count} selected</span>
+      <span className="w-px h-5 bg-white/[0.08]" aria-hidden="true" />
+      <label className="sr-only" htmlFor="kanban-bulk-move">
+        Move selected cards
+      </label>
+      <select
+        id="kanban-bulk-move"
+        disabled={busy}
+        defaultValue=""
+        onChange={(e: any) => {
+          const colId = e.target.value;
+          e.target.value = '';
+          if (colId) onMove(colId);
+        }}
+        className="h-8 px-2 rounded-lg text-xs bg-white/[0.06] border border-white/[0.08] text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 disabled:opacity-50"
+      >
+        <option value="" disabled>
+          Move to…
+        </option>
+        {columns.map((col: any) => (
+          <option key={col.id} value={col.id}>
+            {col.name}
+          </option>
+        ))}
+      </select>
+      <label className="sr-only" htmlFor="kanban-bulk-priority">
+        Set priority
+      </label>
+      <select
+        id="kanban-bulk-priority"
+        disabled={busy}
+        defaultValue=""
+        onChange={(e: any) => {
+          const priority = e.target.value;
+          e.target.value = '';
+          if (priority) onSetPriority(priority);
+        }}
+        className="h-8 px-2 rounded-lg text-xs bg-white/[0.06] border border-white/[0.08] text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 disabled:opacity-50"
+      >
+        <option value="" disabled>
+          Priority…
+        </option>
+        {PRIORITIES.map((p: any) => (
+          <option key={p} value={p}>
+            {p[0].toUpperCase()}
+            {p.slice(1)}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onDelete}
+        className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-medium text-red-300 hover:text-red-200 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors disabled:opacity-50"
+      >
+        <Trash2 size={13} />
+        Delete
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onClear}
+        className="h-8 px-2.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-white/[0.06] transition-colors disabled:opacity-50"
+      >
+        Clear
+      </button>
     </div>
   );
 }
@@ -455,6 +613,22 @@ export default function KanbanBoard({
   const [autonomousSaving, setAutonomousSaving] = useState(false);
 
   const [pendingMove, setPendingMove] = useState<any>(null); // { card, targetColumn, position }
+  const [pendingBulkMove, setPendingBulkMove] = useState<any>(null); // { cards, targetColumn }
+
+  // Multi-select: Cmd/Ctrl+click, Shift+range, or pinned "Select" mode.
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(() => new Set());
+  const selectionAnchorRef = useRef<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const selectedCount = selectedCardIds.size;
+  const showSelectionUi = selectionMode || selectedCount > 0;
+
+  const clearSelection = useCallback(() => {
+    setSelectedCardIds(new Set());
+    selectionAnchorRef.current = null;
+    setSelectionMode(false);
+  }, []);
 
   // Right-click quick-actions menu: { card, x, y } or null.
   const [contextMenu, setContextMenu] = useState<any>(null);
@@ -742,6 +916,25 @@ export default function KanbanBoard({
     }
   }, [addingInColumn]);
 
+  // Drop deleted / reconciled cards from the selection set.
+  useEffect(() => {
+    const existing = new Set(cards.map((c: any) => c.id));
+    setSelectedCardIds((prev) => {
+      const pruned = pruneKanbanSelection(prev, existing);
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }, [cards]);
+
+  // Escape clears selection.
+  useEffect(() => {
+    if (!showSelectionUi) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') clearSelection();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showSelectionUi, clearSelection]);
+
   const cardsForColumn = (columnId: any) => {
     const q = searchQuery.toLowerCase().trim();
     return cards
@@ -757,6 +950,40 @@ export default function KanbanBoard({
       )
       .sort((a: any, b: any) => a.position - b.position);
   };
+
+  const orderedVisibleCardIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const col of columns) {
+      for (const c of cardsForColumn(col.id)) ids.push(c.id);
+    }
+    return ids;
+  }, [columns, cards, searchQuery, selectedEpicId]);
+
+  const handleToggleCardSelect = useCallback(
+    (cardId: string, opts: { shiftKey?: boolean } = {}) => {
+      setSelectedCardIds((prev) => {
+        const { selected, anchorId } = toggleKanbanCardSelection(prev, cardId, {
+          shiftKey: opts.shiftKey,
+          anchorId: selectionAnchorRef.current,
+          orderedVisibleIds: orderedVisibleCardIds,
+        });
+        selectionAnchorRef.current = anchorId;
+        return selected;
+      });
+    },
+    [orderedVisibleCardIds],
+  );
+
+  const handleToggleColumnSelect = (columnId: string, colCardIds: string[]) => {
+    const fullySelected = isKanbanColumnFullySelected(selectedCardIds, colCardIds);
+    setSelectedCardIds(setKanbanColumnSelection(selectedCardIds, colCardIds, !fullySelected));
+    if (colCardIds.length > 0) selectionAnchorRef.current = colCardIds[0]!;
+  };
+
+  const selectedCards = useMemo(
+    () => cards.filter((c: any) => selectedCardIds.has(c.id)),
+    [cards, selectedCardIds],
+  );
 
   // --- Drag and Drop (@dnd-kit) ---
   //
@@ -845,6 +1072,99 @@ export default function KanbanBoard({
     after: any = false,
   ) => {
     await applyResolvedMove(card, targetColumnId, overCardId, after);
+  };
+
+  const commitBulkMove = async (toMove: any[], targetColumnId: string) => {
+    if (toMove.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const columnIndex = (id: string) => columns.findIndex((c: any) => c.id === id);
+      const sorted = [...toMove].sort((a, b) => {
+        const colDiff = columnIndex(a.column_id) - columnIndex(b.column_id);
+        if (colDiff !== 0) return colDiff;
+        return a.position - b.position;
+      });
+
+      let workingCards = [...cards];
+      const allUpdates: any[] = [];
+      for (const card of sorted) {
+        adjustColumnTotals(card.column_id, targetColumnId);
+        const updates = computeMoveUpdates(workingCards, card.id, targetColumnId, null, true);
+        allUpdates.push(...updates);
+        workingCards = workingCards.map((c: any) => {
+          const u = updates.find((x: any) => x.id === c.id);
+          return u ? { ...c, column_id: u.columnId, position: u.position } : c;
+        });
+      }
+
+      const deduped = Array.from(new Map(allUpdates.map((u) => [u.id, u])).values());
+      applyUpdatesOptimistic(deduped);
+      await commitUpdates(deduped);
+      clearSelection();
+      reconcileBoard();
+    } catch (err: any) {
+      console.error('Bulk move failed:', err);
+      reconcileBoard();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkMoveToColumn = async (targetColumnId: string) => {
+    const targetColumn = columns.find((c: any) => c.id === targetColumnId);
+    if (!targetColumn || selectedCards.length === 0) return;
+
+    const needsConfirm = selectedCards.some((card: any) =>
+      shouldConfirmMove(card, card.column_id, targetColumn),
+    );
+    if (needsConfirm) {
+      setPendingBulkMove({ cards: selectedCards, targetColumn });
+      return;
+    }
+    await commitBulkMove(selectedCards, targetColumnId);
+  };
+
+  const bulkSetPriority = async (priority: string) => {
+    const ids = [...selectedCardIds];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    setCards((prev: any) =>
+      prev.map((c: any) => (selectedCardIds.has(c.id) ? { ...c, priority } : c)),
+    );
+    try {
+      await Promise.all(ids.map((id) => api.updateCard(projectId, id, { priority })));
+      clearSelection();
+      reconcileBoard();
+    } catch (err: any) {
+      console.error('Bulk priority update failed:', err);
+      reconcileBoard();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkDelete = async () => {
+    const ids = [...selectedCardIds];
+    if (ids.length === 0) return;
+    if (
+      !window.confirm(
+        `Delete ${ids.length} card${ids.length === 1 ? '' : 's'}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setBulkBusy(true);
+    setCards((prev: any) => prev.filter((c: any) => !selectedCardIds.has(c.id)));
+    try {
+      await Promise.all(ids.map((id) => api.deleteCard(projectId, id)));
+      clearSelection();
+      reconcileBoard();
+    } catch (err: any) {
+      console.error('Bulk delete failed:', err);
+      reconcileBoard();
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   const handleDragStart = (event: any) => {
@@ -1139,6 +1459,23 @@ export default function KanbanBoard({
             </button>
           ) : null}
           <button
+            type="button"
+            onClick={() => {
+              if (selectionMode) clearSelection();
+              else setSelectionMode(true);
+            }}
+            className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
+              selectionMode
+                ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/20'
+                : 'text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.06]'
+            }`}
+            data-testid="kanban-select-mode"
+            aria-pressed={selectionMode}
+          >
+            <CheckSquare size={14} />
+            Select
+          </button>
+          <button
             onClick={() => {
               const target =
                 columns.find((c: any) => c.name.toLowerCase() !== 'backlog') || columns[0];
@@ -1238,6 +1575,7 @@ export default function KanbanBoard({
                   ? `${loadedInColumn} of ${columnTotal}`
                   : String(columnTotal);
               const colCardIds = colCards.map((c: any) => c.id);
+              const columnFullySelected = isKanbanColumnFullySelected(selectedCardIds, colCardIds);
 
               return (
                 <div
@@ -1248,6 +1586,26 @@ export default function KanbanBoard({
                   <div className="px-3.5 py-3 border-b border-white/[0.05]">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
+                        {showSelectionUi && colCards.length > 0 ? (
+                          <button
+                            type="button"
+                            aria-label={
+                              columnFullySelected
+                                ? `Deselect all in ${col.name}`
+                                : `Select all in ${col.name}`
+                            }
+                            aria-pressed={columnFullySelected}
+                            data-testid={`column-select-all-${col.id}`}
+                            onClick={() => handleToggleColumnSelect(col.id, colCardIds)}
+                            className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 transition-colors ${
+                              columnFullySelected
+                                ? 'text-indigo-300'
+                                : 'text-gray-600 hover:text-gray-400'
+                            }`}
+                          >
+                            {columnFullySelected ? <CheckSquare size={14} /> : <Square size={14} />}
+                          </button>
+                        ) : null}
                         <span
                           className="w-2 h-2 rounded-full flex-shrink-0"
                           style={{ backgroundColor: columnColor }}
@@ -1280,6 +1638,15 @@ export default function KanbanBoard({
                           epics={epics}
                           onOpen={openDetail}
                           onContextMenu={openCardContextMenu}
+                          selected={selectedCardIds.has(card.id)}
+                          showCheckbox={showSelectionUi}
+                          onToggleSelect={handleToggleCardSelect}
+                          selectionMode={selectionMode}
+                          selectedCount={selectedCount}
+                          dragDisabled={
+                            selectionMode || (selectedCount > 1 && selectedCardIds.has(card.id))
+                          }
+                          onClearSelection={clearSelection}
                         />
                       ))}
                     </SortableContext>
@@ -1441,6 +1808,63 @@ export default function KanbanBoard({
           </div>
         </div>
       )}
+
+      {pendingBulkMove && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          data-testid="confirm-bulk-move-dialog"
+        >
+          <div className="absolute inset-0 bg-black/60" onClick={() => setPendingBulkMove(null)} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-red-900/60 rounded-xl shadow-2xl p-5">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertTriangle size={20} className="text-red-400 mt-0.5 flex-shrink-0" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {pendingBulkMove.cards.length} blocked card
+                  {pendingBulkMove.cards.length === 1 ? '' : 's'} selected
+                </h3>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  At least one selected card still has unresolved blockers. Move{' '}
+                  {pendingBulkMove.cards.length === 1 ? 'it' : 'them'} into{' '}
+                  <span className="text-gray-200">{pendingBulkMove.targetColumn.name}</span> anyway?
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingBulkMove(null)}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const { cards: toMove, targetColumn } = pendingBulkMove;
+                  setPendingBulkMove(null);
+                  await commitBulkMove(toMove, targetColumn.id);
+                }}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors"
+              >
+                Move anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedCount > 0 ? (
+        <KanbanBulkActionBar
+          count={selectedCount}
+          columns={columns}
+          onMove={bulkMoveToColumn}
+          onSetPriority={bulkSetPriority}
+          onDelete={bulkDelete}
+          onClear={clearSelection}
+          busy={bulkBusy}
+        />
+      ) : null}
 
       {/* Right-click quick-actions menu. `contextCard` re-reads the live card
           from state so submenus reflect optimistic priority/epic changes. */}

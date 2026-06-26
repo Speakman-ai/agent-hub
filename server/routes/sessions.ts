@@ -19,6 +19,7 @@ import {
 import {
   normalizeSessionMode,
   sessionHasUsableWorktree,
+  isSkillBuilderEligibleAgent,
   type SessionMode,
 } from '../session-mode.js';
 import { listSessionDesignFiles } from '../session-design-files.js';
@@ -1156,6 +1157,22 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             'worktree, so design artifacts cannot be produced.',
         });
       }
+      // Skill Builder is a dev-agent mode: chat.ts prepends a dev coach prompt
+      // and force-loads skill-authoring skills, so flipping a docs / reviewer /
+      // legacy skill-builder helper session into it would apply the wrong
+      // prompt + role. Enforce eligibility on EVERY generic mode update, not
+      // just the dedicated entry points.
+      if (
+        nextMode === 'skill-builder' &&
+        !isSkillBuilderEligibleAgent(findAgent(existing.agent_id)?.agent)
+      ) {
+        return res.status(400).json({
+          error: 'skill_builder_requires_dev_agent',
+          message:
+            "Skill Builder mode is only available on a dev agent — this session's agent " +
+            'is a helper (docs / reviewer / skill-builder) and is not eligible.',
+        });
+      }
     }
 
     getDb().transaction(() => {
@@ -1391,6 +1408,19 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         message:
           'Design mode requires a session with an isolated worktree. This session has no ' +
           'worktree, so design artifacts cannot be produced.',
+      });
+    }
+    // Skill Builder mode only runs on a dev agent (see the PATCH guard above and
+    // chat.ts's prompt/skill wiring); refuse to persist it on a helper session.
+    if (
+      mode === 'skill-builder' &&
+      !isSkillBuilderEligibleAgent(findAgent(session.agent_id)?.agent)
+    ) {
+      return res.status(400).json({
+        error: 'skill_builder_requires_dev_agent',
+        message:
+          "Skill Builder mode is only available on a dev agent — this session's agent " +
+          'is a helper (docs / reviewer / skill-builder) and is not eligible.',
       });
     }
     stmts.updateSessionMode.run(mode, req.params.sessionId);
@@ -1885,18 +1915,28 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         return res.status(400).json({ error: 'Source session has no resolvable project' });
       }
 
-      // The project must carry a seeded Skill Builder coach (role
-      // 'skill-builder'). It is seeded at project creation, not backfilled, so
-      // projects created before the Skill Builder epic won't have one yet —
-      // surface that explicitly rather than spawning the wrong agent.
-      const builder = (project.agents || []).find((a) => a.role === 'skill-builder');
-      if (!builder) {
+      // Skill Builder is a DEV-agent mode. Mirror the client's dev-agent
+      // selection: prefer the source session's agent when it is itself a
+      // non-helper dev agent, otherwise fall back to any active dev agent in the
+      // project. Reject when the project has no eligible dev agent so extraction
+      // never launches `session_mode='skill-builder'` on a docs / reviewer /
+      // legacy skill-builder helper (the same roles the UI path rejects).
+      const isDevAgent = (a: { role?: string; active?: boolean } | undefined): boolean =>
+        !!a &&
+        a.active !== false &&
+        a.role !== 'skill-builder' &&
+        a.role !== 'reviewer' &&
+        a.role !== 'docs';
+      const coachAgent = isDevAgent(sourceFound?.agent)
+        ? sourceFound!.agent
+        : (project.agents || []).find(isDevAgent);
+      if (!coachAgent) {
         return res.status(400).json({
-          error: 'skill_builder_missing',
-          message:
-            'This project has no Skill Builder coach agent. It is seeded on project creation; recreate the project or add a skill-builder agent to use this action.',
+          error:
+            'Skill Builder needs a dev agent — the source session’s project has no eligible agent.',
         });
       }
+      const coachAgentId = coachAgent.id;
 
       const transcript = buildTranscript(messages, {
         agentName: sourceFound?.agent?.name,
@@ -1905,14 +1945,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
 
       const ownerUid = resolveOwnerUserId(req as AuthenticatedRequest);
       const newSessionId = uuidv4();
-      const engine = builder.engine || 'claude-code';
+      const engine = coachAgent.engine || 'claude-code';
       const model = resolveEffectiveModel(config, engine, {
-        agentModel: builder.model,
+        agentModel: coachAgent.model,
         ownerUserId: ownerUid,
       });
       const sessionName = buildExtractSkillSessionName(source.name);
       // No worktree: the coach saves skills via the write API, not git.
-      stmts.createSession.run(newSessionId, builder.id, sessionName, engine, model, 0, 0, 1);
+      stmts.createSession.run(newSessionId, coachAgentId, sessionName, engine, model, 0, 0, 1);
+      stmts.updateSessionMode.run('skill-builder', newSessionId);
       setSessionOwner(newSessionId, ownerUid);
 
       const prompt = buildExtractSkillKickoffPrompt({
@@ -1927,7 +1968,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       // first turn runs the extraction.
       void handleChat(null, {
         type: 'chat',
-        agentId: builder.id,
+        agentId: coachAgentId,
         sessionId: newSessionId,
         content: prompt,
       }).catch((err: unknown) => {
@@ -1938,9 +1979,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       const session = stmts.getSession.get(newSessionId) as SessionRow;
       const sessionWire = session ? enrichSessionForClient(session, stmts) : null;
       if (sessionWire) {
-        broadcast({ type: 'session_created', agentId: builder.id, session: sessionWire });
+        broadcast({ type: 'session_created', agentId: coachAgentId, session: sessionWire });
       }
-      res.status(201).json({ sessionId: newSessionId, agentId: builder.id, session: sessionWire });
+      res
+        .status(201)
+        .json({ sessionId: newSessionId, agentId: coachAgentId, session: sessionWire });
     } catch (err) {
       console.error('Extract skill error:', err);
       res.status(500).json({ error: (err as Error).message });

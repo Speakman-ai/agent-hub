@@ -7,6 +7,11 @@ import { parse as parseYaml } from 'yaml';
 import { extractFirstContainerPort } from './scaffolding/detect-compose-preview.js';
 
 const COMPOSE_FILENAMES = [
+  // Agent Hub / project convention — prefer over generic docker-compose.yml
+  // (repos often keep a wizard stub at docker-compose.yml alongside the
+  // real preview stack in compose.preview.yml).
+  'compose.preview.yml',
+  'compose.preview.yaml',
   'docker-compose.yml',
   'compose.yml',
   'docker-compose.yaml',
@@ -102,7 +107,20 @@ function listComposePaths(workspaceDir: string): string[] {
       }
     }
   }
-  return [...new Set(found)].sort((a, b) => a.localeCompare(b));
+  return [...new Set(found)].sort((a, b) => {
+    const ka = composeFileSortKey(a);
+    const kb = composeFileSortKey(b);
+    return ka !== kb ? ka - kb : a.localeCompare(b);
+  });
+}
+
+/** Prefer `compose.preview.yml` over generic `docker-compose.yml` when both exist. */
+function composeFileSortKey(rel: string): number {
+  const base = path.basename(rel);
+  if (base === 'compose.preview.yml' || base === 'compose.preview.yaml') return 0;
+  if (base === 'docker-compose.yml' || base === 'docker-compose.yaml') return 1;
+  if (base === 'compose.yml' || base === 'compose.yaml') return 2;
+  return 3;
 }
 
 export function discoverComposeFiles(workspaceDir: string): ComposeFileCandidate[] {

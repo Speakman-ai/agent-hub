@@ -788,6 +788,10 @@ export const api = {
 
   // Skills & Context
   getSkills: (agentId: any) => fetchJSON(`/agents/${agentId}/skills`),
+  getProjectSkills: (projectId: any) => fetchJSON(`/projects/${projectId}/skills`),
+  // Project-owned read for the skill editor — works without a reference agent.
+  getProjectSkill: (projectId: any, skillId: any) =>
+    fetchJSON(`/projects/${projectId}/skills/${encodeURIComponent(skillId)}`),
   getSkill: (agentId: any, skillId: any) => fetchJSON(`/agents/${agentId}/skills/${skillId}`),
   getContext: (agentId: any) => fetchJSON(`/agents/${agentId}/context`),
   saveContext: (agentId: any, filename: any, content: any) =>

@@ -224,6 +224,7 @@ describe('POST /api/projects/:projectId/rum/setup-wizard', () => {
 
 describe('buildRumKickoffPrompt', () => {
   const draft: RumSetupDraft = {
+    webRoot: '.',
     framework: 'next',
     frameworkEvidence: ['next'],
     packageManager: 'npm',

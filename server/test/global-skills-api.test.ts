@@ -58,7 +58,7 @@ describe('Global (shared) skills — write/read API', () => {
     expect(parsed.content).toContain('# Shared Thing');
   });
 
-  it('GET /api/global-skills lists global skills tagged source=global', async () => {
+  it('GET /api/global-skills lists user global skills and bundled built-ins', async () => {
     await request
       .post('/api/global-skills')
       .send({ name: 'listed-global', description: 'List me.' })
@@ -70,6 +70,7 @@ describe('Global (shared) skills — write/read API', () => {
     const found = body.find((s) => s.id === 'listed-global');
     expect(found).toBeTruthy();
     expect(found?.source).toBe('global');
+    expect(body.some((s) => s.source === 'default')).toBe(true);
   });
 
   it('GET /api/global-skills/:id returns the raw SKILL.md content', async () => {

@@ -3,9 +3,8 @@
  * (Skill Builder Phase 4 — "turn this session into a skill").
  *
  * Mocks all deps; never spawns a real CLI (handleChat is a vi.fn). Asserts the
- * coach session is created against the project's skill-builder agent, the
- * transcript is handed to handleChat, and the error paths return the right
- * status codes.
+ * new session reuses the source session's agent, runs in skill-builder mode,
+ * and the transcript is handed to handleChat.
  */
 import express from 'express';
 import request from 'supertest';
@@ -58,7 +57,6 @@ function makeApp(
 
   const agents = options.agents ?? [
     { id: 'dev-1', role: 'dev', name: 'Agent Hub Dev', engine: 'claude-code' },
-    { id: 'agent-hub-skill-builder', role: 'skill-builder', name: 'Skill Builder' },
   ];
   const project = options.projectMissing
     ? undefined
@@ -100,6 +98,11 @@ function makeApp(
         },
       ),
     },
+    updateSessionMode: {
+      run: vi.fn((mode: string, id: string) => {
+        if (createdRows[id]) createdRows[id] = { ...createdRows[id], session_mode: mode };
+      }),
+    },
   };
 
   const deps = {
@@ -119,36 +122,36 @@ function makeApp(
   const app = express();
   app.use(express.json());
   app.use(createSessionRoutes(deps));
-  return { app, stmts, handleChat, broadcast };
+  return { app, stmts, handleChat, broadcast, createdRows };
 }
 
 describe('POST /api/sessions/:sessionId/extract-skill', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('spawns a skill-builder coach session and hands it the transcript', async () => {
+  it('spawns a skill-builder session on the source agent and hands it the transcript', async () => {
     const { app, stmts, handleChat, broadcast } = makeApp();
 
     const res = await request(app).post('/api/sessions/src-1/extract-skill').expect(201);
 
-    expect(res.body.agentId).toBe('agent-hub-skill-builder');
+    expect(res.body.agentId).toBe('dev-1');
     expect(res.body.sessionId).toBeTruthy();
 
-    // Coach session created against the skill-builder agent, no worktree.
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     const args = stmts.createSession.run.mock.calls[0];
-    expect(args[1]).toBe('agent-hub-skill-builder'); // agent id
-    expect(args[2]).toBe('[Skill from] Deploy staging walkthrough'); // name
-    expect(args[5]).toBe(0); // use_worktree = 0
+    expect(args[1]).toBe('dev-1');
+    expect(args[2]).toBe('[Skill from] Deploy staging walkthrough');
+    expect(args[5]).toBe(0);
 
-    // Transcript handed to the coach's first turn.
+    expect(stmts.updateSessionMode.run).toHaveBeenCalledWith('skill-builder', expect.any(String));
+
     expect(handleChat).toHaveBeenCalledTimes(1);
     const chatMsg = handleChat.mock.calls[0][1];
-    expect(chatMsg.agentId).toBe('agent-hub-skill-builder');
+    expect(chatMsg.agentId).toBe('dev-1');
     expect(chatMsg.content).toContain('how do I deploy staging');
     expect(chatMsg.content).toContain('skill-creator');
 
     expect(broadcast).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'session_created', agentId: 'agent-hub-skill-builder' }),
+      expect.objectContaining({ type: 'session_created', agentId: 'dev-1' }),
     );
   });
 
@@ -164,17 +167,45 @@ describe('POST /api/sessions/:sessionId/extract-skill', () => {
     expect(handleChat).not.toHaveBeenCalled();
   });
 
-  it('400s when the project has no skill-builder coach agent', async () => {
+  it('400s when the source session agent cannot be resolved', async () => {
     const { app, handleChat } = makeApp({
-      agents: [{ id: 'dev-1', role: 'dev', name: 'Agent Hub Dev' }],
+      agents: [{ id: 'other', role: 'dev', name: 'Other' }],
     });
-    const res = await request(app).post('/api/sessions/src-1/extract-skill').expect(400);
-    expect(res.body.error).toBe('skill_builder_missing');
+    await request(app).post('/api/sessions/src-1/extract-skill').expect(400);
     expect(handleChat).not.toHaveBeenCalled();
   });
 
   it('400s when the source session has no resolvable project', async () => {
     const { app, handleChat } = makeApp({ projectMissing: true });
+    await request(app).post('/api/sessions/src-1/extract-skill').expect(400);
+    expect(handleChat).not.toHaveBeenCalled();
+  });
+
+  it('runs the coach on a project DEV agent when the source agent is a helper (docs)', async () => {
+    // Source session belongs to a docs helper; the coach must fall back to an
+    // active dev agent so skill-builder mode never lands on a helper role.
+    const { app, stmts, handleChat } = makeApp({
+      agents: [
+        { id: 'dev-1', role: 'docs', name: 'Docs', engine: 'claude-code' },
+        { id: 'dev-2', role: 'dev', name: 'Dev', engine: 'claude-code' },
+      ],
+    });
+
+    const res = await request(app).post('/api/sessions/src-1/extract-skill').expect(201);
+
+    expect(res.body.agentId).toBe('dev-2');
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('dev-2');
+    expect(handleChat).toHaveBeenCalledTimes(1);
+    expect(handleChat.mock.calls[0][1].agentId).toBe('dev-2');
+  });
+
+  it('400s when the source agent is a helper and the project has no dev agent', async () => {
+    const { app, handleChat } = makeApp({
+      agents: [
+        { id: 'dev-1', role: 'reviewer', name: 'Reviewer', engine: 'claude-code' },
+        { id: 'sb', role: 'skill-builder', name: 'SB', engine: 'claude-code' },
+      ],
+    });
     await request(app).post('/api/sessions/src-1/extract-skill').expect(400);
     expect(handleChat).not.toHaveBeenCalled();
   });
