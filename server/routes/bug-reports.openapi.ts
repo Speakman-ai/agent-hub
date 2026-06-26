@@ -81,6 +81,16 @@ const BugReportSuccessResponse = z
       'A `bug` support ticket has been created in the `agent-hub` Customer Support queue. Result is the new ticket id; the AI investigation runs asynchronously.',
   });
 
+const BugReportIgnoredResponse = z
+  .object({
+    status: z.literal('ignored'),
+    reason: z.literal('discardable_test_report'),
+  })
+  .openapi({
+    description:
+      'The report was accepted but intentionally not queued because it matched the conservative discardable-test-report filter.',
+  });
+
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
 });
@@ -114,6 +124,10 @@ registerPath({
   },
   responses: {
     201: { description: 'Support ticket created.', content: jsonContent(BugReportSuccessResponse) },
+    202: {
+      description: 'Obvious fake test report accepted and discarded.',
+      content: jsonContent(BugReportIgnoredResponse),
+    },
     400: errorResponse('Validation failed (missing title, bad severity, malformed multipart).'),
     429: errorResponse('Per-IP rate limit exceeded.'),
     500: errorResponse('Intake project missing or handler threw.'),

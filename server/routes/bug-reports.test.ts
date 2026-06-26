@@ -17,6 +17,7 @@ vi.mock('../support-ticket-investigation.js', () => ({
 import createBugReportRoutes, {
   _resetRateLimit,
   buildBugReportTicketBody,
+  isDiscardableTestReport,
   sanitizeReplayRef,
   sanitizeReplayMissReason,
   sanitizeScreenshotMissReason,
@@ -207,6 +208,34 @@ describe('sanitizeScreenshotMissReason', () => {
   });
 });
 
+describe('isDiscardableTestReport', () => {
+  it('accepts exact fake report titles with blank or fake descriptions', () => {
+    expect(isDiscardableTestReport({ title: 'test', description: '' })).toBe(true);
+    expect(isDiscardableTestReport({ title: 'Test Ticket', description: 'please ignore' })).toBe(
+      true,
+    );
+    expect(isDiscardableTestReport({ title: 'dummy report', description: 'n/a' })).toBe(true);
+  });
+
+  it('keeps real reports that merely mention tests', () => {
+    expect(
+      isDiscardableTestReport({
+        title: 'Should be able to re run a single pr test from the pr page',
+        description: '',
+      }),
+    ).toBe(false);
+    expect(
+      isDiscardableTestReport({
+        title: 'test',
+        description: 'The regression test list disappeared after refresh',
+      }),
+    ).toBe(false);
+    expect(isDiscardableTestReport({ title: 'Tests are not showing', description: '' })).toBe(
+      false,
+    );
+  });
+});
+
 // ─── Integration: POST /api/bug-reports ───────────────────────────
 
 describe('POST /api/bug-reports', () => {
@@ -253,6 +282,35 @@ describe('POST /api/bug-reports', () => {
     );
     expect(triggerInvestigation).toHaveBeenCalledTimes(1);
     expect(triggerInvestigation.mock.calls[0]![0]).toBe(res.body.ticketId);
+  });
+
+  it('accepts but drops obvious fake test reports without creating a ticket', async () => {
+    const before = listSupportTickets('agent-hub').length;
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Test Ticket')
+      .field('description', 'please ignore')
+      .field('severity', 'medium')
+      .field('clientType', 'web')
+      .expect(202);
+
+    expect(res.body).toEqual({ status: 'ignored', reason: 'discardable_test_report' });
+    expect(listSupportTickets('agent-hub').length).toBe(before);
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(triggerInvestigation).not.toHaveBeenCalled();
+  });
+
+  it('keeps real reports that mention tests', async () => {
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Should be able to rerun a single PR test')
+      .field('description', 'The test control disappears after navigating back')
+      .field('severity', 'medium')
+      .expect(201);
+
+    const ticket = getSupportTicket(res.body.ticketId);
+    expect(ticket).not.toBeNull();
+    expect(ticket!.subject).toBe('Should be able to rerun a single PR test');
   });
 
   it('persists a valid, attributable replayRef on the ticket', async () => {

@@ -53,6 +53,42 @@ const VALID_SCREENSHOT_MISS_REASONS = new Set([
   'upload-rejected',
 ]);
 const INTAKE_PROJECT_ID = 'agent-hub';
+const DISCARDABLE_TEST_TITLES = new Set([
+  'asdf',
+  'asdfasdf',
+  'dummy',
+  'dummy report',
+  'dummy ticket',
+  'ignore',
+  'ignore me',
+  'please ignore',
+  'qa test',
+  'smoke test',
+  'test',
+  'test bug',
+  'test report',
+  'test ticket',
+  'testing',
+  'this is a test',
+  'this is only a test',
+]);
+const DISCARDABLE_TEST_DESCRIPTIONS = new Set([
+  '',
+  'asdf',
+  'asdfasdf',
+  'dummy',
+  'ignore',
+  'ignore me',
+  'n a',
+  'na',
+  'none',
+  'please ignore',
+  'test',
+  'test description',
+  'testing',
+  'this is a test',
+  'this is only a test',
+]);
 
 // ─── Rate limit ──────────────────────────────────────────────────
 // Module-scoped so tests / the live server share the same window.
@@ -164,6 +200,21 @@ function getBoundary(contentType: string | undefined): string | null {
   const m = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
   if (!m) return null;
   return (m[1] ?? m[2] ?? '').trim() || null;
+}
+
+function normalizeDiscardableTestText(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function isDiscardableTestReport(input: { title: string; description?: string }): boolean {
+  const title = normalizeDiscardableTestText(input.title);
+  if (!DISCARDABLE_TEST_TITLES.has(title)) return false;
+  const description = normalizeDiscardableTestText(input.description || '');
+  return DISCARDABLE_TEST_DESCRIPTIONS.has(description);
 }
 
 // ─── Prompt builder ──────────────────────────────────────────────
@@ -344,6 +395,10 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         }
 
         const description = (fields.description || '').toString();
+        if (isDiscardableTestReport({ title, description })) {
+          return res.status(202).json({ status: 'ignored', reason: 'discardable_test_report' });
+        }
+
         const sourceUrl = (fields.sourceUrl || '').toString();
         const userAgent = (fields.userAgent || '').toString();
         const appVersion = (fields.appVersion || '').toString();

@@ -13734,6 +13734,25 @@ paths:
                   - ticketId
                   - status
                 description: A `bug` support ticket has been created in the `agent-hub` Customer Support queue. Result is the new ticket id; the AI investigation runs asynchronously.
+        "202":
+          description: Obvious fake test report accepted and discarded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ignored
+                  reason:
+                    type: string
+                    enum:
+                      - discardable_test_report
+                required:
+                  - status
+                  - reason
+                description: The report was accepted but intentionally not queued because it matched the conservative discardable-test-report filter.
         "400":
           description: Validation failed (missing title, bad severity, malformed multipart).
           content:
