@@ -20,6 +20,7 @@ import {
   __test,
   defaultSpawnStep,
   runStepPhase,
+  runStepsSequence,
   type SpawnStepFn,
   type SpawnedStep,
   type StepRunnerDeps,
@@ -1592,5 +1593,75 @@ describe('withTimeout', () => {
   it('rejects when the promise outlives the deadline', async () => {
     const never = new Promise<string>(() => {});
     await expect(__test.withTimeout(never, 5)).rejects.toThrow(/timed out/);
+  });
+});
+
+describe('runStepsSequence — deferRunTerminal (v2 matrix shard contract)', () => {
+  // The seam behind the "test fails → run looks finished / session waits for
+  // user input while siblings keep running" bug (#1122). A matrix shard runs
+  // through this shared sequence; it must NOT write the run-level terminal on
+  // failure (its siblings are still in flight). The v1 single-sequence path
+  // keeps owning its terminal write — so the flag must be opt-in.
+  function makeFailingDeps() {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: makeMonoClock(),
+    };
+    return { stmts, deps, fakes };
+  }
+
+  async function driveSingleFailingStep(fakes: ReturnType<typeof makeFakeChild>[]) {
+    await microtaskTick();
+    fakes[0].stderr.push('AssertionError: boom\n');
+    await microtaskTick();
+    fakes[0].emitter.emit('close', 1);
+  }
+
+  it('does NOT call failFinalizeRun when deferRunTerminal is true (shard defers to orchestrator)', async () => {
+    const { stmts, deps, fakes } = makeFailingDeps();
+    const resultP = runStepsSequence(deps, {
+      runId: RUN_ID,
+      sessionId: SESSION_ID,
+      worktreePath: WORKTREE,
+      steps: [{ name: 'Test', run: 'npm test' }],
+      timeoutMinutes: 60,
+      skipPhaseInit: true,
+      deferRunTerminal: true,
+    });
+    await driveSingleFailingStep(fakes);
+    const result = await resultP;
+
+    // The failure is still surfaced to the caller (orchestrator/job-runner)…
+    expect(result.status).toBe('failure');
+    expect(result.failedStep).toMatchObject({ name: 'Test', exitCode: 1 });
+    // …but the run-level terminal was NOT written by the shard.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('still calls failFinalizeRun when deferRunTerminal is omitted (v1 path unchanged)', async () => {
+    const { stmts, deps, fakes } = makeFailingDeps();
+    const resultP = runStepsSequence(deps, {
+      runId: RUN_ID,
+      sessionId: SESSION_ID,
+      worktreePath: WORKTREE,
+      steps: [{ name: 'Test', run: 'npm test' }],
+      timeoutMinutes: 60,
+      skipPhaseInit: true,
+    });
+    await driveSingleFailingStep(fakes);
+    const result = await resultP;
+
+    expect(result.status).toBe('failure');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('failed', 'step_failed', RUN_ID);
   });
 });

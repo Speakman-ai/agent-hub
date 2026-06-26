@@ -389,6 +389,21 @@ export interface RunStepsSequenceOptions {
   skipPhaseInit?: boolean;
   /** When false, skip the checks-round timeline write (v2 job shards). Default true. */
   emitChecksTimeline?: boolean;
+  /**
+   * When true, this sequence is ONE shard of a larger run (the v2 matrix path)
+   * and must NOT write the run-level terminal status on failure. A shard that
+   * calls `failFinalizeRun('failed'|'timed_out', …)` stamps the whole
+   * `finalize_runs` row terminal (status + `ended_at`) the moment the FIRST
+   * shard fails — while sibling shards are still executing — which makes the
+   * run look finished and flips the session to "waiting for user input" even
+   * though tasks are still running. With this flag the shard only returns its
+   * failure-shaped {@link StepRunResult}; the job-level state is persisted by
+   * the job runner and the orchestrator owns the single run-level terminal
+   * write once every shard has finished (mirrors how `infra_error` already
+   * defers to the orchestrator). Default false (v1 single-sequence path owns
+   * its terminal write, unchanged).
+   */
+  deferRunTerminal?: boolean;
 }
 export interface StepRunnerOptions {
   /** finalize_runs.id. */
@@ -478,6 +493,10 @@ export async function runStepsSequence(
   const spawnStep = deps.spawnStep ?? defaultSpawnStep;
   const now = deps.now ?? Date.now;
   const spawnHardTimeoutMs = deps.spawnHardTimeoutMs ?? STEP_SPAWN_HARD_TIMEOUT_MS;
+  // v2 matrix shards defer the run-level terminal write to the orchestrator
+  // (see RunStepsSequenceOptions.deferRunTerminal). A `false` here means a
+  // failing shard never stamps `finalize_runs` terminal while siblings run.
+  const writeRunTerminal = !opts.deferRunTerminal;
 
   if (!opts.skipPhaseInit) {
     setPhase(stmts, broadcast, opts.runId, opts.sessionId, 'tasks', 'running');
@@ -541,6 +560,7 @@ export async function runStepsSequence(
             ...(persistMeta?.jobId ? { jobId: persistMeta.jobId } : {}),
             ...(persistMeta?.matrixKey ? { matrixKey: persistMeta.matrixKey } : {}),
           },
+          writeRunTerminal,
         ),
       );
     }
@@ -627,6 +647,7 @@ export async function runStepsSequence(
           stepResults,
           undefined,
           failedStep,
+          writeRunTerminal,
         ),
       );
     }
@@ -655,6 +676,7 @@ export async function runStepsSequence(
           stepResults,
           runOutcome.detail,
           failedStep,
+          writeRunTerminal,
         ),
       );
     }
@@ -697,6 +719,7 @@ export async function runStepsSequence(
           stepResults,
           'runner teardown: context canceled (no test-failure summary)',
           failedStep,
+          writeRunTerminal,
         ),
       );
     }
@@ -720,6 +743,7 @@ export async function runStepsSequence(
           stepResults,
           `step ${stepIndex} (${displayName}) cancelled mid-run (context canceled)`,
           failedStep,
+          writeRunTerminal,
         ),
       );
     }
@@ -737,6 +761,7 @@ export async function runStepsSequence(
         stepResults,
         undefined,
         failedStep,
+        writeRunTerminal,
       ),
     );
   }
@@ -1353,6 +1378,7 @@ function terminate(
   stepResults: StepResult[],
   infraErrorDetail?: string,
   failedStep?: StepRunResult['failedStep'],
+  writeRunTerminal = true,
 ): StepRunResult {
   // `_detail` is intentionally unused inside this helper — the failure
   // detail surfaces via the per-line `addMessage` stream and the §7
@@ -1360,10 +1386,18 @@ function terminate(
   // it on the signature so future tooling (a structured failure log,
   // telemetry, etc.) has an obvious place to plug in without re-threading
   // every call-site.
-  if (status === 'failure') {
-    stmts.failFinalizeRun.run('failed', failureReason, runId);
-  } else if (status === 'timeout') {
-    stmts.failFinalizeRun.run('timed_out', failureReason, runId);
+  //
+  // `writeRunTerminal === false` is the v2 matrix shard path: a single shard
+  // must NOT stamp the run-level terminal status, because its siblings are
+  // still in flight and the orchestrator writes the one authoritative terminal
+  // after aggregating every shard. We still return the failure-shaped result so
+  // the job runner records the per-job state and the orchestrator sees the red.
+  if (writeRunTerminal) {
+    if (status === 'failure') {
+      stmts.failFinalizeRun.run('failed', failureReason, runId);
+    } else if (status === 'timeout') {
+      stmts.failFinalizeRun.run('timed_out', failureReason, runId);
+    }
   }
   // No-op on `'infra_error'` — see doc comment above. The orchestrator
   // is responsible for either spawning the retry row or persisting

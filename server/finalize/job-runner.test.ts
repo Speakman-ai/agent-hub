@@ -470,6 +470,108 @@ jobs:
     expect(jobIds).toEqual(['backend', 'frontend']);
   });
 
+  it('a failing shard does NOT write the run-level terminal while siblings run (regression: #1122)', async () => {
+    // THE BUG: with parallel matrix shards, the FIRST shard to fail used to call
+    // `failFinalizeRun('failed', 'step_failed', runId)` from inside its own
+    // `runStepsSequence`. That stamps the shared `finalize_runs` row terminal
+    // (status='failed' + ended_at) the moment one shard goes red — while sibling
+    // shards are STILL executing. The run then looks finished and the session
+    // flips to "waiting for user input" mid-run, even though the rest of the
+    // tests are still running (the repeatedly-reported symptom).
+    //
+    // THE CONTRACT: a shard must NEVER write the run-level terminal. It records
+    // its per-job state and returns its failure-shaped result; the orchestrator
+    // writes the single authoritative run-level terminal AFTER aggregating every
+    // shard (mirroring how `infra_error` already defers to the orchestrator).
+    const MATRIX = `
+version: 2
+on: [finalize]
+jobs:
+  e2e:
+    runs-on: host
+    matrix:
+      include:
+        - group: Fails_Fast
+          specs: a.cy.ts
+        - group: Slow_Green
+          specs: b.cy.ts
+    steps:
+      - run: test-cmd \${FINALIZE_MATRIX_SPECS}
+`;
+    // Shard A (a.cy.ts) fails immediately with exit 1; shard B (b.cy.ts) takes a
+    // few macrotask hops before exiting 0 — so when A goes red, B is provably
+    // still in flight. This is the exact interleaving that used to mark the run
+    // terminal prematurely.
+    const spawnStep: SpawnStepFn = ({ step }) => {
+      const isFastFail = step.run.includes('a.cy.ts');
+      const stdout = new Readable({ read() {} });
+      const stderr = new Readable({ read() {} });
+      const child: SpawnedStep = {
+        stdout,
+        stderr,
+        on(event: 'close' | 'error', listener: (arg: never) => void) {
+          if (event === 'close') {
+            if (isFastFail) {
+              queueMicrotask(() => {
+                stdout.push('AssertionError: expected 200 but got 500\n');
+                queueMicrotask(() => (listener as (c: number | null) => void)(1));
+              });
+            } else {
+              // Defer B's close across several timer hops so it is still
+              // running at the instant A fails.
+              setTimeout(() => (listener as (c: number | null) => void)(0), 5);
+            }
+          }
+          return child;
+        },
+        kill: vi.fn(() => true),
+      };
+      return child;
+    };
+
+    const parsed = parseCiConfig(MATRIX);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    const deps = makeDeps(vi.fn(spawnStep));
+    const result = await runJobPhase(deps, {
+      runId: 'defer-terminal-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    // 1) THE REGRESSION ASSERTION: no shard wrote the run-level terminal. The
+    //    orchestrator (not exercised here) owns that write after aggregation.
+    expect(deps.stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+
+    // 2) The orchestrator still sees the red — aggregation is unaffected.
+    expect(result.status).toBe('failure');
+    expect(result.failedStep?.matrixKey).toContain('Fails_Fast');
+
+    // 3) Per-job state IS still persisted: the failing shard 'failed', the
+    //    sibling 'passed'. (Job-level rows are owned by the job runner; only the
+    //    RUN-level terminal moved to the orchestrator.)
+    const jobUpserts = (deps.stmts.upsertFinalizeRunJob.run as unknown as ReturnType<typeof vi.fn>)
+      .mock.calls;
+    const finalJobStates = new Map<string, string>();
+    for (const call of jobUpserts) {
+      // upsertFinalizeRunJob(runId, jobId, matrixKey, state, ...)
+      const matrixKey = call[2] as string;
+      const state = call[3] as string;
+      finalJobStates.set(matrixKey, state);
+    }
+    const states = [...finalJobStates.entries()];
+    expect(states.some(([key, state]) => key.includes('Fails_Fast') && state === 'failed')).toBe(
+      true,
+    );
+    expect(states.some(([key, state]) => key.includes('Slow_Green') && state === 'passed')).toBe(
+      true,
+    );
+  });
+
   it('passes step-level env to the spawned step (e.g. FINALIZE_WARMUP)', async () => {
     const seen: Array<Record<string, string | undefined> | undefined> = [];
     const spawnStep: SpawnStepFn = ({ step, env }) => {

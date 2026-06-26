@@ -473,6 +473,13 @@ async function runJobInstance(
         persistMeta,
         skipPhaseInit: true,
         emitChecksTimeline: false,
+        // A shard is one of N parallel jobs. It must NOT stamp the run-level
+        // terminal status on failure — doing so the moment the FIRST shard
+        // fails marks `finalize_runs` ended while siblings are still running
+        // (the "appears finished / waiting for user input mid-run" bug). The
+        // orchestrator writes the single authoritative terminal after every
+        // shard has been aggregated.
+        deferRunTerminal: true,
       },
     );
   } finally {
