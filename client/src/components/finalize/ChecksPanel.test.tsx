@@ -208,6 +208,80 @@ describe('<ChecksPanel />', () => {
     expect(jumps[0].textContent).toMatch(/view logs/i);
   });
 
+  it('labels queued same-job steps with the active prerequisite', () => {
+    setHook({
+      run: fakeRun({ status: 'running', phase: 'tasks' }),
+      status: 'running',
+      phase: 'tasks',
+      isActive: true,
+      activeSeconds: 131,
+      wallSeconds: 170,
+      steps: [
+        {
+          index: 6,
+          name: 'build /  / Build client',
+          state: 'running',
+          exitCode: null,
+          startedAt: 1782508139745,
+          endedAt: null,
+          jobId: 'build',
+          matrixKey: '',
+        },
+        {
+          index: 7,
+          name: 'build /  / Typecheck (all packages)',
+          state: 'queued',
+          exitCode: null,
+          startedAt: null,
+          endedAt: null,
+          jobId: 'build',
+          matrixKey: '',
+        },
+      ],
+    });
+
+    render(<ChecksPanel sessionId="s1" />);
+
+    expect(screen.getByTestId('finalize-step-dependency').textContent).toBe(
+      '(depends on Build client)',
+    );
+  });
+
+  it('does not label queued steps from another job as dependent on the visible running row', () => {
+    setHook({
+      run: fakeRun({ status: 'running', phase: 'tasks' }),
+      status: 'running',
+      phase: 'tasks',
+      isActive: true,
+      steps: [
+        {
+          index: 1,
+          name: 'build /  / Build client',
+          state: 'running',
+          exitCode: null,
+          startedAt: 1,
+          endedAt: null,
+          jobId: 'build',
+          matrixKey: '',
+        },
+        {
+          index: 20,
+          name: 'lint /  / Install root dependencies',
+          state: 'queued',
+          exitCode: null,
+          startedAt: null,
+          endedAt: null,
+          jobId: 'lint',
+          matrixKey: '',
+        },
+      ],
+    });
+
+    render(<ChecksPanel sessionId="s1" />);
+
+    expect(screen.queryByTestId('finalize-step-dependency')).toBeNull();
+  });
+
   it('dispatches log modal open when view logs is clicked', async () => {
     setHook({
       run: fakeRun({ status: 'running', phase: 'tasks', project_id: 'proj-1' }),

@@ -14,6 +14,8 @@ function stepsFromApiRows(rows: any) {
       exitCode: row.exitCode ?? row.exit_code ?? null,
       startedAt: row.startedAt ?? row.started_at ?? null,
       endedAt: row.endedAt ?? row.ended_at ?? null,
+      jobId: row.jobId ?? row.job_id ?? null,
+      matrixKey: row.matrixKey ?? row.matrix_key ?? null,
     });
   }
   return next;
@@ -34,6 +36,8 @@ function mergeStepsMaps(existing: any, incoming: any) {
         startedAt: prev.startedAt ?? row.startedAt ?? null,
         endedAt: prev.endedAt ?? row.endedAt ?? null,
         exitCode: prev.exitCode ?? row.exitCode ?? null,
+        jobId: prev.jobId ?? row.jobId ?? null,
+        matrixKey: prev.matrixKey ?? row.matrixKey ?? null,
       });
       continue;
     }
@@ -381,6 +385,8 @@ export function useFinalizeRun({
           exitCode: null,
           startedAt: null,
           endedAt: null,
+          jobId: detail.job_id ?? null,
+          matrixKey: detail.matrix_key ?? null,
         };
         const now = Date.now();
         if (detail.state === 'running') {
@@ -391,6 +397,8 @@ export function useFinalizeRun({
             startedAt: existing.startedAt ?? now,
             endedAt: null,
             exitCode: null,
+            jobId: detail.job_id ?? existing.jobId ?? null,
+            matrixKey: detail.matrix_key ?? existing.matrixKey ?? null,
           });
         } else if (detail.state === 'passed' || detail.state === 'failed') {
           next.set(stepIndex, {
@@ -399,6 +407,8 @@ export function useFinalizeRun({
             state: detail.state,
             exitCode: typeof detail.exit_code === 'number' ? detail.exit_code : existing.exitCode,
             endedAt: now,
+            jobId: detail.job_id ?? existing.jobId ?? null,
+            matrixKey: detail.matrix_key ?? existing.matrixKey ?? null,
           });
         } else if (detail.state === 'skipped') {
           next.set(stepIndex, {
@@ -406,6 +416,8 @@ export function useFinalizeRun({
             name: detail.step_name || existing.name,
             state: 'skipped',
             endedAt: now,
+            jobId: detail.job_id ?? existing.jobId ?? null,
+            matrixKey: detail.matrix_key ?? existing.matrixKey ?? null,
           });
         }
         return next;

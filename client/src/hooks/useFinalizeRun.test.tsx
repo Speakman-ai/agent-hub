@@ -269,7 +269,14 @@ describe('useFinalizeRun — step state events', () => {
     await act(async () => {
       window.dispatchEvent(
         new CustomEvent('finalize_run_step_state', {
-          detail: { run_id: 'run-1', step_index: 1, step_name: 'lint', state: 'running' },
+          detail: {
+            run_id: 'run-1',
+            step_index: 1,
+            step_name: 'lint',
+            state: 'running',
+            job_id: 'lint',
+            matrix_key: '',
+          },
         }),
       );
     });
@@ -298,6 +305,7 @@ describe('useFinalizeRun — step state events', () => {
     expect(steps.map((s: any) => s.index)).toEqual([1, 2]);
     expect(steps[0].state).toBe('passed');
     expect(steps[0].exitCode).toBe(0);
+    expect(steps[0].jobId).toBe('lint');
     expect(steps[0].endedAt).toBeTypeOf('number');
     expect(steps[1].state).toBe('running');
     expect(steps[1].exitCode).toBe(null);

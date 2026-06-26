@@ -84,7 +84,6 @@ export default function ChecksPanel({
       />
       <StepsList
         runId={run.id}
-        sessionId={run.session_id}
         projectId={projectId ?? run.project_id}
         steps={steps}
         run={run}
@@ -218,7 +217,7 @@ function RunHeader({
   );
 }
 
-function StepsList({ runId, sessionId, projectId, steps, run, isTerminal, phase, onOpenLog }: any) {
+function StepsList({ runId, projectId, steps, run, isTerminal, phase, onOpenLog }: any) {
   if (steps.length === 0) {
     const hint = describeEmptySteps(run, isTerminal, phase);
     return (
@@ -233,12 +232,12 @@ function StepsList({ runId, sessionId, projectId, steps, run, isTerminal, phase,
         Checks
       </div>
       <ol data-testid="finalize-steps-list" className="divide-y divide-slate-700/60">
-        {steps.map((s: any) => (
+        {steps.map((s: any, index: number) => (
           <StepRow
             key={s.index}
             step={s}
+            dependencyName={dependencyNameForQueuedStep(s, steps, index)}
             runId={runId}
-            sessionId={sessionId}
             projectId={projectId}
             onOpenLog={onOpenLog}
           />
@@ -248,7 +247,7 @@ function StepsList({ runId, sessionId, projectId, steps, run, isTerminal, phase,
   );
 }
 
-function StepRow({ step, runId, sessionId, projectId, onOpenLog }: any) {
+function StepRow({ step, dependencyName, runId, projectId, onOpenLog }: any) {
   const duration = computeStepDuration(step);
   const tone = stepToneFor(step.state);
   const Icon = stepIconFor(step.state);
@@ -283,8 +282,19 @@ function StepRow({ step, runId, sessionId, projectId, onOpenLog }: any) {
       <span className={`inline-flex h-5 w-5 items-center justify-center rounded ${tone}`}>
         <Icon size={12} className={step.state === 'running' ? 'animate-spin' : ''} />
       </span>
-      <span className="font-mono text-slate-200">{step.name}</span>
-      <span className="text-slate-500">{labelForState(step.state)}</span>
+      <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+        <span className="truncate font-mono text-slate-200">{step.name}</span>
+        <span className="shrink-0 text-slate-500">{labelForState(step.state)}</span>
+        {dependencyName ? (
+          <span
+            className="min-w-0 truncate text-slate-500"
+            data-testid="finalize-step-dependency"
+            title={`Depends on ${dependencyName}`}
+          >
+            (depends on {dependencyName})
+          </span>
+        ) : null}
+      </span>
       <span className="ml-auto flex items-center gap-3">
         {duration != null ? (
           <span className="font-mono text-slate-400" data-testid="finalize-step-duration">
@@ -320,6 +330,35 @@ function StepRow({ step, runId, sessionId, projectId, onOpenLog }: any) {
       </span>
     </li>
   );
+}
+
+const TERMINAL_STEP_STATES = new Set(['passed', 'failed', 'skipped']);
+
+function dependencyNameForQueuedStep(step: any, steps: any[], index: number) {
+  if (step.state !== 'queued') return null;
+  const previous = findPreviousSameJobStep(step, steps, index);
+  if (!previous || TERMINAL_STEP_STATES.has(previous.state)) return null;
+  return compactStepName(previous.name);
+}
+
+function findPreviousSameJobStep(step: any, steps: any[], index: number) {
+  if (!step.jobId) return null;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const candidate = steps[i];
+    if (candidate?.jobId === step.jobId && (candidate.matrixKey ?? '') === (step.matrixKey ?? '')) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function compactStepName(name: any) {
+  if (typeof name !== 'string') return '';
+  const parts = name
+    .split(' / ')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.at(-1) || name;
 }
 
 function computeStepDuration(step: any) {
