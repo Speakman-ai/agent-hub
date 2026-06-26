@@ -13879,7 +13879,7 @@ paths:
       tags:
         - Projects
       summary: Runner card completion and failure-rate stats
-      description: Aggregates completed Runner runs and per-ci.yaml job instances for the Runners page. Configured ci.yaml jobs are returned even before they have historical samples.
+      description: Aggregates completed Runner runs for the Runners page. Per-test stats are limited to jobs currently configured in ci.yaml; configured jobs are returned even before they have historical samples.
       parameters:
         - schema:
             type: string

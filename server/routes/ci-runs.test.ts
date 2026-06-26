@@ -268,6 +268,37 @@ jobs:
     });
   });
 
+  it('excludes historical-only test cards that are no longer in ci.yaml', async () => {
+    const cwd = freshRepoWithCiYaml(`
+version: 2
+on: [finalize]
+jobs:
+  current-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm test
+`);
+    const projectId = await freshProject(cwd);
+    const runId = seedRun(projectId, {
+      status: 'succeeded',
+      startedAt: 1_000,
+      endedAt: 31_000,
+    });
+
+    getDb().prepare('DELETE FROM finalize_run_jobs WHERE run_id = ?').run(runId);
+    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', '', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(runId, 'backend-tests', '0', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(runId, 'backend-tests', '1', 'passed', 0, 2_000, 12_000);
+
+    const res = await request.get(`/api/projects/${projectId}/ci-runs/stats`).expect(200);
+    expect(res.body.tests.map((t: Record<string, unknown>) => t.name)).toEqual(['current-tests']);
+    expect(res.body.tests[0]).toMatchObject({
+      job_id: 'current-tests',
+      configured: true,
+      total_runs: 1,
+    });
+  });
+
   it('returns ci_config.error instead of failing when ci.yaml is invalid', async () => {
     const cwd = freshRepoWithCiYaml('version: [\n');
     const projectId = await freshProject(cwd);

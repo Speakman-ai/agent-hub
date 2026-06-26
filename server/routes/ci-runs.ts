@@ -112,7 +112,7 @@ registerPath({
   tags: ['Projects'],
   summary: 'Runner card completion and failure-rate stats',
   description:
-    'Aggregates completed Runner runs and per-ci.yaml job instances for the Runners page. Configured ci.yaml jobs are returned even before they have historical samples.',
+    'Aggregates completed Runner runs for the Runners page. Per-test stats are limited to jobs currently configured in ci.yaml; configured jobs are returned even before they have historical samples.',
   request: { params: z.object({ projectId: z.string() }) },
   responses: {
     200: {
@@ -358,6 +358,9 @@ async function buildCiRunStats(project: Project) {
   const overall = emptyMutableStats();
   const byTest = new Map<string, MutableStatsBucket>();
   const names = new Map<string, ConfiguredTest>();
+  const configuredKeys = new Set(
+    configured.tests.map((test) => statsKey(test.job_id, test.matrix_key)),
+  );
   for (const test of configured.tests) {
     const key = statsKey(test.job_id, test.matrix_key);
     byTest.set(key, emptyMutableStats());
@@ -414,16 +417,8 @@ async function buildCiRunStats(project: Project) {
     if (!row.job_id || !row.job_state || IN_FLIGHT_JOB_STATES.has(row.job_state)) continue;
     const matrixKey = row.matrix_key ?? '';
     const key = statsKey(row.job_id, matrixKey);
-    let bucket = byTest.get(key);
-    if (!bucket) {
-      bucket = emptyMutableStats();
-      byTest.set(key, bucket);
-      names.set(key, {
-        job_id: row.job_id,
-        matrix_key: matrixKey,
-        name: matrixKey ? `${row.job_id} / ${matrixKey}` : row.job_id,
-      });
-    }
+    const bucket = byTest.get(key);
+    if (!bucket) continue;
     bucket.totalRuns++;
     addDuration(bucket, row.job_started_at, row.job_ended_at);
     if (jobFailed(row.job_state, row.job_exit_code)) {
@@ -433,9 +428,6 @@ async function buildCiRunStats(project: Project) {
     }
   }
 
-  const configuredKeys = new Set(
-    configured.tests.map((test) => statsKey(test.job_id, test.matrix_key)),
-  );
   const tests = [...byTest.entries()]
     .map(([key, bucket]) => {
       const info = names.get(key)!;

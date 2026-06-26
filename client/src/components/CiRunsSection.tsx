@@ -202,9 +202,6 @@ function RunnerStats({ stats }: any) {
                   <tr key={`${test.job_id}-${test.matrix_key}`}>
                     <td className="py-2 pr-3 min-w-48">
                       <div className="font-mono text-gray-300 truncate">{test.name}</div>
-                      {!test.configured && (
-                        <div className="text-[10px] text-gray-600">historical only</div>
-                      )}
                     </td>
                     <td className="py-2 px-3 tabular-nums text-gray-400 whitespace-nowrap">
                       {formatStatsDuration(test.average_seconds)}
