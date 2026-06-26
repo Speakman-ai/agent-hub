@@ -47,7 +47,8 @@ jobs:
       - name: Typecheck (all packages)
         run: npm run typecheck
 
-  # ── GHA `test` job (matrix): server 1/3, 2/3, 3/3, client, electron, mobile
+  # ── GHA `test` job (matrix): server 1/6..6/6, client 1/3..3/3,
+  # mobile 1/2..2/2, electron
   # GHA expands this matrix into independent job instances; v2
   # `matrix.include` does the same — concurrent runners. v2 steps
   # have no `if:`, so the per-suite branch lives in the run script,
@@ -57,12 +58,18 @@ jobs:
     fail-fast: false
     matrix:
       include:
-        - { suite: server, shard: '1', shards: '3', label: 'server 1/3' }
-        - { suite: server, shard: '2', shards: '3', label: 'server 2/3' }
-        - { suite: server, shard: '3', shards: '3', label: 'server 3/3' }
-        - { suite: client, label: 'client' }
+        - { suite: server, shard: '1', shards: '6', label: 'server 1/6' }
+        - { suite: server, shard: '2', shards: '6', label: 'server 2/6' }
+        - { suite: server, shard: '3', shards: '6', label: 'server 3/6' }
+        - { suite: server, shard: '4', shards: '6', label: 'server 4/6' }
+        - { suite: server, shard: '5', shards: '6', label: 'server 5/6' }
+        - { suite: server, shard: '6', shards: '6', label: 'server 6/6' }
+        - { suite: client, shard: '1', shards: '3', label: 'client 1/3' }
+        - { suite: client, shard: '2', shards: '3', label: 'client 2/3' }
+        - { suite: client, shard: '3', shards: '3', label: 'client 3/3' }
         - { suite: electron, label: 'electron' }
-        - { suite: mobile, label: 'mobile' }
+        - { suite: mobile, shard: '1', shards: '2', label: 'mobile 1/2' }
+        - { suite: mobile, shard: '2', shards: '2', label: 'mobile 2/2' }
     steps:
       - name: Tests (${FINALIZE_MATRIX_LABEL})
         run: |
@@ -74,7 +81,7 @@ jobs:
           elif [ "$FINALIZE_MATRIX_SUITE" = "client" ]; then
             (cd shared && npm ci --include=dev)
             (cd client && npm ci --include=dev)
-            (cd client && npm test)
+            (cd client && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS")
           elif [ "$FINALIZE_MATRIX_SUITE" = "electron" ]; then
             (cd shared && npm ci --include=dev)
             # electron/ has no package.json, so `test:electron` runs vitest from
@@ -92,7 +99,7 @@ jobs:
           elif [ "$FINALIZE_MATRIX_SUITE" = "mobile" ]; then
             (cd shared && npm ci --include=dev)
             (cd mobile && npm ci --include=dev)
-            npm run test:mobile
+            (cd mobile && npm test -- --shard="$FINALIZE_MATRIX_SHARD/$FINALIZE_MATRIX_SHARDS")
           fi
 
   # ── GHA `lint` gate (main-checks.yml) ───────────────────────────────
