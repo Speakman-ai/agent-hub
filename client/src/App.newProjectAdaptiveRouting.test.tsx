@@ -62,6 +62,12 @@ import { render, act, waitFor, cleanup, screen } from '@testing-library/react';
   },
 }));
 
+(vi as any).mock('./components/CustomerSupportPage.jsx', () => ({
+  default: function MockCustomerSupportPage(p: any) {
+    return <div data-testid="support-page-mock" data-project-id={p.projectId || ''} />;
+  },
+}));
+
 (vi as any).mock('./components/OpenProjectWizard.jsx', () => ({
   default: function MockLegacyWizard() {
     return <div data-testid="legacy-wizard-mock" />;
@@ -122,6 +128,7 @@ describe('App — "+ New Project" CTA routes to adaptive flow', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState(null, '', '/');
     localStorage.clear();
     delete (globalThis as any).__ahNewProjectCTA;
     delete (globalThis as any).__ahAdaptiveOnClose;
@@ -240,6 +247,18 @@ describe('App — "+ New Project" CTA routes to adaptive flow', () => {
     });
     // Sidebar should reflect the kanban view
     expect(screen.getByTestId('sidebar-mock').dataset.currentView).toBe('kanban:proj-2');
+    expect(window.location.hash).toBe('#/kanban%3Aproj-2');
+  });
+
+  it('mounts the URL hash view on cold load instead of falling back to dashboard', async () => {
+    window.history.replaceState(null, '', '/#/support/proj-9');
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('sidebar-mock').dataset.currentView).toBe('support');
+    });
+    expect(screen.getByTestId('support-page-mock').dataset.projectId).toBe('proj-9');
   });
 
   it('routes to import wizard when onProjectCreated fires with action:"import"', async () => {

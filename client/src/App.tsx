@@ -156,7 +156,7 @@ import {
   shouldNotifyForAwaitingInput,
 } from './utils/awaitingInputState';
 import { getDefaultShortcuts } from './utils/shortcuts';
-import { getInitialView } from './utils/navigation';
+import { buildNavigationHash, getInitialNavigation } from './utils/navigation';
 import { isSessionOwnedByOtherUser } from './utils/sessionNotificationOwnership';
 import {
   firstEngineWithAuthenticatedModels,
@@ -178,9 +178,14 @@ import { deriveSessionState } from './utils/deriveSessionState';
  * @param {object} [props]
  * @param {string} [props.initialView] — explicit top-level view to mount on
  *   (test seam). Production renders `<App />` with no prop, so the app lands
- *   on the default home view (the Dashboard) via `getInitialView`.
+ *   on the URL hash view or the default home view via `getInitialNavigation`.
  */
 export default function App({ initialView }: any = {}) {
+  const initialNavigationRef = useRef<any>(null);
+  if (!initialNavigationRef.current) {
+    initialNavigationRef.current = getInitialNavigation(initialView);
+  }
+  const initialNavigation = initialNavigationRef.current;
   const [projects, setProjects] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
   const [activeAgentId, _setActiveAgentId] = useState<any>(() => {
@@ -232,7 +237,7 @@ export default function App({ initialView }: any = {}) {
   // Worktree state was removed when Agent Hub locked to worktree-only sessions.
   // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
   const [sessionAskMode, setSessionAskMode] = useState(false);
-  const [currentView, setCurrentView] = useState(getInitialView(initialView));
+  const [currentView, setCurrentView] = useState(initialNavigation.view);
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showForward, setShowForward] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
@@ -274,7 +279,9 @@ export default function App({ initialView }: any = {}) {
   const [streamingAgent, setStreamingAgent] = useState<any>(null);
   // Claude Design (Phase 1) — top-level, not project-scoped
   const [designs, setDesigns] = useState<any[]>([]);
-  const [activeDesignId, setActiveDesignId] = useState<any>(null);
+  const [activeDesignId, setActiveDesignId] = useState<any>(
+    initialNavigation.view === 'design' ? initialNavigation.designId || null : null,
+  );
   const [designMessages, setDesignMessages] = useState<any[]>([]);
   const [designStreaming, setDesignStreaming] = useState<any>(null);
   const [designThinking, setDesignThinking] = useState(false);
@@ -392,16 +399,26 @@ export default function App({ initialView }: any = {}) {
     return union;
   }, [askSubmittedOptimistic, askSubmittedFromHistory]);
   // Wiki state
-  const [wikiProjectId, setWikiProjectId] = useState<any>(null);
+  const [wikiProjectId, setWikiProjectId] = useState<any>(
+    initialNavigation.view === 'wiki' ? initialNavigation.projectId || null : null,
+  );
   // Notes state
-  const [notesProjectId, setNotesProjectId] = useState<any>(null);
+  const [notesProjectId, setNotesProjectId] = useState<any>(
+    initialNavigation.view === 'notes' ? initialNavigation.projectId || null : null,
+  );
   // Previews state
   // Reviewer state — which project's reviewer markdown files are being viewed
-  const [reviewerProjectId, setReviewerProjectId] = useState<any>(null);
+  const [reviewerProjectId, setReviewerProjectId] = useState<any>(
+    initialNavigation.view === 'reviewer' ? initialNavigation.projectId || null : null,
+  );
   // Pull Requests state
-  const [pullsProjectId, setPullsProjectId] = useState<any>(null);
+  const [pullsProjectId, setPullsProjectId] = useState<any>(
+    initialNavigation.view === 'pulls' ? initialNavigation.projectId || null : null,
+  );
   /** Deep-link into Pull Requests detail (e.g. session summary linked PR). Cleared when leaving pulls view. */
-  const [pullsOpenPrNumber, setPullsOpenPrNumber] = useState<any>(null);
+  const [pullsOpenPrNumber, setPullsOpenPrNumber] = useState<any>(
+    initialNavigation.view === 'pulls' ? initialNavigation.prNumber || null : null,
+  );
   /** Bumped when the server signals PR/board activity for the open Pulls view — keeps GitHub list live without reload. */
   const [pullsListRefreshNonce, setPullsListRefreshNonce] = useState(0);
   /** Cleared when user opens the Workflows view — set by workflow WebSocket activity. */
@@ -411,8 +428,12 @@ export default function App({ initialView }: any = {}) {
   /** Deep-link from Workflows → Settings → GitHub: expand this project row (cleared when leaving Settings). */
   const [settingsGithubExpandProjectId, setSettingsGithubExpandProjectId] = useState<any>(null);
   // Threads state
-  const [threadsProjectId, setThreadsProjectId] = useState<any>(null);
-  const [activeThreadId, setActiveThreadId] = useState<any>(null);
+  const [threadsProjectId, setThreadsProjectId] = useState<any>(
+    initialNavigation.view === 'threads' ? initialNavigation.projectId || null : null,
+  );
+  const [activeThreadId, setActiveThreadId] = useState<any>(
+    initialNavigation.view === 'threads' ? initialNavigation.threadId || null : null,
+  );
   const [activeThread, setActiveThread] = useState<any>(null);
   // Unread thread entry counts per project: { [projectId]: number }
   const [unreadThreadCounts, setUnreadThreadCounts] = useState<Record<string, any>>({});
@@ -420,9 +441,15 @@ export default function App({ initialView }: any = {}) {
   const threadListRef = useRef<any>(null);
   const threadViewRef = useRef<any>(null);
   // Customer Support page state
-  const [supportProjectId, setSupportProjectId] = useState<any>(null);
-  const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(null);
-  const [replaysProjectId, setReplaysProjectId] = useState<any>(null);
+  const [supportProjectId, setSupportProjectId] = useState<any>(
+    initialNavigation.view === 'support' ? initialNavigation.projectId || null : null,
+  );
+  const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
+    initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
+  );
+  const [replaysProjectId, setReplaysProjectId] = useState<any>(
+    initialNavigation.view === 'replays' ? initialNavigation.projectId || null : null,
+  );
   // Ref to push WebSocket support_ticket_* updates into CustomerSupportPage
   const supportListRef = useRef<any>(null);
   // Unread support-ticket counts per project: { [projectId]: number }. Seeded
@@ -430,7 +457,9 @@ export default function App({ initialView }: any = {}) {
   // WebSocket events carry, so the Support sidebar badge survives a refresh.
   const [unreadTicketCounts, setUnreadTicketCounts] = useState<Record<string, any>>({});
   // Security audit page state.
-  const [securityProjectId, setSecurityProjectId] = useState<any>(null);
+  const [securityProjectId, setSecurityProjectId] = useState<any>(
+    initialNavigation.view === 'security' ? initialNavigation.projectId || null : null,
+  );
   // Bumped on a kanban_update for the active security project so SecurityPage
   // re-fetches (a scan's only WebSocket signal is kanban_update).
   const [securityRefreshNonce, setSecurityRefreshNonce] = useState(0);
@@ -563,6 +592,100 @@ export default function App({ initialView }: any = {}) {
   const currentViewRef = useRef(currentView);
   currentViewRef.current = currentView;
   const newProjectWizardReturnRef = useRef('chat');
+  const routeUrlInitializedRef = useRef(false);
+
+  const routeProjectId = useMemo(() => {
+    switch (currentView) {
+      case 'wiki':
+        return wikiProjectId;
+      case 'notes':
+        return notesProjectId;
+      case 'reviewer':
+        return reviewerProjectId;
+      case 'pulls':
+        return pullsProjectId;
+      case 'threads':
+        return threadsProjectId;
+      case 'support':
+        return supportProjectId;
+      case 'deployments':
+        return deploymentsProjectId;
+      case 'replays':
+        return replaysProjectId;
+      case 'security':
+        return securityProjectId;
+      default:
+        return null;
+    }
+  }, [
+    currentView,
+    deploymentsProjectId,
+    notesProjectId,
+    pullsProjectId,
+    replaysProjectId,
+    reviewerProjectId,
+    securityProjectId,
+    supportProjectId,
+    threadsProjectId,
+    wikiProjectId,
+  ]);
+
+  const applyNavigationState = useCallback((route: any) => {
+    const view = route?.view || 'dashboard';
+    setCurrentView(view);
+    if (view === 'wiki') setWikiProjectId(route?.projectId || null);
+    if (view === 'notes') setNotesProjectId(route?.projectId || null);
+    if (view === 'reviewer') setReviewerProjectId(route?.projectId || null);
+    if (view === 'pulls') {
+      setPullsProjectId(route?.projectId || null);
+      setPullsOpenPrNumber(route?.prNumber || null);
+    }
+    if (view === 'threads') {
+      setThreadsProjectId(route?.projectId || null);
+      setActiveThreadId(route?.threadId || null);
+      setActiveThread(null);
+    }
+    if (view === 'support') setSupportProjectId(route?.projectId || null);
+    if (view === 'deployments') setDeploymentsProjectId(route?.projectId || null);
+    if (view === 'replays') setReplaysProjectId(route?.projectId || null);
+    if (view === 'security') setSecurityProjectId(route?.projectId || null);
+    if (view === 'design') setActiveDesignId(route?.designId || null);
+    setSidebarOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (initialView) return;
+    if (typeof window === 'undefined') return;
+    const onRouteChange = () => applyNavigationState(getInitialNavigation());
+    window.addEventListener('hashchange', onRouteChange);
+    window.addEventListener('popstate', onRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', onRouteChange);
+      window.removeEventListener('popstate', onRouteChange);
+    };
+  }, [applyNavigationState, initialView]);
+
+  useEffect(() => {
+    if (initialView) return;
+    if (typeof window === 'undefined' || !window.history) return;
+
+    const hash = buildNavigationHash({
+      view: currentView,
+      projectId: routeProjectId,
+      prNumber: pullsOpenPrNumber,
+      threadId: activeThreadId,
+      designId: activeDesignId,
+    });
+    if (window.location.hash === hash) {
+      routeUrlInitializedRef.current = true;
+      return;
+    }
+
+    const nextUrl = `${window.location.pathname}${window.location.search}${hash}`;
+    const method = routeUrlInitializedRef.current ? 'pushState' : 'replaceState';
+    window.history[method](null, '', nextUrl);
+    routeUrlInitializedRef.current = true;
+  }, [activeDesignId, activeThreadId, currentView, initialView, pullsOpenPrNumber, routeProjectId]);
 
   const isWizardView = (v: any) =>
     v === 'new-project-wizard' || v === 'new-project-adaptive' || v === 'import-project-wizard';
