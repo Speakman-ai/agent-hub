@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "2.29.3",
+  "version": "2.29.4",
   "private": true,
   "main": "electron/main.js",
   "type": "module",
