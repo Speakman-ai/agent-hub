@@ -1,9 +1,11 @@
 import { execFile } from 'child_process';
+import { existsSync } from 'fs';
 import { mkdtemp, rm } from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import type { Project } from '../types.js';
+import { gitHostRepoPath } from '../git-host/repo-store.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,7 +19,11 @@ export class DeploymentCheckoutError extends Error {
 }
 
 function projectWorkspace(project: Project): string | null {
-  const candidate = project.ahw || project.cwd;
+  if (project.gitHost === 'agenthub') {
+    const hostedRepo = gitHostRepoPath(project.id);
+    if (existsSync(path.join(hostedRepo, 'HEAD'))) return hostedRepo;
+  }
+  const candidate = project.cwd || project.ahw;
   return typeof candidate === 'string' && candidate.trim() ? candidate : null;
 }
 

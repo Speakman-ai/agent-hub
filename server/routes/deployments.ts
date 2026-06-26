@@ -82,6 +82,10 @@ function projectDeployYamlPath(project: Project): string {
   return path.join(project.cwd, '.agent-hub', 'deploy.yaml');
 }
 
+function projectUsesHostedGit(project: Project): boolean {
+  return project.gitHost === 'agenthub';
+}
+
 function pickWizardAgent(project: Project): string | null {
   if (!project.agents || !Array.isArray(project.agents) || project.agents.length === 0) {
     return null;
@@ -454,13 +458,24 @@ export default function createDeploymentRoutes(
     const project = deps.findProject(projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
+    let checkout: CheckoutResult | null = null;
     try {
-      const config = await loadConfig(projectDeployYamlPath(project));
+      if (projectUsesHostedGit(project)) {
+        checkout = await prepareCheckout({ project, ref: 'HEAD' });
+      }
+      const config = await loadConfig(
+        checkout
+          ? path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml')
+          : projectDeployYamlPath(project),
+      );
       return res.json(deployConfigDto(project, config));
     } catch (err) {
       if (err instanceof DeployConfigError) return mapConfigError(err, res);
+      if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
       const message = err instanceof Error ? err.message : String(err);
       return res.status(500).json({ error: message });
+    } finally {
+      await cleanupPreparedCheckout(checkout);
     }
   });
 

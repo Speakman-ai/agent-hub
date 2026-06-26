@@ -1,7 +1,7 @@
 import '../test/setup.js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import request from 'supertest';
-import { existsSync, mkdtempSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { EventEmitter, Readable } from 'stream';
@@ -20,7 +20,7 @@ import {
   setEnvironmentCurrentRef,
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
-import { parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
+import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
 import createDeploymentRoutes, {
   buildDeploySetupKickoffPrompt,
   isDeploySetupWizardSession,
@@ -49,6 +49,12 @@ async function flushBackgroundRun(): Promise<void> {
 
 function makeCheckoutDir(prefix: string): string {
   return mkdtempSync(path.join(tmpdir(), prefix));
+}
+
+function writeDeployYaml(root: string, raw: string): void {
+  const dir = path.join(root, '.agent-hub');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'deploy.yaml'), raw);
 }
 
 function makeBackend(opts: { autoClose?: boolean; closeOnKill?: boolean } = {}): {
@@ -107,11 +113,13 @@ function makeApp(
     autoCloseSteps?: boolean;
     closeOnKill?: boolean;
     agents?: Project['agents'];
+    project?: Partial<Project>;
     handleChat?: RouteDeps['handleChat'];
     prepareCheckout?: (args: { project: Project; ref: string }) => Promise<{
       worktreePath: string;
       resolvedRef: string;
     }>;
+    loadConfig?: (deployYamlPath: string) => Promise<DeployConfig>;
   } = {},
 ) {
   const backend = makeBackend({ autoClose: opts.autoCloseSteps, closeOnKill: opts.closeOnKill });
@@ -125,6 +133,7 @@ function makeApp(
     agents: opts.agents ?? [
       { id: 'agent-1', name: 'Dev', role: 'dev', engine: 'claude-code', model: 'claude-test' },
     ],
+    ...opts.project,
   } as Project;
   const deps = {
     stmts: {
@@ -216,7 +225,7 @@ function makeApp(
       prepareCheckout:
         opts.prepareCheckout ??
         (async ({ ref }) => ({ worktreePath: `/tmp/deploy-${ref}`, resolvedRef: `${ref}-sha` })),
-      loadConfig: async () => opts.config ?? CONFIG,
+      loadConfig: opts.loadConfig ?? (async () => opts.config ?? CONFIG),
       orchestratorDeps: { runnerBackend: backend.backend, env: { PATH: '/usr/bin' } },
     }),
   );
@@ -410,6 +419,46 @@ describe('deployment routes', () => {
       name: 'prod',
       approval: true,
     });
+  });
+
+  it('renders hosted deploy config from a prepared checkout when project cwd is stale', async () => {
+    const staleCwd = makeCheckoutDir('deploy-route-stale-cwd-');
+    const checkout = makeCheckoutDir('deploy-route-hosted-checkout-');
+    writeDeployYaml(
+      checkout,
+      `
+version: 1
+environments:
+  production:
+    approval: true
+    steps:
+      - name: release
+        run: ./release.sh
+`,
+    );
+    const prepareCheckout = vi.fn(async () => ({
+      worktreePath: checkout,
+      resolvedRef: 'hosted-head-sha',
+    }));
+    const { app } = makeApp({
+      project: { cwd: staleCwd, ahw: staleCwd, gitHost: 'agenthub' },
+      prepareCheckout,
+      loadConfig: loadDeployConfig,
+    });
+
+    const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/config`).expect(200);
+
+    expect(prepareCheckout).toHaveBeenCalledWith({
+      project: expect.objectContaining({ id: PROJECT_ID, gitHost: 'agenthub', cwd: staleCwd }),
+      ref: 'HEAD',
+    });
+    expect(res.body.environments).toHaveLength(1);
+    expect(res.body.environments[0]).toMatchObject({
+      name: 'production',
+      approval: true,
+      steps: [{ name: 'release', run: './release.sh' }],
+    });
+    await vi.waitFor(() => expect(existsSync(checkout)).toBe(false));
   });
 
   it('renders deploy config when environment rows reference deleted deployments', async () => {
