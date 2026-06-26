@@ -57,6 +57,11 @@ process.env.AGENT_HUB_ALLOW_BRANCH_OPS = '1';
 // Same rule for the external-push auto-review dispatch (Reviewer agent
 // session spawn). Unit tests pass `force: true` with a mocked handleChat.
 process.env.AGENT_HUB_DISABLE_AUTO_REVIEW = '1';
+// Workspace cleanup's privileged-removal escalation (`forceRemoveWorkspaceTree`)
+// would `docker run` a root container to unlink uid-0 leftovers. Tests run on
+// node-owned temp fixtures where stage-1 `rm -rf` is sufficient, and must never
+// shell out to docker — disable the escalation here.
+process.env.AGENT_HUB_DISABLE_FORCE_RM_DOCKER = '1';
 // Fresh deploy bootstrap env must not leak from the host (Agent Hub
 // sessions, Docker, Terraform shells). If set, maybeAutoProvisionOwner runs at
 // server boot, auth.json exists, and authMiddleware rejects unauthenticated

@@ -47,6 +47,128 @@ export const WORKSPACES_ROOT: string = path.join(homedir(), '.agent-hub', 'works
 const execFileP = promisify(execFile);
 const execP = promisify(exec);
 
+/**
+ * Host-side path of {@link WORKSPACES_ROOT}, used only by the privileged-removal
+ * escalation in {@link forceRemoveWorkspaceTree}.
+ *
+ * The Hub container bind-mounts the host's workspaces directory at
+ * `WORKSPACES_ROOT`. Preview / finalize compose stacks write artifacts into that
+ * mount as uid 0 (`.agent-hub-preview/data`, `.angular/cache`, `__pycache__`),
+ * so the `node`-uid Hub process cannot unlink them — `rmSync(..., {force:true})`
+ * surfaces `EACCES` (force only swallows `ENOENT`). The orphan dirs then never
+ * get reclaimed and accumulate, so each synchronous sweep walks more trees and
+ * blocks the event loop longer (observed: a ~100s stall → `node-cron` missed
+ * execution bursts → nginx 504s, and a 234 GB / 130-dir workspace pile).
+ *
+ * To delete those root-owned leftovers we spawn a throwaway root container with
+ * the SAME host directory mounted and `rm -rf` the subtree there. That needs the
+ * host path, which differs from the in-container path. Defaults to the
+ * production bind source; override with `AGENT_HUB_HOST_WORKSPACES_ROOT` (set it
+ * equal to `WORKSPACES_ROOT` on bare-metal / dev where they coincide).
+ */
+const HOST_WORKSPACES_ROOT: string =
+  process.env.AGENT_HUB_HOST_WORKSPACES_ROOT?.trim() || '/var/lib/agent-hub/workspaces';
+
+/** Tiny always-available image for the privileged-removal escalation. */
+const FORCE_RM_IMAGE: string = process.env.AGENT_HUB_FORCE_RM_IMAGE?.trim() || 'alpine:3';
+
+/**
+ * When `1`, the docker-root escalation is skipped (stage 1 `rm -rf` only). Set in
+ * unit tests so the sweep never shells out to docker; production leaves it unset.
+ */
+const FORCE_RM_DOCKER_DISABLED: boolean = process.env.AGENT_HUB_DISABLE_FORCE_RM_DOCKER === '1';
+
+/** Hard cap on any single `rm` / `docker run` removal so a wedged unlink can't hang the sweep. */
+const FORCE_RM_TIMEOUT_MS = 120_000;
+
+/** How many orphan trees the sweep removes concurrently — bounded so the disk isn't thrashed. */
+const WORKSPACE_CLEANUP_CONCURRENCY = 3;
+
+/**
+ * Remove a workspace subtree off the event loop, escalating to a privileged
+ * container when the `node`-uid `rm` cannot unlink container-written artifacts.
+ *
+ * Stage 1 — spawn `rm -rf` as a child process (async; never blocks the loop,
+ * even for a multi-GB `node_modules` tree). Clears everything owned by `node`.
+ *
+ * Stage 2 — if anything survives (the `EACCES` root-owned leftovers described on
+ * {@link HOST_WORKSPACES_ROOT}), spawn a throwaway root container with the host
+ * workspaces dir mounted and `rm -rf` the subtree there. Best-effort: logs and
+ * returns `false` if docker is unavailable rather than throwing.
+ *
+ * Returns `true` iff an existing path was removed (matching
+ * {@link removeWorkspace}'s "something was actually unlinked" contract); `false`
+ * for empty input, a path outside the managed root, a missing path, or a
+ * removal that left the tree behind.
+ */
+export async function forceRemoveWorkspaceTree(fullPath: string): Promise<boolean> {
+  if (!fullPath) return false;
+
+  // Path-safety: must live strictly inside the managed root. A bare equality to
+  // the root itself is also rejected — we never remove the root.
+  if (!fullPath.startsWith(WORKSPACES_ROOT + path.sep)) {
+    console.warn(`[Workspace] Refusing to force-remove path outside managed root: ${fullPath}`);
+    return false;
+  }
+  if (!existsSync(fullPath)) return false;
+
+  // Stage 1: async `rm -rf` as the node user.
+  try {
+    await execFileP('rm', ['-rf', '--', fullPath], { timeout: FORCE_RM_TIMEOUT_MS });
+  } catch {
+    // Ignore — fall through to the existence check; a partial failure (EACCES on
+    // a root-owned subpath) leaves the dir present and triggers escalation.
+  }
+  if (!existsSync(fullPath)) return true;
+
+  // Stage 2: privileged escalation for root-owned leftovers.
+  if (!FORCE_RM_DOCKER_DISABLED) {
+    const rel = path.relative(WORKSPACES_ROOT, fullPath);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+      // Can't happen given the prefix guard above, but never hand docker a path
+      // that could escape the mounted root.
+      console.warn(`[Workspace] Skipping escalation — unexpected relative path: ${rel}`);
+    } else {
+      const containerTarget = path.posix.join('/ws', rel.split(path.sep).join('/'));
+      try {
+        await execFileP(
+          'docker',
+          [
+            'run',
+            '--rm',
+            '-v',
+            `${HOST_WORKSPACES_ROOT}:/ws`,
+            FORCE_RM_IMAGE,
+            'rm',
+            '-rf',
+            '--',
+            containerTarget,
+          ],
+          { timeout: FORCE_RM_TIMEOUT_MS },
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[Workspace] Privileged remove failed for ${fullPath}:`, message);
+      }
+    }
+  }
+
+  return !existsSync(fullPath);
+}
+
+/**
+ * Async, EACCES-resilient sibling of {@link removeWorkspace}. Same
+ * `WORKSPACES_ROOT` safety contract and `true`-only-when-unlinked return, but
+ * routes through {@link forceRemoveWorkspaceTree} so it (a) never blocks the
+ * event loop and (b) reclaims root-owned container artifacts the sync version
+ * leaves behind. Preferred by `session-purge.ts`.
+ */
+export async function removeWorkspaceAsync(workspacePath: string): Promise<boolean> {
+  const removed = await forceRemoveWorkspaceTree(workspacePath);
+  if (removed) console.log(`[Workspace] Removed: ${workspacePath}`);
+  return removed;
+}
+
 /** Written in the session clone when an awaited dependency install fails; reuse opens fail fast instead of repeating the install timeout. */
 export const SESSION_DEPENDENCY_INSTALL_FAILURE_MARKER = '.agent-hub-dependency-install-failed';
 
@@ -2142,17 +2264,23 @@ export interface CleanupStaleOpts {
  * The explicit `WORKSPACES_ROOT` guard remains in `removeWorkspace` for
  * direct callers.
  */
-export function cleanupStaleWorkspaces(
+export async function cleanupStaleWorkspaces(
   projectCwd: string,
   maxAgeMs: number = 24 * 60 * 60 * 1000,
   opts: CleanupStaleOpts = {},
-): void {
+): Promise<void> {
   const wsDir = path.join(WORKSPACES_ROOT, projectSlug(projectCwd));
   if (!existsSync(wsDir)) return;
 
   const isSessionRecoverable = opts.isSessionRecoverable;
   const now = opts.now ?? Date.now();
 
+  // Phase 1 — decide what to remove. This is the only synchronous work, and it
+  // is cheap: one `readdir`, then a `statSync` + indexed DB prefix lookup per
+  // entry. The heavy `rm` I/O is deferred to phase 2 so it never blocks the
+  // event loop (the prior synchronous `rmSync` walk over a multi-GB orphan pile
+  // froze the loop for ~100s → node-cron missed-execution bursts → 504s).
+  const toRemove: { path: string; label: string }[] = [];
   try {
     const entries = readdirSync(wsDir);
     for (const entry of entries) {
@@ -2182,25 +2310,45 @@ export function cleanupStaleWorkspaces(
           if (!isSessionRecoverable || isSessionRecoverable(idPrefix)) {
             continue;
           }
-          rmSync(fullPath, { recursive: true, force: true });
-          console.log(`[Workspace] Cleaned up orphan session clone: ${entry}`);
+          toRemove.push({ path: fullPath, label: `orphan session clone: ${entry}` });
           continue;
         }
 
         const stat = statSync(fullPath);
         if (now - stat.mtimeMs > maxAgeMs) {
-          rmSync(fullPath, { recursive: true, force: true });
-          console.log(`[Workspace] Cleaned up stale clone: ${entry}`);
+          toRemove.push({ path: fullPath, label: `stale clone: ${entry}` });
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[Workspace] Cleanup failed for ${entry}:`, message);
+        console.warn(`[Workspace] Cleanup scan failed for ${entry}:`, message);
       }
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[Workspace] Cleanup scan failed:', message);
+    return;
   }
+
+  // Phase 2 — remove off the event loop, a few at a time. `forceRemoveWorkspaceTree`
+  // spawns `rm` (and escalates to a privileged container for root-owned
+  // leftovers), so the disk churn happens in child processes while the loop
+  // stays responsive.
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < toRemove.length) {
+      const item = toRemove[cursor++];
+      const removed = await forceRemoveWorkspaceTree(item.path);
+      if (removed) {
+        console.log(`[Workspace] Cleaned up ${item.label}`);
+      } else {
+        console.warn(
+          `[Workspace] Cleanup failed for ${path.basename(item.path)}: not fully removed`,
+        );
+      }
+    }
+  };
+  const pool = Math.min(WORKSPACE_CLEANUP_CONCURRENCY, toRemove.length);
+  await Promise.all(Array.from({ length: pool }, () => worker()));
 }
 
 /**

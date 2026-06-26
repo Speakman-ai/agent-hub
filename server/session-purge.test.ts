@@ -147,7 +147,7 @@ describe('purgeExpiredArchivedSessions', () => {
     }
   });
 
-  it('removes both row and worktree for an archived session past 24 hours', () => {
+  it('removes both row and worktree for an archived session past 24 hours', async () => {
     const { id, worktreePath } = makeSession(fixture.workspaceDir, {
       deletedAtSql: "datetime('now', '-25 hours')",
     });
@@ -161,7 +161,7 @@ describe('purgeExpiredArchivedSessions', () => {
 
     expect(existsSync(worktreePath)).toBe(true);
 
-    const result = purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+    const result = await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
 
     expect(result.rowsDeleted).toBe(1);
     expect(result.workspacesRemoved).toBe(1);
@@ -171,7 +171,7 @@ describe('purgeExpiredArchivedSessions', () => {
     expect(stillThere).toBeUndefined();
   });
 
-  it('leaves an archived-but-within-24h session untouched', () => {
+  it('leaves an archived-but-within-24h session untouched', async () => {
     const { id, worktreePath } = makeSession(fixture.workspaceDir, {
       deletedAtSql: "datetime('now', '-6 hours')",
     });
@@ -179,17 +179,17 @@ describe('purgeExpiredArchivedSessions', () => {
       .prepare("UPDATE sessions SET deleted_at = datetime('now', '-6 hours') WHERE id = ?")
       .run(id);
 
-    const result = purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+    const result = await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
 
     expect(result.rowsDeleted).toBe(0);
     expect(existsSync(worktreePath)).toBe(true);
     expect(getDb().prepare('SELECT 1 FROM sessions WHERE id = ?').get(id)).toBeDefined();
   });
 
-  it('leaves a live (non-archived) session untouched', () => {
+  it('leaves a live (non-archived) session untouched', async () => {
     const { id, worktreePath } = makeSession(fixture.workspaceDir, { deletedAtSql: null });
 
-    const result = purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
+    const result = await purgeExpiredArchivedSessions(depsFor(fixture.projectCwd));
 
     expect(result.rowsDeleted).toBe(0);
     expect(existsSync(worktreePath)).toBe(true);
@@ -213,30 +213,30 @@ describe('cleanupAllProjectWorkspaces', () => {
     }
   });
 
-  it('removes orphan session-* dirs with no matching DB row', () => {
+  it('removes orphan session-* dirs with no matching DB row', async () => {
     // No DB row — straight onto disk
     const orphanDir = path.join(fixture.workspaceDir, 'session-deadbeef');
     mkdirSync(orphanDir, { recursive: true });
     writeFileSync(path.join(orphanDir, 'README'), 'orphan\n');
     expect(existsSync(orphanDir)).toBe(true);
 
-    cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
+    await cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(orphanDir)).toBe(false);
   });
 
-  it('preserves a live session dir even if mtime is ancient', () => {
+  it('preserves a live session dir even if mtime is ancient', async () => {
     const { worktreePath } = makeSession(fixture.workspaceDir, { deletedAtSql: null });
     // Backdate to 30 days ago — would trip the non-session 24h sweep.
     const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
     utimesSync(worktreePath, old, old);
 
-    cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
+    await cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(worktreePath)).toBe(true);
   });
 
-  it('preserves an archived-but-within-24h session', () => {
+  it('preserves an archived-but-within-24h session', async () => {
     const { id, worktreePath } = makeSession(fixture.workspaceDir, {
       deletedAtSql: "datetime('now', '-3 hours')",
     });
@@ -244,12 +244,12 @@ describe('cleanupAllProjectWorkspaces', () => {
       .prepare("UPDATE sessions SET deleted_at = datetime('now', '-3 hours') WHERE id = ?")
       .run(id);
 
-    cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
+    await cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(worktreePath)).toBe(true);
   });
 
-  it('removes a session-* dir whose row is past the 24h window (defence in depth)', () => {
+  it('removes a session-* dir whose row is past the 24h window (defence in depth)', async () => {
     // The purge tick should hard-delete this row first, but if for any
     // reason the row lingers (FK constraint, prior failure), the sweep
     // should still reclaim the disk dir on its own pass.
@@ -260,28 +260,28 @@ describe('cleanupAllProjectWorkspaces', () => {
       .prepare("UPDATE sessions SET deleted_at = datetime('now', '-30 hours') WHERE id = ?")
       .run(id);
 
-    cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
+    await cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(worktreePath)).toBe(false);
   });
 
-  it('reclaims non-session clones older than 24h', () => {
+  it('reclaims non-session clones older than 24h', async () => {
     const cronDir = path.join(fixture.workspaceDir, 'cron-stale');
     mkdirSync(cronDir, { recursive: true });
     const old = Date.now() / 1000 - 25 * 60 * 60;
     utimesSync(cronDir, old, old);
 
-    cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
+    await cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(cronDir)).toBe(false);
   });
 
-  it('preserves non-session clones younger than 24h', () => {
+  it('preserves non-session clones younger than 24h', async () => {
     const cronDir = path.join(fixture.workspaceDir, 'cron-fresh');
     mkdirSync(cronDir, { recursive: true });
     // Default mtime ≈ now → well within 24h.
 
-    cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
+    await cleanupAllProjectWorkspaces(depsFor(fixture.projectCwd));
 
     expect(existsSync(cronDir)).toBe(true);
   });
@@ -329,7 +329,7 @@ describe('pruneOrphanedSessionEvents', () => {
     expect(remaining.map((r) => r.parent_id)).toEqual([liveMsgId, liveMsgId]);
   });
 
-  it('runWorkspacePurge cascades: archived-session delete then orphan sweep in one tick', () => {
+  it('runWorkspacePurge cascades: archived-session delete then orphan sweep in one tick', async () => {
     const db = getDb();
     const stmts = getStmts();
 
@@ -353,7 +353,7 @@ describe('pruneOrphanedSessionEvents', () => {
     stmts.addSessionEvent.run('message', archivedMsgId, 1, 'tool_use', '{}');
     stmts.addSessionEvent.run('message', archivedMsgId, 2, 'tool_result', '{}');
 
-    runWorkspacePurge(depsFor(fixture.projectCwd));
+    await runWorkspacePurge(depsFor(fixture.projectCwd));
 
     // Session row gone.
     const sessionRow = db.prepare('SELECT id FROM sessions WHERE id = ?').get(archived.id);

@@ -729,30 +729,30 @@ describe('cleanupStaleWorkspaces — omitted isSessionRecoverable callback', () 
     }
   });
 
-  it('preserves session-* dirs when no isSessionRecoverable callback is supplied', () => {
+  it('preserves session-* dirs when no isSessionRecoverable callback is supplied', async () => {
     const sessionDir = path.join(workspaceDir, 'session-deadbeef');
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(path.join(sessionDir, 'README'), 'must survive omitted-callback tick\n');
 
     // No `opts` argument at all — exercises the legacy default-preserve branch.
-    cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000);
+    await cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000);
 
     expect(existsSync(sessionDir)).toBe(true);
   });
 
-  it('preserves session-* dirs when opts is passed without isSessionRecoverable', () => {
+  it('preserves session-* dirs when opts is passed without isSessionRecoverable', async () => {
     const sessionDir = path.join(workspaceDir, 'session-cafef00d');
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(path.join(sessionDir, 'README'), 'must survive partial-opts tick\n');
 
     // Opts present but the recoverability probe is omitted — the
     // `!isSessionRecoverable` branch must still preserve the dir.
-    cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000, { now: Date.now() });
+    await cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000, { now: Date.now() });
 
     expect(existsSync(sessionDir)).toBe(true);
   });
 
-  it('still reaps non-session stale clones when the callback is omitted', () => {
+  it('still reaps non-session stale clones when the callback is omitted', async () => {
     // Sanity: omitting the callback must not turn into "preserve everything";
     // `cron-*` / `heartbeat-*` clones should still get the mtime sweep.
     const cronDir = path.join(workspaceDir, 'cron-stale');
@@ -760,7 +760,7 @@ describe('cleanupStaleWorkspaces — omitted isSessionRecoverable callback', () 
     const oldEpoch = Date.now() / 1000 - 25 * 60 * 60;
     utimesSync(cronDir, oldEpoch, oldEpoch);
 
-    cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000);
+    await cleanupStaleWorkspaces(projectCwd, 24 * 60 * 60 * 1000);
 
     expect(existsSync(cronDir)).toBe(false);
   });

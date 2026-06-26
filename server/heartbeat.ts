@@ -929,11 +929,12 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   const workspacePurgeTask = cron.schedule(
     WORKSPACE_PURGE_SCHEDULE,
     wrapCronTick(() => {
-      try {
-        runWorkspacePurge();
-      } catch (err: unknown) {
+      // `runWorkspacePurge` is async (the stale-clone sweep now removes off the
+      // event loop); catch the rejection so the tick never produces an
+      // unhandled promise rejection.
+      void runWorkspacePurge().catch((err: unknown) => {
         console.error('[Workspace Purge] Scheduled tick threw:', (err as Error).message);
-      }
+      });
     }, 'system:workspace-purge'),
     defaultTickOptions({
       intervalSeconds: estimateIntervalSeconds(WORKSPACE_PURGE_SCHEDULE),
@@ -949,11 +950,9 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
   // first — the purge is read-write and we don't want it competing with
   // initial WAL pressure.
   setTimeout(() => {
-    try {
-      runWorkspacePurge();
-    } catch (err: unknown) {
+    void runWorkspacePurge().catch((err: unknown) => {
       console.error('[Workspace Purge] Startup tick threw:', (err as Error).message);
-    }
+    });
   }, 30_000);
 
   const WIKI_SYNC_SCHEDULE = '0 4 * * *';

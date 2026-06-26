@@ -29,7 +29,7 @@
 
 import { db as _db, stmts as _stmts } from './db.js';
 import {
-  removeWorkspace as defaultRemoveWorkspace,
+  removeWorkspaceAsync as defaultRemoveWorkspace,
   cleanupStaleWorkspaces as defaultCleanupStaleWorkspaces,
 } from './worktree.js';
 import { getProjects as defaultGetProjects } from './project-model.js';
@@ -49,7 +49,11 @@ export interface PurgeDeps {
   db: Database.Database;
   stmts: Stmts;
   getProjects: () => Project[];
-  removeWorkspace: (workspacePath: string) => boolean;
+  /**
+   * Async + EACCES-resilient (see `removeWorkspaceAsync`). Tests may inject a
+   * synchronous stub returning a bare `boolean` — `await` accepts both.
+   */
+  removeWorkspace: (workspacePath: string) => boolean | Promise<boolean>;
   cleanupStaleWorkspaces: typeof defaultCleanupStaleWorkspaces;
 }
 
@@ -80,7 +84,9 @@ function defaultDeps(): PurgeDeps {
  * blocks paths outside `WORKSPACES_ROOT`), then deletes the row. Returns
  * counters for logging / test assertions.
  */
-export function purgeExpiredArchivedSessions(deps: PurgeDeps = defaultDeps()): PurgeResult {
+export async function purgeExpiredArchivedSessions(
+  deps: PurgeDeps = defaultDeps(),
+): Promise<PurgeResult> {
   const { stmts, removeWorkspace } = deps;
 
   const rows = stmts.getExpiredArchivedSessions.all() as ExpiredSessionRow[];
@@ -92,9 +98,9 @@ export function purgeExpiredArchivedSessions(deps: PurgeDeps = defaultDeps()): P
       try {
         // `removeWorkspace` returns `true` only when something was actually
         // unlinked — paths missing on disk, paths outside `WORKSPACES_ROOT`,
-        // and `rmSync` failures all return `false`, so the counter is an
+        // and removal failures all return `false`, so the counter is an
         // honest "files unlinked" rather than the previous "attempts made".
-        if (removeWorkspace(row.worktree_path)) {
+        if (await removeWorkspace(row.worktree_path)) {
           workspacesRemoved++;
         }
       } catch (err: unknown) {
@@ -129,7 +135,7 @@ export function purgeExpiredArchivedSessions(deps: PurgeDeps = defaultDeps()): P
  * `cleanupStaleWorkspaces`, so a project with thousands of dirs costs at
  * most thousands of indexed prefix queries (cheap on the 8-char id slice).
  */
-export function cleanupAllProjectWorkspaces(deps: PurgeDeps = defaultDeps()): void {
+export async function cleanupAllProjectWorkspaces(deps: PurgeDeps = defaultDeps()): Promise<void> {
   const { stmts, getProjects, cleanupStaleWorkspaces } = deps;
 
   // Aggregate recoverability lookup failures across the entire tick so a
@@ -161,7 +167,7 @@ export function cleanupAllProjectWorkspaces(deps: PurgeDeps = defaultDeps()): vo
   for (const project of getProjects()) {
     if (!project.cwd) continue;
     try {
-      cleanupStaleWorkspaces(project.cwd, 24 * 60 * 60 * 1000, { isSessionRecoverable });
+      await cleanupStaleWorkspaces(project.cwd, 24 * 60 * 60 * 1000, { isSessionRecoverable });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[Purge] cleanupStaleWorkspaces(${project.cwd}) threw:`, message);
@@ -202,16 +208,16 @@ export function pruneOrphanedSessionEvents(deps: PurgeDeps = defaultDeps()): voi
  * (daily cron) and once at server startup. Wrapped in a top-level try
  * so a SQLite/FS hiccup never poisons the scheduler.
  */
-export function runWorkspacePurge(deps: PurgeDeps = defaultDeps()): PurgeResult {
+export async function runWorkspacePurge(deps: PurgeDeps = defaultDeps()): Promise<PurgeResult> {
   let result: PurgeResult = { rowsDeleted: 0, workspacesRemoved: 0 };
   try {
-    result = purgeExpiredArchivedSessions(deps);
+    result = await purgeExpiredArchivedSessions(deps);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[Purge] Archived-session purge threw:', message);
   }
   try {
-    cleanupAllProjectWorkspaces(deps);
+    await cleanupAllProjectWorkspaces(deps);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[Purge] Stale-clone sweep threw:', message);
