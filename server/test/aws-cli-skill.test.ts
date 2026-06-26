@@ -9,8 +9,9 @@
  *   5. aws-whoami.sh handles missing credentials gracefully
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync, spawnSync } from 'child_process';
-import { existsSync, readFileSync, statSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -48,6 +49,28 @@ function runBash(
   };
 }
 
+function makeFakeAwsCli(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'agent-hub-fake-aws-'));
+  const bin = path.join(dir, 'aws');
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]]; then
+  echo "aws-cli/2.15.0 Python/3.11.0 Linux/5.15 exe/x86_64"
+  exit 0
+fi
+if [[ "\${1:-}" == "configure" ]]; then
+  exit 1
+fi
+echo "aws: [ERROR]: The config profile (__nonexistent_test_profile__) could not be found" >&2
+exit 255
+`,
+    { mode: 0o755 },
+  );
+  return dir;
+}
+
 // ---------------------------------------------------------------------------
 // 1. SKILL.md shape
 // ---------------------------------------------------------------------------
@@ -79,6 +102,14 @@ describe('aws-cli SKILL.md', () => {
   it('mentions SSO / assume-role', () => {
     const content = readFileSync(skillMd, 'utf8');
     expect(content.toLowerCase()).toContain('sso');
+  });
+
+  it('routes Hub project SSO status checks through ah-api.sh', () => {
+    const content = readFileSync(skillMd, 'utf8');
+    expect(content).toContain('ah-api.sh GET');
+    expect(content).toContain('/api/projects/$PROJECT_ID/aws-sso/status?profile=<name>');
+    expect(content).toContain('per-user HOME');
+    expect(content).not.toMatch(/Bearer\s+\$AGENT_HUB_API_KEY/i);
   });
 
   it('mentions JMESPath', () => {
@@ -217,6 +248,34 @@ describe('aws-whoami.sh credential error handling', () => {
       combined.toLowerCase().includes('no credential') ||
       combined.toLowerCase().includes('unable to locate');
     expect(hasCredGuidance).toBe(true);
+  });
+
+  it('prints the session-aware Hub status command for project-managed profiles', () => {
+    const fakeAwsDir = makeFakeAwsCli();
+    try {
+      const result = runBash(`"${awsWhoami}" --profile __nonexistent_test_profile__`, {
+        AGENT_HUB_AWS_PROFILE_NAMES: '__nonexistent_test_profile__',
+        PROJECT_ID: 'agent-hub',
+        AGENT_HUB_URL: 'http://127.0.0.1:3051',
+        AWS_PROFILE: '',
+        AWS_ACCESS_KEY_ID: '',
+        AWS_SECRET_ACCESS_KEY: '',
+        AWS_SESSION_TOKEN: '',
+        AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+        HOME: '/tmp',
+        PATH: `${fakeAwsDir}:${process.env.PATH ?? ''}`,
+      });
+      const combined = result.stderr + result.stdout;
+      expect(result.status).not.toBe(0);
+      expect(combined).toContain(
+        'ah-api.sh GET "/api/projects/agent-hub/aws-sso/status?profile=__nonexistent_test_profile__"',
+      );
+      expect(combined).not.toContain('GET http://127.0.0.1:3051');
+      expect(combined).not.toMatch(/Bearer\s+\$AGENT_HUB_API_KEY/i);
+    } finally {
+      rmSync(fakeAwsDir, { recursive: true, force: true });
+    }
   });
 });
 

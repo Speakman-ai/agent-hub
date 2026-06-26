@@ -679,30 +679,24 @@ export function compressSkillDescription(
  * Render the `## Project AWS` system-prompt section for a project that has
  * configured AWS profiles. Returns `''` when there are none.
  *
- * Behavioral contract (see card 6f7014c9): agents must NOT initiate their own
- * `aws sso login` device-code flow when the status probe reports `loggedIn:
- * false`. A spawned agent calls `/aws-sso/status` with the break-glass
- * `x-api-key`, which resolves to the shared host HOME, so it can only see SSO
- * tokens cached there. When a human logs in through the web **AWS** settings
- * module they authenticate under their own per-user HOME, whose token cache the
- * agent's probe deliberately never reads (cross-user token enumeration is a
- * security no-go — see `aws-sso-identity.ts`). The result is a false-negative:
- * the user IS logged in, the agent just can't see it. Starting a second
- * device-code login here is exactly the redundant "log in again" prompt users
- * hit. So a false probe result points the user at the AWS settings module
- * rather than spawning a login.
+ * Behavioral contract (see card 3a0a5756): agents must trust the Hub status
+ * endpoint when it reports `loggedIn: true`, because the `ah-api.sh` wrapper
+ * sends the acting session id and lets `/aws-sso/status` resolve the session
+ * owner's per-user HOME. If the probe reports `loggedIn: false`, agents still
+ * must NOT initiate their own `aws sso login` device-code flow; they should
+ * point the user at the AWS settings module instead.
  */
 export function buildProjectAwsPromptSection(projectId: string, profileNames: string[]): string {
   if (profileNames.length === 0) return '';
   return `\n\n## Project AWS
 Configured AWS profiles for this project: ${profileNames.join(', ')}.
-This session sets \`AWS_CONFIG_FILE\` and \`AWS_SHARED_CREDENTIALS_FILE\` to project-specific files. Static profiles use the project credentials file directly. SSO tokens cache under the HOME of whoever logged in. The web **AWS** settings module logs the user in under their own HOME, which your status probe (it runs under the shared host HOME) usually can't read.
+This session sets \`AWS_CONFIG_FILE\` and \`AWS_SHARED_CREDENTIALS_FILE\` to project-specific files. Static profiles use the project credentials file directly. SSO tokens cache under the HOME of whoever logged in. The Hub status endpoint resolves this session's owner and checks the same per-user HOME used by the web **AWS** settings module.
 
 **Before any AWS CLI work:**
 1. Ask which profile to use if the user did not say (e.g. dev, staging, prod).
-2. Check login: \`GET $AGENT_HUB_URL/api/projects/${projectId}/aws-sso/status?profile=<name>\` with \`Authorization: Bearer $AGENT_HUB_API_KEY\`. If \`loggedIn\` is true, proceed.
-3. If \`loggedIn\` is false, **do not start an SSO login yourself**. Do not kick off any login endpoint, do not surface a device-code URL, do not run an interactive sign-in. For SSO profiles, a false result usually just means the user is already signed in under a HOME your probe can't see. For static profiles, it means the saved credentials failed. Point them to the project's **AWS** settings module (the **AWS** entry in project settings), have them click **Check login** / **SSO login** there when applicable, then re-check status.
-4. Use \`scripts/aws-whoami.sh --profile <name>\` and \`scripts/aws-q.sh\` with \`--profile <name>\` for reads; confirm profile/region in output.
+2. Check login with the session-aware Hub wrapper: \`ah-api.sh GET "/api/projects/${projectId}/aws-sso/status?profile=<name>"\`. If \`loggedIn\` is true, proceed.
+3. If \`loggedIn\` is false, **do not start an SSO login yourself**. Do not kick off any login endpoint, do not surface a device-code URL, do not run an interactive sign-in. For SSO profiles, point the user to the project's **AWS** settings module (the **AWS** entry in project settings), have them click **Check login** / **SSO login** there when applicable, then re-check status. For static profiles, the saved credentials failed and must be updated there.
+4. Use \`aws-whoami.sh --profile <name>\` and \`aws-q.sh\` with \`--profile <name>\` for reads; confirm profile/region in output.
 
 Do not print access keys or session tokens.`;
 }

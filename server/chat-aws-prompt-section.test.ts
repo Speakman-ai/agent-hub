@@ -2,14 +2,12 @@
  * Regression for the "AWS asks me to log in again even though I'm already
  * logged in" bug (card 6f7014c9).
  *
- * A spawned agent probes /aws-sso/status with the break-glass x-api-key, which
- * resolves to the shared host HOME. A user who logged in via the web AWS
- * settings module authenticated under their own per-user HOME, whose token
- * cache the probe never reads (cross-user enumeration is a security no-go). So
- * the probe reports loggedIn:false even though the user is signed in. The old
- * prompt told the agent to POST /aws-sso/login and surface a device URL in that
- * case — the exact redundant "log in again" flow. The section must instead
- * point the user at the AWS settings module and never self-initiate a login.
+ * The prompt must send agents through the session-aware Hub API wrapper. That
+ * wrapper attaches X-Agent-Hub-Session-Id, allowing /aws-sso/status to resolve
+ * the session owner's per-user HOME and trust the same login the web AWS
+ * settings module validated. The old prompt used a raw Authorization probe and
+ * told agents the Settings login was usually unreadable, which caused the
+ * redundant "tell the agent I'm logged in" loop.
  */
 import { describe, it, expect } from 'vitest';
 import { buildProjectAwsPromptSection } from './chat.js';
@@ -41,16 +39,20 @@ describe('buildProjectAwsPromptSection', () => {
     expect(out).toMatch(/Check login/i);
   });
 
-  it('explains the false-negative cause (token cached under an unreadable HOME)', () => {
+  it('explains that Hub status checks the Settings login HOME', () => {
     const out = buildProjectAwsPromptSection('agent-hub', ['agenthub']);
-    expect(out).toMatch(/HOME/);
-    expect(out).toMatch(/can't see|cannot see|can't read|cannot read/i);
+    expect(out).toMatch(/per-user HOME/);
+    expect(out).toMatch(/AWS.*settings module/i);
+    expect(out).not.toMatch(/shared host HOME/i);
+    expect(out).not.toMatch(/can't see|cannot see|can't read|cannot read/i);
   });
 
-  it('keeps the status-check endpoint and read wrappers', () => {
+  it('uses the session-aware wrapper for the status-check endpoint and read wrappers', () => {
     const out = buildProjectAwsPromptSection('agent-hub', ['agenthub']);
+    expect(out).toContain('ah-api.sh GET');
     expect(out).toContain('/api/projects/agent-hub/aws-sso/status');
-    expect(out).toContain('scripts/aws-whoami.sh');
-    expect(out).toContain('scripts/aws-q.sh');
+    expect(out).not.toMatch(/Authorization:\s*Bearer/i);
+    expect(out).toContain('aws-whoami.sh');
+    expect(out).toContain('aws-q.sh');
   });
 });

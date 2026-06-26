@@ -38,8 +38,8 @@ if [[ ${IDENTITY_EXIT} -ne 0 ]]; then
     echo "error: AWS session token has expired." >&2
     echo "" >&2
     if [[ -n "${AGENT_HUB_AWS_PROFILE_NAMES:-}" && -n "${PROJECT_ID:-}" && -n "${AGENT_HUB_URL:-}" ]]; then
-      echo "For project profiles, check the Hub status endpoint:" >&2
-      echo "  GET ${AGENT_HUB_URL}/api/projects/${PROJECT_ID}/aws-sso/status?profile=${RESOLVED_PROFILE}" >&2
+      echo "For project profiles, check the session-aware Hub status endpoint:" >&2
+      echo "  ah-api.sh GET \"/api/projects/${PROJECT_ID}/aws-sso/status?profile=${RESOLVED_PROFILE}\"" >&2
       echo "If login is needed, ask the user to use the project's AWS settings module." >&2
     else
       echo "For SSO profiles, run:" >&2
@@ -50,12 +50,12 @@ if [[ ${IDENTITY_EXIT} -ne 0 ]]; then
     exit 1
   fi
 
-  if echo "${IDENTITY_JSON}" | grep -qi "NoCredentialProviders\|Unable to locate credentials"; then
+  if echo "${IDENTITY_JSON}" | grep -qi "NoCredentialProviders\|Unable to locate credentials\|config profile .* could not be found"; then
     echo "error: No AWS credentials found for profile '${RESOLVED_PROFILE}'." >&2
     echo "" >&2
     if [[ -n "${AGENT_HUB_AWS_PROFILE_NAMES:-}" && -n "${PROJECT_ID:-}" && -n "${AGENT_HUB_URL:-}" ]]; then
       echo "Project profiles: ${AGENT_HUB_AWS_PROFILE_NAMES}" >&2
-      echo "  GET  ${AGENT_HUB_URL}/api/projects/${PROJECT_ID}/aws-sso/status?profile=${RESOLVED_PROFILE}" >&2
+      echo "  ah-api.sh GET \"/api/projects/${PROJECT_ID}/aws-sso/status?profile=${RESOLVED_PROFILE}\"" >&2
       echo "Use the project's AWS settings module to refresh SSO or edit static credentials." >&2
     else
       echo "Configure credentials via one of:" >&2

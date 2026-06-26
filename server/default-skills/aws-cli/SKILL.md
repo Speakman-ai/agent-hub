@@ -141,9 +141,11 @@ Settings → Projects → **AWS**. `AWS_CONFIG_FILE` and
 
 1. `scripts/aws-whoami.sh --profile <name>`. If credentials work, proceed.
 2. If not, check status:
-   `GET $AGENT_HUB_URL/api/projects/$PROJECT_ID/aws-sso/status?profile=<name>`
-   (Bearer `$AGENT_HUB_API_KEY`).
-3. If `loggedIn` is false, do not start SSO login yourself. For SSO profiles,
+   `ah-api.sh GET "/api/projects/$PROJECT_ID/aws-sso/status?profile=<name>"`.
+   The wrapper sends the acting session id so the Hub can check the same
+   per-user HOME validated by Settings → Project → **AWS**.
+3. If `loggedIn` is false, do not start SSO login yourself. Do not call the Hub
+   SSO login endpoint or run `aws sso login` from the agent. For SSO profiles,
    ask the user to refresh from the project's AWS settings module; for static
    profiles, ask them to update the saved credentials there. Then re-check
    status.

@@ -41,9 +41,11 @@ Run: aws sso login --profile my-sso
 ```
 
 When the project has Hub-managed AWS profiles (`AGENT_HUB_AWS_PROFILE_NAMES`),
-use the Hub API to start browser-less SSO and return the device URL to the user
-(see `SKILL.md` → Project-configured profiles). Otherwise the agent **does not**
-run `aws sso login` directly without user involvement.
+check status through `ah-api.sh GET "/api/projects/$PROJECT_ID/aws-sso/status?profile=<name>"`
+so the Hub can use the acting session id to resolve the same per-user HOME the
+web AWS settings module validated. If status is false, ask the user to refresh
+from Settings → Project → **AWS**. The agent **does not** call the Hub login
+endpoint or run `aws sso login` directly.
 
 ### Refresh tokens
 
