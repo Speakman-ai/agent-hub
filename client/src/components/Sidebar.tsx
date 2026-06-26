@@ -482,7 +482,7 @@ export default function Sidebar({
             return (
               <div
                 key={project.id}
-                className={`mb-1 ${isBeingDragged ? 'opacity-40' : ''} ${
+                className={`mb-1 flex flex-col ${isBeingDragged ? 'opacity-40' : ''} ${
                   isDropTarget ? 'border-t-2 border-emerald-500' : 'border-t-2 border-transparent'
                 }`}
                 data-testid={`sidebar-project-row-${project.id}`}
@@ -611,7 +611,10 @@ export default function Sidebar({
 
                 {/* Project links (Board, Wiki, Skills, …) */}
                 {(!isCollapsed || activeAgents.length === 1) && (
-                  <div className={activeAgents.length > 1 ? 'ml-3' : ''}>
+                  <div
+                    className={`order-2 ${activeAgents.length > 1 ? 'ml-3' : ''}`}
+                    data-testid={`sidebar-project-menu-wrap-${project.id}`}
+                  >
                     {(() => {
                       const isMenuCollapsed = collapsedProjectMenus[project.id] ?? true;
                       const menuActive = isProjectMenuRoute(currentView, project.id);
@@ -928,7 +931,10 @@ export default function Sidebar({
 
                 {/* Agents within project (auto-expand if single agent) */}
                 {(!isCollapsed || activeAgents.length === 1) && (
-                  <div className={activeAgents.length > 1 ? 'ml-3' : ''}>
+                  <div
+                    className={`order-1 ${activeAgents.length > 1 ? 'ml-3' : ''}`}
+                    data-testid={`sidebar-project-agents-${project.id}`}
+                  >
                     {(() => {
                       // Hide the reviewer agent row; it's edited via the per-project Reviewer page below.
                       const topLevel = activeAgents.filter(

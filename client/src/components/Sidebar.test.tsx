@@ -992,6 +992,14 @@ describe('Sidebar — per-project settings menu', () => {
     fireEvent.click(screen.getByTestId(`sidebar-project-menu-toggle-${PROJECT_ID}` as any) as any);
   };
 
+  it('keeps project agents above the project menu in the sidebar', () => {
+    render(<Sidebar {...buildProps()} />);
+
+    expect(screen.getByTestId(`sidebar-project-row-${PROJECT_ID}`)).toHaveClass('flex-col');
+    expect(screen.getByTestId(`sidebar-project-agents-${PROJECT_ID}`)).toHaveClass('order-1');
+    expect(screen.getByTestId(`sidebar-project-menu-wrap-${PROJECT_ID}`)).toHaveClass('order-2');
+  });
+
   it('shows lifecycle links top-level and keeps configuration collapsed by default', () => {
     render(<Sidebar {...buildProps()} />);
     expect(screen.getByRole('button', { name: 'Test Project Settings' })).toBeInTheDocument();
