@@ -5,14 +5,15 @@
 #   kanban-create-card.sh [options]
 #
 # Options:
-#   --title <str>         card title (required)
+#   --title <str>         card title (required unless --template-id supplies one)
 #   --column <name>       column name (default: To Do). Resolved via
 #                         resolve-column-id.sh.
 #   --description <str>   card description (supports markdown)
-#   --priority <level>    one of: low, medium, high (default: medium)
+#   --priority <level>    one of: low, medium, high, urgent (default: medium)
 #   --labels <csv>        comma-separated labels (e.g. bug,urgent)
 #   --assignee <str>      assignee string
 #   --epic-id <uuid>      link to an epic
+#   --template-id <uuid>  apply defaults from a server card template
 #   --session-id <id>     link card to a session (usually $AGENT_HUB_SESSION_ID)
 #   -h, --help            print this help
 #
@@ -32,18 +33,19 @@ source "$DIR/ah-api.sh"
 
 _usage() {
   cat <<'EOF'
-usage: kanban-create-card.sh --title <str> [options]
+usage: kanban-create-card.sh [--title <str>] [options]
 
 Create a kanban card on the board for $PROJECT_ID.
 
 Options:
-  --title <str>         card title                       (required)
+  --title <str>         card title (required unless --template-id provides one)
   --column <name>       column name (default: To Do)
   --description <str>   markdown description
-  --priority <level>    low | medium | high (default: medium)
+  --priority <level>    low | medium | high | urgent (default: medium)
   --labels <csv>        comma-separated labels
   --assignee <str>      assignee
   --epic-id <uuid>      link to epic
+  --template-id <uuid>  apply defaults from a card template
   --session-id <id>     link to session
   -h, --help            print this help
 
@@ -61,9 +63,11 @@ title=""
 column="To Do"
 description=""
 priority="medium"
+priority_set=0
 labels=""
 assignee=""
 epic_id=""
+template_id=""
 session_id=""
 
 while [[ $# -gt 0 ]]; do
@@ -71,10 +75,11 @@ while [[ $# -gt 0 ]]; do
     --title)        title="${2:-}"; shift 2 ;;
     --column)       column="${2:-}"; shift 2 ;;
     --description)  description="${2:-}"; shift 2 ;;
-    --priority)     priority="${2:-}"; shift 2 ;;
+    --priority)     priority="${2:-}"; priority_set=1; shift 2 ;;
     --labels)       labels="${2:-}"; shift 2 ;;
     --assignee)     assignee="${2:-}"; shift 2 ;;
     --epic-id)      epic_id="${2:-}"; shift 2 ;;
+    --template-id)  template_id="${2:-}"; shift 2 ;;
     --session-id)   session_id="${2:-}"; shift 2 ;;
     -h|--help|help) _usage; exit 0 ;;
     *)
@@ -85,8 +90,37 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$template_id" ]]; then
+  template_json="$("$DIR/kanban-card-templates.sh" get "$template_id")"
+  title="$(
+    AH_TITLE="$title" AH_TEMPLATE="$template_json" python3 <<'PY'
+import json, os, sys
+title = os.environ.get("AH_TITLE", "").strip()
+tpl = json.loads(os.environ["AH_TEMPLATE"])
+if not title:
+    title = (tpl.get("title") or tpl.get("name") or "").strip()
+if not title:
+    sys.stderr.write("error: template has no title; pass --title\n")
+    sys.exit(1)
+print(title)
+PY
+  )"
+  if [[ -z "$description" ]]; then
+    description="$(AH_TEMPLATE="$template_json" python3 -c 'import json,os; print(json.loads(os.environ["AH_TEMPLATE"]).get("description") or "")')"
+  fi
+  if [[ "$priority_set" -eq 0 ]]; then
+    priority="$(AH_TEMPLATE="$template_json" python3 -c 'import json,os; print(json.loads(os.environ["AH_TEMPLATE"]).get("priority") or "medium")')"
+  fi
+  if [[ -z "$labels" ]]; then
+    labels="$(AH_TEMPLATE="$template_json" python3 -c 'import json,os; print(json.loads(os.environ["AH_TEMPLATE"]).get("labels") or "")')"
+  fi
+  if [[ -z "$epic_id" ]]; then
+    epic_id="$(AH_TEMPLATE="$template_json" python3 -c 'import json,os; print(json.loads(os.environ["AH_TEMPLATE"]).get("epicId") or "")')"
+  fi
+fi
+
 if [[ -z "$title" ]]; then
-  echo "error: --title is required" >&2
+  echo "error: --title is required (or pass --template-id with a titled template)" >&2
   exit 2
 fi
 if [[ -z "${session_id:-}" && -n "${AGENT_HUB_SESSION_ID:-}" ]]; then
@@ -97,9 +131,9 @@ if [[ -z "${PROJECT_ID:-}" ]]; then
   exit 2
 fi
 case "$priority" in
-  low|medium|high) ;;
+  low|medium|high|urgent) ;;
   *)
-    echo "error: --priority must be one of: low, medium, high (got '$priority')" >&2
+    echo "error: --priority must be one of: low, medium, high, urgent (got '$priority')" >&2
     exit 2
     ;;
 esac

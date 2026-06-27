@@ -611,28 +611,23 @@ describe('GET /api/orgs/:id/dashboard', () => {
     const project = await createProject({ name: 'Dashboard openCards Done-ish test' });
     const projectId = project.id as string;
 
-    const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
-    const board = boardRes.body as {
-      columns: Array<{ id: string; name: string; position: number; color: string | null }>;
-    };
-    const doneCol = board.columns.find((c) => c.name === 'Done');
-    expect(doneCol).toBeDefined();
-
-    await request
-      .put(`/api/projects/${projectId}/board/columns/${doneCol!.id}`)
-      .send({
-        name: 'Deployed / Done',
-        position: doneCol!.position,
-        color: doneCol!.color ?? '#10B981',
-      })
+    // The system "Done" column can no longer be renamed, so add a custom
+    // done-ish column ("Deployed / Done") to exercise the isColumnDone
+    // substring heuristic — its cards must not count toward openCards.
+    const createRes = await request
+      .post(`/api/projects/${projectId}/board/columns`)
+      .send({ name: 'Deployed / Done', color: '#10B981' })
       .expect(200);
+    const board = createRes.body as Array<{ id: string; name: string }>;
+    const doneishCol = board.find((c) => c.name === 'Deployed / Done');
+    expect(doneishCol).toBeDefined();
 
     const dashBefore = await request.get('/api/orgs/default/dashboard').expect(200);
     const openBefore = (dashBefore.body as DashboardBody).headline.openCards;
 
     await createCard(projectId, {
-      title: 'Work finished in renamed Done column',
-      columnId: doneCol!.id,
+      title: 'Work finished in done-ish column',
+      columnId: doneishCol!.id,
     });
 
     const dashAfter = await request.get('/api/orgs/default/dashboard').expect(200);

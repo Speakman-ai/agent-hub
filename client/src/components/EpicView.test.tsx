@@ -61,7 +61,7 @@ describe('EpicView', () => {
     );
 
     await waitFor(() => expect(screen.getByText('Platform')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('manage-epic-e1' as any) as any);
+    fireEvent.click(screen.getByTestId('epic-manage-open-e1' as any) as any);
     expect(onOpenEpic!).toHaveBeenCalledWith('e1');
   });
 
@@ -107,6 +107,9 @@ describe('EpicView', () => {
       />,
     );
 
+    await waitFor(() => expect(screen.getByTestId('epic-list-toolbar' as any)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('epic-list-create-scope-button' as any));
+    expect(screen.queryByTestId('epic-create-button' as any)).not.toBeInTheDocument();
     const nameInput = await screen.findByPlaceholderText('e.g. Platform reliability' as any);
     fireEvent.change(nameInput, { target: { value: 'Payments' } });
     fireEvent.click(screen.getByTestId('epic-create-scope-button' as any));
@@ -114,6 +117,102 @@ describe('EpicView', () => {
     await waitFor(() => expect(api.createEpic).toHaveBeenCalled());
     await waitFor(() => expect(api.scopeEpic).toHaveBeenCalledWith('p1', 'e-new'));
     await waitFor(() => expect(onNavigateToSession).toHaveBeenCalledWith('a-2', 's-2'));
+  });
+
+  it('retries Create & scope against the created epic when initial scoping fails', async () => {
+    vi.clearAllMocks();
+    (api.getBoard as any).mockResolvedValue(board);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    (api.createEpic as any).mockResolvedValue({ id: 'e-new' });
+    (api.scopeEpic as any)
+      .mockRejectedValueOnce(new Error('scope failed'))
+      .mockResolvedValueOnce({ sessionId: 's-2', agentId: 'a-2' });
+    const onNavigateToSession = vi.fn();
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+        onNavigateToSession={onNavigateToSession}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('epic-list-toolbar' as any)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('epic-list-create-scope-button' as any));
+    const nameInput = await screen.findByPlaceholderText('e.g. Platform reliability' as any);
+    fireEvent.change(nameInput, { target: { value: 'Payments' } });
+    fireEvent.click(screen.getByTestId('epic-create-scope-button' as any));
+
+    await waitFor(() => expect(api.scopeEpic).toHaveBeenCalledTimes(1));
+    expect(api.createEpic).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('epic-create-scope-button' as any));
+
+    await waitFor(() => expect(api.scopeEpic).toHaveBeenCalledTimes(2));
+    expect(api.createEpic).toHaveBeenCalledTimes(1);
+    expect(api.scopeEpic).toHaveBeenLastCalledWith('p1', 'e-new');
+    await waitFor(() => expect(onNavigateToSession).toHaveBeenCalledWith('a-2', 's-2'));
+    consoleError.mockRestore();
+  });
+
+  it('filters epics by label on the list page', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...board,
+      epics: [
+        { id: 'e1', name: 'Platform', color: '#6366F1', description: 'Core work', labels: 'infra' },
+        { id: 'e2', name: 'Mobile', color: '#6366F1', description: '', labels: 'mobile' },
+      ],
+    });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('epic-list-label-infra' as any)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('epic-list-label-infra' as any));
+    await waitFor(() => expect(screen.getByText('Platform')).toBeInTheDocument());
+    expect(screen.queryByText('Mobile')).toBeNull();
+  });
+
+  it('deletes an epic from the list view', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    (api.deleteEpic as any).mockResolvedValue({});
+    (api.getBoard as any)
+      .mockResolvedValueOnce(board)
+      .mockResolvedValueOnce({ ...board, epics: [] });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('manage-epic-e1' as any)).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('epic-manage-delete-e1' as any));
+
+    await waitFor(() => expect(api.deleteEpic).toHaveBeenCalledWith('p1', 'e1'));
+    await waitFor(() => expect(screen.getByText('No epics yet.')).toBeInTheDocument());
   });
 
   it('adds a ticket to a phase on the epic detail screen', async () => {

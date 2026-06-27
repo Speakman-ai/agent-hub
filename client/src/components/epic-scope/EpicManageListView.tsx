@@ -1,11 +1,12 @@
-import { Plus, Zap } from 'lucide-react';
+import { Plus, Trash2, Zap } from 'lucide-react';
 import {
   countDoneTickets,
   columnNameById,
-  epicAutonomousSummary,
   phasesForEpic,
   ticketsForEpic,
 } from '../../utils/epicScopeStats';
+import { parseCardLabels } from '../../utils/kanbanLabels';
+import { usernameForUserId } from '../../utils/kanbanUserFilter';
 
 /** Manage epics list — card grid with phase pills and open-flow links. */
 export default function EpicManageListView({
@@ -18,73 +19,105 @@ export default function EpicManageListView({
   onOpenEpic,
   onCreateEpic,
   creating,
+  onDeleteEpic,
+  deleteBusyEpicId,
+  assignableUsers = [],
+  emptyMessage = 'No epics yet.',
 }: any) {
   const colMap = columnNameById(columns);
 
   return (
     <div data-testid="epic-manage-list">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <h3 className="text-sm font-semibold text-gray-200">Epics in {projectName || 'project'}</h3>
-        {onCreateEpic && (
-          <button
-            type="button"
-            onClick={onCreateEpic}
-            disabled={creating}
-            className="inline-flex items-center gap-1 text-xs font-medium text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 px-2.5 py-1.5 rounded-lg transition-colors"
-          >
-            <Plus size={12} />
-            New epic
-          </button>
-        )}
-      </div>
+      {(projectName || onCreateEpic) && (
+        <div className="flex items-center justify-between gap-3 mb-4">
+          {projectName ? (
+            <h3 className="text-sm font-semibold text-gray-200">Epics in {projectName}</h3>
+          ) : (
+            <span />
+          )}
+          {onCreateEpic ? (
+            <button
+              type="button"
+              onClick={onCreateEpic}
+              disabled={creating}
+              className="inline-flex items-center gap-1 text-xs font-medium text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 px-2.5 py-1.5 rounded-lg transition-colors"
+            >
+              <Plus size={12} />
+              New epic
+            </button>
+          ) : null}
+        </div>
+      )}
 
       {epics.length === 0 ? (
-        <p className="text-sm text-gray-500 py-8 text-center">No epics yet.</p>
+        <p className="text-sm text-gray-500 py-8 text-center" data-testid="epic-manage-empty">
+          {emptyMessage}
+        </p>
       ) : (
         <div className="space-y-3">
           {epics.map((epic: any) => {
             const epicPhases = phasesForEpic(phases, epic.id);
             const epicTickets = ticketsForEpic(cards, epic.id);
             const done = countDoneTickets(epicTickets, colMap);
-            const auto = epicAutonomousSummary(epicPhases);
             const isActive = epic.id === activeEpicId;
+            const isEmpty = epicTickets.length === 0;
+            const deleting = deleteBusyEpicId === epic.id;
+            const epicLabels = parseCardLabels(epic.labels);
+            const leadUser = usernameForUserId(assignableUsers, epic.assigned_user_id);
 
             return (
-              <button
+              <div
                 key={epic.id}
-                type="button"
-                onClick={() => onOpenEpic?.(epic.id)}
-                className={`w-full text-left rounded-xl border p-4 transition-colors cursor-pointer ${
+                className={`rounded-xl border p-4 transition-colors ${
                   isActive
                     ? 'border-indigo-500/40 bg-indigo-500/[0.06]'
-                    : 'border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/[0.12]'
+                    : isEmpty
+                      ? 'border-white/[0.06] bg-white/[0.015] opacity-90'
+                      : 'border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/[0.12]'
                 }`}
                 data-testid={`manage-epic-${epic.id}`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => onOpenEpic?.(epic.id)}
+                    className="min-w-0 flex-1 text-left cursor-pointer"
+                    data-testid={`epic-manage-open-${epic.id}`}
+                  >
                     <div className="flex items-center gap-2 flex-wrap">
                       <span
                         className="w-2.5 h-2.5 rounded-full shrink-0"
                         style={{ backgroundColor: epic.color || '#6366f1' }}
                       />
                       <h4 className="text-sm font-semibold text-gray-100">{epic.name}</h4>
-                      {auto.label && (
-                        <span
-                          className={`text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                            auto.label === 'ALL AUTO'
-                              ? 'text-emerald-300 bg-emerald-500/15'
-                              : 'text-teal-300 bg-teal-500/15'
-                          }`}
-                        >
-                          {auto.label}
+                      {isEmpty ? (
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-gray-500">
+                          Empty
                         </span>
-                      )}
+                      ) : null}
+                      {leadUser ? (
+                        <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-300">
+                          @{leadUser}
+                        </span>
+                      ) : null}
                     </div>
                     {epic.description ? (
                       <p className="text-xs text-gray-500 mt-1.5 line-clamp-2">
                         {epic.description}
                       </p>
+                    ) : null}
+
+                    {epicLabels.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {epicLabels.map((label) => (
+                          <span
+                            key={label}
+                            className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[10px] text-gray-400"
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </div>
                     ) : null}
 
                     {epicPhases.length > 0 && (
@@ -102,7 +135,7 @@ export default function EpicManageListView({
                         ))}
                       </div>
                     )}
-                  </div>
+                  </button>
 
                   <div className="text-right shrink-0 space-y-2">
                     <div className="w-20 h-1 rounded-full bg-white/[0.06] overflow-hidden ml-auto">
@@ -117,11 +150,26 @@ export default function EpicManageListView({
                     </div>
                     <p className="text-[10px] text-gray-500">
                       {done}/{epicTickets.length}
-                      {auto.autoCount > 0 && ` · ${auto.autoCount} auto`}
                     </p>
+                    {onDeleteEpic ? (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteEpic(epic);
+                        }}
+                        disabled={deleting}
+                        className="inline-flex items-center gap-1 rounded-lg border border-white/[0.08] px-2 py-1 text-[10px] font-medium text-red-400 hover:border-red-500/30 hover:bg-red-500/10 disabled:opacity-50"
+                        data-testid={`epic-manage-delete-${epic.id}`}
+                        aria-label={`Delete epic ${epic.name}`}
+                      >
+                        <Trash2 size={10} />
+                        {deleting ? 'Deleting…' : 'Delete'}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>

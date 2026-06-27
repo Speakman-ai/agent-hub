@@ -345,7 +345,8 @@ describe('runAutonomousLoop — dispatch', () => {
     const args = stmts.updateKanbanEpic.run.mock.calls[0] as unknown[];
     expect(args[3]).toBe(0);
     expect(args[8]).toBe('feature/merge');
-    expect(args[9]).toBe(epic.id);
+    expect(args[9]).toBe(null);
+    expect(args[10]).toBe(epic.id);
     expect(deps.broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: 'proj-1' });
     expect(stmts.getEligibleAutonomousCards.all).not.toHaveBeenCalled();
   });

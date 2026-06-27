@@ -51,6 +51,7 @@ const DETERMINISTIC_SCRIPTS = [
   'ah-api.sh',
   'resolve-column-id.sh',
   'kanban-create-card.sh',
+  'kanban-card-templates.sh',
   'kanban-move-card.sh',
   'kanban-list.sh',
   'wiki-search.sh',
@@ -91,6 +92,24 @@ function runExit(file: string, args: string[]): number {
   }
 }
 
+function runScript(
+  file: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = {},
+): { code: number; stdout: string; stderr: string } {
+  const result = spawnSync(file, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5000,
+    env: { ...process.env, ...env },
+  });
+  return {
+    code: result.status ?? -1,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
 describe('agent-hub deterministic script wrappers — shape', () => {
   describe.each([
     ['default-skills', DEFAULT_SCRIPTS],
@@ -113,6 +132,16 @@ describe('agent-hub deterministic script wrappers — shape', () => {
       const { code, stdout } = runHelp(file);
       expect(code, `${name} --help exit`).toBe(0);
       expect(stdout.toLowerCase()).toContain('usage:');
+    });
+
+    it('kanban-create-card.sh invalid priority error lists every accepted priority', () => {
+      const { code, stdout, stderr } = runScript(
+        path.join(dir, 'kanban-create-card.sh'),
+        ['--title', 'Bad priority', '--priority', 'critical'],
+        { PROJECT_ID: 'agent-hub', AGENT_HUB_API_KEY: 'test' },
+      );
+      expect(code).toBe(2);
+      expect(`${stdout}${stderr}`).toContain('low, medium, high, urgent');
     });
 
     it('scripts use set -euo pipefail', async () => {
@@ -210,6 +239,140 @@ describe('agent-hub deterministic script wrappers — shape', () => {
         expect(src).not.toMatch(/\("epic_id",\s*"AH_EPIC"\)/);
       },
     );
+  });
+
+  describe('kanban-card-templates.sh get (mock server)', () => {
+    const hasPython = spawnSync('python3', ['--version']).status === 0;
+    const fn = hasPython ? it : it.skip;
+
+    for (const [label, dir] of [
+      ['default-skills', DEFAULT_SCRIPTS],
+      ['plugin mirror', PLUGIN_SCRIPTS],
+    ] as const) {
+      fn(
+        `returns the selected template JSON (${label})`,
+        async () => {
+          const calls: string[] = [];
+          const server = http.createServer((req, res) => {
+            calls.push(`${req.method} ${req.url}`);
+            res.setHeader('content-type', 'application/json');
+            if (req.url?.endsWith('/board/card-templates')) {
+              res.end(
+                JSON.stringify([
+                  { id: 'template-1', name: 'Bug', title: 'Fix bug' },
+                  { id: 'template-2', name: 'Feature', title: 'Build feature' },
+                ]),
+              );
+            } else {
+              res.statusCode = 404;
+              res.end(JSON.stringify({ error: 'not found' }));
+            }
+          });
+
+          await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+          try {
+            const { port } = server.address() as AddressInfo;
+            const result = await spawnAsync(
+              path.join(dir, 'kanban-card-templates.sh'),
+              ['get', 'template-2'],
+              {
+                ...process.env,
+                AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+                AGENT_HUB_API_KEY: '',
+                PROJECT_ID: 'proj-x',
+              },
+            );
+            expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+            expect(result.stderr).not.toContain('KeyError');
+            expect(JSON.parse(result.stdout)).toMatchObject({
+              id: 'template-2',
+              name: 'Feature',
+              title: 'Build feature',
+            });
+            expect(calls).toEqual(['GET /api/projects/proj-x/board/card-templates']);
+          } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+          }
+        },
+        15_000,
+      );
+    }
+  });
+
+  describe('kanban-create-card.sh template overrides (mock server)', () => {
+    const hasPython = spawnSync('python3', ['--version']).status === 0;
+    const fn = hasPython ? it : it.skip;
+
+    for (const [label, dir] of [
+      ['default-skills', DEFAULT_SCRIPTS],
+      ['plugin mirror', PLUGIN_SCRIPTS],
+    ] as const) {
+      fn(
+        `honors explicit --priority medium over template priority (${label})`,
+        async () => {
+          const calls: Array<{ method: string; url: string; body: string }> = [];
+          const server = http.createServer((req, res) => {
+            const chunks: Buffer[] = [];
+            req.on('data', (c) => chunks.push(c));
+            req.on('end', () => {
+              const body = Buffer.concat(chunks).toString('utf8');
+              calls.push({ method: req.method ?? '', url: req.url ?? '', body });
+              res.setHeader('content-type', 'application/json');
+              if (req.url?.endsWith('/board/card-templates')) {
+                res.end(
+                  JSON.stringify([
+                    {
+                      id: 'template-high',
+                      name: 'High template',
+                      title: 'Template title',
+                      priority: 'high',
+                      labels: 'templated',
+                    },
+                  ]),
+                );
+              } else if (req.url?.endsWith('/board')) {
+                res.end(JSON.stringify({ columns: [{ id: 'col-todo', name: 'To Do' }] }));
+              } else if (req.url?.endsWith('/board/cards')) {
+                res.end(JSON.stringify({ id: 'card-1', title: 'Template title' }));
+              } else {
+                res.statusCode = 404;
+                res.end(JSON.stringify({ error: 'not found' }));
+              }
+            });
+          });
+
+          await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+          try {
+            const { port } = server.address() as AddressInfo;
+            const result = await spawnAsync(
+              path.join(dir, 'kanban-create-card.sh'),
+              ['--template-id', 'template-high', '--priority', 'medium', '--column', 'To Do'],
+              {
+                ...process.env,
+                AGENT_HUB_URL: `http://127.0.0.1:${port}`,
+                AGENT_HUB_API_KEY: '',
+                PROJECT_ID: 'proj-x',
+              },
+            );
+            expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+
+            const createCall = calls.find(
+              (c) => c.method === 'POST' && c.url.endsWith('/board/cards'),
+            );
+            expect(createCall, `calls: ${JSON.stringify(calls)}`).toBeDefined();
+            expect(JSON.parse(createCall!.body)).toMatchObject({
+              title: 'Template title',
+              columnId: 'col-todo',
+              priority: 'medium',
+              labels: 'templated',
+            });
+          } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+          }
+        },
+        15_000,
+      );
+    }
   });
 
   // ─── End-to-end check against a mock HTTP server ──────────────────────

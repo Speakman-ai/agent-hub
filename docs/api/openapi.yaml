@@ -1356,6 +1356,17 @@ components:
         - color
         - created_at
       description: A column on a kanban board (To Do, In Progress, …).
+    KanbanAssignableUser:
+      type: object
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+      required:
+        - id
+        - username
+      description: A user that can be assigned as a kanban lead user.
     KanbanCard:
       type: object
       properties:
@@ -1378,6 +1389,9 @@ components:
             - high
             - urgent
         assignee:
+          type: string
+          nullable: true
+        assigned_user_id:
           type: string
           nullable: true
         labels:
@@ -1518,6 +1532,12 @@ components:
         description:
           type: string
           nullable: true
+        labels:
+          type: string
+          nullable: true
+        assigned_user_id:
+          type: string
+          nullable: true
         color:
           type: string
         autonomous:
@@ -1555,6 +1575,40 @@ components:
         - created_at
         - updated_at
       description: A kanban epic — a group of related cards.
+    KanbanCardTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - urgent
+        labels:
+          type: string
+        epicId:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - name
+        - title
+        - description
+        - priority
+        - labels
+        - epicId
+        - updatedAt
+      description: Reusable defaults for new kanban cards (title, description, priority, labels, epic).
     KanbanPhase:
       type: object
       properties:
@@ -1732,6 +1786,21 @@ components:
             type: string
             nullable: true
           description: "Per-column next-page cursor, keyed by column id (`{ [columnId]: nextCursor|null }`). Present only when `?limit=N` is supplied. A non-null value is the opaque keyset cursor to pass as `cursor` to GET /board/columns/:columnId/cards for the next page; null means the first page is the last page. Lets a client seed per-column infinite scroll from this one request without reconstructing the opaque cursor."
+        cardTemplates:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanCardTemplate"
+          description: Reusable card templates for this board.
+        availableLabels:
+          type: array
+          items:
+            type: string
+          description: Distinct card labels across the full board, even when `cards` is paginated. Used to render complete label filter facets without draining every card page first.
+        assignableUsers:
+          type: array
+          items:
+            $ref: "#/components/schemas/KanbanAssignableUser"
+          description: Users in the request org who can be assigned as kanban lead users.
       required:
         - board
         - columns
@@ -10777,6 +10846,9 @@ paths:
                 assignee:
                   type: string
                   nullable: true
+                assignedUserId:
+                  type: string
+                  nullable: true
                 labels:
                   type: string
                   nullable: true
@@ -10892,6 +10964,9 @@ paths:
                     - high
                     - urgent
                 assignee:
+                  type: string
+                  nullable: true
+                assignedUserId:
                   type: string
                   nullable: true
                 labels:
@@ -11344,6 +11419,12 @@ paths:
                 description:
                   type: string
                   nullable: true
+                labels:
+                  type: string
+                  nullable: true
+                assignedUserId:
+                  type: string
+                  nullable: true
                 color:
                   type: string
                 prBaseBranch:
@@ -11395,6 +11476,12 @@ paths:
                   type: string
                   minLength: 1
                 description:
+                  type: string
+                  nullable: true
+                labels:
+                  type: string
+                  nullable: true
+                assignedUserId:
                   type: string
                   nullable: true
                 color:
@@ -11472,6 +11559,240 @@ paths:
                       - true
                 required:
                   - ok
+  /api/projects/{projectId}/board/epics/{epicId}/assign-lead-to-cards:
+    post:
+      tags:
+        - Board
+      summary: Assign epic lead user to all epic cards
+      description: Sets `assigned_user_id` on every card linked to the epic to the epic’s current lead user. Callable by the lead user, or in local bundled mode.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban epic UUID.
+          required: true
+          description: Kanban epic UUID.
+          name: epicId
+          in: path
+      responses:
+        "200":
+          description: Bulk assignment result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updatedCount:
+                    type: integer
+                    minimum: 0
+                required:
+                  - updatedCount
+        "400":
+          description: Epic has no lead user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "403":
+          description: Caller is not the epic lead user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/card-templates:
+    get:
+      tags:
+        - Board
+      summary: List card templates
+      description: Reusable defaults for creating kanban cards on this board.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Templates for the board.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanCardTemplate"
+    post:
+      tags:
+        - Board
+      summary: Create a card template
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                title:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+                priority:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - urgent
+                labels:
+                  type: string
+                  nullable: true
+                epicId:
+                  type: string
+                  nullable: true
+              required:
+                - name
+      responses:
+        "200":
+          description: Created template.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCardTemplate"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/card-templates/{templateId}:
+    put:
+      tags:
+        - Board
+      summary: Update a card template
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card template UUID.
+          required: true
+          description: Kanban card template UUID.
+          name: templateId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                title:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+                priority:
+                  type: string
+                  enum:
+                    - low
+                    - medium
+                    - high
+                    - urgent
+                labels:
+                  type: string
+                  nullable: true
+                epicId:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated template.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KanbanCardTemplate"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Template not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+    delete:
+      tags:
+        - Board
+      summary: Delete a card template
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Kanban card template UUID.
+          required: true
+          description: Kanban card template UUID.
+          name: templateId
+          in: path
+      responses:
+        "200":
+          description: Acknowledgment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "404":
+          description: Template not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/cards/{cardId}/epic:
     post:
       tags:
@@ -11720,6 +12041,55 @@ paths:
                       - true
                 required:
                   - ok
+  /api/projects/{projectId}/board/columns/reorder:
+    post:
+      tags:
+        - Board
+      summary: Reorder columns atomically
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                columnIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  minItems: 1
+                  description: All column ids for the board in the desired order. The server rewrites positions atomically to 0..N-1.
+              required:
+                - columnIds
+      responses:
+        "200":
+          description: Updated columns list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/KanbanColumn"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/spec-items/{specItemId}/decide-for-me:
     post:
       tags:

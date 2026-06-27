@@ -705,6 +705,8 @@ export interface KanbanCardRow {
   description: string | null;
   priority: 'low' | 'medium' | 'high' | 'urgent';
   assignee: string | null;
+  /** Org user id of the lead user for this card (distinct from agent assignee). */
+  assigned_user_id?: string | null;
   labels: string | null;
   session_id: string | null;
   github_issue_url: string | null;
@@ -854,6 +856,10 @@ export interface KanbanEpicRow {
   board_id: string;
   name: string;
   description: string | null;
+  /** Comma-separated tags (same shape as kanban card labels). */
+  labels: string | null;
+  /** Org user id of the lead user for this epic. */
+  assigned_user_id?: string | null;
   color: string;
   autonomous: number;
   autonomous_interval: number;
@@ -883,6 +889,21 @@ export interface KanbanEpicRow {
    * is on, else `push`).
    */
   autonomous_send_it?: number;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Reusable defaults for creating kanban cards on a board. */
+export interface KanbanCardTemplateRow {
+  id: string;
+  board_id: string;
+  name: string;
+  title: string;
+  description: string | null;
+  priority: string;
+  labels: string | null;
+  epic_id: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -1726,6 +1747,8 @@ export interface Stmts {
   deleteKanbanCard: Stmt;
   markKanbanCardOrphaned: Stmt;
   setKanbanCardAutoMerge: Stmt;
+  setKanbanCardAssignedUser: Stmt;
+  setKanbanCardsAssignedUserByEpic: Stmt;
 
   // Kanban card comments
   getKanbanCardComments: Stmt;
@@ -1747,6 +1770,13 @@ export interface Stmts {
   updateKanbanEpic: Stmt;
   setEpicAutonomousEnabledBy: Stmt;
   setEpicAutonomousSendIt: Stmt;
+  setKanbanEpicAssignedUser: Stmt;
+  getKanbanCardTemplates: Stmt;
+  getKanbanCardTemplate: Stmt;
+  createKanbanCardTemplate: Stmt;
+  updateKanbanCardTemplate: Stmt;
+  deleteKanbanCardTemplate: Stmt;
+  clearKanbanCardTemplateEpic: Stmt;
   deleteKanbanEpic: Stmt;
   getKanbanCardsByEpic: Stmt;
   updateKanbanCardEpic: Stmt;

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../utils/api';
 import { filterAgentsByProject } from '../utils/kanbanAgents';
+import {
+  applyCardTemplateToDetailForm,
+  type KanbanCardTemplate,
+} from '../utils/kanbanCardTemplates';
 
 export function buildDetailFormFromCard(card: any) {
   return {
@@ -8,6 +12,7 @@ export function buildDetailFormFromCard(card: any) {
     description: card.description || '',
     priority: card.priority || 'medium',
     assignee: card.assignee || '',
+    assigned_user_id: card.assigned_user_id || '',
     assign_model: card.assign_model || '',
     assign_engine: card.assign_engine || '',
     labels: card.labels || '',
@@ -20,12 +25,18 @@ export function buildDetailFormFromCard(card: any) {
   };
 }
 
+export function isDraftKanbanCard(card: any): boolean {
+  return Boolean(card?.__draft);
+}
+
 type UseKanbanCardDetailOptions = {
   projectId: string;
   agents?: any[];
   epics?: any[];
   cards: any[];
+  columns?: any[];
   modelConfig?: any;
+  cardTemplates?: KanbanCardTemplate[];
   onRefresh?: () => Promise<any[] | undefined | void>;
   onNavigateToSession?: (agentId: string, sessionId: string) => void;
 };
@@ -35,7 +46,9 @@ export function useKanbanCardDetail({
   agents = [],
   epics = [],
   cards,
+  columns = [],
   modelConfig: externalModelConfig,
+  cardTemplates = [],
   onRefresh,
   onNavigateToSession,
 }: UseKanbanCardDetailOptions) {
@@ -90,6 +103,34 @@ export function useKanbanCardDetail({
     setDescriptionEditing(false);
   }, []);
 
+  const openCreateDetail = useCallback(
+    (columnId: string, opts: { epicId?: string; template?: KanbanCardTemplate } = {}) => {
+      let form = buildDetailFormFromCard({});
+      if (opts.epicId) form.epic_id = opts.epicId;
+      if (opts.template) form = applyCardTemplateToDetailForm(form, opts.template);
+      setSelectedCard({ __draft: true, column_id: columnId });
+      setDetailForm(form);
+      setConfirmDelete(false);
+      setNewComment('');
+      setShowReassign(false);
+      setShowBlockerPicker(false);
+      setBlockerPickerQuery('');
+      setBlockerError(null);
+      setDescriptionEditing(Boolean(opts.template?.description?.trim()) || true);
+      setComments([]);
+      setCardReplay(null);
+      setWatchingReplay(false);
+    },
+    [],
+  );
+
+  const applyCardTemplate = useCallback((template: KanbanCardTemplate) => {
+    setDetailForm((form) => applyCardTemplateToDetailForm(form, template));
+    setDescriptionEditing(Boolean(template.description?.trim()) || true);
+  }, []);
+
+  const isCreating = isDraftKanbanCard(selectedCard);
+
   const refreshSelectedCard = useCallback(
     async (cardId: string) => {
       if (!onRefresh) return;
@@ -102,7 +143,7 @@ export function useKanbanCardDetail({
   );
 
   useEffect(() => {
-    if (!selectedCard) return;
+    if (!selectedCard || isDraftKanbanCard(selectedCard)) return;
     api
       .getCardComments(projectId, selectedCard.id)
       .then(setComments)
@@ -110,9 +151,11 @@ export function useKanbanCardDetail({
   }, [selectedCard, projectId]);
 
   useEffect(() => {
-    if (!selectedCard) {
-      setCardReplay(null);
-      setWatchingReplay(false);
+    if (!selectedCard || isDraftKanbanCard(selectedCard)) {
+      if (!selectedCard) {
+        setCardReplay(null);
+        setWatchingReplay(false);
+      }
       return;
     }
     let cancelled = false;
@@ -142,13 +185,38 @@ export function useKanbanCardDetail({
 
   const handleSaveDetail = async () => {
     if (!selectedCard) return;
+    if (!detailForm.title?.trim()) return;
     setSaving(true);
     try {
+      if (isDraftKanbanCard(selectedCard)) {
+        if (!selectedCard.column_id) return;
+        const created = await api.createCard(projectId, {
+          title: detailForm.title.trim(),
+          description: detailForm.description || null,
+          priority: detailForm.priority,
+          labels: detailForm.labels || null,
+          columnId: selectedCard.column_id,
+          createdBy: 'user',
+          epicId: detailForm.epic_id || null,
+          githubIssueUrl: detailForm.github_issue_url || null,
+          assignee: detailForm.assignee || null,
+          assignedUserId: detailForm.assigned_user_id || null,
+        });
+        setSelectedCard(created);
+        if (detailForm.pr_url?.trim()) {
+          await api.updateCard(projectId, created.id, { prUrl: detailForm.pr_url.trim() });
+        }
+        await onRefresh?.();
+        closeDetail();
+        return;
+      }
+
       await api.updateCard(projectId, selectedCard.id, {
         title: detailForm.title,
         description: detailForm.description,
         priority: detailForm.priority,
         assignee: detailForm.assignee,
+        assignedUserId: detailForm.assigned_user_id || null,
         labels: detailForm.labels,
         githubIssueUrl: detailForm.github_issue_url,
         prUrl: detailForm.pr_url,
@@ -223,6 +291,10 @@ export function useKanbanCardDetail({
 
   const handleLinkCardEpic = async (epicId: string) => {
     if (!selectedCard) return;
+    if (isDraftKanbanCard(selectedCard)) {
+      setDetailForm((f: any) => ({ ...f, epic_id: epicId || '' }));
+      return;
+    }
     try {
       // Changing the epic must also drop any phase, since a phase belongs to
       // exactly one epic. Route through the reconciled update-card path (not
@@ -241,6 +313,10 @@ export function useKanbanCardDetail({
     selectedCard,
     setSelectedCard,
     openDetail,
+    openCreateDetail,
+    applyCardTemplate,
+    isCreating,
+    cardTemplates,
     closeDetail,
     detailForm,
     setDetailForm,
@@ -272,6 +348,7 @@ export function useKanbanCardDetail({
     projectAgents,
     epics,
     cards,
+    columns,
     handleSaveDetail,
     handleDeleteCard,
     handleAddComment,

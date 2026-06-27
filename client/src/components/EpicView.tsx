@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, MessagesSquare, Trash2, Zap } from 'lucide-react';
+import { ArrowLeft, MessagesSquare, Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   defaultAutonomousModel,
@@ -7,13 +7,26 @@ import {
   epicFormToUpdateBody,
   phaseFormToUpdateBody,
 } from '../utils/epics';
+import {
+  applyEpicListFilters,
+  collectDistinctEpicLabels,
+  createDefaultEpicListFilters,
+  type EpicListFilters,
+} from '../utils/epicListFilters';
+import { labelsFieldFromInput } from '../utils/epics';
+import { maybePromptAssignLeadToEpicCards } from '../utils/epicLeadUserCards';
 import EpicDetailsPanel, { EMPTY_EPIC_FORM } from './EpicDetailsPanel';
 import EpicAutonomousPanel, {
   EMPTY_AUTONOMOUS_FORM,
   epicToAutonomousForm,
 } from './EpicAutonomousPanel';
+import EpicCreateDialog from './epic-scope/EpicCreateDialog';
+import EpicManageListView from './epic-scope/EpicManageListView';
+import EpicLeadUserField from './EpicLeadUserField';
+import KanbanUserFilterChips from './KanbanUserFilterChips';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
-import { epicAutonomousSummary, specProgress } from '../utils/epicScopeStats';
+import { specProgress } from '../utils/epicScopeStats';
+import type { AssignableUser } from '../utils/kanbanUserFilter';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
 import { useKanbanCardDetail } from '../hooks/useKanbanCardDetail';
 
@@ -50,6 +63,7 @@ export default function EpicView({
   const [columns, setColumns] = useState<any[]>([]);
   const [cards, setCards] = useState<any[]>([]);
   const [epics, setEpics] = useState<any[]>([]);
+  const [cardTemplates, setCardTemplates] = useState<any[]>([]);
   const [phases, setPhases] = useState<any[]>([]);
   const [specItems, setSpecItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,6 +77,15 @@ export default function EpicView({
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [scopingEpic, setScopingEpic] = useState(false);
   const [newEpicForm, setNewEpicForm] = useState({ ...EMPTY_EPIC_FORM });
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createDialogIntent, setCreateDialogIntent] = useState<'create' | 'scope'>('create');
+  const [pendingScopeEpicId, setPendingScopeEpicId] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [listFilters, setListFilters] = useState<EpicListFilters>(() =>
+    createDefaultEpicListFilters(),
+  );
+  const [deletingEpicId, setDeletingEpicId] = useState<string | null>(null);
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
 
   const [addingTicketPhaseId, setAddingTicketPhaseId] = useState<string | null>(null);
   const [creatingPhase, setCreatingPhase] = useState(false);
@@ -82,8 +105,10 @@ export default function EpicView({
       setColumns(data.columns || []);
       setCards(data.cards || []);
       setEpics(data.epics || []);
+      setCardTemplates(data.cardTemplates || []);
       setPhases(data.phases || []);
       setSpecItems(data.specItems || []);
+      setAssignableUsers(data.assignableUsers || []);
       setError(null);
       return data.cards || [];
     } catch (err: any) {
@@ -100,6 +125,7 @@ export default function EpicView({
     epics,
     cards,
     modelConfig,
+    cardTemplates,
     onRefresh: fetchBoard,
     onNavigateToSession,
   });
@@ -120,6 +146,8 @@ export default function EpicView({
   const epicRowId = epic?.id;
   const epicRowName = epic?.name;
   const epicRowDescription = epic?.description;
+  const epicRowLabels = epic?.labels;
+  const epicRowAssignedUserId = epic?.assigned_user_id;
   const epicRowColor = epic?.color;
   const epicRowAutonomous = epic?.autonomous;
   const epicRowAutonomousInterval = epic?.autonomous_interval;
@@ -147,6 +175,8 @@ export default function EpicView({
     setDetailsForm({
       name: epicRowName,
       description: epicRowDescription || '',
+      labels: labelsFieldFromInput(epicRowLabels),
+      assigned_user_id: epicRowAssignedUserId || '',
       color: epicRowColor || EMPTY_EPIC_FORM.color,
     });
     setAutonomousForm({
@@ -161,6 +191,8 @@ export default function EpicView({
     epicRowId,
     epicRowName,
     epicRowDescription,
+    epicRowLabels,
+    epicRowAssignedUserId,
     epicRowColor,
     epicRowAutonomous,
     epicRowAutonomousInterval,
@@ -211,16 +243,70 @@ export default function EpicView({
     });
   }, [epicPhases]);
 
+  const filteredEpics = useMemo(
+    () => applyEpicListFilters(epics, listFilters, cards),
+    [epics, listFilters, cards],
+  );
+
+  const availableEpicLabels = useMemo(() => collectDistinctEpicLabels(epics), [epics]);
+
+  const toggleEpicListLabel = (label: string) => {
+    setListFilters((prev) => {
+      const next = new Set(prev.selectedLabels);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return { ...prev, selectedLabels: next };
+    });
+  };
+
+  const toggleEpicListUser = (userId: string) => {
+    setListFilters((prev) => {
+      const next = new Set(prev.selectedUserIds);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return { ...prev, selectedUserIds: next };
+    });
+  };
+
+  const closeCreateDialog = () => {
+    if (creatingEpic || scopingEpic) return;
+    setCreateDialogOpen(false);
+    setCreateDialogIntent('create');
+    setCreateError(null);
+    setPendingScopeEpicId(null);
+    setNewEpicForm({ ...EMPTY_EPIC_FORM });
+  };
+
+  const openCreateDialog = (intent: 'create' | 'scope' = 'create') => {
+    setNewEpicForm({ ...EMPTY_EPIC_FORM });
+    setCreateError(null);
+    setCreateDialogIntent(intent);
+    setPendingScopeEpicId(null);
+    setCreateDialogOpen(true);
+  };
+
   const handleCreateEpic = async () => {
-    if (!newEpicForm.name.trim() || creatingEpic) return;
+    if (pendingScopeEpicId) {
+      const epicId = pendingScopeEpicId;
+      setPendingScopeEpicId(null);
+      setNewEpicForm({ ...EMPTY_EPIC_FORM });
+      setCreateDialogOpen(false);
+      setCreateError(null);
+      onOpenEpic(epicId);
+      return;
+    }
+    if (!newEpicForm.name.trim() || creatingEpic || scopingEpic) return;
     setCreatingEpic(true);
+    setCreateError(null);
     try {
       const created = await api.createEpic(projectId, epicFormToCreateBody(newEpicForm));
       setNewEpicForm({ ...EMPTY_EPIC_FORM });
+      setCreateDialogOpen(false);
       await fetchBoard();
       if (created?.id) onOpenEpic(created.id);
     } catch (err: any) {
       console.error('Failed to create epic:', err);
+      setCreateError(err?.message || 'Failed to create epic');
     } finally {
       setCreatingEpic(false);
     }
@@ -230,6 +316,9 @@ export default function EpicView({
     if (!epic || !detailsForm.name.trim() || detailsSaving) return;
     setDetailsSaving(true);
     try {
+      const previousLeadUserId = epic.assigned_user_id;
+      const nextLeadUserId = detailsForm.assigned_user_id || null;
+      const epicCardCount = cards.filter((c: any) => c.epic_id === epic.id).length;
       await api.updateEpic(
         projectId,
         epic.id,
@@ -238,6 +327,14 @@ export default function EpicView({
           ...epicToAutonomousForm(epic),
         }),
       );
+      await maybePromptAssignLeadToEpicCards({
+        projectId,
+        epicId: epic.id,
+        previousUserId: previousLeadUserId,
+        nextUserId: nextLeadUserId,
+        cardCount: epicCardCount,
+        assignableUsers,
+      });
       await fetchBoard();
     } catch (err: any) {
       console.error('Failed to save epic:', err);
@@ -280,6 +377,20 @@ export default function EpicView({
       console.error('Failed to delete epic:', err);
     } finally {
       setDetailsSaving(false);
+    }
+  };
+
+  const handleDeleteEpicFromList = async (target: any) => {
+    if (!target?.id || deletingEpicId) return;
+    if (!window.confirm(`Delete epic "${target.name}"? Cards will be unlinked.`)) return;
+    setDeletingEpicId(target.id);
+    try {
+      await api.deleteEpic(projectId, target.id);
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to delete epic:', err);
+    } finally {
+      setDeletingEpicId(null);
     }
   };
 
@@ -385,7 +496,6 @@ export default function EpicView({
     }
   };
 
-  const epicAutoSummary = epicId ? epicAutonomousSummary(epicPhases) : null;
   const epicSpecStats = useMemo(() => {
     if (!epicId) return null;
     return specProgress(specItems.filter((s: any) => s.epic_id === epicId));
@@ -435,25 +545,35 @@ export default function EpicView({
   };
 
   const handleCreateAndScopeEpic = async () => {
-    if (!newEpicForm.name.trim() || creatingEpic || scopingEpic) return;
+    if ((!pendingScopeEpicId && !newEpicForm.name.trim()) || creatingEpic || scopingEpic) return;
     // Hold BOTH busy flags across the whole create→scope sequence so a second
     // click can't slip in during the scoping leg and create a duplicate epic
     // or a duplicate scoping session.
     setCreatingEpic(true);
     setScopingEpic(true);
+    setCreateError(null);
+    let epicId = pendingScopeEpicId;
     try {
-      const created = await api.createEpic(projectId, epicFormToCreateBody(newEpicForm));
+      if (!epicId) {
+        const created = await api.createEpic(projectId, epicFormToCreateBody(newEpicForm));
+        if (!created?.id) return;
+        epicId = created.id;
+        setPendingScopeEpicId(epicId);
+        await fetchBoard();
+      }
+      const result = await api.scopeEpic(projectId, epicId);
+      setPendingScopeEpicId(null);
       setNewEpicForm({ ...EMPTY_EPIC_FORM });
-      await fetchBoard();
-      if (!created?.id) return;
-      const result = await api.scopeEpic(projectId, created.id);
+      setCreateDialogOpen(false);
       if (onNavigateToSession && result?.sessionId && result?.agentId) {
         onNavigateToSession(result.agentId, result.sessionId);
       } else {
-        onOpenEpic(created.id);
+        onOpenEpic(epicId);
       }
     } catch (err: any) {
       console.error('Failed to create and scope epic:', err);
+      setCreateError(err?.message || 'Failed to create and scope epic');
+      setCreateDialogOpen(true);
     } finally {
       setCreatingEpic(false);
       setScopingEpic(false);
@@ -559,12 +679,6 @@ export default function EpicView({
         </div>
         {epicId && epic ? (
           <div className="flex items-center gap-2">
-            {epicAutoSummary?.label && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-300 bg-emerald-500/10 px-2 py-1 rounded-md">
-                <Zap size={11} />
-                {epicAutoSummary.label}
-              </span>
-            )}
             <button
               type="button"
               onClick={handleScopeEpic}
@@ -594,52 +708,143 @@ export default function EpicView({
       <div className="flex-1 overflow-y-auto">
         <div className={`mx-auto p-5 ${epicId ? 'max-w-[1400px]' : 'max-w-6xl'}`}>
           {!epicId ? (
-            <div className="space-y-6">
-              <SectionCard
-                title="New epic"
-                description="Create an epic, then add spec decisions and phases."
-                action={
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleCreateEpic}
-                      disabled={!newEpicForm.name.trim() || creatingEpic || scopingEpic}
-                      data-testid="epic-create-button"
-                      className="px-3 py-1.5 text-xs font-medium bg-white/[0.06] hover:bg-white/[0.1] disabled:opacity-40 text-gray-200 rounded-lg transition-colors"
-                    >
-                      {creatingEpic ? 'Creating…' : 'Create epic'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCreateAndScopeEpic}
-                      disabled={!newEpicForm.name.trim() || creatingEpic || scopingEpic}
-                      data-testid="epic-create-scope-button"
-                      title="Create the epic and open a scoping session that already knows it"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
-                    >
-                      <MessagesSquare size={13} />
-                      {creatingEpic ? 'Creating…' : 'Create & scope'}
-                    </button>
-                  </div>
-                }
+            <div className="space-y-5">
+              <div
+                className="sticky top-0 z-10 -mx-5 px-5 py-3 border-b border-white/[0.06] bg-gray-950/95 backdrop-blur-sm space-y-3"
+                data-testid="epic-list-toolbar"
               >
-                <EpicDetailsPanel
-                  form={newEpicForm}
-                  onChange={(patch: any) => setNewEpicForm((f: any) => ({ ...f, ...patch }))}
-                  autoFocusName
-                />
-              </SectionCard>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openCreateDialog('create')}
+                    disabled={creatingEpic || scopingEpic}
+                    data-testid="epic-list-create-button"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white/[0.06] hover:bg-white/[0.10] disabled:opacity-40 text-gray-200 rounded-lg transition-colors"
+                  >
+                    <Plus size={13} />
+                    Create epic
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openCreateDialog('scope')}
+                    disabled={creatingEpic || scopingEpic}
+                    data-testid="epic-list-create-scope-button"
+                    title="Create the epic and open a scoping session that already knows it"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
+                  >
+                    <MessagesSquare size={13} />
+                    Create & scope
+                  </button>
+                </div>
 
-              <EpicScopeWorkbench
-                variant="page"
-                epics={epics}
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="relative min-w-[180px] flex-1 max-w-sm">
+                    <Search
+                      size={14}
+                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500"
+                    />
+                    <input
+                      type="search"
+                      value={listFilters.search}
+                      onChange={(event) =>
+                        setListFilters((prev) => ({ ...prev, search: event.target.value }))
+                      }
+                      placeholder="Search epics…"
+                      data-testid="epic-list-search"
+                      className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] py-2 pl-8 pr-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+                    />
+                  </label>
+                  <select
+                    value={listFilters.scope}
+                    onChange={(event) =>
+                      setListFilters((prev) => ({
+                        ...prev,
+                        scope: event.target.value as EpicListFilters['scope'],
+                      }))
+                    }
+                    data-testid="epic-list-filter-scope"
+                    className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+                  >
+                    <option value="all">All epics</option>
+                    <option value="with-tickets">With tickets</option>
+                    <option value="empty">Empty</option>
+                  </select>
+                </div>
+
+                {availableEpicLabels.length > 0 ? (
+                  <div
+                    className="flex flex-wrap items-center gap-2"
+                    data-testid="epic-list-label-filters"
+                  >
+                    {availableEpicLabels.map((label) => {
+                      const active = listFilters.selectedLabels.has(label);
+                      return (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => toggleEpicListLabel(label)}
+                          data-testid={`epic-list-label-${label}`}
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                            active
+                              ? 'border-indigo-500/40 bg-indigo-500/15 text-indigo-200'
+                              : 'border-white/[0.08] bg-white/[0.04] text-gray-400 hover:text-gray-200 hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                    {listFilters.selectedLabels.size > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setListFilters((prev) => ({ ...prev, selectedLabels: new Set() }))
+                        }
+                        data-testid="epic-list-clear-labels"
+                        className="text-[11px] text-gray-500 hover:text-gray-300 px-1"
+                      >
+                        Clear labels
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <KanbanUserFilterChips
+                  users={assignableUsers}
+                  selectedUserIds={listFilters.selectedUserIds}
+                  onToggle={toggleEpicListUser}
+                  onClear={() =>
+                    setListFilters((prev) => ({ ...prev, selectedUserIds: new Set() }))
+                  }
+                  testIdPrefix="epic-list-user-filter"
+                />
+              </div>
+
+              <EpicManageListView
+                epics={filteredEpics}
                 phases={phases}
-                allCards={cards}
-                tickets={[]}
+                cards={cards}
                 columns={columns}
-                specItems={specItems}
-                projectName={project?.name}
+                assignableUsers={assignableUsers}
                 onOpenEpic={onOpenEpic}
+                onDeleteEpic={handleDeleteEpicFromList}
+                deleteBusyEpicId={deletingEpicId}
+                emptyMessage={
+                  epics.length === 0 ? 'No epics yet.' : 'No epics match these filters.'
+                }
+              />
+
+              <EpicCreateDialog
+                open={createDialogOpen}
+                onClose={closeCreateDialog}
+                form={newEpicForm}
+                onChange={(patch: any) => setNewEpicForm((f: any) => ({ ...f, ...patch }))}
+                users={assignableUsers}
+                busy={creatingEpic || scopingEpic}
+                error={createError}
+                intent={createDialogIntent}
+                onCreate={handleCreateEpic}
+                onCreateAndScope={handleCreateAndScopeEpic}
               />
             </div>
           ) : (
@@ -712,6 +917,17 @@ export default function EpicView({
                       form={detailsForm}
                       onChange={(patch: any) => setDetailsForm((f: any) => ({ ...f, ...patch }))}
                     />
+                    {assignableUsers.length > 0 ? (
+                      <div className="mt-5">
+                        <EpicLeadUserField
+                          users={assignableUsers}
+                          value={detailsForm.assigned_user_id || ''}
+                          onChange={(assigned_user_id) =>
+                            setDetailsForm((f: any) => ({ ...f, assigned_user_id }))
+                          }
+                        />
+                      </div>
+                    ) : null}
                   </SectionCard>
 
                   <SectionCard

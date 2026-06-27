@@ -474,6 +474,19 @@ export const api = {
         const qs = params.toString();
         return fetchJSON(`/projects/${projectId}/board/columns/${columnId}/cards${qs ? `?${qs}` : ''}`);
     },
+    createKanbanColumn: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/board/columns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    }),
+    updateKanbanColumn: (projectId: any, columnId: any, data: any) => fetchJSON(`/projects/${projectId}/board/columns/${columnId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    }),
+    deleteKanbanColumn: (projectId: any, columnId: any) => fetchJSON(`/projects/${projectId}/board/columns/${columnId}`, {
+        method: 'DELETE',
+    }),
     createKanbanCard: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/board/cards`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

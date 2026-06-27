@@ -15,6 +15,8 @@ export const EPIC_COLORS = [
 export const EMPTY_EPIC_FORM = {
   name: '',
   description: '',
+  labels: '',
+  assigned_user_id: '',
   color: DEFAULT_EPIC_COLOR,
 } as Record<string, any>;
 
@@ -58,6 +60,19 @@ export default function EpicDetailsPanel({ form, onChange, autoFocusName = false
           rows={3}
           data-testid="epic-description-input"
           className={`${FIELD_CLASS} resize-y min-h-[88px] leading-relaxed`}
+        />
+      </div>
+
+      <div>
+        <FieldLabel htmlFor="epic-labels">Labels</FieldLabel>
+        <input
+          id="epic-labels"
+          type="text"
+          value={form.labels ?? ''}
+          onChange={(e: any) => onChange({ labels: e.target.value })}
+          placeholder="platform, q1, infra"
+          data-testid="epic-labels-input"
+          className={FIELD_CLASS}
         />
       </div>
 

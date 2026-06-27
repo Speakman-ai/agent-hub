@@ -7,6 +7,10 @@ import Sidebar from './Sidebar';
   default: () => <div data-testid="org-switcher-stub" />,
 }));
 
+(vi as any).mock('./KanbanSidebarEpicsPanel.jsx', () => ({
+  default: () => <div data-testid="kanban-sidebar-epics-panel" />,
+}));
+
 // getServerBase is invoked from a useEffect that fetches /api/health. Stub fetch.
 beforeEach(() => {
   (globalThis as any).fetch = vi.fn().mockResolvedValue({
@@ -1006,7 +1010,7 @@ describe('Sidebar — per-project settings menu', () => {
 
     // Lifecycle links are always visible (no Settings expand needed).
     expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Epics' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Epics' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Skills' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();
@@ -1025,9 +1029,6 @@ describe('Sidebar — per-project settings menu', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Board' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`kanban:${PROJECT_ID}`);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Epics' } as any) as any);
-    expect(onNavigate!).toHaveBeenCalledWith(`epics:${PROJECT_ID}`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Skills' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`skills:${PROJECT_ID}`);
@@ -1194,5 +1195,36 @@ describe('Sidebar — per-project settings menu', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'AWS' } as any) as any);
     expect(onNavigate!).toHaveBeenCalledWith(`aws:${PROJECT_ID}`);
+  });
+});
+
+describe('Sidebar kanban board mode', () => {
+  beforeEach(() => {
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ version: 'test', gitHash: 'abc' }) as any,
+    });
+  });
+
+  it('shows the kanban board panel above the Projects section', () => {
+    render(
+      <Sidebar
+        {...buildProps({
+          currentView: 'kanban:proj-1',
+          kanbanProjectId: 'proj-1',
+          kanbanProjectName: 'Test Project',
+          kanbanSearchQuery: '',
+          onKanbanSearchChange: vi.fn(),
+          kanbanSelectedEpicIds: new Set(),
+          onKanbanSelectedEpicIdsChange: vi.fn(),
+          onOpenKanbanEpics: vi.fn(),
+          onOpenProject: vi.fn(),
+        })}
+      />,
+    );
+
+    expect(screen.getByText('Projects')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-new-project-cta')).toBeInTheDocument();
+    expect(screen.getByTestId('kanban-sidebar-epics-panel')).toBeInTheDocument();
   });
 });

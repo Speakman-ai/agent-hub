@@ -776,6 +776,7 @@ async function runAutonomousLoopInner(
         epic.autonomous_model ?? null,
         epic.orchestration_budgets_json ?? null,
         epic.pr_base_branch ?? null,
+        epic.labels ?? null,
         epic.id,
       );
       const clearedEpic = d.stmts.getKanbanEpic.get(epic.id) as KanbanEpicRow;

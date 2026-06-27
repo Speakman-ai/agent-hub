@@ -14,6 +14,7 @@ import { buildCardActions } from '../utils/kanbanCardActions';
 import { shortDate } from '../utils/time';
 import { copyToClipboard } from '../utils/clipboard';
 import { KANBAN_PAGE_SIZE, appendCardPage, pagingEntry, seedPagingFromBoard, loadedCountsByColumn, canLoadMore, } from '../utils/kanbanPagination';
+import KanbanColumnsModal from '../components/KanbanColumnsModal';
 const DEFAULT_COLUMNS = [
     { id: 'todo', name: 'To Do', color: '#3B82F6' },
     { id: 'in-progress', name: 'In Progress', color: '#F59E0B' },
@@ -118,6 +119,7 @@ export default function KanbanScreen({ route, navigation }: any) {
     const [selectedEpicId, setSelectedEpicId] = useState<any>(null);
     const [showEpicFilterModal, setShowEpicFilterModal] = useState(false);
     const [showEpicManager, setShowEpicManager] = useState(false);
+    const [showColumnsModal, setShowColumnsModal] = useState(false);
     const [editingEpic, setEditingEpic] = useState<any>(null); // null = creating new
     const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
     const [epicSaving, setEpicSaving] = useState(false);
@@ -213,6 +215,14 @@ export default function KanbanScreen({ route, navigation }: any) {
             setBoard(data);
             setCards(allCards);
             setColumnPaging(paging);
+            setActiveColumn((cur: any) => {
+                const cols = data?.columns || [];
+                if (cols.length === 0)
+                    return cur;
+                if (cur && cols.some((c: any) => c.id === cur))
+                    return cur;
+                return cols[0].id;
+            });
         }
         catch (err: any) {
             console.error('Failed to reconcile board:', err);
@@ -1365,6 +1375,10 @@ export default function KanbanScreen({ route, navigation }: any) {
         <TouchableOpacity style={styles.epicNewBtn} onPress={openEpicCreate}>
           <Text style={styles.epicNewBtnText}>+ Epic</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity style={styles.epicEditBtn} onPress={() => setShowColumnsModal(true)}>
+          <Text style={styles.epicEditText}>Columns</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Column Tabs */}
@@ -1529,6 +1543,22 @@ export default function KanbanScreen({ route, navigation }: any) {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <KanbanColumnsModal
+        visible={showColumnsModal}
+        projectId={projectId}
+        columns={columns}
+        columnCounts={Object.fromEntries(
+          columns.map((col: any) => [
+            col.id,
+            columnPaging[col.id]?.total ?? cards.filter((c: any) => c.column_id === col.id).length,
+          ]),
+        )}
+        onClose={() => setShowColumnsModal(false)}
+        onChanged={async () => {
+          await reconcileBoard();
+        }}
+      />
 
       {/* Epic Create/Edit Modal */}
       <Modal visible={showEpicManager} transparent animationType="fade" onRequestClose={() => setShowEpicManager(false)}>

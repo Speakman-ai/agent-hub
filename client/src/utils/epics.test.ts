@@ -60,6 +60,8 @@ describe('epicFormToUpdateBody', () => {
       autonomousModel: null,
       autonomousSendIt: 0,
       prBaseBranch: null,
+      labels: null,
+      assignedUserId: null,
     });
   });
 
@@ -218,6 +220,18 @@ describe('epicFormToCreateBody', () => {
       name: 'New epic',
       description: 'desc',
       color: '#EAB308',
+      labels: null,
+      assignedUserId: null,
+    });
+  });
+
+  it('normalizes labels on create', () => {
+    expect(epicFormToCreateBody({ name: 'x', labels: ' platform , q1 , platform ' })).toEqual({
+      name: 'x',
+      description: '',
+      color: DEFAULT_EPIC_COLOR,
+      labels: 'platform, q1',
+      assignedUserId: null,
     });
   });
 
@@ -226,6 +240,8 @@ describe('epicFormToCreateBody', () => {
       name: 'hi',
       description: '',
       color: DEFAULT_EPIC_COLOR,
+      labels: null,
+      assignedUserId: null,
     });
   });
 });

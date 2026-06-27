@@ -13,14 +13,18 @@ import { MarkdownContent } from '../MarkdownRenderer';
 import ReplayPlayerModal from '../ReplayPlayerModal';
 import type { KanbanCardDetailState } from '../../hooks/useKanbanCardDetail';
 
+import EpicLeadUserField from '../EpicLeadUserField';
+import type { AssignableUser } from '../../utils/kanbanUserFilter';
+
 const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
 
 type Props = {
   detail: KanbanCardDetailState;
   agents: any[];
+  assignableUsers?: AssignableUser[];
 };
 
-export default function KanbanCardDetailModal({ detail, agents }: Props) {
+export default function KanbanCardDetailModal({ detail, agents, assignableUsers = [] }: Props) {
   const {
     selectedCard,
     setSelectedCard,
@@ -62,9 +66,13 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
     handleRemoveBlocker,
     handleLinkCardEpic,
     openDetail,
+    isCreating,
+    cardTemplates,
+    applyCardTemplate,
     onRefresh,
     onNavigateToSession,
     projectId,
+    columns = [],
   } = detail;
 
   return (
@@ -84,8 +92,10 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
             {/* Header */}
             <div className="shrink-0 flex items-center justify-between px-6 py-3.5 border-b border-white/[0.06] bg-gray-950/95">
               <div className="flex items-center gap-2 text-xs text-gray-500">
-                <span className="font-medium uppercase tracking-wide">Card</span>
-                {selectedCard?.id && (
+                <span className="font-medium uppercase tracking-wide">
+                  {isCreating ? 'New card' : 'Card'}
+                </span>
+                {!isCreating && selectedCard?.id && (
                   <span className="font-mono text-gray-600 bg-white/[0.04] px-1.5 py-0.5 rounded">
                     #{String(selectedCard.id).slice(0, 8)}
                   </span>
@@ -94,10 +104,10 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleSaveDetail}
-                  disabled={saving}
+                  disabled={saving || !detailForm.title?.trim()}
                   className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-lg text-sm font-medium transition-colors"
                 >
-                  {saving ? 'Saving…' : 'Save'}
+                  {saving ? 'Saving…' : isCreating ? 'Create' : 'Save'}
                 </button>
                 <button
                   onClick={() => closeDetail()}
@@ -187,8 +197,53 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                 </div>
                 {/* Sidebar: metadata */}
                 <aside className="flex flex-col gap-5 lg:border-l lg:border-white/[0.06] lg:pl-6">
+                  {isCreating && cardTemplates.length > 0 ? (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                        Template
+                      </label>
+                      <select
+                        defaultValue=""
+                        data-testid="card-create-template"
+                        onChange={(e: any) => {
+                          const template = cardTemplates.find((t: any) => t.id === e.target.value);
+                          if (template) applyCardTemplate(template);
+                          e.target.value = '';
+                        }}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                      >
+                        <option value="">Apply a template…</option>
+                        {cardTemplates.map((template: any) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
+                  {isCreating && columns.length > 0 ? (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                        Column
+                      </label>
+                      <select
+                        value={selectedCard.column_id || ''}
+                        onChange={(e: any) =>
+                          setSelectedCard((c: any) => ({ ...c, column_id: e.target.value }))
+                        }
+                        data-testid="card-create-column"
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-500"
+                      >
+                        {columns.map((col: any) => (
+                          <option key={col.id} value={col.id}>
+                            {col.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : null}
                   {/* Session replay (carried over from a converted bug ticket) */}
-                  {cardReplay?.replayId ? (
+                  {!isCreating && cardReplay?.replayId ? (
                     <div>
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
                         Session replay
@@ -223,10 +278,10 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                       ))}
                     </select>
                   </div>
-                  {/* Assignee */}
+                  {/* Agent */}
                   <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                      Assignee
+                      Agent
                     </label>
                     {selectedCard?.session_id && !showReassign ? (
                       <div>
@@ -545,11 +600,6 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                               setAssigning(true);
                               try {
                                 const assignOpts: Record<string, any> = {};
-                                // Only send an explicit auto-merge override when
-                                // the user has actually set the checkbox. An
-                                // untouched (null-preference) card omits the
-                                // field so the server falls back to the project
-                                // auto-merge default.
                                 if (detailForm.auto_merge_touched)
                                   assignOpts.autoMerge = !!detailForm.auto_merge;
                                 if (detailForm.assign_model?.trim())
@@ -558,9 +608,46 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                                   assignOpts.engine = detailForm.assign_engine.trim();
                                 if (detailForm.assign_comment?.trim())
                                   assignOpts.comment = detailForm.assign_comment.trim();
+
+                                let cardId = selectedCard?.id;
+                                if (isCreating) {
+                                  if (!detailForm.title?.trim() || !selectedCard?.column_id) return;
+                                  const created = await api.createCard(projectId, {
+                                    title: detailForm.title.trim(),
+                                    description: detailForm.description || null,
+                                    priority: detailForm.priority,
+                                    labels: detailForm.labels || null,
+                                    columnId: selectedCard.column_id,
+                                    createdBy: 'user',
+                                    epicId: detailForm.epic_id || null,
+                                    githubIssueUrl: detailForm.github_issue_url || null,
+                                    assignedUserId: detailForm.assigned_user_id || null,
+                                  });
+                                  cardId = created.id;
+                                  const persistedCard = { ...selectedCard, ...created };
+                                  delete persistedCard.__draft;
+                                  setSelectedCard(persistedCard);
+                                }
+
+                                const prUrl = detailForm.pr_url?.trim();
+                                if (cardId && prUrl && selectedCard?.pr_url !== prUrl) {
+                                  const updated = await api.updateCard(projectId, cardId, {
+                                    prUrl,
+                                  });
+                                  setSelectedCard((current: any) =>
+                                    current?.id === cardId
+                                      ? {
+                                          ...current,
+                                          ...(updated || {}),
+                                          pr_url: updated?.pr_url ?? prUrl,
+                                        }
+                                      : current,
+                                  );
+                                }
+
                                 const result = await api.assignCard(
                                   projectId,
-                                  selectedCard.id,
+                                  cardId,
                                   agent.id,
                                   assignOpts,
                                 );
@@ -576,14 +663,16 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                                 setAssigning(false);
                               }
                             }}
-                            disabled={assigning}
+                            disabled={assigning || (isCreating && !detailForm.title?.trim())}
                             className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap disabled:opacity-50"
                           >
                             {assigning
                               ? 'Starting...'
-                              : selectedCard?.session_id
-                                ? 'Reassign & Start'
-                                : 'Assign & Start'}
+                              : isCreating
+                                ? 'Create & Start'
+                                : selectedCard?.session_id
+                                  ? 'Reassign & Start'
+                                  : 'Assign & Start'}
                           </button>
                         )}
                         {selectedCard?.session_id && (
@@ -597,6 +686,15 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                       </div>
                     )}
                   </div>
+                  {assignableUsers.length > 0 ? (
+                    <EpicLeadUserField
+                      users={assignableUsers}
+                      value={detailForm.assigned_user_id || ''}
+                      onChange={(assigned_user_id) =>
+                        setDetailForm((f: any) => ({ ...f, assigned_user_id }))
+                      }
+                    />
+                  ) : null}
                   {/* Epic */}
                   <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
@@ -636,20 +734,24 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                       <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Blocked by
                       </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowBlockerPicker((v: any) => !v);
-                          setBlockerPickerQuery('');
-                          setBlockerError(null);
-                        }}
-                        className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
-                      >
-                        <Plus size={12} />
-                        Add
-                      </button>
+                      {!isCreating ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowBlockerPicker((v: any) => !v);
+                            setBlockerPickerQuery('');
+                            setBlockerError(null);
+                          }}
+                          className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
+                        >
+                          <Plus size={12} />
+                          Add
+                        </button>
+                      ) : null}
                     </div>
-                    {selectedCard?.blockers && selectedCard.blockers.length > 0 ? (
+                    {isCreating ? (
+                      <p className="text-xs text-gray-600">Save the card to add blockers.</p>
+                    ) : selectedCard?.blockers && selectedCard.blockers.length > 0 ? (
                       <ul className="space-y-1">
                         {selectedCard.blockers.map((b: any) => (
                           <li
@@ -828,35 +930,37 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                     </div>
                   )}
                   {/* Delete */}
-                  <div className="border-t border-gray-800 pt-4 mt-auto">
-                    {confirmDelete ? (
-                      <div className="flex flex-col gap-2">
-                        <span className="text-sm text-red-400">Delete this card?</span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={handleDeleteCard}
-                            className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs transition-colors"
-                          >
-                            Confirm
-                          </button>
-                          <button
-                            onClick={() => setConfirmDelete(false)}
-                            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded text-xs transition-colors"
-                          >
-                            Cancel
-                          </button>
+                  {!isCreating ? (
+                    <div className="border-t border-gray-800 pt-4 mt-auto">
+                      {confirmDelete ? (
+                        <div className="flex flex-col gap-2">
+                          <span className="text-sm text-red-400">Delete this card?</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={handleDeleteCard}
+                              className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs transition-colors"
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              onClick={() => setConfirmDelete(false)}
+                              className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded text-xs transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setConfirmDelete(true)}
-                        className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-400 transition-colors"
-                      >
-                        <Trash2 size={14} />
-                        Delete card
-                      </button>
-                    )}
-                  </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDelete(true)}
+                          className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-red-400 transition-colors"
+                        >
+                          <Trash2 size={14} />
+                          Delete card
+                        </button>
+                      )}
+                    </div>
+                  ) : null}
                 </aside>
               </div>
             </div>
@@ -881,24 +985,28 @@ export default function KanbanCardDetailModal({ detail, agents }: Props) {
                   </div>
                 ))}
               </div>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newComment}
-                  onChange={(e: any) => setNewComment(e.target.value)}
-                  onKeyDown={(e: any) => {
-                    if (e.key === 'Enter') handleAddComment();
-                  }}
-                  placeholder="Add a comment..."
-                  className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
-                />
-                <button
-                  onClick={handleAddComment}
-                  className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
-                >
-                  Send
-                </button>
-              </div>
+              {isCreating ? (
+                <p className="text-xs text-gray-600">Save the card to add comments.</p>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newComment}
+                    onChange={(e: any) => setNewComment(e.target.value)}
+                    onKeyDown={(e: any) => {
+                      if (e.key === 'Enter') handleAddComment();
+                    }}
+                    placeholder="Add a comment..."
+                    className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
+                  />
+                  <button
+                    onClick={handleAddComment}
+                    className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg text-sm transition-colors"
+                  >
+                    Send
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

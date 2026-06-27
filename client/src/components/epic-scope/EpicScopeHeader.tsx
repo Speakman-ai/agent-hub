@@ -1,9 +1,4 @@
-import {
-  epicAutonomousSummary,
-  countDoneTickets,
-  columnNameById,
-  specProgress,
-} from '../../utils/epicScopeStats';
+import { countDoneTickets, columnNameById, specProgress } from '../../utils/epicScopeStats';
 
 /** Epic banner with ticket + spec progress — top of the epic page. */
 export default function EpicScopeHeader({
@@ -20,7 +15,6 @@ export default function EpicScopeHeader({
   const done = countDoneTickets(tickets, colMap);
   const total = tickets.length;
   const ticketProgress = total > 0 ? Math.round((done / total) * 100) : 0;
-  const auto = epicAutonomousSummary(phases);
   const spec = specProgress(specItems);
 
   return (
@@ -72,12 +66,7 @@ export default function EpicScopeHeader({
           </div>
           <div>
             <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-0.5">Phases</p>
-            <p className="text-sm text-gray-200 font-medium">
-              {phases.length}
-              {auto.label && (
-                <span className="ml-1.5 text-[10px] font-bold text-emerald-400">{auto.label}</span>
-              )}
-            </p>
+            <p className="text-sm text-gray-200 font-medium">{phases.length}</p>
           </div>
         </div>
       </div>

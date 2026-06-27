@@ -11,6 +11,7 @@ import type {
   KanbanColumnRow,
   KanbanCardRow,
   KanbanEpicRow,
+  KanbanCardTemplateRow,
   KanbanEpicSpecItemRow,
   KanbanPhaseRow,
   KanbanBlockerLink,
@@ -19,7 +20,7 @@ import type {
   FinalizeRunRow,
   SessionReplayRow,
 } from '../types.js';
-import { findCycle, loadBoardBlockers } from '../kanban-blockers.js';
+import { findCycle, loadBoardBlockers, isSystemLockedColumnName } from '../kanban-blockers.js';
 import { deriveCardPrefix } from '../kanban-short-id.js';
 import {
   type CardCursor,
@@ -29,6 +30,9 @@ import {
 } from '../kanban-pagination.js';
 import { maybeRenameSessionForLinkedCard, resolveCardSessionId } from '../kanban-caller-session.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
+import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned-user.js';
+import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
+import { getDb } from '../db.js';
 import {
   ensureOperatorBaseBranch,
   scheduleAutonomousPhase,
@@ -69,6 +73,7 @@ import {
   AddBlockerRequestSchema,
   CreateColumnRequestSchema,
   UpdateColumnRequestSchema,
+  ReorderColumnsRequestSchema,
   CreateEpicRequestSchema,
   UpdateEpicRequestSchema,
   LinkEpicRequestSchema,
@@ -78,6 +83,8 @@ import {
   UpdateSpecItemRequestSchema,
   DecideForMeRequestSchema,
   ScopeEpicRequestSchema,
+  CreateCardTemplateRequestSchema,
+  UpdateCardTemplateRequestSchema,
 } from './board.openapi.js';
 
 /**
@@ -105,6 +112,28 @@ function parseBody<T extends z.ZodTypeAny>(
     return undefined;
   }
   return result.data;
+}
+
+function resolveTemplateEpicId(
+  stmts: Stmts,
+  boardId: string,
+  epicId: string | null | undefined,
+): string | null | 'invalid' {
+  if (epicId === undefined || epicId === null || String(epicId).trim() === '') return null;
+  const epic = stmts.getKanbanEpic.get(String(epicId).trim()) as KanbanEpicRow | undefined;
+  if (!epic || epic.board_id !== boardId) return 'invalid';
+  return epic.id;
+}
+
+function collectAvailableCardLabels(cards: KanbanCardRow[]): string[] {
+  const labels = new Set<string>();
+  for (const card of cards) {
+    for (const raw of String(card.labels || '').split(',')) {
+      const label = raw.trim();
+      if (label) labels.add(label);
+    }
+  }
+  return [...labels].sort((a, b) => a.localeCompare(b));
 }
 
 function defaultPhaseAutonomousModel(
@@ -222,6 +251,10 @@ function loadColumnCounts(stmts: Stmts, columns: KanbanColumnRow[]): Record<stri
     counts[col.id] = row?.n ?? 0;
   }
   return counts;
+}
+
+function loadRequestAssignableUsers(req: Request): ReturnType<typeof loadAssignableUsers> {
+  return loadAssignableUsers((req as AuthenticatedRequest).authOrgId);
 }
 
 /**
@@ -445,11 +478,18 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // legacy board whose prefix predates the column and somehow wasn't
     // backfilled.
     const cardPrefix = data.board.card_prefix ?? deriveCardPrefix(project.id);
+    const assignableUsers = loadRequestAssignableUsers(req);
+    const cardTemplates = (
+      stmts.getKanbanCardTemplates.all(data.board.id) as KanbanCardTemplateRow[]
+    ).map(templateRowToClient);
     const body: Record<string, unknown> = {
       ...data,
       board: { ...data.board, card_prefix: cardPrefix },
       cards: enrichCards(stmts, data.board.id, cards),
       counts,
+      assignableUsers,
+      cardTemplates,
+      availableLabels: collectAvailableCardLabels(data.cards),
     };
     if (cursors) body.cursors = cursors;
     res.json(body);
@@ -486,6 +526,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const parsed = parseBody(CreateColumnRequestSchema, req, res);
     if (!parsed) return;
     const { name, color } = parsed;
+    if (isSystemLockedColumnName(name)) {
+      return res.status(400).json({
+        error: 'Cannot create a duplicate system column (To Do, In Progress, or Done)',
+      });
+    }
     const { board, columns } = getOrCreateBoard(stmts, req.params.projectId as string);
     const maxPos = columns.length > 0 ? Math.max(...columns.map((c) => c.position)) + 1 : 0;
     const id = uuidv4();
@@ -499,15 +544,97 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const parsed = parseBody(UpdateColumnRequestSchema, req, res);
     if (!parsed) return;
+    const existing = stmts.getKanbanColumn.get(req.params.columnId) as KanbanColumnRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Column not found' });
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    if (existing.board_id !== board.id) {
+      return res.status(404).json({ error: 'Column not found' });
+    }
     const { name, position, color } = parsed;
-    stmts.updateKanbanColumn.run(name, position, color || null, req.params.columnId);
+    const nextName = name ?? existing.name;
+    const existingIsSystemLocked = isSystemLockedColumnName(existing.name);
+    const nextNameIsSystemLocked = isSystemLockedColumnName(nextName);
+    if (
+      existingIsSystemLocked &&
+      nextName.trim().toLowerCase() !== existing.name.trim().toLowerCase()
+    ) {
+      return res.status(400).json({
+        error: 'Cannot rename a system column (To Do, In Progress, or Done)',
+      });
+    }
+    if (!existingIsSystemLocked && nextNameIsSystemLocked) {
+      return res.status(400).json({
+        error:
+          'Cannot rename a custom column to a system column name (To Do, In Progress, or Done)',
+      });
+    }
+    const nextPosition = position ?? existing.position;
+    const nextColor = color !== undefined ? color || null : existing.color;
+    stmts.updateKanbanColumn.run(nextName, nextPosition, nextColor, req.params.columnId);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
+  });
+
+  router.post('/api/projects/:projectId/board/columns/reorder', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const parsed = parseBody(ReorderColumnsRequestSchema, req, res);
+    if (!parsed) return;
+    const { board, columns } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const uniqueIds = new Set(parsed.columnIds);
+    const columnById = new Map(columns.map((column) => [column.id, column]));
+    if (uniqueIds.size !== parsed.columnIds.length) {
+      return res.status(400).json({ error: 'columnIds must not contain duplicates' });
+    }
+    if (
+      parsed.columnIds.length !== columns.length ||
+      parsed.columnIds.some((columnId) => !columnById.has(columnId))
+    ) {
+      return res.status(400).json({
+        error: 'columnIds must include every board column exactly once',
+      });
+    }
+
+    const reorderColumns = getDb().transaction((columnIds: string[]) => {
+      for (const [position, columnId] of columnIds.entries()) {
+        const column = columnById.get(columnId);
+        if (!column) throw new Error(`Column not found: ${columnId}`);
+        stmts.updateKanbanColumn.run(column.name, position, column.color, column.id);
+      }
+      return stmts.getKanbanColumns.all(board.id) as KanbanColumnRow[];
+    });
+
+    const nextColumns = reorderColumns(parsed.columnIds);
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json(nextColumns);
   });
 
   router.delete(
     '/api/projects/:projectId/board/columns/:columnId',
     (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const existing = stmts.getKanbanColumn.get(req.params.columnId) as
+        | KanbanColumnRow
+        | undefined;
+      if (!existing) return res.status(404).json({ error: 'Column not found' });
+      const { board, columns } = getOrCreateBoard(stmts, req.params.projectId as string);
+      if (existing.board_id !== board.id) {
+        return res.status(404).json({ error: 'Column not found' });
+      }
+      if (isSystemLockedColumnName(existing.name)) {
+        return res.status(400).json({
+          error: 'Cannot delete a system column (To Do, In Progress, or Done)',
+        });
+      }
+      if (columns.length <= 1) {
+        return res.status(400).json({ error: 'Cannot delete the last column on the board' });
+      }
+      const cardCount = (stmts.countKanbanCardsByColumn.get(req.params.columnId) as { n: number })
+        .n;
+      if (cardCount > 0) {
+        return res.status(400).json({ error: 'Cannot delete a column that still contains cards' });
+      }
       stmts.deleteKanbanColumn.run(req.params.columnId);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       res.json({ ok: true });
@@ -613,6 +740,18 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
+    let normalizedAssignedUser: string | null = null;
+    if (parsed.assignedUserId !== undefined) {
+      const normalizedUser = normalizeAssignedUserId(
+        parsed.assignedUserId,
+        loadRequestAssignableUsers(req),
+      );
+      if (normalizedUser === 'invalid') {
+        return res.status(400).json({ error: 'Invalid assignedUserId' });
+      }
+      normalizedAssignedUser = normalizedUser;
+    }
+
     // Validate the epic/phase relationship BEFORE inserting, so a rejection
     // never leaves an orphan card on the board. Resolve the final (epic,
     // phase) the card will carry: a phase is authoritative for scope, so its
@@ -688,6 +827,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // above, before the insert).
     if (resolvedEpicId) stmts.updateKanbanCardEpic.run(resolvedEpicId, id);
     if (resolvedPhaseId) stmts.updateKanbanCardPhase.run(resolvedPhaseId, id);
+
+    if (parsed.assignedUserId !== undefined) {
+      stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, id);
+    }
 
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     if (effectiveSessionId) {
@@ -837,6 +980,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         }
       }
     }
+    let normalizedAssignedUser: string | null = null;
+    if (parsed.assignedUserId !== undefined) {
+      const normalizedUser = normalizeAssignedUserId(
+        parsed.assignedUserId,
+        loadRequestAssignableUsers(req),
+      );
+      if (normalizedUser === 'invalid') {
+        return res.status(400).json({ error: 'Invalid assignedUserId' });
+      }
+      normalizedAssignedUser = normalizedUser;
+    }
 
     stmts.updateKanbanCard.run(
       title ?? card.title,
@@ -858,6 +1012,9 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasPrBaseBranch ? (prBaseBranch ?? null) : (card.pr_base_branch ?? null),
       req.params.cardId,
     );
+    if (parsed.assignedUserId !== undefined) {
+      stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, req.params.cardId);
+    }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json(stmts.getKanbanCard.get(req.params.cardId));
   });
@@ -1372,16 +1529,35 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
     const parsedEpic = parseBody(CreateEpicRequestSchema, req, res);
     if (!parsedEpic) return;
-    const { name, description, color } = parsedEpic;
+    const { name, description, color, labels, assignedUserId } = parsedEpic;
     const hasEpicPrBase = parsedEpic.prBaseBranch !== undefined;
     if (hasEpicPrBase) {
       const parsedBranch = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
       if (!parsedBranch.ok) return res.status(400).json({ error: parsedBranch.error });
     }
+    let normalizedAssignedUser: string | null = null;
+    if (assignedUserId !== undefined) {
+      const normalizedUser = normalizeAssignedUserId(
+        assignedUserId,
+        loadRequestAssignableUsers(req),
+      );
+      if (normalizedUser === 'invalid') {
+        return res.status(400).json({ error: 'Invalid assignedUserId' });
+      }
+      normalizedAssignedUser = normalizedUser;
+    }
     const epics = stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[];
     const maxPos = epics.length > 0 ? Math.max(...epics.map((e) => e.position)) + 1 : 0;
     const id = uuidv4();
-    stmts.createKanbanEpic.run(id, board.id, name, description || null, color || '#6366F1', maxPos);
+    stmts.createKanbanEpic.run(
+      id,
+      board.id,
+      name,
+      description || null,
+      color || '#6366F1',
+      maxPos,
+      labels ?? null,
+    );
     if (hasEpicPrBase) {
       const p = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
       if (p.ok) {
@@ -1396,11 +1572,16 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           row.autonomous_model ?? null,
           row.orchestration_budgets_json ?? null,
           p.value,
+          row.labels ?? null,
           id,
         );
       }
     }
     const createdEpic = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
+    if (assignedUserId !== undefined) {
+      stmts.setKanbanEpicAssignedUser.run(normalizedAssignedUser, id);
+    }
+    const createdEpicFinal = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
     // Eager creation of the operator-set integration branch on origin. Without
     // this, the branch is only created lazily by the next autonomous dispatch
     // tick — any session dispatched against this epic in the meantime races
@@ -1422,7 +1603,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-    res.json(createdEpic);
+    res.json(createdEpicFinal);
   });
 
   router.put('/api/projects/:projectId/board/epics/:epicId', (req: Request, res: Response) => {
@@ -1440,14 +1621,28 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       autonomousModel,
       autonomousSendIt,
       orchestrationBudgets,
+      labels,
+      assignedUserId,
     } = parsedEpic;
 
     const hasEpicPrBasePut = parsedEpic.prBaseBranch !== undefined;
+    const hasLabels = labels !== undefined;
     let nextEpicPrBaseField: string | null | undefined;
     if (hasEpicPrBasePut) {
       const parsedBranch = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
       if (!parsedBranch.ok) return res.status(400).json({ error: parsedBranch.error });
       nextEpicPrBaseField = parsedBranch.value;
+    }
+    let normalizedAssignedUser: string | null = null;
+    if (assignedUserId !== undefined) {
+      const normalizedUser = normalizeAssignedUserId(
+        assignedUserId,
+        loadRequestAssignableUsers(req),
+      );
+      if (normalizedUser === 'invalid') {
+        return res.status(400).json({ error: 'Invalid assignedUserId' });
+      }
+      normalizedAssignedUser = normalizedUser;
     }
 
     const nextAutonomousModel =
@@ -1496,6 +1691,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       nextAutonomousModel,
       nextOrchestrationJson,
       hasEpicPrBasePut ? (nextEpicPrBaseField ?? null) : (epic.pr_base_branch ?? null),
+      hasLabels ? (labels ?? null) : (epic.labels ?? null),
       req.params.epicId,
     );
 
@@ -1504,6 +1700,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // explicitly carried the field; omitting it preserves the stored value.
     if (autonomousSendIt !== undefined) {
       stmts.setEpicAutonomousSendIt.run(autonomousSendIt ? 1 : 0, req.params.epicId);
+    }
+
+    if (assignedUserId !== undefined) {
+      stmts.setKanbanEpicAssignedUser.run(normalizedAssignedUser, req.params.epicId);
     }
 
     const updatedEpic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow;
@@ -1531,12 +1731,135 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     res.json(updatedEpic);
   });
 
+  router.post(
+    '/api/projects/:projectId/board/epics/:epicId/assign-lead-to-cards',
+    (req: Request, res: Response) => {
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
+      if (!epic || epic.board_id !== board.id) {
+        return res.status(404).json({ error: 'Epic not found' });
+      }
+
+      const leadUserId = epic.assigned_user_id;
+      if (!leadUserId) {
+        return res.status(400).json({ error: 'Epic has no lead user assigned' });
+      }
+
+      const authedReq = req as AuthenticatedRequest;
+      const callerId = resolveOwnerUserId(authedReq);
+      const isSelf = !!callerId && callerId === leadUserId;
+      const isLocalBypass = !!authedReq.authLocalOrgBypass;
+      if (!isSelf && !isLocalBypass) {
+        return res
+          .status(403)
+          .json({ error: 'Only the epic lead user can assign themselves to cards' });
+      }
+
+      const result = stmts.setKanbanCardsAssignedUserByEpic.run(leadUserId, req.params.epicId);
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json({ updatedCount: result.changes });
+    },
+  );
+
+  router.get('/api/projects/:projectId/board/card-templates', (req: Request, res: Response) => {
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const rows = stmts.getKanbanCardTemplates.all(board.id) as KanbanCardTemplateRow[];
+    res.json(rows.map(templateRowToClient));
+  });
+
+  router.post('/api/projects/:projectId/board/card-templates', (req: Request, res: Response) => {
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const parsed = parseBody(CreateCardTemplateRequestSchema, req, res);
+    if (!parsed) return;
+    const name = parsed.name.trim();
+    if (!name) return res.status(400).json({ error: 'Template name is required' });
+    const epicId = resolveTemplateEpicId(stmts, board.id, parsed.epicId);
+    if (epicId === 'invalid') return res.status(400).json({ error: 'Invalid epicId' });
+    const id = uuidv4();
+    const priority = normalizeTemplatePriority(parsed.priority);
+    stmts.createKanbanCardTemplate.run(
+      id,
+      board.id,
+      name,
+      parsed.title?.trim() || '',
+      parsed.description ?? null,
+      priority,
+      parsed.labels ?? null,
+      epicId,
+      0,
+    );
+    const row = stmts.getKanbanCardTemplate.get(id) as KanbanCardTemplateRow;
+    broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+    res.json(templateRowToClient(row));
+  });
+
+  router.put(
+    '/api/projects/:projectId/board/card-templates/:templateId',
+    (req: Request, res: Response) => {
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      const existing = stmts.getKanbanCardTemplate.get(req.params.templateId) as
+        | KanbanCardTemplateRow
+        | undefined;
+      if (!existing || existing.board_id !== board.id) {
+        return res.status(404).json({ error: 'Template not found' });
+      }
+      const parsed = parseBody(UpdateCardTemplateRequestSchema, req, res);
+      if (!parsed) return;
+      let nextName = existing.name;
+      if (parsed.name !== undefined) {
+        nextName = parsed.name.trim();
+        if (!nextName) return res.status(400).json({ error: 'Template name is required' });
+      }
+      let nextEpicId = existing.epic_id;
+      if (parsed.epicId !== undefined) {
+        const resolved = resolveTemplateEpicId(stmts, board.id, parsed.epicId);
+        if (resolved === 'invalid') return res.status(400).json({ error: 'Invalid epicId' });
+        nextEpicId = resolved;
+      }
+      const priority = normalizeTemplatePriority(parsed.priority ?? existing.priority);
+      stmts.updateKanbanCardTemplate.run(
+        nextName,
+        parsed.title !== undefined ? parsed.title.trim() : existing.title,
+        parsed.description !== undefined ? parsed.description : existing.description,
+        priority,
+        parsed.labels !== undefined ? parsed.labels : existing.labels,
+        nextEpicId,
+        existing.id,
+      );
+      const row = stmts.getKanbanCardTemplate.get(existing.id) as KanbanCardTemplateRow;
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json(templateRowToClient(row));
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/board/card-templates/:templateId',
+    (req: Request, res: Response) => {
+      const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+      const existing = stmts.getKanbanCardTemplate.get(req.params.templateId) as
+        | KanbanCardTemplateRow
+        | undefined;
+      if (!existing || existing.board_id !== board.id) {
+        return res.status(404).json({ error: 'Template not found' });
+      }
+      stmts.deleteKanbanCardTemplate.run(existing.id);
+      broadcast({ type: 'kanban_update', projectId: req.params.projectId });
+      res.json({ ok: true });
+    },
+  );
+
   router.delete('/api/projects/:projectId/board/epics/:epicId', (req: Request, res: Response) => {
+    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
+    const epic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow | undefined;
+    if (!epic || epic.board_id !== board.id) {
+      return res.status(404).json({ error: 'Epic not found' });
+    }
     const epicCards = stmts.getKanbanCardsByEpic.all(req.params.epicId) as KanbanCardRow[];
     for (const card of epicCards) {
       stmts.updateKanbanCardEpic.run(null, card.id);
       stmts.updateKanbanCardPhase.run(null, card.id);
     }
+    stmts.clearKanbanCardTemplateEpic.run(board.id, req.params.epicId);
     stmts.deleteKanbanEpic.run(req.params.epicId);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });

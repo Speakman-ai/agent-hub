@@ -10,6 +10,25 @@
 // fallback silently preserves the old value — i.e. changes made in the UI
 // have no effect.
 
+import { parseCardLabels } from './kanbanLabels';
+
+export function normalizeEpicLabels(raw: string | null | undefined): string | null {
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const label of parseCardLabels(raw)) {
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+  }
+  return labels.length > 0 ? labels.join(', ') : null;
+}
+
+/** Comma-separated labels string for epic form inputs. */
+export function labelsFieldFromInput(raw: string | null | undefined): string {
+  return parseCardLabels(raw).join(', ');
+}
+
 export const DEFAULT_EPIC_COLOR = '#6366F1';
 
 /**
@@ -31,6 +50,8 @@ export function epicFormToUpdateBody(form: any) {
     autonomousModel,
     autonomousSendIt: autonomousOn && form.autonomous_send_it ? 1 : 0,
     prBaseBranch: prTrim || null,
+    labels: normalizeEpicLabels(form.labels),
+    assignedUserId: form.assigned_user_id || null,
     ...(form.orchestrationBudgets !== undefined
       ? { orchestrationBudgets: form.orchestrationBudgets }
       : {}),
@@ -66,6 +87,8 @@ export function epicFormToCreateBody(form: any) {
     name: (form.name || '').trim(),
     description: form.description || '',
     color: form.color || DEFAULT_EPIC_COLOR,
+    labels: normalizeEpicLabels(form.labels),
+    assignedUserId: form.assigned_user_id || null,
     ...(pr ? { prBaseBranch: pr } : {}),
   };
 }

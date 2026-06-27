@@ -6,9 +6,7 @@ import {
   MessageSquare,
   ExternalLink,
   Trash2,
-  Search,
   GitPullRequest,
-  Target,
   Lock,
   AlertTriangle,
   Zap,
@@ -18,6 +16,12 @@ import {
   Unlink,
   CheckSquare,
   Square,
+  Pencil,
+  FileText,
+  Columns3,
+  ChevronLeft,
+  ChevronRight,
+  Target,
 } from 'lucide-react';
 import {
   DndContext,
@@ -42,6 +46,7 @@ import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { epicFormToUpdateBody } from '../utils/epics';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { cardShortLabel, assigneeInitials, assigneeColorClass } from '../utils/kanbanCard';
+import { isHighPriority, toggleHighPriorityValue } from '../utils/kanbanPriority';
 import {
   toggleKanbanCardSelection,
   setKanbanColumnSelection,
@@ -50,13 +55,21 @@ import {
 } from '../utils/kanbanSelection';
 import { shortDate, formatDateTime } from '../utils/time';
 import { filterAgentsByProject } from '../utils/kanbanAgents';
+import { isSystemLockedColumnName } from '../utils/kanbanColumns';
+import {
+  readCollapsedColumnIds,
+  writeCollapsedColumnIds,
+  pruneCollapsedColumnIds,
+} from '../utils/kanbanColumnCollapse';
+import { collectDistinctLabels, cardMatchesLabelFilter } from '../utils/kanbanLabels';
+import { cardMatchesUserFilter, usernameForUserId } from '../utils/kanbanUserFilter';
 import { MarkdownContent } from './MarkdownRenderer';
 import FinalizeCardBadge from './finalize/CardBadge';
-import EpicFilterDropdown from './EpicFilterDropdown';
 import EpicAutonomousDialog from './EpicAutonomousDialog';
 import { epicToAutonomousForm } from './EpicAutonomousPanel';
 import CardContextMenu from './CardContextMenu';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
+import KanbanColumnDialog from './kanban/KanbanColumnDialog';
 import { useKanbanCardDetail } from '../hooks/useKanbanCardDetail';
 
 const PRIORITY_ACCENT = {
@@ -216,15 +229,18 @@ function KanbanCard({
   card,
   board,
   epics,
+  assignableUsers = [],
   dragging = false,
   overlay = false,
   selected = false,
   showCheckbox = false,
   onToggleSelect,
+  onToggleHighPriority,
 }: any) {
   const cardEpic = card.epic_id ? epics.find((e: any) => e.id === card.epic_id) : null;
   const shortLabel = cardShortLabel(board?.card_prefix, card.short_id);
   const cardLabels = card.labels ? card.labels.split(',').filter(Boolean) : [];
+  const leadUser = usernameForUserId(assignableUsers, card.assigned_user_id);
   return (
     <div
       className={`group w-full rounded-xl border bg-white/[0.03] hover:bg-white/[0.05] hover:border-white/[0.12] hover:shadow-lg hover:shadow-black/25 cursor-grab active:cursor-grabbing transition-colors border-l-[3px] ${
@@ -261,7 +277,26 @@ function KanbanCard({
               {selected ? <CheckSquare size={14} /> : <Square size={14} />}
             </button>
           ) : null}
-          <PriorityIcon priority={card.priority} />
+          {onToggleHighPriority && !overlay ? (
+            <button
+              type="button"
+              data-testid="card-priority-toggle"
+              title={isHighPriority(card.priority) ? 'Clear high priority' : 'Mark high priority'}
+              aria-label={
+                isHighPriority(card.priority) ? 'Clear high priority' : 'Mark high priority'
+              }
+              onClick={(e: any) => {
+                e.stopPropagation();
+                onToggleHighPriority(card);
+              }}
+              onPointerDown={(e: any) => e.stopPropagation()}
+              className="inline-flex rounded-sm hover:bg-white/[0.08] focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400/50"
+            >
+              <PriorityIcon priority={card.priority} />
+            </button>
+          ) : (
+            <PriorityIcon priority={card.priority} />
+          )}
           {shortLabel && (
             <span
               className="text-[11px] font-mono text-gray-500 tabular-nums tracking-tight"
@@ -336,8 +371,8 @@ function KanbanCard({
           {card.title}
         </span>
 
-        {/* Footer: epic + labels (left) · created date + assignee avatar (right). */}
-        {(cardEpic || card.assignee || card.created_at || cardLabels.length > 0) && (
+        {/* Footer: epic + labels (left) · created date + agent avatar (right). */}
+        {(cardEpic || card.assignee || leadUser || card.created_at || cardLabels.length > 0) && (
           <div className="flex items-center justify-between gap-2 mt-2.5">
             <div className="flex items-center gap-1 flex-wrap min-w-0">
               {cardEpic && (
@@ -364,6 +399,14 @@ function KanbanCard({
                   {label.trim()}
                 </span>
               ))}
+              {leadUser ? (
+                <span
+                  className="text-[10px] font-medium bg-sky-500/10 text-sky-300 px-1.5 py-0.5 rounded-md"
+                  data-testid="card-lead-user"
+                >
+                  @{leadUser}
+                </span>
+              ) : null}
             </div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
               {card.created_at && (
@@ -395,8 +438,10 @@ function SortableCard({
   card,
   board,
   epics,
+  assignableUsers = [],
   onOpen,
   onContextMenu,
+  onToggleHighPriority,
   selected,
   showCheckbox,
   onToggleSelect,
@@ -439,10 +484,12 @@ function SortableCard({
         card={card}
         board={board}
         epics={epics}
+        assignableUsers={assignableUsers}
         dragging={isDragging}
         selected={selected}
         showCheckbox={showCheckbox}
         onToggleSelect={onToggleSelect}
+        onToggleHighPriority={onToggleHighPriority}
       />
     </div>
   );
@@ -515,6 +562,15 @@ function KanbanBulkActionBar({
       <button
         type="button"
         disabled={busy}
+        data-testid="kanban-bulk-mark-high"
+        onClick={() => onSetPriority('high')}
+        className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-medium text-orange-300 hover:text-orange-200 hover:bg-orange-500/10 border border-transparent hover:border-orange-500/20 transition-colors disabled:opacity-50"
+      >
+        Mark high
+      </button>
+      <button
+        type="button"
+        disabled={busy}
         onClick={onDelete}
         className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-medium text-red-300 hover:text-red-200 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors disabled:opacity-50"
       >
@@ -551,13 +607,125 @@ function ColumnDropZone({ columnId, className, children }: any) {
   );
 }
 
+function KanbanEpicFilterMenu({
+  epics,
+  selectedEpicIds,
+  onSelectedEpicIdsChange,
+}: {
+  epics: any[];
+  selectedEpicIds: Set<string>;
+  onSelectedEpicIdsChange?: (ids: Set<string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  const toggleEpic = (epicId: string) => {
+    if (!onSelectedEpicIdsChange) return;
+    const next = new Set(selectedEpicIds);
+    if (next.has(epicId)) next.delete(epicId);
+    else next.add(epicId);
+    onSelectedEpicIdsChange(next);
+  };
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        data-testid="kanban-epic-filter"
+        className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
+          selectedEpicIds.size > 0
+            ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
+            : 'border-white/[0.06] text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08]'
+        }`}
+      >
+        <Target size={14} />
+        {selectedEpicIds.size > 0 ? `Epics (${selectedEpicIds.size})` : 'Filter epics'}
+      </button>
+      {open ? (
+        <div
+          data-testid="kanban-epic-filter-menu"
+          className="absolute right-0 top-full mt-1 z-30 w-64 max-h-72 overflow-y-auto rounded-xl border border-white/[0.08] bg-gray-950 shadow-xl shadow-black/40 p-1.5"
+        >
+          {epics.length === 0 ? (
+            <div className="px-3 py-4 text-xs text-gray-500">No epics yet.</div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {epics.map((epic: any) => {
+                const selected = selectedEpicIds.has(epic.id);
+                return (
+                  <button
+                    key={epic.id}
+                    type="button"
+                    onClick={() => toggleEpic(epic.id)}
+                    data-testid={`kanban-epic-filter-${epic.id}`}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors ${
+                      selected ? 'bg-indigo-500/10' : 'hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <span
+                      className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 ${
+                        selected ? 'text-indigo-300' : 'text-gray-600'
+                      }`}
+                    >
+                      {selected ? <CheckSquare size={14} /> : <Square size={14} />}
+                    </span>
+                    <span
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: epic.color || '#6B7280' }}
+                    />
+                    <span className="flex-1 min-w-0 truncate text-sm text-gray-200">
+                      {epic.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {selectedEpicIds.size > 0 ? (
+            <button
+              type="button"
+              onClick={() => onSelectedEpicIdsChange?.(new Set())}
+              data-testid="kanban-epic-filter-clear"
+              className="w-full mt-1.5 px-3 py-2.5 text-left text-xs text-gray-500 hover:text-gray-300 rounded-lg hover:bg-white/[0.04] border-t border-white/[0.06] pt-2.5"
+            >
+              Clear epic filter
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function KanbanBoard({
   projectId,
   project,
   agents = [],
   refreshKey,
   onNavigateToSession,
+  onCardActionsReady,
+  pendingCreateTemplate,
+  onPendingCreateTemplateConsumed,
+  searchQuery = '',
+  selectedEpicIds = new Set(),
+  onSelectedEpicIdsChange,
+  selectedLabels = new Set(),
+  onAvailableLabelsChange,
+  selectedUserIds = new Set(),
+  assignableUsers = [],
+  onAssignableUsersChange,
   onOpenEpics,
+  onOpenTemplates,
 }: any) {
   // The assignment dropdown must only offer agents that belong to this
   // project — agents are loaded app-wide and flattened across every visible
@@ -578,6 +746,8 @@ export default function KanbanBoard({
   // `cards` above holds only the cards loaded so far across all columns; this
   // map tracks how far each column has paged and how many cards it really has.
   const [columnPaging, setColumnPaging] = useState<Record<string, any>>({});
+  const pendingTemplateCreateRef = useRef<any>(null);
+  const consumedPendingCreateTemplateRef = useRef<any>(null);
 
   // Refs mirroring async-read state so the IntersectionObserver callback and
   // loadMore guard always see live values without re-subscribing on every
@@ -593,27 +763,117 @@ export default function KanbanBoard({
     columnPagingRef.current = columnPaging;
   }, [columnPaging]);
 
-  // Inline add card state: columnId that has the form open
-  const [addingInColumn, setAddingInColumn] = useState<any>(null);
-  const [newCardTitle, setNewCardTitle] = useState('');
-  const [newCardPriority, setNewCardPriority] = useState('medium');
+  // Inline add card state removed — Add card opens the full detail modal in create mode.
 
   // Drag state: the id of the card currently being dragged. Drives the
   // <DragOverlay> floating clone; null when no drag is in flight.
   const [activeId, setActiveId] = useState<any>(null);
 
-  // Search
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // Epics (filter, badges, autonomous dispatch)
+  // Epics (badges, autonomous dispatch)
   const [epics, setEpics] = useState<any[]>([]);
-  const [selectedEpicId, setSelectedEpicId] = useState<any>(null);
+  const [cardTemplates, setCardTemplates] = useState<any[]>([]);
+  const [serverAvailableLabels, setServerAvailableLabels] = useState<string[] | null>(null);
   const [showAutonomousDialog, setShowAutonomousDialog] = useState(false);
   const [autonomousForm, setAutonomousForm] = useState<any>(null);
   const [autonomousSaving, setAutonomousSaving] = useState(false);
 
   const [pendingMove, setPendingMove] = useState<any>(null); // { card, targetColumn, position }
   const [pendingBulkMove, setPendingBulkMove] = useState<any>(null); // { cards, targetColumn }
+
+  const [columnDialog, setColumnDialog] = useState<any>(null); // null | { mode: 'create' } | { mode: 'edit', column }
+  const [columnBusy, setColumnBusy] = useState(false);
+  const [columnError, setColumnError] = useState<string | null>(null);
+  const [collapsedColumnIds, setCollapsedColumnIds] = useState<Set<string>>(() =>
+    readCollapsedColumnIds(projectId),
+  );
+
+  const closeColumnDialog = useCallback(() => {
+    if (columnBusy) return;
+    setColumnDialog(null);
+    setColumnError(null);
+  }, [columnBusy]);
+
+  const openCreateColumnDialog = useCallback(() => {
+    setColumnError(null);
+    setColumnDialog({ mode: 'create' });
+  }, []);
+
+  const openEditColumnDialog = useCallback((column: any) => {
+    setColumnError(null);
+    setColumnDialog({ mode: 'edit', column });
+  }, []);
+
+  const handleSaveColumn = async (data: { name: string; color: string }) => {
+    if (!projectId || !columnDialog) return;
+    setColumnBusy(true);
+    setColumnError(null);
+    try {
+      if (columnDialog.mode === 'create') {
+        const nextColumns = await api.createColumn(projectId, {
+          name: data.name,
+          color: data.color,
+        });
+        setColumns(nextColumns);
+        setColumnDialog(null);
+        await reconcileBoard();
+      } else if (columnDialog.column) {
+        await api.updateColumn(projectId, columnDialog.column.id, {
+          name: data.name,
+          color: data.color,
+        });
+        setColumnDialog(null);
+        await reconcileBoard();
+      }
+    } catch (err: any) {
+      setColumnError(err?.message || 'Failed to save column');
+    } finally {
+      setColumnBusy(false);
+    }
+  };
+
+  const handleMoveColumn = async (direction: 'left' | 'right') => {
+    if (!projectId || columnDialog?.mode !== 'edit' || !columnDialog.column) return;
+    const sorted = [...columns].sort((a, b) => a.position - b.position);
+    const idx = sorted.findIndex((c) => c.id === columnDialog.column.id);
+    const targetIdx = direction === 'left' ? idx - 1 : idx + 1;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= sorted.length) return;
+    const reordered = [...sorted];
+    [reordered[idx], reordered[targetIdx]] = [reordered[targetIdx], reordered[idx]];
+
+    setColumnBusy(true);
+    setColumnError(null);
+    try {
+      const nextColumns: any[] = await api.reorderColumns(
+        projectId,
+        reordered.map((column) => column.id),
+      );
+      setColumns(nextColumns);
+      setColumnDialog({
+        mode: 'edit',
+        column: nextColumns.find((c) => c.id === columnDialog.column.id),
+      });
+      await reconcileBoard();
+    } catch (err: any) {
+      setColumnError(err?.message || 'Failed to reorder column');
+    } finally {
+      setColumnBusy(false);
+    }
+  };
+
+  const handleDeleteColumn = async () => {
+    if (!projectId || columnDialog?.mode !== 'edit' || !columnDialog.column) return;
+    setColumnBusy(true);
+    setColumnError(null);
+    try {
+      await api.deleteColumn(projectId, columnDialog.column.id);
+      setColumnDialog(null);
+      await reconcileBoard();
+    } catch (err: any) {
+      setColumnError(err?.message || 'Failed to delete column');
+    } finally {
+      setColumnBusy(false);
+    }
+  };
 
   // Multi-select: Cmd/Ctrl+click, Shift+range, or pinned "Select" mode.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -636,7 +896,35 @@ export default function KanbanBoard({
   /** Engine→valid models map from GET /api/config/models (optional model on card assign + epic autonomous). */
   const [modelConfig, setModelConfig] = useState<any>(null);
 
-  const addTitleRef = useRef<any>(null);
+  useEffect(() => {
+    setCollapsedColumnIds(readCollapsedColumnIds(projectId));
+  }, [projectId]);
+
+  const hasLoadedProjectColumns = Boolean(board?.project_id === projectId && columns.length > 0);
+
+  useEffect(() => {
+    if (!hasLoadedProjectColumns) return;
+    writeCollapsedColumnIds(projectId, collapsedColumnIds);
+  }, [projectId, collapsedColumnIds, hasLoadedProjectColumns]);
+
+  useEffect(() => {
+    if (!hasLoadedProjectColumns) return;
+    setCollapsedColumnIds((prev) =>
+      pruneCollapsedColumnIds(
+        prev,
+        columns.map((c: any) => c.id),
+      ),
+    );
+  }, [columns, hasLoadedProjectColumns]);
+
+  const toggleColumnCollapsed = useCallback((columnId: string) => {
+    setCollapsedColumnIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(columnId)) next.delete(columnId);
+      else next.add(columnId);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;
@@ -704,8 +992,11 @@ export default function KanbanBoard({
       setBoard(data.board);
       setColumns(data.columns);
       setEpics(data.epics || []);
+      setCardTemplates(data.cardTemplates || []);
+      setServerAvailableLabels(Array.isArray(data.availableLabels) ? data.availableLabels : null);
       setColumnPaging(paging);
       setCards(allCards);
+      onAssignableUsersChange?.(data.assignableUsers || []);
       setError(null);
       return allCards;
     } catch (err: any) {
@@ -714,7 +1005,7 @@ export default function KanbanBoard({
     } finally {
       setLoading(false);
     }
-  }, [projectId, loadBoardPaged]);
+  }, [projectId, loadBoardPaged, onAssignableUsersChange]);
 
   // WebSocket / interval reconciliation. A `kanban_update` event doesn't say
   // which column changed, so we reload the first page of every column and
@@ -735,26 +1026,92 @@ export default function KanbanBoard({
       setBoard(data.board);
       setColumns(data.columns);
       setEpics(data.epics || []);
+      setCardTemplates(data.cardTemplates || []);
+      setServerAvailableLabels(Array.isArray(data.availableLabels) ? data.availableLabels : null);
       setColumnPaging(paging);
       setCards(allCards);
+      onAssignableUsersChange?.(data.assignableUsers || []);
       setError(null);
       return allCards;
     } catch (err: any) {
       setError(err.message);
       return undefined;
     }
-  }, [projectId, loadBoardPaged]);
+  }, [projectId, loadBoardPaged, onAssignableUsersChange]);
 
   const cardDetail = useKanbanCardDetail({
     projectId,
     agents,
     epics,
     cards,
+    columns,
     modelConfig,
+    cardTemplates,
     onRefresh: reconcileBoard,
     onNavigateToSession,
   });
-  const { openDetail } = cardDetail;
+  const { openDetail, openCreateDetail } = cardDetail;
+
+  const openAddCard = useCallback(
+    (columnId: string) => {
+      const epicId = selectedEpicIds.size === 1 ? [...selectedEpicIds][0] : undefined;
+      openCreateDetail(columnId, epicId ? { epicId } : undefined);
+    },
+    [openCreateDetail, selectedEpicIds],
+  );
+
+  const defaultAddCardColumnId = useMemo(() => {
+    const target = columns.find((c: any) => c.name.toLowerCase() !== 'backlog') || columns[0];
+    return target?.id ?? null;
+  }, [columns]);
+
+  const openCreateFromTemplate = useCallback(
+    (template: any) => {
+      if (!defaultAddCardColumnId) {
+        pendingTemplateCreateRef.current = template;
+        return;
+      }
+      const epicId =
+        template.epicId || (selectedEpicIds.size === 1 ? [...selectedEpicIds][0] : undefined);
+      openCreateDetail(defaultAddCardColumnId, {
+        ...(epicId ? { epicId } : {}),
+        template,
+      });
+    },
+    [defaultAddCardColumnId, openCreateDetail, selectedEpicIds],
+  );
+
+  useEffect(() => {
+    pendingTemplateCreateRef.current = null;
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!defaultAddCardColumnId || !pendingTemplateCreateRef.current) return;
+    const template = pendingTemplateCreateRef.current;
+    pendingTemplateCreateRef.current = null;
+    openCreateFromTemplate(template);
+  }, [defaultAddCardColumnId, openCreateFromTemplate]);
+
+  useEffect(() => {
+    if (!pendingCreateTemplate) {
+      consumedPendingCreateTemplateRef.current = null;
+      return;
+    }
+    if (consumedPendingCreateTemplateRef.current === pendingCreateTemplate) return;
+    consumedPendingCreateTemplateRef.current = pendingCreateTemplate;
+    openCreateFromTemplate(pendingCreateTemplate);
+    onPendingCreateTemplateConsumed?.();
+  }, [openCreateFromTemplate, onPendingCreateTemplateConsumed, pendingCreateTemplate]);
+
+  useEffect(() => {
+    if (!onCardActionsReady) return;
+    onCardActionsReady({
+      openCreateFromTemplate,
+    });
+    return () => {
+      onCardActionsReady(null);
+    };
+  }, [onCardActionsReady, openCreateFromTemplate]);
 
   // Append the next keyset page for one column. Guarded against double-fetch
   // (sync `inflightRef`) and against fetching past the end (`hasMore` /
@@ -909,13 +1266,6 @@ export default function KanbanBoard({
     { enabled: Boolean(projectId) },
   );
 
-  // Focus title input when add form opens
-  useEffect(() => {
-    if (addingInColumn && addTitleRef.current) {
-      addTitleRef.current.focus();
-    }
-  }, [addingInColumn]);
-
   // Drop deleted / reconciled cards from the selection set.
   useEffect(() => {
     const existing = new Set(cards.map((c: any) => c.id));
@@ -939,7 +1289,11 @@ export default function KanbanBoard({
     const q = searchQuery.toLowerCase().trim();
     return cards
       .filter((c: any) => c.column_id === columnId)
-      .filter((c: any) => !selectedEpicId || c.epic_id === selectedEpicId)
+      .filter(
+        (c: any) => selectedEpicIds.size === 0 || (c.epic_id && selectedEpicIds.has(c.epic_id)),
+      )
+      .filter((c: any) => cardMatchesLabelFilter(c, selectedLabels))
+      .filter((c: any) => cardMatchesUserFilter(c, selectedUserIds))
       .filter(
         (c: any) =>
           !q ||
@@ -957,7 +1311,7 @@ export default function KanbanBoard({
       for (const c of cardsForColumn(col.id)) ids.push(c.id);
     }
     return ids;
-  }, [columns, cards, searchQuery, selectedEpicId]);
+  }, [columns, cards, searchQuery, selectedEpicIds, selectedLabels, selectedUserIds]);
 
   const handleToggleCardSelect = useCallback(
     (cardId: string, opts: { shiftKey?: boolean } = {}) => {
@@ -1187,29 +1541,6 @@ export default function KanbanBoard({
 
   const handleDragCancel = () => setActiveId(null);
 
-  // --- Card CRUD ---
-  const handleAddCard = async (columnId: any) => {
-    if (!newCardTitle.trim()) return;
-    try {
-      const payload: Record<string, any> = {
-        title: newCardTitle.trim(),
-        priority: newCardPriority,
-        columnId,
-        createdBy: 'user',
-      };
-      if (selectedEpicId) {
-        payload.epicId = selectedEpicId;
-      }
-      await api.createCard(projectId, payload);
-      setNewCardTitle('');
-      setNewCardPriority('medium');
-      setAddingInColumn(null);
-      reconcileBoard();
-    } catch (err: any) {
-      console.error('Failed to create card:', err);
-    }
-  };
-
   // --- Right-click quick actions (no detail panel) ---
   // Each handler operates on an explicit card (the right-clicked one), applies
   // an optimistic update, persists, then reconciles against the eventual
@@ -1235,6 +1566,9 @@ export default function KanbanBoard({
   };
 
   const quickSetPriority = (card: any, priority: any) => quickPatchCard(card, { priority });
+
+  const quickToggleHighPriority = (card: any) =>
+    quickSetPriority(card, toggleHighPriorityValue(card.priority));
 
   const quickToggleLabel = (card: any, label: any) => {
     const current = (card.labels ? String(card.labels).split(',') : [])
@@ -1307,26 +1641,20 @@ export default function KanbanBoard({
     }
   };
 
-  // Distinct labels across all loaded cards — drives the Labels submenu toggle.
-  const allLabels = useMemo(() => {
-    const set = new Set();
-    for (const c of cards) {
-      if (!c.labels) continue;
-      for (const l of String(c.labels).split(',')) {
-        const t = l.trim();
-        if (t) set.add(t);
-      }
-    }
-    return Array.from(set).sort((a: any, b: any) => a.localeCompare(b));
-  }, [cards]);
-
-  const doneColumnIds = new Set(
-    columns.filter((c: any) => c.name.toLowerCase() === 'done').map((c: any) => c.id),
+  // Prefer server facets so paginated boards expose labels from off-page cards.
+  const allLabels = useMemo(
+    () => serverAvailableLabels ?? collectDistinctLabels(cards),
+    [cards, serverAvailableLabels],
   );
-  const epicCardCount = (epicId: any) =>
-    cards.filter((c: any) => c.epic_id === epicId && !doneColumnIds.has(c.column_id)).length;
 
-  const selectedEpic = selectedEpicId ? epics.find((e: any) => e.id === selectedEpicId) : null;
+  useEffect(() => {
+    onAvailableLabelsChange?.(allLabels);
+  }, [allLabels, onAvailableLabelsChange]);
+
+  const soleSelectedEpicId = selectedEpicIds.size === 1 ? [...selectedEpicIds][0] : null;
+  const selectedEpic = soleSelectedEpicId
+    ? epics.find((e: any) => e.id === soleSelectedEpicId)
+    : null;
 
   // Board-wide card total from per-column counts (falls back to loaded count
   // before the first paged response lands). With pagination `cards` is only the
@@ -1339,7 +1667,11 @@ export default function KanbanBoard({
   // A search query or epic filter is active. Filtering happens client-side
   // over the loaded `cards`, so when a filter is on we must hold the complete
   // board in memory — otherwise matches beyond the first page silently vanish.
-  const filterActive = Boolean(searchQuery.trim()) || Boolean(selectedEpicId);
+  const filterActive =
+    Boolean(searchQuery.trim()) ||
+    selectedEpicIds.size > 0 ||
+    selectedLabels.size > 0 ||
+    selectedUserIds.size > 0;
 
   // While a filter is active, eagerly drain every not-fully-loaded column so
   // the filter searches the whole board (the pre-pagination behavior), not
@@ -1447,15 +1779,48 @@ export default function KanbanBoard({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {onOpenTemplates ? (
+            <button
+              type="button"
+              onClick={onOpenTemplates}
+              data-testid="kanban-edit-templates"
+              className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors"
+            >
+              <FileText size={14} />
+              Templates
+            </button>
+          ) : null}
           {onOpenEpics ? (
             <button
               type="button"
               onClick={onOpenEpics}
+              data-testid="kanban-edit-epics"
               className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors"
-              data-testid="open-epics-screen"
             >
-              <Target size={14} />
+              <Pencil size={14} />
               Epics
+            </button>
+          ) : null}
+          {onSelectedEpicIdsChange ? (
+            <KanbanEpicFilterMenu
+              epics={epics}
+              selectedEpicIds={selectedEpicIds}
+              onSelectedEpicIdsChange={onSelectedEpicIdsChange}
+            />
+          ) : null}
+          {selectedEpic ? (
+            <button
+              type="button"
+              onClick={openAutonomousDialog}
+              data-testid="open-autonomous-dialog"
+              className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
+                selectedEpic.autonomous === 1
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                  : 'border-white/[0.06] text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08]'
+              }`}
+            >
+              <Zap size={14} className={selectedEpic.autonomous === 1 ? 'text-emerald-400' : ''} />
+              Autonomous
             </button>
           ) : null}
           <button
@@ -1476,62 +1841,26 @@ export default function KanbanBoard({
             Select
           </button>
           <button
+            type="button"
+            onClick={openCreateColumnDialog}
+            className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors"
+            data-testid="kanban-add-column"
+          >
+            <Columns3 size={14} />
+            Add column
+          </button>
+          <button
             onClick={() => {
-              const target =
-                columns.find((c: any) => c.name.toLowerCase() !== 'backlog') || columns[0];
-              if (target) setAddingInColumn(target.id);
+              if (defaultAddCardColumnId) openAddCard(defaultAddCardColumnId);
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-medium transition-colors shadow-sm shadow-indigo-900/30"
+            disabled={!defaultAddCardColumnId}
+            data-testid="kanban-add-card"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-lg text-xs font-medium transition-colors shadow-sm shadow-indigo-900/30"
           >
             <Plus size={14} />
             Add card
           </button>
         </div>
-      </div>
-
-      {/* Search + epic filter */}
-      <div className="px-5 py-2.5 border-b border-white/[0.06] bg-gray-950/60 flex items-center gap-3 flex-wrap">
-        <div className="relative max-w-md">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e: any) => setSearchQuery(e.target.value)}
-            placeholder="Search cards…"
-            className="bg-white/[0.04] border border-white/[0.08] text-sm text-gray-100 rounded-lg pl-9 pr-8 h-9 w-52 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500/50 placeholder-gray-500 transition-colors"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-            >
-              <X size={12} />
-            </button>
-          )}
-        </div>
-
-        <EpicFilterDropdown
-          epics={epics}
-          selectedEpicId={selectedEpicId}
-          onSelect={setSelectedEpicId}
-          epicCardCount={epicCardCount}
-        />
-
-        {selectedEpic ? (
-          <button
-            type="button"
-            onClick={openAutonomousDialog}
-            data-testid="open-autonomous-dialog"
-            className={`inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
-              selectedEpic.autonomous === 1
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
-                : 'border-white/[0.08] bg-white/[0.04] text-gray-400 hover:text-gray-200 hover:bg-white/[0.06]'
-            }`}
-          >
-            <Zap size={14} className={selectedEpic.autonomous === 1 ? 'text-emerald-400' : ''} />
-            Autonomous
-          </button>
-        ) : null}
       </div>
 
       <EpicAutonomousDialog
@@ -1543,6 +1872,26 @@ export default function KanbanBoard({
         saving={autonomousSaving}
         onSave={handleSaveAutonomous}
         onClose={closeAutonomousDialog}
+      />
+
+      <KanbanColumnDialog
+        open={columnDialog != null}
+        mode={columnDialog?.mode === 'edit' ? 'edit' : 'create'}
+        column={columnDialog?.column}
+        columns={columns}
+        cardCount={
+          columnDialog?.column
+            ? (columnPaging[columnDialog.column.id]?.total ??
+              cards.filter((c: any) => c.column_id === columnDialog.column.id).length)
+            : 0
+        }
+        locked={columnDialog?.column ? isSystemLockedColumnName(columnDialog.column.name) : false}
+        saving={columnBusy}
+        error={columnError}
+        onClose={closeColumnDialog}
+        onSave={handleSaveColumn}
+        onDelete={columnDialog?.mode === 'edit' ? handleDeleteColumn : undefined}
+        onMove={columnDialog?.mode === 'edit' ? handleMoveColumn : undefined}
       />
 
       {/* Board */}
@@ -1576,167 +1925,189 @@ export default function KanbanBoard({
                   : String(columnTotal);
               const colCardIds = colCards.map((c: any) => c.id);
               const columnFullySelected = isKanbanColumnFullySelected(selectedCardIds, colCardIds);
+              const isCollapsed = collapsedColumnIds.has(col.id);
 
               return (
                 <div
                   key={col.id}
-                  className="flex flex-col flex-1 min-w-[220px] h-full min-h-0 rounded-xl border border-white/[0.06] bg-white/[0.02]"
+                  data-testid={`kanban-column-${col.id}`}
+                  data-collapsed={isCollapsed ? 'true' : 'false'}
+                  className={`flex flex-col h-full min-h-0 rounded-xl border border-white/[0.06] bg-white/[0.02] transition-[width,flex] duration-200 ${
+                    isCollapsed
+                      ? 'w-11 min-w-[44px] max-w-[44px] flex-shrink-0'
+                      : 'flex-1 min-w-[220px]'
+                  }`}
                 >
                   {/* Column header */}
                   <div className="px-3.5 py-3 border-b border-white/[0.05]">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        {showSelectionUi && colCards.length > 0 ? (
-                          <button
-                            type="button"
-                            aria-label={
-                              columnFullySelected
-                                ? `Deselect all in ${col.name}`
-                                : `Select all in ${col.name}`
-                            }
-                            aria-pressed={columnFullySelected}
-                            data-testid={`column-select-all-${col.id}`}
-                            onClick={() => handleToggleColumnSelect(col.id, colCardIds)}
-                            className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 transition-colors ${
-                              columnFullySelected
-                                ? 'text-indigo-300'
-                                : 'text-gray-600 hover:text-gray-400'
-                            }`}
-                          >
-                            {columnFullySelected ? <CheckSquare size={14} /> : <Square size={14} />}
-                          </button>
-                        ) : null}
+                    {isCollapsed ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleColumnCollapsed(col.id)}
+                        data-testid={`column-expand-${col.id}`}
+                        aria-label={`Expand ${col.name} column`}
+                        className="flex flex-col items-center gap-2 w-full text-gray-400 hover:text-gray-200 transition-colors"
+                      >
+                        <ChevronRight size={14} className="flex-shrink-0" />
                         <span
                           className="w-2 h-2 rounded-full flex-shrink-0"
                           style={{ backgroundColor: columnColor }}
                         />
-                        <span className="text-xs font-semibold uppercase tracking-wide text-gray-300 truncate">
+                        <span
+                          className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 [writing-mode:vertical-rl] rotate-180 max-h-28 truncate"
+                          title={col.name}
+                        >
                           {col.name}
                         </span>
+                        <span
+                          className="text-[10px] font-medium text-gray-500 tabular-nums"
+                          data-testid={`column-count-${col.id}`}
+                        >
+                          {countLabel}
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {showSelectionUi && colCards.length > 0 ? (
+                            <button
+                              type="button"
+                              aria-label={
+                                columnFullySelected
+                                  ? `Deselect all in ${col.name}`
+                                  : `Select all in ${col.name}`
+                              }
+                              aria-pressed={columnFullySelected}
+                              data-testid={`column-select-all-${col.id}`}
+                              onClick={() => handleToggleColumnSelect(col.id, colCardIds)}
+                              className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 transition-colors ${
+                                columnFullySelected
+                                  ? 'text-indigo-300'
+                                  : 'text-gray-600 hover:text-gray-400'
+                              }`}
+                            >
+                              {columnFullySelected ? (
+                                <CheckSquare size={14} />
+                              ) : (
+                                <Square size={14} />
+                              )}
+                            </button>
+                          ) : null}
+                          <span
+                            className="w-2 h-2 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: columnColor }}
+                          />
+                          <span className="text-xs font-semibold uppercase tracking-wide text-gray-300 truncate">
+                            {col.name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => openEditColumnDialog(col)}
+                            data-testid={`column-edit-${col.id}`}
+                            aria-label={`Edit ${col.name} column`}
+                            className="inline-flex items-center justify-center w-5 h-5 rounded text-gray-600 hover:text-gray-300 hover:bg-white/[0.06] flex-shrink-0 transition-colors"
+                          >
+                            <Pencil size={11} />
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => toggleColumnCollapsed(col.id)}
+                            data-testid={`column-collapse-${col.id}`}
+                            aria-label={`Collapse ${col.name} column`}
+                            className="inline-flex items-center justify-center w-6 h-6 rounded text-gray-600 hover:text-gray-300 hover:bg-white/[0.06] transition-colors"
+                          >
+                            <ChevronLeft size={14} />
+                          </button>
+                          <span
+                            className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums"
+                            data-testid={`column-count-${col.id}`}
+                          >
+                            {countLabel}
+                          </span>
+                        </div>
                       </div>
-                      <span
-                        className="text-[11px] font-medium text-gray-500 bg-white/[0.05] px-2 py-0.5 rounded-full tabular-nums flex-shrink-0"
-                        data-testid={`column-count-${col.id}`}
-                      >
-                        {countLabel}
-                      </span>
-                    </div>
+                    )}
                   </div>
 
-                  {/* Cards — the scroll area is the column droppable (drops into
+                  {isCollapsed ? (
+                    <ColumnDropZone columnId={col.id} className="flex-1 min-h-[120px]" />
+                  ) : (
+                    <>
+                      {/* Cards — the scroll area is the column droppable (drops into
                       empty space / past the last card resolve to the column). */}
-                  <ColumnDropZone
-                    columnId={col.id}
-                    className="flex-1 overflow-y-auto kanban-column-scroll px-2.5 py-2 space-y-2"
-                  >
-                    <SortableContext items={colCardIds} strategy={verticalListSortingStrategy}>
-                      {colCards.map((card: any) => (
-                        <SortableCard
-                          key={card.id}
-                          card={card}
-                          board={board}
-                          epics={epics}
-                          onOpen={openDetail}
-                          onContextMenu={openCardContextMenu}
-                          selected={selectedCardIds.has(card.id)}
-                          showCheckbox={showSelectionUi}
-                          onToggleSelect={handleToggleCardSelect}
-                          selectionMode={selectionMode}
-                          selectedCount={selectedCount}
-                          dragDisabled={
-                            selectionMode || (selectedCount > 1 && selectedCardIds.has(card.id))
-                          }
-                          onClearSelection={clearSelection}
-                        />
-                      ))}
-                    </SortableContext>
+                      <ColumnDropZone
+                        columnId={col.id}
+                        className="flex-1 overflow-y-auto kanban-column-scroll px-2.5 py-2 space-y-2"
+                      >
+                        <SortableContext items={colCardIds} strategy={verticalListSortingStrategy}>
+                          {colCards.map((card: any) => (
+                            <SortableCard
+                              key={card.id}
+                              card={card}
+                              board={board}
+                              epics={epics}
+                              assignableUsers={assignableUsers}
+                              onOpen={openDetail}
+                              onContextMenu={openCardContextMenu}
+                              selected={selectedCardIds.has(card.id)}
+                              showCheckbox={showSelectionUi}
+                              onToggleSelect={handleToggleCardSelect}
+                              selectionMode={selectionMode}
+                              selectedCount={selectedCount}
+                              dragDisabled={
+                                selectionMode || (selectedCount > 1 && selectedCardIds.has(card.id))
+                              }
+                              onClearSelection={clearSelection}
+                              onToggleHighPriority={quickToggleHighPriority}
+                            />
+                          ))}
+                        </SortableContext>
 
-                    {/* Infinite-scroll loading row + sentinel. The sentinel sits
+                        {/* Infinite-scroll loading row + sentinel. The sentinel sits
                         at the bottom of the scroll container and triggers
                         loadMoreColumn when scrolled into view. Hidden while a
                         search/epic filter is active (the filter runs over loaded
                         cards only; paging more in wouldn't change the matched
                         set predictably, so we don't auto-fetch during a filter). */}
-                    {paging?.loading && (
-                      <div
-                        data-testid={`column-loading-${col.id}`}
-                        className="flex items-center justify-center gap-2 py-3 text-[11px] text-gray-500"
+                        {paging?.loading && (
+                          <div
+                            data-testid={`column-loading-${col.id}`}
+                            className="flex items-center justify-center gap-2 py-3 text-[11px] text-gray-500"
+                          >
+                            <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
+                            Loading more…
+                          </div>
+                        )}
+                        {paging?.hasMore && !filterActive && (
+                          <ColumnLoadMoreSentinel columnId={col.id} onLoadMore={loadMoreColumn} />
+                        )}
+                      </ColumnDropZone>
+
+                      {/* Add button at bottom */}
+                      <button
+                        onClick={() => openAddCard(col.id)}
+                        data-testid={`kanban-column-add-card-${col.id}`}
+                        className="flex items-center gap-1.5 mx-2.5 mb-2.5 px-2.5 py-2 text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] rounded-lg transition-colors"
                       >
-                        <div className="h-3.5 w-3.5 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
-                        Loading more…
-                      </div>
-                    )}
-                    {paging?.hasMore && !filterActive && (
-                      <ColumnLoadMoreSentinel columnId={col.id} onLoadMore={loadMoreColumn} />
-                    )}
-
-                    {/* Inline add form */}
-                    {addingInColumn === col.id && (
-                      <div className="w-full rounded-xl p-3 bg-white/[0.04] border border-indigo-500/30">
-                        <input
-                          ref={addTitleRef}
-                          type="text"
-                          value={newCardTitle}
-                          onChange={(e: any) => setNewCardTitle(e.target.value)}
-                          onKeyDown={(e: any) => {
-                            if (e.key === 'Enter') handleAddCard(col.id);
-                            if (e.key === 'Escape') {
-                              setAddingInColumn(null);
-                              setNewCardTitle('');
-                            }
-                          }}
-                          placeholder="Card title…"
-                          className="w-full bg-gray-950/80 border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500/50 mb-2.5"
-                        />
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={newCardPriority}
-                            onChange={(e: any) => setNewCardPriority(e.target.value)}
-                            className="bg-gray-950/80 border border-white/[0.08] rounded-lg px-2.5 py-1.5 text-xs text-gray-200 focus:outline-none"
-                          >
-                            {PRIORITIES.map((p: any) => (
-                              <option key={p} value={p}>
-                                {p}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={() => handleAddCard(col.id)}
-                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
-                          >
-                            Add
-                          </button>
-                          <button
-                            onClick={() => {
-                              setAddingInColumn(null);
-                              setNewCardTitle('');
-                            }}
-                            className="p-1.5 text-gray-500 hover:text-gray-200 rounded-md hover:bg-white/[0.06]"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </ColumnDropZone>
-
-                  {/* Add button at bottom */}
-                  {addingInColumn !== col.id && (
-                    <button
-                      onClick={() => {
-                        setAddingInColumn(col.id);
-                        setNewCardTitle('');
-                        setNewCardPriority('medium');
-                      }}
-                      className="flex items-center gap-1.5 mx-2.5 mb-2.5 px-2.5 py-2 text-xs font-medium text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] rounded-lg transition-colors"
-                    >
-                      <Plus size={12} />
-                      Add card
-                    </button>
+                        <Plus size={12} />
+                        Add card
+                      </button>
+                    </>
                   )}
                 </div>
               );
             })}
+            <button
+              type="button"
+              onClick={openCreateColumnDialog}
+              data-testid="kanban-add-column-inline"
+              className="flex flex-col items-center justify-center flex-shrink-0 w-[220px] h-full min-h-[120px] rounded-xl border border-dashed border-white/[0.08] bg-white/[0.01] text-gray-500 hover:text-gray-300 hover:border-white/[0.14] hover:bg-white/[0.03] transition-colors"
+            >
+              <Plus size={18} className="mb-1.5" />
+              <span className="text-xs font-medium">Add column</span>
+            </button>
           </div>
         </div>
 
@@ -1747,14 +2118,24 @@ export default function KanbanBoard({
             ? (() => {
                 const activeCard = cards.find((c: any) => c.id === activeId);
                 return activeCard ? (
-                  <KanbanCard card={activeCard} board={board} epics={epics} overlay />
+                  <KanbanCard
+                    card={activeCard}
+                    board={board}
+                    epics={epics}
+                    assignableUsers={assignableUsers}
+                    overlay
+                  />
                 ) : null;
               })()
             : null}
         </DragOverlay>
       </DndContext>
 
-      <KanbanCardDetailModal detail={cardDetail} agents={agents} />
+      <KanbanCardDetailModal
+        detail={cardDetail}
+        agents={agents}
+        assignableUsers={assignableUsers}
+      />
 
       {/* Confirm move — blocked-card → blocker-sensitive column */}
       {pendingMove && (

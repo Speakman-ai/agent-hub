@@ -59,6 +59,7 @@ import NewProjectAdaptiveFlow from './components/NewProjectAdaptiveFlow';
 import SetupWizard, { stepIndexForKey } from './components/SetupWizard';
 import KanbanBoard from './components/KanbanBoard';
 import EpicView from './components/EpicView';
+import KanbanCardTemplatesView from './components/KanbanCardTemplatesView';
 import DashboardView from './components/DashboardView';
 import WikiBrowser from './components/WikiBrowser';
 import ThreadList from './components/ThreadList';
@@ -504,6 +505,44 @@ export default function App({ initialView }: any = {}) {
   const { notify } = useDesktopNotifications();
   // Kanban board refresh trigger
   const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
+  const [kanbanSearchQuery, setKanbanSearchQuery] = useState('');
+  const [kanbanSelectedEpicIds, setKanbanSelectedEpicIds] = useState<Set<string>>(() => new Set());
+  const [kanbanAvailableLabels, setKanbanAvailableLabels] = useState<string[]>([]);
+  const [kanbanSelectedLabels, setKanbanSelectedLabels] = useState<Set<string>>(() => new Set());
+  const [kanbanAssignableUsers, setKanbanAssignableUsers] = useState<
+    { id: string; username: string }[]
+  >([]);
+  const [kanbanSelectedUserIds, setKanbanSelectedUserIds] = useState<Set<string>>(() => new Set());
+  const [kanbanPendingCreateTemplate, setKanbanPendingCreateTemplate] = useState<any>(null);
+  const kanbanProjectId = currentView.startsWith('kanban:') ? currentView.slice(7) : null;
+  const kanbanContextProjectId =
+    kanbanProjectId ?? (currentView.startsWith('kanban-templates:') ? currentView.slice(17) : null);
+  const previousKanbanProjectIdRef = useRef<string | null>(null);
+
+  const resetKanbanViewState = useCallback(() => {
+    setKanbanPendingCreateTemplate(null);
+    setKanbanSearchQuery('');
+    setKanbanSelectedEpicIds(new Set());
+    setKanbanAvailableLabels([]);
+    setKanbanSelectedLabels(new Set());
+    setKanbanAssignableUsers([]);
+    setKanbanSelectedUserIds(new Set());
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!kanbanContextProjectId) {
+      resetKanbanViewState();
+      return;
+    }
+
+    if (
+      previousKanbanProjectIdRef.current !== null &&
+      previousKanbanProjectIdRef.current !== kanbanContextProjectId
+    ) {
+      resetKanbanViewState();
+    }
+    previousKanbanProjectIdRef.current = kanbanContextProjectId;
+  }, [kanbanContextProjectId, resetKanbanViewState]);
   const activeDesignIdRef = useRef(activeDesignId);
   activeDesignIdRef.current = activeDesignId;
 
@@ -5119,6 +5158,28 @@ export default function App({ initialView }: any = {}) {
             }}
             electronSuppressHealthFetch={isElectron}
             electronHealthSnapshot={electronDesktopHealth}
+            kanbanProjectId={currentView.startsWith('kanban:') ? currentView.split(':')[1] : null}
+            kanbanProjectName={
+              currentView.startsWith('kanban:')
+                ? projects.find((p: any) => p.id === currentView.split(':')[1])?.name
+                : null
+            }
+            kanbanSearchQuery={kanbanSearchQuery}
+            onKanbanSearchChange={setKanbanSearchQuery}
+            kanbanSelectedEpicIds={kanbanSelectedEpicIds}
+            onKanbanSelectedEpicIdsChange={setKanbanSelectedEpicIds}
+            kanbanAvailableLabels={kanbanAvailableLabels}
+            kanbanSelectedLabels={kanbanSelectedLabels}
+            onKanbanSelectedLabelsChange={setKanbanSelectedLabels}
+            kanbanAssignableUsers={kanbanAssignableUsers}
+            kanbanSelectedUserIds={kanbanSelectedUserIds}
+            onKanbanSelectedUserIdsChange={setKanbanSelectedUserIds}
+            onOpenKanbanEpics={() => {
+              const projectId = currentView.split(':')[1];
+              setCurrentView(`epics:${projectId}`);
+              setSidebarOpen(false);
+            }}
+            kanbanRefreshKey={kanbanRefreshKey}
           />
         </div>
 
@@ -5202,6 +5263,26 @@ export default function App({ initialView }: any = {}) {
                   project={projects.find((p: any) => p.id === currentView.split(':')[1])}
                   agents={agents}
                   refreshKey={kanbanRefreshKey}
+                  pendingCreateTemplate={kanbanPendingCreateTemplate}
+                  onPendingCreateTemplateConsumed={() => {
+                    setKanbanPendingCreateTemplate(null);
+                  }}
+                  searchQuery={kanbanSearchQuery}
+                  selectedEpicIds={kanbanSelectedEpicIds}
+                  onSelectedEpicIdsChange={setKanbanSelectedEpicIds}
+                  selectedLabels={kanbanSelectedLabels}
+                  onAvailableLabelsChange={setKanbanAvailableLabels}
+                  selectedUserIds={kanbanSelectedUserIds}
+                  assignableUsers={kanbanAssignableUsers}
+                  onAssignableUsersChange={setKanbanAssignableUsers}
+                  onOpenEpics={() => {
+                    const projectId = currentView.split(':')[1];
+                    setCurrentView(`epics:${projectId}`);
+                  }}
+                  onOpenTemplates={() => {
+                    const projectId = currentView.split(':')[1];
+                    setCurrentView(`kanban-templates:${projectId}`);
+                  }}
                   showToast={showToast}
                   onProjectsRefresh={() => {
                     // Re-pull the project list so derived flags reflect any
@@ -5218,10 +5299,22 @@ export default function App({ initialView }: any = {}) {
                     setActiveSessionId(sessionId);
                     setCurrentView('chat');
                   }}
-                  onOpenEpics={() => {
-                    const projectId = currentView.split(':')[1];
-                    setCurrentView(`epics:${projectId}`);
-                    setSidebarOpen(false);
+                />
+              ) : currentView.startsWith('kanban-templates:') ? (
+                <KanbanCardTemplatesView
+                  projectId={currentView.slice('kanban-templates:'.length)}
+                  project={projects.find(
+                    (p: any) => p.id === currentView.slice('kanban-templates:'.length),
+                  )}
+                  refreshKey={kanbanRefreshKey}
+                  onBackToBoard={() => {
+                    const projectId = currentView.slice('kanban-templates:'.length);
+                    setCurrentView(`kanban:${projectId}`);
+                  }}
+                  onUseTemplate={(template) => {
+                    const projectId = currentView.slice('kanban-templates:'.length);
+                    setKanbanPendingCreateTemplate(template);
+                    setCurrentView(`kanban:${projectId}`);
                   }}
                 />
               ) : currentView.startsWith('epics:') || currentView.startsWith('epic:') ? (

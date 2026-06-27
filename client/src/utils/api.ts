@@ -1129,6 +1129,27 @@ export const api = {
     const qs = params.toString();
     return fetchJSON(`/projects/${projectId}/board/columns/${columnId}/cards${qs ? `?${qs}` : ''}`);
   },
+  createColumn: (projectId: any, data: { name: string; color?: string | null }) =>
+    fetchJSON(`/projects/${projectId}/board/columns`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateColumn: (
+    projectId: any,
+    columnId: any,
+    data: { name?: string; position?: number; color?: string | null },
+  ) =>
+    fetchJSON(`/projects/${projectId}/board/columns/${columnId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  reorderColumns: (projectId: any, columnIds: string[]) =>
+    fetchJSON(`/projects/${projectId}/board/columns/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ columnIds }),
+    }),
+  deleteColumn: (projectId: any, columnId: any) =>
+    fetchJSON(`/projects/${projectId}/board/columns/${columnId}`, { method: 'DELETE' }),
   createCard: (projectId: any, data: any) =>
     fetchJSON(`/projects/${projectId}/board/cards`, { method: 'POST', body: JSON.stringify(data) }),
   updateCard: (projectId: any, cardId: any, data: any) =>
@@ -1188,6 +1209,28 @@ export const api = {
     }),
   deleteEpic: (projectId: any, epicId: any) =>
     fetchJSON(`/projects/${projectId}/board/epics/${epicId}`, { method: 'DELETE' }),
+  assignEpicLeadToCards: (projectId: any, epicId: any) =>
+    fetchJSON(`/projects/${projectId}/board/epics/${epicId}/assign-lead-to-cards`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  // Card templates
+  getCardTemplates: (projectId: any) => fetchJSON(`/projects/${projectId}/board/card-templates`),
+  createCardTemplate: (projectId: any, data: any) =>
+    fetchJSON(`/projects/${projectId}/board/card-templates`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateCardTemplate: (projectId: any, templateId: any, data: any) =>
+    fetchJSON(`/projects/${projectId}/board/card-templates/${templateId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteCardTemplate: (projectId: any, templateId: any) =>
+    fetchJSON(`/projects/${projectId}/board/card-templates/${templateId}`, {
+      method: 'DELETE',
+    }),
   scopeEpic: (projectId: any, epicId: any, data: { agentId?: string } = {}) =>
     fetchJSON(`/projects/${projectId}/board/epics/${epicId}/scope`, {
       method: 'POST',

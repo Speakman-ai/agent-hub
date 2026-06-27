@@ -445,9 +445,21 @@ describe('handleHandoff — end-to-end', () => {
     stmts.createKanbanBoard.run(boardId, 'proj-test', 'Test Board', 'PT');
     stmts.createKanbanColumn.run(columnId, boardId, 'In Progress', 2, null);
     if (epicId) {
-      stmts.createKanbanEpic.run(epicId, boardId, 'Auto Epic', null, '#fff', 0);
+      stmts.createKanbanEpic.run(epicId, boardId, 'Auto Epic', null, '#fff', 0, null);
       // Flip autonomous on
-      stmts.updateKanbanEpic.run('Auto Epic', null, '#fff', 1, 60, 5, null, null, null, epicId);
+      stmts.updateKanbanEpic.run(
+        'Auto Epic',
+        null,
+        '#fff',
+        1,
+        60,
+        5,
+        null,
+        null,
+        null,
+        null,
+        epicId,
+      );
     }
     stmts.createKanbanCard.run(
       cardId,

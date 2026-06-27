@@ -23,7 +23,6 @@ import {
   Lock,
   GripVertical,
   ScanEye,
-  Target,
   ChevronRight,
   ChevronDown,
   Bot,
@@ -47,6 +46,7 @@ import SidebarSessionOrchestration from './SidebarSessionOrchestration';
 import SessionStateIcon from './SessionStateIcon';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import BugReportButton from './BugReportButton';
+import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 
 export default function Sidebar({
   /** When true, shows a loading overlay on the nav body (org switcher stays usable). */
@@ -146,6 +146,21 @@ export default function Sidebar({
    * renders in the header. Mobile uses the slide-out drawer and never shows it.
    */
   onCollapseSidebar,
+  /** Kanban board: project id when `currentView` is `kanban:<id>`. */
+  kanbanProjectId = null,
+  kanbanProjectName = null,
+  kanbanSearchQuery = '',
+  onKanbanSearchChange,
+  kanbanSelectedEpicIds = new Set(),
+  onKanbanSelectedEpicIdsChange,
+  kanbanAvailableLabels = [],
+  kanbanSelectedLabels = new Set(),
+  onKanbanSelectedLabelsChange,
+  kanbanAssignableUsers = [],
+  kanbanSelectedUserIds = new Set(),
+  onKanbanSelectedUserIdsChange,
+  onOpenKanbanEpics,
+  kanbanRefreshKey = 0,
 }: any) {
   const [hoveredSession, setHoveredSession] = useState<any>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, any>>({});
@@ -250,7 +265,7 @@ export default function Sidebar({
   };
 
   // Routes that live inside the collapsible "<project> Settings" group. The
-  // lifecycle links (Repository, Pulls, Board, Epics, Skills, Notes, Threads,
+  // lifecycle links (Repository, Pulls, Board, Skills, Notes, Threads,
   // Support, Wiki) are now top-level and intentionally excluded so the Settings toggle
   // for configuration sub-routes.
   const isProjectMenuRoute = (view: any, pid: any) =>
@@ -320,6 +335,9 @@ export default function Sidebar({
     currentView === 'chat' && activeSessionId
       ? (sessions.find((s: any) => s.id === activeSessionId) ?? null)
       : null;
+
+  const isKanbanView = Boolean(kanbanProjectId);
+  const kanbanProject = isKanbanView ? projects.find((p: any) => p.id === kanbanProjectId) : null;
 
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
@@ -436,6 +454,27 @@ export default function Sidebar({
               })}
             </div>
           )}
+
+          {isKanbanView &&
+          kanbanProjectId &&
+          onKanbanSearchChange &&
+          onKanbanSelectedEpicIdsChange ? (
+            <KanbanSidebarEpicsPanel
+              projectId={kanbanProjectId}
+              projectName={kanbanProjectName || kanbanProject?.name}
+              searchQuery={kanbanSearchQuery}
+              onSearchChange={onKanbanSearchChange}
+              selectedEpicIds={kanbanSelectedEpicIds}
+              onSelectedEpicIdsChange={onKanbanSelectedEpicIdsChange}
+              availableLabels={kanbanAvailableLabels}
+              selectedLabels={kanbanSelectedLabels}
+              onSelectedLabelsChange={onKanbanSelectedLabelsChange}
+              assignableUsers={kanbanAssignableUsers}
+              selectedUserIds={kanbanSelectedUserIds}
+              onSelectedUserIdsChange={onKanbanSelectedUserIdsChange}
+              refreshKey={kanbanRefreshKey}
+            />
+          ) : null}
 
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">
             Projects
@@ -667,19 +706,6 @@ export default function Sidebar({
                           >
                             <LayoutGrid size={14} className="flex-shrink-0" />
                             <span className="truncate">Board</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => onNavigate(`epics:${project.id}`)}
-                            className={projectMenuLinkClass(
-                              currentView === `epics:${project.id}` ||
-                                (typeof currentView === 'string' &&
-                                  currentView.startsWith(`epic:${project.id}:`)),
-                            )}
-                          >
-                            <Target size={14} className="flex-shrink-0" />
-                            <span className="truncate">Epics</span>
                           </button>
 
                           <button

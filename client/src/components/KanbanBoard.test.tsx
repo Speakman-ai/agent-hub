@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
 import KanbanBoard from './KanbanBoard';
 import { api } from '../utils/api';
@@ -39,6 +39,11 @@ import { api } from '../utils/api';
     assignCard: vi.fn(),
     unassignCard: vi.fn(),
     updateEpic: vi.fn().mockResolvedValue({}),
+    createColumn: vi.fn(),
+    createCard: vi.fn(),
+    updateColumn: vi.fn(),
+    reorderColumns: vi.fn(),
+    deleteColumn: vi.fn(),
     // Cards now render <FinalizeCardBadge /> which calls this on mount
     // whenever the card has a session_id. Mocked to "no run" so the badge
     // is invisible in kanban-flow tests that don't care about finalize.
@@ -46,15 +51,27 @@ import { api } from '../utils/api';
   },
 }));
 
-const makeBoard = (cards: any = []) => ({
-  board: { id: 'b1' },
+const makeBoard = (cards: any = [], extras: any = {}) => ({
+  board: { id: 'b1', project_id: 'p1' },
   columns: [
     { id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 },
     { id: 'col-done', name: 'Done', color: '#22c55e', position: 1 },
   ],
   cards,
   epics: [],
+  counts: extras.counts || {},
+  cursors: extras.cursors || {},
 });
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+};
 
 describe('KanbanBoard background refresh', () => {
   beforeEach(() => {
@@ -106,6 +123,96 @@ describe('KanbanBoard background refresh', () => {
   });
 });
 
+describe('KanbanBoard template actions', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.getCardComments as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+    (api.getCardComments as any).mockResolvedValue([]);
+  });
+
+  it('opens a requested template after columns finish loading', async () => {
+    const boardLoad = deferred<any>();
+    let actions: any = null;
+    (api.getBoard as any).mockReturnValueOnce(boardLoad.promise);
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onCardActionsReady={(next: any) => {
+          actions = next;
+        }}
+      />,
+    );
+
+    await waitFor(() => expect(actions?.openCreateFromTemplate).toBeTypeOf('function'));
+
+    act(() => {
+      actions.openCreateFromTemplate({
+        id: 'template-1',
+        name: 'Bug template',
+        title: 'Fix queued bug',
+        description: 'Queued template body',
+        priority: 'high',
+        labels: 'bug',
+        epicId: '',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      });
+    });
+
+    expect(screen.queryByTestId('card-detail-modal')).not.toBeInTheDocument();
+
+    await act(async () => {
+      boardLoad.resolve(makeBoard([]));
+      await boardLoad.promise;
+    });
+
+    const modal = await screen.findByTestId('card-detail-modal');
+    expect(within(modal).getByDisplayValue('Fix queued bug')).toBeInTheDocument();
+    expect(within(modal).getByDisplayValue('Queued template body')).toBeInTheDocument();
+  });
+
+  it('consumes a pending template prop after columns finish loading', async () => {
+    const boardLoad = deferred<any>();
+    const onConsumed = vi.fn();
+    (api.getBoard as any).mockReturnValueOnce(boardLoad.promise);
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        pendingCreateTemplate={{
+          id: 'template-1',
+          name: 'Bug template',
+          title: 'Fix pending bug',
+          description: 'Pending template body',
+          priority: 'high',
+          labels: 'bug',
+          epicId: '',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        }}
+        onPendingCreateTemplateConsumed={onConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(onConsumed).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('card-detail-modal')).not.toBeInTheDocument();
+
+    await act(async () => {
+      boardLoad.resolve(makeBoard([]));
+      await boardLoad.promise;
+    });
+
+    const modal = await screen.findByTestId('card-detail-modal');
+    expect(within(modal).getByDisplayValue('Fix pending bug')).toBeInTheDocument();
+    expect(within(modal).getByDisplayValue('Pending template body')).toBeInTheDocument();
+  });
+});
+
 describe('KanbanBoard card detail modal', () => {
   beforeEach(() => {
     (api.getBoard as any).mockReset();
@@ -152,7 +259,7 @@ describe('KanbanBoard card detail modal', () => {
 
     // Sidebar contains the metadata labels.
     expect(within(modal).getByText(/^Priority$/i)).toBeInTheDocument();
-    expect(within(modal).getByText(/^Assignee$/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/^Agent$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/^Epic$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/^Labels$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/GitHub Issue URL/i)).toBeInTheDocument();
@@ -387,7 +494,7 @@ describe('KanbanBoard reassign active session', () => {
     // Clicking Reassign reveals the agent dropdown + cancel button.
     fireEvent.click(reassignBtn as any);
 
-    // There are multiple selects (Priority, Assignee, Epic); pick the one
+    // There are multiple selects (Priority, Agent, Epic); pick the one
     // that contains the "Unassigned" option.
     const combos = within(modal).getAllByRole('combobox');
     const assigneeSelect = combos.find((c: any) =>
@@ -972,20 +1079,17 @@ describe('KanbanBoard epic filter and autonomous dispatch', () => {
       ],
     });
 
-    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        selectedEpicIds={new Set(['e1'])}
+      />,
+    );
 
     await waitFor(() => expect(screen.getByText('Epic one card')).toBeInTheDocument());
-    expect(screen.getByText('Other epic card')).toBeInTheDocument();
-
-    fireEvent.click(
-      (screen.getByTestId('epic-filter-dropdown' as any) as any).querySelector('button') as any,
-    );
-    fireEvent.click(screen.getByRole('option', { name: /Platform/i } as any) as any);
-
-    await waitFor(() => {
-      expect(screen.getByText('Epic one card')).toBeInTheDocument();
-      expect(screen.queryByText('Other epic card')).not.toBeInTheDocument();
-    });
+    expect(screen.queryByText('Other epic card')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('open-autonomous-dialog' as any) as any);
     expect(screen.getByTestId('epic-autonomous-dialog')).toBeInTheDocument();
@@ -1150,7 +1254,9 @@ describe('KanbanBoard infinite scroll (per-column pagination)', () => {
       total: 3,
     });
 
-    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    const { rerender } = render(
+      <KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} searchQuery="" />,
+    );
     await waitFor(() => expect(screen.getByText('Apple')).toBeInTheDocument());
 
     // Page 2 (Cherry) not loaded yet, and no fetch has happened.
@@ -1158,9 +1264,9 @@ describe('KanbanBoard infinite scroll (per-column pagination)', () => {
     expect(api.getColumnCards).not.toHaveBeenCalled();
 
     // Activating a filter eagerly drains the column so the off-page match loads.
-    fireEvent.change(screen.getByPlaceholderText(/Search cards/i as any), {
-      target: { value: 'Cherry' },
-    });
+    rerender(
+      <KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} searchQuery="Cherry" />,
+    );
 
     await waitFor(() =>
       expect(api.getColumnCards).toHaveBeenCalledWith('p1', 'col-todo', {
@@ -1298,6 +1404,31 @@ describe('KanbanBoard right-click context menu', () => {
     fireEvent.click(screen.getByTestId('ctx-sub-pri-high' as any) as any);
     await waitFor(() =>
       expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'high' }),
+    );
+  });
+
+  it('clicking the priority icon marks a medium card high without opening detail', async () => {
+    ctxBoard();
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Context card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('card-priority-toggle'));
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'high' }),
+    );
+    expect(screen.queryByTestId('card-detail-modal')).not.toBeInTheDocument();
+  });
+
+  it('clicking the priority icon on a high card clears back to medium', async () => {
+    ctxBoard({ priority: 'high' });
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Context card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('card-priority-toggle'));
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'medium' }),
     );
   });
 
@@ -1444,6 +1575,29 @@ describe('KanbanBoard multi-select', () => {
     expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-2', { priority: 'high' });
   });
 
+  it('bulk Mark high button sets high priority on all selected cards', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'One', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Two', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'));
+
+    fireEvent.click(screen.getByTestId('kanban-bulk-mark-high'));
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'high' }),
+    );
+    expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-2', { priority: 'high' });
+  });
+
   it('column select-all toggles every visible card in that column', async () => {
     (api.getBoard as any).mockResolvedValue(
       makeBoard([
@@ -1459,5 +1613,459 @@ describe('KanbanBoard multi-select', () => {
     fireEvent.click(screen.getByTestId('column-select-all-col-todo'));
 
     expect(screen.getByTestId('kanban-bulk-bar')).toHaveTextContent('2 selected');
+  });
+});
+
+describe('KanbanBoard column management', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.createColumn as any).mockReset();
+    (api.updateColumn as any).mockReset();
+    (api.reorderColumns as any).mockReset();
+    (api.deleteColumn as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+    (api.createColumn as any).mockResolvedValue([
+      { id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 },
+      { id: 'col-done', name: 'Done', color: '#22c55e', position: 1 },
+      { id: 'col-qa', name: 'QA', color: '#3B82F6', position: 2 },
+    ]);
+    (api.updateColumn as any).mockResolvedValue({ ok: true });
+    (api.reorderColumns as any).mockResolvedValue([
+      { id: 'col-todo', name: 'Todo', color: '#6b7280', position: 0 },
+      { id: 'col-done', name: 'Done', color: '#22c55e', position: 1 },
+      { id: 'col-qa', name: 'QA', color: '#3B82F6', position: 2 },
+    ]);
+    (api.deleteColumn as any).mockResolvedValue({ ok: true });
+  });
+
+  it('creates a column from the header button', async () => {
+    (api.getBoard as any).mockResolvedValue(makeBoard([]));
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('kanban-add-column')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-add-column'));
+    fireEvent.change(screen.getByTestId('kanban-column-name-input'), { target: { value: 'QA' } });
+    fireEvent.click(screen.getByTestId('kanban-column-save'));
+
+    await waitFor(() =>
+      expect(api.createColumn).toHaveBeenCalledWith('p1', expect.objectContaining({ name: 'QA' })),
+    );
+  });
+
+  it('updates a custom column from the column edit button', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...makeBoard([]),
+      columns: [
+        { id: 'col-todo', name: 'To Do', color: '#6b7280', position: 0 },
+        { id: 'col-qa', name: 'QA', color: '#22c55e', position: 1 },
+      ],
+    });
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('column-edit-col-qa')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('column-edit-col-qa'));
+    fireEvent.change(screen.getByTestId('kanban-column-name-input'), {
+      target: { value: 'Review' },
+    });
+    fireEvent.click(screen.getByTestId('kanban-column-save'));
+
+    await waitFor(() =>
+      expect(api.updateColumn).toHaveBeenCalledWith('p1', 'col-qa', {
+        name: 'Review',
+        color: '#22c55e',
+      }),
+    );
+    expect((api.updateColumn as any).mock.calls[0][2]).not.toHaveProperty('position');
+  });
+
+  it('moves a column through the atomic reorder endpoint', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...makeBoard([]),
+      columns: [
+        { id: 'col-todo', name: 'To Do', color: '#6b7280', position: 0 },
+        { id: 'col-qa', name: 'QA', color: '#3B82F6', position: 1 },
+        { id: 'col-done', name: 'Done', color: '#22c55e', position: 2 },
+      ],
+    });
+    (api.reorderColumns as any).mockResolvedValue([
+      { id: 'col-todo', name: 'To Do', color: '#6b7280', position: 0 },
+      { id: 'col-done', name: 'Done', color: '#22c55e', position: 1 },
+      { id: 'col-qa', name: 'QA', color: '#3B82F6', position: 2 },
+    ]);
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('column-edit-col-qa')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('column-edit-col-qa'));
+    fireEvent.click(screen.getByTestId('kanban-column-move-right'));
+
+    await waitFor(() =>
+      expect(api.reorderColumns).toHaveBeenCalledWith('p1', ['col-todo', 'col-done', 'col-qa']),
+    );
+    expect(api.updateColumn).not.toHaveBeenCalled();
+  });
+
+  it('locks To Do, In Progress, and Done from rename/delete', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...makeBoard([]),
+      columns: [
+        { id: 'col-todo', name: 'To Do', color: '#6b7280', position: 0 },
+        { id: 'col-progress', name: 'In Progress', color: '#f59e0b', position: 1 },
+        { id: 'col-done', name: 'Done', color: '#22c55e', position: 2 },
+      ],
+    });
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('column-edit-col-todo')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('column-edit-col-todo'));
+    expect(screen.getByTestId('kanban-column-locked-notice')).toBeInTheDocument();
+    expect(screen.getByTestId('kanban-column-name-input')).toBeDisabled();
+    expect(screen.queryByTestId('kanban-column-delete')).not.toBeInTheDocument();
+  });
+
+  it('blocks delete when the column still has cards', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 1, title: 'Card A', column_id: 'col-todo', position: 0 }], {
+        counts: { 'col-todo': 1 },
+      }),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('column-edit-col-todo')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('column-edit-col-todo'));
+    expect(screen.getByTestId('kanban-column-delete-blocked')).toHaveTextContent(
+      /still has 1 card/i,
+    );
+    expect(screen.getByTestId('kanban-column-delete')).toBeDisabled();
+  });
+});
+
+describe('KanbanBoard column collapse', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('collapses and expands a column from the header controls', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 1, title: 'Card A', column_id: 'col-todo', position: 0 }]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByText('Card A')).toBeInTheDocument());
+
+    expect(screen.getByTestId('kanban-column-col-todo')).toHaveAttribute('data-collapsed', 'false');
+
+    fireEvent.click(screen.getByTestId('column-collapse-col-todo'));
+    expect(screen.getByTestId('kanban-column-col-todo')).toHaveAttribute('data-collapsed', 'true');
+    expect(screen.queryByText('Card A')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('column-expand-col-todo'));
+    expect(screen.getByTestId('kanban-column-col-todo')).toHaveAttribute('data-collapsed', 'false');
+    expect(screen.getByText('Card A')).toBeInTheDocument();
+  });
+
+  it('preserves stored collapsed columns while the board is loading', async () => {
+    localStorage.setItem('kanbanCollapsedColumns:p1', JSON.stringify(['col-todo']));
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 1, title: 'Card A', column_id: 'col-todo', position: 0 }]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-column-col-todo')).toHaveAttribute(
+        'data-collapsed',
+        'true',
+      ),
+    );
+    expect(screen.queryByText('Card A')).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('kanbanCollapsedColumns:p1') || '[]')).toEqual([
+      'col-todo',
+    ]);
+  });
+});
+
+describe('KanbanBoard label filter', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+  });
+
+  it('shows only cards matching selected labels', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'c1', title: 'Bug card', column_id: 'col-todo', position: 0, labels: 'bug' },
+        { id: 'c2', title: 'Feature card', column_id: 'col-todo', position: 1, labels: 'feature' },
+      ]),
+    );
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        selectedLabels={new Set(['bug'])}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Bug card')).toBeInTheDocument());
+    expect(screen.queryByText('Feature card')).not.toBeInTheDocument();
+  });
+
+  it('publishes server-provided label facets even when labels are not on loaded cards', async () => {
+    const onAvailableLabelsChange = vi.fn();
+    (api.getBoard as any).mockResolvedValue({
+      ...makeBoard([
+        { id: 'c1', title: 'Visible card', column_id: 'col-todo', position: 0, labels: 'visible' },
+      ]),
+      availableLabels: ['hidden', 'visible'],
+    });
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onAvailableLabelsChange={onAvailableLabelsChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onAvailableLabelsChange).toHaveBeenCalledWith(['hidden', 'visible']),
+    );
+  });
+});
+
+describe('KanbanBoard user filter', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+  });
+
+  it('shows only cards matching selected lead users', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...makeBoard([
+        {
+          id: 'c1',
+          title: 'Ryan card',
+          column_id: 'col-todo',
+          position: 0,
+          assigned_user_id: 'u1',
+        },
+        {
+          id: 'c2',
+          title: 'Other card',
+          column_id: 'col-todo',
+          position: 1,
+          assigned_user_id: 'u2',
+        },
+      ]),
+      assignableUsers: [
+        { id: 'u1', username: 'ryan' },
+        { id: 'u2', username: 'alex' },
+      ],
+    });
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        selectedUserIds={new Set(['u1'])}
+        assignableUsers={[{ id: 'u1', username: 'ryan' }]}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Ryan card')).toBeInTheDocument());
+    expect(screen.queryByText('Other card')).not.toBeInTheDocument();
+  });
+});
+
+describe('KanbanBoard add card', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.getCardComments as any).mockReset();
+    (api.getCardComments as any).mockResolvedValue([]);
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+    (api.createCard as any).mockReset();
+    (api.updateCard as any).mockReset();
+    (api.assignCard as any).mockReset();
+  });
+
+  it('opens the full detail modal in create mode', async () => {
+    (api.getBoard as any).mockResolvedValue(makeBoard([]));
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('kanban-add-card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-add-card'));
+
+    const modal = await screen.findByTestId('card-detail-modal');
+    expect(within(modal).getByText('New card')).toBeInTheDocument();
+    expect(within(modal).getByPlaceholderText('Card title')).toHaveValue('');
+    expect(within(modal).getByRole('button', { name: 'Create' })).toBeInTheDocument();
+    expect(api.getCardComments).not.toHaveBeenCalled();
+  });
+
+  it('does not create a duplicate card when Create & Start assignment fails and is retried', async () => {
+    (api.getBoard as any).mockResolvedValue(makeBoard([]));
+    (api.createCard as any).mockResolvedValueOnce({
+      id: 'card-created',
+      title: 'Retry assignment card',
+      description: '',
+      priority: 'medium',
+      column_id: 'col-todo',
+      blockers: [],
+      blocks: [],
+    });
+    (api.assignCard as any)
+      .mockRejectedValueOnce(new Error('assignment failed'))
+      .mockResolvedValueOnce({ sessionId: 'session-1' });
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('kanban-add-card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-add-card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+    fireEvent.change(within(modal).getByPlaceholderText('Card title'), {
+      target: { value: 'Retry assignment card' },
+    });
+    const assigneeSelect = within(modal)
+      .getAllByRole('combobox')
+      .find((c: any) =>
+        Array.from((c as any).options).some((o: any) => o.textContent === 'Unassigned'),
+      );
+    expect(assigneeSelect).toBeDefined();
+    fireEvent.change(assigneeSelect as any, { target: { value: 'AgentA' } });
+
+    fireEvent.click(within(modal).getByRole('button', { name: /Create & Start/i }));
+    await waitFor(() => expect(api.createCard).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledTimes(1));
+
+    const retryButton = await within(modal).findByRole('button', { name: /Assign & Start/i });
+    fireEvent.click(retryButton);
+
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledTimes(2));
+    expect(api.createCard).toHaveBeenCalledTimes(1);
+    expect(api.assignCard).toHaveBeenLastCalledWith('p1', 'card-created', 'agent-a', {});
+  });
+
+  it('retries the PR URL update before assigning a created card', async () => {
+    (api.getBoard as any).mockResolvedValue(makeBoard([]));
+    (api.createCard as any).mockResolvedValueOnce({
+      id: 'card-created',
+      title: 'Retry PR card',
+      description: '',
+      priority: 'medium',
+      column_id: 'col-todo',
+      blockers: [],
+      blocks: [],
+    });
+    (api.updateCard as any)
+      .mockRejectedValueOnce(new Error('pr update failed'))
+      .mockResolvedValueOnce({
+        id: 'card-created',
+        pr_url: 'https://github.com/acme/repo/pull/7',
+      });
+    (api.assignCard as any).mockResolvedValueOnce({ sessionId: 'session-1' });
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId('kanban-add-card')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-add-card'));
+    const modal = await screen.findByTestId('card-detail-modal');
+    fireEvent.change(within(modal).getByPlaceholderText('Card title'), {
+      target: { value: 'Retry PR card' },
+    });
+    fireEvent.change(within(modal).getByPlaceholderText('https://github.com/.../pull/123'), {
+      target: { value: 'https://github.com/acme/repo/pull/7' },
+    });
+    const assigneeSelect = within(modal)
+      .getAllByRole('combobox')
+      .find((c: any) =>
+        Array.from((c as any).options).some((o: any) => o.textContent === 'Unassigned'),
+      );
+    expect(assigneeSelect).toBeDefined();
+    fireEvent.change(assigneeSelect as any, { target: { value: 'AgentA' } });
+
+    fireEvent.click(within(modal).getByRole('button', { name: /Create & Start/i }));
+    await waitFor(() => expect(api.createCard).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.updateCard).toHaveBeenCalledTimes(1));
+    expect(api.assignCard).not.toHaveBeenCalled();
+
+    const retryButton = await within(modal).findByRole('button', { name: /Assign & Start/i });
+    fireEvent.click(retryButton);
+
+    await waitFor(() => expect(api.updateCard).toHaveBeenCalledTimes(2));
+    expect(api.updateCard).toHaveBeenLastCalledWith('p1', 'card-created', {
+      prUrl: 'https://github.com/acme/repo/pull/7',
+    });
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledTimes(1));
+    expect(api.createCard).toHaveBeenCalledTimes(1);
+    expect(api.assignCard).toHaveBeenLastCalledWith('p1', 'card-created', 'agent-a', {});
+  });
+});
+
+describe('KanbanBoard epics toolbar', () => {
+  beforeEach(() => {
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+  });
+
+  it('shows Epics button and epic filter on the board header', async () => {
+    const onOpenEpics = vi.fn();
+    const onSelectedEpicIdsChange = vi.fn();
+    (api.getBoard as any).mockResolvedValue({
+      ...makeBoard([]),
+      epics: [{ id: 'e1', name: 'Platform', color: '#6366F1', autonomous: 0 }],
+    });
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onOpenEpics={onOpenEpics}
+        onSelectedEpicIdsChange={onSelectedEpicIdsChange}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('kanban-edit-epics')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('kanban-edit-epics'));
+    expect(onOpenEpics).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('kanban-epic-filter'));
+    fireEvent.click(screen.getByTestId('kanban-epic-filter-e1'));
+    expect(onSelectedEpicIdsChange).toHaveBeenCalled();
   });
 });

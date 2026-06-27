@@ -30,6 +30,18 @@ export function isColumnDone(columnName: string | null | undefined): boolean {
 }
 
 /**
+ * Default-seed columns the automation stack keys off by name: autonomous
+ * dispatch (`To Do`), assign/finalize lifecycle (`In Progress`), and
+ * terminal merge/push state (`Done`). These may not be deleted or renamed.
+ * Color and position changes remain allowed.
+ */
+export function isSystemLockedColumnName(columnName: string | null | undefined): boolean {
+  if (!columnName) return false;
+  const n = columnName.trim().toLowerCase();
+  return n === 'to do' || n === 'in progress' || n === 'done';
+}
+
+/**
  * Shipped / release lanes count as closed for org headline metrics (`openCards`,
  * `openPRs`, priority breakdown). Uses a word-boundary match on `shipped` so
  * **"Unshipped"** is not misclassified (a naive `includes('shipped')` would).

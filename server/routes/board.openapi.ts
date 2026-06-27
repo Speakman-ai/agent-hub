@@ -103,6 +103,16 @@ export const KanbanColumnComponent = registerComponent(
     .openapi({ description: 'A column on a kanban board (To Do, In Progress, …).' }),
 );
 
+export const KanbanAssignableUserComponent = registerComponent(
+  'KanbanAssignableUser',
+  z
+    .object({
+      id: z.string(),
+      username: z.string(),
+    })
+    .openapi({ description: 'A user that can be assigned as a kanban lead user.' }),
+);
+
 export const KanbanCardComponent = registerComponent(
   'KanbanCard',
   z
@@ -114,6 +124,7 @@ export const KanbanCardComponent = registerComponent(
       description: z.string().nullable(),
       priority: PrioritySchema,
       assignee: z.string().nullable(),
+      assigned_user_id: z.string().nullable().optional(),
       labels: z.string().nullable(),
       session_id: z.string().nullable(),
       github_issue_url: z.string().nullable(),
@@ -187,6 +198,8 @@ export const KanbanEpicComponent = registerComponent(
       board_id: z.string(),
       name: z.string(),
       description: z.string().nullable(),
+      labels: z.string().nullable().optional(),
+      assigned_user_id: z.string().nullable().optional(),
       color: z.string(),
       autonomous: z.number().int(),
       autonomous_interval: z.number().int(),
@@ -199,6 +212,25 @@ export const KanbanEpicComponent = registerComponent(
       updated_at: z.string(),
     })
     .openapi({ description: 'A kanban epic — a group of related cards.' }),
+);
+
+export const KanbanCardTemplateComponent = registerComponent(
+  'KanbanCardTemplate',
+  z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      title: z.string(),
+      description: z.string(),
+      priority: PrioritySchema,
+      labels: z.string(),
+      epicId: z.string(),
+      updatedAt: z.string(),
+    })
+    .openapi({
+      description:
+        'Reusable defaults for new kanban cards (title, description, priority, labels, epic).',
+    }),
 );
 
 export const KanbanPhaseComponent = registerComponent(
@@ -298,6 +330,16 @@ export const BoardResponseComponent = registerComponent(
         description:
           'Per-column next-page cursor, keyed by column id (`{ [columnId]: nextCursor|null }`). Present only when `?limit=N` is supplied. A non-null value is the opaque keyset cursor to pass as `cursor` to GET /board/columns/:columnId/cards for the next page; null means the first page is the last page. Lets a client seed per-column infinite scroll from this one request without reconstructing the opaque cursor.',
       }),
+      cardTemplates: z.array(KanbanCardTemplateComponent).optional().openapi({
+        description: 'Reusable card templates for this board.',
+      }),
+      availableLabels: z.array(z.string()).optional().openapi({
+        description:
+          'Distinct card labels across the full board, even when `cards` is paginated. Used to render complete label filter facets without draining every card page first.',
+      }),
+      assignableUsers: z.array(KanbanAssignableUserComponent).optional().openapi({
+        description: 'Users in the request org who can be assigned as kanban lead users.',
+      }),
     })
     .openapi({
       description:
@@ -359,6 +401,7 @@ export const CreateCardRequestSchema = z.preprocess(
     description: z.string().nullable().optional(),
     priority: PrioritySchema.optional(),
     assignee: z.string().nullable().optional(),
+    assignedUserId: z.string().nullable().optional(),
     labels: z.string().nullable().optional(),
     sessionId: z.string().nullable().optional(),
     githubIssueUrl: z.string().nullable().optional(),
@@ -378,12 +421,14 @@ export const UpdateCardRequestSchema = z.preprocess(
     assignModel: 'assign_model',
     assignEngine: 'assign_engine',
     prBaseBranch: 'pr_base_branch',
+    assignedUserId: 'assigned_user_id',
   }),
   z.object({
     title: z.string().min(1).optional(),
     description: z.string().nullable().optional(),
     priority: PrioritySchema.optional(),
     assignee: z.string().nullable().optional(),
+    assignedUserId: z.string().nullable().optional(),
     labels: z.string().nullable().optional(),
     sessionId: z.string().nullable().optional(),
     githubIssueUrl: z.string().nullable().optional(),
@@ -430,11 +475,23 @@ export const UpdateColumnRequestSchema = z.object({
   color: z.string().nullable().optional(),
 });
 
+export const ReorderColumnsRequestSchema = z.object({
+  columnIds: z
+    .array(z.string().min(1, 'column id is required'))
+    .min(1, 'columnIds is required')
+    .openapi({
+      description:
+        'All column ids for the board in the desired order. The server rewrites positions atomically to 0..N-1.',
+    }),
+});
+
 export const CreateEpicRequestSchema = z.preprocess(
   aliasPreprocess({ prBaseBranch: 'pr_base_branch' }),
   z.object({
     name: z.string({ error: 'name is required' }).min(1, 'name is required'),
     description: z.string().nullable().optional(),
+    labels: z.string().nullable().optional(),
+    assignedUserId: z.string().nullable().optional(),
     color: z.string().optional(),
     prBaseBranch: z.string().nullable().optional(),
   }),
@@ -445,6 +502,8 @@ export const UpdateEpicRequestSchema = z.preprocess(
   z.object({
     name: z.string().min(1).optional(),
     description: z.string().nullable().optional(),
+    labels: z.string().nullable().optional(),
+    assignedUserId: z.string().nullable().optional(),
     color: z.string().optional(),
     autonomous: z.number().int().optional(),
     autonomousInterval: z.number().int().optional(),
@@ -472,6 +531,24 @@ export const UpdateEpicRequestSchema = z.preprocess(
 );
 
 export const LinkEpicRequestSchema = z.object({
+  epicId: z.string().nullable().optional(),
+});
+
+export const CreateCardTemplateRequestSchema = z.object({
+  name: z.string({ error: 'name is required' }).min(1, 'name is required'),
+  title: z.string().optional(),
+  description: z.string().nullable().optional(),
+  priority: PrioritySchema.optional(),
+  labels: z.string().nullable().optional(),
+  epicId: z.string().nullable().optional(),
+});
+
+export const UpdateCardTemplateRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  title: z.string().optional(),
+  description: z.string().nullable().optional(),
+  priority: PrioritySchema.optional(),
+  labels: z.string().nullable().optional(),
   epicId: z.string().nullable().optional(),
 });
 
@@ -595,6 +672,9 @@ const projectCardIdParams = projectIdParams.extend({
 });
 const projectEpicIdParams = projectIdParams.extend({
   epicId: z.string().openapi({ description: 'Kanban epic UUID.' }),
+});
+const projectCardTemplateIdParams = projectIdParams.extend({
+  templateId: z.string().openapi({ description: 'Kanban card template UUID.' }),
 });
 const projectColumnIdParams = projectIdParams.extend({
   columnId: z.string().openapi({ description: 'Kanban column UUID.' }),
@@ -938,6 +1018,91 @@ registerPath({
   },
 });
 
+// POST /board/epics/:epicId/assign-lead-to-cards
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/epics/{epicId}/assign-lead-to-cards',
+  tags: ['Board'],
+  summary: 'Assign epic lead user to all epic cards',
+  description:
+    'Sets `assigned_user_id` on every card linked to the epic to the epic’s current lead user. Callable by the lead user, or in local bundled mode.',
+  request: { params: projectEpicIdParams },
+  responses: {
+    200: {
+      description: 'Bulk assignment result.',
+      content: jsonContent(z.object({ updatedCount: z.number().int().nonnegative() })),
+    },
+    400: errorResponse('Epic has no lead user.'),
+    403: errorResponse('Caller is not the epic lead user.'),
+    404: errorResponse('Epic not found.'),
+  },
+});
+
+// GET /board/card-templates
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/board/card-templates',
+  tags: ['Board'],
+  summary: 'List card templates',
+  description: 'Reusable defaults for creating kanban cards on this board.',
+  request: { params: projectIdParams },
+  responses: {
+    200: {
+      description: 'Templates for the board.',
+      content: jsonContent(z.array(KanbanCardTemplateComponent)),
+    },
+  },
+});
+
+// POST /board/card-templates
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/card-templates',
+  tags: ['Board'],
+  summary: 'Create a card template',
+  request: {
+    params: projectIdParams,
+    body: { content: jsonContent(CreateCardTemplateRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Created template.', content: jsonContent(KanbanCardTemplateComponent) },
+    400: errorResponse('Validation failed.'),
+  },
+});
+
+// PUT /board/card-templates/:templateId
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/board/card-templates/{templateId}',
+  tags: ['Board'],
+  summary: 'Update a card template',
+  request: {
+    params: projectCardTemplateIdParams,
+    body: { content: jsonContent(UpdateCardTemplateRequestSchema) },
+  },
+  responses: {
+    200: { description: 'Updated template.', content: jsonContent(KanbanCardTemplateComponent) },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Template not found.'),
+  },
+});
+
+// DELETE /board/card-templates/:templateId
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/board/card-templates/{templateId}',
+  tags: ['Board'],
+  summary: 'Delete a card template',
+  request: { params: projectCardTemplateIdParams },
+  responses: {
+    200: {
+      description: 'Acknowledgment.',
+      content: jsonContent(z.object({ ok: z.literal(true) })),
+    },
+    404: errorResponse('Template not found.'),
+  },
+});
+
 // POST /board/cards/:cardId/epic (link / unlink)
 registerPath({
   method: 'post',
@@ -1031,6 +1196,25 @@ registerPath({
     200: {
       description: 'Acknowledgment.',
       content: jsonContent(z.object({ ok: z.literal(true) })),
+    },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/columns/reorder',
+  tags: ['Board'],
+  summary: 'Reorder columns atomically',
+  request: {
+    params: projectIdParams,
+    body: { content: jsonContent(ReorderColumnsRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated columns list.',
+      content: jsonContent(z.array(KanbanColumnComponent)),
     },
     400: errorResponse('Validation failed.'),
     404: errorResponse('Project not found.'),

@@ -14,9 +14,15 @@ page is the _how_.
 ## Board shape
 
 ```bash
-scripts/board.sh get     # full board: columns[], cards[], plus metadata
+scripts/board.sh get     # full board: columns[], cards[], cardTemplates[], plus metadata
 scripts/board.sh list    # flat list of cards
 ```
+
+`cardTemplates[]` holds reusable create defaults: `id`, `name`, `title`,
+`description`, `priority`, `labels`, `epicId`, `updatedAt`. Manage them with
+`scripts/kanban-card-templates.sh list|get` or the REST CRUD under
+`/board/card-templates`. Apply on create with
+`kanban-create-card.sh --template-id <uuid>`.
 
 Cards carry: `id`, `column_id`, `title`, `description`, `priority`
 (`urgent|high|medium|low`), `assignee`, `labels` (comma-separated string),

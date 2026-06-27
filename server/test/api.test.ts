@@ -1489,6 +1489,22 @@ describe('Kanban Board', () => {
       expect(card).toHaveProperty('id');
     });
 
+    it('does not create a card when assignedUserId is invalid', async () => {
+      const boardRes = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const columnId = (boardRes.body.columns as Array<{ id: string }>)[0]!.id;
+      const title = 'Invalid card assignee should not persist';
+
+      await request
+        .post(`/api/projects/${testProject.id}/board/cards`)
+        .send({ title, columnId, assignedUserId: 'missing-user' })
+        .expect(400);
+
+      const cardsRes = await request.get(`/api/projects/${testProject.id}/board/cards`).expect(200);
+      expect((cardsRes.body as Array<{ title: string }>).some((card) => card.title === title)).toBe(
+        false,
+      );
+    });
+
     it('lists cards for a project', async () => {
       await createCard(testProject.id as string);
       const res = await request.get(`/api/projects/${testProject.id}/board/cards`).expect(200);
@@ -1505,6 +1521,21 @@ describe('Kanban Board', () => {
 
       expect(res.body.title).toBe('Updated Title');
       expect(res.body.priority).toBe('urgent');
+    });
+
+    it('does not update a card when assignedUserId is invalid', async () => {
+      const card = await createCard(testProject.id as string, { title: 'Keep Card Title' });
+
+      await request
+        .put(`/api/projects/${testProject.id}/board/cards/${card.id}`)
+        .send({ title: 'Changed Card Title', assignedUserId: 'missing-user' })
+        .expect(400);
+
+      const cardsRes = await request.get(`/api/projects/${testProject.id}/board/cards`).expect(200);
+      const current = (cardsRes.body as Array<{ id: string; title: string }>).find(
+        (row) => row.id === card.id,
+      );
+      expect(current?.title).toBe('Keep Card Title');
     });
 
     it('moves a card between columns', async () => {
@@ -1574,6 +1605,38 @@ describe('Kanban Board', () => {
 
       const listRes = await request.get(`/api/projects/${testProject.id}/board/epics`).expect(200);
       expect(listRes.body.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('does not create an epic when assignedUserId is invalid', async () => {
+      const name = 'Invalid Assignee Epic';
+      await request
+        .post(`/api/projects/${testProject.id}/board/epics`)
+        .send({ name, assignedUserId: 'missing-user' })
+        .expect(400);
+
+      const listRes = await request.get(`/api/projects/${testProject.id}/board/epics`).expect(200);
+      expect((listRes.body as Array<{ name: string }>).some((epic) => epic.name === name)).toBe(
+        false,
+      );
+    });
+
+    it('does not update an epic when assignedUserId is invalid', async () => {
+      const epicRes = await request
+        .post(`/api/projects/${testProject.id}/board/epics`)
+        .send({ name: 'Keep Name', color: '#3B82F6' })
+        .expect(200);
+      const epicId = (epicRes.body as { id: string }).id;
+
+      await request
+        .put(`/api/projects/${testProject.id}/board/epics/${epicId}`)
+        .send({ name: 'Changed Name', assignedUserId: 'missing-user' })
+        .expect(400);
+
+      const listRes = await request.get(`/api/projects/${testProject.id}/board/epics`).expect(200);
+      const epic = (listRes.body as Array<{ id: string; name: string }>).find(
+        (row) => row.id === epicId,
+      );
+      expect(epic?.name).toBe('Keep Name');
     });
 
     it('persists epic orchestrationBudgets JSON and clears with null', async () => {
@@ -1667,6 +1730,26 @@ describe('Kanban Board', () => {
       expect(qa).toBeDefined();
     });
 
+    it('rejects creating a duplicate system column name', async () => {
+      const before = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const beforeDoneColumns = (before.body.columns as Array<{ name: string }>).filter(
+        (c) => c.name === 'Done',
+      );
+
+      const res = await request
+        .post(`/api/projects/${testProject.id}/board/columns`)
+        .send({ name: 'Done' })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/duplicate system column/i);
+
+      const after = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const afterDoneColumns = (after.body.columns as Array<{ name: string }>).filter(
+        (c) => c.name === 'Done',
+      );
+      expect(afterDoneColumns).toHaveLength(beforeDoneColumns.length);
+    });
+
     it('updates a column name', async () => {
       const createRes = await request
         .post(`/api/projects/${testProject.id}/board/columns`)
@@ -1685,6 +1768,80 @@ describe('Kanban Board', () => {
       expect(res.body.ok).toBe(true);
     });
 
+    it('rejects renaming a custom column to a system column name', async () => {
+      const createRes = await request
+        .post(`/api/projects/${testProject.id}/board/columns`)
+        .send({ name: 'Rename Guard' })
+        .expect(200);
+
+      const customCol = (
+        createRes.body as Array<{ id: string; name: string; position: number }>
+      ).find((c) => c.name === 'Rename Guard')!;
+
+      const res = await request
+        .put(`/api/projects/${testProject.id}/board/columns/${customCol.id}`)
+        .send({ name: 'In Progress', position: customCol.position })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/system column name/i);
+
+      const boardRes = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const unchanged = (boardRes.body.columns as Array<{ id: string; name: string }>).find(
+        (c) => c.id === customCol.id,
+      );
+      expect(unchanged?.name).toBe('Rename Guard');
+    });
+
+    it('reorders columns atomically with a complete ordered id list', async () => {
+      await request
+        .post(`/api/projects/${testProject.id}/board/columns`)
+        .send({ name: 'QA Reorder' })
+        .expect(200);
+
+      const before = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const orderedBefore = [
+        ...(before.body.columns as Array<{ id: string; name: string; position: number }>),
+      ].sort((a, b) => a.position - b.position);
+      const nextIds = orderedBefore.map((column) => column.id).reverse();
+
+      const res = await request
+        .post(`/api/projects/${testProject.id}/board/columns/reorder`)
+        .send({ columnIds: nextIds })
+        .expect(200);
+
+      const reordered = res.body as Array<{ id: string; position: number }>;
+      expect(reordered.map((column) => column.id)).toEqual(nextIds);
+      expect(reordered.map((column) => column.position)).toEqual(nextIds.map((_, index) => index));
+      expect(new Set(reordered.map((column) => column.position)).size).toBe(reordered.length);
+    });
+
+    it('rejects column reorder payloads that omit a board column', async () => {
+      await request
+        .post(`/api/projects/${testProject.id}/board/columns`)
+        .send({ name: 'QA Partial Reorder' })
+        .expect(200);
+
+      const before = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const orderedBefore = [
+        ...(before.body.columns as Array<{ id: string; position: number }>),
+      ].sort((a, b) => a.position - b.position);
+
+      const res = await request
+        .post(`/api/projects/${testProject.id}/board/columns/reorder`)
+        .send({ columnIds: orderedBefore.slice(0, -1).map((column) => column.id) })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/every board column exactly once/i);
+
+      const after = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const orderedAfter = [
+        ...(after.body.columns as Array<{ id: string; position: number }>),
+      ].sort((a, b) => a.position - b.position);
+      expect(orderedAfter.map((column) => [column.id, column.position])).toEqual(
+        orderedBefore.map((column) => [column.id, column.position]),
+      );
+    });
+
     it('deletes a column', async () => {
       const createRes = await request
         .post(`/api/projects/${testProject.id}/board/columns`)
@@ -1698,6 +1855,57 @@ describe('Kanban Board', () => {
       await request
         .delete(`/api/projects/${testProject.id}/board/columns/${delCol.id}`)
         .expect(200);
+    });
+
+    it('rejects deleting a column that still has cards', async () => {
+      // Use a custom (non-system) column so the card-count guard is exercised
+      // rather than short-circuiting on the system-column lock (To Do/In
+      // Progress/Done can never be deleted regardless of contents).
+      const createRes = await request
+        .post(`/api/projects/${testProject.id}/board/columns`)
+        .send({ name: 'Blocked' })
+        .expect(200);
+      const customCol = (createRes.body as Array<{ id: string; name: string }>).find(
+        (c) => c.name === 'Blocked',
+      )!;
+
+      await request
+        .post(`/api/projects/${testProject.id}/board/cards`)
+        .send({ title: 'Block delete', columnId: customCol.id })
+        .expect(200);
+
+      const res = await request
+        .delete(`/api/projects/${testProject.id}/board/columns/${customCol.id}`)
+        .expect(400);
+
+      expect(res.body.error).toMatch(/still contains cards/i);
+    });
+
+    it('rejects deleting a system column', async () => {
+      const boardRes = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const todoCol = (boardRes.body.columns as Array<{ id: string; name: string }>).find(
+        (c) => c.name === 'To Do',
+      )!;
+
+      const res = await request
+        .delete(`/api/projects/${testProject.id}/board/columns/${todoCol.id}`)
+        .expect(400);
+
+      expect(res.body.error).toMatch(/system column/i);
+    });
+
+    it('rejects renaming a system column', async () => {
+      const boardRes = await request.get(`/api/projects/${testProject.id}/board`).expect(200);
+      const doneCol = (
+        boardRes.body.columns as Array<{ id: string; name: string; position: number }>
+      ).find((c) => c.name === 'Done')!;
+
+      const res = await request
+        .put(`/api/projects/${testProject.id}/board/columns/${doneCol.id}`)
+        .send({ name: 'Complete', position: doneCol.position })
+        .expect(400);
+
+      expect(res.body.error).toMatch(/system column/i);
     });
   });
 });

@@ -11,6 +11,7 @@ import {
   hasUnresolvedBlockers,
   isColumnBlockerSensitive,
   isColumnDone,
+  isSystemLockedColumnName,
   isColumnShippedLane,
   loadBoardBlockers,
 } from './kanban-blockers.js';
@@ -126,6 +127,20 @@ describe('isColumnDone', () => {
     expect(isColumnDone(null)).toBe(false);
     expect(isColumnDone(undefined)).toBe(false);
     expect(isColumnDone('')).toBe(false);
+  });
+});
+
+describe('isSystemLockedColumnName', () => {
+  it('locks the default automation columns', () => {
+    expect(isSystemLockedColumnName('To Do')).toBe(true);
+    expect(isSystemLockedColumnName('In Progress')).toBe(true);
+    expect(isSystemLockedColumnName('Done')).toBe(true);
+  });
+
+  it('does not lock custom or substring Done lanes', () => {
+    expect(isSystemLockedColumnName('QA')).toBe(false);
+    expect(isSystemLockedColumnName('Review')).toBe(false);
+    expect(isSystemLockedColumnName('Deployed / Done')).toBe(false);
   });
 });
 

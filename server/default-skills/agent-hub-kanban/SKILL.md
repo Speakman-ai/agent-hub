@@ -45,8 +45,11 @@ scripts/kanban-list.sh --column "In Progress"       # filtered card list
 scripts/resolve-column-id.sh "In Progress"          # name → UUID
 scripts/kanban-create-card.sh --title "…" --column "To Do" \
   --priority high
+  # --template-id <uuid> applies server template defaults
   # --session-id defaults to $AGENT_HUB_SESSION_ID when set
 scripts/kanban-move-card.sh <cardId> "Review"
+scripts/kanban-card-templates.sh list
+scripts/kanban-card-templates.sh get <templateId>
 
 # Subcommand-style wrappers (raw JSON, thinner layer):
 scripts/board.sh  get | list | create | move | update | comment
@@ -57,7 +60,12 @@ scripts/epics.sh  list | create | link | unlink
 
 Cards carry `priority` (`urgent|high|medium|low`), `assignee`, `labels`,
 `session_id`, optional `epic_id`, `pr_url`, `review_status`,
-`github_issue_url`, `position`, and timestamps. **Do not self-stamp
+`github_issue_url`, `position`, and timestamps. **Card templates** are
+server-backed defaults (`GET/POST/PUT/DELETE
+/api/projects/<slug>/board/card-templates`); list them with
+`scripts/kanban-card-templates.sh list` and apply on create via
+`kanban-create-card.sh --template-id <uuid>` (explicit flags override
+template fields). **Do not self-stamp
 `assignee` on create** — leave it `null` and let the assign endpoint or the
 autonomous loop fill it in. The server normalises a stray agent id to the
 agent's display name, but pre-stamping reserves the card out of the

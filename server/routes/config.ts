@@ -944,6 +944,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             epic.description || '',
             epic.color || '#6b7280',
             epic.position || 0,
+            (epic as { labels?: string | null }).labels ?? null,
           );
           const importedEpicPrBase = (epic as { pr_base_branch?: string | null }).pr_base_branch;
           if (importedEpicPrBase != null && String(importedEpicPrBase).trim() !== '') {
@@ -969,6 +970,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
                 row.autonomous_model ?? null,
                 row.orchestration_budgets_json ?? null,
                 br.value,
+                (row as { labels?: string | null }).labels ?? null,
                 newEpicId,
               );
             }

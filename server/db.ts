@@ -2136,6 +2136,48 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN autonomous_send_it INTEGER NOT NULL DEFAULT 0');
   }
 
+  try {
+    db.prepare('SELECT labels FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN labels TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT assigned_user_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN assigned_user_id TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT assigned_user_id FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_epics ADD COLUMN assigned_user_id TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT id FROM kanban_card_templates LIMIT 1').get();
+  } catch {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS kanban_card_templates (
+        id TEXT PRIMARY KEY,
+        board_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        description TEXT,
+        priority TEXT NOT NULL DEFAULT 'medium',
+        labels TEXT,
+        epic_id TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (board_id) REFERENCES kanban_boards(id) ON DELETE CASCADE
+      )
+    `);
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_kanban_card_templates_board ON kanban_card_templates(board_id)',
+    );
+  }
+
   // Phases — subgroups within an epic (Epic → Phase → Ticket hierarchy).
   try {
     db.prepare('SELECT id FROM kanban_phases LIMIT 1').get();
@@ -3850,6 +3892,12 @@ function initDb(dataDir: string): void {
     updateKanbanCard: db.prepare(
       `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, phase_id = ?, assign_model = ?, assign_engine = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
+    setKanbanCardAssignedUser: db.prepare(
+      `UPDATE kanban_cards SET assigned_user_id = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setKanbanCardsAssignedUserByEpic: db.prepare(
+      `UPDATE kanban_cards SET assigned_user_id = ?, updated_at = datetime('now') WHERE epic_id = ?`,
+    ),
     moveKanbanCard: db.prepare(
       `UPDATE kanban_cards SET column_id = ?, position = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
@@ -4060,10 +4108,10 @@ function initDb(dataDir: string): void {
       // Default autonomous_max_concurrent to 1 explicitly (not just via the
       // column DEFAULT) so existing DBs created before the default dropped from
       // 2 → 1 also start new epics at 1 ticket-at-once.
-      `INSERT INTO kanban_epics (id, board_id, name, description, color, position, autonomous_max_concurrent) VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO kanban_epics (id, board_id, name, description, color, position, autonomous_max_concurrent, labels) VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
     ),
     updateKanbanEpic: db.prepare(
-      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,
+      `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, labels = ?, updated_at = datetime('now') WHERE id = ?`,
     ),
     // Standalone stamp for the user who flipped autonomous mode on. Kept
     // separate from updateKanbanEpic so existing call sites (and the
@@ -4077,6 +4125,28 @@ function initDb(dataDir: string): void {
     // extra arg.
     setEpicAutonomousSendIt: db.prepare(
       `UPDATE kanban_epics SET autonomous_send_it = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    setKanbanEpicAssignedUser: db.prepare(
+      `UPDATE kanban_epics SET assigned_user_id = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    getKanbanCardTemplates: db.prepare(
+      'SELECT * FROM kanban_card_templates WHERE board_id = ? ORDER BY name ASC, created_at ASC',
+    ),
+    getKanbanCardTemplate: db.prepare('SELECT * FROM kanban_card_templates WHERE id = ?'),
+    createKanbanCardTemplate: db.prepare(
+      `INSERT INTO kanban_card_templates (id, board_id, name, title, description, priority, labels, epic_id, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    updateKanbanCardTemplate: db.prepare(
+      `UPDATE kanban_card_templates
+       SET name = ?, title = ?, description = ?, priority = ?, labels = ?, epic_id = ?, updated_at = datetime('now')
+       WHERE id = ?`,
+    ),
+    deleteKanbanCardTemplate: db.prepare('DELETE FROM kanban_card_templates WHERE id = ?'),
+    clearKanbanCardTemplateEpic: db.prepare(
+      `UPDATE kanban_card_templates
+       SET epic_id = NULL, updated_at = datetime('now')
+       WHERE board_id = ? AND epic_id = ?`,
     ),
     deleteKanbanEpic: db.prepare('DELETE FROM kanban_epics WHERE id = ?'),
     getKanbanCardsByEpic: db.prepare(
