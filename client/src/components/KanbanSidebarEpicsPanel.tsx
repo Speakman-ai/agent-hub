@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bookmark, Search, Tag, Trash2, User, X } from 'lucide-react';
+import {
+  Bookmark,
+  CheckSquare,
+  Search,
+  Square,
+  Tag,
+  Target,
+  Trash2,
+  User,
+  X,
+  Zap,
+} from 'lucide-react';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
+import { api } from '../utils/api';
 import {
   applySnapshot,
   deleteFilterSet,
@@ -29,6 +41,13 @@ type KanbanSidebarEpicsPanelProps = {
   refreshKey?: number;
 };
 
+type SidebarEpic = {
+  id: string;
+  name: string;
+  color?: string;
+  autonomous?: number;
+};
+
 export default function KanbanSidebarEpicsPanel({
   projectId,
   projectName,
@@ -42,7 +61,9 @@ export default function KanbanSidebarEpicsPanel({
   assignableUsers = [],
   selectedUserIds = new Set(),
   onSelectedUserIdsChange,
+  refreshKey,
 }: KanbanSidebarEpicsPanelProps) {
+  const [epics, setEpics] = useState<SidebarEpic[]>([]);
   const [labelSearch, setLabelSearch] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [savedFilters, setSavedFilters] = useState<KanbanFilterSet[]>([]);
@@ -56,6 +77,22 @@ export default function KanbanSidebarEpicsPanel({
     setSaveFilterName('');
     setSaveFilterError(null);
   }, [projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getEpics(projectId)
+      .then((next: SidebarEpic[]) => {
+        if (!cancelled) setEpics(Array.isArray(next) ? next : []);
+      })
+      .catch((err: unknown) => {
+        console.warn('[KanbanSidebarEpicsPanel] getEpics failed:', err);
+        if (!cancelled) setEpics([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, refreshKey]);
 
   const filteredLabels = useMemo(() => {
     const q = labelSearch.trim().toLowerCase();
@@ -100,6 +137,15 @@ export default function KanbanSidebarEpicsPanel({
   );
 
   const canSaveCurrentFilter = !isEmptySnapshot(currentSnapshot);
+
+  const toggleEpic = (epicId: string) => {
+    const next = new Set(selectedEpicIds);
+    if (next.has(epicId)) next.delete(epicId);
+    else next.add(epicId);
+    onSelectedEpicIdsChange(next);
+  };
+
+  const clearEpicFilter = () => onSelectedEpicIdsChange(new Set());
 
   const handleApplySavedFilter = useCallback(
     (filter: KanbanFilterSet) => {
@@ -253,6 +299,67 @@ export default function KanbanSidebarEpicsPanel({
           </button>
         )}
       </div>
+
+      <div className="flex items-center justify-between gap-2 mb-2 px-2">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          <Target size={12} />
+          Epics
+        </div>
+        {selectedEpicIds.size > 0 ? (
+          <button
+            type="button"
+            onClick={clearEpicFilter}
+            data-testid="kanban-sidebar-clear-epics"
+            className="text-[11px] text-gray-500 hover:text-gray-300"
+          >
+            Clear ({selectedEpicIds.size})
+          </button>
+        ) : null}
+      </div>
+
+      {epics.length > 0 ? (
+        <div
+          className="mb-4 px-1 max-h-[180px] overflow-y-auto kanban-column-scroll rounded-xl border border-white/[0.06] bg-white/[0.02] p-1.5"
+          data-testid="kanban-sidebar-epic-list"
+        >
+          <div className="flex flex-col gap-1">
+            {epics.map((epic) => {
+              const active = selectedEpicIds.has(epic.id);
+              return (
+                <button
+                  key={epic.id}
+                  type="button"
+                  onClick={() => toggleEpic(epic.id)}
+                  data-testid={`kanban-sidebar-epic-${epic.id}`}
+                  className={`flex w-full items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors ${
+                    active ? 'bg-indigo-500/10' : 'hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <span
+                    className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 ${
+                      active ? 'text-indigo-300' : 'text-gray-600'
+                    }`}
+                  >
+                    {active ? <CheckSquare size={14} /> : <Square size={14} />}
+                  </span>
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: epic.color || '#6B7280' }}
+                  />
+                  <span className="flex-1 min-w-0 truncate text-sm text-gray-200">{epic.name}</span>
+                  {epic.autonomous === 1 ? (
+                    <Zap size={12} className="text-emerald-400 flex-shrink-0" aria-hidden />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="mb-4 px-3 py-2 text-xs text-gray-500 rounded-xl border border-white/[0.06] bg-white/[0.02]">
+          No epics on the board yet.
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-2 mb-2 px-2">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">

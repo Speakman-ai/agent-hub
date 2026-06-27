@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import KanbanSidebarEpicsPanel from './KanbanSidebarEpicsPanel';
 import { readFilterSets, saveFilterSet } from '../utils/kanbanFilterSets';
 
@@ -40,6 +40,37 @@ describe('KanbanSidebarEpicsPanel', () => {
     expect(onSelectedLabelsChange).toHaveBeenCalled();
     const next = onSelectedLabelsChange.mock.calls[0][0] as Set<string>;
     expect(next.has('bug')).toBe(true);
+  });
+
+  it('renders the epic filter with the sidebar filters', async () => {
+    const onSelectedEpicIdsChange = vi.fn();
+    (api.getEpics as any).mockResolvedValueOnce([
+      { id: 'e1', name: 'Platform', color: '#6366F1', autonomous: 0 },
+    ]);
+
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set()}
+        onSelectedEpicIdsChange={onSelectedEpicIdsChange}
+        availableLabels={['bug']}
+        selectedLabels={new Set()}
+        onSelectedLabelsChange={vi.fn()}
+      />,
+    );
+
+    const panel = screen.getByTestId('kanban-sidebar-epics-panel');
+    await waitFor(() =>
+      expect(within(panel).getByTestId('kanban-sidebar-epic-list')).toBeInTheDocument(),
+    );
+
+    fireEvent.click(within(panel).getByTestId('kanban-sidebar-epic-e1'));
+    expect(onSelectedEpicIdsChange).toHaveBeenCalled();
+    const next = onSelectedEpicIdsChange.mock.calls[0][0] as Set<string>;
+    expect(next.has('e1')).toBe(true);
+    expect(within(panel).getByTestId('kanban-sidebar-label-list')).toBeInTheDocument();
   });
 
   it('toggles lead user multi-select', () => {

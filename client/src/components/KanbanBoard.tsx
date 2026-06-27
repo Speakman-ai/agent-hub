@@ -21,7 +21,6 @@ import {
   Columns3,
   ChevronLeft,
   ChevronRight,
-  Target,
 } from 'lucide-react';
 import {
   DndContext,
@@ -607,106 +606,6 @@ function ColumnDropZone({ columnId, className, children }: any) {
   );
 }
 
-function KanbanEpicFilterMenu({
-  epics,
-  selectedEpicIds,
-  onSelectedEpicIdsChange,
-}: {
-  epics: any[];
-  selectedEpicIds: Set<string>;
-  onSelectedEpicIdsChange?: (ids: Set<string>) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [open]);
-
-  const toggleEpic = (epicId: string) => {
-    if (!onSelectedEpicIdsChange) return;
-    const next = new Set(selectedEpicIds);
-    if (next.has(epicId)) next.delete(epicId);
-    else next.add(epicId);
-    onSelectedEpicIdsChange(next);
-  };
-
-  return (
-    <div ref={rootRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        data-testid="kanban-epic-filter"
-        className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
-          selectedEpicIds.size > 0
-            ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
-            : 'border-white/[0.06] text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08]'
-        }`}
-      >
-        <Target size={14} />
-        {selectedEpicIds.size > 0 ? `Epics (${selectedEpicIds.size})` : 'Filter epics'}
-      </button>
-      {open ? (
-        <div
-          data-testid="kanban-epic-filter-menu"
-          className="absolute right-0 top-full mt-1 z-30 w-64 max-h-72 overflow-y-auto rounded-xl border border-white/[0.08] bg-gray-950 shadow-xl shadow-black/40 p-1.5"
-        >
-          {epics.length === 0 ? (
-            <div className="px-3 py-4 text-xs text-gray-500">No epics yet.</div>
-          ) : (
-            <div className="flex flex-col gap-1">
-              {epics.map((epic: any) => {
-                const selected = selectedEpicIds.has(epic.id);
-                return (
-                  <button
-                    key={epic.id}
-                    type="button"
-                    onClick={() => toggleEpic(epic.id)}
-                    data-testid={`kanban-epic-filter-${epic.id}`}
-                    className={`flex w-full items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors ${
-                      selected ? 'bg-indigo-500/10' : 'hover:bg-white/[0.04]'
-                    }`}
-                  >
-                    <span
-                      className={`inline-flex items-center justify-center w-4 h-4 rounded flex-shrink-0 ${
-                        selected ? 'text-indigo-300' : 'text-gray-600'
-                      }`}
-                    >
-                      {selected ? <CheckSquare size={14} /> : <Square size={14} />}
-                    </span>
-                    <span
-                      className="w-2 h-2 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: epic.color || '#6B7280' }}
-                    />
-                    <span className="flex-1 min-w-0 truncate text-sm text-gray-200">
-                      {epic.name}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {selectedEpicIds.size > 0 ? (
-            <button
-              type="button"
-              onClick={() => onSelectedEpicIdsChange?.(new Set())}
-              data-testid="kanban-epic-filter-clear"
-              className="w-full mt-1.5 px-3 py-2.5 text-left text-xs text-gray-500 hover:text-gray-300 rounded-lg hover:bg-white/[0.04] border-t border-white/[0.06] pt-2.5"
-            >
-              Clear epic filter
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 export default function KanbanBoard({
   projectId,
   project,
@@ -718,7 +617,6 @@ export default function KanbanBoard({
   onPendingCreateTemplateConsumed,
   searchQuery = '',
   selectedEpicIds = new Set(),
-  onSelectedEpicIdsChange,
   selectedLabels = new Set(),
   onAvailableLabelsChange,
   selectedUserIds = new Set(),
@@ -1800,13 +1698,6 @@ export default function KanbanBoard({
               <Pencil size={14} />
               Epics
             </button>
-          ) : null}
-          {onSelectedEpicIdsChange ? (
-            <KanbanEpicFilterMenu
-              epics={epics}
-              selectedEpicIds={selectedEpicIds}
-              onSelectedEpicIdsChange={onSelectedEpicIdsChange}
-            />
           ) : null}
           {selectedEpic ? (
             <button

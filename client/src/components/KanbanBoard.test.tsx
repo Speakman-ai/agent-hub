@@ -2042,7 +2042,7 @@ describe('KanbanBoard epics toolbar', () => {
     (api.get as any).mockResolvedValue([]);
   });
 
-  it('shows Epics button and epic filter on the board header', async () => {
+  it('shows the Epics button without rendering the epic filter in the board header', async () => {
     const onOpenEpics = vi.fn();
     const onSelectedEpicIdsChange = vi.fn();
     (api.getBoard as any).mockResolvedValue({
@@ -2063,9 +2063,7 @@ describe('KanbanBoard epics toolbar', () => {
     await waitFor(() => expect(screen.getByTestId('kanban-edit-epics')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('kanban-edit-epics'));
     expect(onOpenEpics).toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId('kanban-epic-filter'));
-    fireEvent.click(screen.getByTestId('kanban-epic-filter-e1'));
-    expect(onSelectedEpicIdsChange).toHaveBeenCalled();
+    expect(screen.queryByTestId('kanban-epic-filter')).not.toBeInTheDocument();
+    expect(onSelectedEpicIdsChange).not.toHaveBeenCalled();
   });
 });
