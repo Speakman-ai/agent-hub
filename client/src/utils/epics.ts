@@ -31,6 +31,18 @@ export function labelsFieldFromInput(raw: string | null | undefined): string {
 
 export const DEFAULT_EPIC_COLOR = '#6366F1';
 
+export const EPIC_STATE_LABELS = {
+  not_started: 'Not started',
+  in_progress: 'In progress',
+  done: 'Done',
+} as const;
+
+export type EpicLifecycleState = keyof typeof EPIC_STATE_LABELS;
+
+export function epicStateLabel(state: string | null | undefined): string {
+  return EPIC_STATE_LABELS[(state || '') as EpicLifecycleState] || '';
+}
+
 /**
  * Normalize the web form shape into the server's camelCase update body.
  * The PUT /board/epics/:epicId endpoint accepts camelCase keys.
@@ -70,8 +82,12 @@ export function epicFormToUpdateBody(form: any) {
  */
 export function epicsWithActiveCards(epics: any, countFor: any, selectedEpicId: any = null) {
   if (!Array.isArray(epics)) return [];
-  if (typeof countFor !== 'function') return epics;
-  return epics.filter((e: any) => e.id === selectedEpicId || countFor(e.id) > 0);
+  return epics.filter((e: any) => {
+    if (e.id === selectedEpicId) return true;
+    if (e.state === 'done') return false;
+    if (typeof countFor !== 'function') return true;
+    return countFor(e.id) > 0;
+  });
 }
 
 /**

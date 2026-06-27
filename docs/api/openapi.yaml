@@ -1532,6 +1532,15 @@ components:
         description:
           type: string
           nullable: true
+        state:
+          type: string
+          nullable: true
+          enum:
+            - not_started
+            - in_progress
+            - done
+            - null
+          description: Derived lifecycle from linked cards. `null` means the epic has no linked cards. `not_started` means linked cards exist but none have left To Do/backlog yet, `in_progress` means at least one linked card has started or completed but not every linked card is Done, and `done` means every linked card is in a Done-ish column.
         labels:
           type: string
           nullable: true
@@ -1566,6 +1575,7 @@ components:
         - board_id
         - name
         - description
+        - state
         - color
         - autonomous
         - autonomous_interval

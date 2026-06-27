@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
-import { EPIC_COLORS, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, } from '../utils/epics';
+import { EPIC_COLORS, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, EPIC_STATE_LABELS, epicStateLabel, } from '../utils/epics';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 export default function EpicsScreen({ route, navigation }: any) {
     const { projectId, project: routeProject } = route.params || {};
@@ -16,6 +16,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     const [showForm, setShowForm] = useState(false);
     const [saving, setSaving] = useState(false);
     const [scopingId, setScopingId] = useState<any>(null);
+    const [stateFilter, setStateFilter] = useState('all');
     const { setActiveAgentId, setActiveSessionId } = useApp();
     const openScopingSession = useCallback(async (epicId: any) => {
         if (!epicId || scopingId)
@@ -59,6 +60,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     const epics = board?.epics || [];
     const cards = board?.cards || [];
     const doneColumnIds = new Set((board?.columns || []).filter((c: any) => /done/i.test(c.name || '')).map((c: any) => c.id));
+    const visibleEpics = epics.filter((epic: any) => stateFilter === 'all' || epic.state === stateFilter);
     const openCreate = () => {
         setEditingEpic(null);
         setEpicForm(DEFAULT_EPIC_FORM);
@@ -190,8 +192,20 @@ export default function EpicsScreen({ route, navigation }: any) {
               </TouchableOpacity>)}
           </View>)}
 
-        {loading ? (<ActivityIndicator color={colors.gray400} style={{ marginTop: 24 }}/>) : epics.length === 0 ? (<Text style={styles.empty}>No epics yet.</Text>) : (epics.map((epic: any) => {
+        <View style={styles.stateFilterRow}>
+          {[
+            ['all', 'All states'],
+            ['not_started', EPIC_STATE_LABELS.not_started],
+            ['in_progress', EPIC_STATE_LABELS.in_progress],
+            ['done', EPIC_STATE_LABELS.done],
+        ].map(([value, label]) => (<TouchableOpacity key={value} style={[styles.stateFilterBtn, stateFilter === value && styles.stateFilterBtnActive]} onPress={() => setStateFilter(value)}>
+              <Text style={[styles.stateFilterText, stateFilter === value && styles.stateFilterTextActive]}>{label}</Text>
+            </TouchableOpacity>))}
+        </View>
+
+        {loading ? (<ActivityIndicator color={colors.gray400} style={{ marginTop: 24 }}/>) : epics.length === 0 ? (<Text style={styles.empty}>No epics yet.</Text>) : visibleEpics.length === 0 ? (<Text style={styles.empty}>No epics match this state.</Text>) : (visibleEpics.map((epic: any) => {
             const { open, total } = cardCountFor(epic.id);
+            const stateLabel = epicStateLabel(epic.state);
             return (<TouchableOpacity key={epic.id} style={styles.epicCard} onPress={() => openEdit(epic)}>
                 <View style={[styles.epicDot, { backgroundColor: epic.color || colors.indigo500 }]}/>
                 <View style={styles.epicInfo}>
@@ -200,6 +214,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                   <Text style={styles.epicCount}>
                     {open} open · {total} total card{total === 1 ? '' : 's'}
                   </Text>
+                  {stateLabel ? (<Text style={styles.epicState}>{stateLabel}</Text>) : null}
                 </View>
                 <View style={styles.epicActions}>
                   <TouchableOpacity style={styles.boardLink} onPress={() => openScopingSession(epic.id)} disabled={!!scopingId}>
@@ -269,6 +284,22 @@ const styles = StyleSheet.create({
     epicName: { fontSize: 15, fontWeight: '600', color: colors.white },
     epicDesc: { fontSize: 12, color: colors.gray500, marginTop: 2 },
     epicCount: { fontSize: 11, color: colors.gray500, marginTop: 4 },
+    epicState: { fontSize: 11, color: colors.gray400, marginTop: 2 },
+    stateFilterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+    stateFilterBtn: {
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        backgroundColor: colors.gray900,
+    },
+    stateFilterBtnActive: {
+        borderColor: colors.blue400,
+        backgroundColor: colors.gray800,
+    },
+    stateFilterText: { color: colors.gray400, fontSize: 12, fontWeight: '600' },
+    stateFilterTextActive: { color: colors.blue400 },
     boardLink: {
         paddingHorizontal: 10,
         paddingVertical: 6,

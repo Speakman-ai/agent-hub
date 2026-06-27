@@ -5,6 +5,7 @@ import {
   defaultAutonomousModel,
   epicFormToCreateBody,
   epicFormToUpdateBody,
+  EPIC_STATE_LABELS,
   phaseFormToUpdateBody,
 } from '../utils/epics';
 import {
@@ -768,6 +769,22 @@ export default function EpicView({
                     <option value="all">All epics</option>
                     <option value="with-tickets">With tickets</option>
                     <option value="empty">Empty</option>
+                  </select>
+                  <select
+                    value={listFilters.state}
+                    onChange={(event) =>
+                      setListFilters((prev) => ({
+                        ...prev,
+                        state: event.target.value as EpicListFilters['state'],
+                      }))
+                    }
+                    data-testid="epic-list-filter-state"
+                    className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+                  >
+                    <option value="all">All states</option>
+                    <option value="not_started">{EPIC_STATE_LABELS.not_started}</option>
+                    <option value="in_progress">{EPIC_STATE_LABELS.in_progress}</option>
+                    <option value="done">{EPIC_STATE_LABELS.done}</option>
                   </select>
                 </div>
 

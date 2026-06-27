@@ -7,6 +7,7 @@ import {
 } from '../../utils/epicScopeStats';
 import { parseCardLabels } from '../../utils/kanbanLabels';
 import { usernameForUserId } from '../../utils/kanbanUserFilter';
+import { epicStateLabel } from '../../utils/epics';
 
 /** Manage epics list — card grid with phase pills and open-flow links. */
 export default function EpicManageListView({
@@ -64,6 +65,7 @@ export default function EpicManageListView({
             const deleting = deleteBusyEpicId === epic.id;
             const epicLabels = parseCardLabels(epic.labels);
             const leadUser = usernameForUserId(assignableUsers, epic.assigned_user_id);
+            const stateLabel = epicStateLabel(epic.state);
 
             return (
               <div
@@ -91,8 +93,13 @@ export default function EpicManageListView({
                       />
                       <h4 className="text-sm font-semibold text-gray-100">{epic.name}</h4>
                       {isEmpty ? (
-                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-gray-500">
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-gray-500">
                           Empty
+                        </span>
+                      ) : null}
+                      {stateLabel ? (
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-gray-400">
+                          {stateLabel}
                         </span>
                       ) : null}
                       {leadUser ? (

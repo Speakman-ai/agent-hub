@@ -14,6 +14,14 @@ export const EPIC_COLORS = [
     '#3B82F6', // blue
 ];
 export const DEFAULT_EPIC_COLOR = '#6366F1';
+export const EPIC_STATE_LABELS: Record<string, string> = {
+    not_started: 'Not started',
+    in_progress: 'In progress',
+    done: 'Done',
+};
+export function epicStateLabel(state: string | null | undefined): string {
+    return EPIC_STATE_LABELS[state || ''] || '';
+}
 export const DEFAULT_EPIC_FORM: Record<string, any> = {
     name: '',
     description: '',
@@ -118,9 +126,15 @@ export function countOpenCardsForEpic(cards: any, epicId: any, doneColumnIds: an
 export function epicsWithActiveCards(epics: any, countFor: any, selectedEpicId: any = null) {
     if (!Array.isArray(epics))
         return [];
-    if (typeof countFor !== 'function')
-        return epics;
-    return epics.filter((e: any) => e.id === selectedEpicId || countFor(e.id) > 0);
+    return epics.filter((e: any) => {
+        if (e.id === selectedEpicId)
+            return true;
+        if (e.state === 'done')
+            return false;
+        if (typeof countFor !== 'function')
+            return true;
+        return countFor(e.id) > 0;
+    });
 }
 /**
  * Convenience — find an epic by id inside the board payload's `epics` array.

@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, } from './epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, } from './epics';
 describe('EPIC_COLORS', () => {
     it('matches the web palette', () => {
         expect(EPIC_COLORS).toEqual([
@@ -15,6 +15,12 @@ describe('EPIC_COLORS', () => {
             '#3B82F6',
         ]);
         expect(EPIC_COLORS).toContain(DEFAULT_EPIC_COLOR);
+    });
+});
+describe('epicStateLabel', () => {
+    it('returns no label for empty epics without a lifecycle state', () => {
+        expect(epicStateLabel(null)).toBe('');
+        expect(epicStateLabel(undefined)).toBe('');
     });
 });
 describe('DEFAULT_EPIC_FORM', () => {
@@ -192,8 +198,9 @@ describe('epicsWithActiveCards', () => {
         { id: 'e1', name: 'Alpha' },
         { id: 'e2', name: 'Beta' },
         { id: 'e3', name: 'Empty' },
+        { id: 'e4', name: 'Complete', state: 'done' },
     ];
-    const countFor = (id: any) => ({ e1: 2, e2: 1, e3: 0 })[id] ?? 0;
+    const countFor = (id: any) => ({ e1: 2, e2: 1, e3: 0, e4: 2 })[id] ?? 0;
     it('drops epics with zero active cards', () => {
         expect(epicsWithActiveCards(epics, countFor, null).map((e: any) => e.id)).toEqual(['e1', 'e2']);
     });
@@ -204,8 +211,20 @@ describe('epicsWithActiveCards', () => {
             'e3',
         ]);
     });
+    it('drops done epics from the board picker unless selected', () => {
+        expect(epicsWithActiveCards(epics, countFor, null).map((e: any) => e.id)).toEqual(['e1', 'e2']);
+        expect(epicsWithActiveCards(epics, countFor, 'e4').map((e: any) => e.id)).toEqual([
+            'e1',
+            'e2',
+            'e4',
+        ]);
+    });
     it('returns all epics when no count function is provided', () => {
-        expect(epicsWithActiveCards(epics, undefined, null)).toEqual(epics);
+        expect(epicsWithActiveCards(epics, undefined, null).map((e: any) => e.id)).toEqual([
+            'e1',
+            'e2',
+            'e3',
+        ]);
     });
     it('returns an empty array for a non-array input', () => {
         expect(epicsWithActiveCards(null, countFor, null)).toEqual([]);

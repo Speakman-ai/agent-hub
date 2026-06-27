@@ -49,6 +49,7 @@ import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
 import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { recomputeSessionState } from '../session-state.js';
+import { epicsWithComputedState, recomputeEpicState } from '../epic-state.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
 import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
 import {
@@ -366,6 +367,7 @@ function createSpikeCardForSpecItem(
   if (args.phaseId) {
     stmts.updateKanbanCardPhase.run(args.phaseId, cardId);
   }
+  recomputeEpicState(stmts, args.epicId);
   stmts.setKanbanSpecItemSpikeCard.run(cardId, args.specItem.id);
   return (stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined) ?? null;
 }
@@ -451,6 +453,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const data = getOrCreateBoard(stmts, req.params.projectId as string);
+    data.epics = epicsWithComputedState(data.epics, data.cards, data.columns);
     const counts = loadColumnCounts(stmts, data.columns);
 
     let cards: KanbanCardRow[];
@@ -827,6 +830,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // above, before the insert).
     if (resolvedEpicId) stmts.updateKanbanCardEpic.run(resolvedEpicId, id);
     if (resolvedPhaseId) stmts.updateKanbanCardPhase.run(resolvedPhaseId, id);
+    if (resolvedEpicId) recomputeEpicState(stmts, resolvedEpicId);
 
     if (parsed.assignedUserId !== undefined) {
       stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, id);
@@ -1012,6 +1016,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasPrBaseBranch ? (prBaseBranch ?? null) : (card.pr_base_branch ?? null),
       req.params.cardId,
     );
+    const affectedEpicIds = new Set<string>();
+    if (card.epic_id) affectedEpicIds.add(card.epic_id);
+    if (nextEpicId) affectedEpicIds.add(nextEpicId);
+    for (const affectedEpicId of affectedEpicIds) {
+      recomputeEpicState(stmts, affectedEpicId);
+    }
     if (parsed.assignedUserId !== undefined) {
       stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, req.params.cardId);
     }
@@ -1037,6 +1047,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
       const previousColumnId = card.column_id;
       stmts.moveKanbanCard.run(columnId, position ?? 0, req.params.cardId);
+      recomputeEpicState(stmts, card.epic_id);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       const updatedCard = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
       res.json(updatedCard);
@@ -1233,6 +1244,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         req.params.cardId,
       );
       stmts.moveKanbanCard.run(inProgressColumnId, 0, req.params.cardId);
+      recomputeEpicState(stmts, card.epic_id);
 
       // Persist an explicit auto-merge override on the card so it stays visible
       // in the assign UI and survives reassignment. Only an explicit boolean
@@ -1395,10 +1407,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
   router.delete('/api/projects/:projectId/board/cards/:cardId', (req: Request, res: Response) => {
     const cardId = req.params.cardId as string;
+    const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
 
     lastDispatchedReviewId.delete(cardId);
 
     stmts.deleteKanbanCard.run(cardId);
+    recomputeEpicState(stmts, card?.epic_id);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
   });
@@ -1521,8 +1535,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
   );
 
   router.get('/api/projects/:projectId/board/epics', (req: Request, res: Response) => {
-    const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-    res.json(stmts.getKanbanEpics.all(board.id));
+    const data = getOrCreateBoard(stmts, req.params.projectId as string);
+    res.json(epicsWithComputedState(data.epics, data.cards, data.columns));
   });
 
   router.post('/api/projects/:projectId/board/epics', (req: Request, res: Response) => {
@@ -2397,6 +2411,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         stmts.deleteKanbanCard.run(specItem.spike_card_id);
       }
       stmts.deleteKanbanSpecItem.run(req.params.specItemId);
+      recomputeEpicState(stmts, specItem.epic_id);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       res.json({ ok: true });
     },
@@ -2481,6 +2496,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         }
       }
       stmts.updateKanbanCardEpic.run(epicId || null, req.params.cardId);
+      const affectedEpicIds = new Set<string>();
+      if (card.epic_id) affectedEpicIds.add(card.epic_id);
+      if (epicId) affectedEpicIds.add(epicId);
+      for (const affectedEpicId of affectedEpicIds) {
+        recomputeEpicState(stmts, affectedEpicId);
+      }
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       res.json(stmts.getKanbanCard.get(req.params.cardId));
     },

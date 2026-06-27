@@ -68,6 +68,7 @@ const PrioritySchema = z.enum(['low', 'medium', 'high', 'urgent']);
 const ReviewStatusSchema = z
   .enum(['awaiting_review', 'reviewing', 'approved', 'changes_requested'])
   .nullable();
+const EpicStateSchema = z.enum(['not_started', 'in_progress', 'done']);
 
 export const KanbanBoardComponent = registerComponent(
   'KanbanBoard',
@@ -198,6 +199,10 @@ export const KanbanEpicComponent = registerComponent(
       board_id: z.string(),
       name: z.string(),
       description: z.string().nullable(),
+      state: EpicStateSchema.nullable().openapi({
+        description:
+          'Derived lifecycle from linked cards. `null` means the epic has no linked cards. `not_started` means linked cards exist but none have left To Do/backlog yet, `in_progress` means at least one linked card has started or completed but not every linked card is Done, and `done` means every linked card is in a Done-ish column.',
+      }),
       labels: z.string().nullable().optional(),
       assigned_user_id: z.string().nullable().optional(),
       color: z.string(),

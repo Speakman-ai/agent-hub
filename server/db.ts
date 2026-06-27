@@ -538,6 +538,8 @@ function initDb(dataDir: string): void {
       board_id TEXT NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
+      state TEXT DEFAULT NULL
+        CHECK (state IS NULL OR state IN ('not_started', 'in_progress', 'done')),
       color TEXT NOT NULL DEFAULT '#6366F1',
       autonomous INTEGER NOT NULL DEFAULT 0,
       autonomous_interval INTEGER NOT NULL DEFAULT 5,
@@ -2140,6 +2142,14 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT labels FROM kanban_epics LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE kanban_epics ADD COLUMN labels TEXT DEFAULT NULL');
+  }
+
+  try {
+    db.prepare('SELECT state FROM kanban_epics LIMIT 1').get();
+  } catch {
+    db.exec(
+      "ALTER TABLE kanban_epics ADD COLUMN state TEXT DEFAULT NULL CHECK (state IS NULL OR state IN ('not_started', 'in_progress', 'done'))",
+    );
   }
 
   try {
@@ -4112,6 +4122,9 @@ function initDb(dataDir: string): void {
     ),
     updateKanbanEpic: db.prepare(
       `UPDATE kanban_epics SET name = ?, description = ?, color = ?, autonomous = ?, autonomous_interval = ?, autonomous_max_concurrent = ?, autonomous_model = ?, orchestration_budgets_json = ?, pr_base_branch = ?, labels = ?, updated_at = datetime('now') WHERE id = ?`,
+    ),
+    updateKanbanEpicState: db.prepare(
+      "UPDATE kanban_epics SET state = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     // Standalone stamp for the user who flipped autonomous mode on. Kept
     // separate from updateKanbanEpic so existing call sites (and the

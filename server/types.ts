@@ -856,6 +856,8 @@ export interface KanbanEpicRow {
   board_id: string;
   name: string;
   description: string | null;
+  /** Derived lifecycle from linked cards. Null means the epic has no linked cards. */
+  state: 'not_started' | 'in_progress' | 'done' | null;
   /** Comma-separated tags (same shape as kanban card labels). */
   labels: string | null;
   /** Org user id of the lead user for this epic. */
@@ -1768,6 +1770,7 @@ export interface Stmts {
   getKanbanEpic: Stmt;
   createKanbanEpic: Stmt;
   updateKanbanEpic: Stmt;
+  updateKanbanEpicState: Stmt;
   setEpicAutonomousEnabledBy: Stmt;
   setEpicAutonomousSendIt: Stmt;
   setKanbanEpicAssignedUser: Stmt;

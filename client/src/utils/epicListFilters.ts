@@ -7,15 +7,18 @@ type EpicRow = {
   name: string;
   goal?: string | null;
   description?: string | null;
+  state?: 'not_started' | 'in_progress' | 'done' | null;
   labels?: string | null;
   assigned_user_id?: string | null;
 };
 
 export type EpicListFilterScope = 'all' | 'with-tickets' | 'empty';
+export type EpicListFilterState = 'all' | 'not_started' | 'in_progress' | 'done';
 
 export type EpicListFilters = {
   search: string;
   scope: EpicListFilterScope;
+  state: EpicListFilterState;
   selectedLabels: Set<string>;
   selectedUserIds: Set<string>;
 };
@@ -24,6 +27,7 @@ export function createDefaultEpicListFilters(): EpicListFilters {
   return {
     search: '',
     scope: 'all',
+    state: 'all',
     selectedLabels: new Set(),
     selectedUserIds: new Set(),
   };
@@ -56,6 +60,7 @@ export function filterEpicsForList(
     const count = epicTicketCount(epic.id, cards);
     if (filters.scope === 'with-tickets' && count === 0) return false;
     if (filters.scope === 'empty' && count > 0) return false;
+    if (filters.state !== 'all' && epic.state !== filters.state) return false;
     if (!cardMatchesLabelFilter(epic, filters.selectedLabels)) return false;
     if (!epicMatchesUserFilter(epic, filters.selectedUserIds)) return false;
     if (!q) return true;

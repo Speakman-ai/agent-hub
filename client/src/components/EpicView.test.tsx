@@ -189,6 +189,67 @@ describe('EpicView', () => {
     expect(screen.queryByText('Mobile')).toBeNull();
   });
 
+  it('filters epics by lifecycle state on the list page', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...board,
+      epics: [
+        {
+          id: 'e1',
+          name: 'Platform',
+          color: '#6366F1',
+          description: 'Core work',
+          state: 'in_progress',
+        },
+        {
+          id: 'e2',
+          name: 'Archived',
+          color: '#6366F1',
+          description: '',
+          state: 'done',
+        },
+        {
+          id: 'e3',
+          name: 'Empty epic',
+          color: '#6366F1',
+          description: '',
+          state: null,
+        },
+        {
+          id: 'e4',
+          name: 'Todo epic',
+          color: '#6366F1',
+          description: '',
+          state: 'not_started',
+        },
+      ],
+    });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Platform')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('epic-list-filter-state' as any), {
+      target: { value: 'not_started' },
+    });
+    await waitFor(() => expect(screen.getByText('Todo epic')).toBeInTheDocument());
+    expect(screen.queryByText('Empty epic')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('epic-list-filter-state' as any), {
+      target: { value: 'done' },
+    });
+    await waitFor(() => expect(screen.getByText('Archived')).toBeInTheDocument());
+    expect(screen.queryByText('Platform')).toBeNull();
+  });
+
   it('deletes an epic from the list view', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     (api.deleteEpic as any).mockResolvedValue({});

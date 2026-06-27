@@ -57,6 +57,7 @@ function makeEpic(overrides: Partial<KanbanEpicRow> = {}): KanbanEpicRow {
     board_id: 'board-1',
     name: 'Test Epic',
     description: null,
+    state: 'not_started',
     labels: null,
     color: '#3B82F6',
     autonomous: 1,

@@ -7,15 +7,24 @@ import {
   autonomousModelOptions,
   defaultAutonomousModel,
   DEFAULT_EPIC_COLOR,
+  epicStateLabel,
 } from './epics';
+
+describe('epicStateLabel', () => {
+  it('returns no label for empty epics without a lifecycle state', () => {
+    expect(epicStateLabel(null)).toBe('');
+    expect(epicStateLabel(undefined)).toBe('');
+  });
+});
 
 describe('epicsWithActiveCards', () => {
   const epics = [
     { id: 'e1', name: 'Platform' },
     { id: 'e2', name: 'Mobile' },
     { id: 'e3', name: 'Empty' },
+    { id: 'e4', name: 'Complete', state: 'done' },
   ];
-  const countFor = (id: any) => (({ e1: 3, e2: 1, e3: 0 }) as Record<string, any>)[id] ?? 0;
+  const countFor = (id: any) => (({ e1: 3, e2: 1, e3: 0, e4: 2 }) as Record<string, any>)[id] ?? 0;
 
   it('drops epics with zero active cards', () => {
     const visible = epicsWithActiveCards(epics, countFor, null);
@@ -27,8 +36,21 @@ describe('epicsWithActiveCards', () => {
     expect(visible.map((e: any) => e.id)).toEqual(['e1', 'e2', 'e3']);
   });
 
+  it('drops done epics from the board picker unless selected', () => {
+    expect(epicsWithActiveCards(epics, countFor, null).map((e: any) => e.id)).toEqual(['e1', 'e2']);
+    expect(epicsWithActiveCards(epics, countFor, 'e4').map((e: any) => e.id)).toEqual([
+      'e1',
+      'e2',
+      'e4',
+    ]);
+  });
+
   it('returns all epics when no count function is provided', () => {
-    expect(epicsWithActiveCards(epics, undefined, null)).toEqual(epics);
+    expect(epicsWithActiveCards(epics, undefined, null).map((e: any) => e.id)).toEqual([
+      'e1',
+      'e2',
+      'e3',
+    ]);
   });
 
   it('returns an empty array for a non-array input', () => {

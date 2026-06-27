@@ -6,20 +6,22 @@ import {
 } from './epicListFilters';
 
 const epics = [
-  { id: 'e-empty', name: 'Alpha empty', labels: 'alpha' },
-  { id: 'e-full', name: 'Beta full', labels: 'platform, q1' },
-  { id: 'e-other', name: 'Gamma other', labels: 'platform' },
+  { id: 'e-empty', name: 'Alpha empty', labels: 'alpha', state: null },
+  { id: 'e-full', name: 'Beta full', labels: 'platform, q1', state: 'done' },
+  { id: 'e-other', name: 'Gamma other', labels: 'platform', state: 'in_progress' },
+  { id: 'e-todo', name: 'Delta todo', labels: 'alpha', state: 'not_started' },
 ];
 
 const cards = [
   { id: 'c1', epic_id: 'e-full' },
   { id: 'c2', epic_id: 'e-other' },
+  { id: 'c3', epic_id: 'e-todo' },
 ];
 
 describe('epicListFilters', () => {
   it('sorts epics with empty ticket counts last', () => {
     const sorted = sortEpicsWithEmptyLast(epics as any, cards);
-    expect(sorted.map((e) => e.id)).toEqual(['e-full', 'e-other', 'e-empty']);
+    expect(sorted.map((e) => e.id)).toEqual(['e-full', 'e-todo', 'e-other', 'e-empty']);
   });
 
   it('filters by scope and search', () => {
@@ -36,6 +38,20 @@ describe('epicListFilters', () => {
     filters.selectedLabels = new Set(['platform']);
     const filtered = applyEpicListFilters(epics as any, filters, cards);
     expect(filtered.map((e) => e.id)).toEqual(['e-full', 'e-other']);
+  });
+
+  it('filters by lifecycle state', () => {
+    const filters = createDefaultEpicListFilters();
+    filters.state = 'in_progress';
+    const filtered = applyEpicListFilters(epics as any, filters, cards);
+    expect(filtered.map((e) => e.id)).toEqual(['e-other']);
+  });
+
+  it('does not classify empty epics as not started', () => {
+    const filters = createDefaultEpicListFilters();
+    filters.state = 'not_started';
+    const filtered = applyEpicListFilters(epics as any, filters, cards);
+    expect(filtered.map((e) => e.id)).toEqual(['e-todo']);
   });
 
   it('filters by selected lead users with OR semantics', () => {
