@@ -146,6 +146,60 @@ describe('findKanbanCardForIncomingPr', () => {
     expect(path).toBe('branch_worktree');
     expect(found?.id).toBe('c2');
   });
+
+  it('resolves via finalize run registry when the card has no pr_url', () => {
+    const card = {
+      id: 'c-finalize',
+      board_id: 'b1',
+      column_id: 'col-todo',
+      title: 'Finalize-created PR',
+      session_id: '22222222-2222-4333-8444-555555555555',
+      pr_url: null,
+    } as KanbanCardRow;
+    const stmts = {
+      getKanbanCardByPrUrl: { get: vi.fn(() => undefined) },
+      getFinalizeRunByPrUrl: { get: vi.fn(() => ({ id: 'run-1', card_id: card.id })) },
+      getKanbanCard: { get: vi.fn(() => card) },
+    };
+
+    const { card: found, path } = findKanbanCardForIncomingPr(stmts as never, 'b1', {
+      prUrl: '/projects/agent-hub/pulls/337',
+      headRef: 'feature/saved-filter-fix',
+      prTitle: 'Save all Kanban sidebar filter fields',
+      cols,
+      prNumber: 337,
+    });
+
+    expect(path).toBe('finalize_run');
+    expect(found?.id).toBe(card.id);
+  });
+
+  it('does not resolve a finalize registry hit for a different board', () => {
+    const card = {
+      id: 'c-other-board',
+      board_id: 'other-board',
+      column_id: 'col-todo',
+      title: 'Other board card',
+      pr_url: null,
+    } as KanbanCardRow;
+    const stmts = {
+      getKanbanCardByPrUrl: { get: vi.fn(() => undefined) },
+      getFinalizeRunByPrUrl: { get: vi.fn(() => ({ id: 'run-1', card_id: card.id })) },
+      getKanbanCard: { get: vi.fn(() => card) },
+      getKanbanCards: { all: vi.fn(() => []) },
+      getSessionIdsByWorktreeBranch: { all: vi.fn(() => []) },
+    };
+
+    const { card: found, path } = findKanbanCardForIncomingPr(stmts as never, 'b1', {
+      prUrl: '/projects/agent-hub/pulls/337',
+      headRef: 'feature/saved-filter-fix',
+      prTitle: 'Save all Kanban sidebar filter fields',
+      cols,
+    });
+
+    expect(path).toBe('none');
+    expect(found).toBeUndefined();
+  });
 });
 
 describe('linkKanbanCardPrUrl', () => {

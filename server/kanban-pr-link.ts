@@ -9,13 +9,20 @@
  * Callers must invoke {@link linkKanbanCardPrUrl} after a successful find so
  * clients receive `kanban_update` and logs record which path fired.
  */
-import type { BroadcastFn, KanbanCardRow, KanbanColumnRow, Stmts } from './types.js';
+import type {
+  BroadcastFn,
+  FinalizeRunRow,
+  KanbanCardRow,
+  KanbanColumnRow,
+  Stmts,
+} from './types.js';
 
 /** Matches `session-abcdef12` anywhere in a branch name (e.g. `agent-hub/foo/session-abcdef12`). */
 export const SESSION_BRANCH_REF_RE = /session-([a-f0-9]{8})\b/i;
 
 export type KanbanPrLinkPath =
   | 'already_linked'
+  | 'finalize_run'
   | 'branch_session_id'
   | 'branch_worktree'
   | 'title'
@@ -110,6 +117,19 @@ function findCardByWorktreeBranch(
   return card;
 }
 
+function findCardByFinalizeRunPrUrl(
+  stmts: Stmts,
+  boardId: string,
+  prUrl: string,
+): KanbanCardRow | undefined {
+  const run = stmts.getFinalizeRunByPrUrl?.get(prUrl) as FinalizeRunRow | undefined;
+  if (!run?.card_id) return undefined;
+  const card = stmts.getKanbanCard.get(run.card_id) as KanbanCardRow | undefined;
+  if (!card || card.board_id !== boardId) return undefined;
+  if (card.pr_url && card.pr_url !== prUrl) return undefined;
+  return card;
+}
+
 /**
  * Resolve a kanban card for an incoming GitHub PR (webhook / reconcile).
  * Does not broadcast — call {@link linkKanbanCardPrUrl} when `path !== 'none'`.
@@ -119,12 +139,17 @@ export function findKanbanCardForIncomingPr(
   boardId: string,
   opts: FindKanbanCardForPrOpts,
 ): FindKanbanCardForPrResult {
-  const { prUrl, headRef, prTitle, cols, prNumber } = opts;
+  const { prUrl, headRef, prTitle, cols } = opts;
   const terminalColIds = terminalColumnIds(cols);
 
   const byUrl = stmts.getKanbanCardByPrUrl?.get(prUrl) as KanbanCardRow | undefined;
   if (byUrl) {
     return { card: byUrl, path: 'already_linked' };
+  }
+
+  const byFinalizeRun = findCardByFinalizeRunPrUrl(stmts, boardId, prUrl);
+  if (byFinalizeRun) {
+    return { card: byFinalizeRun, path: 'finalize_run' };
   }
 
   if (headRef) {

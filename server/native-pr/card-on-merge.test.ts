@@ -181,4 +181,77 @@ describe('handleCardOnMerge — Done means merged, not pushed', () => {
       columnName: renamedDone.name,
     });
   });
+
+  it('moves a Finalize-run card to Done when only finalize_runs has the PR URL', () => {
+    const projectId = `np-merge-${uuidv4().slice(0, 8)}`;
+    const board = getOrCreateBoard(stmts, projectId);
+    const cols = board.columns as KanbanColumnRow[];
+    const done = cols.find((c) => c.name.toLowerCase() === 'done')!;
+    const start = cols.find((c) => c.id !== done.id)!;
+
+    const cardId = uuidv4();
+    const prNumber = 29;
+    const prUrl = buildNativePrUrl(projectId, prNumber);
+    stmts.createKanbanCard.run(
+      cardId,
+      start.id,
+      board.board.id,
+      'Finalize tracked card',
+      null,
+      'medium',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      0,
+    );
+    const runId = uuidv4();
+    stmts.insertFinalizeRun.run(
+      runId,
+      cardId,
+      null,
+      projectId,
+      'feature/finalize-card',
+      'a'.repeat(40),
+      `idempotency-${uuidv4()}`,
+      'pushed',
+      'push',
+      'agent_block',
+      null,
+      'user-1',
+      'Agent Hub',
+      'agent@example.com',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+    stmts.updateFinalizeRunPrUrl.run(prUrl, runId);
+
+    const events: Array<Record<string, unknown>> = [];
+    handleCardOnMerge(
+      {
+        stmts,
+        broadcast: (e) => {
+          events.push(e as Record<string, unknown>);
+        },
+      },
+      projectId,
+      makePr(projectId, prNumber, {
+        head_branch: 'feature/no-session-token',
+        title: 'Different PR title',
+      }),
+      'tester',
+    );
+
+    const after = stmts.getKanbanCard.get(cardId) as { column_id: string; pr_url: string | null };
+    expect(after.column_id).toBe(done.id);
+    expect(after.pr_url).toBe(prUrl);
+    expect(events.find((e) => e.type === 'card_moved')).toMatchObject({
+      cardId,
+      columnName: done.name,
+    });
+  });
 });
