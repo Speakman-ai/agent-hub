@@ -6,28 +6,44 @@ import {
   finalizeAutomationFromSession,
   sessionControlValue,
   sessionControlPatch,
-  sessionControlOptionsForAgent,
+  sessionControlOptionsForProject,
+  sessionControlValueForProject,
 } from '../../utils/finalizeAutomation';
+import { sessionControlIcon } from '../../utils/sessionControlIcons';
+
+function SessionControlIcon({
+  value,
+  size = 14,
+  className = '',
+}: {
+  value: string;
+  size?: number;
+  className?: string;
+}) {
+  const Icon = sessionControlIcon(value);
+  if (!Icon) return null;
+  return <Icon size={size} className={`shrink-0 ${className}`} aria-hidden />;
+}
 
 /**
  * FinalizeAutomationSelect — the single "what is this session doing" dropdown.
  *
- * It folds three orthogonal session axes into one mutually-exclusive control:
+ * It folds session mode and finalize automation into one mutually-exclusive control:
  *   - session_mode === 'design'  → Design (no ship at all; live canvas)
- *   - ask_mode === true          → Ask (read-only planning)
+ *   - session_mode === 'consult' → Consult (Hub-only; no code ship or Finalize)
  *   - finalize_automation level  → Build / Build and Review / Build and Push / Auto Merge
  *
- * Design sits at the top as the no-ship end of the gradient. It is mutually
- * exclusive with the ship levels by construction: picking Design clears any
- * ship intent, and picking a ship level (or Ask) drops the session out of
- * design mode first.
+ * Design and Consult sit at the no-ship end of the gradient. They are mutually
+ * exclusive with the ship levels by construction: picking Design or Consult clears
+ * any ship intent, and picking a ship level drops the session out of those modes first.
  */
 export default function FinalizeAutomationSelect({
   sessionId,
   session,
   agent,
+  project = null,
   disabled = false,
-  askMode = false,
+  legacyAskMode = false,
   onControlChange,
   onError,
   variant = 'default',
@@ -40,7 +56,9 @@ export default function FinalizeAutomationSelect({
         ? 'scoping'
         : session?.session_mode === 'skill-builder'
           ? 'skill-builder'
-          : 'chat';
+          : session?.session_mode === 'consult'
+            ? 'consult'
+            : 'chat';
   const canDesign = !!session?.can_design_mode;
   const [pending, setPending] = useState(false);
   const [open, setOpen] = useState(false);
@@ -56,7 +74,10 @@ export default function FinalizeAutomationSelect({
       // entering Design from `merge` clears ship intent AND switches the mode in
       // a single transaction, so a failed worktree check can't drop the merge
       // intent while leaving the user in chat.
-      const patch = sessionControlPatch({ sessionMode, askMode, automation: level }, nextValue);
+      const patch = sessionControlPatch(
+        { sessionMode, askMode: legacyAskMode, automation: level },
+        nextValue,
+      );
       if (!sessionId || pending || patch === null) {
         setOpen(false);
         return;
@@ -72,20 +93,24 @@ export default function FinalizeAutomationSelect({
         setOpen(false);
       }
     },
-    [sessionId, pending, sessionMode, canDesign, askMode, level, onControlChange, onError],
+    [sessionId, pending, sessionMode, canDesign, legacyAskMode, level, onControlChange, onError],
   );
 
   if (!sessionId) return null;
 
   const compact = variant === 'compact';
-  const selectedValue = sessionControlValue({ sessionMode, askMode, automation: level });
+  const selectedValue = sessionControlValueForProject(project, {
+    sessionMode,
+    askMode: legacyAskMode,
+    automation: level,
+  });
   // The currently-active label is resolved against the FULL list so a session
   // already in skill-builder mode still renders correctly even on an ineligible
-  // agent; the dropdown itself only OFFERS the options the agent is allowed to
-  // switch into (Skill Builder hidden for docs / reviewer / skill-builder).
-  const optionList = sessionControlOptionsForAgent(agent);
+  // agent; the dropdown itself only OFFERS the options the agent/project allow.
+  const optionList = sessionControlOptionsForProject(project, agent);
   const selected =
     SESSION_CONTROL_OPTIONS.find((o: any) => o.value === selectedValue) ??
+    optionList[0] ??
     SESSION_CONTROL_OPTIONS[2];
 
   return (
@@ -104,6 +129,7 @@ export default function FinalizeAutomationSelect({
             : 'flex w-full justify-center items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-slate-700/70 bg-slate-900/50 text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 sm:w-auto sm:inline-flex'
         }
       >
+        <SessionControlIcon value={selectedValue} size={compact ? 12 : 14} className="opacity-80" />
         <span>{selected.label}</span>
         <ChevronDown size={compact ? 12 : 14} className="opacity-70 shrink-0" />
       </button>
@@ -142,11 +168,20 @@ export default function FinalizeAutomationSelect({
                       optionDisabled ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : ''
                     } ${active ? 'text-indigo-200 bg-indigo-950/40' : 'text-slate-200'}`}
                   >
-                    <div className="font-medium">{option.label}</div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">
-                      {optionDisabled
-                        ? 'Needs a session with an isolated worktree'
-                        : option.description}
+                    <div className="flex items-start gap-2">
+                      <SessionControlIcon
+                        value={option.value}
+                        size={14}
+                        className={`mt-0.5 ${active ? 'text-indigo-300' : 'text-slate-400'}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">{option.label}</div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          {optionDisabled
+                            ? 'Needs a session with an isolated worktree'
+                            : option.description}
+                        </div>
+                      </div>
                     </div>
                   </button>
                 </li>

@@ -114,45 +114,37 @@ describe('api session helpers — URL + method + body parity with web client', (
         expect(init.method).toBe('PUT');
         expect(JSON.parse(init.body)).toEqual({ phase: 'verifying', meta: { pr: 1 } });
     });
-    it('createSession omits ask_mode when not provided', async () => {
+    it('createSession omits session_mode when not in consult mode', async () => {
         await api.createSession('agent-1', 'My session');
         const [, init] = lastCall();
         const body = JSON.parse(init.body);
         expect(body).toEqual({ name: 'My session' });
+        expect(body).not.toHaveProperty('session_mode');
         expect(body).not.toHaveProperty('ask_mode');
     });
-    it('createSession({ askMode: true }) forwards ask_mode:true', async () => {
-        await api.createSession('agent-1', 'My session', { askMode: true });
+    it('createSession({ consultMode: true }) forwards session_mode:consult', async () => {
+        await api.createSession('agent-1', 'My session', { consultMode: true });
         const [, init] = lastCall();
         expect(JSON.parse(init.body)).toEqual({
             name: 'My session',
-            ask_mode: true,
+            session_mode: 'consult',
         });
     });
-    it('createSession({ askMode: false }) forwards ask_mode:false (explicit opt-out)', async () => {
-        await api.createSession('agent-1', 'My session', { askMode: false });
+    it('createSession({ consultMode: false }) omits session_mode', async () => {
+        await api.createSession('agent-1', 'My session', { consultMode: false });
         const [, init] = lastCall();
         expect(JSON.parse(init.body)).toEqual({
             name: 'My session',
-            ask_mode: false,
         });
     });
-    it('createSession coerces truthy askMode values to boolean true', async () => {
-        await api.createSession('agent-1', 'My session', { askMode: 1 });
-        const [, init] = lastCall();
-        expect(JSON.parse(init.body)).toEqual({
-            name: 'My session',
-            ask_mode: true,
-        });
-    });
-    it('createSession ignores use_worktree even when combined with askMode', async () => {
+    it('createSession ignores use_worktree even when combined with consultMode', async () => {
         await api.createSession('agent-1', 'My session', {
             use_worktree: false,
-            askMode: true,
+            consultMode: true,
         });
         const [, init] = lastCall();
         const body = JSON.parse(init.body);
-        expect(body).toEqual({ name: 'My session', ask_mode: true });
+        expect(body).toEqual({ name: 'My session', session_mode: 'consult' });
         expect(body).not.toHaveProperty('use_worktree');
     });
 });

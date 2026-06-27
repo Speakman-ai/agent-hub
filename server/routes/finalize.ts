@@ -79,6 +79,7 @@ import {
   type MetricName,
 } from '../finalize/metrics.js';
 import type { FinalizeMetricRow } from '../types.js';
+import { isWorkflowProject, workflowFinalizeBlockedResponse } from '../project-mode-guards.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -290,6 +291,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
 
       const project = findProject(projectId);
       if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (isWorkflowProject(project)) {
+        return res.status(400).json(workflowFinalizeBlockedResponse());
+      }
 
       const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
@@ -355,6 +359,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
 
       const project = findProject(projectId);
       if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (isWorkflowProject(project)) {
+        return res.status(400).json(workflowFinalizeBlockedResponse());
+      }
 
       if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
         return res.status(404).json({ error: 'Session not found' });

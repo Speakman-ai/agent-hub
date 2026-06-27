@@ -35,7 +35,9 @@ import {
   isDesignModeActive,
   isScopingModeActive,
   isSkillBuilderModeActive,
+  isConsultBehaviorActive,
 } from './session-mode.js';
+import { CONSULT_SKILL_IDS } from './consult-mode-prompt.js';
 import type { Project } from './types.js';
 
 /** Subdirectory of the session worktree that holds design artifacts. */
@@ -65,6 +67,7 @@ export function requiredSkillIdsForSession(
   if (isDesignModeActive(session)) return [DESIGN_SKILL_ID];
   if (isScopingModeActive(session)) return ['agent-hub-kanban'];
   if (isSkillBuilderModeActive(session)) return [...SKILL_BUILDER_REQUIRED_SKILL_IDS];
+  if (isConsultBehaviorActive(session)) return [...CONSULT_SKILL_IDS];
   return [];
 }
 

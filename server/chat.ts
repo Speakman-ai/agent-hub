@@ -91,7 +91,8 @@ import {
 } from './design-mode-prompt.js';
 import { buildScopingModePreamble } from './scoping-mode-prompt.js';
 import { buildSkillBuilderModePreamble } from './skill-builder-mode-prompt.js';
-import { isSkillBuilderModeActive } from './session-mode.js';
+import { buildConsultModePreamble } from './consult-mode-prompt.js';
+import { isSkillBuilderModeActive, isConsultBehaviorActive } from './session-mode.js';
 import { formatEpicSpecDecisionsForContext, loadChosenSpecItemsForEpic } from './epic-spec.js';
 import {
   detectTagBlockInLastFence,
@@ -2552,6 +2553,28 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         enrichedPrompt = `${skillBuilderPreamble}\n\n${enrichedPrompt}`;
       }
 
+      if (isConsultBehaviorActive(session!)) {
+        if (!isAutoContinuation) {
+          for (const requiredId of requiredSkillIdsForSession(session!)) {
+            if (loadedRoutedSkillIds.has(requiredId)) continue;
+            const injection = loadSkillByName({
+              name: requiredId,
+              reason: 'session_mode=consult (required)',
+              paths: { skillsDir: paths.skillsDir },
+              sessionId,
+              stmts: stmts as Stmts,
+              broadcast,
+            });
+            enrichedPrompt += `\n\n${injection}`;
+            loadedRoutedSkillIds.add(requiredId);
+          }
+        }
+        const consultPreamble = buildConsultModePreamble({
+          project: project as Project,
+        });
+        enrichedPrompt = `${consultPreamble}\n\n${enrichedPrompt}`;
+      }
+
       let linkedEpicForBudgets: KanbanEpicRow | null = null;
       try {
         const cardRow = (stmts as Stmts).getKanbanCardBySession?.get(sessionId) as
@@ -3114,7 +3137,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (model && model !== 'auto') {
           args.push('--model', model);
         }
-        const isAskMode = !!session!.ask_mode;
+        const isAskMode = false;
         if (!isAskMode) {
           args.push('--yolo');
         }
@@ -3151,7 +3174,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         if (grokModel) {
           args.push('--model', grokModel);
         }
-        const isAskMode = !!session!.ask_mode;
+        const isAskMode = false;
         if (!isAskMode) {
           args.push('--always-approve');
         }
@@ -3175,7 +3198,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // On the first turn we pass the enriched system prompt inline (Codex has
         // no `--system-prompt` flag) and rely on `--skip-git-repo-check` so
         // fresh project cwds without a `.git` dir don't fail.
-        const isAskMode = !!session!.ask_mode;
+        const isAskMode = false;
         const prompt =
           isNewEngineSession || forceSystemPromptThisTurn
             ? `${enrichedPrompt}\n\n${finalPrompt}`
@@ -3245,7 +3268,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         stdinPrompt = prompt;
         bin = CODEX_BIN;
       } else {
-        const isAskMode = !!session!.ask_mode;
+        const isAskMode = false;
         // Write the enriched system prompt to a temp file and pass it
         // via `--system-prompt-file` instead of `--system-prompt
         // <huge-string>`. The argv-string form trips the Linux kernel's

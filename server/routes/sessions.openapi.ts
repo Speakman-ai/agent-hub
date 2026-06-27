@@ -241,7 +241,9 @@ export const CreateSessionRequestSchema = z.object({
   name: z.string().optional(),
   engine: z.string().optional(),
   model: z.string().optional(),
+  /** @deprecated Rejected when true — use session_mode: "consult" instead. */
   ask_mode: z.boolean().optional(),
+  session_mode: SessionModeSchema.optional(),
 });
 
 /** PATCH /api/sessions/:sessionId — `name`, `max_turns`, and/or `finalize_automation`. */

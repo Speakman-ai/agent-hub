@@ -24,7 +24,7 @@ import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
 import { shouldShowViewChanges } from '../utils/sessionExtras';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle, parseResolvePrNumberFromTitle, } from '@shared/utils/sessionTitlePr';
 export default function ChatScreen() {
-    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionAskMode, askSubmitted, handleAskSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, } = useApp();
+    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, } = useApp();
     // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
     // plain declaration here previously made this module fail to parse.
     const navigation = useNavigation<any>();
@@ -65,7 +65,9 @@ export default function ChatScreen() {
         };
     }, [activeSession, activeProject]);
     const showFinalizeBar = Boolean(activeSessionId && activeProject?.id);
-    const finalize = useFinalizeRunPoll(activeSessionId, { enabled: showFinalizeBar });
+    const finalize = useFinalizeRunPoll(activeSessionId, {
+        enabled: showFinalizeBar && !workflowProject,
+    });
     const hasCommittableChanges = useSessionCommittable(activeSessionId, { pendingChanges });
     // Build list data: messages + thinking + streaming indicators
     const listData = [
@@ -136,7 +138,7 @@ export default function ChatScreen() {
     </View>);
     return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <TopBar />
-      {activeSessionId ? (<FinalizeBar projectId={activeProject?.id} sessionId={activeSessionId} cardId={activeSession?.card_id ?? null} session={activeSession} sessionAgents={sessionAgents} hosted={activeProject?.gitHost === 'agenthub'} hasChanges={hasCommittableChanges} showViewChanges={shouldShowViewChanges(activeSession)} onViewChanges={() => navigation.navigate('SessionChanges', {
+      {activeSessionId ? (<FinalizeBar projectId={activeProject?.id} project={activeProject} sessionId={activeSessionId} cardId={activeSession?.card_id ?? null} session={activeSession} sessionAgents={sessionAgents} hosted={activeProject?.gitHost === 'agenthub'} hasChanges={hasCommittableChanges} showViewChanges={shouldShowViewChanges(activeSession)} onViewChanges={() => navigation.navigate('SessionChanges', {
                 sessionId: activeSessionId,
                 sessionName: activeSession?.name || '',
                 projectId: activeProject?.id || null,
@@ -160,7 +162,7 @@ export default function ChatScreen() {
         }}/>
 
         {/* Input */}
-        <MessageInput onSend={handleSend} onCancel={handleCancel} disabled={!activeAgentId || !connected || isProcessing} isProcessing={isProcessing} agentColor={activeAgent?.color} skills={skills} queueLength={(messageQueues[activeSessionId] || []).length} askMode={sessionAskMode}/>
+        <MessageInput onSend={handleSend} onCancel={handleCancel} disabled={!activeAgentId || !connected || isProcessing} isProcessing={isProcessing} agentColor={activeAgent?.color} skills={skills} queueLength={(messageQueues[activeSessionId] || []).length} consultMode={sessionConsultMode || activeSession?.session_mode === 'consult'}/>
       </KeyboardAvoidingView>
 
       {/* Agent Switcher Modal */}

@@ -25,7 +25,7 @@
  */
 
 /** Canonical, ordered list of session modes. Order is display order. */
-export const SESSION_MODES = ['chat', 'design', 'scoping', 'skill-builder'] as const;
+export const SESSION_MODES = ['chat', 'design', 'scoping', 'skill-builder', 'consult'] as const;
 
 export type SessionMode = (typeof SESSION_MODES)[number];
 
@@ -77,6 +77,31 @@ export function isSkillBuilderModeActive(
   session: { session_mode?: string | null } | null | undefined,
 ): boolean {
   return normalizeSessionMode(session?.session_mode) === 'skill-builder';
+}
+
+/**
+ * Whether consult-mode behavior (Hub-only Q&A + project mutations, no code ship)
+ * should be active. Available on dev and workflow projects; code ship and
+ * Finalize are blocked while consult behavior is active.
+ */
+export function isConsultModeActive(
+  session: { session_mode?: string | null } | null | undefined,
+): boolean {
+  return normalizeSessionMode(session?.session_mode) === 'consult';
+}
+
+/** Consult behavior: explicit consult mode, or legacy ask_mode rows (Ask retired). */
+export function isConsultBehaviorActive(
+  session: { session_mode?: string | null; ask_mode?: number | null } | null | undefined,
+): boolean {
+  return isConsultModeActive(session) || Number(session?.ask_mode ?? 0) !== 0;
+}
+
+/** Default session_mode for newly created user-facing sessions. */
+export function defaultSessionModeForProject(
+  project: { mode?: string | null } | null | undefined,
+): SessionMode {
+  return project?.mode === 'workflow' ? 'consult' : 'chat';
 }
 
 /**

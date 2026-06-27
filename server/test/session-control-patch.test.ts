@@ -48,15 +48,16 @@ describe('PATCH /api/sessions/:sessionId — atomic multi-axis control change', 
     expect(res.body.finalize_automation).toBe('manual');
   });
 
-  it('entering Design from merge+ask resets both ship intent and ask in one call', async () => {
+  it('entering Design from merge+legacy ask clears ship intent and ask in one call', async () => {
     const session = await createSession({ agentId, name: 'patch-design-from-merge' });
     const sessionId = session.id as string;
     giveSessionWorktree(sessionId);
-    // Seed ship intent + ask mode (the "merge + Ask" starting state).
+    // Seed ship intent + legacy ask flag (pre-Consult rows used ask_mode).
     await request
       .patch(`/api/sessions/${sessionId}`)
-      .send({ finalize_automation: 'merge', ask_mode: true })
+      .send({ finalize_automation: 'merge' })
       .expect(200);
+    await request.put(`/api/sessions/${sessionId}/ask-mode`).send({ enabled: true }).expect(200);
 
     // One atomic patch flips to Design and clears both other axes.
     const res = await request
@@ -98,5 +99,41 @@ describe('PATCH /api/sessions/:sessionId — atomic multi-axis control change', 
       .send({ finalize_automation: 'push' })
       .expect(200);
     expect(res.body.finalize_automation).toBe('push');
+  });
+
+  it('rejects ask_mode:true on PATCH with ask_mode_retired', async () => {
+    const session = await createSession({ agentId, name: 'patch-ask-retired' });
+    const sessionId = session.id as string;
+    const res = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ ask_mode: true })
+      .expect(400);
+    expect(res.body.error).toBe('ask_mode_retired');
+  });
+
+  it('allows session_mode consult on dev project sessions', async () => {
+    const session = await createSession({ agentId, name: 'patch-consult-dev' });
+    const sessionId = session.id as string;
+    const res = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ session_mode: 'consult', finalize_automation: 'manual' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('consult');
+  });
+
+  it('rejects ask_mode:true on POST create with ask_mode_retired', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'create-ask-retired', ask_mode: true })
+      .expect(400);
+    expect(res.body.error).toBe('ask_mode_retired');
+  });
+
+  it('creates dev sessions in consult mode when session_mode consult is sent', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'create-consult', session_mode: 'consult' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('consult');
   });
 });

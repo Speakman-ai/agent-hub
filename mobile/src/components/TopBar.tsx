@@ -12,7 +12,7 @@ import SessionStateIcon from './SessionStateIcon';
 import SessionEngineModelSheet from './SessionEngineModelSheet';
 import { truncateSessionId } from '../utils/sessionId';
 export default function TopBar() {
-    const { activeAgent, sessionEngine, sessionModel, sessionReasoningEffort, handleReasoningEffortChange, modelConfig, sessionAskMode, handleEngineChange, handleModelChange, activeSessionId, activeSessionState, agents, handleOpenHandoffSession, } = useApp();
+    const { activeAgent, sessionEngine, sessionModel, sessionReasoningEffort, handleReasoningEffortChange, modelConfig, sessionConsultMode, handleEngineChange, handleModelChange, activeSessionId, activeSessionState, agents, handleOpenHandoffSession, } = useApp();
     const { openSidebar } = useContext(SidebarContext);
     const [showPicker, setShowPicker] = useState(false);
     const [showForward, setShowForward] = useState(false);
@@ -90,8 +90,8 @@ export default function TopBar() {
 
       <View style={styles.right}>
         {/* Ask-mode badge — only when read-only mode is active */}
-        {activeAgent && sessionAskMode && (<TouchableOpacity onPress={() => setShowPicker(true)} accessibilityRole="button" accessibilityLabel="Ask mode on — read-only, no file changes or commands" style={styles.askBadge}>
-            <Text style={styles.askBadgeText}>Ask</Text>
+        {activeAgent && sessionConsultMode && (<TouchableOpacity onPress={() => setShowPicker(true)} accessibilityRole="button" accessibilityLabel="Consult mode on — Hub project updates only, no code ship or Finalize" style={styles.askBadge}>
+            <Text style={styles.askBadgeText}>Consult</Text>
           </TouchableOpacity>)}
 
         {/* Engine + Model button */}

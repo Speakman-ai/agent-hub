@@ -64,6 +64,7 @@ function MessageInput(
     agentColor,
     skills,
     askMode,
+    consultMode = askMode,
     readOnly,
     draftKey,
     onFileError,
@@ -949,8 +950,8 @@ function MessageInput(
           </button>
         </div>
       )}
-      {/* Ask mode indicator */}
-      {askMode && (
+      {/* Consult mode indicator */}
+      {consultMode && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-blue-900/20 border border-blue-800/40 rounded-lg text-xs text-blue-400">
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -964,7 +965,7 @@ function MessageInput(
               clipRule="evenodd"
             />
           </svg>
-          <span>Ask mode — read-only, no file changes or commands</span>
+          <span>Consult mode — Hub project updates only, no code ship or Finalize</span>
         </div>
       )}
 
@@ -1278,10 +1279,10 @@ function MessageInput(
           placeholder={
             disabled
               ? 'Waiting...'
-              : askMode
+              : consultMode
                 ? window.innerWidth < 640
                   ? 'Ask a question...'
-                  : 'Ask a question... (read-only mode)'
+                  : 'Consult on Agent Hub — board, wiki, workflows…'
                 : window.innerWidth < 640
                   ? 'Message...'
                   : 'Type a message... (paste or drop files)'

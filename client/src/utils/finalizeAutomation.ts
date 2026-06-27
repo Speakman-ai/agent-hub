@@ -37,13 +37,6 @@ export function finalizeAutomationLabel(value: any) {
   return FINALIZE_AUTOMATION_OPTIONS.find((o: any) => o.value === value)?.label ?? 'Build';
 }
 
-/**
- * Design is folded into the same "what is this session doing" dropdown as Ask
- * and the finalize automation levels. It is the no-ship end of the gradient:
- * iterate on a live canvas with the app as context, nothing finalizes/pushes.
- * It maps to `session_mode = 'design'` (a separate axis from ask_mode /
- * finalize_automation) but is mutually exclusive with the others in the UI.
- */
 export const DESIGN_AUTOMATION_OPTION = {
   value: 'design',
   label: 'Design',
@@ -62,62 +55,71 @@ export const SKILL_BUILDER_AUTOMATION_OPTION = {
   description: 'Author or refine project skills conversationally — nothing ships',
 } as Record<string, any>;
 
-export const ASK_AUTOMATION_OPTION = {
-  value: 'ask',
-  label: 'Ask',
-  description: 'Read-only planning mode, using the selected CLI engine ask mode',
+export const CONSULT_AUTOMATION_OPTION = {
+  value: 'consult',
+  label: 'Consult',
+  description:
+    'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
 } as Record<string, any>;
 
-/**
- * The full ordered option list for the session control dropdown:
- * Design → Ask → Build → Build and Review → Build and Push → Auto Merge.
- */
+/** Session-control values offered on workflow projects (no build/push/finalize). */
+export const WORKFLOW_SESSION_CONTROL_VALUES = new Set([
+  'consult',
+  'scoping',
+  'design',
+  'skill-builder',
+]);
+
+const SHIP_AUTOMATION_VALUES = new Set(['manual', 'review', 'push', 'merge']);
+
 export const SESSION_CONTROL_OPTIONS = [
+  CONSULT_AUTOMATION_OPTION,
   DESIGN_AUTOMATION_OPTION,
   SCOPING_AUTOMATION_OPTION,
   SKILL_BUILDER_AUTOMATION_OPTION,
-  ASK_AUTOMATION_OPTION,
   ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 
-/**
- * Agent roles that may NOT run Skill Builder mode. Mirror of
- * `server/session-mode.ts` `SKILL_BUILDER_INELIGIBLE_ROLES` — Skill Builder
- * prepends a dev coach prompt and force-loads skill-authoring skills, so it
- * only makes sense on a regular dev agent.
- */
 export const SKILL_BUILDER_INELIGIBLE_ROLES = ['skill-builder', 'reviewer', 'docs'];
 
-/** Whether an agent (by role) is eligible to run Skill Builder mode. */
 export function isSkillBuilderEligibleAgent(agent: any): boolean {
   if (!agent) return false;
   return !SKILL_BUILDER_INELIGIBLE_ROLES.includes(agent.role ?? '');
 }
 
-/**
- * The session-control options for a given agent: the full list, minus the Skill
- * Builder entry when the agent is a helper (docs / reviewer / skill-builder).
- * The server rejects the mode for those roles too — hiding it here keeps the
- * picker honest instead of offering an option that 400s.
- */
 export function sessionControlOptionsForAgent(agent: any): typeof SESSION_CONTROL_OPTIONS {
   if (isSkillBuilderEligibleAgent(agent)) return SESSION_CONTROL_OPTIONS;
   return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
 }
 
-/**
- * Resolve which single dropdown value is active given the three underlying
- * axes. Design takes precedence over Ask, which takes precedence over the
- * finalize automation level — matching their mutual exclusivity in the UI.
- *
- * @param {{ sessionMode?: string, askMode?: unknown, automation?: string }} input
- * @returns {string} one of 'design' | 'ask' | 'manual' | 'review' | 'push' | 'merge'
- */
+/** Workflow projects hide Build→Auto Merge; dev projects show the full list. */
+export function sessionControlOptionsForProject(
+  project: { mode?: string } | null | undefined,
+  agent: any,
+): typeof SESSION_CONTROL_OPTIONS {
+  const base = sessionControlOptionsForAgent(agent);
+  if (project?.mode === 'workflow') {
+    return base.filter((o: any) => WORKFLOW_SESSION_CONTROL_VALUES.has(o.value));
+  }
+  return base;
+}
+
+/** Legacy ask_mode rows and stale ship levels map to Consult for display. */
+export function sessionControlValueForProject(
+  project: { mode?: string } | null | undefined,
+  input: { sessionMode?: string; askMode?: unknown; automation?: string } = {},
+) {
+  const value = sessionControlValue(input);
+  if (project?.mode === 'workflow' && SHIP_AUTOMATION_VALUES.has(value)) return 'consult';
+  return value;
+}
+
 export function sessionControlValue({ sessionMode, askMode, automation }: any = {}) {
   if (sessionMode === 'design') return 'design';
   if (sessionMode === 'scoping') return 'scoping';
   if (sessionMode === 'skill-builder') return 'skill-builder';
-  if (askMode) return 'ask';
+  if (sessionMode === 'consult') return 'consult';
+  if (askMode) return 'consult';
   return parseFinalizeAutomation(automation);
 }
 
@@ -125,31 +127,6 @@ export function sessionControlLabel(value: any) {
   return SESSION_CONTROL_OPTIONS.find((o: any) => o.value === value)?.label ?? 'Build';
 }
 
-/**
- * Plan the ordered mutations needed to move the session control from its current
- * state to `target`. Centralizes the mutual-exclusivity contract so web + mobile
- * apply it identically and it stays unit-testable.
- *
- * Returns an array of steps; the caller applies them in order, mapping each to
- * the right API/handler call:
- *   - { type: 'mode', value: 'design' | 'chat' }   → setSessionMode
- *   - { type: 'ask', value: boolean }              → setSessionAskMode
- *   - { type: 'automation', value: <level> }       → updateSession({ finalize_automation })
- *
- * Key invariant (the bugs this guards): selecting Design is mutually exclusive
- * with all ship intent, so it must CLEAR both other axes —
- *   - ask mode (otherwise Design wins display precedence while the session runs
- *     read-only underneath, so design prompts never write artifacts), and
- *   - the finalize_automation level (otherwise a session entering Design from
- *     push/merge keeps that ship intent stored underneath and unexpectedly
- *     reveals/reuses it when later leaving Design) — reset to 'manual'.
- * Symmetrically, leaving Design for any ship/ask intent resets session_mode to
- * 'chat' first so the ship intent actually applies. Returns [] for a no-op.
- *
- * @param {{ sessionMode?: string, askMode?: unknown, automation?: string }} current
- * @param {string} target one of the SESSION_CONTROL_OPTIONS values
- * @returns {Array<{ type: 'mode'|'ask'|'automation', value: any }>}
- */
 export function planSessionControlChange(current: any, target: any) {
   const sessionMode =
     current?.sessionMode === 'design'
@@ -158,61 +135,63 @@ export function planSessionControlChange(current: any, target: any) {
         ? 'scoping'
         : current?.sessionMode === 'skill-builder'
           ? 'skill-builder'
-          : 'chat';
+          : current?.sessionMode === 'consult'
+            ? 'consult'
+            : 'chat';
   const askMode = !!current?.askMode;
   const automation = parseFinalizeAutomation(current?.automation);
   const currentValue = sessionControlValue({ sessionMode, askMode, automation });
   if (target === currentValue) return [];
 
   const steps: any[] = [];
-  if (target === 'design') {
+  const clearLegacyAsk = () => {
     if (askMode) steps.push({ type: 'ask', value: false });
+  };
+  const clearShipIntent = () => {
     if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
+  };
+
+  if (target === 'design') {
+    clearLegacyAsk();
+    clearShipIntent();
     steps.push({ type: 'mode', value: 'design' });
     return steps;
   }
 
   if (target === 'scoping') {
-    if (askMode) steps.push({ type: 'ask', value: false });
-    if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
+    clearLegacyAsk();
+    clearShipIntent();
     steps.push({ type: 'mode', value: 'scoping' });
     return steps;
   }
 
   if (target === 'skill-builder') {
-    if (askMode) steps.push({ type: 'ask', value: false });
-    if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
+    clearLegacyAsk();
+    clearShipIntent();
     steps.push({ type: 'mode', value: 'skill-builder' });
     return steps;
   }
 
-  // Any non-design/scoping/skill-builder target: drop out of special modes first.
-  if (sessionMode === 'design' || sessionMode === 'scoping' || sessionMode === 'skill-builder') {
+  if (target === 'consult') {
+    clearLegacyAsk();
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'consult' });
+    return steps;
+  }
+
+  if (
+    sessionMode === 'design' ||
+    sessionMode === 'scoping' ||
+    sessionMode === 'skill-builder' ||
+    sessionMode === 'consult'
+  ) {
     steps.push({ type: 'mode', value: 'chat' });
   }
-  if (target === 'ask') {
-    steps.push({ type: 'ask', value: true });
-  } else {
-    if (askMode) steps.push({ type: 'ask', value: false });
-    if (target !== automation) steps.push({ type: 'automation', value: target });
-  }
+  clearLegacyAsk();
+  if (target !== automation) steps.push({ type: 'automation', value: target });
   return steps;
 }
 
-/**
- * Collapse the planned steps into a single PATCH body so the change is applied
- * atomically in one server call (transactional) — no partial commits, nothing
- * to roll back on the client. Returns `null` for a no-op.
- *
- * Keys map to the PATCH /api/sessions/:id contract:
- *   - mode       → session_mode
- *   - ask        → ask_mode
- *   - automation → finalize_automation
- *
- * @param {{ sessionMode?: string, askMode?: unknown, automation?: string }} current
- * @param {string} target
- * @returns {{ session_mode?: string, ask_mode?: boolean, finalize_automation?: string } | null}
- */
 export function sessionControlPatch(current: any, target: any) {
   const steps = planSessionControlChange(current, target);
   if (steps.length === 0) return null;

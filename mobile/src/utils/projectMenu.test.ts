@@ -35,6 +35,14 @@ describe('projectLifecycleEntries', () => {
         const keys = projectLifecycleEntries({ githubRepo: 'owner/repo', mode: 'workflow' }).map((e: any) => e.key);
         expect(keys).not.toContain('pulls');
     });
+    it('omits dev-only lifecycle destinations for workflow projects', () => {
+        const keys = projectLifecycleEntries({ mode: 'workflow' }).map((e: any) => e.key);
+        expect(keys).not.toContain('deployments');
+        expect(keys).not.toContain('support');
+        expect(keys).not.toContain('security');
+        expect(keys).toContain('board');
+        expect(keys).toContain('wiki');
+    });
     it('does not include preview surfaces', () => {
         const all = [
             ...projectLifecycleEntries({ gitHost: 'agenthub', githubRepo: 'x/y' }),
@@ -76,6 +84,13 @@ describe('projectSettingsEntries', () => {
     it('omits Reviewer from project settings menu', () => {
         const keys = projectSettingsEntries({}).map((e: any) => e.key);
         expect(keys).not.toContain('reviewer');
+    });
+    it('omits runners and RUM for workflow projects', () => {
+        const keys = projectSettingsEntries({ mode: 'workflow' }).map((e: any) => e.key);
+        expect(keys).not.toContain('runners');
+        expect(keys).not.toContain('rum');
+        expect(keys).toContain('project-settings');
+        expect(keys).toContain('project-crons');
     });
 });
 describe('projectMenuEntries (legacy alias)', () => {
