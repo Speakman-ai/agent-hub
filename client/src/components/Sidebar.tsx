@@ -182,6 +182,8 @@ export default function Sidebar({
   const [serverVersion, setServerVersion] = useState<any>(null);
   const [serverGitHash, setServerGitHash] = useState<any>(null);
   const renameSavedRef = useRef(false);
+  const kanbanFiltersRef = useRef<HTMLDivElement | null>(null);
+  const scrolledKanbanFiltersProjectRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeAgentId) return;
     setExpandedAgents((prev: any) =>
@@ -339,6 +341,16 @@ export default function Sidebar({
   const isKanbanView = Boolean(kanbanProjectId);
   const kanbanProject = isKanbanView ? projects.find((p: any) => p.id === kanbanProjectId) : null;
 
+  useEffect(() => {
+    if (!isKanbanView || !kanbanProjectId) {
+      scrolledKanbanFiltersProjectRef.current = null;
+      return;
+    }
+    if (scrolledKanbanFiltersProjectRef.current === kanbanProjectId) return;
+    scrolledKanbanFiltersProjectRef.current = kanbanProjectId;
+    kanbanFiltersRef.current?.scrollIntoView?.({ block: 'start', inline: 'nearest' });
+  }, [isKanbanView, kanbanProjectId]);
+
   return (
     <div className="sidebar-container bg-gray-900 border-r border-gray-800 flex flex-col h-full electron-no-drag">
       {/* Header — Org Switcher (Electron-only).
@@ -459,21 +471,23 @@ export default function Sidebar({
           kanbanProjectId &&
           onKanbanSearchChange &&
           onKanbanSelectedEpicIdsChange ? (
-            <KanbanSidebarEpicsPanel
-              projectId={kanbanProjectId}
-              projectName={kanbanProjectName || kanbanProject?.name}
-              searchQuery={kanbanSearchQuery}
-              onSearchChange={onKanbanSearchChange}
-              selectedEpicIds={kanbanSelectedEpicIds}
-              onSelectedEpicIdsChange={onKanbanSelectedEpicIdsChange}
-              availableLabels={kanbanAvailableLabels}
-              selectedLabels={kanbanSelectedLabels}
-              onSelectedLabelsChange={onKanbanSelectedLabelsChange}
-              assignableUsers={kanbanAssignableUsers}
-              selectedUserIds={kanbanSelectedUserIds}
-              onSelectedUserIdsChange={onKanbanSelectedUserIdsChange}
-              refreshKey={kanbanRefreshKey}
-            />
+            <div ref={kanbanFiltersRef} data-testid="kanban-sidebar-filters-anchor">
+              <KanbanSidebarEpicsPanel
+                projectId={kanbanProjectId}
+                projectName={kanbanProjectName || kanbanProject?.name}
+                searchQuery={kanbanSearchQuery}
+                onSearchChange={onKanbanSearchChange}
+                selectedEpicIds={kanbanSelectedEpicIds}
+                onSelectedEpicIdsChange={onKanbanSelectedEpicIdsChange}
+                availableLabels={kanbanAvailableLabels}
+                selectedLabels={kanbanSelectedLabels}
+                onSelectedLabelsChange={onKanbanSelectedLabelsChange}
+                assignableUsers={kanbanAssignableUsers}
+                selectedUserIds={kanbanSelectedUserIds}
+                onSelectedUserIdsChange={onKanbanSelectedUserIdsChange}
+                refreshKey={kanbanRefreshKey}
+              />
+            </div>
           ) : null}
 
           <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">

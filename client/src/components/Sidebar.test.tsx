@@ -1227,4 +1227,32 @@ describe('Sidebar kanban board mode', () => {
     expect(screen.getByTestId('sidebar-new-project-cta')).toBeInTheDocument();
     expect(screen.getByTestId('kanban-sidebar-epics-panel')).toBeInTheDocument();
   });
+
+  it('scrolls the board filters into view when the board opens', async () => {
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(
+        <Sidebar
+          {...buildProps({
+            currentView: 'kanban:proj-1',
+            kanbanProjectId: 'proj-1',
+            kanbanProjectName: 'Test Project',
+            kanbanSearchQuery: '',
+            onKanbanSearchChange: vi.fn(),
+            kanbanSelectedEpicIds: new Set(),
+            onKanbanSelectedEpicIdsChange: vi.fn(),
+          })}
+        />,
+      );
+
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', inline: 'nearest' });
+      expect(screen.getByTestId('kanban-sidebar-filters-anchor')).toBeInTheDocument();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  });
 });
