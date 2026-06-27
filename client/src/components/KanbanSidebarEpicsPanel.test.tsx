@@ -103,7 +103,7 @@ describe('KanbanSidebarEpicsPanel', () => {
     const onSelectedLabelsChange = vi.fn();
     const onSelectedUserIdsChange = vi.fn();
 
-    const { rerender } = render(
+    render(
       <KanbanSidebarEpicsPanel
         projectId="p1"
         searchQuery="login"
@@ -119,6 +119,13 @@ describe('KanbanSidebarEpicsPanel', () => {
       />,
     );
 
+    fireEvent.change(screen.getByTestId('kanban-sidebar-label-search'), {
+      target: { value: 'bu' },
+    });
+    fireEvent.change(screen.getByTestId('kanban-sidebar-user-search'), {
+      target: { value: 'ry' },
+    });
+
     fireEvent.click(screen.getByTestId('kanban-sidebar-save-filter'));
     fireEvent.change(screen.getByTestId('kanban-sidebar-save-filter-name'), {
       target: { value: 'Login bugs' },
@@ -126,28 +133,23 @@ describe('KanbanSidebarEpicsPanel', () => {
     fireEvent.click(screen.getByTestId('kanban-sidebar-save-filter-confirm'));
 
     await waitFor(() => expect(readFilterSets('p1')).toHaveLength(1));
+    expect(readFilterSets('p1')[0].labelSearch).toBe('bu');
+    expect(readFilterSets('p1')[0].userSearch).toBe('ry');
     expect(readFilterSets('p1')[0].userIds).toEqual(['u1']);
 
-    rerender(
-      <KanbanSidebarEpicsPanel
-        projectId="p1"
-        searchQuery=""
-        onSearchChange={onSearchChange}
-        selectedEpicIds={new Set()}
-        onSelectedEpicIdsChange={onSelectedEpicIdsChange}
-        availableLabels={['bug']}
-        selectedLabels={new Set()}
-        onSelectedLabelsChange={onSelectedLabelsChange}
-        assignableUsers={[{ id: 'u1', username: 'ryan' }]}
-        selectedUserIds={new Set()}
-        onSelectedUserIdsChange={onSelectedUserIdsChange}
-      />,
-    );
+    fireEvent.change(screen.getByTestId('kanban-sidebar-label-search'), {
+      target: { value: '' },
+    });
+    fireEvent.change(screen.getByTestId('kanban-sidebar-user-search'), {
+      target: { value: '' },
+    });
 
     const saved = readFilterSets('p1')[0];
     fireEvent.click(screen.getByTestId(`kanban-sidebar-saved-filter-${saved.id}`));
 
     expect(onSearchChange).toHaveBeenCalledWith('login');
+    expect(screen.getByTestId('kanban-sidebar-label-search')).toHaveValue('bu');
+    expect(screen.getByTestId('kanban-sidebar-user-search')).toHaveValue('ry');
     expect(onSelectedEpicIdsChange).toHaveBeenCalled();
     expect(onSelectedLabelsChange).toHaveBeenCalled();
     expect(onSelectedUserIdsChange).toHaveBeenCalled();

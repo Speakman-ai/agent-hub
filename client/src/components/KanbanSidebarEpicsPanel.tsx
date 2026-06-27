@@ -127,8 +127,16 @@ export default function KanbanSidebarEpicsPanel({
   const clearUserFilter = () => onSelectedUserIdsChange?.(new Set());
 
   const currentSnapshot = useMemo(
-    () => snapshotFromState(searchQuery, selectedEpicIds, selectedLabels, selectedUserIds),
-    [searchQuery, selectedEpicIds, selectedLabels, selectedUserIds],
+    () =>
+      snapshotFromState(
+        searchQuery,
+        labelSearch,
+        userSearch,
+        selectedEpicIds,
+        selectedLabels,
+        selectedUserIds,
+      ),
+    [searchQuery, labelSearch, userSearch, selectedEpicIds, selectedLabels, selectedUserIds],
   );
 
   const activeSavedFilter = useMemo(
@@ -151,6 +159,8 @@ export default function KanbanSidebarEpicsPanel({
     (filter: KanbanFilterSet) => {
       const next = applySnapshot(filter);
       onSearchChange(next.searchQuery);
+      setLabelSearch(next.labelSearch);
+      setUserSearch(next.userSearch);
       onSelectedEpicIdsChange(new Set(next.epicIds));
       onSelectedLabelsChange?.(new Set(next.labels));
       onSelectedUserIdsChange?.(new Set(next.userIds));

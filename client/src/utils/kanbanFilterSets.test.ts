@@ -23,6 +23,8 @@ describe('kanbanFilterSets', () => {
         id: 'f1',
         name: 'Bugs',
         searchQuery: 'crash',
+        labelSearch: 'bu',
+        userSearch: 'ry',
         epicIds: ['e1'],
         labels: ['bug'],
         userIds: ['u1'],
@@ -31,12 +33,14 @@ describe('kanbanFilterSets', () => {
     ]);
 
     expect(readFilterSets('p1')).toHaveLength(1);
+    expect(readFilterSets('p1')[0].labelSearch).toBe('bu');
+    expect(readFilterSets('p1')[0].userSearch).toBe('ry');
     expect(readFilterSets('p1')[0].userIds).toEqual(['u1']);
     expect(readFilterSets('p2')).toEqual([]);
     expect(localStorage.getItem(kanbanFilterSetsKey('p1'))).toContain('Bugs');
   });
 
-  it('reads legacy filter sets without user ids as empty user filters', () => {
+  it('reads legacy filter sets without list searches or user ids as empty filters', () => {
     localStorage.setItem(
       kanbanFilterSetsKey('p1'),
       JSON.stringify([
@@ -51,18 +55,24 @@ describe('kanbanFilterSets', () => {
       ]),
     );
 
+    expect(readFilterSets('p1')[0].labelSearch).toBe('');
+    expect(readFilterSets('p1')[0].userSearch).toBe('');
     expect(readFilterSets('p1')[0].userIds).toEqual([]);
   });
 
   it('snapshotFromState and applySnapshot round-trip sets', () => {
     const snapshot = snapshotFromState(
       'auth',
+      'bug',
+      'ryan',
       new Set(['e1', 'e2']),
       new Set(['bug']),
       new Set(['u1']),
     );
     const applied = applySnapshot(snapshot);
     expect(applied.searchQuery).toBe('auth');
+    expect(applied.labelSearch).toBe('bug');
+    expect(applied.userSearch).toBe('ryan');
     expect(applied.epicIds).toEqual(new Set(['e1', 'e2']));
     expect(applied.labels).toEqual(new Set(['bug']));
     expect(applied.userIds).toEqual(new Set(['u1']));
@@ -71,6 +81,24 @@ describe('kanbanFilterSets', () => {
   it('isEmptySnapshot detects an empty filter', () => {
     expect(isEmptySnapshot({ searchQuery: '', epicIds: [], labels: [], userIds: [] })).toBe(true);
     expect(isEmptySnapshot({ searchQuery: 'x', epicIds: [], labels: [], userIds: [] })).toBe(false);
+    expect(
+      isEmptySnapshot({
+        searchQuery: '',
+        labelSearch: 'bug',
+        epicIds: [],
+        labels: [],
+        userIds: [],
+      }),
+    ).toBe(false);
+    expect(
+      isEmptySnapshot({
+        searchQuery: '',
+        userSearch: 'ryan',
+        epicIds: [],
+        labels: [],
+        userIds: [],
+      }),
+    ).toBe(false);
     expect(isEmptySnapshot({ searchQuery: '', epicIds: [], labels: [], userIds: ['u1'] })).toBe(
       false,
     );
@@ -79,12 +107,16 @@ describe('kanbanFilterSets', () => {
   it('filterSetsEqual ignores epic/label/user order', () => {
     const a = {
       searchQuery: 'q',
+      labelSearch: 'bug',
+      userSearch: 'ryan',
       epicIds: ['e2', 'e1'],
       labels: ['b', 'a'],
       userIds: ['u2', 'u1'],
     };
     const b = {
       searchQuery: 'q',
+      labelSearch: 'bug',
+      userSearch: 'ryan',
       epicIds: ['e1', 'e2'],
       labels: ['a', 'b'],
       userIds: ['u1', 'u2'],
@@ -104,12 +136,16 @@ describe('kanbanFilterSets', () => {
 
     const updated = saveFilterSet('p1', 'platform', {
       searchQuery: 'api',
+      labelSearch: 'bu',
+      userSearch: 'ry',
       epicIds: ['e1', 'e2'],
       labels: ['bug'],
       userIds: ['u1'],
     });
     expect(updated).toHaveLength(1);
     expect(updated[0].searchQuery).toBe('api');
+    expect(updated[0].labelSearch).toBe('bu');
+    expect(updated[0].userSearch).toBe('ry');
     expect(updated[0].epicIds).toEqual(['e1', 'e2']);
     expect(updated[0].userIds).toEqual(['u1']);
   });
@@ -133,11 +169,20 @@ describe('kanbanFilterSets', () => {
   it('findMatchingFilterSet returns the active saved set', () => {
     const sets = saveFilterSet('p1', 'Match', {
       searchQuery: 'login',
+      labelSearch: 'bu',
+      userSearch: 'ry',
       epicIds: ['e1'],
       labels: ['bug'],
       userIds: ['u1'],
     });
-    const snapshot = snapshotFromState('login', new Set(['e1']), new Set(['bug']), new Set(['u1']));
+    const snapshot = snapshotFromState(
+      'login',
+      'bu',
+      'ry',
+      new Set(['e1']),
+      new Set(['bug']),
+      new Set(['u1']),
+    );
     expect(findMatchingFilterSet(sets, snapshot)?.name).toBe('Match');
   });
 });

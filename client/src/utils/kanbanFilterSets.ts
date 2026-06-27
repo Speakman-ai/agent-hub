@@ -1,6 +1,8 @@
 /** Snapshot of the kanban board sidebar filters. */
 export type KanbanFilterSetSnapshot = {
   searchQuery: string;
+  labelSearch?: string;
+  userSearch?: string;
   epicIds: string[];
   labels: string[];
   userIds: string[];
@@ -38,6 +40,8 @@ export function readFilterSets(projectId: string | null | undefined): KanbanFilt
         id: row.id,
         name: row.name,
         searchQuery: row.searchQuery,
+        labelSearch: typeof row.labelSearch === 'string' ? row.labelSearch : '',
+        userSearch: typeof row.userSearch === 'string' ? row.userSearch : '',
         epicIds: row.epicIds.filter((id: unknown) => typeof id === 'string'),
         labels: row.labels.filter((label: unknown) => typeof label === 'string'),
         userIds: Array.isArray(row.userIds)
@@ -69,12 +73,16 @@ export function writeFilterSets(
 
 export function snapshotFromState(
   searchQuery: string,
+  labelSearch: string,
+  userSearch: string,
   epicIds: Set<string>,
   labels: Set<string>,
   userIds: Set<string> = new Set(),
 ): KanbanFilterSetSnapshot {
   return {
     searchQuery: searchQuery.trim(),
+    labelSearch: labelSearch.trim(),
+    userSearch: userSearch.trim(),
     epicIds: [...epicIds],
     labels: [...labels],
     userIds: [...userIds],
@@ -83,12 +91,16 @@ export function snapshotFromState(
 
 export function applySnapshot(snapshot: KanbanFilterSetSnapshot): {
   searchQuery: string;
+  labelSearch: string;
+  userSearch: string;
   epicIds: Set<string>;
   labels: Set<string>;
   userIds: Set<string>;
 } {
   return {
     searchQuery: snapshot.searchQuery,
+    labelSearch: snapshot.labelSearch ?? '',
+    userSearch: snapshot.userSearch ?? '',
     epicIds: new Set(snapshot.epicIds),
     labels: new Set(snapshot.labels),
     userIds: new Set(snapshot.userIds ?? []),
@@ -98,6 +110,8 @@ export function applySnapshot(snapshot: KanbanFilterSetSnapshot): {
 export function isEmptySnapshot(snapshot: KanbanFilterSetSnapshot): boolean {
   return (
     !snapshot.searchQuery.trim() &&
+    !(snapshot.labelSearch ?? '').trim() &&
+    !(snapshot.userSearch ?? '').trim() &&
     snapshot.epicIds.length === 0 &&
     snapshot.labels.length === 0 &&
     snapshot.userIds.length === 0
@@ -106,6 +120,8 @@ export function isEmptySnapshot(snapshot: KanbanFilterSetSnapshot): boolean {
 
 export function filterSetsEqual(a: KanbanFilterSetSnapshot, b: KanbanFilterSetSnapshot): boolean {
   if (a.searchQuery.trim() !== b.searchQuery.trim()) return false;
+  if ((a.labelSearch ?? '').trim() !== (b.labelSearch ?? '').trim()) return false;
+  if ((a.userSearch ?? '').trim() !== (b.userSearch ?? '').trim()) return false;
   const epicA = [...a.epicIds].sort();
   const epicB = [...b.epicIds].sort();
   if (epicA.length !== epicB.length || epicA.some((id, i) => id !== epicB[i])) return false;
@@ -153,6 +169,8 @@ export function saveFilterSet(
             ...set,
             name: trimmedName,
             searchQuery: snapshot.searchQuery,
+            labelSearch: snapshot.labelSearch ?? '',
+            userSearch: snapshot.userSearch ?? '',
             epicIds: [...snapshot.epicIds],
             labels: [...snapshot.labels],
             userIds: [...snapshot.userIds],
@@ -167,6 +185,8 @@ export function saveFilterSet(
         id: newFilterSetId(),
         name: trimmedName,
         searchQuery: snapshot.searchQuery,
+        labelSearch: snapshot.labelSearch ?? '',
+        userSearch: snapshot.userSearch ?? '',
         epicIds: [...snapshot.epicIds],
         labels: [...snapshot.labels],
         userIds: [...snapshot.userIds],
