@@ -1492,9 +1492,11 @@ describe('KanbanBoard multi-select', () => {
     (api.moveCard as any).mockReset();
     (api.updateCard as any).mockReset();
     (api.deleteCard as any).mockReset();
+    (api.assignCard as any).mockReset();
     (api.deleteCard as any).mockResolvedValue({});
     (api.updateCard as any).mockResolvedValue({});
     (api.moveCard as any).mockResolvedValue({});
+    (api.assignCard as any).mockResolvedValue({ sessionId: 'bulk-session' });
   });
 
   it('select mode toggles cards and shows the bulk action bar', async () => {
@@ -1596,6 +1598,55 @@ describe('KanbanBoard multi-select', () => {
       expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-1', { priority: 'high' }),
     );
     expect(api.updateCard).toHaveBeenCalledWith('p1', 'card-2', { priority: 'high' });
+  });
+
+  it('bulk Assign opens agent options and starts each selected card with model and auto-merge', async () => {
+    (api.getModelConfig as any).mockResolvedValue({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: { 'claude-code': 'claude-opus-4-8' },
+      engineValidModels: { 'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-20250514'] },
+    });
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([
+        { id: 'card-1', title: 'One', column_id: 'col-todo', position: 0 },
+        { id: 'card-2', title: 'Two', column_id: 'col-todo', position: 1 },
+      ]),
+    );
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        agents={[{ id: 'agent-a', name: 'AgentA', engine: 'claude-code', projectId: 'p1' }]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('One')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('kanban-select-mode'));
+    fireEvent.click(screen.getByText('One'));
+    fireEvent.click(screen.getByText('Two'));
+    fireEvent.click(screen.getByTestId('kanban-bulk-assign'));
+
+    const dialog = await screen.findByTestId('kanban-bulk-assign-dialog');
+    fireEvent.change(within(dialog).getByTestId('kanban-bulk-agent-select'), {
+      target: { value: 'agent-a' },
+    });
+    fireEvent.change(await within(dialog).findByTestId('kanban-bulk-model-select'), {
+      target: { value: 'claude-sonnet-4-20250514' },
+    });
+    fireEvent.click(within(dialog).getByTestId('kanban-bulk-auto-merge'));
+    fireEvent.click(within(dialog).getByRole('button', { name: /Assign & Start/i }));
+
+    await waitFor(() => expect(api.assignCard).toHaveBeenCalledTimes(2));
+    expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-1', 'agent-a', {
+      autoMerge: true,
+      model: 'claude-sonnet-4-20250514',
+    });
+    expect(api.assignCard).toHaveBeenCalledWith('p1', 'card-2', 'agent-a', {
+      autoMerge: true,
+      model: 'claude-sonnet-4-20250514',
+    });
   });
 
   it('column select-all toggles every visible card in that column', async () => {

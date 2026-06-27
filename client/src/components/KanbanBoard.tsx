@@ -21,6 +21,7 @@ import {
   Columns3,
   ChevronLeft,
   ChevronRight,
+  UserPlus,
 } from 'lucide-react';
 import {
   DndContext,
@@ -498,6 +499,8 @@ function SortableCard({
 function KanbanBulkActionBar({
   count,
   columns,
+  canAssign,
+  onOpenAssign,
   onMove,
   onSetPriority,
   onDelete,
@@ -507,10 +510,20 @@ function KanbanBulkActionBar({
   return (
     <div
       data-testid="kanban-bulk-bar"
-      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-3 py-2 rounded-xl border border-white/[0.1] bg-gray-900/95 backdrop-blur-md shadow-2xl shadow-black/50"
+      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex max-w-[calc(100vw-1rem)] items-center gap-2 overflow-x-auto px-3 py-2 rounded-xl border border-white/[0.1] bg-gray-900/95 backdrop-blur-md shadow-2xl shadow-black/50"
     >
       <span className="text-xs font-medium text-gray-200 tabular-nums px-1">{count} selected</span>
       <span className="w-px h-5 bg-white/[0.08]" aria-hidden="true" />
+      <button
+        type="button"
+        disabled={busy || !canAssign}
+        data-testid="kanban-bulk-assign"
+        onClick={onOpenAssign}
+        className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg text-xs font-medium text-indigo-200 hover:text-white hover:bg-indigo-500/15 border border-indigo-500/20 transition-colors disabled:opacity-50"
+      >
+        <UserPlus size={13} />
+        Assign
+      </button>
       <label className="sr-only" htmlFor="kanban-bulk-move">
         Move selected cards
       </label>
@@ -584,6 +597,169 @@ function KanbanBulkActionBar({
       >
         Clear
       </button>
+    </div>
+  );
+}
+
+function BulkAssignDialog({ count, agents, modelConfig, busy, onClose, onAssign }: any) {
+  const [agentId, setAgentId] = useState('');
+  const [assignEngine, setAssignEngine] = useState('');
+  const [assignModel, setAssignModel] = useState('');
+  const [autoMerge, setAutoMerge] = useState(false);
+
+  const selectedAgent = agents.find((a: any) => a.id === agentId) || null;
+  const agentEngine = selectedAgent?.engine || 'claude-code';
+  const engineEntries = Object.entries(modelConfig?.engineValidModels || {}).filter(
+    ([, models]: any) => (models?.length ?? 0) > 0,
+  );
+  const effectiveEngine = (assignEngine && assignEngine.trim()) || agentEngine;
+  const modelOptions = modelConfig?.engineValidModels?.[effectiveEngine] || [];
+
+  const submit = () => {
+    if (!agentId) return;
+    const opts: Record<string, any> = { autoMerge };
+    if (assignEngine.trim()) opts.engine = assignEngine.trim();
+    if (assignModel.trim()) opts.model = assignModel.trim();
+    onAssign({ agentId, opts });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="bulk-assign-title"
+        data-testid="kanban-bulk-assign-dialog"
+        className="w-full max-w-md rounded-xl border border-white/[0.1] bg-gray-950 shadow-2xl shadow-black/60"
+      >
+        <div className="flex items-center justify-between border-b border-white/[0.08] px-4 py-3">
+          <div>
+            <h2 id="bulk-assign-title" className="text-sm font-semibold text-white">
+              Assign agent
+            </h2>
+            <p className="mt-0.5 text-xs text-gray-400">
+              {count} selected card{count === 1 ? '' : 's'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-white/[0.06] hover:text-gray-100 disabled:opacity-50"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="space-y-3 px-4 py-4">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="bulk-agent">
+              Agent
+            </label>
+            <select
+              id="bulk-agent"
+              data-testid="kanban-bulk-agent-select"
+              value={agentId}
+              onChange={(e: any) => {
+                setAgentId(e.target.value);
+                setAssignEngine('');
+                setAssignModel('');
+              }}
+              disabled={busy}
+              className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none disabled:opacity-50"
+            >
+              <option value="">Select agent...</option>
+              {agents.map((agent: any) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {agentId && engineEntries.length > 0 ? (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="bulk-engine">
+                Session engine
+              </label>
+              <select
+                id="bulk-engine"
+                data-testid="kanban-bulk-engine-select"
+                value={assignEngine}
+                onChange={(e: any) => {
+                  setAssignEngine(e.target.value);
+                  setAssignModel('');
+                }}
+                disabled={busy}
+                className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none disabled:opacity-50"
+              >
+                <option value="">Agent default ({agentEngine})</option>
+                {engineEntries.map(([engine]: any) => (
+                  <option key={engine} value={engine}>
+                    {engine}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          {agentId && modelOptions.length > 0 ? (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-400" htmlFor="bulk-model">
+                Session model
+              </label>
+              <select
+                id="bulk-model"
+                data-testid="kanban-bulk-model-select"
+                value={assignModel}
+                onChange={(e: any) => setAssignModel(e.target.value)}
+                disabled={busy}
+                className="w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none disabled:opacity-50"
+              >
+                <option value="">Engine default</option>
+                {modelOptions.map((model: any) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          <label className="inline-flex items-center gap-2 text-xs text-gray-300">
+            <input
+              type="checkbox"
+              checked={autoMerge}
+              onChange={(e: any) => setAutoMerge(e.target.checked)}
+              disabled={busy}
+              data-testid="kanban-bulk-auto-merge"
+              className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 accent-indigo-500 disabled:opacity-50"
+            />
+            Auto-merge
+          </label>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-white/[0.08] px-4 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-white/[0.06] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy || !agentId}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+          >
+            <UserPlus size={13} />
+            {busy ? 'Assigning...' : 'Assign & Start'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -778,11 +954,13 @@ export default function KanbanBoard({
   const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(() => new Set());
   const selectionAnchorRef = useRef<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
 
   const selectedCount = selectedCardIds.size;
   const showSelectionUi = selectionMode || selectedCount > 0;
 
   const clearSelection = useCallback(() => {
+    setBulkAssignOpen(false);
     setSelectedCardIds(new Set());
     selectionAnchorRef.current = null;
     setSelectionMode(false);
@@ -1389,6 +1567,38 @@ export default function KanbanBoard({
       reconcileBoard();
     } catch (err: any) {
       console.error('Bulk priority update failed:', err);
+      reconcileBoard();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkAssign = async ({ agentId, opts }: any) => {
+    const ids = [...selectedCardIds];
+    const agent = projectAgents.find((a: any) => a.id === agentId);
+    if (ids.length === 0 || !agent) return;
+    const selected = new Set(ids);
+    setBulkBusy(true);
+    setCards((prev: any) =>
+      prev.map((card: any) =>
+        selected.has(card.id)
+          ? {
+              ...card,
+              assignee: agent.name,
+              assign_engine: opts.engine || null,
+              assign_model: opts.model || null,
+              auto_merge: opts.autoMerge ? 1 : 0,
+            }
+          : card,
+      ),
+    );
+    try {
+      await Promise.all(ids.map((id) => api.assignCard(projectId, id, agent.id, opts)));
+      setBulkAssignOpen(false);
+      clearSelection();
+      reconcileBoard();
+    } catch (err: any) {
+      console.error('Bulk assign failed:', err);
       reconcileBoard();
     } finally {
       setBulkBusy(false);
@@ -2130,11 +2340,24 @@ export default function KanbanBoard({
         <KanbanBulkActionBar
           count={selectedCount}
           columns={columns}
+          canAssign={projectAgents.length > 0}
+          onOpenAssign={() => setBulkAssignOpen(true)}
           onMove={bulkMoveToColumn}
           onSetPriority={bulkSetPriority}
           onDelete={bulkDelete}
           onClear={clearSelection}
           busy={bulkBusy}
+        />
+      ) : null}
+
+      {bulkAssignOpen ? (
+        <BulkAssignDialog
+          count={selectedCount}
+          agents={projectAgents}
+          modelConfig={modelConfig}
+          busy={bulkBusy}
+          onClose={() => setBulkAssignOpen(false)}
+          onAssign={bulkAssign}
         />
       ) : null}
 
