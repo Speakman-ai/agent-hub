@@ -891,10 +891,10 @@ export const api = {
     fetchJSON('/setup/configure', { method: 'POST', body: JSON.stringify(data) }),
 
   // Project onboarding
-  analyzeProject: (cwd: any) =>
+  analyzeProject: (cwd: any, opts: any = {}) =>
     fetchJSON('/projects/analyze', {
       method: 'POST',
-      body: JSON.stringify({ cwd }),
+      body: JSON.stringify({ cwd, engine: opts.engine, model: opts.model }),
       timeout: 300000,
     }),
   onboardProject: (data: any) =>

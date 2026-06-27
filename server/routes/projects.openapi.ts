@@ -95,6 +95,57 @@ export const ProjectDetailErrorComponent = registerComponent(
     }),
 );
 
+const ProjectAnalysisEngineSchema = z.enum(['claude-code', 'cursor-agent', 'codex-cli']).openapi({
+  description:
+    'Agent CLI engine to use for project analysis. Gemini is excluded because it is reserved for embeddings/RAG.',
+});
+
+export const ProjectAnalyzeRequestSchema = z
+  .object({
+    cwd: z.string().min(1).openapi({
+      description: 'Directory to analyze. `~` is expanded against the server process HOME.',
+    }),
+    engine: ProjectAnalysisEngineSchema.optional().openapi({
+      description:
+        'Optional selected analysis engine. When supplied, analysis uses this engine only and returns a targeted setup error if it cannot run.',
+    }),
+    model: z.string().min(1).optional().openapi({
+      description:
+        'Optional selected model. Must belong to the selected engine, or to one of the supported project-analysis engines when engine is omitted.',
+    }),
+  })
+  .openapi({ description: 'Body for POST /api/projects/analyze.' });
+
+export const ProjectAnalyzeResponseComponent = registerComponent(
+  'ProjectAnalyzeResponse',
+  z
+    .object({
+      analyzeId: z.string().openapi({
+        description:
+          'Opaque id used to correlate WebSocket analyze-progress / analyze-complete / analyze-error events.',
+      }),
+    })
+    .openapi({ description: 'Analysis job accepted.' }),
+);
+
+export const ProjectAnalyzeErrorComponent = registerComponent(
+  'ProjectAnalyzeErrorResponse',
+  z
+    .object({
+      error: z.string(),
+      code: z.string().optional(),
+      acceptedEngines: z.array(ProjectAnalysisEngineSchema).optional(),
+      acceptedModels: z
+        .union([z.array(z.string()), z.record(z.string(), z.array(z.string()))])
+        .optional(),
+      availability: z.record(z.string(), z.object({}).passthrough()).optional(),
+    })
+    .openapi({
+      description:
+        'Error envelope returned when the cwd, selected engine/model, or engine setup is invalid.',
+    }),
+);
+
 // ─── Path registrations ───────────────────────────────────────────
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -150,6 +201,35 @@ registerPath({
     404: {
       description: 'No project with this slug, or the caller cannot see it.',
       content: jsonContent(ProjectDetailErrorComponent),
+    },
+  },
+});
+
+// POST /api/projects/analyze
+registerPath({
+  method: 'post',
+  path: '/api/projects/analyze',
+  tags: ['Projects'],
+  summary: 'Analyze a local or cloned project directory',
+  description:
+    'Starts an asynchronous project-analysis run for the Open Project wizard. ' +
+    'The response returns an `analyzeId`; progress and completion arrive over WebSocket events. ' +
+    'Callers may select the engine/model from `/api/config/models` before starting analysis.',
+  request: {
+    body: { content: jsonContent(ProjectAnalyzeRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Analysis was accepted and will stream progress over WebSocket.',
+      content: jsonContent(ProjectAnalyzeResponseComponent),
+    },
+    400: {
+      description: 'Invalid cwd, selected engine/model, or no usable selected engine.',
+      content: jsonContent(ProjectAnalyzeErrorComponent),
+    },
+    500: {
+      description: 'Unexpected engine-selection failure.',
+      content: jsonContent(ProjectAnalyzeErrorComponent),
     },
   },
 });

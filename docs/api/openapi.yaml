@@ -5476,6 +5476,51 @@ components:
       required:
         - error
       description: Error envelope returned when the project slug is unknown.
+    ProjectAnalyzeResponse:
+      type: object
+      properties:
+        analyzeId:
+          type: string
+          description: Opaque id used to correlate WebSocket analyze-progress / analyze-complete / analyze-error events.
+      required:
+        - analyzeId
+      description: Analysis job accepted.
+    ProjectAnalyzeErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        acceptedEngines:
+          type: array
+          items:
+            type: string
+            enum:
+              - claude-code
+              - cursor-agent
+              - codex-cli
+            description: Agent CLI engine to use for project analysis. Gemini is excluded because it is reserved for embeddings/RAG.
+        acceptedModels:
+          anyOf:
+            - type: array
+              items:
+                type: string
+            - type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+        availability:
+          type: object
+          additionalProperties:
+            type: object
+            properties: {}
+            additionalProperties:
+              nullable: true
+      required:
+        - error
+      description: Error envelope returned when the cwd, selected engine/model, or engine setup is invalid.
     UserProjectSettings:
       type: object
       properties:
@@ -20043,6 +20088,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProjectDetailErrorResponse"
+  /api/projects/analyze:
+    post:
+      tags:
+        - Projects
+      summary: Analyze a local or cloned project directory
+      description: Starts an asynchronous project-analysis run for the Open Project wizard. The response returns an `analyzeId`; progress and completion arrive over WebSocket events. Callers may select the engine/model from `/api/config/models` before starting analysis.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cwd:
+                  type: string
+                  minLength: 1
+                  description: Directory to analyze. `~` is expanded against the server process HOME.
+                engine:
+                  type: string
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - codex-cli
+                  description: Optional selected analysis engine. When supplied, analysis uses this engine only and returns a targeted setup error if it cannot run.
+                model:
+                  type: string
+                  minLength: 1
+                  description: Optional selected model. Must belong to the selected engine, or to one of the supported project-analysis engines when engine is omitted.
+              required:
+                - cwd
+              description: Body for POST /api/projects/analyze.
+      responses:
+        "200":
+          description: Analysis was accepted and will stream progress over WebSocket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAnalyzeResponse"
+        "400":
+          description: Invalid cwd, selected engine/model, or no usable selected engine.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAnalyzeErrorResponse"
+        "500":
+          description: Unexpected engine-selection failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectAnalyzeErrorResponse"
   /api/projects/{projectId}/user-settings:
     get:
       tags:

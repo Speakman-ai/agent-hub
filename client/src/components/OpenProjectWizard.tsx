@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { getApiBase, getAuthHeaders, getConnectionConfig } from '../utils/connection';
 import ServerBrowser from './ServerBrowser';
@@ -20,6 +20,13 @@ const COLOR_PRESETS = [
 const CONTEXT_FILE_TABS = ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md', 'MEMORY.md'];
 
 const STEP_LABELS = ['Select Folder', 'Analyze', 'GitHub', 'Review & Create'];
+
+const ANALYSIS_ENGINE_ORDER = ['claude-code', 'cursor-agent', 'codex-cli'];
+const ANALYSIS_ENGINE_LABELS: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  'cursor-agent': 'Cursor Agent',
+  'codex-cli': 'Codex',
+};
 
 function deriveNameFromPath(path: any) {
   return path.split('/').filter(Boolean).pop() || '';
@@ -103,7 +110,12 @@ function StepIndicator({ currentStep }: any) {
   );
 }
 
-export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 'modal' }: any) {
+export default function OpenProjectWizard({
+  onClose,
+  onProjectCreated,
+  layout = 'modal',
+  modelConfig = null,
+}: any) {
   const [step, setStep] = useState(1);
 
   // Step 1 mode: 'local' or 'clone'
@@ -132,6 +144,8 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
   const [progressLog, setProgressLog] = useState<any[]>([]); // recent activity messages
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [analysisError, setAnalysisError] = useState<any>(null);
+  const [analysisEngine, setAnalysisEngine] = useState('');
+  const [analysisModel, setAnalysisModel] = useState('');
 
   // Step 3 state — GitHub
   // ghStatus shape: { authenticated, user, scopes, source: 'gh-cli' | 'oauth' | 'pat' | null,
@@ -186,6 +200,47 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
   // Determine if we're in remote mode (server browser needed)
   const isRemote = getConnectionConfig().mode === 'remote';
   const isElectronLocal = window.electronAPI?.isElectron && !isRemote;
+
+  const analysisEngineOptions = useMemo(() => {
+    const validModels = modelConfig?.engineValidModels || {};
+    return ANALYSIS_ENGINE_ORDER.map((engine) => ({
+      id: engine,
+      label: ANALYSIS_ENGINE_LABELS[engine] || engine,
+      models: Array.isArray(validModels[engine]) ? validModels[engine] : [],
+    })).filter((option) => option.models.length > 0);
+  }, [modelConfig]);
+
+  useEffect(() => {
+    if (analysisEngineOptions.length === 0) return;
+    const currentEngine = analysisEngineOptions.find((option) => option.id === analysisEngine);
+    const nextEngine = currentEngine || analysisEngineOptions[0];
+    const defaultModel = modelConfig?.engineDefaultModels?.[nextEngine.id];
+    const nextModel = nextEngine.models.includes(analysisModel)
+      ? analysisModel
+      : nextEngine.models.includes(defaultModel)
+        ? defaultModel
+        : nextEngine.models[0] || '';
+
+    if (nextEngine.id !== analysisEngine) setAnalysisEngine(nextEngine.id);
+    if (nextModel !== analysisModel) setAnalysisModel(nextModel);
+  }, [analysisEngineOptions, analysisEngine, analysisModel, modelConfig]);
+
+  const selectedAnalysisEngineOption = analysisEngineOptions.find(
+    (option) => option.id === analysisEngine,
+  );
+
+  const handleAnalysisEngineChange = useCallback(
+    (engine: string) => {
+      const option = analysisEngineOptions.find((candidate) => candidate.id === engine);
+      if (!option) return;
+      const defaultModel = modelConfig?.engineDefaultModels?.[engine];
+      setAnalysisEngine(engine);
+      setAnalysisModel(
+        option.models.includes(defaultModel) ? defaultModel : option.models[0] || '',
+      );
+    },
+    [analysisEngineOptions, modelConfig],
+  );
 
   // Auto-derive name and id from path or clone URL
   useEffect(() => {
@@ -270,8 +325,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
       if (data.type === 'clone-complete') {
         setCloning(false);
         setPath(data.path);
-        // Auto-proceed to analyze after successful clone
-        setCloneLog((prev: any) => [...prev, '✓ Clone complete! Starting analysis...']);
+        setCloneLog((prev: any) => [...prev, '✓ Clone complete. Ready to analyze.']);
       }
       if (data.type === 'clone-error') {
         setCloning(false);
@@ -335,7 +389,11 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
       const res = await fetch(`${getApiBase()}/projects/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ cwd: path }),
+        body: JSON.stringify({
+          cwd: path,
+          engine: analysisEngine || undefined,
+          model: analysisModel || undefined,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -347,7 +405,7 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
       setAnalyzing(false);
       setAnalysisError(err.message);
     }
-  }, [path]);
+  }, [path, analysisEngine, analysisModel]);
 
   const detectGitHub = useCallback(async () => {
     setGhLoading(true);
@@ -637,6 +695,8 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
           progressText,
           progressLog,
           cloneLog,
+          analysisEngine,
+          analysisModel,
           detectedPreview,
           previewDecision,
         }),
@@ -668,6 +728,8 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
     progressText,
     progressLog,
     cloneLog,
+    analysisEngine,
+    analysisModel,
     detectedPreview,
     previewDecision,
   ]);
@@ -712,6 +774,8 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
       if (typeof d.progressText === 'string') setProgressText(d.progressText);
       if (Array.isArray(d.progressLog)) setProgressLog(d.progressLog);
       if (Array.isArray(d.cloneLog)) setCloneLog(d.cloneLog);
+      if (typeof d.analysisEngine === 'string') setAnalysisEngine(d.analysisEngine);
+      if (typeof d.analysisModel === 'string') setAnalysisModel(d.analysisModel);
       if (d.detectedPreview && typeof d.detectedPreview === 'object')
         setDetectedPreview(d.detectedPreview);
       if (d.previewDecision && typeof d.previewDecision === 'object')
@@ -1116,6 +1180,45 @@ export default function OpenProjectWizard({ onClose, onProjectCreated, layout = 
                 />
               </div>
             </div>
+
+            {analysisEngineOptions.length > 0 && (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Analysis Engine
+                  </label>
+                  <select
+                    aria-label="Analysis Engine"
+                    value={analysisEngine}
+                    onChange={(e: any) => handleAnalysisEngineChange(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+                  >
+                    {analysisEngineOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Analysis Model
+                  </label>
+                  <select
+                    aria-label="Analysis Model"
+                    value={analysisModel}
+                    onChange={(e: any) => setAnalysisModel(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+                  >
+                    {(selectedAnalysisEngineOption?.models || []).map((model: any) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
 
             <div className="pt-2">
               {sourceMode === 'local' ? (

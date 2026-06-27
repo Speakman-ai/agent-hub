@@ -6314,6 +6314,7 @@ export default function App({ initialView }: any = {}) {
         {(currentView === 'import-project-wizard' || currentView === 'new-project-wizard') && (
           <OpenProjectWizard
             layout="fullscreen"
+            modelConfig={modelConfig}
             onClose={() => setCurrentView(newProjectWizardReturnRef.current)}
             onProjectCreated={() => {
               setCurrentView(newProjectWizardReturnRef.current);

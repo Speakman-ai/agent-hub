@@ -168,6 +168,41 @@ const ANALYZE_FALLBACK_CHAIN: readonly SupportedEngine[] = [
   'codex-cli',
 ];
 
+function isAnalyzeEngine(value: unknown): value is SupportedEngine {
+  return typeof value === 'string' && (ANALYZE_FALLBACK_CHAIN as readonly string[]).includes(value);
+}
+
+function findAnalyzeEngineForModel(
+  engineValidModels: Record<string, string[]>,
+  model: string,
+): SupportedEngine | null {
+  for (const engine of ANALYZE_FALLBACK_CHAIN) {
+    const models = engineValidModels[engine] || [];
+    if (models.includes(model)) return engine;
+  }
+  return null;
+}
+
+function analyzeErrorDetail(raw: string | null | undefined): string {
+  const text = (raw || '').trim();
+  if (!text) return 'No diagnostic output was returned by the engine.';
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return (lines.slice(-6).join('\n') || text).slice(0, 1200);
+}
+
+function analyzeRunErrorMessage(input: {
+  engine: SupportedEngine;
+  model: string;
+  cwd?: string;
+  detail?: string | null;
+}): string {
+  const where = input.cwd ? ` in ${input.cwd}` : '';
+  return `Project analysis failed while running ${input.engine} (${input.model})${where}: ${analyzeErrorDetail(input.detail)}`;
+}
+
 interface AnalysisResult {
   techStack?: {
     languages?: string[];
@@ -2732,6 +2767,45 @@ This workspace has no git repo and no PR automation — your job is planning, or
     const { cwd } = req.body as { cwd?: string };
     if (!cwd) return res.status(400).json({ error: 'cwd is required' });
 
+    const body = req.body as { engine?: unknown; model?: unknown };
+    const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
+    const requestedEngineRaw = typeof body.engine === 'string' ? body.engine.trim() : '';
+    const engineValidModels = config.engineValidModels || {};
+
+    if (requestedEngineRaw && !isAnalyzeEngine(requestedEngineRaw)) {
+      return res.status(400).json({
+        error: `Project analysis does not support engine "${requestedEngineRaw}". Choose one of: ${ANALYZE_FALLBACK_CHAIN.join(', ')}.`,
+        code: 'invalid_analysis_engine',
+        acceptedEngines: ANALYZE_FALLBACK_CHAIN,
+      });
+    }
+
+    let requestedEngine = requestedEngineRaw || '';
+    if (requestedModel) {
+      if (requestedEngine) {
+        const models = engineValidModels[requestedEngine] || [];
+        if (!models.includes(requestedModel)) {
+          return res.status(400).json({
+            error: `Model "${requestedModel}" is not valid for project analysis engine "${requestedEngine}".`,
+            code: 'invalid_analysis_model',
+            acceptedModels: models,
+          });
+        }
+      } else {
+        const inferred = findAnalyzeEngineForModel(engineValidModels, requestedModel);
+        if (!inferred) {
+          return res.status(400).json({
+            error: `Model "${requestedModel}" is not available for project analysis. Choose a model from Claude Code, Cursor Agent, or Codex.`,
+            code: 'invalid_analysis_model',
+            acceptedModels: Object.fromEntries(
+              ANALYZE_FALLBACK_CHAIN.map((engine) => [engine, engineValidModels[engine] || []]),
+            ),
+          });
+        }
+        requestedEngine = inferred;
+      }
+    }
+
     const resolvedCwd = cwd.replace(/^~/, process.env.HOME || '/tmp');
     if (!existsSync(resolvedCwd) || !statSync(resolvedCwd).isDirectory()) {
       return res.status(400).json({ error: 'Path does not exist or is not a directory' });
@@ -2751,19 +2825,26 @@ This workspace has no git repo and no PR automation — your job is planning, or
     let resolved;
     try {
       resolved = await resolveOneShotEngine(config, {
-        preferred: 'claude-code',
+        preferred: requestedEngine || 'claude-code',
+        preferredModel: requestedModel || null,
         userId: analyzeUserId,
-        fallbackChain: ANALYZE_FALLBACK_CHAIN,
+        fallbackChain: requestedEngine
+          ? [requestedEngine as SupportedEngine]
+          : ANALYZE_FALLBACK_CHAIN,
       });
     } catch (err) {
       if (err instanceof NoEnginesAvailableError) {
         return res.status(400).json({
-          error: err.message,
+          error: requestedEngine
+            ? `Project analysis could not start with ${requestedEngine}${requestedModel ? ` (${requestedModel})` : ''}. ${err.message}`
+            : `Project analysis could not start. ${err.message}`,
           code: 'no_engines_configured',
           availability: err.availability,
         });
       }
-      return res.status(500).json({ error: (err as Error).message });
+      return res.status(500).json({
+        error: `Project analysis could not choose an engine: ${(err as Error).message}`,
+      });
     }
 
     if (resolved.engine === 'claude-code') {
@@ -2814,7 +2895,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
         broadcast({
           type: 'analyze-error',
           analyzeId,
-          error: `Analysis timed out after ${ANALYZE_TIMEOUT_MS / 1000}s`,
+          error: analyzeRunErrorMessage({
+            engine: resolved.engine,
+            model: resolved.model,
+            cwd: resolvedCwd,
+            detail: `timed out after ${ANALYZE_TIMEOUT_MS / 1000}s`,
+          }),
         });
       }, ANALYZE_TIMEOUT_MS);
 
@@ -2868,7 +2954,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
         broadcast({
           type: 'analyze-error',
           analyzeId,
-          error: `Failed to start claude (${(err as NodeJS.ErrnoException).code || 'ERR'}): ${err.message}`,
+          error: analyzeRunErrorMessage({
+            engine: resolved.engine,
+            model: resolved.model,
+            cwd: resolvedCwd,
+            detail: `failed to start (${(err as NodeJS.ErrnoException).code || 'ERR'}): ${err.message}`,
+          }),
         });
       });
 
@@ -2893,7 +2984,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
           broadcast({
             type: 'analyze-error',
             analyzeId,
-            error: stderr || `Process exited with code ${code}`,
+            error: analyzeRunErrorMessage({
+              engine: resolved.engine,
+              model: resolved.model,
+              cwd: resolvedCwd,
+              detail: stderr || `Process exited with code ${code}`,
+            }),
           });
           return;
         }
@@ -2914,7 +3010,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
             broadcast({
               type: 'analyze-error',
               analyzeId,
-              error: 'Failed to parse analysis output as JSON',
+              error:
+                `Project analysis ran with ${resolved.engine} (${resolved.model}) but returned output that was not valid JSON. ` +
+                'Retry with a different model or check the engine output for prompt/configuration errors.',
             });
             return;
           }
@@ -2966,7 +3064,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
               broadcast({
                 type: 'analyze-error',
                 analyzeId,
-                error: 'Failed to parse analysis output as JSON',
+                error:
+                  `Project analysis ran with ${resolved.engine} (${resolved.model}) but returned output that was not valid JSON. ` +
+                  'Retry with a different model or check the engine output for prompt/configuration errors.',
               });
               return;
             }
@@ -2978,7 +3078,12 @@ This workspace has no git repo and no PR automation — your job is planning, or
           broadcast({
             type: 'analyze-error',
             analyzeId,
-            error: `${resolved.engine}: ${err.message}`,
+            error: analyzeRunErrorMessage({
+              engine: resolved.engine,
+              model: resolved.model,
+              cwd: resolvedCwd,
+              detail: err.message,
+            }),
           });
         });
     }
