@@ -32,12 +32,22 @@ vi.mock('../engine-resolver.js', async (importOriginal) => {
   return { ...actual, resolveOneShotEngine: vi.fn() };
 });
 
+vi.mock('../one-shot-spawn.js', () => ({
+  runOneShotPrompt: vi.fn(),
+}));
+
 const { resolveOneShotEngine, NoEnginesAvailableError } = await import('../engine-resolver.js');
+const { runOneShotPrompt } = await import('../one-shot-spawn.js');
 const { default: createProjectRoutes } = await import('./projects.js');
 
 const resolveMock = resolveOneShotEngine as unknown as ReturnType<typeof vi.fn>;
+const runOneShotMock = runOneShotPrompt as unknown as ReturnType<typeof vi.fn>;
 
-function buildApp(opts: { authUserId?: string; config?: Record<string, unknown> }) {
+function buildApp(opts: {
+  authUserId?: string;
+  config?: Record<string, unknown>;
+  broadcast?: ReturnType<typeof vi.fn>;
+}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -60,9 +70,10 @@ function buildApp(opts: { authUserId?: string; config?: Record<string, unknown> 
       'codex-cli': ['gpt-5.5', 'gpt-5.4'],
     },
   };
+  const broadcast = opts.broadcast ?? vi.fn();
   const deps = {
     config,
-    broadcast: vi.fn(),
+    broadcast,
     getClaudeBin: () => '/usr/local/bin/claude',
   };
   app.use(createProjectRoutes(deps as unknown as Parameters<typeof createProjectRoutes>[0]));
@@ -83,6 +94,7 @@ describe('POST /api/projects/analyze — engine selection wiring', () => {
 
   beforeEach(() => {
     resolveMock.mockReset();
+    runOneShotMock.mockReset();
     // The resolver rejecting keeps the route on the 400 path (no spawn).
     resolveMock.mockRejectedValue(new NoEnginesAvailableError({} as never));
     cwd = mkdtempSync(path.join(tmpdir(), 'analyze-engine-'));
@@ -170,5 +182,66 @@ describe('POST /api/projects/analyze — engine selection wiring', () => {
     expect(res.status).toBe(400);
     const [, input] = resolveMock.mock.calls[0];
     expect(input.userId).toBeNull();
+  });
+
+  it('parses Codex JSONL final assistant text before reading the project analysis JSON', async () => {
+    const broadcast = vi.fn();
+    const app = buildApp({ authUserId: 'user-abc', broadcast });
+    const analysis = {
+      techStack: {
+        languages: ['TypeScript'],
+        frameworks: ['Express'],
+        tools: ['Vitest'],
+        packageManager: 'npm',
+      },
+      description: 'A test project.',
+      agents: [
+        {
+          id: 'test-dev',
+          name: 'Test Dev',
+          role: 'dev',
+          specialty: 'Owns the test project.',
+          systemPrompt: 'You own the test project.',
+        },
+      ],
+    };
+
+    resolveMock.mockResolvedValue({
+      engine: 'codex-cli',
+      model: 'gpt-5.5',
+      fallbackUsed: false,
+      fallbackFromReason: null,
+    });
+    runOneShotMock.mockResolvedValue(
+      [
+        JSON.stringify({ type: 'thread.started', thread_id: 'codex-thread-1' }),
+        JSON.stringify({ type: 'turn.started' }),
+        JSON.stringify({
+          type: 'item.completed',
+          item: {
+            id: 'msg_1',
+            type: 'agent_message',
+            text: `\`\`\`json\n${JSON.stringify(analysis)}\n\`\`\``,
+          },
+        }),
+        JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 20 } }),
+      ].join('\n'),
+    );
+
+    const res = await supertest(app)
+      .post('/api/projects/analyze')
+      .send({ cwd, engine: 'codex-cli', model: 'gpt-5.5' });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(broadcast.mock.calls.some(([event]) => event.type === 'analyze-complete')).toBe(true);
+    });
+
+    const complete = broadcast.mock.calls.find(([event]) => event.type === 'analyze-complete')?.[0];
+    expect(complete).toMatchObject({
+      type: 'analyze-complete',
+      result: analysis,
+    });
+    expect(broadcast.mock.calls.some(([event]) => event.type === 'analyze-error')).toBe(false);
   });
 });

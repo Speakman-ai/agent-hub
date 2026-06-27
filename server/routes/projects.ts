@@ -230,6 +230,99 @@ interface AnalysisResult {
   contextFiles?: Record<string, string>;
 }
 
+function isAnalysisResult(value: unknown): value is AnalysisResult {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<AnalysisResult>;
+  return (
+    Array.isArray(candidate.agents) ||
+    typeof candidate.description === 'string' ||
+    (candidate.techStack !== null &&
+      candidate.techStack !== undefined &&
+      typeof candidate.techStack === 'object')
+  );
+}
+
+function parseAnalysisCandidate(text: string): AnalysisResult | null {
+  try {
+    const parsed = JSON.parse(text.trim()) as unknown;
+    return isAnalysisResult(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseFirstAnalysisObject(text: string): AnalysisResult | null {
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+      } else if (ch === '{') {
+        depth += 1;
+      } else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          const result = parseAnalysisCandidate(text.slice(start, i + 1));
+          if (result) return result;
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function parseAnalysisResult(text: string): AnalysisResult | null {
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of text.matchAll(fencePattern)) {
+    const result = parseAnalysisCandidate(match[1]);
+    if (result) return result;
+  }
+
+  return parseAnalysisCandidate(text) ?? parseFirstAnalysisObject(text);
+}
+
+function extractOneShotAnalysisText(engine: SupportedEngine, output: string): string {
+  if (engine !== 'codex-cli') return output;
+
+  const parser = createStreamParser(engine);
+  const events = [...parser.feed(Buffer.from(output)), ...parser.flush()];
+  const finalText: string[] = [];
+  const errors: string[] = [];
+
+  for (const event of events) {
+    if (event.type === 'assistant_text' && !event.partial) {
+      finalText.push(event.text);
+    } else if (event.type === 'result' && event.isError && event.text) {
+      errors.push(event.text);
+    } else if (event.type === 'error' && event.message) {
+      errors.push(event.message);
+    } else if (event.type === 'unknown' && event.text.startsWith('codex error:')) {
+      errors.push(event.text);
+    }
+  }
+
+  if (finalText.length > 0) return finalText.join('\n');
+  if (errors.length > 0) throw new Error(errors.join('\n'));
+  return output;
+}
+
 interface OnboardBody {
   project: {
     id: string;
@@ -2994,28 +3087,16 @@ This workspace has no git repo and no PR automation — your job is planning, or
           return;
         }
 
-        let result: AnalysisResult | null = null;
-        const fenceMatch = finalText.match(/```json\s*([\s\S]*)```/);
-        if (fenceMatch) {
-          try {
-            result = JSON.parse(fenceMatch[1].trim()) as AnalysisResult;
-          } catch {
-            // Try the whole output
-          }
-        }
+        const result = parseAnalysisResult(finalText);
         if (!result) {
-          try {
-            result = JSON.parse(finalText.trim()) as AnalysisResult;
-          } catch {
-            broadcast({
-              type: 'analyze-error',
-              analyzeId,
-              error:
-                `Project analysis ran with ${resolved.engine} (${resolved.model}) but returned output that was not valid JSON. ` +
-                'Retry with a different model or check the engine output for prompt/configuration errors.',
-            });
-            return;
-          }
+          broadcast({
+            type: 'analyze-error',
+            analyzeId,
+            error:
+              `Project analysis ran with ${resolved.engine} (${resolved.model}) but returned output that was not valid JSON. ` +
+              'Retry with a different model or check the engine output for prompt/configuration errors.',
+          });
+          return;
         }
 
         broadcast({ type: 'analyze-complete', analyzeId, result });
@@ -3048,28 +3129,17 @@ This workspace has no git repo and no PR automation — your job is planning, or
         config,
       )
         .then((output) => {
-          let result: AnalysisResult | null = null;
-          const fenceMatch = output.match(/```json\s*([\s\S]*)```/);
-          if (fenceMatch) {
-            try {
-              result = JSON.parse(fenceMatch[1].trim()) as AnalysisResult;
-            } catch {
-              /* try whole-output below */
-            }
-          }
+          const finalText = extractOneShotAnalysisText(resolved.engine, output);
+          const result = parseAnalysisResult(finalText);
           if (!result) {
-            try {
-              result = JSON.parse(output.trim()) as AnalysisResult;
-            } catch {
-              broadcast({
-                type: 'analyze-error',
-                analyzeId,
-                error:
-                  `Project analysis ran with ${resolved.engine} (${resolved.model}) but returned output that was not valid JSON. ` +
-                  'Retry with a different model or check the engine output for prompt/configuration errors.',
-              });
-              return;
-            }
+            broadcast({
+              type: 'analyze-error',
+              analyzeId,
+              error:
+                `Project analysis ran with ${resolved.engine} (${resolved.model}) but returned output that was not valid JSON. ` +
+                'Retry with a different model or check the engine output for prompt/configuration errors.',
+            });
+            return;
           }
           broadcast({ type: 'analyze-complete', analyzeId, result });
         })
