@@ -104,6 +104,7 @@ function makeApp() {
   const stmts = makeStmts();
   const broadcast = vi.fn();
   const findProject = vi.fn();
+  const findAgent = vi.fn();
   const app = express();
   app.use(express.json());
   const activeProcesses = new Map();
@@ -111,11 +112,12 @@ function makeApp() {
     stmts,
     broadcast,
     findProject,
+    findAgent,
     activeProcesses,
     config: { personalOAuth: null },
   } as unknown as RouteDeps;
   app.use(createFinalizeRoutes(deps));
-  return { app, stmts, broadcast, findProject, activeProcesses };
+  return { app, stmts, broadcast, findProject, findAgent, activeProcesses };
 }
 
 beforeEach(() => {
@@ -247,6 +249,34 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
       .expect(409);
 
     expect(res.body).toMatchObject({ error: 'session_finalized_pushed' });
+    expect(runFinalize).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['consult mode', { session_mode: 'consult', ask_mode: 0 }],
+    ['legacy ask_mode', { session_mode: 'chat', ask_mode: 1 }],
+  ])('400 when the linked session is in %s', async (_label, modeFields) => {
+    const { app, findProject, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    stmts.getKanbanCard.get.mockReturnValue({
+      id: 'card-1',
+      board_id: 'board-1',
+      session_id: 'sess-1',
+    });
+    stmts.getKanbanBoard.get.mockReturnValue({ id: 'board-1' });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+      ...modeFields,
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/cards/card-1/finalize')
+      .send({ mode: 'checks' })
+      .expect(400);
+
+    expect(res.body).toMatchObject({ error: 'finalize_not_allowed_in_consult_session' });
     expect(runFinalize).not.toHaveBeenCalled();
   });
 
@@ -532,6 +562,35 @@ describe('POST /api/projects/:projectId/cards/:cardId/finalize', () => {
     expect(runFinalize).toHaveBeenCalledOnce();
     expect(stmts.insertFinalizeKickoffClaim.run).toHaveBeenCalledOnce();
     expect(stmts.deleteFinalizeKickoffClaim.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/projects/:projectId/sessions/:sessionId/finalize', () => {
+  it.each([
+    ['consult mode', { session_mode: 'consult', ask_mode: 0 }],
+    ['legacy ask_mode', { session_mode: 'chat', ask_mode: 1 }],
+  ])('400 when the session is in %s', async (_label, modeFields) => {
+    const { app, findProject, findAgent, stmts } = makeApp();
+    findProject.mockReturnValue({ id: 'proj-1' });
+    findAgent.mockReturnValue({
+      project: { id: 'proj-1' },
+      agent: { id: 'agent-1', name: 'Dev' },
+    });
+    stmts.getSession.get.mockReturnValue({
+      id: 'sess-1',
+      agent_id: 'agent-1',
+      worktree_path: '/tmp/wt',
+      worktree_branch: 'feature/x',
+      ...modeFields,
+    });
+
+    const res = await supertest(app)
+      .post('/api/projects/proj-1/sessions/sess-1/finalize')
+      .send({ mode: 'review' })
+      .expect(400);
+
+    expect(res.body).toMatchObject({ error: 'finalize_not_allowed_in_consult_session' });
+    expect(runFinalize).not.toHaveBeenCalled();
   });
 });
 

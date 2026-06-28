@@ -1896,8 +1896,9 @@ components:
             - design
             - scoping
             - skill-builder
+            - consult
             - null
-          description: "Session mode picker dimension: `chat` (default), `design`, or `scoping`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
+          description: "Session mode picker dimension: `chat` (default), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is read-only Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`."
         reasoning_effort:
           type: string
           nullable: true
@@ -12705,6 +12706,14 @@ paths:
                   type: string
                 ask_mode:
                   type: boolean
+                session_mode:
+                  type: string
+                  enum:
+                    - chat
+                    - design
+                    - scoping
+                    - skill-builder
+                    - consult
       responses:
         "200":
           description: New session.
@@ -12882,6 +12891,7 @@ paths:
                     - design
                     - scoping
                     - skill-builder
+                    - consult
                 ask_mode:
                   type: boolean
       responses:
@@ -13416,7 +13426,7 @@ paths:
     put:
       tags:
         - Sessions
-      summary: Toggle ask-mode (read-only / plan-mode) on a session
+      summary: Legacy Ask toggle alias for Consult mode
       parameters:
         - schema:
             type: string
@@ -13481,6 +13491,7 @@ paths:
                     - design
                     - scoping
                     - skill-builder
+                    - consult
               required:
                 - mode
       responses:

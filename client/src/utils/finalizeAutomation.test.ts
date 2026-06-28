@@ -5,11 +5,14 @@ import {
   finalizeAutomationLabel,
   SESSION_CONTROL_OPTIONS,
   DESIGN_AUTOMATION_OPTION,
+  CONSULT_AUTOMATION_OPTION,
   sessionControlValue,
   sessionControlLabel,
   planSessionControlChange,
   sessionControlPatch,
   sessionControlOptionsForAgent,
+  sessionControlOptionsForProject,
+  sessionControlValueForProject,
   isSkillBuilderEligibleAgent,
 } from './finalizeAutomation';
 
@@ -24,12 +27,12 @@ describe('parseFinalizeAutomation', () => {
 });
 
 describe('SESSION_CONTROL_OPTIONS', () => {
-  it('folds Design + Ask + the four finalize levels into one ordered list', () => {
+  it('folds Consult + Design + Scoping + Skill Builder + the four finalize levels', () => {
     expect(SESSION_CONTROL_OPTIONS.map((o: any) => (o as any).value)).toEqual([
+      'consult',
       'design',
       'scoping',
       'skill-builder',
-      'ask',
       'manual',
       'review',
       'push',
@@ -37,22 +40,26 @@ describe('SESSION_CONTROL_OPTIONS', () => {
     ]);
   });
 
-  it('puts Design first as the no-ship option', () => {
-    expect(SESSION_CONTROL_OPTIONS[0]).toBe(DESIGN_AUTOMATION_OPTION);
+  it('puts Consult first and Design second as no-ship options', () => {
+    expect(SESSION_CONTROL_OPTIONS[0]).toBe(CONSULT_AUTOMATION_OPTION);
+    expect(SESSION_CONTROL_OPTIONS[1]).toBe(DESIGN_AUTOMATION_OPTION);
     expect(DESIGN_AUTOMATION_OPTION.label).toBe('Design');
   });
 });
 
 describe('sessionControlValue', () => {
-  it('design takes precedence over ask and automation', () => {
+  it('design takes precedence over legacy ask and automation', () => {
     expect(sessionControlValue({ sessionMode: 'design', askMode: true, automation: 'merge' })).toBe(
       'design',
     );
   });
 
-  it('ask takes precedence over the automation level when not in design', () => {
+  it('consult mode and legacy ask_mode both map to consult', () => {
+    expect(
+      sessionControlValue({ sessionMode: 'consult', askMode: false, automation: 'push' }),
+    ).toBe('consult');
     expect(sessionControlValue({ sessionMode: 'chat', askMode: true, automation: 'push' })).toBe(
-      'ask',
+      'consult',
     );
   });
 
@@ -65,9 +72,9 @@ describe('sessionControlValue', () => {
 });
 
 describe('sessionControlLabel', () => {
-  it('agrees with finalizeAutomationLabel for ship levels and adds Design/Ask', () => {
+  it('agrees with finalizeAutomationLabel for ship levels and adds Consult/Design', () => {
+    expect(sessionControlLabel('consult')).toBe('Consult');
     expect(sessionControlLabel('design')).toBe('Design');
-    expect(sessionControlLabel('ask')).toBe('Ask');
     expect(sessionControlLabel('merge')).toBe(finalizeAutomationLabel('merge'));
     expect(sessionControlLabel('bogus')).toBe('Build');
   });
@@ -85,14 +92,14 @@ describe('planSessionControlChange', () => {
       ),
     ).toEqual([]);
     expect(
-      planSessionControlChange({ sessionMode: 'chat', askMode: true, automation: 'push' }, 'ask'),
+      planSessionControlChange(
+        { sessionMode: 'consult', askMode: false, automation: 'manual' },
+        'consult',
+      ),
     ).toEqual([]);
   });
 
-  it('Ask -> Design clears ask mode before entering design (regression)', () => {
-    // The bug: Design would win display precedence while ask_mode stayed on,
-    // leaving the session read-only underneath so design prompts never write
-    // artifacts. The plan must clear ask first.
+  it('legacy ask -> Design clears ask mode before entering design (regression)', () => {
     const steps = planSessionControlChange(
       { sessionMode: 'chat', askMode: true, automation: 'manual' },
       'design',
@@ -113,8 +120,6 @@ describe('planSessionControlChange', () => {
   });
 
   it('ship level -> Design resets automation to manual before entering design (regression)', () => {
-    // The bug: entering Design from push/merge left the ship intent stored
-    // underneath, resurfacing when later leaving Design.
     expect(
       planSessionControlChange(
         { sessionMode: 'chat', askMode: false, automation: 'merge' },
@@ -126,7 +131,7 @@ describe('planSessionControlChange', () => {
     ]);
   });
 
-  it('Ask + ship level -> Design clears both ask and ship intent', () => {
+  it('legacy ask + ship level -> Design clears both ask and ship intent', () => {
     expect(
       planSessionControlChange(
         { sessionMode: 'chat', askMode: true, automation: 'push' },
@@ -136,6 +141,30 @@ describe('planSessionControlChange', () => {
       { type: 'ask', value: false },
       { type: 'automation', value: 'manual' },
       { type: 'mode', value: 'design' },
+    ]);
+  });
+
+  it('entering Consult clears legacy ask and ship intent', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: false, automation: 'merge' },
+        'consult',
+      ),
+    ).toEqual([
+      { type: 'automation', value: 'manual' },
+      { type: 'mode', value: 'consult' },
+    ]);
+  });
+
+  it('leaving Consult for a ship level resets session_mode first', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'consult', askMode: false, automation: 'manual' },
+        'push',
+      ),
+    ).toEqual([
+      { type: 'mode', value: 'chat' },
+      { type: 'automation', value: 'push' },
     ]);
   });
 
@@ -151,19 +180,7 @@ describe('planSessionControlChange', () => {
     ]);
   });
 
-  it('Design -> Ask resets to chat then enables ask', () => {
-    expect(
-      planSessionControlChange(
-        { sessionMode: 'design', askMode: false, automation: 'manual' },
-        'ask',
-      ),
-    ).toEqual([
-      { type: 'mode', value: 'chat' },
-      { type: 'ask', value: true },
-    ]);
-  });
-
-  it('Ask -> a ship level clears ask then sets the level', () => {
+  it('legacy ask -> a ship level clears ask then sets the level', () => {
     expect(
       planSessionControlChange(
         { sessionMode: 'chat', askMode: true, automation: 'manual' },
@@ -175,13 +192,26 @@ describe('planSessionControlChange', () => {
     ]);
   });
 
-  it('Build -> Ask just enables ask', () => {
+  it('Build -> Consult switches mode and clears ship intent', () => {
     expect(
       planSessionControlChange(
-        { sessionMode: 'chat', askMode: false, automation: 'manual' },
-        'ask',
+        { sessionMode: 'chat', askMode: false, automation: 'merge' },
+        'consult',
       ),
-    ).toEqual([{ type: 'ask', value: true }]);
+    ).toEqual([
+      { type: 'automation', value: 'manual' },
+      { type: 'mode', value: 'consult' },
+    ]);
+  });
+
+  it('workflow project non-ship transitions do not write finalize automation', () => {
+    expect(
+      planSessionControlChange(
+        { sessionMode: 'consult', askMode: false, automation: 'merge' },
+        'scoping',
+        { project: { mode: 'workflow' } },
+      ),
+    ).toEqual([{ type: 'mode', value: 'scoping' }]);
   });
 });
 
@@ -197,8 +227,8 @@ describe('sessionControlPatch', () => {
       sessionControlPatch({ sessionMode: 'chat', askMode: false, automation: 'manual' }, 'merge'),
     ).toEqual({ finalize_automation: 'merge' });
     expect(
-      sessionControlPatch({ sessionMode: 'chat', askMode: false, automation: 'manual' }, 'ask'),
-    ).toEqual({ ask_mode: true });
+      sessionControlPatch({ sessionMode: 'chat', askMode: false, automation: 'manual' }, 'consult'),
+    ).toEqual({ session_mode: 'consult' });
   });
 
   it('collapses Design-from-merge into one atomic patch (mode + ship reset)', () => {
@@ -207,7 +237,7 @@ describe('sessionControlPatch', () => {
     ).toEqual({ session_mode: 'design', finalize_automation: 'manual' });
   });
 
-  it('collapses Ask + ship -> Design into one atomic patch (all three axes)', () => {
+  it('collapses legacy ask + ship -> Design into one atomic patch (all three axes)', () => {
     expect(
       sessionControlPatch({ sessionMode: 'chat', askMode: true, automation: 'push' }, 'design'),
     ).toEqual({ session_mode: 'design', ask_mode: false, finalize_automation: 'manual' });
@@ -217,6 +247,39 @@ describe('sessionControlPatch', () => {
     expect(
       sessionControlPatch({ sessionMode: 'design', askMode: false, automation: 'manual' }, 'push'),
     ).toEqual({ session_mode: 'chat', finalize_automation: 'push' });
+  });
+
+  it('omits finalize_automation for workflow project Consult -> Scoping patches', () => {
+    expect(
+      sessionControlPatch(
+        { sessionMode: 'consult', askMode: false, automation: 'merge' },
+        'scoping',
+        { project: { mode: 'workflow' } },
+      ),
+    ).toEqual({ session_mode: 'scoping' });
+  });
+});
+
+describe('sessionControlOptionsForProject / sessionControlValueForProject', () => {
+  it('offers only server-accepted workflow modes on workflow projects', () => {
+    const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'sub' });
+    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'scoping']);
+  });
+
+  it('includes Consult and Build modes on dev projects', () => {
+    const opts = sessionControlOptionsForProject({ mode: 'dev' }, { role: 'sub' });
+    expect(opts.map((o: any) => o.value)).toContain('consult');
+    expect(opts.map((o: any) => o.value)).toContain('manual');
+    expect(opts.map((o: any) => o.value)).not.toContain('ask');
+  });
+
+  it('maps legacy ship automation to Consult for display on workflow projects', () => {
+    expect(
+      sessionControlValueForProject({ mode: 'workflow' }, { automation: 'push', askMode: false }),
+    ).toBe('consult');
+    expect(
+      sessionControlValueForProject({ mode: 'dev' }, { automation: 'push', askMode: false }),
+    ).toBe('push');
   });
 });
 
@@ -231,8 +294,7 @@ describe('sessionControlOptionsForAgent / isSkillBuilderEligibleAgent', () => {
     for (const role of ['docs', 'reviewer', 'skill-builder']) {
       const opts = sessionControlOptionsForAgent({ role });
       expect(opts.some((o: any) => o.value === 'skill-builder')).toBe(false);
-      // Other options (design, ask, ship levels) are untouched.
-      expect(opts.some((o: any) => o.value === 'design')).toBe(true);
+      expect(opts.some((o: any) => o.value === 'consult')).toBe(true);
       expect(opts.length).toBe(SESSION_CONTROL_OPTIONS.length - 1);
     }
   });

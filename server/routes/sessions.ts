@@ -20,8 +20,14 @@ import {
   normalizeSessionMode,
   sessionHasUsableWorktree,
   isSkillBuilderEligibleAgent,
+  defaultSessionModeForProject,
   type SessionMode,
 } from '../session-mode.js';
+import {
+  isWorkflowProject,
+  validateFinalizeAutomationForProject,
+  validateSessionModeForProject,
+} from '../project-mode-guards.js';
 import { listSessionDesignFiles } from '../session-design-files.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
@@ -482,20 +488,53 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       explicitEngine: parsed.engine,
       explicitModel: parsed.model,
     });
-    // Agent Hub is worktree-only for user-facing session creation.
-    // `defaultSessionUseWorktreeFlag` returns 1 unconditionally; internal
-    // callers that need custom session names or kickoff prompts bypass
-    // this route and write directly to `stmts.createSession`.
+    const requestedMode =
+      parsed.session_mode !== undefined
+        ? normalizeSessionMode(parsed.session_mode)
+        : parsed.ask_mode === true
+          ? 'consult'
+          : undefined;
+    if (requestedMode !== undefined) {
+      const modeGuard = validateSessionModeForProject(found?.project, requestedMode);
+      if (modeGuard) return res.status(400).json(modeGuard);
+      if (requestedMode === 'design') {
+        return res.status(400).json({
+          error: 'design_mode_requires_worktree',
+          message:
+            'Design mode requires a session with an isolated worktree. Create the session first, then switch to Design after the worktree is ready.',
+        });
+      }
+      if (requestedMode === 'skill-builder' && !isSkillBuilderEligibleAgent(found?.agent)) {
+        return res.status(400).json({
+          error: 'skill_builder_requires_dev_agent',
+          message:
+            "Skill Builder mode is only available on a dev agent — this session's agent " +
+            'is a helper (docs / reviewer / skill-builder) and is not eligible.',
+        });
+      }
+    }
+
     const useWorktree = defaultSessionUseWorktreeFlag(found?.project);
-    const askMode = parsed.ask_mode ? 1 : 0;
-    stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, askMode, 1);
+    stmts.createSession.run(id, req.params.agentId, name, engine, model, useWorktree, 0, 1);
     setSessionOwner(id, ownerUid);
-    // Apply this user's per-project default Finalize automation level (if any)
-    // to the new ad-hoc session. No stored preference → leave NULL, which the
-    // session resolves to the global default ('manual'). Board-assigned and
-    // autonomous-dispatch sessions are created elsewhere and keep their own
-    // escalation rules (see assignedFinalizeAutomationLevel).
-    if (found?.project?.id) {
+    if (isWorkflowProject(found?.project)) {
+      stmts.updateSessionMode.run(
+        requestedMode ?? defaultSessionModeForProject(found?.project),
+        id,
+      );
+    } else if (requestedMode !== undefined && requestedMode !== 'chat') {
+      stmts.updateSessionMode.run(requestedMode, id);
+    }
+    if (
+      !isWorkflowProject(found?.project) &&
+      found?.project?.id &&
+      (requestedMode === undefined || requestedMode === 'chat')
+    ) {
+      // Apply this user's per-project default Finalize automation level (if any)
+      // to the new ad-hoc session. No stored preference → leave NULL, which the
+      // session resolves to the global default ('manual'). Board-assigned and
+      // autonomous-dispatch sessions are created elsewhere and keep their own
+      // escalation rules (see assignedFinalizeAutomationLevel).
       const userDefault = getUserProjectDefaultFinalizeAutomation(
         stmts,
         ownerUid,
@@ -1143,6 +1182,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const sessionId = String(req.params.sessionId);
     const existing = stmts.getSession.get(sessionId) as SessionRow | undefined;
     if (!existing) return res.status(404).json({ error: 'Session not found' });
+    const sessionProject = findAgent(existing.agent_id)?.project ?? null;
 
     // Validate the design-mode precondition BEFORE any write so the whole patch
     // is atomic. The session-mode picker can change several axes at once (e.g.
@@ -1179,7 +1219,43 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
             'is a helper (docs / reviewer / skill-builder) and is not eligible.',
         });
       }
+      const modeGuard = validateSessionModeForProject(sessionProject, nextMode);
+      if (modeGuard) return res.status(400).json(modeGuard);
     }
+
+    if (parsed.finalize_automation !== undefined) {
+      const automationGuard = validateFinalizeAutomationForProject(
+        sessionProject,
+        parsed.finalize_automation,
+      );
+      if (automationGuard) return res.status(400).json(automationGuard);
+    }
+
+    if (parsed.ask_mode === true && nextMode === undefined) {
+      nextMode = 'consult';
+      const modeGuard = validateSessionModeForProject(sessionProject, nextMode);
+      if (modeGuard) return res.status(400).json(modeGuard);
+    }
+
+    const finalMode = nextMode ?? normalizeSessionMode(existing.session_mode);
+    const finalAskMode = parsed.ask_mode !== undefined ? 0 : Number(existing.ask_mode ?? 0);
+    const finalModeBlocksFinalize = finalMode !== 'chat' || finalAskMode !== 0;
+    if (
+      finalModeBlocksFinalize &&
+      parsed.finalize_automation !== undefined &&
+      parsed.finalize_automation !== 'manual'
+    ) {
+      return res.status(400).json({
+        error: 'finalize_not_allowed_in_session_mode',
+        message:
+          'Finalize automation must be manual when a session is in Consult, Scoping, Design, Skill Builder, or legacy Ask mode.',
+      });
+    }
+
+    const enteringNonShippingMode = nextMode !== undefined && nextMode !== 'chat';
+    const shouldClearFinalizeAutomation =
+      enteringNonShippingMode && parsed.finalize_automation === undefined;
+    const shouldClearAskMode = enteringNonShippingMode;
 
     getDb().transaction(() => {
       if (parsed.name) {
@@ -1194,9 +1270,11 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         // end-of-turn auto-commit (see maybeAutoStartFinalizeForSession via
         // auto-git.ts).
         stmts.updateSessionFinalizeAutomation.run(parsed.finalize_automation, sessionId);
+      } else if (shouldClearFinalizeAutomation) {
+        stmts.updateSessionFinalizeAutomation.run('manual', sessionId);
       }
-      if (parsed.ask_mode !== undefined) {
-        stmts.updateSessionAskMode.run(parsed.ask_mode ? 1 : 0, sessionId);
+      if (parsed.ask_mode !== undefined || shouldClearAskMode) {
+        stmts.updateSessionAskMode.run(0, sessionId);
       }
       if (nextMode !== undefined) {
         stmts.updateSessionMode.run(nextMode, sessionId);
@@ -1390,7 +1468,17 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const { enabled } = parsed;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    stmts.updateSessionAskMode.run(enabled ? 1 : 0, req.params.sessionId);
+    const sessionProject = findAgent(session.agent_id)?.project ?? null;
+    const targetMode = enabled ? 'consult' : isWorkflowProject(sessionProject) ? 'scoping' : 'chat';
+    const modeGuard = validateSessionModeForProject(sessionProject, targetMode);
+    if (modeGuard) return res.status(400).json(modeGuard);
+    getDb().transaction(() => {
+      stmts.updateSessionAskMode.run(0, req.params.sessionId);
+      stmts.updateSessionMode.run(targetMode, req.params.sessionId);
+      if (enabled) {
+        stmts.updateSessionFinalizeAutomation.run('manual', req.params.sessionId);
+      }
+    })();
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     res.json(enrichSessionForClient(updated, stmts));
   });
@@ -1403,6 +1491,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     if (!parsed) return;
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
+    const sessionProject = findAgent(session.agent_id)?.project ?? null;
     const mode = normalizeSessionMode(parsed.mode);
     // Design mode requires an isolated worktree: the spawn path disables design
     // behavior (no skill, no artifacts) for a worktree-less session rather than
@@ -1429,7 +1518,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
           'is a helper (docs / reviewer / skill-builder) and is not eligible.',
       });
     }
-    stmts.updateSessionMode.run(mode, req.params.sessionId);
+    const modeGuard = validateSessionModeForProject(sessionProject, mode);
+    if (modeGuard) return res.status(400).json(modeGuard);
+    const enteringNonShippingMode = mode !== 'chat';
+    getDb().transaction(() => {
+      stmts.updateSessionMode.run(mode, req.params.sessionId);
+      if (enteringNonShippingMode) {
+        stmts.updateSessionAskMode.run(0, req.params.sessionId);
+        stmts.updateSessionFinalizeAutomation.run('manual', req.params.sessionId);
+      }
+    })();
     const updated = stmts.getSession.get(req.params.sessionId) as SessionRow;
     const enriched = enrichSessionForClient(updated, stmts);
     deps.broadcast({ type: 'session-updated', session: enriched });

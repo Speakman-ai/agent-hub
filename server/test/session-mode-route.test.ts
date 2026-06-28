@@ -96,6 +96,22 @@ describe('PUT /api/sessions/:sessionId/mode', () => {
       .expect(200);
     expect(res.body.session_mode).toBe('skill-builder');
   });
+
+  it.each(['consult', 'scoping', 'skill-builder'] as const)(
+    'clears legacy ask and ship intent when switching to %s mode',
+    async (mode) => {
+      const session = await createSession({ agentId, name: `mode-clears-${mode}` });
+      const sessionId = session.id as string;
+      routeDeps.stmts.updateSessionAskMode.run(1, sessionId);
+      routeDeps.stmts.updateSessionFinalizeAutomation.run('push', sessionId);
+
+      const res = await request.put(`/api/sessions/${sessionId}/mode`).send({ mode }).expect(200);
+
+      expect(res.body.session_mode).toBe(mode);
+      expect(res.body.ask_mode).toBeFalsy();
+      expect(res.body.finalize_automation).toBe('manual');
+    },
+  );
 });
 
 describe('skill-builder mode is rejected on helper agents', () => {

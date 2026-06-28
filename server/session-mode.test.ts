@@ -7,12 +7,14 @@ import {
   isDesignModeActive,
   isSkillBuilderModeActive,
   isSkillBuilderEligibleAgent,
+  isConsultModeActive,
+  defaultSessionModeForProject,
   sessionHasUsableWorktree,
 } from './session-mode.js';
 
 describe('session-mode helpers', () => {
   it('exposes the canonical mode list with chat as the default', () => {
-    expect(SESSION_MODES).toEqual(['chat', 'design', 'scoping', 'skill-builder']);
+    expect(SESSION_MODES).toEqual(['chat', 'design', 'scoping', 'skill-builder', 'consult']);
     expect(DEFAULT_SESSION_MODE).toBe('chat');
     expect(SESSION_MODES).toContain(DEFAULT_SESSION_MODE);
   });
@@ -23,6 +25,7 @@ describe('session-mode helpers', () => {
       expect(isSessionMode('design')).toBe(true);
       expect(isSessionMode('scoping')).toBe(true);
       expect(isSessionMode('skill-builder')).toBe(true);
+      expect(isSessionMode('consult')).toBe(true);
     });
 
     it('rejects unknown strings and non-strings', () => {
@@ -92,6 +95,21 @@ describe('session-mode helpers', () => {
     it('is false for a missing agent', () => {
       expect(isSkillBuilderEligibleAgent(null)).toBe(false);
       expect(isSkillBuilderEligibleAgent(undefined)).toBe(false);
+    });
+  });
+
+  describe('isConsultModeActive', () => {
+    it('is true only for consult mode rows', () => {
+      expect(isConsultModeActive({ session_mode: 'consult' })).toBe(true);
+      expect(isConsultModeActive({ session_mode: 'chat' })).toBe(false);
+    });
+  });
+
+  describe('defaultSessionModeForProject', () => {
+    it('defaults workflow projects to consult and dev to chat', () => {
+      expect(defaultSessionModeForProject({ mode: 'workflow' })).toBe('consult');
+      expect(defaultSessionModeForProject({ mode: 'dev' })).toBe('chat');
+      expect(defaultSessionModeForProject(null)).toBe('chat');
     });
   });
 

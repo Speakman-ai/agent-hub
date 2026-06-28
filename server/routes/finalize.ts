@@ -79,6 +79,11 @@ import {
   type MetricName,
 } from '../finalize/metrics.js';
 import type { FinalizeMetricRow } from '../types.js';
+import {
+  isWorkflowProject,
+  sessionBlocksFinalize,
+  workflowFinalizeBlockedResponse,
+} from '../project-mode-guards.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -128,6 +133,12 @@ const JOBS_UNSUPPORTED_BODY = {
   error: 'jobs_unsupported',
   message:
     'Single-job Finalize runs (the `jobs` field) are no longer supported — Finalize always runs the full rebase + reviewer + checks pipeline. Remove `jobs` from the request to run the full pipeline.',
+} as const;
+
+const CONSULT_FINALIZE_BLOCKED_BODY = {
+  error: 'finalize_not_allowed_in_consult_session',
+  message:
+    'Finalize Code Changes is not available while a session is in Consult mode. Switch the session to Build before running Finalize.',
 } as const;
 
 /**
@@ -290,6 +301,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
 
       const project = findProject(projectId);
       if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (isWorkflowProject(project)) {
+        return res.status(400).json(workflowFinalizeBlockedResponse());
+      }
 
       const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
       if (!card) return res.status(404).json({ error: 'Card not found' });
@@ -320,6 +334,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
         return res
           .status(400)
           .json({ error: 'no_session', message: 'Linked session was not found.' });
+      }
+      if (sessionBlocksFinalize(project, session)) {
+        return res.status(400).json(CONSULT_FINALIZE_BLOCKED_BODY);
       }
       if (hasPushedFinalizeRun(stmts, session.id)) {
         return res.status(409).json({
@@ -355,6 +372,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
 
       const project = findProject(projectId);
       if (!project) return res.status(404).json({ error: 'Project not found' });
+      if (isWorkflowProject(project)) {
+        return res.status(400).json(workflowFinalizeBlockedResponse());
+      }
 
       if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
         return res.status(404).json({ error: 'Session not found' });
@@ -366,6 +386,9 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       const lookup = deps.findAgent(session.agent_id);
       if (!lookup || lookup.project.id !== project.id) {
         return res.status(404).json({ error: 'Session not found' });
+      }
+      if (sessionBlocksFinalize(project, session)) {
+        return res.status(400).json(CONSULT_FINALIZE_BLOCKED_BODY);
       }
       if (hasPushedFinalizeRun(stmts, session.id)) {
         return res.status(409).json({

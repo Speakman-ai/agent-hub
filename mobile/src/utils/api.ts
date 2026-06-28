@@ -42,9 +42,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({
             name,
-            // `use_worktree` is no longer accepted on session creation —
-            // Agent Hub is worktree-only for user-facing session flows.
-            ...(options.askMode != null ? { ask_mode: !!options.askMode } : {}),
+            ...(options.consultMode ? { session_mode: 'consult' } : {}),
         }),
     }),
     getMessages: async (sessionId: any, opts: any = {}) => {

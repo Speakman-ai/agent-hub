@@ -49,6 +49,14 @@
 export const SHADOWED_NATIVE_TOOLS = ['Skill', 'AskUserQuestion'] as const;
 
 /**
+ * Native Claude Code tools that can directly mutate the workspace. Consult and
+ * workflow sessions still need Bash so Hub wrappers (`ah-api.sh`, `board.sh`,
+ * `wiki-upsert.sh`, ...) can mutate Agent Hub state, but they should not get
+ * Claude's direct file-editing tools.
+ */
+export const CODE_MUTATION_NATIVE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const;
+
+/**
  * Args to pass alongside the rest of the Claude CLI invocation in order to
  * disable Claude Code's native tools that Agent Hub already shadows
  * (`Skill`, `AskUserQuestion`, …). Returns a fresh array on each call so
@@ -79,8 +87,14 @@ export const SHADOWED_NATIVE_TOOLS = ['Skill', 'AskUserQuestion'] as const;
  * Bare-prompt call sites (heartbeat/memory/slack/room-chat/delegation
  * fan-out) use option (2). See those files for the inline comments.
  */
-export function disableShadowedNativeToolsArgs(): string[] {
-  return ['--disallowed-tools', ...SHADOWED_NATIVE_TOOLS];
+export function disableShadowedNativeToolsArgs(
+  options: { codeMutationTools?: boolean } = {},
+): string[] {
+  return [
+    '--disallowed-tools',
+    ...SHADOWED_NATIVE_TOOLS,
+    ...(options.codeMutationTools ? CODE_MUTATION_NATIVE_TOOLS : []),
+  ];
 }
 
 /**

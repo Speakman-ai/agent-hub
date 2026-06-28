@@ -366,10 +366,17 @@ export const api = {
   // Agents & Sessions
   getAgents: () => fetchJSON<AgentWire[]>('/agents'),
   getSessions: (agentId: string) => fetchJSON<SessionWire[]>(`/agents/${agentId}/sessions`),
-  createSession: (agentId: string, name?: string, { askMode }: { askMode?: boolean } = {}) =>
+  createSession: (
+    agentId: string,
+    name?: string,
+    { consultMode }: { consultMode?: boolean } = {},
+  ) =>
     fetchJSON<SessionWire>(`/agents/${agentId}/sessions`, {
       method: 'POST',
-      body: JSON.stringify({ name, ask_mode: askMode || false }),
+      body: JSON.stringify({
+        name,
+        ...(consultMode ? { session_mode: 'consult' } : {}),
+      }),
     }),
   /**
    * Fetch session messages (oldest-first array).

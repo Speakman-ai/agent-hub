@@ -41,15 +41,25 @@ describe('FinalizeAutomationSelect', () => {
     expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Auto Merge');
   });
 
-  it('renders Ask when session ask mode is active', () => {
+  it('renders Consult when session is in consult mode', () => {
     render(
       <FinalizeAutomationSelect
         sessionId={sid}
-        session={{ finalize_automation: 'push' }}
-        askMode={true}
+        session={{ session_mode: 'consult', finalize_automation: 'push' }}
       />,
     );
-    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Ask');
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Consult');
+  });
+
+  it('renders Consult for legacy ask_mode rows', () => {
+    render(
+      <FinalizeAutomationSelect
+        sessionId={sid}
+        session={{ finalize_automation: 'push', ask_mode: 1 }}
+        legacyAskMode={true}
+      />,
+    );
+    expect(screen.getByTestId('finalize-automation-select')).toHaveTextContent('Consult');
   });
 
   describe('atomic single-patch contract', () => {
@@ -69,28 +79,29 @@ describe('FinalizeAutomationSelect', () => {
       );
     });
 
-    it('selecting Ask sends a single { ask_mode: true } patch', async () => {
+    it('selecting Consult sends a single consult patch', async () => {
       const onControlChange = vi.fn().mockResolvedValue(undefined);
       render(
         <FinalizeAutomationSelect
           sessionId={sid}
           session={{ finalize_automation: 'manual' }}
-          askMode={false}
           onControlChange={onControlChange}
         />,
       );
       fireEvent.click(screen.getByTestId('finalize-automation-select' as any) as any);
-      fireEvent.click(screen.getByTestId('finalize-automation-option-ask' as any) as any);
-      await waitFor(() => expect(onControlChange!).toHaveBeenCalledWith({ ask_mode: true }));
+      fireEvent.click(screen.getByTestId('finalize-automation-option-consult' as any) as any);
+      await waitFor(() =>
+        expect(onControlChange!).toHaveBeenCalledWith({ session_mode: 'consult' }),
+      );
     });
 
-    it('Ask -> a ship level clears ask AND sets the level in ONE patch', async () => {
+    it('legacy ask -> a ship level clears ask AND sets the level in ONE patch', async () => {
       const onControlChange = vi.fn().mockResolvedValue(undefined);
       render(
         <FinalizeAutomationSelect
           sessionId={sid}
           session={{ finalize_automation: 'manual' }}
-          askMode={true}
+          legacyAskMode={true}
           onControlChange={onControlChange}
         />,
       );
@@ -102,7 +113,6 @@ describe('FinalizeAutomationSelect', () => {
           finalize_automation: 'review',
         }),
       );
-      // Exactly one call — no separate per-axis round-trips that could partially commit.
       expect(onControlChange!).toHaveBeenCalledTimes(1);
     });
 
@@ -120,7 +130,7 @@ describe('FinalizeAutomationSelect', () => {
   });
 
   describe('Design folded into the dropdown', () => {
-    it('renders Design and Ask alongside the ship levels', () => {
+    it('renders Design and Consult alongside the ship levels', () => {
       render(
         <FinalizeAutomationSelect
           sessionId={sid}
@@ -129,7 +139,7 @@ describe('FinalizeAutomationSelect', () => {
       );
       fireEvent.click(screen.getByTestId('finalize-automation-select' as any) as any);
       expect(screen.getByTestId('finalize-automation-option-design')).toBeInTheDocument();
-      expect(screen.getByTestId('finalize-automation-option-ask')).toBeInTheDocument();
+      expect(screen.getByTestId('finalize-automation-option-consult')).toBeInTheDocument();
       expect(screen.getByTestId('finalize-automation-option-merge')).toBeInTheDocument();
     });
 
@@ -160,8 +170,6 @@ describe('FinalizeAutomationSelect', () => {
     });
 
     it('Design from a ship level clears ship intent in the SAME atomic patch (regression)', async () => {
-      // The bug: ship intent could be cleared and then the mode switch fail,
-      // dropping the merge/push intent. One atomic patch makes it all-or-nothing.
       const onControlChange = vi.fn().mockResolvedValue(undefined);
       render(
         <FinalizeAutomationSelect
@@ -181,13 +189,13 @@ describe('FinalizeAutomationSelect', () => {
       expect(onControlChange!).toHaveBeenCalledTimes(1);
     });
 
-    it('Ask + ship -> Design clears both axes in the SAME atomic patch (regression)', async () => {
+    it('legacy ask + ship -> Design clears both axes in the SAME atomic patch (regression)', async () => {
       const onControlChange = vi.fn().mockResolvedValue(undefined);
       render(
         <FinalizeAutomationSelect
           sessionId={sid}
           session={{ session_mode: 'chat', can_design_mode: true, finalize_automation: 'push' }}
-          askMode={true}
+          legacyAskMode={true}
           onControlChange={onControlChange}
         />,
       );

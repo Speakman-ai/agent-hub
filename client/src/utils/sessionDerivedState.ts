@@ -3,12 +3,19 @@
  *
  * SQLite stores 0/1 integers; older payloads may omit fields. Crucially,
  * `undefined !== 0` is true in JavaScript — never write `session?.ask_mode !== 0`
- * without coalescing, or Ask mode flips on whenever the active row is missing
+ * without coalescing, or Consult mode flips on whenever the active row is missing
  * from the in-memory list (agent switch races, optimistic navigation, etc.).
  */
 
-export function isSessionAskModeEnabled(session: any) {
+/** True when the session is in Consult (Hub-only, no code ship / Finalize). */
+export function isSessionConsultModeEnabled(session: any) {
+  if (session?.session_mode === 'consult') return true;
   return Number(session?.ask_mode ?? 0) !== 0;
+}
+
+/** @deprecated Use isSessionConsultModeEnabled — legacy ask_mode rows map to Consult. */
+export function isSessionAskModeEnabled(session: any) {
+  return isSessionConsultModeEnabled(session);
 }
 
 /** Server default for new sessions is use_worktree = 1 — match when the row is absent. */

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isSessionAskModeEnabled,
+  isSessionConsultModeEnabled,
   isSessionWorktreeEnabled,
   isSessionWorkspaceReady,
   prependSessionDeduped,
@@ -8,22 +8,29 @@ import {
 } from './sessionDerivedState';
 
 describe('sessionDerivedState', () => {
-  describe('isSessionAskModeEnabled', () => {
-    it('returns false when session is undefined (missing row must not imply ask mode)', () => {
-      expect(isSessionAskModeEnabled(undefined)).toBe(false);
+  describe('isSessionConsultModeEnabled', () => {
+    it('returns false when session is undefined (missing row must not imply consult mode)', () => {
+      expect(isSessionConsultModeEnabled(undefined)).toBe(false);
     });
 
     it('returns false when session is null', () => {
-      expect(isSessionAskModeEnabled(null)).toBe(false);
+      expect(isSessionConsultModeEnabled(null)).toBe(false);
     });
 
-    it('returns false when ask_mode is 0 or missing', () => {
-      expect(isSessionAskModeEnabled({ id: 'x', ask_mode: 0 })).toBe(false);
-      expect(isSessionAskModeEnabled({ id: 'x' })).toBe(false);
+    it('returns false for chat mode with ask_mode off', () => {
+      expect(isSessionConsultModeEnabled({ id: 'x', ask_mode: 0 })).toBe(false);
+      expect(isSessionConsultModeEnabled({ id: 'x' })).toBe(false);
+      expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'chat', ask_mode: 0 })).toBe(
+        false,
+      );
     });
 
-    it('returns true when ask_mode is non-zero', () => {
-      expect(isSessionAskModeEnabled({ id: 'x', ask_mode: 1 })).toBe(true);
+    it('returns true for consult session_mode', () => {
+      expect(isSessionConsultModeEnabled({ id: 'x', session_mode: 'consult' })).toBe(true);
+    });
+
+    it('returns true for legacy ask_mode rows', () => {
+      expect(isSessionConsultModeEnabled({ id: 'x', ask_mode: 1 })).toBe(true);
     });
   });
 

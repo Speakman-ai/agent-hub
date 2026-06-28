@@ -26,6 +26,7 @@ import {
   claudePermissionModeForSpawn,
   disableShadowedNativeToolsArgs,
   disableNativeSkillToolArgs,
+  CODE_MUTATION_NATIVE_TOOLS,
   SHADOWED_NATIVE_TOOLS,
 } from './claude-cli-args.js';
 import { buildDesignSpawnArgs } from './design-multi-engine.js';
@@ -67,6 +68,14 @@ describe('disableShadowedNativeToolsArgs', () => {
 
   it('includes AskUserQuestion (replaced by agenthub:ask fenced block)', () => {
     expect(disableShadowedNativeToolsArgs()).toContain('AskUserQuestion');
+  });
+
+  it('optionally includes direct file mutation tools for Consult/workflow spawns', () => {
+    expect(disableShadowedNativeToolsArgs({ codeMutationTools: true })).toEqual([
+      '--disallowed-tools',
+      ...SHADOWED_NATIVE_TOOLS,
+      ...CODE_MUTATION_NATIVE_TOOLS,
+    ]);
   });
 
   it('returns a fresh array each call so callers can safely mutate it', () => {

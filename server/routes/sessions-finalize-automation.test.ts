@@ -73,6 +73,22 @@ function makeApp(options: { session?: Partial<SessionRow>; activeTaskStatus?: st
       projectId: 'agent-hub',
       projectName: 'agent-hub',
     })),
+    findAgent: vi.fn(() => ({
+      project: {
+        id: 'agent-hub',
+        name: 'agent-hub',
+        cwd: '/tmp/agent-hub',
+        ahw: '/tmp/agent-hub/.ahw',
+        mode: 'dev',
+        agents: [],
+      },
+      agent: {
+        id: 'agent-1',
+        name: 'Agent Hub Dev',
+        color: '#333333',
+        role: 'dev',
+      },
+    })),
     broadcast: vi.fn(),
   } as unknown as RouteDeps;
   const app = express();

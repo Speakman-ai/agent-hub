@@ -60,16 +60,18 @@ export const SKILL_BUILDER_AUTOMATION_OPTION: Record<string, any> = {
     label: 'Skill Builder',
     description: 'Author or refine project skills conversationally — nothing ships',
 };
-export const ASK_AUTOMATION_OPTION: Record<string, any> = {
-    value: 'ask',
-    label: 'Ask',
-    description: 'Read-only planning mode',
+export const CONSULT_AUTOMATION_OPTION: Record<string, any> = {
+    value: 'consult',
+    label: 'Consult',
+    description: 'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
 };
+export const WORKFLOW_SESSION_CONTROL_VALUES = new Set(['consult', 'scoping']);
+const SHIP_AUTOMATION_VALUES = new Set(['manual', 'review', 'push', 'merge']);
 export const SESSION_CONTROL_OPTIONS = [
+    CONSULT_AUTOMATION_OPTION,
     DESIGN_AUTOMATION_OPTION,
     SCOPING_AUTOMATION_OPTION,
     SKILL_BUILDER_AUTOMATION_OPTION,
-    ASK_AUTOMATION_OPTION,
     ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 /**
@@ -94,6 +96,21 @@ export function sessionControlOptionsForAgent(agent: any) {
         return SESSION_CONTROL_OPTIONS;
     return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
 }
+export function sessionControlOptionsForProject(project: any, agent: any) {
+    const base = sessionControlOptionsForAgent(agent);
+    if (project?.mode === 'workflow') {
+        return base.filter((o: any) => WORKFLOW_SESSION_CONTROL_VALUES.has(o.value));
+    }
+    return base;
+}
+export function sessionControlValueForProject(project: any, input: any = {}) {
+    const value = sessionControlValue(input);
+    if (project?.mode !== 'workflow')
+        return value;
+    if (SHIP_AUTOMATION_VALUES.has(value))
+        return 'consult';
+    return value;
+}
 /**
  * Resolve the active dropdown value from the three underlying axes. Design >
  * Ask > finalize automation level, matching their mutual exclusivity.
@@ -108,8 +125,10 @@ export function sessionControlValue({ sessionMode, askMode, automation }: any = 
         return 'scoping';
     if (sessionMode === 'skill-builder')
         return 'skill-builder';
+    if (sessionMode === 'consult')
+        return 'consult';
     if (askMode)
-        return 'ask';
+        return 'consult';
     return parseFinalizeAutomation(automation);
 }
 export function sessionControlLabel(value: any) {
@@ -134,55 +153,63 @@ export function sessionControlLabel(value: any) {
  * @param {string} target
  * @returns {Array<{ type: 'mode'|'ask'|'automation', value: any }>}
  */
-export function planSessionControlChange(current: any, target: any) {
+export function planSessionControlChange(current: any, target: any, options: any = {}) {
+    const workflowProject = options?.project?.mode === 'workflow' || current?.projectMode === 'workflow';
     const sessionMode = current?.sessionMode === 'design'
         ? 'design'
         : current?.sessionMode === 'scoping'
             ? 'scoping'
             : current?.sessionMode === 'skill-builder'
                 ? 'skill-builder'
-                : 'chat';
+                : current?.sessionMode === 'consult'
+                    ? 'consult'
+                    : 'chat';
     const askMode = !!current?.askMode;
     const automation = parseFinalizeAutomation(current?.automation);
     const currentValue = sessionControlValue({ sessionMode, askMode, automation });
     if (target === currentValue)
         return [];
     const steps = [];
+    const clearShipIntent = () => {
+        if (workflowProject)
+            return;
+        if (automation !== 'manual')
+            steps.push({ type: 'automation', value: 'manual' });
+    };
     if (target === 'design') {
         if (askMode)
             steps.push({ type: 'ask', value: false });
-        if (automation !== 'manual')
-            steps.push({ type: 'automation', value: 'manual' });
+        clearShipIntent();
         steps.push({ type: 'mode', value: 'design' });
         return steps;
     }
     if (target === 'scoping') {
         if (askMode)
             steps.push({ type: 'ask', value: false });
-        if (automation !== 'manual')
-            steps.push({ type: 'automation', value: 'manual' });
+        clearShipIntent();
         steps.push({ type: 'mode', value: 'scoping' });
         return steps;
     }
     if (target === 'skill-builder') {
         if (askMode)
             steps.push({ type: 'ask', value: false });
-        if (automation !== 'manual')
-            steps.push({ type: 'automation', value: 'manual' });
+        clearShipIntent();
         steps.push({ type: 'mode', value: 'skill-builder' });
         return steps;
     }
-    if (sessionMode === 'design' || sessionMode === 'scoping' || sessionMode === 'skill-builder')
-        steps.push({ type: 'mode', value: 'chat' });
-    if (target === 'ask') {
-        steps.push({ type: 'ask', value: true });
-    }
-    else {
+    if (target === 'consult') {
         if (askMode)
             steps.push({ type: 'ask', value: false });
-        if (target !== automation)
-            steps.push({ type: 'automation', value: target });
+        clearShipIntent();
+        steps.push({ type: 'mode', value: 'consult' });
+        return steps;
     }
+    if (sessionMode === 'design' || sessionMode === 'scoping' || sessionMode === 'skill-builder' || sessionMode === 'consult')
+        steps.push({ type: 'mode', value: 'chat' });
+    if (askMode)
+        steps.push({ type: 'ask', value: false });
+    if (target !== automation)
+        steps.push({ type: 'automation', value: target });
     return steps;
 }
 /**
@@ -195,8 +222,8 @@ export function planSessionControlChange(current: any, target: any) {
  * @param {string} target
  * @returns {{ session_mode?: string, ask_mode?: boolean, finalize_automation?: string } | null}
  */
-export function sessionControlPatch(current: any, target: any) {
-    const steps = planSessionControlChange(current, target);
+export function sessionControlPatch(current: any, target: any, options: any = {}) {
+    const steps = planSessionControlChange(current, target, options);
     if (steps.length === 0)
         return null;
     const patch: Record<string, any> = {};

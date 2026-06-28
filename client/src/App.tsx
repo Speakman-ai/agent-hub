@@ -165,7 +165,7 @@ import {
   defaultModelForAuthenticatedEngine,
 } from './utils/authModelEngines';
 import {
-  isSessionAskModeEnabled,
+  isSessionConsultModeEnabled,
   isSessionWorkspaceReady,
   isSessionWorktreeEnabled,
   prependSessionDeduped,
@@ -244,7 +244,7 @@ export default function App({ initialView }: any = {}) {
   const [modelConfig, setModelConfig] = useState<any>(null);
   // Worktree state was removed when Agent Hub locked to worktree-only sessions.
   // The CLI-detection signal (`gitWorktreeDetected`) is similarly retired.
-  const [sessionAskMode, setSessionAskMode] = useState(false);
+  const [sessionConsultMode, setSessionConsultMode] = useState(false);
   const [currentView, setCurrentView] = useState(initialNavigation.view);
   const [showSwitcher, setShowSwitcher] = useState(false);
   const [showForward, setShowForward] = useState(false);
@@ -1279,7 +1279,7 @@ export default function App({ initialView }: any = {}) {
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
               'claude-opus-4-8',
           );
-          setSessionAskMode(isSessionAskModeEnabled(target));
+          setSessionConsultMode(isSessionConsultModeEnabled(target));
         } else {
           setActiveSessionId(null);
           setMessages([]);
@@ -1287,7 +1287,7 @@ export default function App({ initialView }: any = {}) {
             agentsRef.current.find((a: any) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
           setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-8');
-          setSessionAskMode(false);
+          setSessionConsultMode(false);
         }
       }
     } catch (err: any) {
@@ -3271,14 +3271,14 @@ export default function App({ initialView }: any = {}) {
               modelConfig?.engineDefaultModels?.[target.engine || ag?.engine || 'claude-code'] ||
               'claude-opus-4-8',
           );
-          setSessionAskMode(isSessionAskModeEnabled(target));
+          setSessionConsultMode(isSessionConsultModeEnabled(target));
         } else {
           setActiveSessionId(null);
           setMessages([]);
           const fallbackEngine = agents.find((a: any) => a.id === agentId)?.engine || 'claude-code';
           setSessionEngine(fallbackEngine);
           setSessionModel(modelConfig?.engineDefaultModels?.[fallbackEngine] || 'claude-opus-4-8');
-          setSessionAskMode(false);
+          setSessionConsultMode(false);
         }
       })
       .catch((err: any) => {
@@ -3330,7 +3330,7 @@ export default function App({ initialView }: any = {}) {
     }
     // NULL/legacy/non-Codex rows default to 'high' (matches the server resolver).
     setSessionReasoningEffort(session?.reasoning_effort === 'pro' ? 'pro' : 'high');
-    setSessionAskMode(isSessionAskModeEnabled(session));
+    setSessionConsultMode(isSessionConsultModeEnabled(session));
   }, [activeSessionId, sessions]);
 
   // If the server reports no models for the session's engine (e.g. Cursor auth
@@ -4053,7 +4053,7 @@ export default function App({ initialView }: any = {}) {
       return;
     }
     const session = await api.createSession(agentId, undefined, {
-      askMode: agentId === activeAgentId ? sessionAskMode : false,
+      consultMode: agentId === activeAgentId ? sessionConsultMode : false,
     });
     insertCreatedSession(agentId, session);
     setActiveAgentId(agentId);
@@ -4064,7 +4064,7 @@ export default function App({ initialView }: any = {}) {
         modelConfig?.engineDefaultModels?.[session.engine || agent?.engine || 'claude-code'] ||
         'claude-opus-4-8',
     );
-    setSessionAskMode(isSessionAskModeEnabled(session));
+    setSessionConsultMode(isSessionConsultModeEnabled(session));
     setMessages([]);
     setCurrentView('chat');
   };
@@ -4096,7 +4096,7 @@ export default function App({ initialView }: any = {}) {
         return;
       }
       try {
-        const session = await api.createSession(agent.id, '[Skill Builder]', { askMode: false });
+        const session = await api.createSession(agent.id, '[Skill Builder]');
         const updated = await api.updateSession(session.id, {
           session_mode: 'skill-builder',
           ask_mode: false,
@@ -4111,7 +4111,7 @@ export default function App({ initialView }: any = {}) {
             modelConfig?.engineDefaultModels?.[updated.engine || agent.engine || 'claude-code'] ||
             'claude-opus-4-8',
         );
-        setSessionAskMode(false);
+        setSessionConsultMode(false);
         setMessages([]);
         setCurrentView('chat');
       } catch (err: any) {
@@ -4136,7 +4136,9 @@ export default function App({ initialView }: any = {}) {
         return;
       }
       try {
-        const session = await api.createSession(agentId, undefined, { askMode: sessionAskMode });
+        const session = await api.createSession(agentId, undefined, {
+          consultMode: sessionConsultMode,
+        });
         setActiveAgentId(agentId);
         insertCreatedSession(agentId, session);
         setActiveSessionId(session.id);
@@ -4146,14 +4148,14 @@ export default function App({ initialView }: any = {}) {
             modelConfig?.engineDefaultModels?.[session.engine || agent?.engine || 'claude-code'] ||
             'claude-opus-4-8',
         );
-        setSessionAskMode(isSessionAskModeEnabled(session));
+        setSessionConsultMode(isSessionConsultModeEnabled(session));
         setMessages([]);
         setCurrentView('chat');
       } catch (err: any) {
         showToast(err?.message || 'Failed to start session', 'error', 4000);
       }
     },
-    [agents, sessionAskMode, modelConfig, setActiveAgentId, insertCreatedSession, showToast],
+    [agents, sessionConsultMode, modelConfig, setActiveAgentId, insertCreatedSession, showToast],
   );
 
   const defaultModelForEngine = useCallback(
@@ -4414,14 +4416,16 @@ export default function App({ initialView }: any = {}) {
   const handleSend = async (content: any, images: any = [], { interrupt = false }: any = {}) => {
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
-      const coalesceKey = `${activeAgentId}:${sessionAskMode ? 'ask' : 'run'}`;
+      const coalesceKey = `${activeAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
       const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () =>
-        api.createSession(activeAgentId, undefined, { askMode: sessionAskMode }).then((s: any) => {
-          setSessions((prev: any) => prependSessionDeduped(prev, s));
-          setActiveSessionId(s.id);
-          activeSessionIdRef.current = s.id;
-          return s;
-        }),
+        api
+          .createSession(activeAgentId, undefined, { consultMode: sessionConsultMode })
+          .then((s: any) => {
+            setSessions((prev: any) => prependSessionDeduped(prev, s));
+            setActiveSessionId(s.id);
+            activeSessionIdRef.current = s.id;
+            return s;
+          }),
       );
       sessionId = session.id;
     }
@@ -4564,7 +4568,9 @@ export default function App({ initialView }: any = {}) {
         ? 'scoping'
         : activeSession?.session_mode === 'skill-builder'
           ? 'skill-builder'
-          : 'chat';
+          : activeSession?.session_mode === 'consult'
+            ? 'consult'
+            : 'chat';
   const designModeActive = sessionMode === 'design';
   const scopingModeActive = sessionMode === 'scoping';
   // Skill Builder mode is purely conversational (the coach runs in chat and
@@ -4572,29 +4578,35 @@ export default function App({ initialView }: any = {}) {
   // Scoping, so there is no `skillBuilderModeActive` flag to render here.
 
   // Atomic multi-axis session-control change for the Finalize automation picker
-  // (Design / Ask / Build / …). The picker can change session_mode + ask_mode +
+  // (Consult / Design / Build / …). The picker can change session_mode +
   // finalize_automation at once; we send them as ONE PATCH so the server applies
-  // them in a single transaction. Optimistic `sessionAskMode` is tracked
+  // them in a single transaction. Optimistic `sessionConsultMode` is tracked
   // separately from the session row, so it is updated here and reverted if the
   // (atomic) call fails — the server changed nothing, so neither should we.
   const handleSessionControlChange = useCallback(
     async (patch: any) => {
       if (!activeSessionId) return;
-      const prevAsk = sessionAskMode;
-      if (patch.ask_mode !== undefined) setSessionAskMode(patch.ask_mode);
+      const prevConsult = sessionConsultMode;
+      if (patch.session_mode === 'consult') setSessionConsultMode(true);
+      else if (patch.session_mode === 'chat' || patch.finalize_automation !== undefined) {
+        setSessionConsultMode(false);
+      }
+      if (patch.ask_mode === false) setSessionConsultMode(false);
       try {
         const updated = await api.updateSession(activeSessionId, patch);
         setSessions((prev: any) =>
           prev.map((s: any) => (s.id === updated.id ? { ...s, ...updated } : s)),
         );
-        if (patch.ask_mode !== undefined) setSessionAskMode(isSessionAskModeEnabled(updated));
+        setSessionConsultMode(isSessionConsultModeEnabled(updated));
       } catch (err: any) {
-        if (patch.ask_mode !== undefined) setSessionAskMode(prevAsk);
+        setSessionConsultMode(prevConsult);
         throw err;
       }
     },
-    [activeSessionId, sessionAskMode],
+    [activeSessionId, sessionConsultMode],
   );
+
+  const sessionConsultActive = isSessionConsultModeEnabled(activeSession);
 
   const sessionOwnerAgentId = activeSession?.agent_id ?? activeAgentId;
   const chatAgent = useMemo(
@@ -5817,7 +5829,9 @@ export default function App({ initialView }: any = {}) {
                                     />
                                   ),
                                 )}
-                                {activeSessionId && activeChatProject?.id ? (
+                                {activeSessionId &&
+                                activeChatProject?.id &&
+                                !chatProjectIsWorkflow ? (
                                   <FinalizeChecksLiveBlock
                                     sessionId={activeSessionId}
                                     projectId={activeChatProject.id}
@@ -5972,6 +5986,7 @@ export default function App({ initialView }: any = {}) {
                         preview event for this session but the user has
                         closed the pane. One-click reopen. */}
                       {activeSessionId &&
+                        !chatProjectIsWorkflow &&
                         activePreviewEvent &&
                         previewPaneOpenBySession[activeSessionId] === false && (
                           <div className="px-3 md:px-6 pb-1">
@@ -6002,37 +6017,39 @@ export default function App({ initialView }: any = {}) {
                           <div className="px-3 md:px-6 pb-2 flex flex-wrap justify-center gap-2 sm:flex-nowrap sm:justify-start sm:items-center pt-2">
                             {/* Changes (code diff) toggle — opens the diff pane on
                             the right, replacing the preview pane if open. */}
-                            <button
-                              type="button"
-                              data-testid="toggle-changes-pane"
-                              aria-pressed={showSessionDiffPane}
-                              onClick={() => {
-                                const opening = !diffPaneOpenBySession[activeSessionId];
-                                setDiffPaneOpenBySession((prev: any) => ({
-                                  ...prev,
-                                  [activeSessionId]: opening,
-                                }));
-                                if (opening) {
-                                  setArtifactsPaneOpenBySession((prev: any) => ({
+                            {!chatProjectIsWorkflow && !sessionConsultActive && (
+                              <button
+                                type="button"
+                                data-testid="toggle-changes-pane"
+                                aria-pressed={showSessionDiffPane}
+                                onClick={() => {
+                                  const opening = !diffPaneOpenBySession[activeSessionId];
+                                  setDiffPaneOpenBySession((prev: any) => ({
                                     ...prev,
-                                    [activeSessionId]: false,
+                                    [activeSessionId]: opening,
                                   }));
-                                }
-                              }}
-                              title="View session file changes"
-                              className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
-                                showSessionDiffPane
-                                  ? 'bg-sky-700/70 text-sky-50 border-sky-600'
-                                  : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
-                              }`}
-                            >
-                              <GitBranch size={13} /> Changes
-                              {diffFileCountBySession[activeSessionId] > 0 && (
-                                <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
-                                  {diffFileCountBySession[activeSessionId]}
-                                </span>
-                              )}
-                            </button>
+                                  if (opening) {
+                                    setArtifactsPaneOpenBySession((prev: any) => ({
+                                      ...prev,
+                                      [activeSessionId]: false,
+                                    }));
+                                  }
+                                }}
+                                title="View session file changes"
+                                className={`flex w-[150px] min-w-[150px] shrink-0 justify-center items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border sm:w-auto sm:min-w-0 ${
+                                  showSessionDiffPane
+                                    ? 'bg-sky-700/70 text-sky-50 border-sky-600'
+                                    : 'bg-gray-800/70 hover:bg-gray-700/70 text-gray-200 border-gray-700'
+                                }`}
+                              >
+                                <GitBranch size={13} /> Changes
+                                {diffFileCountBySession[activeSessionId] > 0 && (
+                                  <span className="ml-0.5 rounded-full bg-sky-500/30 text-sky-100 px-1.5 text-[10px] font-semibold">
+                                    {diffFileCountBySession[activeSessionId]}
+                                  </span>
+                                )}
+                              </button>
+                            )}
                             {/* Artifacts toggle — opens the artifacts pane, which
                             shares the right slot with Changes/preview. */}
                             <button
@@ -6066,43 +6083,47 @@ export default function App({ initialView }: any = {}) {
                                 </span>
                               )}
                             </button>
-                            <SessionPreviewStartButton
-                              sessionId={activeSessionId}
-                              project={activeChatProject}
-                              previewEvent={previewEventBySession[activeSessionId]}
-                              disabled={!connected || !activeChatProject}
-                              starting={!!previewStartingBySession[activeSessionId]}
-                              workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
-                              workspaceNotReady={
-                                !!activeSession &&
-                                isSessionWorktreeEnabled(activeSession) &&
-                                !isSessionWorkspaceReady(activeSession)
-                              }
-                              onStart={handleStartSessionPreview}
-                              onConfigure={handlePreviewConfigure}
-                            />
-                            {/* Finalize Code Changes — replaces the legacy ship affordance. */}
+                            {!chatProjectIsWorkflow && (
+                              <SessionPreviewStartButton
+                                sessionId={activeSessionId}
+                                project={activeChatProject}
+                                previewEvent={previewEventBySession[activeSessionId]}
+                                disabled={!connected || !activeChatProject}
+                                starting={!!previewStartingBySession[activeSessionId]}
+                                workspaceEnsuring={!!workspaceEnsuringBySession[activeSessionId]}
+                                workspaceNotReady={
+                                  !!activeSession &&
+                                  isSessionWorktreeEnabled(activeSession) &&
+                                  !isSessionWorkspaceReady(activeSession)
+                                }
+                                onStart={handleStartSessionPreview}
+                                onConfigure={handlePreviewConfigure}
+                              />
+                            )}
                             {activeSessionId && activeChatProject?.id ? (
                               <>
                                 <FinalizeAutomationSelect
                                   sessionId={activeSessionId}
                                   session={activeSession}
                                   agent={activeAgent}
+                                  project={activeChatProject}
                                   disabled={!connected}
-                                  askMode={sessionAskMode}
+                                  legacyAskMode={Number(activeSession?.ask_mode ?? 0) !== 0}
                                   onControlChange={handleSessionControlChange}
                                   onError={(msg: any) => showToast(msg, 'error', 8000)}
                                 />
-                                <FinalizeButton
-                                  projectId={activeChatProject.id}
-                                  cardId={activeSession?.card_id ?? null}
-                                  sessionId={activeSessionId}
-                                  branchLabel={activeSession?.worktree_branch || ''}
-                                  pendingChanges={changesReady[activeSessionId] ?? null}
-                                  onError={(msg: any) => showToast(msg, 'error', 8000)}
-                                  hosted={activeChatProject?.gitHost === 'agenthub'}
-                                  isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
-                                />
+                                {!chatProjectIsWorkflow && !sessionConsultActive && (
+                                  <FinalizeButton
+                                    projectId={activeChatProject.id}
+                                    cardId={activeSession?.card_id ?? null}
+                                    sessionId={activeSessionId}
+                                    branchLabel={activeSession?.worktree_branch || ''}
+                                    pendingChanges={changesReady[activeSessionId] ?? null}
+                                    onError={(msg: any) => showToast(msg, 'error', 8000)}
+                                    hosted={activeChatProject?.gitHost === 'agenthub'}
+                                    isResolveSession={isResolvePrSessionTitle(activeSession?.name)}
+                                  />
+                                )}
                               </>
                             ) : null}
                           </div>
@@ -6120,7 +6141,7 @@ export default function App({ initialView }: any = {}) {
                           queueLength={(messageQueues[activeSessionId] || []).length}
                           agentColor={chatAccentColor}
                           skills={skills}
-                          askMode={sessionAskMode}
+                          consultMode={sessionConsultActive}
                           readOnly={activeAgent?.role === 'reviewer'}
                           draftKey={activeSessionId || activeAgentId || 'none'}
                           onFileError={(msg: any) => showToast(msg, 'error', 6000)}

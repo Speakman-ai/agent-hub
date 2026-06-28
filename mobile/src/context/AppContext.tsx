@@ -10,6 +10,7 @@ import { loadSetupDismissed, saveSetupDismissed, shouldShowWizard, shouldGateLog
 import { hydrateChangesReady } from '../utils/changesReady';
 import { applyDetectedFlag } from '../utils/worktreeState';
 import { isWorkflowProject } from '../utils/project-mode';
+import { isSessionConsultModeEnabled } from '../utils/sessionDerivedState';
 import { selectSessionToActivate } from '../utils/sessionSelection';
 import { applyEntryUnread, clearProjectUnread } from '../utils/threads';
 import { registerForPushNotifications, presentLocalNotification } from '../utils/push';
@@ -51,10 +52,9 @@ export function AppProvider({ children }: any) {
     // signal (`gitWorktreeDetected`) were removed when Agent Hub locked to
     // worktree-only sessions. All user-facing session creation now uses a
     // per-session worktree unconditionally.
-    // Ask Mode (read-only session) — when true, the server spawns the CLI with
-    // `--permission-mode plan` so the agent can read files but can't make edits
-    // or run destructive commands. Mirrors the web client's `sessionAskMode`.
-    const [sessionAskMode, setSessionAskMode] = useState(false);
+    // Consult mode (Hub-only) — sticky preference for new sessions and synced
+    // from the active session row. Mirrors the web client's `sessionConsultMode`.
+    const [sessionConsultMode, setSessionConsultMode] = useState(false);
     // Map of sessionId -> running task state. Populated from server snapshot on
     // connect and kept in sync via stream events so it survives session switches.
     const [activeTasks, setActiveTasks] = useState<any>({});
@@ -1096,7 +1096,7 @@ export function AppProvider({ children }: any) {
                 const agent = agents.find((a: any) => a.id === activeAgentId);
                 setSessionEngine(target.engine || agent?.engine || 'claude-code');
                 setSessionModel(target.model || defaultModelForEngine(target.engine || agent?.engine || 'claude-code'));
-                setSessionAskMode(target.ask_mode !== 0 && !!target.ask_mode);
+                setSessionConsultMode(isSessionConsultModeEnabled(target));
                 setSessionReasoningEffort(target.reasoning_effort === 'pro' ? 'pro' : 'high');
             }
             else {
@@ -1105,7 +1105,7 @@ export function AppProvider({ children }: any) {
                 const agent = agents.find((a: any) => a.id === activeAgentId);
                 setSessionEngine(agent?.engine || 'claude-code');
                 setSessionModel(defaultModelForEngine(agent?.engine || 'claude-code'));
-                setSessionAskMode(false);
+                setSessionConsultMode(false);
                 setSessionReasoningEffort('high');
             }
         }).catch((err: any) => console.error('Failed to load sessions:', err));
@@ -1145,7 +1145,7 @@ export function AppProvider({ children }: any) {
         if (session?.model)
             setSessionModel(session.model);
         if (session) {
-            setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
+            setSessionConsultMode(isSessionConsultModeEnabled(session));
             setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
         }
     }, [activeSessionId, sessions]);
@@ -1290,7 +1290,7 @@ export function AppProvider({ children }: any) {
         setChangesReady({});
         setFinalizeStatusBySession({});
         setSessionHandoffs([]);
-        setSessionAskMode(false);
+        setSessionConsultMode(false);
         // Reconnect WebSocket to new org
         reconnect();
         // Re-probe the new server's auth mode so notification owner-scoping uses
@@ -1334,17 +1334,17 @@ export function AppProvider({ children }: any) {
         // who toggled "Ask (read-only)" before tapping `+` gets a read-only
         // session. Matches the web client's behavior in App.jsx.
         const session = await api.createSession(activeAgentId, undefined, {
-            askMode: sessionAskMode,
+            consultMode: sessionConsultMode,
         });
         setSessions((prev: any) => prev.some((s: any) => s.id === session.id) ? prev : [session, ...prev]);
         setActiveSessionId(session.id);
         const agent = agents.find((a: any) => a.id === activeAgentId);
         setSessionEngine(session.engine || agent?.engine || 'claude-code');
         setSessionModel(session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'));
-        setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
+        setSessionConsultMode(isSessionConsultModeEnabled(session));
         setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
         setMessages([]);
-    }, [activeAgentId, agents, sessionAskMode]);
+    }, [activeAgentId, agents, sessionConsultMode]);
     // Start a chat session with a SPECIFIC agent (not necessarily the active one)
     // and make it active. The caller navigates to the Chat screen. Used by the
     // Skills screen "Build a skill" button to open the project's Skill Builder
@@ -1355,16 +1355,18 @@ export function AppProvider({ children }: any) {
         const agent = agents.find((a: any) => a.id === agentId);
         if (agent?.role === 'reviewer')
             return;
-        const session = await api.createSession(agentId, undefined, { askMode: sessionAskMode });
+        const session = await api.createSession(agentId, undefined, {
+          consultMode: sessionConsultMode,
+        });
         setActiveAgentId(agentId);
         setSessions((prev: any) => (prev.some((s: any) => s.id === session.id) ? prev : [session, ...prev]));
         setActiveSessionId(session.id);
         setSessionEngine(session.engine || agent?.engine || 'claude-code');
         setSessionModel(session.model || defaultModelForEngine(session.engine || agent?.engine || 'claude-code'));
-        setSessionAskMode(session.ask_mode !== 0 && !!session.ask_mode);
+        setSessionConsultMode(isSessionConsultModeEnabled(session));
         setSessionReasoningEffort(session.reasoning_effort === 'pro' ? 'pro' : 'high');
         setMessages([]);
-    }, [agents, sessionAskMode]);
+    }, [agents, sessionConsultMode]);
     const handleStartSkillBuilderMode = useCallback(async (projectId: any) => {
         // Skill Builder is a DEV-agent mode — only a non-helper agent gets the
         // builder prompt/role. Reject helper-only (or empty) rosters instead of
@@ -1373,7 +1375,7 @@ export function AppProvider({ children }: any) {
         const agent = agents.find((a: any) => a.projectId === projectId && a.active !== false && a.role !== 'skill-builder' && a.role !== 'reviewer' && a.role !== 'docs');
         if (!agent)
             return;
-        const session = await api.createSession(agent.id, '[Skill Builder]', { askMode: false });
+        const session = await api.createSession(agent.id, '[Skill Builder]');
         const updated = await api.updateSession(session.id, {
             session_mode: 'skill-builder',
             ask_mode: false,
@@ -1384,31 +1386,44 @@ export function AppProvider({ children }: any) {
         setActiveSessionId(updated.id);
         setSessionEngine(updated.engine || agent.engine || 'claude-code');
         setSessionModel(updated.model || defaultModelForEngine(updated.engine || agent.engine || 'claude-code'));
-        setSessionAskMode(false);
+        setSessionConsultMode(false);
         setSessionReasoningEffort(updated.reasoning_effort === 'pro' ? 'pro' : 'high');
         setMessages([]);
     }, [agents]);
     // `handleWorktreeChange` was removed when Agent Hub locked to
     // worktree-only sessions. The legacy `PUT /sessions/:id/worktree`
     // endpoint no longer exists.
-    // Toggle Ask Mode for the active session. Optimistically updates local
-    // state; reverts on server error. Mirrors the web client's
-    // `handleAskModeChange` in App.jsx.
-    const handleAskModeChange = useCallback(async (enabled: any) => {
+    const handleConsultModeChange = useCallback(async (enabled: any) => {
         const sid = activeSessionIdRef.current;
-        const prevEnabled = sessionAskMode;
-        setSessionAskMode(enabled);
+        const prevEnabled = sessionConsultMode;
+        setSessionConsultMode(enabled);
         if (!sid)
             return;
         try {
-            const updated = await api.setSessionAskMode(sid, enabled);
-            setSessions((prev: any) => prev.map((s: any) => s.id === updated.id ? { ...s, ask_mode: updated.ask_mode } : s));
+            const session = activeSession?.id === sid
+                ? activeSession
+                : sessions.find((s: any) => s.id === sid) ||
+                    cronSessions.find((s: any) => s.id === sid) ||
+                    null;
+            const agent = agents.find((a: any) => a.id === (session?.agent_id || activeAgentId));
+            const project = projects.find((p: any) => p.id === agent?.projectId);
+            const workflowProject = isWorkflowProject(project);
+            const patch: any = {
+                session_mode: enabled ? 'consult' : workflowProject ? 'scoping' : 'chat',
+            };
+            if (!workflowProject)
+                patch.finalize_automation = 'manual';
+            const updated = await api.updateSession(sid, patch);
+            setSessions((prev: any) =>
+                prev.map((s: any) => (s.id === updated.id ? { ...s, ...updated } : s)),
+            );
+            setSessionConsultMode(isSessionConsultModeEnabled(updated));
         }
         catch (err: any) {
-            console.warn('setSessionAskMode failed; reverting toggle:', err);
-            setSessionAskMode(prevEnabled);
+            console.warn('updateSession consult mode failed; reverting toggle:', err);
+            setSessionConsultMode(prevEnabled);
         }
-    }, [sessionAskMode]);
+    }, [activeAgentId, activeSession, agents, cronSessions, projects, sessionConsultMode, sessions]);
     const handleEngineChange = useCallback(async (engine: any) => {
         setSessionEngine(engine);
         const defaultModel = defaultModelForEngine(engine);
@@ -1563,9 +1578,9 @@ export function AppProvider({ children }: any) {
     const handleSend = useCallback(async (content: any, images: any = [], { interrupt = false }: any = {}) => {
         let sessionId = activeSessionIdRef.current;
         if (!sessionId) {
-            const coalesceKey = `${activeAgentId}:${sessionAskMode ? 'ask' : 'run'}`;
+            const coalesceKey = `${activeAgentId}:${sessionConsultMode ? 'consult' : 'run'}`;
             const session = await coalescePromiseByKey(implicitSessionCreateByKeyRef, coalesceKey, () => api
-                .createSession(activeAgentId, undefined, { askMode: sessionAskMode })
+                .createSession(activeAgentId, undefined, { consultMode: sessionConsultMode })
                 .then((s: any) => {
                 setSessions((prev: any) => (prev.some((x: any) => x.id === s.id) ? prev : [s, ...prev]));
                 setActiveSessionId(s.id);
@@ -1597,7 +1612,7 @@ export function AppProvider({ children }: any) {
             ...(uploadedImages.length > 0 ? { images: uploadedImages } : {}),
             ...(interrupt ? { interrupt: true } : {}),
         });
-    }, [activeAgentId, sessionAskMode, send]);
+    }, [activeAgentId, sessionConsultMode, send]);
     const handleInterruptQueuedMessage = useCallback((message: any) => {
         const sessionId = activeSessionIdRef.current;
         if (!sessionId || !message?.id)
@@ -1899,8 +1914,8 @@ export function AppProvider({ children }: any) {
         sessionReasoningEffort,
         handleReasoningEffortChange,
         modelConfig,
-        sessionAskMode,
-        handleAskModeChange,
+        sessionConsultMode,
+        handleConsultModeChange,
         connected,
         reconnecting,
         isProcessing,

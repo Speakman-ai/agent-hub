@@ -1,6 +1,6 @@
 import './setup.js';
 import { describe, it, expect, beforeAll } from 'vitest';
-import { getRequest, createAgent, createSession } from './helpers.js';
+import { getRequest, createAgent, createProject, createSession } from './helpers.js';
 import { routeDeps } from '../index.js';
 import type TestAgent from 'supertest/lib/agent.js';
 
@@ -48,15 +48,16 @@ describe('PATCH /api/sessions/:sessionId — atomic multi-axis control change', 
     expect(res.body.finalize_automation).toBe('manual');
   });
 
-  it('entering Design from merge+ask resets both ship intent and ask in one call', async () => {
+  it('entering Design from merge+legacy ask clears ship intent and ask in one call', async () => {
     const session = await createSession({ agentId, name: 'patch-design-from-merge' });
     const sessionId = session.id as string;
     giveSessionWorktree(sessionId);
-    // Seed ship intent + ask mode (the "merge + Ask" starting state).
+    // Seed ship intent + legacy ask flag (pre-Consult rows used ask_mode).
     await request
       .patch(`/api/sessions/${sessionId}`)
-      .send({ finalize_automation: 'merge', ask_mode: true })
+      .send({ finalize_automation: 'merge' })
       .expect(200);
+    await request.put(`/api/sessions/${sessionId}/ask-mode`).send({ enabled: true }).expect(200);
 
     // One atomic patch flips to Design and clears both other axes.
     const res = await request
@@ -98,5 +99,157 @@ describe('PATCH /api/sessions/:sessionId — atomic multi-axis control change', 
       .send({ finalize_automation: 'push' })
       .expect(200);
     expect(res.body.finalize_automation).toBe('push');
+  });
+
+  it('atomically leaves legacy Ask and arms review automation', async () => {
+    const session = await createSession({ agentId, name: 'patch-legacy-ask-to-review' });
+    const sessionId = session.id as string;
+    routeDeps.stmts.updateSessionAskMode.run(1, sessionId);
+
+    const res = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ ask_mode: false, finalize_automation: 'review' })
+      .expect(200);
+
+    expect(res.body.session_mode).toBe('chat');
+    expect(res.body.ask_mode).toBeFalsy();
+    expect(res.body.finalize_automation).toBe('review');
+  });
+
+  it('translates ask_mode:true on PATCH to Consult for legacy clients', async () => {
+    const session = await createSession({ agentId, name: 'patch-ask-compat' });
+    const sessionId = session.id as string;
+    await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ finalize_automation: 'merge' })
+      .expect(200);
+
+    const res = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ ask_mode: true })
+      .expect(200);
+    expect(res.body.session_mode).toBe('consult');
+    expect(res.body.ask_mode).toBeFalsy();
+    expect(res.body.finalize_automation).toBe('manual');
+  });
+
+  it('aliases PUT ask-mode to Consult/chat while clearing the legacy flag and ship intent', async () => {
+    const session = await createSession({ agentId, name: 'put-ask-compat' });
+    const sessionId = session.id as string;
+    await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ finalize_automation: 'push' })
+      .expect(200);
+
+    const enabled = await request
+      .put(`/api/sessions/${sessionId}/ask-mode`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(enabled.body.session_mode).toBe('consult');
+    expect(enabled.body.ask_mode).toBeFalsy();
+    expect(enabled.body.finalize_automation).toBe('manual');
+
+    const disabled = await request
+      .put(`/api/sessions/${sessionId}/ask-mode`)
+      .send({ enabled: false })
+      .expect(200);
+    expect(disabled.body.session_mode).toBe('chat');
+    expect(disabled.body.ask_mode).toBeFalsy();
+    expect(disabled.body.finalize_automation).toBe('manual');
+  });
+
+  it('allows session_mode consult on dev project sessions', async () => {
+    const session = await createSession({ agentId, name: 'patch-consult-dev' });
+    const sessionId = session.id as string;
+    const res = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ session_mode: 'consult', finalize_automation: 'manual' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('consult');
+  });
+
+  it('rejects hidden ship intent when PATCH enters Consult mode', async () => {
+    const session = await createSession({ agentId, name: 'patch-consult-push' });
+    const sessionId = session.id as string;
+    const res = await request
+      .patch(`/api/sessions/${sessionId}`)
+      .send({ session_mode: 'consult', finalize_automation: 'push' })
+      .expect(400);
+    expect(res.body.error).toBe('finalize_not_allowed_in_session_mode');
+
+    const fetched = await request.get(`/api/sessions/${sessionId}`).expect(200);
+    expect(fetched.body.session_mode).toBe('chat');
+    expect(fetched.body.finalize_automation).toBe('manual');
+  });
+
+  it('translates ask_mode:true on POST create to Consult for legacy clients', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'create-ask-compat', ask_mode: true })
+      .expect(200);
+    expect(res.body.session_mode).toBe('consult');
+    expect(res.body.ask_mode).toBeFalsy();
+  });
+
+  it('rejects switching a workflow project session back to chat mode', async () => {
+    const workflowId = `workflow-session-mode-guard-${Date.now()}`;
+    const project = await createProject({
+      id: workflowId,
+      name: 'Workflow Session Mode Guard',
+      mode: 'workflow',
+    });
+    const workflowAgent = await createAgent({
+      projectId: project.id as string,
+      name: 'Workflow Guard Agent',
+      engine: 'claude-code',
+    });
+    const session = await createSession({
+      agentId: workflowAgent.id as string,
+      name: 'workflow-default-consult',
+    });
+    expect(session.session_mode).toBe('consult');
+
+    const res = await request
+      .patch(`/api/sessions/${session.id}`)
+      .send({ session_mode: 'chat' })
+      .expect(400);
+    expect(res.body.error).toBe('session_mode_not_allowed_on_workflow_project');
+
+    const fetched = await request.get(`/api/sessions/${session.id}`).expect(200);
+    expect(fetched.body.session_mode).toBe('consult');
+
+    const disabled = await request
+      .put(`/api/sessions/${session.id}/ask-mode`)
+      .send({ enabled: false })
+      .expect(200);
+    expect(disabled.body.session_mode).toBe('scoping');
+    expect(disabled.body.ask_mode).toBeFalsy();
+  });
+
+  it('creates dev sessions in consult mode when session_mode consult is sent', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'create-consult', session_mode: 'consult' })
+      .expect(200);
+    expect(res.body.session_mode).toBe('consult');
+  });
+
+  it.each(['scoping', 'skill-builder'] as const)(
+    'creates dev sessions in %s mode when requested',
+    async (sessionMode) => {
+      const res = await request
+        .post(`/api/agents/${agentId}/sessions`)
+        .send({ name: `create-${sessionMode}`, session_mode: sessionMode })
+        .expect(200);
+      expect(res.body.session_mode).toBe(sessionMode);
+    },
+  );
+
+  it('rejects create-time design mode until a worktree exists', async () => {
+    const res = await request
+      .post(`/api/agents/${agentId}/sessions`)
+      .send({ name: 'create-design', session_mode: 'design' })
+      .expect(400);
+    expect(res.body.error).toBe('design_mode_requires_worktree');
   });
 });

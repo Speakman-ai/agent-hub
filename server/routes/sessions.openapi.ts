@@ -60,7 +60,7 @@ export const SessionComponent = registerComponent(
       react_loop_enabled: z.number().int().nullable().optional(),
       session_mode: SessionModeSchema.nullable().optional().openapi({
         description:
-          'Session mode picker dimension: `chat` (default), `design`, or `scoping`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
+          'Session mode picker dimension: `chat` (default), `design`, `scoping`, `skill-builder`, or `consult`. NULL/absent on legacy rows → treated as `chat`. `design` loads the design skill; `scoping` loads kanban planning with a live epic flowchart panel; `skill-builder` loads the skill-authoring coach; `consult` is read-only Hub/project Q&A with no code ship or Finalize. Set via `PATCH /api/sessions/{sessionId}` or `PUT .../mode`.',
       }),
       reasoning_effort: z.enum(['high', 'pro']).nullable().optional().openapi({
         description:
@@ -241,7 +241,9 @@ export const CreateSessionRequestSchema = z.object({
   name: z.string().optional(),
   engine: z.string().optional(),
   model: z.string().optional(),
+  /** @deprecated Rejected when true — use session_mode: "consult" instead. */
   ask_mode: z.boolean().optional(),
+  session_mode: SessionModeSchema.optional(),
 });
 
 /** PATCH /api/sessions/:sessionId — `name`, `max_turns`, and/or `finalize_automation`. */
@@ -713,7 +715,7 @@ registerPath({
   method: 'put',
   path: '/api/sessions/{sessionId}/ask-mode',
   tags: ['Sessions'],
-  summary: 'Toggle ask-mode (read-only / plan-mode) on a session',
+  summary: 'Legacy Ask toggle alias for Consult mode',
   request: {
     params: sessionIdParams,
     body: { content: jsonContent(ToggleEnabledRequestSchema) },

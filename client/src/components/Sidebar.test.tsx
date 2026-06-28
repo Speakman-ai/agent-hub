@@ -1141,6 +1141,32 @@ describe('Sidebar — per-project settings menu', () => {
     expect(onNavigate!).toHaveBeenCalledWith(`project-crons:${PROJECT_ID}`);
   });
 
+  it('hides dev-only lifecycle and settings links for workflow projects', () => {
+    const workflowProject = {
+      id: PROJECT_ID,
+      name: 'Workflow Project',
+      color: '#22d3ee',
+      mode: 'workflow',
+      agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+    };
+    render(<Sidebar {...buildProps({ projects: [workflowProject] })} />);
+
+    expect(screen.queryByRole('button', { name: 'Deployments' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Support' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Replays' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Security' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Pulls' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Wiki' })).toBeInTheDocument();
+
+    expandMenu();
+    expect(screen.queryByRole('button', { name: 'Runners' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Previews' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'RUM' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Agents' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cron Jobs' })).toBeInTheDocument();
+  });
+
   // Regression: every configuration route (including Cron Jobs) must mark the
   // "<project> Settings" toggle active, so the active page isn't hidden under a
   // collapsed, inactive-looking group on initial render / reload. `text-gray-200`

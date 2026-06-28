@@ -10,19 +10,20 @@ import AppIcon from './AppIcon';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import SessionSummarySheet from './SessionSummarySheet';
-import { sessionControlValue, sessionControlLabel, sessionControlPatch, deriveSessionFinalizeMode, sessionControlOptionsForAgent, } from '../utils/finalizeAutomation';
+import { sessionControlLabel, sessionControlPatch, deriveSessionFinalizeMode, sessionControlOptionsForProject, sessionControlValueForProject, } from '../utils/finalizeAutomation';
+import { sessionControlAppIcon } from '../utils/sessionControlIcons';
 import { deriveFinalizeButton, canPush, isFullyValidated } from '../utils/finalizeView';
 import { describeRunPhase } from '../utils/finalizeRun';
 const PURPLE = '#7C3AED';
 
 function resolveSessionModeFromRow(session: any) {
     const m = session?.session_mode;
-    if (m === 'design' || m === 'scoping' || m === 'skill-builder')
+    if (m === 'design' || m === 'scoping' || m === 'skill-builder' || m === 'consult')
         return m;
     return 'chat';
 }
 
-export default function FinalizeBar({ projectId, sessionId, cardId, session, sessionAgents = [], hosted = false, hasChanges = true, showViewChanges = true, onViewChanges, showFinalize = true, status, phase, phases, run, onChanged, onError, }: any) {
+export default function FinalizeBar({ projectId, sessionId, cardId, session, sessionAgents = [], project = null, hosted = false, hasChanges = true, showViewChanges = true, onViewChanges, showFinalize = true, status, phase, phases, run, onChanged, onError, }: any) {
     const [showSummary, setShowSummary] = useState(false);
     const [automation, setAutomation] = useState(() => deriveSessionFinalizeMode(session).automation);
     const [askMode, setAskMode] = useState(() => deriveSessionFinalizeMode(session).askMode);
@@ -49,13 +50,15 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
     const canDesignMode = !!session?.can_design_mode;
     // Skill Builder is a dev-agent mode; hide it from the picker when this
     // session's agent is a helper (the server rejects it for those roles too).
+    const workflowProject = project?.mode === 'workflow';
     const sessionAgent = (sessionAgents || []).find((a: any) => a.id === session?.agent_id) || (sessionAgents || [])[0] || null;
-    const controlOptions = sessionControlOptionsForAgent(sessionAgent);
+    const controlOptions = sessionControlOptionsForProject(project, sessionAgent);
     const fullyValidated = isFullyValidated(phases);
     const btn = deriveFinalizeButton({ status, fullyValidated, hasChanges });
     const pushEnabled = canPush({ status, hasChanges }) && !!run?.id;
     const pushLabel = 'Push';
-    const selectedValue = sessionControlValue({ sessionMode: mode, askMode, automation });
+    const selectedValue = sessionControlValueForProject(project, { sessionMode: mode, askMode, automation });
+    const consultActive = selectedValue === 'consult';
     const dropdownLabel = sessionControlLabel(selectedValue);
     const reportError = useCallback((msg: any) => {
         if (onError)
@@ -72,7 +75,9 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
         // intent succeeds but the mode switch then fails its worktree check — and
         // the old per-step revert could even desync local state from a server that
         // already changed one axis. A single transactional call is all-or-nothing.
-        const patch = sessionControlPatch({ sessionMode: mode, askMode, automation }, value);
+        const patch = sessionControlPatch({ sessionMode: mode, askMode, automation }, value, {
+            project,
+        });
         if (!sessionId || patch === null)
             return;
         // Snapshot for revert; the server applies the patch atomically, so on
@@ -94,7 +99,7 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
             setAutomation(prev.automation);
             reportError(err?.message || 'Failed to update session mode');
         }
-    }, [sessionId, mode, automation, askMode, canDesignMode, onChanged, reportError]);
+    }, [sessionId, mode, automation, askMode, canDesignMode, project, onChanged, reportError]);
     const handleFinalize = useCallback(async () => {
         if (busy)
             return;
@@ -154,20 +159,22 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
           <Text style={styles.outlineBtnText}>Summary</Text>
         </TouchableOpacity>
 
-        {showViewChanges && typeof onViewChanges === 'function' && (<TouchableOpacity style={styles.outlineBtn} onPress={onViewChanges} accessibilityRole="button" accessibilityLabel="View code changes for this session">
+        {showViewChanges && !workflowProject && !consultActive && typeof onViewChanges === 'function' && (<TouchableOpacity style={styles.outlineBtn} onPress={onViewChanges} accessibilityRole="button" accessibilityLabel="View code changes for this session">
             <AppIcon name="git-compare-outline" size={12} color={colors.gray400}/>
             <Text style={styles.outlineBtnText}>Changes</Text>
           </TouchableOpacity>)}
 
         {showFinalize && projectId ? (<>
-            {/* Build dropdown */}
+            {/* Session mode dropdown — always shown; ship controls hidden on workflow projects. */}
             <TouchableOpacity style={styles.dropdown} onPress={() => setMenuOpen(true)} disabled={!sessionId} testID="finalize-automation-select">
+              <AppIcon name={sessionControlAppIcon(selectedValue)} size={12} color={colors.gray400}/>
               <Text style={styles.dropdownText} numberOfLines={1}>
                 {dropdownLabel}
               </Text>
               <AppIcon name="chevron-down" size={12} color={colors.gray400}/>
             </TouchableOpacity>
 
+            {!workflowProject && !consultActive ? (<>
             {/* Finalize / Stop */}
             <TouchableOpacity style={[
                 styles.finalizeBtn,
@@ -186,11 +193,12 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
                 {pushLabel}
               </Text>
             </TouchableOpacity>
+            </>) : null}
           </>) : null}
       </ScrollView>
 
       {/* Live status line while a run is active */}
-      {showFinalize && btn.inFlight && (<Text style={styles.statusLine}>{describeRunPhase(status, phase)}…</Text>)}
+      {showFinalize && !workflowProject && !consultActive && btn.inFlight && (<Text style={styles.statusLine}>{describeRunPhase(status, phase)}…</Text>)}
 
       <SessionSummarySheet visible={showSummary} onClose={() => setShowSummary(false)} sessionId={sessionId} sessionAgents={sessionAgents}/>
 
@@ -207,12 +215,22 @@ export default function FinalizeBar({ projectId, sessionId, cardId, session, ses
                         active && styles.menuItemActive,
                         optDisabled && styles.menuItemDisabled,
                     ]} disabled={optDisabled} onPress={() => selectAutomation(opt.value)}>
-                    <Text style={[styles.menuItemLabel, active && styles.menuItemLabelActive]}>
-                      {opt.label}
-                    </Text>
-                    <Text style={styles.menuItemDesc}>
-                      {optDisabled ? 'Needs a session with an isolated worktree' : opt.description}
-                    </Text>
+                    <View style={styles.menuItemRow}>
+                      <AppIcon
+                        name={sessionControlAppIcon(opt.value)}
+                        size={16}
+                        color={active ? colors.indigo300 : colors.gray400}
+                        style={styles.menuItemIcon}
+                      />
+                      <View style={styles.menuItemText}>
+                        <Text style={[styles.menuItemLabel, active && styles.menuItemLabelActive]}>
+                          {opt.label}
+                        </Text>
+                        <Text style={styles.menuItemDesc}>
+                          {optDisabled ? 'Needs a session with an isolated worktree' : opt.description}
+                        </Text>
+                      </View>
+                    </View>
                   </TouchableOpacity>);
             })}
             </ScrollView>
@@ -335,6 +353,18 @@ const styles = StyleSheet.create({
         paddingVertical: 12,
         borderBottomWidth: 1,
         borderBottomColor: colors.gray800,
+    },
+    menuItemRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 10,
+    },
+    menuItemIcon: {
+        marginTop: 1,
+    },
+    menuItemText: {
+        flex: 1,
+        minWidth: 0,
     },
     menuItemActive: {
         backgroundColor: 'rgba(99,102,241,0.18)',

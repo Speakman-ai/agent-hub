@@ -30,6 +30,7 @@ import {
 } from './automation.js';
 import { getSessionCommittableChanges } from './worktree-changes.js';
 import { flakeGateBlocksAutoPush, parseFlakeGate } from './flake-recovery.js';
+import { sessionBlocksFinalize } from '../project-mode-guards.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -219,6 +220,7 @@ export async function maybeAutoStartFinalizeForSession(sessionId: string): Promi
   if (sessionPostFinalizePushBlocksAutomation(sessionId, 'auto-start')) return;
   const ctx = await loadSessionContext(sessionId);
   if (!ctx) return;
+  if (sessionBlocksFinalize(ctx.project, ctx.session)) return;
 
   // Fail-closed turn-error gate: if the session's last turn ended in an
   // upstream engine/API error (e.g. "API Error: The socket connection was
@@ -265,6 +267,7 @@ export async function maybeAutoPushReadyFinalizeRun(args: {
   if (sessionPostFinalizePushBlocksAutomation(args.sessionId, 'auto-push')) return;
   const ctx = await loadSessionContext(args.sessionId);
   if (!ctx) return;
+  if (sessionBlocksFinalize(ctx.project, ctx.session)) return;
 
   // Same fail-closed gate as auto-start: a ready_to_push run parked before
   // the errored turn must not auto-push/auto-merge over it.

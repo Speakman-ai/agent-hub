@@ -9,6 +9,13 @@
  * `icon` values are Lucide icon names (rendered via `HubIcon`).
  */
 import { isWorkflowProject } from './project-mode';
+
+const WORKFLOW_EXCLUDED_LIFECYCLE_KEYS = new Set([
+    'deployments',
+    'support',
+    'security',
+]);
+const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum']);
 /**
  * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
  */
@@ -27,6 +34,9 @@ export function projectLifecycleEntries(project: any) {
         entries.push({ key: 'pulls', label: 'Pulls', icon: 'ListOrdered', screen: 'PullRequests' });
     }
     entries.push({ key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' }, { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' }, { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' }, { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' }, { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' }, { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' }, { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' }, { key: 'wiki', label: 'Wiki', screen: 'Wiki', icon: 'BookOpen' });
+    if (isWorkflowProject(project)) {
+        return entries.filter((entry) => !WORKFLOW_EXCLUDED_LIFECYCLE_KEYS.has(entry.key));
+    }
     return entries;
 }
 /**
@@ -52,6 +62,9 @@ export function projectSettingsEntries(project: any) {
         entries.push({ key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' });
     }
     entries.push({ key: 'project-crons', label: 'Cron Jobs', icon: 'Clock', screen: 'ProjectCrons' });
+    if (isWorkflowProject(project)) {
+        return entries.filter((entry) => !WORKFLOW_EXCLUDED_SETTINGS_KEYS.has(entry.key));
+    }
     return entries;
 }
 /** @deprecated Use projectLifecycleEntries — kept for tests migrating gradually */

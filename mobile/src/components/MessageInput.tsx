@@ -26,7 +26,7 @@ function guessMimeFromName(name: any, fallback: any) {
     };
     return map[ext] || fallback;
 }
-export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode, readOnly, }: any) {
+export default function MessageInput({ onSend, onCancel, disabled, isProcessing, agentColor, skills, queueLength, askMode, consultMode = askMode, readOnly, }: any) {
     const [value, setValue] = useState('');
     // Attachments: [{id, uri, name, kind, dataUrl?, mimeType?, sizeBytes?}]
     // kind ∈ 'image' | 'video' | 'file'
@@ -219,10 +219,10 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
     return (<View style={styles.container}>
       {/* Ask mode indicator — mirrors the web client's banner so the user
               has an unmissable cue that the session is read-only. */}
-      {askMode && (<View style={styles.askModeBanner}>
+      {consultMode && (<View style={styles.askModeBanner}>
           <AppIcon name="information-circle" size={14} color={colors.blue400} style={{ marginRight: 4 }}/>
           <Text style={styles.askModeBannerText}>
-            Ask mode — read-only, no file changes or commands
+            Consult mode — Hub project updates only, no code ship or Finalize
           </Text>
         </View>)}
 
@@ -287,8 +287,8 @@ export default function MessageInput({ onSend, onCancel, disabled, isProcessing,
 
         <TextInput ref={inputRef} value={value} onChangeText={handleChangeText} onSelectionChange={handleSelectionChange} placeholder={disabled
             ? 'Waiting...'
-            : askMode
-                ? 'Ask a question...'
+            : consultMode
+                ? 'Consult on Agent Hub…'
                 : 'Message...'} placeholderTextColor={colors.gray500} editable={!disabled || isProcessing} multiline maxLength={10000} style={[styles.input, disabled && !isProcessing && styles.inputDisabled]} onSubmitEditing={handleSubmit} blurOnSubmit={false} returnKeyType="send"/>
         {isProcessing ? (<TouchableOpacity style={styles.cancelButton} onPress={onCancel} activeOpacity={0.7}>
             <AppIcon name="close-circle" size={22} color={colors.white}/>

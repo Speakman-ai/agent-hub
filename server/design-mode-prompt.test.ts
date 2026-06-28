@@ -182,6 +182,13 @@ describe('requiredSkillIdsForSession', () => {
     ]);
   });
 
+  it('force-loads Hub skills in consult mode', () => {
+    expect(requiredSkillIdsForSession({ session_mode: 'consult' })).toEqual([
+      'agent-hub',
+      'agent-hub-kanban',
+    ]);
+  });
+
   it('loads nothing for chat / default / missing mode', () => {
     expect(requiredSkillIdsForSession({ session_mode: 'chat' })).toEqual([]);
     expect(requiredSkillIdsForSession({ session_mode: null })).toEqual([]);
