@@ -99,6 +99,92 @@ describe('rebaseOntoBase', () => {
     expect(git(clone, 'log --oneline -10')).toContain('feature commit');
   });
 
+  it('transplants only session commits when an epic base differs from main', async () => {
+    const epic = path.join(tmpRoot, 'epic-base');
+    execSync(`git clone --quiet "${originBare}" "${epic}"`, { stdio: 'pipe' });
+    git(epic, 'config user.email "epic@example.com"');
+    git(epic, 'config user.name "Epic"');
+    git(epic, 'checkout -b feature/auto/auth origin/main');
+    writeFileSync(path.join(epic, 'auth.ts'), 'smtp transport baseline\n');
+    git(epic, 'add auth.ts');
+    git(epic, 'commit -m "smtp baseline"');
+    git(epic, 'push -u origin feature/auto/auth');
+
+    const main = path.join(tmpRoot, 'main-advance');
+    execSync(`git clone --quiet "${originBare}" "${main}"`, { stdio: 'pipe' });
+    git(main, 'config user.email "main@example.com"');
+    git(main, 'config user.name "Main"');
+    writeFileSync(path.join(main, 'auth.ts'), 'password reset baseline\n');
+    git(main, 'add auth.ts');
+    git(main, 'commit -m "password reset baseline"');
+    git(main, 'push origin main');
+
+    git(clone, 'fetch origin main feature/auto/auth');
+    git(clone, 'checkout -B feature/main-based origin/main');
+    writeFileSync(path.join(clone, 'invite.ts'), 'invite email delivery\n');
+    git(clone, 'add invite.ts');
+    git(clone, 'commit -m "invite email delivery"');
+
+    const out = await rebaseOntoBase({ cwd: clone, baseBranch: 'feature/auto/auth' });
+
+    expect(out.kind).toBe('rebased');
+    expect(git(clone, 'merge-base HEAD origin/feature/auto/auth')).toBe(
+      git(clone, 'rev-parse origin/feature/auto/auth'),
+    );
+    expect(git(clone, 'log --oneline origin/feature/auto/auth..HEAD')).toContain(
+      'invite email delivery',
+    );
+    expect(git(clone, 'log --oneline origin/feature/auto/auth..HEAD')).not.toContain(
+      'password reset baseline',
+    );
+    expect(git(clone, 'show HEAD:auth.ts')).toBe('smtp transport baseline');
+    expect(git(clone, 'show HEAD:invite.ts')).toBe('invite email delivery');
+  });
+
+  it('restores the original branch tip when transplant cherry-pick conflicts', async () => {
+    const epic = path.join(tmpRoot, 'epic-conflict-base');
+    execSync(`git clone --quiet "${originBare}" "${epic}"`, { stdio: 'pipe' });
+    git(epic, 'config user.email "epic@example.com"');
+    git(epic, 'config user.name "Epic"');
+    git(epic, 'checkout -b feature/auto/auth origin/main');
+    writeFileSync(path.join(epic, 'auth.ts'), 'smtp transport baseline\n');
+    git(epic, 'add auth.ts');
+    git(epic, 'commit -m "smtp baseline"');
+    git(epic, 'push -u origin feature/auto/auth');
+
+    const main = path.join(tmpRoot, 'main-conflict-advance');
+    execSync(`git clone --quiet "${originBare}" "${main}"`, { stdio: 'pipe' });
+    git(main, 'config user.email "main@example.com"');
+    git(main, 'config user.name "Main"');
+    writeFileSync(path.join(main, 'auth.ts'), 'password reset baseline\n');
+    git(main, 'add auth.ts');
+    git(main, 'commit -m "password reset baseline"');
+    git(main, 'push origin main');
+
+    git(clone, 'fetch origin main feature/auto/auth');
+    git(clone, 'checkout -B feature/main-based origin/main');
+    writeFileSync(path.join(clone, 'auth.ts'), 'invite email delivery\n');
+    git(clone, 'add auth.ts');
+    git(clone, 'commit -m "invite email delivery"');
+
+    const originalHead = git(clone, 'rev-parse HEAD');
+    const epicTip = git(clone, 'rev-parse origin/feature/auto/auth');
+    const logs: string[] = [];
+
+    const out = await rebaseOntoBase({
+      cwd: clone,
+      baseBranch: 'feature/auto/auth',
+      prLog: (line) => logs.push(line),
+    });
+
+    expect(out.kind).toBe('conflict');
+    expect(logs.join('')).toContain('transplant failed, restoring original HEAD');
+    expect(git(clone, 'rev-parse HEAD')).toBe(originalHead);
+    expect(git(clone, 'rev-parse HEAD')).not.toBe(epicTip);
+    expect(git(clone, 'status --porcelain')).toBe('');
+    expect(git(clone, 'show HEAD:auth.ts')).toBe('invite email delivery');
+  });
+
   it('sets a repo-local fallback committer identity when the runner has none', async () => {
     // Sibling pushes a non-conflicting change to main so the rebase must
     // rewrite the feature commit and therefore needs a committer identity.

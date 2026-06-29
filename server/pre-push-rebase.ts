@@ -223,6 +223,22 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
   }
 
   await ensureGitCommitterIdentity(runGit, cwd, env, prLog);
+  const defaultBranch = await resolveOriginDefaultBranch(runGit, cwd, env);
+  if (defaultBranch && defaultBranch !== baseBranch && SAFE_BRANCH_RE.test(defaultBranch)) {
+    prLog?.(`$ git fetch origin ${defaultBranch}\n`);
+    try {
+      await runGit(['fetch', '--no-tags', 'origin', defaultBranch], {
+        cwd,
+        env,
+        timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      prLog?.(
+        `  (default branch fetch failed: ${msg.split('\n')[0]}; continuing with normal rebase)\n`,
+      );
+    }
+  }
 
   // Resolve the authoritative origin SHA for the feature branch via
   // `ls-remote`. This is what the caller pins `--force-with-lease` to so the
@@ -313,6 +329,19 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
     /* informational; never block the rebase on this */
   }
 
+  const transplant = await maybeTransplantDefaultBasedBranch({
+    runGit,
+    cwd,
+    env,
+    prLog,
+    baseBranch,
+    defaultBranch,
+    commitsBehind,
+    expectedRemoteSha,
+    wantExpectedSha,
+  });
+  if (transplant) return transplant;
+
   // Attempt the rebase. `--empty=drop`: if a branch commit becomes empty against
   // an advanced base (its change already upstream, or a redundant 3-way result),
   // drop it and continue instead of pausing with "no conflicted files (possibly
@@ -356,6 +385,201 @@ export async function rebaseOntoBase(opts: RebaseOntoBaseOptions): Promise<Rebas
     }
     return { kind: 'conflict', detail };
   }
+}
+
+async function resolveOriginDefaultBranch(
+  runGit: NonNullable<RebaseOntoBaseOptions['runGit']>,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<string | null> {
+  try {
+    const { stdout } = await runGit(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], {
+      cwd,
+      env,
+      timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+    });
+    const ref = stdout.trim();
+    const branch = ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref;
+    return branch && SAFE_BRANCH_RE.test(branch) ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+async function maybeTransplantDefaultBasedBranch(args: {
+  runGit: NonNullable<RebaseOntoBaseOptions['runGit']>;
+  cwd: string;
+  env: NodeJS.ProcessEnv | undefined;
+  prLog: ((text: string) => void) | undefined;
+  baseBranch: string;
+  defaultBranch: string | null;
+  commitsBehind: number;
+  expectedRemoteSha: string | null;
+  wantExpectedSha: boolean;
+}): Promise<RebaseOutcome | null> {
+  const {
+    runGit,
+    cwd,
+    env,
+    prLog,
+    baseBranch,
+    defaultBranch,
+    commitsBehind,
+    expectedRemoteSha,
+    wantExpectedSha,
+  } = args;
+  if (!defaultBranch || defaultBranch === baseBranch || !SAFE_BRANCH_RE.test(defaultBranch)) {
+    return null;
+  }
+
+  let regularCount = 0;
+  let replayCommits: string[] = [];
+  try {
+    const [regularRes, replayRes] = await Promise.all([
+      runGit(['rev-list', '--count', 'HEAD', `^origin/${baseBranch}`], {
+        cwd,
+        env,
+        timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+      }),
+      runGit(
+        ['rev-list', '--reverse', 'HEAD', `^origin/${baseBranch}`, `^origin/${defaultBranch}`],
+        {
+          cwd,
+          env,
+          timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+        },
+      ),
+    ]);
+    regularCount = Number.parseInt(regularRes.stdout.trim(), 10) || 0;
+    replayCommits = replayRes.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+
+  if (regularCount <= replayCommits.length) return null;
+
+  prLog?.(
+    `  detected ${regularCount - replayCommits.length} default-branch commit(s) between HEAD and origin/${baseBranch}; transplanting ${replayCommits.length} session commit(s)\n`,
+  );
+
+  let originalHead = '';
+  try {
+    const headRes = await runGit(['rev-parse', 'HEAD'], {
+      cwd,
+      env,
+      timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+    });
+    originalHead = headRes.stdout.trim();
+    await runGit(['reset', '--hard', `origin/${baseBranch}`], {
+      cwd,
+      env,
+      timeoutMs: PRE_PUSH_REBASE_TIMEOUT_MS,
+    });
+    for (const commit of replayCommits) {
+      try {
+        await runGit(['cherry-pick', commit], {
+          cwd,
+          env,
+          timeoutMs: PRE_PUSH_REBASE_TIMEOUT_MS,
+        });
+      } catch (err: unknown) {
+        const unmerged = await listUnmergedFiles(runGit, cwd, env);
+        if (unmerged.length === 0) {
+          await runGit(['cherry-pick', '--skip'], {
+            cwd,
+            env,
+            timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+          });
+          continue;
+        }
+        const detail = formatGitError(err);
+        prLog?.(`  transplant failed, restoring original HEAD\n`);
+        await abortCherryPick(runGit, cwd, env);
+        if (originalHead) {
+          await runGit(['reset', '--hard', originalHead], {
+            cwd,
+            env,
+            timeoutMs: PRE_PUSH_REBASE_TIMEOUT_MS,
+          });
+        }
+        return { kind: 'conflict', detail };
+      }
+    }
+    return wantExpectedSha
+      ? { kind: 'rebased', commitsBehind, expectedRemoteSha }
+      : { kind: 'rebased', commitsBehind };
+  } catch (err: unknown) {
+    const detail = formatGitError(err);
+    prLog?.(`  transplant failed, restoring original HEAD\n`);
+    await abortCherryPick(runGit, cwd, env);
+    if (originalHead) {
+      try {
+        await runGit(['reset', '--hard', originalHead], {
+          cwd,
+          env,
+          timeoutMs: PRE_PUSH_REBASE_TIMEOUT_MS,
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
+    return { kind: 'conflict', detail };
+  }
+}
+
+async function listUnmergedFiles(
+  runGit: NonNullable<RebaseOntoBaseOptions['runGit']>,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<string[]> {
+  try {
+    const { stdout } = await runGit(['diff', '--name-only', '--diff-filter=U'], {
+      cwd,
+      env,
+      timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+    });
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function abortCherryPick(
+  runGit: NonNullable<RebaseOntoBaseOptions['runGit']>,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<void> {
+  try {
+    await runGit(['cherry-pick', '--abort'], {
+      cwd,
+      env,
+      timeoutMs: PRE_PUSH_FETCH_TIMEOUT_MS,
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+function formatGitError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const stderrOut =
+    typeof (err as { stderr?: unknown }).stderr === 'string'
+      ? ((err as { stderr?: string }).stderr as string)
+      : '';
+  const stdoutOut =
+    typeof (err as { stdout?: unknown }).stdout === 'string'
+      ? ((err as { stdout?: string }).stdout as string)
+      : '';
+  return [stderrOut, stdoutOut, msg]
+    .map((s) => (s ?? '').toString().trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 async function ensureGitCommitterIdentity(
@@ -414,5 +638,7 @@ export const __test = {
   ensureGitCommitterIdentity,
   hasGitConfigValue,
   isRebaseInProgressOnDisk,
+  maybeTransplantDefaultBasedBranch,
+  resolveOriginDefaultBranch,
   SAFE_BRANCH_RE,
 };
