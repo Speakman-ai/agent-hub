@@ -373,9 +373,33 @@ export interface DeploymentReleaseItemDetailRow extends DeploymentReleaseItemRow
   support_ticket_summary: string | null;
   support_ticket_status: string | null;
   support_ticket_type: string | null;
+  support_ticket_reporter_email: string | null;
   support_ticket_fixed_at: string | null;
   support_ticket_released_to_prod_at: string | null;
   support_ticket_customer_notified_at: string | null;
+}
+
+export type ReleaseNotificationType = 'ticket_release' | 'release_digest';
+export type ReleaseNotificationOutboxStatus = 'pending' | 'sending' | 'sent' | 'error';
+
+export interface ReleaseNotificationOutboxRow {
+  id: string;
+  project_id: string;
+  deployment_id: string;
+  release_item_id: string | null;
+  support_ticket_id: string | null;
+  notification_type: ReleaseNotificationType;
+  idempotency_key: string;
+  recipient_email: string;
+  subject: string;
+  body_text: string;
+  status: ReleaseNotificationOutboxStatus;
+  attempts: number;
+  sent_at: string | null;
+  next_attempt_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface HeartbeatLogRow {
@@ -1574,6 +1598,15 @@ export interface Stmts {
   updateDeploymentReleaseItemAdjustment: Stmt;
   listDeploymentReleaseItems: Stmt;
   listDeploymentReleaseItemsWithContext: Stmt;
+  insertReleaseNotificationOutbox: Stmt;
+  getReleaseNotificationOutboxById: Stmt;
+  getReleaseNotificationOutboxByKey: Stmt;
+  listReleaseNotificationOutboxByDeployment: Stmt;
+  listRetryEligibleReleaseNotificationOutbox: Stmt;
+  markReleaseNotificationOutboxSending: Stmt;
+  markReleaseNotificationOutboxSent: Stmt;
+  markReleaseNotificationOutboxError: Stmt;
+  markReleaseNotificationOutboxDeliveryError: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;

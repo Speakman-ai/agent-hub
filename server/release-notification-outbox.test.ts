@@ -1,0 +1,367 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { getDb, getStmts } from './db.js';
+import { fileConfig } from './config.js';
+import {
+  createDeployment,
+  ensureDeploymentReleaseItem,
+  updateDeploymentStatus,
+} from './deploy/deployment-store.js';
+import { createSupportTicket } from './support-tickets-store.js';
+import { addReleaseDigestRecipient } from './release-notification-settings.js';
+import {
+  deliverReleaseNotificationOutboxBatch,
+  enqueueReleaseNotificationOutbox,
+  enqueueReleaseNotificationsForDeployment,
+  listReleaseNotificationOutboxByDeployment,
+  listRetryEligibleReleaseNotificationOutbox,
+  markReleaseNotificationOutboxError,
+} from './release-notification-outbox.js';
+
+const P = 'release-outbox-test';
+
+beforeEach(() => {
+  const db = getDb();
+  db.exec('DELETE FROM release_notification_outbox;');
+  db.exec('DELETE FROM deployment_release_items;');
+  db.exec('DELETE FROM deployment_steps;');
+  db.exec('DELETE FROM deployments;');
+  db.exec('DELETE FROM deployment_environments;');
+  db.exec('DELETE FROM release_digest_recipients;');
+  db.exec('DELETE FROM release_notification_settings;');
+  db.exec('DELETE FROM kanban_cards;');
+  db.exec('DELETE FROM kanban_columns;');
+  db.exec('DELETE FROM kanban_boards;');
+  db.exec('DELETE FROM support_tickets;');
+  (fileConfig as Record<string, unknown>).smtp = { enabled: false };
+});
+
+function insertReleaseCard(args: {
+  cardId: string;
+  title?: string;
+  supportTicketId?: string | null;
+}): string {
+  const boardId = `board-${args.cardId}`;
+  const columnId = `col-${args.cardId}`;
+  const db = getDb();
+  db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)').run(
+    boardId,
+    P,
+    'Board',
+  );
+  db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, ?, ?)').run(
+    columnId,
+    boardId,
+    'Done',
+    0,
+  );
+  db.prepare(
+    `INSERT INTO kanban_cards
+       (id, column_id, board_id, title, description, support_ticket_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    args.cardId,
+    columnId,
+    boardId,
+    args.title ?? 'Customer-visible fix',
+    'Internal notes are not copied into outbox rows.',
+    args.supportTicketId ?? null,
+  );
+  return args.cardId;
+}
+
+function successfulProductionDeployment() {
+  const deployment = createDeployment({ projectId: P, environment: 'production', ref: 'abc123' });
+  return updateDeploymentStatus(deployment.id, 'success')!;
+}
+
+describe('release notification outbox', () => {
+  it('enqueues reporter and digest notifications idempotently from final release items', () => {
+    const ticket = createSupportTicket({
+      projectId: P,
+      subject: 'CSV export is broken',
+      body: 'Cannot export CSV.',
+      reporterEmail: 'Reporter@Example.COM',
+    });
+    const deployment = successfulProductionDeployment();
+    const cardId = insertReleaseCard({ cardId: 'card-outbox-1', supportTicketId: ticket.id });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
+
+    const first = enqueueReleaseNotificationsForDeployment(deployment);
+    const second = enqueueReleaseNotificationsForDeployment(deployment);
+    const rows = listReleaseNotificationOutboxByDeployment(deployment.id);
+
+    expect(first).toHaveLength(2);
+    expect(second.map((row) => row.id).sort()).toEqual(first.map((row) => row.id).sort());
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.notification_type).sort()).toEqual([
+      'release_digest',
+      'ticket_release',
+    ]);
+    expect(rows.map((row) => row.status)).toEqual(['pending', 'pending']);
+    expect(rows.map((row) => row.attempts)).toEqual([0, 0]);
+    expect(rows.find((row) => row.notification_type === 'ticket_release')).toMatchObject({
+      recipient_email: 'reporter@example.com',
+      support_ticket_id: ticket.id,
+    });
+    expect(rows.find((row) => row.notification_type === 'release_digest')).toMatchObject({
+      recipient_email: 'ops@example.com',
+      support_ticket_id: null,
+    });
+  });
+
+  it('keeps sent rows out of retry eligibility and preserves failure state for retry', () => {
+    const deployment = successfulProductionDeployment();
+    const retryable = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'retryable-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    const sent = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'sent-key',
+      recipientEmail: 'sent@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    getDb()
+      .prepare(
+        "UPDATE release_notification_outbox SET status = 'sent', sent_at = datetime('now') WHERE id = ?",
+      )
+      .run(sent.id);
+
+    const failed = markReleaseNotificationOutboxError(retryable.id, 'temporary smtp failure')!;
+
+    expect(failed.status).toBe('error');
+    expect(failed.last_error).toBe('temporary smtp failure');
+    expect(failed.next_attempt_at).toBeTruthy();
+    expect(listRetryEligibleReleaseNotificationOutbox()).toEqual([]);
+    getDb()
+      .prepare(
+        "UPDATE release_notification_outbox SET next_attempt_at = datetime('now', '-1 minute') WHERE id = ?",
+      )
+      .run(retryable.id);
+    expect(listRetryEligibleReleaseNotificationOutbox().map((row) => row.id)).toEqual([
+      retryable.id,
+    ]);
+  });
+
+  it('falls back to the default retry limit for non-finite limits', () => {
+    const deployment = successfulProductionDeployment();
+    for (let i = 0; i < 30; i++) {
+      enqueueReleaseNotificationOutbox({
+        projectId: P,
+        deploymentId: deployment.id,
+        notificationType: 'release_digest',
+        idempotencyKey: `non-finite-limit-${i}`,
+        recipientEmail: `ops-${i}@example.com`,
+        subject: 'Digest',
+        bodyText: 'Digest body',
+      });
+    }
+
+    expect(listRetryEligibleReleaseNotificationOutbox(Number.NaN)).toHaveLength(25);
+    expect(listRetryEligibleReleaseNotificationOutbox(Number.POSITIVE_INFINITY)).toHaveLength(25);
+  });
+
+  it('honors retry backoff due time and max attempt cap', () => {
+    const deployment = successfulProductionDeployment();
+    const due = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'due-error-key',
+      recipientEmail: 'due@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    const capped = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'capped-error-key',
+      recipientEmail: 'capped@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    getDb()
+      .prepare(
+        `UPDATE release_notification_outbox
+            SET status = 'error', attempts = 4, next_attempt_at = datetime('now', '-1 minute')
+          WHERE id = ?`,
+      )
+      .run(due.id);
+    getDb()
+      .prepare(
+        `UPDATE release_notification_outbox
+            SET status = 'error', attempts = 5, next_attempt_at = datetime('now', '-1 minute')
+          WHERE id = ?`,
+      )
+      .run(capped.id);
+
+    expect(listRetryEligibleReleaseNotificationOutbox().map((row) => row.id)).toEqual([due.id]);
+  });
+
+  it('reclaims stale sending rows without retrying fresh in-flight claims', async () => {
+    const deployment = successfulProductionDeployment();
+    const fresh = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'fresh-sending-key',
+      recipientEmail: 'fresh@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    const stale = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'stale-sending-key',
+      recipientEmail: 'stale@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    getDb()
+      .prepare(
+        `UPDATE release_notification_outbox
+            SET status = 'sending', attempts = 1
+          WHERE id = ?`,
+      )
+      .run(fresh.id);
+    getDb()
+      .prepare(
+        `UPDATE release_notification_outbox
+            SET status = 'sending', attempts = 1, updated_at = datetime('now', '-16 minutes')
+          WHERE id = ?`,
+      )
+      .run(stale.id);
+
+    expect(listRetryEligibleReleaseNotificationOutbox().map((row) => row.id)).toEqual([stale.id]);
+
+    const delivered = await deliverReleaseNotificationOutboxBatch();
+
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      id: stale.id,
+      status: 'error',
+      attempts: 2,
+      last_error: 'smtp_not_configured',
+    });
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)).toContainEqual(
+      expect.objectContaining({
+        id: fresh.id,
+        status: 'sending',
+        attempts: 1,
+        last_error: null,
+      }),
+    );
+  });
+
+  it('ignores terminal updates from stale delivery attempts', () => {
+    const deployment = successfulProductionDeployment();
+    const sent = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'stale-error-after-sent-key',
+      recipientEmail: 'sent@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    const failed = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'stale-sent-after-error-key',
+      recipientEmail: 'failed@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    getDb()
+      .prepare("UPDATE release_notification_outbox SET status = 'sending', attempts = 1")
+      .run();
+
+    expect(getStmts().markReleaseNotificationOutboxSent.run(sent.id, 2).changes).toBe(0);
+    expect(getStmts().markReleaseNotificationOutboxSent.run(sent.id, 1).changes).toBe(1);
+    expect(
+      getStmts().markReleaseNotificationOutboxDeliveryError.run(
+        null,
+        'old attempt failed late',
+        sent.id,
+        1,
+      ).changes,
+    ).toBe(0);
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)).toContainEqual(
+      expect.objectContaining({
+        id: sent.id,
+        status: 'sent',
+        last_error: null,
+      }),
+    );
+
+    expect(
+      getStmts().markReleaseNotificationOutboxDeliveryError.run(
+        null,
+        'newer attempt failed',
+        failed.id,
+        1,
+      ).changes,
+    ).toBe(1);
+    expect(
+      getStmts().markReleaseNotificationOutboxDeliveryError.run(
+        null,
+        'same attempt failed again late',
+        failed.id,
+        1,
+      ).changes,
+    ).toBe(0);
+    expect(getStmts().markReleaseNotificationOutboxSent.run(failed.id, 1).changes).toBe(0);
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)).toContainEqual(
+      expect.objectContaining({
+        id: failed.id,
+        status: 'error',
+        sent_at: null,
+        last_error: 'newer attempt failed',
+      }),
+    );
+  });
+
+  it('records smtp_not_configured as a retryable failed delivery attempt', async () => {
+    const deployment = successfulProductionDeployment();
+    const queued = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'smtp-disabled-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+
+    const delivered = await deliverReleaseNotificationOutboxBatch();
+
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({
+      id: queued.id,
+      status: 'error',
+      attempts: 1,
+      last_error: 'smtp_not_configured',
+      sent_at: null,
+      next_attempt_at: expect.any(String),
+    });
+    expect(listRetryEligibleReleaseNotificationOutbox()).toEqual([]);
+    getDb()
+      .prepare(
+        "UPDATE release_notification_outbox SET next_attempt_at = datetime('now', '-1 minute') WHERE id = ?",
+      )
+      .run(queued.id);
+    expect(listRetryEligibleReleaseNotificationOutbox().map((row) => row.id)).toEqual([queued.id]);
+  });
+});

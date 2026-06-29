@@ -32,6 +32,8 @@ import {
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { createSupportTicket, getSupportTicket } from '../support-tickets-store.js';
+import { addReleaseDigestRecipient } from '../release-notification-settings.js';
+import { listReleaseNotificationOutboxByDeployment } from '../release-notification-outbox.js';
 
 const PROJECT = 'proj-deploy-orch';
 const OTHER_PROJECT = 'proj-deploy-other';
@@ -39,12 +41,15 @@ const WORKTREE = '/tmp/deploy-orch-fake';
 
 beforeEach(() => {
   const db = getDb();
+  db.exec('DELETE FROM release_notification_outbox;');
   db.exec('DELETE FROM deployment_release_items;');
   db.exec('DELETE FROM deployment_approvals;');
   db.exec('DELETE FROM deployment_steps;');
   db.exec('DELETE FROM deployments;');
   db.exec('DELETE FROM deployment_environments;');
   db.exec('DELETE FROM finalize_runs;');
+  db.exec('DELETE FROM release_digest_recipients;');
+  db.exec('DELETE FROM release_notification_settings;');
   db.exec('DELETE FROM support_tickets;');
   db.exec('DELETE FROM kanban_cards;');
   db.exec('DELETE FROM kanban_columns;');
@@ -776,9 +781,18 @@ environments:
   });
 
   it('marks included project support tickets released only after production succeeds', async () => {
-    const ticket = createSupportTicket({ projectId: PROJECT, body: 'please notify me' });
-    const cardTicket = createSupportTicket({ projectId: PROJECT, body: 'linked through card' });
+    const ticket = createSupportTicket({
+      projectId: PROJECT,
+      body: 'please notify me',
+      reporterEmail: 'direct@example.com',
+    });
+    const cardTicket = createSupportTicket({
+      projectId: PROJECT,
+      body: 'linked through card',
+      reporterEmail: 'card@example.com',
+    });
     const cardId = createLinkedCard(PROJECT, cardTicket.id);
+    addReleaseDigestRecipient({ projectId: PROJECT, email: 'digest@example.com' });
     const otherTicket = createSupportTicket({ projectId: OTHER_PROJECT, body: 'other direct' });
     const otherCardTicket = createSupportTicket({
       projectId: OTHER_PROJECT,
@@ -834,6 +848,23 @@ environments:
         support_ticket_id: item.support_ticket_id,
       })),
     ).toEqual([{ card_id: cardId, support_ticket_id: cardTicket.id }]);
+    const outboxRows = listReleaseNotificationOutboxByDeployment(prod.id);
+    expect(outboxRows.map((row) => row.notification_type).sort()).toEqual([
+      'release_digest',
+      'ticket_release',
+    ]);
+    expect(outboxRows.find((row) => row.notification_type === 'ticket_release')).toMatchObject({
+      recipient_email: 'card@example.com',
+      support_ticket_id: cardTicket.id,
+      status: 'pending',
+      attempts: 0,
+    });
+    expect(outboxRows.find((row) => row.notification_type === 'release_digest')).toMatchObject({
+      recipient_email: 'digest@example.com',
+      support_ticket_id: null,
+      status: 'pending',
+      attempts: 0,
+    });
     const releaseBroadcasts = broadcast.mock.calls
       .map(([msg]) => msg as { type?: string; ticket?: { id?: string; release_state?: string } })
       .filter((msg) => msg.type === 'support_ticket_updated');

@@ -18,6 +18,13 @@ export interface EmailSendResult {
   reason?: 'smtp_not_configured' | 'send_failed';
 }
 
+export interface EmailMessage {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+}
+
 function smtpConfig():
   | (Required<Pick<SmtpConfig, 'host' | 'from'>> &
       SmtpConfig & { port: number; tlsMode: SmtpTlsMode })
@@ -44,6 +51,25 @@ export async function sendPasswordResetEmail(opts: {
   to: string;
   resetUrl: string;
 }): Promise<EmailSendResult> {
+  return sendEmail({
+    to: opts.to,
+    subject: 'Reset your Agent Hub password',
+    text: [
+      'Use this link to reset your Agent Hub password:',
+      '',
+      opts.resetUrl,
+      '',
+      'This link expires in 30 minutes. If you did not request it, ignore this email.',
+    ].join('\n'),
+    html: [
+      '<p>Use this link to reset your Agent Hub password:</p>',
+      `<p><a href="${escapeHtml(opts.resetUrl)}">Reset password</a></p>`,
+      '<p>This link expires in 30 minutes. If you did not request it, ignore this email.</p>',
+    ].join(''),
+  });
+}
+
+export async function sendEmail(message: EmailMessage): Promise<EmailSendResult> {
   const smtp = smtpConfig();
   if (!smtp) return { sent: false, reason: 'smtp_not_configured' };
 
@@ -64,24 +90,14 @@ export async function sendPasswordResetEmail(opts: {
   try {
     await transporter.sendMail({
       from: smtp.from,
-      to: opts.to,
-      subject: 'Reset your Agent Hub password',
-      text: [
-        'Use this link to reset your Agent Hub password:',
-        '',
-        opts.resetUrl,
-        '',
-        'This link expires in 30 minutes. If you did not request it, ignore this email.',
-      ].join('\n'),
-      html: [
-        '<p>Use this link to reset your Agent Hub password:</p>',
-        `<p><a href="${escapeHtml(opts.resetUrl)}">Reset password</a></p>`,
-        '<p>This link expires in 30 minutes. If you did not request it, ignore this email.</p>',
-      ].join(''),
+      to: message.to,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
     });
     return { sent: true };
   } catch (err) {
-    console.warn(`[email] password reset send failed: ${(err as Error).message}`);
+    console.warn(`[email] send failed: ${(err as Error).message}`);
     return { sent: false, reason: 'send_failed' };
   }
 }

@@ -40,10 +40,14 @@ describe('deployment schema', () => {
     db = freshDb();
   });
 
-  it('creates all five deployment tables', () => {
+  it('creates deployment and release notification tables', () => {
     const tables = (
       db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'deployment%'")
+        .prepare(
+          `SELECT name FROM sqlite_master
+            WHERE type='table'
+              AND (name LIKE 'deployment%' OR name = 'release_notification_outbox')`,
+        )
         .all() as { name: string }[]
     )
       .map((r) => r.name)
@@ -55,6 +59,7 @@ describe('deployment schema', () => {
         'deployment_release_items',
         'deployment_steps',
         'deployments',
+        'release_notification_outbox',
       ].sort(),
     );
   });
@@ -132,7 +137,31 @@ describe('deployment schema', () => {
     );
   });
 
-  it('cascades step approval and release item deletes when a deployment is removed', () => {
+  it('defines release notification outbox columns for retryable email delivery', () => {
+    expect(colNames(db, 'release_notification_outbox')).toEqual(
+      [
+        'id',
+        'project_id',
+        'deployment_id',
+        'release_item_id',
+        'support_ticket_id',
+        'notification_type',
+        'idempotency_key',
+        'recipient_email',
+        'subject',
+        'body_text',
+        'status',
+        'attempts',
+        'sent_at',
+        'next_attempt_at',
+        'last_error',
+        'created_at',
+        'updated_at',
+      ].sort(),
+    );
+  });
+
+  it('cascades step approval release item and outbox deletes when a deployment is removed', () => {
     db.prepare(
       "INSERT INTO deployments (id, project_id, environment, ref) VALUES ('d4','p1','dev','abc')",
     ).run();
@@ -145,12 +174,21 @@ describe('deployment schema', () => {
     db.prepare(
       "INSERT INTO deployment_release_items (id, deployment_id, card_id) VALUES ('ri1','d4','card-1')",
     ).run();
+    db.prepare(
+      `INSERT INTO release_notification_outbox
+         (id, project_id, deployment_id, release_item_id, notification_type, idempotency_key,
+          recipient_email, subject, body_text)
+       VALUES ('n1','p1','d4','ri1','ticket_release','key-1','a@example.com','Subject','Body')`,
+    ).run();
 
     db.prepare("DELETE FROM deployments WHERE id = 'd4'").run();
 
     expect(db.prepare('SELECT COUNT(*) c FROM deployment_steps').get()).toMatchObject({ c: 0 });
     expect(db.prepare('SELECT COUNT(*) c FROM deployment_approvals').get()).toMatchObject({ c: 0 });
     expect(db.prepare('SELECT COUNT(*) c FROM deployment_release_items').get()).toMatchObject({
+      c: 0,
+    });
+    expect(db.prepare('SELECT COUNT(*) c FROM release_notification_outbox').get()).toMatchObject({
       c: 0,
     });
   });
@@ -256,6 +294,48 @@ describe('deployment schema', () => {
     ).toThrow(/UNIQUE/i);
   });
 
+  it('enforces outbox type status and idempotency key constraints', () => {
+    db.prepare(
+      "INSERT INTO deployments (id, project_id, environment, ref) VALUES ('d8','p1','prod','abc')",
+    ).run();
+    db.prepare(
+      `INSERT INTO release_notification_outbox
+         (id, project_id, deployment_id, notification_type, idempotency_key,
+          recipient_email, subject, body_text)
+       VALUES ('n2','p1','d8','release_digest','key-2','ops@example.com','Subject','Body')`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO release_notification_outbox
+             (id, project_id, deployment_id, notification_type, idempotency_key,
+              recipient_email, subject, body_text)
+           VALUES ('n3','p1','d8','digest','key-3','ops@example.com','Subject','Body')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/i);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO release_notification_outbox
+             (id, project_id, deployment_id, notification_type, idempotency_key,
+              recipient_email, subject, body_text, status)
+           VALUES ('n4','p1','d8','release_digest','key-4','ops@example.com','Subject','Body','done')`,
+        )
+        .run(),
+    ).toThrow(/CHECK/i);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO release_notification_outbox
+             (id, project_id, deployment_id, notification_type, idempotency_key,
+              recipient_email, subject, body_text)
+           VALUES ('n5','p1','d8','release_digest','key-2','ops@example.com','Subject','Body')`,
+        )
+        .run(),
+    ).toThrow(/UNIQUE/i);
+  });
+
   it('creates the expected named indexes', () => {
     expect(namedIdx(db, 'deployments')).toEqual(
       ['idx_deployments_env_created', 'idx_deployments_project_created'].sort(),
@@ -270,6 +350,13 @@ describe('deployment schema', () => {
         'idx_deployment_release_items_card',
         'idx_deployment_release_items_deployment',
         'idx_deployment_release_items_ticket',
+      ].sort(),
+    );
+    expect(namedIdx(db, 'release_notification_outbox')).toEqual(
+      [
+        'idx_release_notification_outbox_deployment',
+        'idx_release_notification_outbox_project_status',
+        'idx_release_notification_outbox_ticket',
       ].sort(),
     );
   });

@@ -74,6 +74,7 @@ import {
   supportTicketIdsForCards,
 } from '../support-tickets-store.js';
 import { serializeSupportTicketForBroadcast } from '../support-ticket-serialization.js';
+import { enqueueReleaseNotificationsForDeployment } from '../release-notification-outbox.js';
 
 /** Max lines of combined step output retained for the failure message / step error. */
 const STEP_TAIL_LINES = 50;
@@ -911,6 +912,15 @@ export async function runDeployment(
   const successDeployment = updateDeploymentStatus(deploymentId, 'success');
   if (successDeployment) {
     markReleasedSupportTicketsForDeployment(deps, successDeployment, ctx.sessionId ?? null);
+    try {
+      enqueueReleaseNotificationsForDeployment(successDeployment);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[deploy-orchestrator] release notification enqueue failed ` +
+          `deployment=${successDeployment.id} project=${successDeployment.project_id}: ${detail}`,
+      );
+    }
   }
   emitDeploymentUpdate(deps, projectId, deploymentId);
   return getDeployment(deploymentId) as DeploymentRow;

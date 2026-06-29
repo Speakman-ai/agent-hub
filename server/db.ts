@@ -2829,9 +2829,13 @@ function initDb(dataDir: string): void {
 
   // Deployment Module: deployments / steps / environments / approvals. Schema
   // is co-located with the deploy store so deployment-schema.test.ts can spin
-  // up an in-memory DB without the full bootstrap path. These tables are new
-  // (no legacy installs), so CREATE TABLE IF NOT EXISTS is the whole migration.
+  // up an in-memory DB without the full bootstrap path.
   db.exec(DEPLOYMENT_SCHEMA);
+  try {
+    db.exec('ALTER TABLE release_notification_outbox ADD COLUMN next_attempt_at TEXT');
+  } catch (_e) {
+    /* table does not exist yet or column already present */
+  }
 
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
@@ -3401,6 +3405,7 @@ function initDb(dataDir: string): void {
               st.ai_summary AS support_ticket_summary,
               st.status AS support_ticket_status,
               st.type AS support_ticket_type,
+              st.reporter_email AS support_ticket_reporter_email,
               st.fixed_at AS support_ticket_fixed_at,
               st.released_to_prod_at AS support_ticket_released_to_prod_at,
               st.customer_notified_at AS support_ticket_customer_notified_at
@@ -3413,6 +3418,86 @@ function initDb(dataDir: string): void {
            ON st.id = ri.support_ticket_id
         WHERE ri.deployment_id = ?
         ORDER BY ri.created_at ASC, ri.rowid ASC`,
+    ),
+    insertReleaseNotificationOutbox: db.prepare(
+      `INSERT INTO release_notification_outbox
+         (id, project_id, deployment_id, release_item_id, support_ticket_id,
+          notification_type, idempotency_key, recipient_email, subject, body_text)
+       VALUES (@id, @project_id, @deployment_id, @release_item_id, @support_ticket_id,
+          @notification_type, @idempotency_key, @recipient_email, @subject, @body_text)
+       ON CONFLICT(idempotency_key) DO NOTHING`,
+    ),
+    getReleaseNotificationOutboxById: db.prepare(
+      'SELECT * FROM release_notification_outbox WHERE id = ?',
+    ),
+    getReleaseNotificationOutboxByKey: db.prepare(
+      'SELECT * FROM release_notification_outbox WHERE idempotency_key = ?',
+    ),
+    listReleaseNotificationOutboxByDeployment: db.prepare(
+      `SELECT * FROM release_notification_outbox
+        WHERE deployment_id = ?
+        ORDER BY created_at ASC, rowid ASC`,
+    ),
+    listRetryEligibleReleaseNotificationOutbox: db.prepare(
+      `SELECT * FROM release_notification_outbox
+        WHERE sent_at IS NULL
+          AND attempts < ?
+          AND (
+            status = 'pending'
+            OR (
+              status = 'error'
+              AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+            )
+            OR (status = 'sending' AND updated_at <= datetime('now', '-15 minutes'))
+          )
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT ?`,
+    ),
+    markReleaseNotificationOutboxSending: db.prepare(
+      `UPDATE release_notification_outbox
+          SET status = 'sending',
+              attempts = attempts + 1,
+              next_attempt_at = NULL,
+              updated_at = datetime('now')
+        WHERE id = ?
+          AND sent_at IS NULL
+          AND (
+            status IN ('pending', 'error')
+            OR (status = 'sending' AND updated_at <= datetime('now', '-15 minutes'))
+          )`,
+    ),
+    markReleaseNotificationOutboxSent: db.prepare(
+      `UPDATE release_notification_outbox
+          SET status = 'sent',
+              sent_at = datetime('now'),
+              next_attempt_at = NULL,
+              last_error = NULL,
+              updated_at = datetime('now')
+        WHERE id = ?
+          AND status = 'sending'
+          AND sent_at IS NULL
+          AND attempts = ?`,
+    ),
+    markReleaseNotificationOutboxError: db.prepare(
+      `UPDATE release_notification_outbox
+          SET status = 'error',
+              next_attempt_at = ?,
+              last_error = ?,
+              updated_at = datetime('now')
+        WHERE id = ?
+          AND sent_at IS NULL
+          AND status != 'sent'`,
+    ),
+    markReleaseNotificationOutboxDeliveryError: db.prepare(
+      `UPDATE release_notification_outbox
+          SET status = 'error',
+              next_attempt_at = ?,
+              last_error = ?,
+              updated_at = datetime('now')
+        WHERE id = ?
+          AND status = 'sending'
+          AND sent_at IS NULL
+          AND attempts = ?`,
     ),
     // Sessions
     createSession: db.prepare(

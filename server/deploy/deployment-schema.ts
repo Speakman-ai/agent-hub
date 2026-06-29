@@ -10,6 +10,9 @@
  *   - `deployment_release_items`
  *                              — auditable card / support-ticket inclusion map
  *                                for production deployments.
+ *   - `release_notification_outbox`
+ *                              — idempotent, retryable notification rows created
+ *                                from successful production deployment releases.
  *   - `deployment_steps`       — per-step state for a run (name, order, status,
  *                                exit code, timing). Mirrors the deploy.yaml step
  *                                list so the UI can render a live progress list.
@@ -155,4 +158,35 @@ export const DEPLOYMENT_SCHEMA = `
     ON deployment_release_items(card_id);
   CREATE INDEX IF NOT EXISTS idx_deployment_release_items_ticket
     ON deployment_release_items(support_ticket_id);
+
+  CREATE TABLE IF NOT EXISTS release_notification_outbox (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    deployment_id TEXT NOT NULL,
+    release_item_id TEXT,
+    support_ticket_id TEXT,
+    notification_type TEXT NOT NULL
+      CHECK(notification_type IN ('ticket_release', 'release_digest')),
+    idempotency_key TEXT NOT NULL,
+    recipient_email TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    body_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(status IN ('pending', 'sending', 'sent', 'error')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    sent_at TEXT,
+    next_attempt_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (idempotency_key),
+    FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE,
+    FOREIGN KEY (release_item_id) REFERENCES deployment_release_items(id) ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_release_notification_outbox_project_status
+    ON release_notification_outbox(project_id, status, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_release_notification_outbox_deployment
+    ON release_notification_outbox(deployment_id);
+  CREATE INDEX IF NOT EXISTS idx_release_notification_outbox_ticket
+    ON release_notification_outbox(support_ticket_id);
 `;

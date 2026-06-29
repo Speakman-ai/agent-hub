@@ -212,6 +212,10 @@ import {
   runRunnerJobLogReaper,
   RUNNER_JOB_LOG_REAPER_CRON,
 } from './finalize/runner-job-log-reaper.js';
+import {
+  RELEASE_NOTIFICATION_OUTBOX_WORKER_CRON,
+  runReleaseNotificationOutboxWorker,
+} from './release-notification-worker.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
 
@@ -1036,6 +1040,15 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       }
     },
     { name: 'runner-job-log-reaper' },
+  );
+
+  void runReleaseNotificationOutboxWorker();
+  cron.schedule(
+    RELEASE_NOTIFICATION_OUTBOX_WORKER_CRON,
+    () => {
+      void runReleaseNotificationOutboxWorker();
+    },
+    { name: 'release-notification-outbox-worker', noOverlap: true },
   );
 }
 
