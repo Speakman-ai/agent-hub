@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 (vi as any).mock('../utils/auth.js', () => ({
   getAuthStatus: vi.fn(),
+  getAuthRecord: vi.fn(),
   isAuthenticated: vi.fn(),
   needsEmailUpdate: vi.fn(),
   updateEmail: vi.fn(),
@@ -19,14 +20,21 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
   default: () => <div data-testid="login-screen">login</div>,
 }));
 
-import AuthGate from './AuthGate';
-import { getAuthStatus, isAuthenticated, needsEmailUpdate, updateEmail } from '../utils/auth';
+import AuthGate, { shouldShowEmailUpdatePrompt } from './AuthGate';
+import {
+  getAuthStatus,
+  getAuthRecord,
+  isAuthenticated,
+  needsEmailUpdate,
+  updateEmail,
+} from '../utils/auth';
 import { getConnectionConfig, saveConnectionConfig } from '../utils/connection';
 
 const Child = () => <div data-testid="app-child">app</div>;
 
 beforeEach(() => {
   (getAuthStatus as any).mockReset();
+  (getAuthRecord as any).mockReset();
   (isAuthenticated as any).mockReset();
   (needsEmailUpdate as any).mockReset();
   (updateEmail as any).mockReset();
@@ -34,6 +42,7 @@ beforeEach(() => {
   (saveConnectionConfig as any).mockReset();
   (getConnectionConfig as any).mockReturnValue({ mode: 'local', remoteUrl: '', apiKey: '' });
   (isAuthenticated as any).mockReturnValue(false);
+  (getAuthRecord as any).mockReturnValue(null);
   (needsEmailUpdate as any).mockReturnValue(false);
   delete (window as any).electronAPI;
 });
@@ -200,9 +209,13 @@ describe('AuthGate — active-org local bypass', () => {
     (getAuthStatus as any).mockResolvedValue({
       authConfigured: true,
       activeOrgIsLocal: true,
+      needsEmailUpdate: true,
     });
     (isAuthenticated as any).mockReturnValue(true);
     (needsEmailUpdate as any).mockReturnValue(true);
+    (getAuthRecord as any).mockReturnValue({
+      user: { email: null, needsEmailUpdate: true, role: 'Owner' },
+    });
 
     render(
       <AuthGate>
@@ -215,6 +228,49 @@ describe('AuthGate — active-org local bypass', () => {
     });
     expect(screen.queryByTestId('app-child')).toBeNull();
     expect(screen.queryByTestId('login-screen')).toBeNull();
+  });
+
+  it('advances past the email prompt after a successful save even when status is still stale', async () => {
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      activeOrgIsLocal: true,
+      needsEmailUpdate: true,
+    });
+    (isAuthenticated as any).mockReturnValue(true);
+    (needsEmailUpdate as any).mockReturnValue(true);
+    (getAuthRecord as any).mockReturnValue({
+      user: { email: null, needsEmailUpdate: true, role: 'Owner' },
+    });
+    (updateEmail as any).mockImplementation(async () => {
+      (needsEmailUpdate as any).mockReturnValue(false);
+      (getAuthRecord as any).mockReturnValue({
+        token: 'fresh',
+        user: { email: 'owner@example.com', needsEmailUpdate: false, role: 'Owner' },
+      });
+    });
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Set your email/i)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/^email$/i), {
+      target: { value: 'owner@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save email/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('app-child')).toBeInTheDocument();
+    });
+    expect(updateEmail).toHaveBeenCalledWith({
+      baseUrl: '/api',
+      email: 'owner@example.com',
+    });
   });
 
   it('prompts local users when server status reports a legacy auth record before a token exists', async () => {
@@ -279,5 +335,39 @@ describe('AuthGate — active-org local bypass', () => {
       expect(screen.getByTestId('app-child')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('login-screen')).toBeNull();
+  });
+});
+
+describe('shouldShowEmailUpdatePrompt', () => {
+  it('does not prompt when the refreshed token explicitly cleared needsEmailUpdate', () => {
+    (isAuthenticated as any).mockReturnValue(true);
+    (getAuthRecord as any).mockReturnValue({
+      user: { email: 'owner@example.com', needsEmailUpdate: false, role: 'Owner' },
+    });
+    (needsEmailUpdate as any).mockReturnValue(false);
+
+    expect(
+      shouldShowEmailUpdatePrompt({
+        required: true,
+        needsEmailUpdate: true,
+        activeOrgIsLocal: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('still prompts authenticated users when the token and status both require migration', () => {
+    (isAuthenticated as any).mockReturnValue(true);
+    (getAuthRecord as any).mockReturnValue({
+      user: { email: null, needsEmailUpdate: true, role: 'Owner' },
+    });
+    (needsEmailUpdate as any).mockReturnValue(true);
+
+    expect(
+      shouldShowEmailUpdatePrompt({
+        required: true,
+        needsEmailUpdate: true,
+        activeOrgIsLocal: true,
+      }),
+    ).toBe(true);
   });
 });
