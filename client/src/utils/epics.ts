@@ -38,6 +38,7 @@ export const EPIC_STATE_LABELS = {
 } as const;
 
 export type EpicLifecycleState = keyof typeof EPIC_STATE_LABELS;
+export const DEFAULT_EPIC_LIST_STATE_FILTER: EpicLifecycleState = 'in_progress';
 
 export function epicStateLabel(state: string | null | undefined): string {
   return EPIC_STATE_LABELS[(state || '') as EpicLifecycleState] || '';

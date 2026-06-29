@@ -19,6 +19,7 @@ export const EPIC_STATE_LABELS: Record<string, string> = {
     in_progress: 'In progress',
     done: 'Done',
 };
+export const DEFAULT_EPIC_LIST_STATE_FILTER = 'in_progress';
 export function epicStateLabel(state: string | null | undefined): string {
     return EPIC_STATE_LABELS[state || ''] || '';
 }

@@ -1,4 +1,5 @@
 import { ticketsForEpic } from './epicScopeStats';
+import { DEFAULT_EPIC_LIST_STATE_FILTER } from './epics';
 import { cardMatchesLabelFilter, collectDistinctLabels, parseCardLabels } from './kanbanLabels';
 import { epicMatchesUserFilter } from './kanbanUserFilter';
 
@@ -27,7 +28,7 @@ export function createDefaultEpicListFilters(): EpicListFilters {
   return {
     search: '',
     scope: 'all',
-    state: 'all',
+    state: DEFAULT_EPIC_LIST_STATE_FILTER,
     selectedLabels: new Set(),
     selectedUserIds: new Set(),
   };

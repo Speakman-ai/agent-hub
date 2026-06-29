@@ -19,6 +19,11 @@ const cards = [
 ];
 
 describe('epicListFilters', () => {
+  it('defaults the epic list to in-progress work', () => {
+    const filters = createDefaultEpicListFilters();
+    expect(filters.state).toBe('in_progress');
+  });
+
   it('sorts epics with empty ticket counts last', () => {
     const sorted = sortEpicsWithEmptyLast(epics as any, cards);
     expect(sorted.map((e) => e.id)).toEqual(['e-full', 'e-todo', 'e-other', 'e-empty']);
@@ -27,7 +32,7 @@ describe('epicListFilters', () => {
   it('filters by scope and search', () => {
     const filtered = applyEpicListFilters(
       epics as any,
-      { ...createDefaultEpicListFilters(), scope: 'empty', search: 'alpha' },
+      { ...createDefaultEpicListFilters(), scope: 'empty', search: 'alpha', state: 'all' },
       cards,
     );
     expect(filtered.map((e) => e.id)).toEqual(['e-empty']);
@@ -35,6 +40,7 @@ describe('epicListFilters', () => {
 
   it('filters by selected labels with OR semantics', () => {
     const filters = createDefaultEpicListFilters();
+    filters.state = 'all';
     filters.selectedLabels = new Set(['platform']);
     const filtered = applyEpicListFilters(epics as any, filters, cards);
     expect(filtered.map((e) => e.id)).toEqual(['e-full', 'e-other']);
@@ -56,8 +62,8 @@ describe('epicListFilters', () => {
 
   it('filters by selected lead users with OR semantics', () => {
     const epicsWithUsers = [
-      { id: 'e1', name: 'Ryan epic', assigned_user_id: 'u1', labels: '' },
-      { id: 'e2', name: 'Alex epic', assigned_user_id: 'u2', labels: '' },
+      { id: 'e1', name: 'Ryan epic', assigned_user_id: 'u1', labels: '', state: 'in_progress' },
+      { id: 'e2', name: 'Alex epic', assigned_user_id: 'u2', labels: '', state: 'in_progress' },
     ];
     const filters = createDefaultEpicListFilters();
     filters.selectedUserIds = new Set(['u1']);

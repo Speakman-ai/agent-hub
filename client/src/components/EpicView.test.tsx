@@ -35,7 +35,14 @@ const board = {
     },
   ],
   epics: [
-    { id: 'e1', name: 'Platform', color: '#6366F1', description: 'Core work', autonomous: 0 },
+    {
+      id: 'e1',
+      name: 'Platform',
+      color: '#6366F1',
+      description: 'Core work',
+      autonomous: 0,
+      state: 'in_progress',
+    },
   ],
   phases: [{ id: 'ph1', epic_id: 'e1', name: 'Build', position: 0 }],
 };
@@ -164,8 +171,22 @@ describe('EpicView', () => {
     (api.getBoard as any).mockResolvedValue({
       ...board,
       epics: [
-        { id: 'e1', name: 'Platform', color: '#6366F1', description: 'Core work', labels: 'infra' },
-        { id: 'e2', name: 'Mobile', color: '#6366F1', description: '', labels: 'mobile' },
+        {
+          id: 'e1',
+          name: 'Platform',
+          color: '#6366F1',
+          description: 'Core work',
+          labels: 'infra',
+          state: 'in_progress',
+        },
+        {
+          id: 'e2',
+          name: 'Mobile',
+          color: '#6366F1',
+          description: '',
+          labels: 'mobile',
+          state: 'in_progress',
+        },
       ],
     });
 
@@ -248,6 +269,44 @@ describe('EpicView', () => {
     });
     await waitFor(() => expect(screen.getByText('Archived')).toBeInTheDocument());
     expect(screen.queryByText('Platform')).toBeNull();
+  });
+
+  it('shows in-progress epics by default on the list page', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...board,
+      epics: [
+        {
+          id: 'e1',
+          name: 'Active Platform',
+          color: '#6366F1',
+          description: 'Core work',
+          state: 'in_progress',
+        },
+        {
+          id: 'e2',
+          name: 'Completed Platform',
+          color: '#6366F1',
+          description: '',
+          state: 'done',
+        },
+      ],
+    });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Active Platform')).toBeInTheDocument());
+    expect(screen.queryByText('Completed Platform')).toBeNull();
+    expect(screen.getByTestId('epic-list-filter-state')).toHaveValue('in_progress');
   });
 
   it('deletes an epic from the list view', async () => {

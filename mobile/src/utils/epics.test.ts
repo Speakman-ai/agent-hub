@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, } from './epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, } from './epics';
 describe('EPIC_COLORS', () => {
     it('matches the web palette', () => {
         expect(EPIC_COLORS).toEqual([
@@ -21,6 +21,9 @@ describe('epicStateLabel', () => {
     it('returns no label for empty epics without a lifecycle state', () => {
         expect(epicStateLabel(null)).toBe('');
         expect(epicStateLabel(undefined)).toBe('');
+    });
+    it('defaults epic lists to in-progress work', () => {
+        expect(DEFAULT_EPIC_LIST_STATE_FILTER).toBe('in_progress');
     });
 });
 describe('DEFAULT_EPIC_FORM', () => {

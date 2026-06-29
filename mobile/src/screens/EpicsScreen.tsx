@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
-import { EPIC_COLORS, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, EPIC_STATE_LABELS, epicStateLabel, } from '../utils/epics';
+import { EPIC_COLORS, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, EPIC_STATE_LABELS, epicStateLabel, } from '../utils/epics';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 export default function EpicsScreen({ route, navigation }: any) {
     const { projectId, project: routeProject } = route.params || {};
@@ -16,7 +16,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     const [showForm, setShowForm] = useState(false);
     const [saving, setSaving] = useState(false);
     const [scopingId, setScopingId] = useState<any>(null);
-    const [stateFilter, setStateFilter] = useState('all');
+    const [stateFilter, setStateFilter] = useState(DEFAULT_EPIC_LIST_STATE_FILTER);
     const { setActiveAgentId, setActiveSessionId } = useApp();
     const openScopingSession = useCallback(async (epicId: any) => {
         if (!epicId || scopingId)
