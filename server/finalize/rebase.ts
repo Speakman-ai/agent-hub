@@ -62,6 +62,11 @@ import type {
 import { rebaseOntoBase } from '../pre-push-rebase.js';
 import type { RebaseOntoBaseOptions, RebaseOutcome } from '../pre-push-rebase.js';
 import {
+  capturePreRebaseBaseline,
+  rebaseDroppedAllChanges,
+  worktreeHasChangesVsBase,
+} from './prerebase-backup.js';
+import {
   classifyFileResolution,
   regenerateLockfile,
   type ConflictHunk,
@@ -115,7 +120,12 @@ export type RebasePhaseOutcome =
     }
   | {
       kind: 'failed';
-      failureReason: 'rebase_aborted' | 'timeout' | 'unsafe_base_branch' | 'no_worktree';
+      failureReason:
+        | 'rebase_aborted'
+        | 'timeout'
+        | 'unsafe_base_branch'
+        | 'no_worktree'
+        | 'rebase_dropped_commits';
       detail: string;
       activeSecondsBilled: number;
     };
@@ -211,6 +221,19 @@ export async function runRebasePhase(
   // UI checks panel can show the in-flight row before the first git spawn.
   setPhase(stmts, broadcast, opts.runId, opts.card.session_id ?? null, 'rebase', 'rebasing');
 
+  // Commit-loss guard, part 1: snapshot the branch tip to a durable backup ref
+  // BEFORE the first rebase rewrites the branch, and record whether the branch
+  // had net changes vs base. The snapshot keeps the pre-rebase commits
+  // reachable (recoverable) no matter what the rebase does; the recorded
+  // baseline powers the drop-detection below. Best-effort — see
+  // `capturePreRebaseBaseline`.
+  const preRebaseBaseline = await capturePreRebaseBaseline(runGit, {
+    cwd: opts.worktreePath,
+    baseBranch: opts.baseBranch,
+    runId: opts.runId,
+    env: opts.env,
+  });
+
   let billedSeconds = 0;
   let requiredFix = false;
   let conflictsDispatchedCount = 0;
@@ -237,6 +260,44 @@ export async function runRebasePhase(
     stmts.updateFinalizeRunActiveSeconds.run(REBASE_ATTEMPT_ACTIVE_SECONDS, opts.runId);
 
     if (outcome.kind === 'noop' || outcome.kind === 'rebased') {
+      // Commit-loss guard, part 2: a clean rebase that left the branch with
+      // ZERO net changes vs base, when it HAD changes before, means the rebase
+      // silently dropped the session's commits (patch-equivalent to work
+      // already on base, or a conflict resolved to base's side). Fail loudly
+      // instead of advancing to push — otherwise Finalize ships an empty diff
+      // and (under Merge Automatically) moves the card to Done. The pre-rebase
+      // commits remain recoverable from the backup ref captured above.
+      if (preRebaseBaseline.headSha && preRebaseBaseline.hadChangesVsBase) {
+        let postHasChanges = true;
+        try {
+          postHasChanges = await worktreeHasChangesVsBase(runGit, {
+            cwd: opts.worktreePath,
+            baseBranch: opts.baseBranch,
+            env: opts.env,
+          });
+        } catch {
+          // Can't determine post-state — fail open (assume not dropped) so a
+          // transient git error never blocks an otherwise-clean rebase. The
+          // push-side empty-integration gate is the backstop.
+          postHasChanges = true;
+        }
+        if (rebaseDroppedAllChanges(preRebaseBaseline, postHasChanges)) {
+          return terminate(
+            stmts,
+            opts.runId,
+            'failed',
+            'rebase_dropped_commits',
+            `rebase onto origin/${opts.baseBranch} dropped all session changes ` +
+              `(branch had net changes before the rebase, none after). The ` +
+              `pre-rebase commit is preserved at ${preRebaseBaseline.backupRef} ` +
+              `(${preRebaseBaseline.headSha}); recover with ` +
+              `\`git branch <name> ${preRebaseBaseline.backupRef}\`. This usually ` +
+              `means equivalent work already landed on ${opts.baseBranch} or a ` +
+              `conflict was resolved to the base side.`,
+            billedSeconds,
+          );
+        }
+      }
       return {
         kind: 'success',
         rebaseKind: outcome.kind,
@@ -377,7 +438,12 @@ function terminate(
   stmts: RebasePhaseDeps['stmts'],
   runId: string,
   status: 'failed' | 'timed_out',
-  reason: 'rebase_aborted' | 'timeout' | 'unsafe_base_branch' | 'no_worktree',
+  reason:
+    | 'rebase_aborted'
+    | 'timeout'
+    | 'unsafe_base_branch'
+    | 'no_worktree'
+    | 'rebase_dropped_commits',
   detail: string,
   billedSeconds: number,
 ): RebasePhaseOutcome {

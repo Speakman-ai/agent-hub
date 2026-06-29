@@ -745,6 +745,130 @@ describe('runRebasePhase — guard rails', () => {
   });
 });
 
+describe('runRebasePhase — commit-loss guard (regression: AH-1219)', () => {
+  // runGit reports net changes vs base BEFORE the rebase and none AFTER —
+  // i.e., the rebase dropped the session's commits (the exact AH-1219 shape:
+  // a competing implementation already on base made the session's work
+  // patch-equivalent, so the rebased tip carried zero net diff).
+  function makeDropRunGit() {
+    let diffCalls = 0;
+    return vi.fn(async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { stdout: 'feedface\n', stderr: '' };
+      if (args[0] === 'update-ref') return { stdout: '', stderr: '' };
+      if (args[0] === 'diff') {
+        diffCalls += 1;
+        // 1st diff = pre-rebase baseline (has changes); 2nd = post-rebase (none).
+        return diffCalls === 1
+          ? { stdout: ' 4 files changed, 220 insertions(+)\n', stderr: '' }
+          : { stdout: '', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+  }
+
+  it('fails with rebase_dropped_commits when a clean rebase empties the branch', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const runGit = makeDropRunGit();
+    const rebase = vi.fn().mockResolvedValue({ kind: 'rebased', commitsBehind: 3 });
+
+    const result = await runRebasePhase(
+      {
+        stmts: stmts as never,
+        broadcast,
+        dispatchAndWaitForTurnEnd: vi.fn(),
+        rebase,
+        runGit,
+      },
+      {
+        runId: 'run-1',
+        worktreePath: tmpRoot,
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      },
+    );
+
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failureReason).toBe('rebase_dropped_commits');
+      // The failure detail points at the recovery ref so the work isn't lost.
+      expect(result.detail).toContain('refs/finalize/prerebase/run-1');
+    }
+    // Pre-rebase tip was snapshotted to the backup ref before the rewrite.
+    expect(runGit).toHaveBeenCalledWith(
+      ['update-ref', 'refs/finalize/prerebase/run-1', 'feedface'],
+      expect.objectContaining({ cwd: tmpRoot }),
+    );
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith(
+      'failed',
+      'rebase_dropped_commits',
+      'run-1',
+    );
+  });
+
+  it('still succeeds when the post-rebase branch retains its changes', async () => {
+    const stmts = makeStmts();
+    // Both diffs report changes ⇒ nothing was dropped.
+    const runGit = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { stdout: 'feedface\n', stderr: '' };
+      if (args[0] === 'diff') return { stdout: ' 4 files changed\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    const rebase = vi.fn().mockResolvedValue({ kind: 'rebased', commitsBehind: 1 });
+
+    const result = await runRebasePhase(
+      {
+        stmts: stmts as never,
+        broadcast: vi.fn(),
+        dispatchAndWaitForTurnEnd: vi.fn(),
+        rebase,
+        runGit,
+      },
+      {
+        runId: 'run-1',
+        worktreePath: tmpRoot,
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      },
+    );
+
+    expect(result.kind).toBe('success');
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('does not fire for an intentionally empty session (no pre-rebase changes)', async () => {
+    const stmts = makeStmts();
+    // Both diffs empty ⇒ the session never had net changes; not a drop.
+    const runGit = vi.fn(async (args: string[]) => {
+      if (args[0] === 'rev-parse') return { stdout: 'feedface\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    const rebase = vi.fn().mockResolvedValue({ kind: 'noop' });
+
+    const result = await runRebasePhase(
+      {
+        stmts: stmts as never,
+        broadcast: vi.fn(),
+        dispatchAndWaitForTurnEnd: vi.fn(),
+        rebase,
+        runGit,
+      },
+      {
+        runId: 'run-1',
+        worktreePath: tmpRoot,
+        baseBranch: 'main',
+        card: fakeCard,
+        project: fakeProject,
+      },
+    );
+
+    expect(result.kind).toBe('success');
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+});
+
 describe('buildConflictDispatchMessage', () => {
   it('includes file paths and base branch', () => {
     const body = buildConflictDispatchMessage(
