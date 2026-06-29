@@ -214,6 +214,7 @@ import {
 } from './project-mode.js';
 import { isWorkflowProject } from './project-mode-guards.js';
 import { isPreviewSetupWizardSession } from './routes/preview-wizard.js';
+import { isSetupWizardSession } from './setup-wizard-session.js';
 import { mergeAllowlistedExtraEnv } from './extra-env-allowlist.js';
 import {
   runBrowserReActStep,
@@ -352,6 +353,16 @@ interface BuildEnrichedPromptOptions {
   sessionWorktreePath?: string | null;
   /** Feature branch checked out in the session worktree. */
   sessionWorktreeBranch?: string | null;
+  /**
+   * Suppress the first-turn workspace-memory carryover (MEMORY.md + today's /
+   * yesterday's daily notes). Set for guided setup-wizard sessions
+   * (`isSetupWizardSession`), whose kickoff prompt is the sole authoritative
+   * instruction. Generic memory carryover competes with that focused task and
+   * has been observed to override it — a Preview Setup session resumed an
+   * unrelated dev task pulled from a carried "Session Summary" block instead of
+   * running the wizard. These scoped sessions don't need workspace memory.
+   */
+  omitWorkspaceMemory?: boolean;
   _getEnrichedAgent?: (id: string) => EnrichedAgent | null;
 }
 
@@ -913,9 +924,16 @@ Do **not** emit \`<agenthub:preview>\` blocks — the host ignores them. Only th
   // `isFirstMessage`. MEMORY.md (long-term) and today's notes still ship
   // on every turn — they carry the live context the model needs for
   // in-session continuity.
-  const memoryContext = getMemoryContext(project.ahw, { includeYesterday: isFirstMessage });
-  if (memoryContext) {
-    prompt += '\n\n' + memoryContext;
+  //
+  // Guided setup-wizard sessions (`omitWorkspaceMemory`) skip this entirely:
+  // their kickoff prompt is the sole authoritative instruction, and the daily
+  // notes can carry a "Session Summary (just completed)" block from an
+  // unrelated dev effort that has been observed to override the wizard task.
+  if (!options.omitWorkspaceMemory) {
+    const memoryContext = getMemoryContext(project.ahw, { includeYesterday: isFirstMessage });
+    if (memoryContext) {
+      prompt += '\n\n' + memoryContext;
+    }
   }
 
   // Tasks-only projects (no `githubRepo` field, no git remote) must not get
@@ -2447,6 +2465,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
           finalizeConfigured: worktreeHasFinalizeCi(session!.worktree_path),
           sessionWorktreePath: session!.worktree_path ?? null,
           sessionWorktreeBranch: session!.worktree_branch ?? null,
+          omitWorkspaceMemory: isSetupWizardSession(session!),
           _getEnrichedAgent: getEnrichedAgent,
         },
       );
