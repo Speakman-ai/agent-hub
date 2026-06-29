@@ -266,6 +266,17 @@ describe('classifyFailureReason', () => {
     );
   });
 
+  it('budget_exhausted is CI-class (time-class) — never auto-retried (card #1243)', () => {
+    // The run consumed its whole CI time budget before a job could acquire a
+    // runner. Re-running — or opening an infra auto-retry — would only exhaust
+    // the shared family budget again and instant-fail the same way. If this
+    // regresses, a budget-exhausted job loops on sub-second acquire windows.
+    expect(classifyFailureReason('budget_exhausted')).toBe('ci');
+    expect(isInfraFailureReason('budget_exhausted')).toBe(false);
+    expect((CI_FAILURE_REASONS as readonly string[]).includes('budget_exhausted')).toBe(true);
+    expect((INFRA_FAILURE_REASONS as readonly string[]).includes('budget_exhausted')).toBe(false);
+  });
+
   it('spot_reclaimed classifies as infra and as a reclaim', () => {
     expect(classifyFailureReason('spot_reclaimed')).toBe('infra');
     expect(isReclaimFailureReason('spot_reclaimed')).toBe(true);

@@ -75,6 +75,15 @@ export const CI_FAILURE_REASONS = [
   // transient `container_unavailable`. Auto-retrying it would livelock the
   // remote fleet, re-running the same broken bundle forever.
   'worktree_bundle_failed',
+  // The run consumed its entire CI time budget before a job could even acquire a
+  // runner agent (earlier attempts burned the budget on Spot reclaims / lease-
+  // loss retries). Like `timeout`, this is a time-class terminal: re-running the
+  // job — or opening an infra auto-retry — would only exhaust the (shared family)
+  // budget again and instantly fail the same way, so it is classified CI-class so
+  // neither the per-instance infra retry nor the orchestrator's auto-retry
+  // livelocks on a sub-second acquire window. See job-runner.ts
+  // `MIN_ACQUIRE_TIMEOUT_MS`.
+  'budget_exhausted',
 ] as const;
 
 /**

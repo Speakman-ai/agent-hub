@@ -74,6 +74,47 @@ function isRemoteBackend(): boolean {
 export const MAX_INSTANCE_INFRA_ATTEMPTS = 3;
 
 /**
+ * Minimum viable runner-acquire window. The acquire wait is capped by the run's
+ * remaining time budget so a queued job can't outlive the run — but once earlier
+ * attempts (Spot reclaims, lease-loss retries) have burned that budget toward
+ * zero, the cap collapses too. A sub-second window can NEVER let the fleet scale
+ * up and claim the job, so every attempt fails instantly with "claimed within
+ * Nms" and the per-instance infra retry + orchestrator loop spin in
+ * milliseconds (the 1ms-floor livelock, card #1243).
+ *
+ * Two protections key off this floor (see {@link runJobInstance}):
+ *   1. If less than this much budget remains, the run is genuinely out of time —
+ *      stop with a distinct, non-retryable `budget_exhausted` reason instead of
+ *      attempting a doomed acquire.
+ *   2. The acquire timeout passed to the backend is floored here (never the old
+ *      `1`), defending against the small clock drift between the guard and the
+ *      acquire call.
+ *
+ * Env override `FINALIZE_MIN_ACQUIRE_TIMEOUT_MS` (parsed as an integer ms):
+ *   - A valid value `>= 1` is honored, but coerced UP to a hard 1s minimum
+ *     (`1..999 -> 1000`) — even an operator-tuned floor must stay above the
+ *     sub-second window that caused the livelock, so the safety property holds
+ *     regardless of the configured value.
+ *   - Anything that is NOT a positive integer — unset, empty, `0`, negative, or
+ *     non-numeric garbage — is treated as "no valid override" and falls back to
+ *     {@link DEFAULT_MIN_ACQUIRE_TIMEOUT_MS} (30s). This is deliberately
+ *     asymmetric with the `1..999 -> 1000` coercion: `0`/negative are far more
+ *     likely a misconfiguration (someone trying to *disable* the floor and
+ *     re-introduce the livelock) than an intentional 1s request, so we resolve
+ *     them to the safe default rather than the 1s minimum.
+ */
+export const DEFAULT_MIN_ACQUIRE_TIMEOUT_MS = 30_000;
+
+export function minAcquireTimeoutMs(): number {
+  const raw = process.env.FINALIZE_MIN_ACQUIRE_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1) return Math.max(1_000, n);
+  }
+  return DEFAULT_MIN_ACQUIRE_TIMEOUT_MS;
+}
+
+/**
  * Re-run a job instance only on `infra_error`. Each attempt re-acquires a new
  * lease (new agent, fresh DinD) and re-runs all the instance's steps from the
  * start — CI steps aren't resume-able mid-job. A real test `failure` or a
@@ -377,6 +418,50 @@ async function runJobInstance(
 
     if (isDindRunnerMode()) {
       const backend = deps.runnerBackend ?? resolveRunnerBackend();
+
+      // Budget-exhaustion guard (card #1243). When earlier attempts have already
+      // consumed the run's CI time budget, the remaining-budget acquire cap
+      // collapses toward zero. Acquiring with a sub-floor window is hopeless —
+      // the fleet can't scale up and claim the job in time, so the attempt fails
+      // instantly ("claimed within Nms"), the per-instance retry re-runs with the
+      // same tiny window, and the orchestrator loop re-enters: a millisecond-fast
+      // livelock that thrashes for the whole run with no genuine red. Once less
+      // than a viable acquire window remains, the run is out of time: stop here
+      // with a distinct, human-readable `budget_exhausted` reason. CI-class (see
+      // CI_FAILURE_REASONS) so neither this instance's infra retry nor the
+      // orchestrator's infra auto-retry re-runs a job that would only exhaust the
+      // shared family budget again.
+      const minAcquireMs = minAcquireTimeoutMs();
+      const remainingBudgetMs = budgetMs - (now() - budgetStartedAt);
+      if (remainingBudgetMs < minAcquireMs) {
+        const endedAt = now();
+        const detail =
+          `finalize run budget exhausted before a runner could be acquired for job ` +
+          `${instance.jobId} (${Math.max(0, Math.round(remainingBudgetMs / 1000))}s of budget ` +
+          `left, need >= ${Math.round(minAcquireMs / 1000)}s to acquire an agent)`;
+        console.warn(`[finalize-job-runner] ${instance.jobId}/${instance.matrixKey} ${detail}`);
+        persistJobState(
+          deps,
+          runId,
+          instance.jobId,
+          instance.matrixKey,
+          'failed',
+          -1,
+          jobStartedAt,
+          endedAt,
+        );
+        return {
+          instance,
+          result: {
+            status: 'infra_error',
+            stepResults: [],
+            activeSecondsBilled: 0,
+            infraErrorDetail: detail,
+            failureReason: 'budget_exhausted',
+          },
+        };
+      }
+
       // Pick the GitHub-parity resource tier from the gated repo's visibility
       // (public -> ubuntu-public, private -> ubuntu-private) so public repos get
       // exact parity without manual config. Skip the probe entirely when an
@@ -399,7 +484,11 @@ async function runJobInstance(
           composeProjectName,
           env: mergedEnv,
           labels: jobLabels,
-          acquireTimeoutMs: Math.max(1, budgetMs - (now() - budgetStartedAt)),
+          // Floor at minAcquireMs (never the old 1ms). The guard above already
+          // returned when remaining < floor, so this only protects against the
+          // small clock drift consumed by visibility detection between the guard
+          // and here — the window is never sub-floor.
+          acquireTimeoutMs: Math.max(minAcquireMs, budgetMs - (now() - budgetStartedAt)),
           visibility,
         });
       } catch (err) {

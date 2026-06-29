@@ -7,6 +7,8 @@ import {
   sanitizeComposeProjectName,
   readMaxParallelJobs,
   DEFAULT_MAX_PARALLEL_JOBS,
+  DEFAULT_MIN_ACQUIRE_TIMEOUT_MS,
+  minAcquireTimeoutMs,
 } from './job-runner.js';
 import { createLocalRunnerBackend } from './runner-backend-local.js';
 import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
@@ -90,6 +92,53 @@ describe('readMaxParallelJobs', () => {
     vi.stubEnv('FINALIZE_MAX_PARALLEL_JOBS', '0');
     vi.stubEnv('FINALIZE_RUNNER_BACKEND', 'local');
     expect(readMaxParallelJobs()).toBe(DEFAULT_MAX_PARALLEL_JOBS);
+  });
+});
+
+describe('minAcquireTimeoutMs', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('defaults to DEFAULT_MIN_ACQUIRE_TIMEOUT_MS when unset', () => {
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '');
+    expect(minAcquireTimeoutMs()).toBe(DEFAULT_MIN_ACQUIRE_TIMEOUT_MS);
+  });
+
+  it('honors a valid override at or above the 1s minimum', () => {
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '60000');
+    expect(minAcquireTimeoutMs()).toBe(60_000);
+
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '1000');
+    expect(minAcquireTimeoutMs()).toBe(1_000);
+  });
+
+  it('coerces a sub-1s positive override UP to the 1s hard minimum', () => {
+    // 1..999 are honored as a real (too-low) override and clamped to 1000 — the
+    // safety floor must always stay above the sub-second livelock window.
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '500');
+    expect(minAcquireTimeoutMs()).toBe(1_000);
+
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '1');
+    expect(minAcquireTimeoutMs()).toBe(1_000);
+  });
+
+  it('treats 0 / negative / garbage as "no override" and falls back to the default', () => {
+    // Deliberately asymmetric with 1..999: 0/negative are far more likely an
+    // attempt to DISABLE the floor (re-introducing the livelock) than a request
+    // for 1s, so they resolve to the safe 30s default rather than the 1s minimum.
+    for (const bad of ['0', '-1', '-1000', 'abc', 'NaN', 'off']) {
+      vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', bad);
+      expect(minAcquireTimeoutMs()).toBe(DEFAULT_MIN_ACQUIRE_TIMEOUT_MS);
+    }
+  });
+
+  it('parses a leading-integer override (parseInt semantics) and clamps it', () => {
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '45000ms');
+    expect(minAcquireTimeoutMs()).toBe(45_000);
+
+    vi.stubEnv('FINALIZE_MIN_ACQUIRE_TIMEOUT_MS', '120abc');
+    expect(minAcquireTimeoutMs()).toBe(1_000);
   });
 });
 
@@ -279,6 +328,64 @@ jobs:
     expect(acquired).toHaveLength(1);
     expect(acquired[0].acquireTimeoutMs).toBeGreaterThan(0);
     expect(acquired[0].acquireTimeoutMs).toBeLessThanOrEqual(3 * 60_000);
+    // Never a sub-floor (1ms) window — the fleet must have a viable chance to
+    // scale up and claim the job (card #1243).
+    expect(acquired[0].acquireTimeoutMs).toBeGreaterThanOrEqual(DEFAULT_MIN_ACQUIRE_TIMEOUT_MS);
+  });
+
+  it('does not attempt to acquire a runner once the run budget is exhausted (card #1243)', async () => {
+    const acquired: Array<{ acquireTimeoutMs?: number }> = [];
+    const fakeBackend = {
+      kind: 'fake',
+      acquire: async (spec: { acquireTimeoutMs?: number }) => {
+        acquired.push({ acquireTimeoutMs: spec.acquireTimeoutMs });
+        return { spawnStep: makeFakeSpawnStep(), release: async () => {} };
+      },
+    };
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+timeout_minutes: 1
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: e2e-cmd
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+
+    // Clock: the FIRST now() call stamps budgetStartedAt; every later call jumps
+    // far past the 1-minute budget, so by the time the job evaluates its
+    // remaining budget the run is provably out of time. (Robust to the exact
+    // number of now() calls — only the first-call ordering matters.)
+    const base = 1_000_000;
+    let firstCall = true;
+    const now = () => {
+      if (firstCall) {
+        firstCall = false;
+        return base;
+      }
+      return base + 10 * 60_000;
+    };
+
+    const deps = { ...makeDeps(vi.fn()), runnerBackend: fakeBackend, now } as StepRunnerDeps;
+    const result = await runJobPhase(deps, {
+      runId: 'exhausted-run',
+      config: parsed.config,
+      worktreePath: '/tmp/wt',
+      sessionId: 'sess',
+      branch: 'main',
+      headSha: 'abc',
+    });
+
+    // No acquire was attempted — a sub-floor window would only instant-fail and
+    // livelock the per-instance + orchestrator retry loops.
+    expect(acquired).toHaveLength(0);
+    // Terminal as a distinct, non-retryable budget_exhausted reason (CI-class).
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('budget_exhausted');
+    expect(result.infraErrorDetail).toMatch(/budget exhausted/i);
   });
 
   it('runs warmup job to completion before any fan-out shard', async () => {
