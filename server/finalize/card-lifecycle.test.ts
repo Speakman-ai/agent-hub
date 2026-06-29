@@ -234,6 +234,27 @@ describe('createCardLifecycle.onStarted', () => {
     expect(moves[0].columnId).toBe('col-doing');
   });
 
+  it('matches the In Progress column case-insensitively', () => {
+    const customCols: KanbanColumnRow[] = [
+      COLUMNS[0],
+      {
+        id: 'col-progress-lower',
+        board_id: 'board-1',
+        name: 'in progress',
+        position: 1,
+        color: null,
+        created_at: '',
+      },
+    ];
+    const { deps, moves } = makeDeps();
+    (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
+      () => customCols,
+    );
+    const lc = createCardLifecycle(deps, { cardId: 'card-1', projectId: 'proj-1' });
+    lc.onStarted({ runId: 'r', triggerSource: 'agent_block' });
+    expect(moves).toEqual([{ columnId: 'col-progress-lower', position: 0, cardId: 'card-1' }]);
+  });
+
   it('logs and skips the move when the target column is missing', () => {
     const { deps, moves, log, comments } = makeDeps();
     (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(

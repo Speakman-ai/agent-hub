@@ -524,6 +524,14 @@ function listAutonomousEpics(stmts: Stmts, boardId: string): KanbanEpicRow[] {
   return one ? [one] : [];
 }
 
+function findColumnByName(
+  cols: Array<Pick<KanbanColumnRow, 'id' | 'name'>>,
+  name: string,
+): Pick<KanbanColumnRow, 'id' | 'name'> | undefined {
+  const normalized = name.trim().toLowerCase();
+  return cols.find((c) => c.name.trim().toLowerCase() === normalized);
+}
+
 // ─── Core Dispatch ─────────────────────────────────────────────────────────
 
 /**
@@ -1016,8 +1024,14 @@ async function runAutonomousLoopInner(
     id: string;
     name: string;
   }>;
-  const inProgressColId = cols.find((c) => c.name === 'In Progress')?.id;
-  const reviewColId = cols.find((c) => c.name === 'Review')?.id;
+  const inProgressColId = findColumnByName(cols, 'In Progress')?.id;
+  const reviewColId = findColumnByName(cols, 'Review')?.id;
+  if (!inProgressColId) {
+    console.error(
+      `[Autonomous] Cannot dispatch for epic "${epic.name}": board ${boardData.board.id} has no In Progress column`,
+    );
+    return;
+  }
   const epicCards = allScopeCards;
   const activeCardCount = epicCards.filter(
     (c) => c.column_id === inProgressColId || c.column_id === reviewColId,
@@ -1190,7 +1204,7 @@ async function runAutonomousLoopInner(
         ).length;
         if (activeNow >= effectiveMaxConcurrent) return 'cap';
         d.stmts.markCardDispatchedByAutonomous.run(cardId);
-        d.stmts.moveKanbanCard.run(inProgressColId || card.column_id, 0, cardId);
+        d.stmts.moveKanbanCard.run(inProgressColId, 0, cardId);
         return 'claimed';
       });
       const claimResult = claimSlot.immediate(card.id);

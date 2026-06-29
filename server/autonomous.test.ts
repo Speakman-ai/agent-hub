@@ -403,6 +403,33 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(sessionCreated[0]).toMatchObject({ type: 'session_created', agentId: 'dev-1' });
   });
 
+  it('moves a claimed card to In Progress when the column casing differs', async () => {
+    const card = makeCard();
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: {
+        all: vi.fn(() => [
+          { id: 'col-todo', name: 'To Do' },
+          { id: 'col-progress-lower', name: 'in progress' },
+          { id: 'col-review-lower', name: 'review' },
+          { id: 'col-done', name: 'Done' },
+        ]),
+      },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('card-1');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress-lower', 0, 'card-1');
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+  });
+
   it('dispatches cards for EVERY autonomous epic on the board (multi-epic)', async () => {
     // Two epics both in autonomous mode, each with one eligible card. The loop
     // must tick both — not just the first — so a board can run several epics

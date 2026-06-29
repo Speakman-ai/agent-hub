@@ -153,6 +153,8 @@ export interface RunFinalizePushArgs {
   /** Resolve the worktree's checked-out branch (injectable for tests). */
   resolveCurrentBranch?: (worktreePath: string) => Promise<string | null>;
   pushAndCreatePr?: PushAndCreatePrFn;
+  /** Test seam: production builds the lifecycle from route deps. */
+  cardLifecycle?: CardLifecycle;
   /** Operator override — skip ready_to_push and push-gate checks. */
   force?: boolean;
 }
@@ -493,6 +495,19 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
           status: 'pushed',
           pr_url: peer.pr_url,
         });
+        try {
+          const lifecycle =
+            args.cardLifecycle ??
+            buildOrchestratorDeps(deps, card, project.id).cardLifecycle ??
+            NOOP_CARD_LIFECYCLE;
+          lifecycle.onPushed({
+            runId: run.id,
+            prUrl: peer.pr_url,
+            triggerSource: run.trigger_source,
+          });
+        } catch {
+          /* cosmetic */
+        }
         return { ok: true, prUrl: peer.pr_url };
       }
       return {
@@ -527,6 +542,7 @@ export async function runFinalizePush(args: RunFinalizePushArgs): Promise<Finali
     // (force=false) cleared it. This drives the timeline warning.
     bypassedGates: force,
     pushAndCreatePr: args.pushAndCreatePr,
+    lifecycle: args.cardLifecycle,
   });
 }
 

@@ -186,6 +186,10 @@ type MoveOutcome =
   | { kind: 'already' }
   | { kind: 'unresolved' };
 
+function columnNameMatches(actual: string, expected: string): boolean {
+  return actual.trim().toLowerCase() === expected.trim().toLowerCase();
+}
+
 /**
  * Resolve the target column and execute the move DB write, returning a typed
  * outcome. No broadcasts here — the caller orders those so the comment's
@@ -211,7 +215,9 @@ function resolveAndExecuteMove(
     // column the same way the `<agenthub:close-card>` path does
     // (exact "done" → contains "done" → rightmost). Otherwise fall back to
     // the legacy exact-name Review match.
-    const target = moveToDone ? pickDoneColumn(cols) : cols.find((c) => c.name === reviewName);
+    const target = moveToDone
+      ? pickDoneColumn(cols)
+      : cols.find((c) => columnNameMatches(c.name, reviewName));
     if (!target) {
       const detail = moveToDone
         ? `Done column not found on board=${card.board_id}`

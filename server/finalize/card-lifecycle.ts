@@ -186,6 +186,10 @@ export function createCardLifecycle(
   const reviewName = opts.reviewColumnName ?? 'Review';
   const moveToDoneOnPush = opts.moveToDoneOnPush === true;
 
+  function columnNameMatches(actual: string, expected: string): boolean {
+    return actual.trim().toLowerCase() === expected.trim().toLowerCase();
+  }
+
   function postComment(content: string): void {
     try {
       deps.stmts.createKanbanCardComment.run(newId(), opts.cardId, author, content);
@@ -207,7 +211,7 @@ export function createCardLifecycle(
         return;
       }
       const cols = deps.stmts.getKanbanColumns.all(card.board_id) as KanbanColumnRow[];
-      const target = cols.find((c) => c.name === targetName);
+      const target = cols.find((c) => columnNameMatches(c.name, targetName));
       if (!target) {
         log(
           `[card-lifecycle] moveToColumnByName: column "${targetName}" not found on ` +

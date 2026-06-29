@@ -364,6 +364,7 @@ describe('runFinalizePush force', () => {
   it('reuses an already pushed peer for the same session and validated head without pushing again', async () => {
     const { deps } = makeDeps();
     const pushAndCreatePr = vi.fn();
+    const lifecycle = { onPushed: vi.fn() };
     (deps.stmts.claimFinalizeRunPush.run as ReturnType<typeof vi.fn>).mockReturnValue({
       changes: 0,
     });
@@ -384,6 +385,7 @@ describe('runFinalizePush force', () => {
       resolveHeadSha: vi.fn().mockResolvedValue('abc123'),
       resolveCurrentBranch: vi.fn().mockResolvedValue('feature/x'),
       pushAndCreatePr,
+      cardLifecycle: lifecycle as never,
     });
 
     expect(outcome).toEqual({ ok: true, prUrl: 'https://github.com/o/r/pull/10' });
@@ -392,6 +394,11 @@ describe('runFinalizePush force', () => {
       'run-2',
     );
     expect(deps.stmts.markFinalizeRunPushed.run).toHaveBeenCalledWith('run-2');
+    expect(lifecycle.onPushed).toHaveBeenCalledWith({
+      runId: 'run-2',
+      prUrl: 'https://github.com/o/r/pull/10',
+      triggerSource: 'ui_button',
+    });
     expect(pushAndCreatePr).not.toHaveBeenCalled();
   });
 });

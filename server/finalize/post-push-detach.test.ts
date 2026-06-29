@@ -264,6 +264,23 @@ describe('runPostPushDetach — happy path (card in In Progress)', () => {
 
     expect(moves[0].columnId).toBe('col-done');
   });
+
+  it('matches the Review column case-insensitively', () => {
+    const { deps, moves } = makeDeps({ column_id: 'col-progress' });
+    (deps.stmts.getKanbanColumns as unknown as { all: ReturnType<typeof vi.fn> }).all = vi.fn(
+      () => [COLUMNS[0], COLUMNS[1], { ...COLUMNS[2], name: 'review' }, COLUMNS[3]],
+    );
+
+    runPostPushDetach(deps, {
+      cardId: 'card-1',
+      projectId: 'proj-1',
+      prUrl: 'https://github.com/o/r/pull/42',
+      runId: 'run-1',
+      triggerSource: 'agent_block',
+    });
+
+    expect(moves).toEqual([{ columnId: 'col-review', position: 0, cardId: 'card-1' }]);
+  });
 });
 
 describe('runPostPushDetach — moveToDone (cardDoneOnPush)', () => {
