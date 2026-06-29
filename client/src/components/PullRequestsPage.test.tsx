@@ -27,6 +27,10 @@ import { api } from '../utils/api';
     updateNativePr: vi.fn(),
     getGitHostRecentPushes: vi.fn(async () => ({ pushes: [] })),
     getGitHostBranches: vi.fn(async () => ({ defaultBranch: 'main', branches: [] })),
+    getCiRunDetail: vi.fn(),
+    getFinalizeStepOutput: vi.fn(),
+    getFinalizeRunResources: vi.fn(),
+    cancelFinalizeRun: vi.fn(),
     getNativePrBranchChanges: vi.fn(async () => ({
       headBranch: 'feature/x',
       baseBranch: 'main',
@@ -150,6 +154,91 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     await renderAndOpenDetail();
     expect(await screen.findByText('Activity')).toBeTruthy();
     expect(screen.getByText(/Chronological history from GitHub/i)).toBeTruthy();
+  });
+
+  it('renders the backing CI run as an expandable runner row with step logs', async () => {
+    const ciRun = {
+      id: 'run-pr-1',
+      branch: 'feature/x',
+      head_sha: 'c'.repeat(40),
+      status: 'failed',
+      trigger_source: 'pr_push',
+      failure_reason: 'checks_failed',
+      started_at: Date.now() - 70_000,
+      ended_at: Date.now() - 30_000,
+      jobs: [
+        {
+          job_id: 'test',
+          matrix_key: 'mobile 1/2',
+          state: 'failed',
+          exit_code: 1,
+          started_at: 1,
+          ended_at: 2,
+        },
+      ],
+    };
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      ...detailResponse,
+      source: 'agenthub',
+      ci_run: ciRun,
+      checks: [
+        {
+          id: 'flat-check',
+          name: 'legacy flat row',
+          status: 'completed',
+          conclusion: 'failure',
+          job_id: 'test',
+        },
+      ],
+    });
+    (api.getCiRunDetail as any).mockResolvedValue({
+      run: ciRun,
+      steps: [
+        {
+          step_index: 1,
+          name: 'test / mobile 1/2 / Tests (mobile 1/2)',
+          state: 'failed',
+          exit_code: 1,
+          started_at: 1,
+          ended_at: 2,
+          job_id: 'test',
+          matrix_key: 'mobile 1/2',
+        },
+      ],
+    });
+    (api.getFinalizeRunResources as any).mockResolvedValue({
+      jobs: [
+        {
+          job_name: 'test',
+          matrix_key: 'mobile 1/2',
+          peak_mem_bytes: 1.3 * 1024 * 1024 * 1024,
+          mem_total_bytes: 15.3 * 1024 * 1024 * 1024,
+          peak_cpu_percent: 44,
+        },
+      ],
+    });
+    (api.getFinalizeStepOutput as any).mockResolvedValue({
+      lines: ['npm test failed'],
+    });
+
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+
+    const runSection = await screen.findByTestId('pr-ci-run-row');
+    expect(within(runSection).getByTestId('ci-run-run-pr-1')).toHaveTextContent('pr ci');
+    expect(within(runSection).getByText('feature/x')).toBeInTheDocument();
+    expect(screen.queryByText('legacy flat row')).toBeNull();
+
+    fireEvent.click(within(runSection).getByTestId('ci-run-run-pr-1' as any));
+    expect(await screen.findByText('mobile 1/2')).toBeInTheDocument();
+    expect(await screen.findByText('1.3 / 15.3 GB · 44%')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId('ci-run-step-run-pr-1-1' as any));
+    await waitFor(() =>
+      expect(api.getFinalizeStepOutput).toHaveBeenCalledWith('proj-1', 'run-pr-1', 1),
+    );
+    expect(await screen.findByText('npm test failed')).toBeInTheDocument();
   });
 
   it('disables the button while the request is in flight', async () => {

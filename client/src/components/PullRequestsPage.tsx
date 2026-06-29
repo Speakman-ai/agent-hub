@@ -18,6 +18,7 @@ import { Pencil, Check, X, Sparkles, SquareKanban, ChevronDown, ChevronRight } f
 import { api } from '../utils/api';
 import FileDiffView from './FileDiffView';
 import { MarkdownContent } from './MarkdownRenderer';
+import { RunRow } from './CiRunsSection';
 import {
   relativePrTime,
   diffSummary,
@@ -572,6 +573,17 @@ function PrDetail({
     }
   };
 
+  const handleStopCiRun = async () => {
+    if (!ciRun?.id) return;
+    try {
+      await api.cancelFinalizeRun(projectId, ciRun.id);
+      if (onToast) onToast('Stopping all jobs…', 'success', 4000);
+      setTimeout(() => onRefresh(), 1500);
+    } catch (err: any) {
+      toastErr(err);
+    }
+  };
+
   const handleSubmitReview = async () => {
     if (reviewVerdict === 'commented' && !reviewBody.trim()) return;
     setSubmittingReview(true);
@@ -1010,12 +1022,22 @@ function PrDetail({
             </button>
           )}
         </div>
-        {(!detail.checks || detail.checks.length === 0) && (
+        {ciRun && (
+          <div className="space-y-1.5" data-testid="pr-ci-run-row">
+            <RunRow
+              projectId={projectId}
+              run={ciRun}
+              onRerun={ciRerunnable ? () => handleRerunChecks() : null}
+              onStop={handleStopCiRun}
+            />
+          </div>
+        )}
+        {!ciRun && (!detail.checks || detail.checks.length === 0) && (
           <p className="text-sm text-gray-500" data-testid="pr-checks-empty-note">
             {detail.checks_note || 'No checks reported.'}
           </p>
         )}
-        {Array.isArray(detail.checks) && detail.checks.length > 0 && (
+        {!ciRun && Array.isArray(detail.checks) && detail.checks.length > 0 && (
           <div className="bg-gray-900/40 border border-gray-800 rounded-lg overflow-hidden">
             {detail.checks.map((chk: any, i: any) => (
               <CheckRow

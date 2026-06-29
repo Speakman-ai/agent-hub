@@ -374,7 +374,7 @@ function StepLog({ projectId, runId, step }: any) {
   );
 }
 
-function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
+export function RunRow({ projectId, run, onRerun = null, onStop = null }: any) {
   const [expanded, setExpanded] = useState(false);
   const [steps, setSteps] = useState<any>(null);
   const [openStep, setOpenStep] = useState<any>(null);
