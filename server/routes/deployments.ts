@@ -46,6 +46,11 @@ import {
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
+  listReleaseNotificationOutboxByDeployment,
+  releaseNotificationHistoryItem,
+  retryReleaseNotificationOutbox,
+} from '../release-notification-outbox.js';
+import {
   DeploymentCheckoutError,
   prepareDeploymentCheckout,
 } from '../deploy/deployment-checkout.js';
@@ -121,6 +126,12 @@ function releaseItemDto(row: DeploymentReleaseItemDetailRow): Record<string, unk
 
 function releaseItemsDto(deploymentId: string): Record<string, unknown>[] {
   return listDeploymentReleaseItemsWithContext(deploymentId).map(releaseItemDto);
+}
+
+function releaseNotificationsDto(deploymentId: string): unknown[] {
+  return listReleaseNotificationOutboxByDeployment(deploymentId).map(
+    releaseNotificationHistoryItem,
+  );
 }
 
 function deploymentAllowsReleaseItemAdjustments(deployment: DeploymentRow): boolean {
@@ -615,6 +626,7 @@ export default function createDeploymentRoutes(
         steps: listDeploymentSteps(deployment.id),
         approvals: listDeploymentApprovals(deployment.id),
         releaseItems: releaseItemsDto(deployment.id),
+        releaseNotifications: releaseNotificationsDto(deployment.id),
         environment: getDeploymentEnvironment(projectId, deployment.environment),
         history: listDeploymentsForEnvironment(projectId, deployment.environment, {
           limit: 25,
@@ -632,6 +644,35 @@ export default function createDeploymentRoutes(
       const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
       if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
       return res.json({ releaseItems: releaseItemsDto(deployment.id) });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/deployments/:deploymentId/release-notifications/:notificationId/retry',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
+      if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+      const row = listReleaseNotificationOutboxByDeployment(deployment.id).find(
+        (candidate) => candidate.id === req.params.notificationId,
+      );
+      if (!row) return res.status(404).json({ error: 'Release notification not found' });
+      if (row.sent_at) {
+        return res.status(409).json({ error: 'Release notification has already been sent' });
+      }
+      if (row.status !== 'error') {
+        return res.status(409).json({ error: 'Only failed release notifications can be retried' });
+      }
+      const retried = retryReleaseNotificationOutbox(row.id);
+      if (!retried) {
+        return res.status(409).json({ error: 'Release notification is no longer retryable' });
+      }
+      return res.json({
+        notification: releaseNotificationHistoryItem(retried),
+        releaseNotifications: releaseNotificationsDto(deployment.id),
+      });
     },
   );
 

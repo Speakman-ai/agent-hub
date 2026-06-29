@@ -268,6 +268,10 @@ export const api = {
         return fetchJSON(`/projects/${projectId}/deployments${qs ? `?${qs}` : ''}`);
     },
     getDeployment: (projectId: any, deploymentId: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}`),
+    retryReleaseNotification: (projectId: any, deploymentId: any, notificationId: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/release-notifications/${encodeURIComponent(notificationId)}/retry`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+    }),
     adjustDeploymentReleaseItem: (projectId: any, deploymentId: any, cardId: any, body: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/release-items/${cardId}`, {
         method: 'PUT',
         body: JSON.stringify(body),

@@ -22,6 +22,11 @@ export function sortTickets(list: any) {
         return (b.created_at || '').localeCompare(a.created_at || '');
     });
 }
+export function mergeTicketDetail(current: any, detail: any) {
+    if (!current || !detail || current.id !== detail.id)
+        return current;
+    return { ...current, ...detail };
+}
 // Resolve a server-stored reference (replay or screenshot) to an openable URL.
 // Absolute URLs pass through; server-relative paths (e.g. /uploads/...) are
 // prefixed with the server base.

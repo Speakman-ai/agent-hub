@@ -50,6 +50,30 @@ export const AdjustDeploymentReleaseItemRequestSchema = z.object({
   supportTicketId: z.string().min(1).nullable().optional(),
 });
 
+const ReleaseNotificationTypeEnum = z.enum(['ticket_release', 'release_digest']);
+const ReleaseNotificationStatusEnum = z.enum(['pending', 'sending', 'sent', 'error']);
+
+const ReleaseNotificationHistoryItemSchema = registerComponent(
+  'ReleaseNotificationHistoryItem',
+  z.object({
+    id: z.string(),
+    deployment_id: z.string(),
+    release_item_id: z.string().nullable(),
+    support_ticket_id: z.string().nullable(),
+    notification_type: ReleaseNotificationTypeEnum,
+    recipient_type: z.enum(['reporter', 'release_digest']),
+    subject: z.string(),
+    status: ReleaseNotificationStatusEnum,
+    attempts: z.number().int(),
+    sent_at: z.string().nullable(),
+    next_attempt_at: z.string().nullable(),
+    error_summary: z.string().nullable(),
+    can_retry: z.boolean(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }),
+);
+
 export const DeploymentSchema = registerComponent(
   'Deployment',
   z.object({
@@ -217,6 +241,7 @@ const DeploymentDetailResponseSchema = registerComponent(
     steps: z.array(DeploymentStepSchema),
     approvals: z.array(DeploymentApprovalSchema),
     releaseItems: z.array(DeploymentReleaseItemReviewSchema),
+    releaseNotifications: z.array(ReleaseNotificationHistoryItemSchema),
     environment: DeploymentEnvironmentSchema.nullable(),
     history: z.array(DeploymentSchema),
     logs: z.array(z.object({}).passthrough()),
@@ -249,6 +274,14 @@ const DeploymentReleaseDigestResponseSchema = registerComponent(
   }),
 );
 
+const ReleaseNotificationRetryResponseSchema = registerComponent(
+  'ReleaseNotificationRetryResponse',
+  z.object({
+    notification: ReleaseNotificationHistoryItemSchema,
+    releaseNotifications: z.array(ReleaseNotificationHistoryItemSchema),
+  }),
+);
+
 const DeploymentActionResponseSchema = registerComponent(
   'DeploymentActionResponse',
   z.object({
@@ -272,6 +305,11 @@ const deploymentReleaseItemParams = z.object({
   projectId: z.string(),
   deploymentId: z.string(),
   cardId: z.string(),
+});
+const deploymentReleaseNotificationParams = z.object({
+  projectId: z.string(),
+  deploymentId: z.string(),
+  notificationId: z.string(),
 });
 
 registerPath({
@@ -322,6 +360,28 @@ registerPath({
     200: { description: 'Deployment history.', content: jsonContent(DeploymentListResponseSchema) },
     400: errorResponse('Invalid query.'),
     404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deployments/{deploymentId}/release-notifications/{notificationId}/retry',
+  tags: ['Deployments'],
+  summary: 'Retry a failed release notification',
+  description:
+    'Admin+. Requeues the existing failed release notification outbox row. Sent rows are never duplicated.',
+  request: {
+    params: deploymentReleaseNotificationParams,
+    body: { content: jsonContent(z.object({}).passthrough()) },
+  },
+  responses: {
+    200: {
+      description: 'Existing notification row requeued for delivery.',
+      content: jsonContent(ReleaseNotificationRetryResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project, deployment, or release notification not found.'),
+    409: errorResponse('Notification is already sent or not failed.'),
   },
 });
 

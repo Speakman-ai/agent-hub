@@ -13,6 +13,8 @@ import {
   Check,
   X,
   Trash2,
+  Mail,
+  RefreshCw,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { getServerBase } from '../utils/connection';
@@ -98,6 +100,22 @@ function ReleaseStateBadge({ ticket }: { ticket: any }) {
       {RELEASE_STATE_LABEL[state] || state}
     </span>
   );
+}
+
+function notificationRecipientLabel(notification: any) {
+  if (notification?.recipient_type === 'reporter') return 'Reporter';
+  if (notification?.recipient_type === 'release_digest') return 'Release digest';
+  return String(notification?.recipient_type || notification?.notification_type || 'Recipient');
+}
+
+function notificationStatusLabel(notification: any) {
+  return String(notification?.status || 'pending').replaceAll('_', ' ');
+}
+
+function notificationDate(value: any) {
+  if (!value) return '';
+  const d = String(value).includes('T') ? new Date(value) : new Date(`${value}Z`);
+  return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString();
 }
 
 // Filter groups. The default ("Open") shows only the working states; the
@@ -752,6 +770,7 @@ function SupportTicketDetailModal({
   // instead of going stale.
   const [enrichment, setEnrichment] = useState<any>(null);
   const [watchingReplay, setWatchingReplay] = useState(false);
+  const [retryingNotificationId, setRetryingNotificationId] = useState<any>(null);
 
   // Fetch the full ticket from the dedicated detail endpoint for this id. Reset
   // the enrichment first so a previous ticket's investigation can't bleed
@@ -789,6 +808,7 @@ function SupportTicketDetailModal({
     ...liveTicket,
     ai_investigation: fetched?.ai_investigation ?? liveTicket.ai_investigation,
     ai_investigated_at: fetched?.ai_investigated_at ?? liveTicket.ai_investigated_at,
+    release_notifications: fetched?.release_notifications ?? liveTicket.release_notifications ?? [],
   };
 
   const type = TYPE_META[ticket.type] || TYPE_META.other;
@@ -799,6 +819,37 @@ function SupportTicketDetailModal({
   const title = ticket.subject?.trim() || ticket.body?.trim() || '(no subject)';
   const isConverted = ticket.status === 'converted' || !!ticket.converted_card_id;
   const investigation = ticket.ai_investigation?.trim() || ticket.ai_summary?.trim() || null;
+  const releaseNotifications = ticket.release_notifications || [];
+
+  const retryNotification = async (notification: any) => {
+    if (!notification?.id || !notification?.deployment_id || retryingNotificationId) return;
+    setRetryingNotificationId(notification.id);
+    try {
+      const res = await api.retryReleaseNotification(
+        projectId,
+        notification.deployment_id,
+        notification.id,
+      );
+      const updatedNotification = res?.notification || {
+        ...notification,
+        status: 'pending',
+        error_summary: null,
+        can_retry: false,
+      };
+      const nextNotifications = releaseNotifications.map((item: any) =>
+        item.id === notification.id ? updatedNotification : item,
+      );
+      setEnrichment((cur: any) =>
+        cur && cur.id === ticket.id ? { ...cur, release_notifications: nextNotifications } : cur,
+      );
+      onUpdated?.({ ...ticket, release_notifications: nextNotifications });
+      onNotify?.('Release notification queued for retry', 'success');
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Failed to retry release notification', 'error');
+    } finally {
+      setRetryingNotificationId(null);
+    }
+  };
 
   return (
     <>
@@ -909,6 +960,72 @@ function SupportTicketDetailModal({
                 Watch replay
               </button>
             ) : null}
+
+            <div>
+              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                <Mail size={12} />
+                Notifications
+              </div>
+              {releaseNotifications.length === 0 ? (
+                <div className="rounded-md border border-dashed border-gray-800 p-3 text-xs text-gray-500">
+                  No release notifications recorded.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {releaseNotifications.map((notification: any) => (
+                    <div
+                      key={notification.id}
+                      className="rounded-md border border-gray-800 bg-gray-950/60 p-3"
+                    >
+                      <div className="flex flex-wrap items-start gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-medium text-gray-200">
+                              {notificationRecipientLabel(notification)}
+                            </span>
+                            <span className="rounded border border-gray-700 bg-gray-800/70 px-1.5 py-0.5 text-[10px] text-gray-300">
+                              {notificationStatusLabel(notification)}
+                            </span>
+                            <span className="text-[11px] text-gray-500">
+                              {notification.attempts || 0} attempts
+                            </span>
+                          </div>
+                          <div className="mt-1 truncate text-xs text-gray-400">
+                            {notification.subject || 'Release notification'}
+                          </div>
+                          {notification.sent_at ? (
+                            <div className="mt-1 text-[11px] text-gray-500">
+                              Sent {notificationDate(notification.sent_at)}
+                            </div>
+                          ) : null}
+                          {notification.error_summary ? (
+                            <div className="mt-2 rounded border border-red-500/20 bg-red-500/10 px-2 py-1 text-xs text-red-200">
+                              {notification.error_summary}
+                            </div>
+                          ) : null}
+                        </div>
+                        {notification.can_retry ? (
+                          <button
+                            type="button"
+                            onClick={() => retryNotification(notification)}
+                            disabled={retryingNotificationId === notification.id}
+                            className="inline-flex min-h-[28px] items-center gap-1.5 rounded-md border border-gray-700 px-2 text-xs text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <RefreshCw
+                              size={12}
+                              className={
+                                retryingNotificationId === notification.id ? 'animate-spin' : ''
+                              }
+                            />
+                            Retry
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Footer actions */}

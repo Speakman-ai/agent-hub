@@ -15,6 +15,27 @@ const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
 const RELEASE_STATES = ['fixed_pending_release', 'released_to_prod', 'customer_notified'] as const;
 
+const SupportTicketReleaseNotificationComponent = registerComponent(
+  'SupportTicketReleaseNotification',
+  z.object({
+    id: z.string(),
+    deployment_id: z.string(),
+    release_item_id: z.string().nullable(),
+    support_ticket_id: z.string().nullable(),
+    notification_type: z.enum(['ticket_release', 'release_digest']),
+    recipient_type: z.enum(['reporter', 'release_digest']),
+    subject: z.string(),
+    status: z.enum(['pending', 'sending', 'sent', 'error']),
+    attempts: z.number().int(),
+    sent_at: z.string().nullable(),
+    next_attempt_at: z.string().nullable(),
+    error_summary: z.string().nullable(),
+    can_retry: z.boolean(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }),
+);
+
 const ErrorResponse = registerComponent(
   'SupportTicketErrorResponse',
   z
@@ -74,6 +95,10 @@ export const SupportTicketComponent = registerComponent(
         .string()
         .nullable()
         .openapi({ description: 'Timestamp the ticket was first read, or null when unread.' }),
+      release_notifications: z
+        .array(SupportTicketReleaseNotificationComponent)
+        .optional()
+        .openapi({ description: 'Release notification outbox history for this ticket.' }),
       created_at: z.string(),
       updated_at: z.string(),
     })

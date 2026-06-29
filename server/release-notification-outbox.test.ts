@@ -29,6 +29,7 @@ import {
   listReleaseNotificationOutboxByDeployment,
   listRetryEligibleReleaseNotificationOutbox,
   markReleaseNotificationOutboxError,
+  retryReleaseNotificationOutbox,
 } from './release-notification-outbox.js';
 
 const P = 'release-outbox-test';
@@ -165,6 +166,32 @@ describe('release notification outbox', () => {
     expect(listRetryEligibleReleaseNotificationOutbox().map((row) => row.id)).toEqual([
       retryable.id,
     ]);
+  });
+
+  it('does not report retry success when the row is no longer failed', () => {
+    const deployment = successfulProductionDeployment();
+    const retryable = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'stale-retry-state-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+    markReleaseNotificationOutboxError(retryable.id, 'temporary smtp failure');
+    getDb()
+      .prepare("UPDATE release_notification_outbox SET status = 'pending' WHERE id = ?")
+      .run(retryable.id);
+
+    expect(retryReleaseNotificationOutbox(retryable.id)).toBeNull();
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)).toContainEqual(
+      expect.objectContaining({
+        id: retryable.id,
+        status: 'pending',
+        last_error: 'temporary smtp failure',
+      }),
+    );
   });
 
   it('falls back to the default retry limit for non-finite limits', () => {

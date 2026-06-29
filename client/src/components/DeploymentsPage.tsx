@@ -5,6 +5,7 @@ import {
   Circle,
   Clock,
   Loader2,
+  Mail,
   Play,
   RefreshCw,
   Rocket,
@@ -79,6 +80,16 @@ function releaseItemCardTitle(item: any): string {
   const title = item?.card?.title || item?.card_title || item?.card_id || 'Card';
   const shortId = item?.card?.shortId ?? item?.card_short_id ?? null;
   return shortId ? `#${shortId} ${title}` : String(title);
+}
+
+function notificationRecipientLabel(notification: any): string {
+  if (notification?.recipient_type === 'reporter') return 'Reporter';
+  if (notification?.recipient_type === 'release_digest') return 'Release digest';
+  return String(notification?.recipient_type || notification?.notification_type || 'Recipient');
+}
+
+function notificationStatusLabel(notification: any): string {
+  return String(notification?.status || 'pending').replaceAll('_', ' ');
 }
 
 function StepIcon({ status }: any) {
@@ -280,6 +291,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         steps: snapshot.steps || [],
         approvals: snapshot.approvals || prev?.approvals || [],
         releaseItems: snapshot.releaseItems || prev?.releaseItems || [],
+        releaseNotifications: snapshot.releaseNotifications || prev?.releaseNotifications || [],
       }));
     }
     setEvents((prev) =>
@@ -329,6 +341,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const selectedDeployment = selected?.deployment;
   const selectedSteps = selected?.steps || [];
   const selectedReleaseItems = selected?.releaseItems || [];
+  const selectedReleaseNotifications = selected?.releaseNotifications || [];
 
   const adjustReleaseItem = async (item: any, inclusionStatus: 'included' | 'excluded') => {
     if (!selectedDeployment?.id || !item?.card_id) return;
@@ -367,6 +380,32 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
       );
     } catch (e: any) {
       notify(e?.message || 'Failed to update release item', 'error');
+    } finally {
+      setActionKey(null);
+    }
+  };
+
+  const retryNotification = async (notification: any) => {
+    if (!selectedDeployment?.id || !notification?.id) return;
+    const key = `notification:${notification.id}:retry`;
+    setActionKey(key);
+    try {
+      const res = await api.retryReleaseNotification(
+        projectId,
+        selectedDeployment.id,
+        notification.id,
+      );
+      setSelected((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              releaseNotifications: res.releaseNotifications || prev.releaseNotifications || [],
+            }
+          : prev,
+      );
+      notify('Release notification queued for retry', 'success');
+    } catch (e: any) {
+      notify(e?.message || 'Failed to retry release notification', 'error');
     } finally {
       setActionKey(null);
     }
@@ -753,6 +792,84 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                                   )}
                                   {actionLabel}
                                 </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {selectedDeployment && (
+                  <div className="mt-4 border-t border-gray-800 pt-4">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h3 className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase text-gray-400">
+                        <Mail size={13} />
+                        Notifications
+                      </h3>
+                      <span className="text-xs text-gray-500">
+                        {selectedReleaseNotifications.length} recorded
+                      </span>
+                    </div>
+                    {selectedReleaseNotifications.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-gray-800 p-4 text-center text-sm text-gray-500">
+                        No release notifications recorded for this deployment.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {selectedReleaseNotifications.map((notification: any) => {
+                          const retryKey = `notification:${notification.id}:retry`;
+                          return (
+                            <div
+                              key={notification.id}
+                              className="rounded-md border border-gray-800 bg-gray-950/70 p-3"
+                            >
+                              <div className="flex flex-wrap items-start gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-sm font-medium text-gray-200">
+                                      {notificationRecipientLabel(notification)}
+                                    </span>
+                                    <StatusBadge status={notification.status} />
+                                    <span className="text-xs text-gray-500">
+                                      {notification.attempts || 0} attempts
+                                    </span>
+                                  </div>
+                                  <div className="mt-1 truncate text-xs text-gray-400">
+                                    {notification.subject || 'Release notification'}
+                                  </div>
+                                  <div className="mt-1 flex flex-wrap gap-2 text-xs text-gray-500">
+                                    {notification.sent_at ? (
+                                      <span>sent {formatDate(notification.sent_at)}</span>
+                                    ) : (
+                                      <span>{notificationStatusLabel(notification)}</span>
+                                    )}
+                                    {notification.next_attempt_at ? (
+                                      <span>next {formatDate(notification.next_attempt_at)}</span>
+                                    ) : null}
+                                  </div>
+                                  {notification.error_summary ? (
+                                    <div className="mt-2 rounded border border-red-500/20 bg-red-500/10 px-2 py-1 text-xs text-red-200">
+                                      {notification.error_summary}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                {notification.can_retry ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => retryNotification(notification)}
+                                    disabled={actionKey === retryKey}
+                                    className="inline-flex min-h-[30px] items-center gap-1.5 rounded-md border border-gray-700 px-2.5 text-xs text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {actionKey === retryKey ? (
+                                      <Loader2 size={12} className="animate-spin" />
+                                    ) : (
+                                      <RefreshCw size={12} />
+                                    )}
+                                    Retry
+                                  </button>
+                                ) : null}
                               </div>
                             </div>
                           );

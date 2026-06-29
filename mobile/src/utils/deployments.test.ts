@@ -9,6 +9,8 @@ import {
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
   releaseItemCardLabel,
+  releaseNotificationRecipientLabel,
+  releaseNotificationStatusLabel,
   releaseItemStatusLabel,
   releaseItemSupportLabel,
   shortDeploymentRef,
@@ -178,5 +180,13 @@ describe('deployment state helpers', () => {
     expect(releaseItemSupportLabel(item)).toBe('Export fails (ticket-1)');
     expect(releaseItemStatusLabel({ inclusion_status: 'included' })).toBe('Included');
     expect(releaseItemSupportLabel({ support_ticket_id: null })).toBe('No support ticket');
+  });
+
+  it('formats release notification labels', () => {
+    expect(releaseNotificationRecipientLabel({ recipient_type: 'reporter' })).toBe('Reporter');
+    expect(releaseNotificationRecipientLabel({ recipient_type: 'release_digest' })).toBe(
+      'Release digest',
+    );
+    expect(releaseNotificationStatusLabel({ status: 'sending' })).toBe('sending');
   });
 });

@@ -274,6 +274,13 @@ describe('api deployment helpers — URL + body parity with web client', () => {
         expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-1');
         expect(init.method ?? 'GET').toBe('GET');
     });
+    it('retryReleaseNotification POSTs to the scoped retry endpoint', async () => {
+        await api.retryReleaseNotification('agent-hub', 'dep-1', 'note/1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-1/release-notifications/note%2F1/retry');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({});
+    });
     it('adjustDeploymentReleaseItem PUTs inclusion status and reason', async () => {
         await api.adjustDeploymentReleaseItem('agent-hub', 'dep-1', 'card-1', {
             inclusionStatus: 'excluded',
@@ -598,6 +605,12 @@ describe('api.getHealth — drawer footer / mount-effect contract', () => {
     });
 });
 describe('api support-ticket helpers — URL + method parity with web client', () => {
+    it('getSupportTicket(projectId, id) → GET detail row with release notifications', async () => {
+        await api.getSupportTicket('agent-hub', 'tkt-1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-1');
+        expect(init?.method).toBeUndefined();
+    });
     it('deleteSupportTicket(projectId, id) → DELETE /projects/:id/support-tickets/:ticketId', async () => {
         await api.deleteSupportTicket('agent-hub', 'tkt-1');
         const [url, init] = lastCall();

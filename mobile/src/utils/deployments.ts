@@ -163,3 +163,13 @@ export function releaseItemSupportLabel(item: any): string {
   const subject = ticket?.subject ?? item?.support_ticket_subject ?? '';
   return subject ? `${subject} (${id})` : `Support ticket ${id}`;
 }
+
+export function releaseNotificationRecipientLabel(notification: any): string {
+  if (notification?.recipient_type === 'reporter') return 'Reporter';
+  if (notification?.recipient_type === 'release_digest') return 'Release digest';
+  return String(notification?.recipient_type || notification?.notification_type || 'Recipient');
+}
+
+export function releaseNotificationStatusLabel(notification: any): string {
+  return String(notification?.status || 'pending').replaceAll('_', ' ');
+}

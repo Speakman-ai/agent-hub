@@ -40,8 +40,12 @@ import {
 
 export { serializeSupportTicket };
 
-function serializeForRequest(req: Request, ticket: SupportTicketRow): SupportTicketResponse {
-  return serializeSupportTicketForRequest(req, ticket);
+function serializeForRequest(
+  req: Request,
+  ticket: SupportTicketRow,
+  opts: { includeReleaseNotifications?: boolean } = {},
+): SupportTicketResponse {
+  return serializeSupportTicketForRequest(req, ticket, opts);
 }
 
 function serializeForBroadcast(ticket: SupportTicketRow): SupportTicketResponse {
@@ -191,7 +195,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     if (!ticket || ticket.project_id !== project.id) {
       return res.status(404).json({ error: 'Support ticket not found' });
     }
-    res.json(serializeForRequest(req, ticket));
+    res.json(serializeForRequest(req, ticket, { includeReleaseNotifications: true }));
   });
 
   router.post('/api/projects/:projectId/support-tickets', async (req: Request, res: Response) => {

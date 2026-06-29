@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, } from '../utils/supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, mergeTicketDetail, } from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
@@ -51,6 +51,16 @@ const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all');
 function reporterText(ticket: any) {
     const parts = [ticket.reporter, ticket.reporter_email].filter(Boolean);
     return parts.length ? `Reported by ${parts.join(' · ')}` : '';
+}
+function notificationRecipientLabel(notification: any) {
+    if (notification?.recipient_type === 'reporter')
+        return 'Reporter';
+    if (notification?.recipient_type === 'release_digest')
+        return 'Release digest';
+    return String(notification?.recipient_type || notification?.notification_type || 'Recipient');
+}
+function notificationStatusLabel(notification: any) {
+    return String(notification?.status || 'pending').replaceAll('_', ' ');
 }
 function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
@@ -230,6 +240,7 @@ export default function CustomerSupportScreen({ route }: any) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<any>(null);
     const [selectedTicket, setSelectedTicket] = useState<any>(null);
+    const [retryingNotificationId, setRetryingNotificationId] = useState<any>(null);
     // The ticket whose "won't do" reason is being captured (null = modal closed).
     const [wontDoTicket, setWontDoTicket] = useState<any>(null);
     const [wontDoReason, setWontDoReason] = useState('');
@@ -369,7 +380,40 @@ export default function CustomerSupportScreen({ route }: any) {
     const handleTicketPress = useCallback((ticket: any) => {
         markRead(ticket);
         setSelectedTicket(ticket);
-    }, [markRead]);
+        api.getSupportTicket(projectId, ticket.id)
+            .then((detail: any) => {
+            setSelectedTicket((cur: any) => mergeTicketDetail(cur, detail));
+        })
+            .catch(() => { });
+    }, [markRead, projectId]);
+    const retryNotification = async (notification: any) => {
+        if (!projectId || !selectedTicket || !notification?.id || !notification?.deployment_id)
+            return;
+        setRetryingNotificationId(notification.id);
+        try {
+            const res = await api.retryReleaseNotification(projectId, notification.deployment_id, notification.id);
+            const updatedNotification = res?.notification || {
+                ...notification,
+                status: 'pending',
+                error_summary: null,
+                can_retry: false,
+            };
+            const releaseNotifications = selectedTicket.release_notifications || [];
+            const updatedTicket = {
+                ...selectedTicket,
+                release_notifications: releaseNotifications.map((item: any) => item.id === notification.id ? updatedNotification : item),
+            };
+            setSelectedTicket(updatedTicket);
+            upsertOrDrop(updatedTicket);
+            Alert.alert('Customer Support', 'Release notification queued for retry');
+        }
+        catch (err: any) {
+            Alert.alert('Retry failed', err?.message || 'Failed to retry release notification');
+        }
+        finally {
+            setRetryingNotificationId(null);
+        }
+    };
     // Deep-link: a `support_ticket_created` notification tap routes here with the
     // triggering ticket id (see `notificationRouteToNavigation`). Open that
     // ticket once it's present in the loaded list instead of leaving the user on
@@ -392,6 +436,7 @@ export default function CustomerSupportScreen({ route }: any) {
     if (selectedTicket) {
         const title = selectedTicket.subject?.trim() || selectedTicket.body?.trim() || '(no subject)';
         const screenshotUrl = resolveUploadUrl(selectedTicket.screenshot_ref);
+        const releaseNotifications = selectedTicket.release_notifications || [];
         return (<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.topBar}>
           <TouchableOpacity onPress={() => setSelectedTicket(null)} style={styles.menuButton}>
@@ -420,6 +465,24 @@ export default function CustomerSupportScreen({ route }: any) {
               <Text style={styles.aiLabel}>AI investigation</Text>
               <Text style={styles.aiText}>{selectedTicket.ai_summary}</Text>
             </View>) : null}
+          <View style={styles.notificationSection}>
+            <Text style={styles.notificationTitle}>Notifications</Text>
+            {releaseNotifications.length === 0 ? (<Text style={styles.notificationEmpty}>No release notifications recorded.</Text>) : releaseNotifications.map((notification: any) => {
+                const retrying = retryingNotificationId === notification.id;
+                return (<View key={notification.id} style={styles.notificationCard}>
+                  <View style={styles.notificationHeader}>
+                    <Text style={styles.notificationRecipient}>{notificationRecipientLabel(notification)}</Text>
+                    <Text style={styles.notificationStatus}>{notificationStatusLabel(notification)}</Text>
+                  </View>
+                  <Text style={styles.notificationSubject} numberOfLines={2}>{notification.subject || 'Release notification'}</Text>
+                  <Text style={styles.notificationMeta}>{notification.attempts || 0} attempts{notification.sent_at ? ` · sent ${relativeTime(notification.sent_at)}` : ''}</Text>
+                  {notification.error_summary ? (<Text style={styles.notificationError}>{notification.error_summary}</Text>) : null}
+                  {notification.can_retry ? (<TouchableOpacity onPress={() => retryNotification(notification)} disabled={retrying} style={[styles.notificationRetryButton, retrying && styles.convertButtonDisabled]}>
+                    <Text style={styles.notificationRetryText}>{retrying ? 'Retrying…' : 'Retry'}</Text>
+                  </TouchableOpacity>) : null}
+                </View>);
+            })}
+          </View>
           {screenshotUrl ? (<Image source={{ uri: screenshotUrl }} style={styles.detailScreenshot} resizeMode="contain"/>) : null}
         </ScrollView>
         <Modal visible={!!reclassifyTicket} transparent animationType="fade" onRequestClose={() => setReclassifyTicket(null)}>
@@ -702,6 +765,38 @@ const styles = StyleSheet.create({
         borderColor: colors.gray700,
         backgroundColor: colors.gray900,
     },
+    notificationSection: { marginTop: 12, gap: 8 },
+    notificationTitle: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: colors.gray500,
+        textTransform: 'uppercase',
+    },
+    notificationEmpty: { color: colors.gray500, fontSize: 12 },
+    notificationCard: {
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        borderRadius: 8,
+        backgroundColor: colors.gray900,
+        padding: 10,
+        gap: 5,
+    },
+    notificationHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    notificationRecipient: { flex: 1, color: colors.gray200, fontSize: 13, fontWeight: '700' },
+    notificationStatus: { color: colors.gray400, fontSize: 11 },
+    notificationSubject: { color: colors.gray400, fontSize: 12 },
+    notificationMeta: { color: colors.gray500, fontSize: 11 },
+    notificationError: { color: colors.red400, fontSize: 12 },
+    notificationRetryButton: {
+        alignSelf: 'flex-start',
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        marginTop: 2,
+    },
+    notificationRetryText: { color: colors.gray300, fontSize: 12, fontWeight: '700' },
     typeFilterRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',

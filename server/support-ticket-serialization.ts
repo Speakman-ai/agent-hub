@@ -2,11 +2,17 @@ import type { Request } from 'express';
 import type { AuthenticatedRequest } from './auth.js';
 import { resolveVisibilityCaller } from './project-visibility-middleware.js';
 import { deriveSupportTicketReleaseState, maskReporterEmail } from './support-tickets-store.js';
+import {
+  listReleaseNotificationOutboxBySupportTicket,
+  releaseNotificationHistoryItem,
+  type ReleaseNotificationHistoryItem,
+} from './release-notification-outbox.js';
 import type { SupportTicketReleaseState, SupportTicketRow } from './types.js';
 
 export type SupportTicketResponse = SupportTicketRow & {
   reporter_email_masked: boolean;
   release_state: SupportTicketReleaseState | null;
+  release_notifications?: ReleaseNotificationHistoryItem[];
 };
 
 export interface LinkedSupportTicketMetadata {
@@ -36,10 +42,13 @@ export function canReadReporterEmail(req: Request): boolean {
 
 export function serializeSupportTicket(
   ticket: SupportTicketRow,
-  opts: { canReadReporterEmail: boolean },
+  opts: {
+    canReadReporterEmail: boolean;
+    releaseNotifications?: ReleaseNotificationHistoryItem[];
+  },
 ): SupportTicketResponse {
   const hasEmail = Boolean(ticket.reporter_email);
-  return {
+  const response: SupportTicketResponse = {
     ...ticket,
     reporter_email: opts.canReadReporterEmail
       ? ticket.reporter_email
@@ -47,13 +56,24 @@ export function serializeSupportTicket(
     reporter_email_masked: hasEmail && !opts.canReadReporterEmail,
     release_state: deriveSupportTicketReleaseState(ticket),
   };
+  if (opts.releaseNotifications) {
+    response.release_notifications = opts.releaseNotifications;
+  }
+  return response;
 }
 
 export function serializeSupportTicketForRequest(
   req: Request,
   ticket: SupportTicketRow,
+  opts: { includeReleaseNotifications?: boolean } = {},
 ): SupportTicketResponse {
-  return serializeSupportTicket(ticket, { canReadReporterEmail: canReadReporterEmail(req) });
+  const releaseNotifications = opts.includeReleaseNotifications
+    ? listReleaseNotificationOutboxBySupportTicket(ticket.id).map(releaseNotificationHistoryItem)
+    : undefined;
+  return serializeSupportTicket(ticket, {
+    canReadReporterEmail: canReadReporterEmail(req),
+    releaseNotifications,
+  });
 }
 
 export function serializeSupportTicketForBroadcast(

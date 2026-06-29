@@ -26,6 +26,10 @@ import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deplo
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import { updateReleaseNotificationSettings } from '../release-notification-settings.js';
 import {
+  enqueueReleaseNotificationOutbox,
+  markReleaseNotificationOutboxError,
+} from '../release-notification-outbox.js';
+import {
   EMPTY_RELEASE_DIGEST_MARKDOWN,
   RELEASE_DIGEST_ITEM_LIMIT,
   RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES,
@@ -249,6 +253,7 @@ beforeEach(() => {
   db.exec('DELETE FROM deployment_release_items;');
   db.exec('DELETE FROM deployment_approvals;');
   db.exec('DELETE FROM deployment_steps;');
+  db.exec('DELETE FROM release_notification_outbox;');
   db.exec('DELETE FROM deployments;');
   db.exec('DELETE FROM deployment_environments;');
   db.exec('DELETE FROM release_notification_settings;');
@@ -618,6 +623,7 @@ environments:
         },
       }),
     ]);
+    expect(detail.body.releaseNotifications).toEqual([]);
     expect(detail.body.environment.name).toBe('dev');
     expect(detail.body.history.map((d: { id: string }) => d.id)).toContain(dep.id);
     expect(detail.body.logs).toEqual([]);
@@ -626,6 +632,122 @@ environments:
       .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items`)
       .expect(200);
     expect(items.body.releaseItems).toEqual(detail.body.releaseItems);
+  });
+
+  it('returns safe release notification history and retries failed rows without duplicating them', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'prod', ref: 'abc' });
+    const failed = enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'retry-route-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Release digest',
+      bodyText: 'Release body',
+    });
+    markReleaseNotificationOutboxError(failed.id, 'smtp host smtp.internal failed auth');
+    getDb()
+      .prepare('UPDATE release_notification_outbox SET attempts = 5 WHERE id = ?')
+      .run(failed.id);
+
+    const { app } = makeApp();
+    const detail = await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}`)
+      .expect(200);
+
+    expect(detail.body.releaseNotifications).toEqual([
+      expect.objectContaining({
+        id: failed.id,
+        notification_type: 'release_digest',
+        recipient_type: 'release_digest',
+        subject: 'Release digest',
+        status: 'error',
+        attempts: 5,
+        sent_at: null,
+        error_summary: 'Email delivery failed.',
+        can_retry: true,
+      }),
+    ]);
+    expect(JSON.stringify(detail.body.releaseNotifications)).not.toContain('smtp.internal');
+
+    const retry = await request(app)
+      .post(
+        `/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-notifications/${failed.id}/retry`,
+      )
+      .send({})
+      .expect(200);
+
+    expect(retry.body.notification).toMatchObject({
+      id: failed.id,
+      status: 'pending',
+      attempts: 4,
+      error_summary: null,
+      can_retry: false,
+    });
+    expect(retry.body.releaseNotifications).toHaveLength(1);
+    expect(
+      getDb()
+        .prepare(
+          'SELECT COUNT(*) AS count FROM release_notification_outbox WHERE idempotency_key = ?',
+        )
+        .get('retry-route-key'),
+    ).toMatchObject({ count: 1 });
+  });
+
+  it('requires Admin role to retry release notifications', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'prod', ref: 'abc' });
+    const failed = enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'retry-auth-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Release digest',
+      bodyText: 'Release body',
+    });
+    markReleaseNotificationOutboxError(failed.id, 'send_failed');
+
+    const { app } = makeApp({ role: 'User' });
+    await request(app)
+      .post(
+        `/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-notifications/${failed.id}/retry`,
+      )
+      .send({})
+      .expect(403);
+  });
+
+  it('does not retry already sent release notifications', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'prod', ref: 'abc' });
+    const sent = enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'retry-sent-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Release digest',
+      bodyText: 'Release body',
+    });
+    getDb()
+      .prepare(
+        "UPDATE release_notification_outbox SET status = 'sent', sent_at = datetime('now') WHERE id = ?",
+      )
+      .run(sent.id);
+
+    const { app } = makeApp();
+    await request(app)
+      .post(
+        `/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-notifications/${sent.id}/retry`,
+      )
+      .send({})
+      .expect(409);
+
+    expect(
+      getDb()
+        .prepare(
+          'SELECT COUNT(*) AS count FROM release_notification_outbox WHERE idempotency_key = ?',
+        )
+        .get('retry-sent-key'),
+    ).toMatchObject({ count: 1 });
   });
 
   it('generates a release digest draft with the stored project prompt inside the fixed template', async () => {

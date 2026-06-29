@@ -3438,6 +3438,11 @@ function initDb(dataDir: string): void {
         WHERE deployment_id = ?
         ORDER BY created_at ASC, rowid ASC`,
     ),
+    listReleaseNotificationOutboxBySupportTicket: db.prepare(
+      `SELECT * FROM release_notification_outbox
+        WHERE support_ticket_id = ?
+        ORDER BY created_at ASC, rowid ASC`,
+    ),
     listRetryEligibleReleaseNotificationOutbox: db.prepare(
       `SELECT * FROM release_notification_outbox
         WHERE sent_at IS NULL
@@ -3452,6 +3457,17 @@ function initDb(dataDir: string): void {
           )
         ORDER BY created_at ASC, rowid ASC
         LIMIT ?`,
+    ),
+    retryReleaseNotificationOutbox: db.prepare(
+      `UPDATE release_notification_outbox
+          SET status = 'pending',
+              attempts = CASE WHEN attempts >= ? THEN ? ELSE attempts END,
+              next_attempt_at = NULL,
+              last_error = NULL,
+              updated_at = datetime('now')
+        WHERE id = ?
+          AND sent_at IS NULL
+          AND status = 'error'`,
     ),
     markReleaseNotificationOutboxSending: db.prepare(
       `UPDATE release_notification_outbox

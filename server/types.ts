@@ -1602,7 +1602,9 @@ export interface Stmts {
   getReleaseNotificationOutboxById: Stmt;
   getReleaseNotificationOutboxByKey: Stmt;
   listReleaseNotificationOutboxByDeployment: Stmt;
+  listReleaseNotificationOutboxBySupportTicket: Stmt;
   listRetryEligibleReleaseNotificationOutbox: Stmt;
+  retryReleaseNotificationOutbox: Stmt;
   markReleaseNotificationOutboxSending: Stmt;
   markReleaseNotificationOutboxSent: Stmt;
   markReleaseNotificationOutboxError: Stmt;

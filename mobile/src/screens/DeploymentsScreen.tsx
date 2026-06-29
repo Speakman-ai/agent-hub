@@ -34,6 +34,8 @@ import {
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
   releaseItemCardLabel,
+  releaseNotificationRecipientLabel,
+  releaseNotificationStatusLabel,
   releaseItemStatusLabel,
   releaseItemSupportLabel,
   shortDeploymentRef,
@@ -235,6 +237,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         approvals: snapshot.approvals || prev?.approvals || [],
         logs: snapshot.logs || prev?.logs || [],
         releaseItems: snapshot.releaseItems || prev?.releaseItems || [],
+        releaseNotifications: snapshot.releaseNotifications || prev?.releaseNotifications || [],
       }));
     }
     const event = deploymentEventFromSnapshot(snapshot);
@@ -275,6 +278,36 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const selectedSteps = selected?.steps || [];
   const selectedLogs = selected?.logs || [];
   const selectedReleaseItems = selected?.releaseItems || [];
+  const selectedReleaseNotifications = selected?.releaseNotifications || [];
+
+  const retryNotification = useCallback(
+    async (notification: any) => {
+      if (!projectId || !selectedDeployment?.id || !notification?.id) return;
+      const key = `notification:${notification.id}:retry`;
+      setActionKey(key);
+      try {
+        const res = await api.retryReleaseNotification(
+          projectId,
+          selectedDeployment.id,
+          notification.id,
+        );
+        setSelected((prev: any) =>
+          prev
+            ? {
+                ...prev,
+                releaseNotifications: res.releaseNotifications || prev.releaseNotifications || [],
+              }
+            : prev,
+        );
+        Alert.alert('Deployments', 'Release notification queued for retry');
+      } catch (err: any) {
+        Alert.alert('Retry failed', err?.message || 'Failed to retry release notification');
+      } finally {
+        setActionKey(null);
+      }
+    },
+    [projectId, selectedDeployment?.id],
+  );
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -622,6 +655,61 @@ export default function DeploymentsScreen({ route, navigation }: any) {
               )}
             </View>
           ) : null}
+
+          {selectedDeployment ? (
+            <View style={styles.releaseSection}>
+              <View style={styles.releaseHeader}>
+                <Text style={styles.releaseTitle}>Notifications</Text>
+                <Text style={styles.releaseCount}>{selectedReleaseNotifications.length} recorded</Text>
+              </View>
+              {selectedReleaseNotifications.length === 0 ? (
+                <Text style={styles.emptyText}>
+                  No release notifications recorded for this deployment.
+                </Text>
+              ) : (
+                selectedReleaseNotifications.map((notification: any) => {
+                  const retryKey = `notification:${notification.id}:retry`;
+                  return (
+                    <View key={notification.id} style={styles.releaseItemCard}>
+                      <View style={styles.releaseItemHeader}>
+                        <Text style={styles.releaseItemTitle} numberOfLines={1}>
+                          {releaseNotificationRecipientLabel(notification)}
+                        </Text>
+                        <StatusBadge status={notification.status} />
+                      </View>
+                      <Text style={styles.releaseTicketMutedText} numberOfLines={2}>
+                        {notification.subject || 'Release notification'}
+                      </Text>
+                      <Text style={styles.releaseReasonText}>
+                        {releaseNotificationStatusLabel(notification)} ·{' '}
+                        {notification.attempts || 0} attempts
+                        {notification.sent_at ? ` · sent ${formatDate(notification.sent_at)}` : ''}
+                      </Text>
+                      {notification.error_summary ? (
+                        <Text style={styles.notificationErrorText}>
+                          {notification.error_summary}
+                        </Text>
+                      ) : null}
+                      {notification.can_retry ? (
+                        <TouchableOpacity
+                          onPress={() => retryNotification(notification)}
+                          disabled={actionKey === retryKey}
+                          style={[styles.secondaryButton, actionKey === retryKey && styles.disabled]}
+                        >
+                          {actionKey === retryKey ? (
+                            <ActivityIndicator color={colors.gray300} size="small" />
+                          ) : (
+                            <RefreshCw size={13} color={colors.gray300} />
+                          )}
+                          <Text style={styles.secondaryButtonText}>Retry</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.detailCard}>
@@ -871,6 +959,7 @@ const styles = StyleSheet.create({
   releaseTicketText: { color: colors.blue300, fontSize: 12, lineHeight: 17 },
   releaseTicketMutedText: { color: colors.gray500, fontSize: 12, lineHeight: 17 },
   releaseReasonText: { color: colors.gray500, fontSize: 11, lineHeight: 16 },
+  notificationErrorText: { color: colors.red400, fontSize: 12, lineHeight: 17 },
   eventRow: {
     flexDirection: 'row',
     alignItems: 'center',

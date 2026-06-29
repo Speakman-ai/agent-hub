@@ -32,6 +32,24 @@ export interface EnqueueReleaseNotificationInput {
   bodyText: string;
 }
 
+export interface ReleaseNotificationHistoryItem {
+  id: string;
+  deployment_id: string;
+  release_item_id: string | null;
+  support_ticket_id: string | null;
+  notification_type: ReleaseNotificationType;
+  recipient_type: 'reporter' | 'release_digest';
+  subject: string;
+  status: ReleaseNotificationOutboxRow['status'];
+  attempts: number;
+  sent_at: string | null;
+  next_attempt_at: string | null;
+  error_summary: string | null;
+  can_retry: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 function normalizeRecipientEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -122,6 +140,47 @@ export function listReleaseNotificationOutboxByDeployment(
   ) as ReleaseNotificationOutboxRow[];
 }
 
+export function listReleaseNotificationOutboxBySupportTicket(
+  supportTicketId: string,
+): ReleaseNotificationOutboxRow[] {
+  return getStmts().listReleaseNotificationOutboxBySupportTicket.all(
+    supportTicketId,
+  ) as ReleaseNotificationOutboxRow[];
+}
+
+export function safeReleaseNotificationErrorSummary(error: string | null): string | null {
+  if (!error) return null;
+  const normalized = error.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'smtp_not_configured') return 'SMTP is not configured.';
+  if (normalized === 'send_failed') return 'Email send failed.';
+  if (normalized === 'recipient_missing') return 'Recipient address is missing.';
+  if (normalized === 'invalid_recipient') return 'Recipient address is invalid.';
+  return 'Email delivery failed.';
+}
+
+export function releaseNotificationHistoryItem(
+  row: ReleaseNotificationOutboxRow,
+): ReleaseNotificationHistoryItem {
+  return {
+    id: row.id,
+    deployment_id: row.deployment_id,
+    release_item_id: row.release_item_id,
+    support_ticket_id: row.support_ticket_id,
+    notification_type: row.notification_type,
+    recipient_type: row.notification_type === 'ticket_release' ? 'reporter' : 'release_digest',
+    subject: row.subject,
+    status: row.status,
+    attempts: row.attempts,
+    sent_at: row.sent_at,
+    next_attempt_at: row.next_attempt_at,
+    error_summary: safeReleaseNotificationErrorSummary(row.last_error),
+    can_retry: row.status === 'error' && row.sent_at === null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 export function listRetryEligibleReleaseNotificationOutbox(
   limit = DEFAULT_DELIVERY_LIMIT,
 ): ReleaseNotificationOutboxRow[] {
@@ -132,6 +191,20 @@ export function listRetryEligibleReleaseNotificationOutbox(
     RELEASE_NOTIFICATION_OUTBOX_MAX_ATTEMPTS,
     boundedLimit,
   ) as ReleaseNotificationOutboxRow[];
+}
+
+export function retryReleaseNotificationOutbox(id: string): ReleaseNotificationOutboxRow | null {
+  const result = getStmts().retryReleaseNotificationOutbox.run(
+    RELEASE_NOTIFICATION_OUTBOX_MAX_ATTEMPTS,
+    RELEASE_NOTIFICATION_OUTBOX_MAX_ATTEMPTS - 1,
+    id,
+  );
+  if (result.changes === 0) return null;
+  return (
+    (getStmts().getReleaseNotificationOutboxById.get(id) as
+      | ReleaseNotificationOutboxRow
+      | undefined) ?? null
+  );
 }
 
 export function markReleaseNotificationOutboxError(

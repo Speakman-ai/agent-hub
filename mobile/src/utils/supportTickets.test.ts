@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect, vi } from 'vitest';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, } from './supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, mergeTicketDetail, } from './supportTickets';
 vi.mock('./config', () => ({
     getServerBaseUrl: () => 'https://hub.example.com',
 }));
@@ -65,6 +65,36 @@ describe('releaseStateLabel', () => {
     it('returns null for empty state and falls back for forward-compatible states', () => {
         expect(releaseStateLabel(null)).toBeNull();
         expect(releaseStateLabel('future_state')).toBe('future_state');
+    });
+});
+describe('mergeTicketDetail', () => {
+    it('merges detail-only release notifications into the selected support ticket', () => {
+        const current = { id: 'tkt-1', subject: 'Bug', release_notifications: undefined };
+        const detail = {
+            id: 'tkt-1',
+            subject: 'Bug',
+            release_notifications: [
+                {
+                    id: 'note-1',
+                    status: 'failed',
+                    recipient_type: 'reporter',
+                    error_summary: 'send_failed',
+                    can_retry: true,
+                },
+            ],
+        };
+        expect(mergeTicketDetail(current, detail)).toEqual({
+            ...current,
+            release_notifications: detail.release_notifications,
+        });
+    });
+    it('ignores stale detail responses for a different selected ticket', () => {
+        const current = { id: 'tkt-2', subject: 'Current' };
+        const detail = { id: 'tkt-1', subject: 'Old', release_notifications: [{ id: 'note-1' }] };
+        expect(mergeTicketDetail(current, detail)).toBe(current);
+    });
+    it('leaves a closed modal empty when a detail response arrives late', () => {
+        expect(mergeTicketDetail(null, { id: 'tkt-1' })).toBeNull();
     });
 });
 describe('performTicketDelete', () => {

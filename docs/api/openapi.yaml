@@ -3506,6 +3506,71 @@ components:
         - openPRs
         - recentActivity
       description: Org-wide dashboard payload. `:id` may be an explicit org id or the alias `active`.
+    ReleaseNotificationHistoryItem:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment_id:
+          type: string
+        release_item_id:
+          type: string
+          nullable: true
+        support_ticket_id:
+          type: string
+          nullable: true
+        notification_type:
+          type: string
+          enum:
+            - ticket_release
+            - release_digest
+        recipient_type:
+          type: string
+          enum:
+            - reporter
+            - release_digest
+        subject:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - sending
+            - sent
+            - error
+        attempts:
+          type: integer
+        sent_at:
+          type: string
+          nullable: true
+        next_attempt_at:
+          type: string
+          nullable: true
+        error_summary:
+          type: string
+          nullable: true
+        can_retry:
+          type: boolean
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - deployment_id
+        - release_item_id
+        - support_ticket_id
+        - notification_type
+        - recipient_type
+        - subject
+        - status
+        - attempts
+        - sent_at
+        - next_attempt_at
+        - error_summary
+        - can_retry
+        - created_at
+        - updated_at
     Deployment:
       type: object
       properties:
@@ -3911,6 +3976,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DeploymentReleaseItemReview"
+        releaseNotifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseNotificationHistoryItem"
         environment:
           allOf:
             - $ref: "#/components/schemas/DeploymentEnvironment"
@@ -3931,6 +4000,7 @@ components:
         - steps
         - approvals
         - releaseItems
+        - releaseNotifications
         - environment
         - history
         - logs
@@ -3974,6 +4044,18 @@ components:
       required:
         - digestMarkdown
         - settings
+    ReleaseNotificationRetryResponse:
+      type: object
+      properties:
+        notification:
+          $ref: "#/components/schemas/ReleaseNotificationHistoryItem"
+        releaseNotifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseNotificationHistoryItem"
+      required:
+        - notification
+        - releaseNotifications
     DeploymentActionResponse:
       type: object
       properties:
@@ -7805,6 +7887,71 @@ components:
         - type
         - title
       description: Multipart form fields for the support-request intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
+    SupportTicketReleaseNotification:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment_id:
+          type: string
+        release_item_id:
+          type: string
+          nullable: true
+        support_ticket_id:
+          type: string
+          nullable: true
+        notification_type:
+          type: string
+          enum:
+            - ticket_release
+            - release_digest
+        recipient_type:
+          type: string
+          enum:
+            - reporter
+            - release_digest
+        subject:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - sending
+            - sent
+            - error
+        attempts:
+          type: integer
+        sent_at:
+          type: string
+          nullable: true
+        next_attempt_at:
+          type: string
+          nullable: true
+        error_summary:
+          type: string
+          nullable: true
+        can_retry:
+          type: boolean
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - deployment_id
+        - release_item_id
+        - support_ticket_id
+        - notification_type
+        - recipient_type
+        - subject
+        - status
+        - attempts
+        - sent_at
+        - next_attempt_at
+        - error_summary
+        - can_retry
+        - created_at
+        - updated_at
     SupportTicketErrorResponse:
       type: object
       properties:
@@ -7910,6 +8057,11 @@ components:
           type: string
           nullable: true
           description: Timestamp the ticket was first read, or null when unread.
+        release_notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/SupportTicketReleaseNotification"
+          description: Release notification outbox history for this ticket.
         created_at:
           type: string
         updated_at:
@@ -16520,6 +16672,61 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "409":
           description: Environment is already busy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/release-notifications/{notificationId}/retry:
+    post:
+      tags:
+        - Deployments
+      summary: Retry a failed release notification
+      description: Admin+. Requeues the existing failed release notification outbox row. Sent rows are never duplicated.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: notificationId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties:
+                nullable: true
+      responses:
+        "200":
+          description: Existing notification row requeued for delivery.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationRetryResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project, deployment, or release notification not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Notification is already sent or not failed.
           content:
             application/json:
               schema:

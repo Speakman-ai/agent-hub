@@ -9,6 +9,7 @@ import { api } from '../utils/api';
     getProjectBranches: vi.fn(),
     getGitHostBranches: vi.fn(),
     getDeployment: vi.fn(),
+    retryReleaseNotification: vi.fn(),
     adjustDeploymentReleaseItem: vi.fn(),
     startDeployWizard: vi.fn(),
     triggerDeployment: vi.fn(),
@@ -86,8 +87,34 @@ function releaseItem(over: any = {}) {
   };
 }
 
-function snapshot(dep = deployment(), steps = [step()], releaseItems = [releaseItem()]) {
-  return { deployment: dep, steps, approvals: [], releaseItems };
+function releaseNotification(over: any = {}) {
+  return {
+    id: 'note-1',
+    deployment_id: 'dep-1',
+    release_item_id: null,
+    support_ticket_id: null,
+    notification_type: 'release_digest',
+    recipient_type: 'release_digest',
+    subject: 'Release digest',
+    status: 'error',
+    attempts: 2,
+    sent_at: null,
+    next_attempt_at: '2026-06-25 12:15:00',
+    error_summary: 'SMTP is not configured.',
+    can_retry: true,
+    created_at: '2026-06-25 12:00:00',
+    updated_at: '2026-06-25 12:00:00',
+    ...over,
+  };
+}
+
+function snapshot(
+  dep = deployment(),
+  steps = [step()],
+  releaseItems = [releaseItem()],
+  releaseNotifications: any[] = [],
+) {
+  return { deployment: dep, steps, approvals: [], releaseItems, releaseNotifications };
 }
 
 function env(over: any = {}) {
@@ -135,6 +162,12 @@ beforeEach(() => {
   (api.adjustDeploymentReleaseItem as any).mockResolvedValue({
     releaseItem: releaseItem({ inclusion_status: 'excluded' }),
     releaseItems: [releaseItem({ inclusion_status: 'excluded' })],
+  });
+  (api.retryReleaseNotification as any).mockResolvedValue({
+    notification: releaseNotification({ status: 'pending', can_retry: false, error_summary: null }),
+    releaseNotifications: [
+      releaseNotification({ status: 'pending', can_retry: false, error_summary: null }),
+    ],
   });
   (api.startDeployWizard as any).mockResolvedValue({
     sessionId: 'setup-session-1',
@@ -336,6 +369,27 @@ describe('DeploymentsPage', () => {
     await waitFor(() =>
       expect(api.approveDeployment).toHaveBeenCalledWith('proj-1', 'dep-prod', {}),
     );
+  });
+
+  it('shows release notification history and retries failed notifications', async () => {
+    (api.getDeployment as any).mockResolvedValue(
+      snapshot(deployment(), [step()], [releaseItem()], [releaseNotification()]),
+    );
+    const onNotify = vi.fn();
+    render(<DeploymentsPage projectId="proj-1" onNotify={onNotify} />);
+
+    expect(await screen.findByText('Notifications')).toBeInTheDocument();
+    expect(screen.getAllByText('Release digest').length).toBeGreaterThan(0);
+    expect(screen.getByText('SMTP is not configured.')).toBeInTheDocument();
+    expect(screen.getByText(/2 attempts/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() =>
+      expect(api.retryReleaseNotification).toHaveBeenCalledWith('proj-1', 'dep-1', 'note-1'),
+    );
+    expect(onNotify).toHaveBeenCalledWith('Release notification queued for retry', 'success');
+    await waitFor(() => expect(screen.queryByText('SMTP is not configured.')).toBeNull());
   });
 
   it('applies deployment_update WebSocket events to the selected run and live stream', async () => {

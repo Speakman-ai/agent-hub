@@ -8,6 +8,11 @@ import { getRequest, createProject } from '../test/helpers.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { getStmts } from '../db.js';
 import type { RouteDeps } from '../types.js';
+import { createDeployment } from '../deploy/deployment-store.js';
+import {
+  enqueueReleaseNotificationOutbox,
+  markReleaseNotificationOutboxError,
+} from '../release-notification-outbox.js';
 import createSupportTicketRoutes, { serializeSupportTicket } from './support-tickets.js';
 import createBoardRoutes from './board.js';
 
@@ -133,6 +138,48 @@ describe('support-tickets routes', () => {
       .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
       .expect(200);
     expect(detail.body.reporter_email).toBe('alice@example.com');
+    expect(detail.body.release_notifications).toEqual([]);
+  });
+
+  it('includes safe release notification history on support ticket detail', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'customer bug', reporter_email: 'alice@example.com' })
+      .expect(201);
+    const deployment = createDeployment({ projectId, environment: 'production', ref: 'abc' });
+    const notification = enqueueReleaseNotificationOutbox({
+      projectId,
+      deploymentId: deployment.id,
+      supportTicketId: created.body.id,
+      notificationType: 'ticket_release',
+      idempotencyKey: `support-ticket-history-key:${created.body.id}`,
+      recipientEmail: 'alice@example.com',
+      subject: 'Ticket shipped',
+      bodyText: 'Your ticket shipped.',
+    });
+    markReleaseNotificationOutboxError(notification.id, 'smtp secret detail');
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .expect(200);
+
+    const list = await request.get(`/api/projects/${projectId}/support-tickets`).expect(200);
+    expect(list.body.find((row: { id: string }) => row.id === created.body.id)).not.toHaveProperty(
+      'release_notifications',
+    );
+    expect(detail.body.release_notifications).toEqual([
+      expect.objectContaining({
+        id: notification.id,
+        deployment_id: deployment.id,
+        notification_type: 'ticket_release',
+        recipient_type: 'reporter',
+        status: 'error',
+        error_summary: 'Email delivery failed.',
+        can_retry: true,
+      }),
+    ]);
+    expect(JSON.stringify(detail.body.release_notifications)).not.toContain('smtp secret detail');
   });
 
   it('rejects invalid reporter_email values', async () => {

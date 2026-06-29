@@ -8,6 +8,7 @@ import { api } from '../utils/api';
   api: {
     getSupportTickets: vi.fn(),
     getSupportTicket: vi.fn(),
+    retryReleaseNotification: vi.fn(),
     convertSupportTicketToCard: vi.fn(),
     assignCard: vi.fn(),
     setSupportTicketStatus: vi.fn(),
@@ -44,6 +45,7 @@ function ticket(overrides: any = {}) {
     released_to_prod_at: null,
     release_deployment_id: null,
     customer_notified_at: null,
+    release_notifications: [],
     created_at: '2026-06-14 10:00:00',
     updated_at: '2026-06-14 10:00:00',
     ...overrides,
@@ -514,6 +516,65 @@ describe('CustomerSupportPage — ticket detail view', () => {
     // Clicking an action must not also trigger the full-card open button.
     expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull();
     expect(api.getSupportTicket).not.toHaveBeenCalled();
+  });
+
+  it('shows support ticket notification history and retries failed rows', async () => {
+    const notification = {
+      id: 'note-1',
+      deployment_id: 'dep-1',
+      release_item_id: 'ri-1',
+      support_ticket_id: 't1',
+      notification_type: 'ticket_release',
+      recipient_type: 'reporter',
+      subject: 'Ticket shipped',
+      status: 'error',
+      attempts: 3,
+      sent_at: null,
+      next_attempt_at: null,
+      error_summary: 'Email delivery failed.',
+      can_retry: true,
+      created_at: '2026-06-14 10:00:00',
+      updated_at: '2026-06-14 10:00:00',
+    };
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 't1', subject: 'Notify me', release_notifications: [notification] }),
+    ]);
+    (api.getSupportTicket as any).mockResolvedValue(
+      ticket({ id: 't1', subject: 'Notify me', release_notifications: [notification] }),
+    );
+    (api.retryReleaseNotification as any).mockResolvedValue({
+      notification: {
+        ...notification,
+        status: 'pending',
+        error_summary: null,
+        can_retry: false,
+      },
+    });
+    const onNotify = vi.fn();
+
+    render(<CustomerSupportPage projectId="proj-1" onNotify={onNotify} />);
+    await waitFor(() => expect(screen.getByText('Notify me')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /open support ticket/i } as any) as any);
+
+    const modal = await screen.findByTestId('support-ticket-detail-modal');
+    expect(within(modal).getByText('Notifications')).toBeInTheDocument();
+    expect(within(modal).getByText('Reporter')).toBeInTheDocument();
+    expect(within(modal).getByText('Email delivery failed.')).toBeInTheDocument();
+    expect(within(modal).getByText('3 attempts')).toBeInTheDocument();
+
+    fireEvent.click(within(modal).getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() =>
+      expect(api.retryReleaseNotification).toHaveBeenCalledWith('proj-1', 'dep-1', 'note-1'),
+    );
+    expect(onNotify).toHaveBeenCalledWith('Release notification queued for retry', 'success');
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId('support-ticket-detail-modal')).queryByText(
+          'Email delivery failed.',
+        ),
+      ).toBeNull(),
+    );
   });
 });
 
