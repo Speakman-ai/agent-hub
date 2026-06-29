@@ -48,6 +48,8 @@ export interface RunnerImageVersions {
   compose: string;
   /** Docker Buildx plugin (`docker-buildx-plugin`). */
   buildx: string;
+  /** GitHub CLI (`gh`). */
+  githubCli: string;
 }
 
 /**
@@ -59,6 +61,7 @@ export const RUNNER_IMAGE_VERSIONS: RunnerImageVersions = {
   docker: '28.0.4',
   compose: '2.38.2',
   buildx: '0.34.1',
+  githubCli: '2.95.0',
 };
 
 /**

@@ -30,6 +30,7 @@ describe('runner image versions — recorded targets', () => {
       docker: '28.0.4',
       compose: '2.38.2',
       buildx: '0.34.1',
+      githubCli: '2.95.0',
     });
     expect(MANIFEST_SNAPSHOT.image).toBe('ubuntu-24.04');
     expect(MANIFEST_SNAPSHOT.reconciledOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -66,6 +67,9 @@ describe('runner image versions — Dockerfile drift guard', () => {
     expect(argDefault(df, 'RUNNER_BUILDX_VERSION'), 'RUNNER_BUILDX_VERSION').toBe(
       RUNNER_IMAGE_VERSIONS.buildx,
     );
+    expect(argDefault(df, 'RUNNER_GH_VERSION'), 'RUNNER_GH_VERSION').toBe(
+      RUNNER_IMAGE_VERSIONS.githubCli,
+    );
   });
 
   it('NodeSource setup script selects the pinned Node major line', () => {
@@ -91,6 +95,20 @@ describe('runner image versions — Dockerfile drift guard', () => {
     expect(df).toContain('pick docker-ce "^5:${RUNNER_DOCKER_VERSION%%.*}');
     expect(df).toContain('pick docker-compose-plugin "^${RUNNER_COMPOSE_VERSION%%.*}');
     expect(df).toContain('pick docker-buildx-plugin "^${RUNNER_BUILDX_VERSION%%.*}');
+  });
+
+  it('installs GitHub CLI for deployment steps that dispatch workflows', () => {
+    const df = readDockerfile();
+    expect(df).toContain('https://cli.github.com/packages');
+    expect(df).toContain('github-cli.list');
+    expect(df).toContain('"gh=${RUNNER_GH_VERSION}"');
+    expect(df).toContain('gh --version');
+  });
+
+  it('constrains the GitHub CLI fallback to the recorded major line', () => {
+    const df = readDockerfile();
+    expect(df).toContain('grep -E "^${RUNNER_GH_VERSION%%.*}');
+    expect(df).toMatch(/no same-major fallback for gh[\s\S]*exit 1/);
   });
 
   it('refuses to cross majors silently when the recorded major aged out', () => {

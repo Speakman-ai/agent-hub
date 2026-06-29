@@ -24,6 +24,7 @@ ARG RUNNER_NODE_VERSION=22.22.3
 ARG RUNNER_DOCKER_VERSION=28.0.4
 ARG RUNNER_COMPOSE_VERSION=2.38.2
 ARG RUNNER_BUILDX_VERSION=0.34.1
+ARG RUNNER_GH_VERSION=2.95.0
 ARG RUNNER_ENFORCE_VERSION_PINS=0
 
 # Run apt's download/verify step as root instead of the unprivileged `_apt` user.
@@ -113,12 +114,37 @@ RUN NODE_MAJOR="${RUNNER_NODE_VERSION%%.*}" \
        fi \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI. Deploy jobs use the same runner image as Finalize, and deploy.yaml
+# may legitimately dispatch GitHub workflows with `gh workflow run`.
+RUN set -e; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    if apt-get install -y --no-install-recommends "gh=${RUNNER_GH_VERSION}"; then \
+      echo "Pinned gh=${RUNNER_GH_VERSION}"; \
+    elif [ "${RUNNER_ENFORCE_VERSION_PINS}" = "1" ]; then \
+      echo "ERROR: pinned gh=${RUNNER_GH_VERSION} unavailable and RUNNER_ENFORCE_VERSION_PINS=1" >&2; exit 1; \
+    else \
+      echo "WARN: pinned gh=${RUNNER_GH_VERSION} unavailable (aged out of repo?); resolving newest patch within the SAME major line. Bump RUNNER_GH_VERSION + runner-image-versions.ts." >&2; \
+      GH_F="$(apt-cache madison gh | awk '{print $3}' | grep -E "^${RUNNER_GH_VERSION%%.*}\\." | sort -Vr | head -n1 || true)"; \
+      if [ -z "$GH_F" ]; then \
+        echo "ERROR: no same-major fallback for gh(${RUNNER_GH_VERSION%%.*}) - the recorded major aged out of the repo. Refusing to cross majors silently. Bump the targeted version in runner-image-versions.ts + the Dockerfile ARG." >&2; \
+        exit 1; \
+      fi; \
+      echo "WARN: same-major fallback gh=${GH_F}" >&2; \
+      apt-get install -y --no-install-recommends "gh=${GH_F}"; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
 # Record targeted vs installed toolchain versions in the build log (parity audit).
 RUN echo "Runner toolchain (targeted -> installed):" \
     && echo "  node:    ${RUNNER_NODE_VERSION} -> $(node --version 2>/dev/null || echo '?')" \
     && echo "  docker:  ${RUNNER_DOCKER_VERSION} -> $(docker --version 2>/dev/null || echo '?')" \
     && echo "  compose: ${RUNNER_COMPOSE_VERSION} -> $(docker compose version 2>/dev/null || echo '?')" \
-    && echo "  buildx:  ${RUNNER_BUILDX_VERSION} -> $(docker buildx version 2>/dev/null || echo '?')"
+    && echo "  buildx:  ${RUNNER_BUILDX_VERSION} -> $(docker buildx version 2>/dev/null || echo '?')" \
+    && echo "  gh:      ${RUNNER_GH_VERSION} -> $(gh --version 2>/dev/null | head -n1 || echo '?')"
 
 # Cypress E2E browser.
 #   amd64 (GHA parity / prod): Google Chrome stable from Google's apt repo.
