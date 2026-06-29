@@ -32,28 +32,31 @@ const inactiveSibling = {
     active: false,
 };
 describe('filterForwardTargets (mobile)', () => {
-    it('keeps active agents from the same project with source pinned first', () => {
+    it('orders source first, then same-project, then other-project agents', () => {
         const agents = [source, siblingA, siblingB, otherProject, inactiveSibling];
         const result = filterForwardTargets(agents, source);
-        // Source agent is now included (self-forward) and comes first
-        expect(result.map((a: any) => a.id)).toEqual(['src-1', 'sib-a', 'sib-b']);
+        // Source pinned first (self-forward), same-project siblings next,
+        // cross-project agent last. Inactive dropped.
+        expect(result.map((a: any) => a.id)).toEqual(['src-1', 'sib-a', 'sib-b', 'other-1']);
     });
-    it('returns just the source when no siblings exist (self-forward only)', () => {
+    it('includes an other-project agent even when no siblings exist', () => {
         const result = filterForwardTargets([source, otherProject, inactiveSibling], source);
-        expect(result.map((a: any) => a.id)).toEqual(['src-1']);
+        expect(result.map((a: any) => a.id)).toEqual(['src-1', 'other-1']);
     });
-    it('drops agents from other projects even if active', () => {
+    it('keeps agents from other projects when active (cross-project forwarding)', () => {
         const result = filterForwardTargets([source, otherProject], source);
-        // Only the source remains — other project agent is filtered out
-        expect(result.map((a: any) => a.id)).toEqual(['src-1']);
+        expect(result.map((a: any) => a.id)).toEqual(['src-1', 'other-1']);
     });
     it('drops inactive agents from the same project but keeps the source', () => {
         const result = filterForwardTargets([source, inactiveSibling], source);
         expect(result.map((a: any) => a.id)).toEqual(['src-1']);
     });
-    it('returns [] when source is missing or has no project', () => {
+    it('returns [] when source is missing', () => {
         expect(filterForwardTargets([source, siblingA], null)).toEqual([]);
-        expect(filterForwardTargets([source, siblingA], { id: 'x', active: true })).toEqual([]);
+    });
+    it('still lists agents when source has no project (all treated cross-project)', () => {
+        // No projectId match and source not in list → every active agent is a candidate.
+        expect(filterForwardTargets([source, siblingA], { id: 'x', active: true }).map((a: any) => a.id)).toEqual(['src-1', 'sib-a']);
     });
     it('returns [] on non-array input', () => {
         expect(filterForwardTargets(null, source)).toEqual([]);

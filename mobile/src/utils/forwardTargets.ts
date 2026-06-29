@@ -3,10 +3,12 @@
  * source agent of the session being forwarded, return the candidate agents
  * the session can be forwarded to. Rules:
  *   - Must be active (`active !== false`)
- *   - Must belong to the same project as the source agent
- *   - Source agent IS included (self-forward) and pinned at the top so
- *     "fork this conversation into a new session on the same agent" is
- *     the first, most discoverable option.
+ *   - Agents from **any** project the caller can see are eligible — the
+ *     agent list is already visibility-filtered server-side and the forward
+ *     route re-checks target-project access (cross-project forwarding).
+ *   - Ordering: source agent first (self-forward), then same-project agents,
+ *     then agents in other projects. Each row renders `projectName` so
+ *     cross-project targets are distinguishable.
  *
  * Mirrors the web client's ForwardSessionModal filter so both platforms agree
  * on which agents show up in the picker.
@@ -15,10 +17,11 @@ export function filterForwardTargets(agents: any, sourceAgent: any) {
     if (!Array.isArray(agents) || !sourceAgent)
         return [];
     const sourceProjectId = sourceAgent.projectId;
-    if (!sourceProjectId)
-        return [];
-    const matches = agents.filter((a: any) => a && a.active !== false && a.projectId === sourceProjectId);
-    const self = matches.find((a: any) => a.id === sourceAgent.id);
-    const others = matches.filter((a: any) => a.id !== sourceAgent.id);
-    return self ? [self, ...others] : others;
+    const active = agents.filter((a: any) => a && a.active !== false);
+    const self = active.find((a: any) => a.id === sourceAgent.id);
+    const rest = active.filter((a: any) => a.id !== sourceAgent.id);
+    const sameProject = rest.filter((a: any) => a.projectId === sourceProjectId);
+    const otherProjects = rest.filter((a: any) => a.projectId !== sourceProjectId);
+    const ordered = [...sameProject, ...otherProjects];
+    return self ? [self, ...ordered] : ordered;
 }

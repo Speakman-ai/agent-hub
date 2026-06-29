@@ -6,9 +6,14 @@
  */
 
 import './setup.js';
+import express from 'express';
+import supertest from 'supertest';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { getRequest, createProject, createAgent, createSession } from './helpers.js';
 import type TestAgent from 'supertest/lib/agent.js';
+import type { Request, Response, NextFunction } from 'express';
+import type { AuthenticatedRequest } from '../auth.js';
+import type { RouteDeps } from '../types.js';
 
 let request: TestAgent;
 
@@ -275,6 +280,38 @@ describe('POST /api/sessions/:sessionId/forward', () => {
     expect(res.body.session.agent_id).toBe(agentA.id);
   });
 
+  it('forwards to an agent in a different (shared) project', async () => {
+    // Cross-project forwarding: the target agent lives in a separate project
+    // from the source. The server has no same-project restriction; the only
+    // gate is target-project visibility (covered separately below).
+    const otherProject = await createProject({
+      id: 'fwd-proj-other',
+      name: 'Other Forward Project',
+      cwd: '/tmp',
+    });
+    const agentC = await createAgent({
+      projectId: otherProject.id as string,
+      id: 'agent-c',
+      name: 'Agent Gamma',
+    });
+
+    const { session: srcSession } = await createSessionWithMessages(agentA.id as string, [
+      { role: 'user', content: 'Cross-project hello' },
+      { role: 'assistant', content: 'Reply from Alpha' },
+    ]);
+
+    const res = await request
+      .post(`/api/sessions/${srcSession.id}/forward`)
+      .send({ targetAgentId: agentC.id })
+      .expect(201);
+
+    expect(res.body.session.agent_id).toBe(agentC.id);
+
+    const msgRes = await request.get(`/api/sessions/${res.body.session.id}/messages`).expect(200);
+    expect(msgRes.body).toHaveLength(1);
+    expect(msgRes.body[0].content).toContain('Cross-project hello');
+  });
+
   it('session name is truncated for long agent names', async () => {
     const longNameAgent = await createAgent({
       projectId: project.id as string,
@@ -291,5 +328,86 @@ describe('POST /api/sessions/:sessionId/forward', () => {
       .expect(201);
 
     expect(res.body.session.name.length).toBeLessThanOrEqual(100);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Cross-project visibility — the forward route is the real authorization
+// boundary. The shared test app above runs under no-auth bypass (every
+// project visible). To exercise the private-project block we mount the
+// sessions router behind a middleware that stamps a *concrete* non-Owner
+// user, so the visibility resolver does NOT collapse to localBypass.
+// ═══════════════════════════════════════════════════════════════════
+
+describe('POST /api/sessions/:sessionId/forward — cross-project visibility', () => {
+  it('404s a private-project target the caller cannot view, but allows a shared one', async () => {
+    const createSessionRoutes = (await import('../routes/sessions.js')).default;
+    const { getStmts } = await import('../db.js');
+    const { findAgent, findProject, getEnrichedAgent } = await import('../project-model.js');
+
+    const app = express();
+    app.use(express.json());
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      const r = req as AuthenticatedRequest;
+      r.authUserId = 'fwd-visibility-user';
+      r.authUser = 'fwd-visibility-user';
+      r.authRole = 'User';
+      next();
+    });
+    app.use(
+      createSessionRoutes({
+        stmts: getStmts(),
+        findAgent,
+        findProject,
+        getEnrichedAgent,
+        handleChat: () => Promise.resolve(),
+        broadcast: () => {},
+        activeProcesses: new Map(),
+        config: { engineValidModels: {}, engineDefaultModels: {} },
+      } as unknown as RouteDeps),
+    );
+    const scopedRequest = supertest(app);
+
+    // Private target project (null owner under bypass create) — a concrete
+    // non-owner User cannot view it.
+    const privProj = await createProject({
+      id: 'fwd-priv-proj',
+      name: 'Private Fwd',
+      cwd: '/tmp',
+      visibility: 'private',
+    });
+    const privAgent = await createAgent({
+      projectId: privProj.id as string,
+      id: 'agent-priv',
+      name: 'Agent Private',
+    });
+
+    // Shared target project in a different project — viewable by everyone.
+    const sharedProj = await createProject({
+      id: 'fwd-shared-proj',
+      name: 'Shared Fwd',
+      cwd: '/tmp',
+    });
+    const sharedAgent = await createAgent({
+      projectId: sharedProj.id as string,
+      id: 'agent-shared-x',
+      name: 'Agent Shared X',
+    });
+
+    // Empty source session: the only difference between the two targets is
+    // project visibility. A viewable target passes the visibility gate and
+    // proceeds to the "no messages to forward" 400; an unviewable one 404s
+    // before that. The 400-vs-404 split is what proves the gate fired.
+    const src = await createSession({ agentId: agentA.id as string });
+
+    await scopedRequest
+      .post(`/api/sessions/${src.id}/forward`)
+      .send({ targetAgentId: privAgent.id })
+      .expect(404);
+
+    await scopedRequest
+      .post(`/api/sessions/${src.id}/forward`)
+      .send({ targetAgentId: sharedAgent.id })
+      .expect(400);
   });
 });

@@ -316,6 +316,25 @@ export const PatchCheckpointRequestSchema = z.object({
   label: z.string({ error: 'label is required' }),
 });
 
+export const ForwardSessionRequestSchema = z.object({
+  targetAgentId: z
+    .string({ error: 'targetAgentId is required' })
+    .min(1, 'targetAgentId is required')
+    .openapi({
+      description:
+        'Agent to forward the conversation to. May belong to a different project than the source session (cross-project forwarding); the caller must be able to view the target agent’s project.',
+    }),
+  messageIds: z.array(z.string()).optional().openapi({
+    description: 'Specific message IDs to include (default: all, capped to the last 200).',
+  }),
+  prompt: z.string().max(50_000).optional().openapi({
+    description: 'Extra instructions prepended to the forwarded context (max 50k chars).',
+  }),
+  autoStart: z.boolean().optional().openapi({
+    description: 'When true, immediately send the forwarded message to the target agent’s CLI.',
+  }),
+});
+
 // ─── OpenAPI path registrations ───────────────────────────────────
 
 const agentIdParams = z.object({
@@ -436,6 +455,34 @@ registerPath({
   responses: {
     200: { description: 'Session row.', content: jsonContent(SessionComponent) },
     404: errorResponse('Session not found (or hidden by ownership).'),
+  },
+});
+
+// POST /api/sessions/:sessionId/forward
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/forward',
+  tags: ['Sessions'],
+  summary: 'Forward a session’s conversation to another agent',
+  description:
+    'Creates a new session on the target agent seeded with the forwarded transcript as the initial user message. The target agent may live in a different project (cross-project forwarding); the caller must own the source session and be able to view the target agent’s project, otherwise 404. The new session inherits the source session’s owner.',
+  request: {
+    params: sessionIdParams,
+    body: { content: jsonContent(ForwardSessionRequestSchema) },
+  },
+  responses: {
+    201: {
+      description:
+        'New forwarded session plus the pre-stored forwarded message id (null when autoStart).',
+      content: jsonContent(
+        z.object({ session: SessionComponent, forwardedMessageId: z.string().nullable() }),
+      ),
+    },
+    400: errorResponse(
+      'Validation failed, no messages to forward, or forwarded content too large.',
+    ),
+    404: errorResponse('Source session not found, or target agent not found / not viewable.'),
+    503: errorResponse('Auto-start requested but the chat handler is not initialized.'),
   },
 });
 

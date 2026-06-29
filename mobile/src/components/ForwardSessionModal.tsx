@@ -68,7 +68,7 @@ export default function ForwardSessionModal({ visible, sourceAgent, agents, sess
 
           {candidates.length === 0 ? (<View style={styles.empty}>
               <Text style={styles.emptyText}>
-                No agents in this project to forward to. Add an agent in
+                No agents available to forward to. Add an agent in
                 Settings to use this feature.
               </Text>
             </View>) : (<>

@@ -3,24 +3,26 @@ import { Loader2, Send, X, ArrowLeftRight } from 'lucide-react';
 
 /**
  * Filter the flat agent list down to the subset that can be forwarded to
- * from a source agent. Rule: same project, active agents only. The source
- * agent is **kept** and pinned at the top of the list so a user can fork
- * the current conversation into a fresh session on the same agent
- * (self-forward is supported end-to-end by the backend). Exported for
- * testing.
+ * from a source agent. Rule: any active agent, across **all** projects the
+ * caller can see (the agent list is already visibility-filtered server-side,
+ * and the forward route re-checks target-project access). Ordering:
+ *   1. the source agent itself, pinned at the top so the self-forward
+ *      ("fork this conversation") option is the first thing the user sees;
+ *   2. other agents in the same project (the common case);
+ *   3. agents in other projects (cross-project forwarding).
+ * Each candidate carries `projectName`, which the row renders so cross-project
+ * targets are distinguishable. Exported for testing.
  */
 export function filterForwardTargets(agents: any, sourceAgent: any) {
   if (!Array.isArray(agents) || !sourceAgent) return [];
   const sourceProjectId = sourceAgent.projectId;
-  if (!sourceProjectId) return [];
-  const matches = agents.filter(
-    (a: any) => a && a.active !== false && a.projectId === sourceProjectId,
-  );
-  // Pin the source agent at the top so the self-forward option is the
-  // first thing the user sees. Order of the rest is preserved.
-  const self = matches.find((a: any) => a.id === sourceAgent.id);
-  const others = matches.filter((a: any) => a.id !== sourceAgent.id);
-  return self ? [self, ...others] : others;
+  const active = agents.filter((a: any) => a && a.active !== false);
+  const self = active.find((a: any) => a.id === sourceAgent.id);
+  const rest = active.filter((a: any) => a.id !== sourceAgent.id);
+  const sameProject = rest.filter((a: any) => a.projectId === sourceProjectId);
+  const otherProjects = rest.filter((a: any) => a.projectId !== sourceProjectId);
+  const ordered = [...sameProject, ...otherProjects];
+  return self ? [self, ...ordered] : ordered;
 }
 
 export default function ForwardSessionModal({
@@ -121,7 +123,7 @@ export default function ForwardSessionModal({
 
         {!hasCandidates ? (
           <div className="p-6 text-sm text-gray-400">
-            No agents in this project to forward to. Add an agent in Settings to use this feature.
+            No agents available to forward to. Add an agent in Settings to use this feature.
           </div>
         ) : (
           <>

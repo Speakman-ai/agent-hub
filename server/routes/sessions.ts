@@ -2328,9 +2328,19 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
         return res.status(404).json({ error: 'Source session not found' });
       }
 
-      // Validate target agent
+      // Validate target agent. The target may live in a *different* project
+      // than the source — cross-project forwarding is supported. The client
+      // only ever lists agents the caller can already see, but this route is
+      // the real authorization boundary: enforce target-project visibility so
+      // a caller cannot forward (and optionally auto-start a CLI) into a
+      // private project they cannot view. Mask as the same 404 the client
+      // would get for a genuinely missing agent so we don't leak existence.
       const targetFound = findAgent(targetAgentId);
       if (!targetFound) {
+        return res.status(404).json({ error: `Target agent not found: ${targetAgentId}` });
+      }
+      const caller = resolveVisibilityCaller(req as AuthenticatedRequest);
+      if (!canViewProject(targetFound.project, caller)) {
         return res.status(404).json({ error: `Target agent not found: ${targetAgentId}` });
       }
 

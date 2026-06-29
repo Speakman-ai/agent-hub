@@ -48,18 +48,19 @@ const inactive = {
 };
 
 describe('filterForwardTargets', () => {
-  it('returns same-project agents with the source pinned at the top', () => {
+  it('lists cross-project agents: source first, then same-project, then other projects', () => {
     const agents = [source, siblingA, siblingB, otherProject, inactive];
     const result = filterForwardTargets(agents, source);
     const ids = result.map((a: any) => a.id);
-    // Source agent is included (self-forward) and comes first so the
-    // "fork this conversation" option is discoverable.
-    expect(ids!).toEqual(['src-1', 'sib-a', 'sib-b']);
+    // Source pinned first (self-forward), then same-project siblings, then
+    // agents in other projects (cross-project forwarding). Inactive dropped.
+    expect(ids!).toEqual(['src-1', 'sib-a', 'sib-b', 'other-1']);
   });
 
-  it('returns only the source agent when no siblings exist (self-forward only)', () => {
+  it('includes an other-project agent even when no siblings exist', () => {
     const result = filterForwardTargets([source, otherProject, inactive], source);
-    expect(result!.map((a: any) => a.id)).toEqual(['src-1']);
+    // Source first, then the cross-project agent.
+    expect(result!.map((a: any) => a.id)).toEqual(['src-1', 'other-1']);
   });
 
   it('excludes inactive agents even if they share the project', () => {
@@ -68,9 +69,11 @@ describe('filterForwardTargets', () => {
     expect(result!.map((a: any) => a.id)).toEqual(['src-1']);
   });
 
-  it('returns an empty list when the source has no projectId', () => {
+  it('still lists agents when the source has no projectId (all treated as cross-project)', () => {
     const result = filterForwardTargets([source, siblingA], { id: 'x', active: true });
-    expect(result!).toEqual([]);
+    // No projectId match and source not in the list, so every active agent
+    // falls into the other-projects bucket.
+    expect(result!.map((a: any) => a.id)).toEqual(['src-1', 'sib-a']);
   });
 
   it('returns an empty list when the source agent is missing', () => {
@@ -91,7 +94,7 @@ describe('filterForwardTargets', () => {
 });
 
 describe('<ForwardSessionModal />', () => {
-  it('renders same-project candidates including the source agent', () => {
+  it('renders candidates including other-project agents and the source agent', () => {
     render(
       <ForwardSessionModal
         sourceAgent={source}
@@ -103,29 +106,28 @@ describe('<ForwardSessionModal />', () => {
     );
     expect(screen.getByText('Hub Backend')).toBeTruthy();
     expect(screen.getByText('Hub Lead')).toBeTruthy();
-    expect(screen.queryByText('Side Project Agent')).toBeNull();
+    // Cross-project agents now appear in the picker.
+    expect(screen.getByText('Side Project Agent')).toBeTruthy();
     expect(screen.queryByText('Retired')).toBeNull();
-    // Source agent IS now shown so users can fork into a new session on
+    // Source agent IS shown so users can fork into a new session on
     // the same agent (self-forward).
     expect(screen.getByText('Hub Frontend')).toBeTruthy();
     // …and is tagged so it's obvious it's the current agent.
     expect(screen.getByText(/this agent/i)).toBeTruthy();
   });
 
-  it('shows an empty-state message when no agents exist in the project', () => {
+  it('shows an empty-state message when there are no agents to forward to', () => {
     render(
       <ForwardSessionModal
-        // Source with no projectId triggers the empty branch — this is
-        // the only path that still produces an empty candidate list now
-        // that self-forward is allowed.
-        sourceAgent={{ id: 'no-proj', name: 'Stray', active: true }}
-        agents={[source, otherProject]}
+        sourceAgent={source}
+        // Only inactive agents exist → no eligible candidates.
+        agents={[inactive]}
         sessionId="session-1"
         onClose={() => {}}
         onForward={() => Promise.resolve({})}
       />,
     );
-    expect(screen.getByText(/No agents in this project to forward to/i)).toBeTruthy();
+    expect(screen.getByText(/No agents available to forward to/i)).toBeTruthy();
   });
 
   it('invokes onForward with the selected targetAgentId', async () => {
