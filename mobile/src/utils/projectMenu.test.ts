@@ -31,6 +31,10 @@ describe('projectLifecycleEntries', () => {
         const keys = projectLifecycleEntries({ githubRepo: 'owner/repo' }).map((e: any) => e.key);
         expect(keys).toContain('pulls');
     });
+    it('adds Pulls for Agent Hub-hosted projects', () => {
+        const keys = projectLifecycleEntries({ gitHost: 'agenthub' }).map((e: any) => e.key);
+        expect(keys).toContain('pulls');
+    });
     it('omits Pulls for workflow projects even with a repo', () => {
         const keys = projectLifecycleEntries({ githubRepo: 'owner/repo', mode: 'workflow' }).map((e: any) => e.key);
         expect(keys).not.toContain('pulls');

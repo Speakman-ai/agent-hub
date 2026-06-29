@@ -89,6 +89,7 @@ import { useVersionCheck } from './hooks/useVersionCheck';
 import useReadback from './hooks/useReadback';
 import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck';
 import { api } from './utils/api';
+import { isWorkflowProject } from './utils/projectMode';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate';
 import { coalescePromiseByKey } from './utils/coalesceInFlight';
 import {
@@ -429,6 +430,8 @@ export default function App({ initialView }: any = {}) {
   );
   /** Bumped when the server signals PR/board activity for the open Pulls view — keeps GitHub list live without reload. */
   const [pullsListRefreshNonce, setPullsListRefreshNonce] = useState(0);
+  /** Open pull request counts per project, used by the Pulls sidebar badge. */
+  const [openPullCounts, setOpenPullCounts] = useState<Record<string, any>>({});
   /** Cleared when user opens the Workflows view — set by workflow WebSocket activity. */
   const [workflowSidebarBadgeByProject, setWorkflowSidebarBadgeByProject] = useState<
     Record<string, any>
@@ -906,6 +909,58 @@ export default function App({ initialView }: any = {}) {
         const next = { ...prev };
         for (const [pid, counts] of entries) {
           if (next[pid] === undefined && counts) next[pid] = counts;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
+
+  const refreshOpenPullCount = useCallback((projectId: any) => {
+    if (!projectId) return;
+    api
+      .getProjectPulls(projectId, { state: 'open', limit: 100 })
+      .then((data: any) => {
+        const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
+        setOpenPullCounts((prev: any) => ({ ...prev, [projectId]: count }));
+      })
+      .catch(() => {
+        setOpenPullCounts((prev: any) =>
+          prev[projectId] === undefined ? { ...prev, [projectId]: 0 } : prev,
+        );
+      });
+  }, []);
+  const seededPullProjectsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!projects || projects.length === 0) {
+      seededPullProjectsRef.current = new Set();
+      return;
+    }
+    const pullProjects = projects.filter(
+      (p: any) =>
+        p?.id &&
+        !isWorkflowProject(p) &&
+        (p.githubRepo || p.gitHost === 'agenthub') &&
+        !seededPullProjectsRef.current.has(p.id),
+    );
+    if (pullProjects.length === 0) return;
+    pullProjects.forEach((p: any) => seededPullProjectsRef.current.add(p.id));
+    let cancelled = false;
+    Promise.all(
+      pullProjects.map((p: any) =>
+        api
+          .getProjectPulls(p.id, { state: 'open', limit: 100 })
+          .then((data: any) => [p.id, Array.isArray(data?.pulls) ? data.pulls.length : 0])
+          .catch(() => [p.id, 0]),
+      ),
+    ).then((entries: any) => {
+      if (cancelled) return;
+      setOpenPullCounts((prev: any) => {
+        const next = { ...prev };
+        for (const [pid, count] of entries) {
+          if (next[pid] === undefined) next[pid] = count;
         }
         return next;
       });
@@ -2420,6 +2475,7 @@ export default function App({ initialView }: any = {}) {
           ) {
             setPullsListRefreshNonce((n: any) => n + 1);
           }
+          if (data.projectId) refreshOpenPullCount(data.projectId);
           // A security scan's only WebSocket signal is kanban_update. Keep the
           // open Security view live (refetch via the nonce) and refresh the
           // affected project's open-severity counts for the sidebar badge.
@@ -2445,6 +2501,7 @@ export default function App({ initialView }: any = {}) {
           ) {
             setPullsListRefreshNonce((n: any) => n + 1);
           }
+          if (data.projectId) refreshOpenPullCount(data.projectId);
           break;
 
         case 'projects_updated':
@@ -3029,6 +3086,7 @@ export default function App({ initialView }: any = {}) {
       refreshDiffFileCount,
       bumpDiffReloadToken,
       refreshSecurityOpenCounts,
+      refreshOpenPullCount,
     ],
   );
 
@@ -5159,6 +5217,7 @@ export default function App({ initialView }: any = {}) {
             workflowBadgeByProject={workflowSidebarBadgeByProject}
             unreadThreadCounts={unreadThreadCounts}
             unreadTicketCounts={unreadTicketCounts}
+            openPullCounts={openPullCounts}
             securityOpenCounts={securityOpenCounts}
             activeReviews={activeReviews}
             designs={designs}

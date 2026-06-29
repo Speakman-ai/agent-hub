@@ -15,7 +15,7 @@ import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
 import BugReportButton from './BugReportButton';
 export default function DrawerContent({ navigation }: any) {
-    const { agents, projects, activeAgentId, setActiveAgentId, sessions, activeSessionId, setActiveSessionId, handleNewSession, handleDeleteSession, archivedSessions, handleRestoreSession, restoringSessionIds, handleSwitchOrg, refreshProjects, refreshAgents, cronSessions, activeTasks, finalizeStatusBySession, unreadThreadCounts, unreadTicketCounts, securityOpenCounts, reloadMessages, connected, reconnecting, } = useApp();
+    const { agents, projects, activeAgentId, setActiveAgentId, sessions, activeSessionId, setActiveSessionId, handleNewSession, handleDeleteSession, archivedSessions, handleRestoreSession, restoringSessionIds, handleSwitchOrg, refreshProjects, refreshAgents, cronSessions, activeTasks, finalizeStatusBySession, unreadThreadCounts, unreadTicketCounts, openPullCounts, securityOpenCounts, reloadMessages, connected, reconnecting, } = useApp();
     const activeAgent = agents.find((a: any) => a.id === activeAgentId) || null;
     const bugReportProjectId = activeAgent?.projectId || '';
     const [collapsedAgents, setCollapsedAgents] = useState<any>({});
@@ -244,6 +244,11 @@ export default function DrawerContent({ navigation }: any) {
       {entry.key === 'support' && unreadTicketCounts?.[project.id] > 0 && (<View style={styles.unreadBadge}>
           <Text style={styles.unreadBadgeText}>
             {unreadTicketCounts[project.id] > 99 ? '99+' : unreadTicketCounts[project.id]}
+          </Text>
+        </View>)}
+      {entry.key === 'pulls' && openPullCounts?.[project.id] > 0 && (<View style={styles.unreadBadge}>
+          <Text style={styles.unreadBadgeText}>
+            {openPullCounts[project.id] > 99 ? '99+' : openPullCounts[project.id]}
           </Text>
         </View>)}
       {entry.key === 'security' &&

@@ -93,6 +93,8 @@ export function AppProvider({ children }: any) {
     // Drives the Security drawer badge (open critical + high). Seeded from the
     // server on load and refreshed on kanban_update (a scan's only WS signal).
     const [securityOpenCounts, setSecurityOpenCounts] = useState<any>({});
+    // Open pull request counts keyed by projectId, used by the Pulls drawer badge.
+    const [openPullCounts, setOpenPullCounts] = useState<any>({});
     // Last `finalize_wizard_*` WS event for the Settings → Finalize panel.
     // Mirrors the web component's `agenthub:finalize_wizard_complete`
     // window CustomEvent — RN has no DOM event bus, so we surface the last
@@ -113,6 +115,7 @@ export function AppProvider({ children }: any) {
     // Stable ref to refreshSecurityOpenCounts so the WS handler (defined before
     // the helper) can call it without a stale-closure / ordering problem.
     const refreshSecurityOpenCountsRef = useRef<any>(null);
+    const refreshOpenPullCountRef = useRef<any>(null);
     // Kanban board refresh trigger
     const [kanbanRefreshKey, setKanbanRefreshKey] = useState(0);
     // Ad-hoc PR creation: Map of sessionId -> { agentId, branch, hasUncommitted, hasUnpushed }
@@ -578,10 +581,16 @@ export function AppProvider({ children }: any) {
                 break;
             case 'kanban_update':
                 setKanbanRefreshKey((k: any) => (k || 0) + 1);
+                if (data.projectId)
+                    refreshOpenPullCountRef.current?.(data.projectId);
                 // A security scan's only WS signal is kanban_update. Refresh the
                 // affected project's open-severity counts so the drawer badge stays live.
                 if (data.projectId)
                     refreshSecurityOpenCountsRef.current?.(data.projectId);
+                break;
+            case 'native_pr_update':
+                if (data.projectId)
+                    refreshOpenPullCountRef.current?.(data.projectId);
                 break;
             case 'dispatch_failure':
                 // Refresh kanban to show the failure comment on the card
@@ -1793,6 +1802,52 @@ export function AppProvider({ children }: any) {
             cancelled = true;
         };
     }, [projects]);
+    const refreshOpenPullCount = useCallback(async (projectId: any) => {
+        if (!projectId)
+            return;
+        try {
+            const data = await api.getProjectPulls(projectId, { state: 'open', limit: 100 });
+            const count = Array.isArray(data?.pulls) ? data.pulls.length : 0;
+            setOpenPullCounts((prev: any) => ({ ...prev, [projectId]: count }));
+        }
+        catch {
+            setOpenPullCounts((prev: any) => prev[projectId] === undefined ? { ...prev, [projectId]: 0 } : prev);
+        }
+    }, []);
+    refreshOpenPullCountRef.current = refreshOpenPullCount;
+    const seededPullProjectsRef = useRef<any>(new Set());
+    useEffect(() => {
+        if (!projects || projects.length === 0) {
+            seededPullProjectsRef.current = new Set();
+            return;
+        }
+        const toSeed = projects.filter((p: any) => p?.id &&
+            !isWorkflowProject(p) &&
+            (p.githubRepo || p.gitHost === 'agenthub') &&
+            !seededPullProjectsRef.current.has(p.id));
+        if (toSeed.length === 0)
+            return;
+        toSeed.forEach((p: any) => seededPullProjectsRef.current.add(p.id));
+        let cancelled = false;
+        Promise.all(toSeed.map((p: any) => api
+            .getProjectPulls(p.id, { state: 'open', limit: 100 })
+            .then((data: any) => [p.id, Array.isArray(data?.pulls) ? data.pulls.length : 0])
+            .catch(() => [p.id, 0]))).then((entries: any) => {
+            if (cancelled)
+                return;
+            setOpenPullCounts((prev: any) => {
+                const next = { ...prev };
+                for (const [pid, count] of entries) {
+                    if (next[pid] === undefined)
+                        next[pid] = count;
+                }
+                return next;
+            });
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [projects]);
     // Provider-level seed of the Support drawer badge: as soon as the project list
     // is known, fetch each project's unread count so the badge is correct on a
     // cold app launch — not only after the user opens a project's Support screen.
@@ -1980,6 +2035,7 @@ export function AppProvider({ children }: any) {
         wsSend: send,
         lastSupportTicketEvent,
         unreadTicketCounts,
+        openPullCounts,
         refreshSupportUnreadCount,
         setSupportUnreadCount,
         // Security audit drawer badge + screen seed

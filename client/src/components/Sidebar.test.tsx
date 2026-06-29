@@ -1023,6 +1023,14 @@ describe('Sidebar — per-project settings menu', () => {
     expect(screen.queryByRole('button', { name: 'Project Configuration' })).toBeNull();
   });
 
+  it('shows the open pull request count beside Pulls', () => {
+    render(<Sidebar {...buildProps({ openPullCounts: { [PROJECT_ID]: 3 } })} />);
+
+    const pulls = screen.getByText('Pulls').closest('button');
+    expect(pulls).not.toBeNull();
+    expect(within(pulls as HTMLElement).getByText('3')).toBeInTheDocument();
+  });
+
   it('navigates from the top-level lifecycle links without expanding Settings', () => {
     const onNavigate = vi.fn();
     render(<Sidebar {...buildProps({ onNavigate })} />);

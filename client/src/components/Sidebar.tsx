@@ -111,6 +111,7 @@ export default function Sidebar({
   workflowBadgeByProject = {},
   unreadThreadCounts = {},
   unreadTicketCounts = {},
+  openPullCounts = {},
   /** Per-project open-severity counts: { [projectId]: { critical, high, … } }. */
   securityOpenCounts = {},
   activeReviews = {},
@@ -701,6 +702,13 @@ export default function Sidebar({
                             >
                               <ListOrdered size={14} className="flex-shrink-0" />
                               <span className="truncate">Pulls</span>
+                              {openPullCounts[project.id] > 0 && (
+                                <span className="ml-auto flex-shrink-0 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white px-1">
+                                  {openPullCounts[project.id] > 99
+                                    ? '99+'
+                                    : openPullCounts[project.id]}
+                                </span>
+                              )}
                             </button>
                           )}
 
