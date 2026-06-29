@@ -20,6 +20,18 @@ export const RELEASE_DIGEST_LABEL_LIMIT = 20;
 export const RELEASE_DIGEST_LABEL_MAX_BYTES = 80;
 
 const TRUNCATED_SUFFIX = '...[truncated]';
+const REDACTED_EMAIL = '[redacted email]';
+const REDACTED_SECRET = '[redacted secret]';
+const AUTHORIZATION_BEARER_RE = /\bauthorization\b\s*[:=]\s*bearer\s+[^\s,;]+/gi;
+const SENSITIVE_KEY_VALUE_RE =
+  /\b(api[_-]?key|authorization|bearer|client[_-]?secret|password|secret|token)\b\s*[:=]\s*([^\s,;]+)/gi;
+const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+
+export const EMPTY_RELEASE_DIGEST_MARKDOWN = [
+  '## Release digest',
+  '',
+  'No customer-facing release items were included in this production deployment.',
+].join('\n');
 
 export interface ReleaseDigestFact {
   card: {
@@ -41,6 +53,12 @@ export interface ReleaseDigestFact {
   } | null;
 }
 
+export interface ReleaseDigestGroup {
+  key: 'support-ticket-resolutions' | 'product-changes' | 'other-customer-visible-changes';
+  label: string;
+  itemIndexes: number[];
+}
+
 export interface ReleaseDigestGenerationPrompt {
   prompt: string;
   facts: {
@@ -53,9 +71,11 @@ export interface ReleaseDigestGenerationPrompt {
       completedAt: string | null;
     };
     releaseItems: ReleaseDigestFact[];
+    groups: ReleaseDigestGroup[];
     factLimits: {
       maxReleaseItems: number;
       originalIncludedReleaseItemCount: number;
+      excludedReleaseItemCount: number;
       omittedReleaseItemCount: number;
       maxTextFieldBytes: number;
       maxShortFieldBytes: number;
@@ -87,8 +107,15 @@ function parseCardLabels(raw: string | null): string[] {
     .filter(Boolean);
 }
 
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(AUTHORIZATION_BEARER_RE, 'authorization=[redacted secret]')
+    .replace(SENSITIVE_KEY_VALUE_RE, (_match, key: string) => `${key}=${REDACTED_SECRET}`)
+    .replace(EMAIL_RE, REDACTED_EMAIL);
+}
+
 function clipFactString(raw: string | null, maxBytes: number): string | null {
-  const value = raw?.trim();
+  const value = raw ? redactSensitiveText(raw).trim() : null;
   if (!value) return null;
   if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
   const budget = Math.max(0, maxBytes - TRUNCATED_SUFFIX.length);
@@ -136,6 +163,41 @@ function itemFact(row: DeploymentReleaseItemDetailRow): ReleaseDigestFact {
   };
 }
 
+function classifyFact(fact: ReleaseDigestFact): ReleaseDigestGroup['key'] {
+  if (fact.supportTicket) return 'support-ticket-resolutions';
+  const labels = new Set(fact.card.labels.map((label) => label.toLowerCase()));
+  if (
+    labels.has('feature') ||
+    labels.has('features') ||
+    labels.has('product') ||
+    labels.has('customer-facing') ||
+    labels.has('improvement')
+  ) {
+    return 'product-changes';
+  }
+  return 'other-customer-visible-changes';
+}
+
+function buildFactGroups(facts: ReleaseDigestFact[]): ReleaseDigestGroup[] {
+  const labels = {
+    'support-ticket-resolutions': 'Support-ticket resolutions',
+    'product-changes': 'Product changes',
+    'other-customer-visible-changes': 'Other customer-visible changes',
+  } satisfies Record<ReleaseDigestGroup['key'], string>;
+  const groups = new Map<ReleaseDigestGroup['key'], number[]>();
+  facts.forEach((fact, index) => {
+    const key = classifyFact(fact);
+    groups.set(key, [...(groups.get(key) ?? []), index]);
+  });
+  return (Object.keys(labels) as ReleaseDigestGroup['key'][])
+    .map((key) => ({ key, label: labels[key], itemIndexes: groups.get(key) ?? [] }))
+    .filter((group) => group.itemIndexes.length > 0);
+}
+
+export function sanitizeReleaseDigestMarkdown(markdown: string): string {
+  return redactSensitiveText(markdown).trim();
+}
+
 export function buildDeploymentReleaseDigestGenerationPrompt(args: {
   projectId: string;
   deployment: DeploymentRow;
@@ -143,7 +205,9 @@ export function buildDeploymentReleaseDigestGenerationPrompt(args: {
 }): ReleaseDigestGenerationPrompt {
   const settings = getReleaseNotificationSettings(args.projectId);
   const includedItems = args.releaseItems.filter((item) => item.inclusion_status === 'included');
+  const excludedItems = args.releaseItems.filter((item) => item.inclusion_status === 'excluded');
   const boundedItems = includedItems.slice(0, RELEASE_DIGEST_ITEM_LIMIT);
+  const releaseItemFacts = boundedItems.map(itemFact);
   const facts = {
     deployment: {
       id: args.deployment.id,
@@ -156,10 +220,12 @@ export function buildDeploymentReleaseDigestGenerationPrompt(args: {
       status: args.deployment.status,
       completedAt: args.deployment.completed_at,
     },
-    releaseItems: boundedItems.map(itemFact),
+    releaseItems: releaseItemFacts,
+    groups: buildFactGroups(releaseItemFacts),
     factLimits: {
       maxReleaseItems: RELEASE_DIGEST_ITEM_LIMIT,
       originalIncludedReleaseItemCount: includedItems.length,
+      excludedReleaseItemCount: excludedItems.length,
       omittedReleaseItemCount: Math.max(0, includedItems.length - boundedItems.length),
       maxTextFieldBytes: RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES,
       maxShortFieldBytes: RELEASE_DIGEST_SHORT_FIELD_MAX_BYTES,
@@ -204,14 +270,20 @@ export async function generateDeploymentReleaseDigest(args: {
     deployment,
     releaseItems: listDeploymentReleaseItemsWithContext(deployment.id),
   });
+  if (generation.facts.releaseItems.length === 0) {
+    return { ...generation, digestMarkdown: EMPTY_RELEASE_DIGEST_MARKDOWN };
+  }
   const runner = args.runner ?? defaultRunner;
-  const digestMarkdown = (
+  const digestMarkdown = sanitizeReleaseDigestMarkdown(
     await runner({
       prompt: generation.prompt,
       cfg: args.cfg,
       userId: args.userId ?? null,
       fetchImpl: args.fetchImpl,
-    })
-  ).trim();
+    }),
+  );
+  if (!digestMarkdown) {
+    throw new Error('Release digest generation returned an empty response after redaction.');
+  }
   return { ...generation, digestMarkdown };
 }

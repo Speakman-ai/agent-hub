@@ -26,6 +26,7 @@ import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deplo
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import { updateReleaseNotificationSettings } from '../release-notification-settings.js';
 import {
+  EMPTY_RELEASE_DIGEST_MARKDOWN,
   RELEASE_DIGEST_ITEM_LIMIT,
   RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES,
   type ReleaseDigestRunner,
@@ -295,6 +296,22 @@ function insertReleaseCard(
     opts.supportTicketId ?? null,
   );
   return cardId;
+}
+
+function extractReleaseDigestFacts(prompt: string): {
+  groups: Array<{ key: string; label: string; itemIndexes: number[] }>;
+  factLimits: { excludedReleaseItemCount: number };
+} {
+  const marker = 'Generate the release digest from this JSON facts object only:\n';
+  const start = prompt.indexOf(marker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const jsonStart = start + marker.length;
+  const jsonEnd = prompt.indexOf('\n\nReturn a customer-facing markdown email body.', jsonStart);
+  expect(jsonEnd).toBeGreaterThan(jsonStart);
+  return JSON.parse(prompt.slice(jsonStart, jsonEnd)) as {
+    groups: Array<{ key: string; label: string; itemIndexes: number[] }>;
+    factLimits: { excludedReleaseItemCount: number };
+  };
 }
 
 describe('deployment routes', () => {
@@ -672,6 +689,15 @@ environments:
     expect(prompts[0]).toContain('Export fails');
     expect(prompts[0]).toContain('CSV export generated blank files for paid workspaces.');
     expect(prompts[0]).not.toContain('Internal migration');
+    const facts = extractReleaseDigestFacts(prompts[0]);
+    expect(facts.groups).toEqual([
+      {
+        key: 'support-ticket-resolutions',
+        label: 'Support-ticket resolutions',
+        itemIndexes: [0],
+      },
+    ]);
+    expect(facts.factLimits.excludedReleaseItemCount).toBe(1);
     expect(response.body).toMatchObject({
       digestMarkdown: '## Release digest\n\nCSV export is fixed.',
       settings: { isDefault: false },
@@ -734,6 +760,93 @@ environments:
     expect(prompts[0]).not.toContain('Beyond cap release item');
     expect(prompts[0]).toContain('label-19');
     expect(prompts[0]).not.toContain('label-20');
+  });
+
+  it('returns a deterministic empty release digest without invoking the model', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const internalCardId = insertReleaseCard('release-digest-empty-excluded', PROJECT_ID, {
+      title: 'Internal migration',
+      labels: 'internal',
+    });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: internalCardId });
+    setDeploymentReleaseItemInclusion({
+      deploymentId: dep.id,
+      cardId: internalCardId,
+      inclusionStatus: 'excluded',
+      adjustedBy: 'admin-1',
+      note: 'operator excluded internal-only work',
+    });
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async () => 'should not run');
+
+    const { app } = makeApp({ role: 'Admin', releaseDigestRunner });
+    const response = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest`)
+      .send({})
+      .expect(200);
+
+    expect(releaseDigestRunner).not.toHaveBeenCalled();
+    expect(response.body.digestMarkdown).toBe(EMPTY_RELEASE_DIGEST_MARKDOWN);
+  });
+
+  it('redacts sensitive fact text before the model and redacts sensitive model output', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const ticket = createSupportTicket({
+      projectId: PROJECT_ID,
+      subject: 'Login export failed',
+      body: 'customer bug',
+      type: 'bug',
+      reporterEmail: 'reporter@example.com',
+    });
+    recordSupportTicketInvestigation(ticket.id, {
+      summary: 'Fixed login export for reporter@example.com after password: hunter2 failed.',
+    });
+    const cardId = insertReleaseCard('release-digest-redacted', PROJECT_ID, {
+      supportTicketId: ticket.id,
+      title: 'Fix login export',
+      description:
+        'Do not leak reporter@example.com, api_key=sk_live_secret, or Authorization: Bearer sk_live_auth.',
+    });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId });
+    const prompts: string[] = [];
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      prompts.push(prompt);
+      return [
+        '## Release digest',
+        '',
+        'Fixed login export for reporter@example.com with token=abc123 and Authorization: Bearer sk_live_output.',
+      ].join('\n');
+    });
+
+    const { app } = makeApp({ role: 'Admin', releaseDigestRunner });
+    const response = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest`)
+      .send({})
+      .expect(200);
+
+    expect(prompts[0]).not.toContain('reporter@example.com');
+    expect(prompts[0]).not.toContain('sk_live_secret');
+    expect(prompts[0]).not.toContain('sk_live_auth');
+    expect(prompts[0]).not.toContain('hunter2');
+    expect(prompts[0]).toContain('[redacted email]');
+    expect(prompts[0]).toContain('api_key=[redacted secret]');
+    expect(prompts[0]).toContain('password=[redacted secret]');
+    expect(prompts[0]).toContain('authorization=[redacted secret]');
+    expect(response.body.digestMarkdown).not.toContain('reporter@example.com');
+    expect(response.body.digestMarkdown).not.toContain('abc123');
+    expect(response.body.digestMarkdown).not.toContain('sk_live_output');
+    expect(response.body.digestMarkdown).toContain('[redacted email]');
+    expect(response.body.digestMarkdown).toContain('token=[redacted secret]');
+    expect(response.body.digestMarkdown).toContain('authorization=[redacted secret]');
   });
 
   it('lets Admin include and exclude release items with an audit reason', async () => {
