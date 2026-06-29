@@ -710,6 +710,10 @@ export interface KanbanCardRow {
   labels: string | null;
   session_id: string | null;
   github_issue_url: string | null;
+  /** Durable support ticket link for cards converted from customer support. */
+  support_ticket_id?: string | null;
+  /** Durable customer report link. Currently the support ticket id for support-ticket intake. */
+  customer_report_id?: string | null;
   pr_url: string | null;
   review_status: 'awaiting_review' | 'reviewing' | 'approved' | 'changes_requested' | null;
   created_by: string | null;
@@ -1735,6 +1739,8 @@ export interface Stmts {
   countKanbanCardsByColumn: Stmt;
   getKanbanCard: Stmt;
   createKanbanCard: Stmt;
+  linkKanbanCardSupportTicket: Stmt;
+  getLinkedSupportTicketsForBoard: Stmt;
   updateKanbanCard: Stmt;
   moveKanbanCard: Stmt;
   setCardPrUrl: Stmt;

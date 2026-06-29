@@ -69,6 +69,32 @@ const ReviewStatusSchema = z
   .enum(['awaiting_review', 'reviewing', 'approved', 'changes_requested'])
   .nullable();
 const EpicStateSchema = z.enum(['not_started', 'in_progress', 'done']);
+const LinkedSupportTicketComponent = registerComponent(
+  'KanbanCardLinkedSupportTicket',
+  z
+    .object({
+      id: z.string(),
+      project_id: z.string(),
+      type: z.enum(['bug', 'question', 'feature_request', 'incident', 'other']),
+      severity: z.enum(['critical', 'high', 'medium', 'low']),
+      status: z.enum(['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do']),
+      subject: z.string(),
+      reporter: z.string().nullable(),
+      reporter_email: z.string().nullable().openapi({
+        description: 'Reporter email for privileged callers; masked for non-privileged callers.',
+      }),
+      reporter_email_masked: z.boolean().openapi({
+        description: 'True when reporter_email is present but masked for this response.',
+      }),
+      converted_card_id: z.string().nullable(),
+      created_at: z.string(),
+      updated_at: z.string(),
+    })
+    .openapi({
+      description:
+        'Safe support-ticket metadata attached to a converted kanban card. The full ticket body and raw reporter contact stay on the support-ticket record.',
+    }),
+);
 
 export const KanbanBoardComponent = registerComponent(
   'KanbanBoard',
@@ -129,6 +155,18 @@ export const KanbanCardComponent = registerComponent(
       labels: z.string().nullable(),
       session_id: z.string().nullable(),
       github_issue_url: z.string().nullable(),
+      support_ticket_id: z.string().nullable().optional().openapi({
+        description:
+          'Durable id of the support ticket this card was converted from, when present. Used by release workflows instead of scraping card text.',
+      }),
+      customer_report_id: z.string().nullable().optional().openapi({
+        description:
+          'Durable id of the source customer report. For support-ticket intake this matches support_ticket_id.',
+      }),
+      linked_support_ticket: LinkedSupportTicketComponent.nullable().optional().openapi({
+        description:
+          'Safe linked support-ticket metadata for converted cards. reporter_email is role-gated/masked.',
+      }),
       pr_url: z.string().nullable(),
       review_status: ReviewStatusSchema,
       created_by: z.string().nullable(),

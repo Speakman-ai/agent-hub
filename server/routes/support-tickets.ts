@@ -1,6 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
-import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, KanbanCardRow } from '../types.js';
 import {
   getSupportTicket,
@@ -18,7 +17,6 @@ import {
   SUPPORT_TICKET_STATUSES,
   SUPPORT_TICKET_OPEN_STATUSES,
   SUPPORT_TICKET_TYPES,
-  maskReporterEmail,
 } from '../support-tickets-store.js';
 import type { SupportTicketStatus, SupportTicketType, SupportTicketRow } from '../types.js';
 import { intakeSupportTicket, setGuardedReplayRef } from '../support-ticket-intake.js';
@@ -28,46 +26,26 @@ import {
   deleteSupportTicketScreenshot,
 } from '../support-ticket-screenshot.js';
 import { buildCardFieldsFromTicket } from '../support-ticket-convert.js';
-import { getOrCreateBoard } from './board.js';
+import { getOrCreateBoard, serializeCardForRequest } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
 import { ConvertSupportTicketRequestSchema } from './support-tickets.openapi.js';
-import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import {
+  defaultReporterEmail,
+  serializeSupportTicket,
+  serializeSupportTicketForBroadcast,
+  serializeSupportTicketForRequest,
+  type SupportTicketResponse,
+} from '../support-ticket-serialization.js';
 
-export type SupportTicketResponse = SupportTicketRow & {
-  reporter_email_masked: boolean;
-};
-
-function canReadReporterEmail(req: Request): boolean {
-  const caller = resolveVisibilityCaller(req);
-  return Boolean(caller.localBypass || caller.role === 'Owner' || caller.role === 'Admin');
-}
-
-export function serializeSupportTicket(
-  ticket: SupportTicketRow,
-  opts: { canReadReporterEmail: boolean },
-): SupportTicketResponse {
-  const hasEmail = Boolean(ticket.reporter_email);
-  return {
-    ...ticket,
-    reporter_email: opts.canReadReporterEmail
-      ? ticket.reporter_email
-      : maskReporterEmail(ticket.reporter_email),
-    reporter_email_masked: hasEmail && !opts.canReadReporterEmail,
-  };
-}
+export { serializeSupportTicket };
 
 function serializeForRequest(req: Request, ticket: SupportTicketRow): SupportTicketResponse {
-  return serializeSupportTicket(ticket, { canReadReporterEmail: canReadReporterEmail(req) });
+  return serializeSupportTicketForRequest(req, ticket);
 }
 
 function serializeForBroadcast(ticket: SupportTicketRow): SupportTicketResponse {
-  return serializeSupportTicket(ticket, { canReadReporterEmail: false });
-}
-
-function defaultReporterEmail(req: Request): string | null {
-  const authUser = (req as AuthenticatedRequest).authUser;
-  return typeof authUser === 'string' && authUser.includes('@') ? authUser : null;
+  return serializeSupportTicketForBroadcast(ticket);
 }
 
 /**
@@ -538,6 +516,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
             null, // assign_model
             maxPos,
           );
+          stmts.linkKanbanCardSupportTicket.run(ticket.id, ticket.id, cardId);
           // Stamp the auto-merge preference (if the operator set one) so it
           // carries over to the board's assign UI and the eventual session's
           // finalize automation level.
@@ -588,7 +567,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       broadcastTicket('support_ticket_updated', project.id, { ticket: converted });
 
       res.status(201).json({
-        card,
+        card: serializeCardForRequest(req, stmts, board.id, card),
         ticket: serializeForRequest(req, converted),
         ticketId: ticket.id,
         converted: true,

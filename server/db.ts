@@ -501,6 +501,10 @@ function initDb(dataDir: string): void {
       labels TEXT,
       session_id TEXT,
       github_issue_url TEXT,
+      -- Durable source support ticket / customer report link. Reporter PII
+      -- remains on support_tickets; cards carry only stable ids.
+      support_ticket_id TEXT,
+      customer_report_id TEXT,
       created_by TEXT,
       -- Human-readable per-board sequence number (the "123" in "AH-123").
       -- Assigned by the kanban_card_assign_short_id trigger on insert; NULL only
@@ -2107,6 +2111,48 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN auto_merge INTEGER DEFAULT NULL');
   }
+
+  // Durable support-ticket linkage for cards created by converting customer
+  // support requests. Existing converted tickets already point at their card
+  // via support_tickets.converted_card_id; backfill the card-side ids so future
+  // release workflows can resolve card -> ticket without scraping markdown.
+  try {
+    db.prepare('SELECT support_ticket_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN support_ticket_id TEXT DEFAULT NULL');
+  }
+  try {
+    db.prepare('SELECT customer_report_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN customer_report_id TEXT DEFAULT NULL');
+  }
+  db.exec(`
+    UPDATE kanban_cards
+       SET support_ticket_id = COALESCE(support_ticket_id, (
+             SELECT st.id
+               FROM support_tickets st
+              WHERE st.converted_card_id = kanban_cards.id
+              LIMIT 1
+           )),
+           customer_report_id = COALESCE(customer_report_id, (
+             SELECT st.id
+               FROM support_tickets st
+              WHERE st.converted_card_id = kanban_cards.id
+              LIMIT 1
+           ))
+     WHERE (support_ticket_id IS NULL OR customer_report_id IS NULL)
+       AND EXISTS (
+             SELECT 1
+               FROM support_tickets st
+              WHERE st.converted_card_id = kanban_cards.id
+           )
+  `);
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_kanban_cards_support_ticket ON kanban_cards(support_ticket_id)',
+  );
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_kanban_cards_customer_report ON kanban_cards(customer_report_id)',
+  );
 
   try {
     db.prepare('SELECT autonomous_model FROM kanban_epics LIMIT 1').get();
@@ -3909,6 +3955,26 @@ function initDb(dataDir: string): void {
     createKanbanCard: db.prepare(
       `INSERT INTO kanban_cards (id, column_id, board_id, title, description, priority, assignee, labels, session_id, github_issue_url, created_by, assign_model, position)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    linkKanbanCardSupportTicket: db.prepare(
+      `UPDATE kanban_cards
+          SET support_ticket_id = ?, customer_report_id = ?, updated_at = datetime('now')
+        WHERE id = ?`,
+    ),
+    getLinkedSupportTicketsForBoard: db.prepare(
+      `SELECT c.id AS card_id, st.*
+         FROM kanban_cards c
+         JOIN support_tickets st
+           ON st.id = COALESCE(c.support_ticket_id, c.customer_report_id)
+        WHERE c.board_id = ?
+       UNION ALL
+       SELECT c.id AS card_id, st.*
+         FROM kanban_cards c
+         JOIN support_tickets st
+           ON st.converted_card_id = c.id
+        WHERE c.board_id = ?
+          AND c.support_ticket_id IS NULL
+          AND c.customer_report_id IS NULL`,
     ),
     updateKanbanCard: db.prepare(
       `UPDATE kanban_cards SET title = ?, description = ?, priority = ?, assignee = ?, labels = ?, session_id = ?, github_issue_url = ?, pr_url = ?, epic_id = ?, phase_id = ?, assign_model = ?, assign_engine = ?, pr_base_branch = ?, updated_at = datetime('now') WHERE id = ?`,

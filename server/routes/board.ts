@@ -19,6 +19,7 @@ import type {
   SessionRow,
   FinalizeRunRow,
   SessionReplayRow,
+  SupportTicketRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers, isSystemLockedColumnName } from '../kanban-blockers.js';
 import { deriveCardPrefix } from '../kanban-short-id.js';
@@ -52,6 +53,11 @@ import { recomputeSessionState } from '../session-state.js';
 import { epicsWithComputedState, recomputeEpicState } from '../epic-state.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
 import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
+import {
+  canReadReporterEmail,
+  linkedSupportTicketMetadata,
+  type LinkedSupportTicketMetadata,
+} from '../support-ticket-serialization.js';
 import {
   buildSpikeSessionContext,
   buildSpikeSessionContextFallback,
@@ -179,8 +185,18 @@ interface BoardData {
   specItems: KanbanEpicSpecItemRow[];
 }
 
+interface LinkedSupportTicketRow extends SupportTicketRow {
+  card_id: string;
+}
+
+export interface SerializedKanbanCard extends KanbanCardRow {
+  support_ticket_id: string | null;
+  customer_report_id: string | null;
+  linked_support_ticket: LinkedSupportTicketMetadata | null;
+}
+
 /** A card row enriched with its blocker relationships. */
-interface EnrichedCard extends KanbanCardRow {
+interface EnrichedCard extends SerializedKanbanCard {
   blockers: KanbanBlockerLink[];
   blocks: KanbanBlockerLink[];
   /**
@@ -217,10 +233,67 @@ function loadBoardFinalizeRuns(stmts: Stmts, boardId: string): Map<string, Final
  * is cheap to call once per request whether it enriches the whole board or a
  * single paginated column slice.
  */
-function enrichCards(stmts: Stmts, boardId: string, cards: KanbanCardRow[]): EnrichedCard[] {
+function loadLinkedSupportTicketsForCards(
+  req: Request,
+  stmts: Stmts,
+  boardId: string,
+): Map<string, LinkedSupportTicketMetadata> {
+  const statement = (
+    stmts as Stmts & {
+      getLinkedSupportTicketsForBoard?: {
+        all?: (boardId: string, fallbackBoardId: string) => unknown[];
+      };
+    }
+  ).getLinkedSupportTicketsForBoard;
+  if (!statement?.all) return new Map();
+  const rows = statement.all(boardId, boardId) as LinkedSupportTicketRow[];
+  const canRead = canReadReporterEmail(req);
+  const out = new Map<string, LinkedSupportTicketMetadata>();
+  for (const row of rows) {
+    if (!out.has(row.card_id)) {
+      out.set(row.card_id, linkedSupportTicketMetadata(row, { canReadReporterEmail: canRead }));
+    }
+  }
+  return out;
+}
+
+export function serializeCardsForRequest(
+  req: Request,
+  stmts: Stmts,
+  boardId: string,
+  cards: KanbanCardRow[],
+): SerializedKanbanCard[] {
+  const linkedByCardId = loadLinkedSupportTicketsForCards(req, stmts, boardId);
+  return cards.map((card) => {
+    const linked = linkedByCardId.get(card.id) ?? null;
+    const linkedId = linked?.id ?? null;
+    return {
+      ...card,
+      support_ticket_id: card.support_ticket_id ?? linkedId,
+      customer_report_id: card.customer_report_id ?? card.support_ticket_id ?? linkedId,
+      linked_support_ticket: linked,
+    };
+  });
+}
+
+export function serializeCardForRequest(
+  req: Request,
+  stmts: Stmts,
+  boardId: string,
+  card: KanbanCardRow,
+): SerializedKanbanCard {
+  return serializeCardsForRequest(req, stmts, boardId, [card])[0];
+}
+
+function enrichCards(
+  req: Request,
+  stmts: Stmts,
+  boardId: string,
+  cards: KanbanCardRow[],
+): EnrichedCard[] {
   const index = loadBoardBlockers(stmts, boardId);
   const finalizeRuns = loadBoardFinalizeRuns(stmts, boardId);
-  return cards.map((c) => ({
+  return serializeCardsForRequest(req, stmts, boardId, cards).map((c) => ({
     ...c,
     blockers: index.blockersByCard.get(c.id) ?? [],
     blocks: index.blocksByCard.get(c.id) ?? [],
@@ -507,7 +580,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const body: Record<string, unknown> = {
       ...data,
       board: { ...data.board, card_prefix: cardPrefix },
-      cards: enrichCards(stmts, data.board.id, cards),
+      cards: enrichCards(req, stmts, data.board.id, cards),
       counts,
       assignableUsers,
       cardTemplates,
@@ -538,7 +611,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const limit = clampPageLimit(req.query.limit);
       const total = (stmts.countKanbanCardsByColumn.get(column.id) as { n: number }).n;
       const { cards: rows, nextCursor } = fetchColumnCardPage(stmts, column.id, limit, cursor);
-      return res.json({ cards: enrichCards(stmts, board.id, rows), nextCursor, total });
+      return res.json({ cards: enrichCards(req, stmts, board.id, rows), nextCursor, total });
     },
   );
 
@@ -667,7 +740,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
-    res.json(stmts.getKanbanCards.all(board.id));
+    const cards = stmts.getKanbanCards.all(board.id) as KanbanCardRow[];
+    res.json(serializeCardsForRequest(req, stmts, board.id, cards));
   });
 
   // Resolve the session replay attributed to a card, if any. A bug ticket
@@ -741,7 +815,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const duplicate = allBoardCards.find((c) => c.title.toLowerCase().trim() === titleLower);
     if (duplicate) {
       // Return the existing card instead of creating a duplicate
-      return res.json(duplicate);
+      return res.json(serializeCardForRequest(req, stmts, board.id, duplicate));
     }
 
     // Session-id deduplication: when an agent has been spawned via
@@ -758,7 +832,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (sessionId && sessionId.trim()) {
       const linked = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
       if (linked && linked.board_id === board.id) {
-        return res.json(linked);
+        return res.json(serializeCardForRequest(req, stmts, board.id, linked));
       }
     }
 
@@ -859,7 +933,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (effectiveSessionId) {
       maybeRenameSessionForLinkedCard(stmts, broadcast, effectiveSessionId, title);
     }
-    res.json(stmts.getKanbanCard.get(id));
+    const created = stmts.getKanbanCard.get(id) as KanbanCardRow;
+    res.json(serializeCardForRequest(req, stmts, board.id, created));
   });
 
   router.put('/api/projects/:projectId/board/cards/:cardId', (req: Request, res: Response) => {
@@ -1045,7 +1120,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, req.params.cardId);
     }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-    res.json(stmts.getKanbanCard.get(req.params.cardId));
+    const updated = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
+    res.json(serializeCardForRequest(req, stmts, card.board_id, updated));
   });
 
   router.post(
@@ -1069,7 +1145,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       recomputeEpicState(stmts, card.epic_id);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       const updatedCard = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
-      res.json(updatedCard);
+      res.json(serializeCardForRequest(req, stmts, updatedCard.board_id, updatedCard));
 
       try {
         const col = (
@@ -1389,7 +1465,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
       res.json({
         sessionId,
-        card: stmts.getKanbanCard.get(req.params.cardId),
+        card: serializeCardForRequest(
+          req,
+          stmts,
+          card.board_id,
+          stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow,
+        ),
       });
     },
   );
@@ -1420,7 +1501,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       );
 
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-      res.json(stmts.getKanbanCard.get(req.params.cardId));
+      const updated = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
+      res.json(serializeCardForRequest(req, stmts, card.board_id, updated));
     },
   );
 
@@ -2534,7 +2616,8 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         recomputeEpicState(stmts, affectedEpicId);
       }
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
-      res.json(stmts.getKanbanCard.get(req.params.cardId));
+      const updated = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
+      res.json(serializeCardForRequest(req, stmts, card.board_id, updated));
     },
   );
 

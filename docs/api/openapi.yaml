@@ -1402,6 +1402,70 @@ components:
         - pr_url
         - status
       description: Push + PR creation succeeded.
+    KanbanCardLinkedSupportTicket:
+      type: object
+      properties:
+        id:
+          type: string
+        project_id:
+          type: string
+        type:
+          type: string
+          enum:
+            - bug
+            - question
+            - feature_request
+            - incident
+            - other
+        severity:
+          type: string
+          enum:
+            - critical
+            - high
+            - medium
+            - low
+        status:
+          type: string
+          enum:
+            - new
+            - investigating
+            - converted
+            - closed
+            - duplicate
+            - wont_do
+        subject:
+          type: string
+        reporter:
+          type: string
+          nullable: true
+        reporter_email:
+          type: string
+          nullable: true
+          description: Reporter email for privileged callers; masked for non-privileged callers.
+        reporter_email_masked:
+          type: boolean
+          description: True when reporter_email is present but masked for this response.
+        converted_card_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - project_id
+        - type
+        - severity
+        - status
+        - subject
+        - reporter
+        - reporter_email
+        - reporter_email_masked
+        - converted_card_id
+        - created_at
+        - updated_at
+      description: Safe support-ticket metadata attached to a converted kanban card. The full ticket body and raw reporter contact stay on the support-ticket record.
     KanbanBoard:
       type: object
       properties:
@@ -1498,6 +1562,79 @@ components:
         github_issue_url:
           type: string
           nullable: true
+        support_ticket_id:
+          type: string
+          nullable: true
+          description: Durable id of the support ticket this card was converted from, when present. Used by release workflows instead of scraping card text.
+        customer_report_id:
+          type: string
+          nullable: true
+          description: Durable id of the source customer report. For support-ticket intake this matches support_ticket_id.
+        linked_support_ticket:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            project_id:
+              type: string
+            type:
+              type: string
+              enum:
+                - bug
+                - question
+                - feature_request
+                - incident
+                - other
+            severity:
+              type: string
+              enum:
+                - critical
+                - high
+                - medium
+                - low
+            status:
+              type: string
+              enum:
+                - new
+                - investigating
+                - converted
+                - closed
+                - duplicate
+                - wont_do
+            subject:
+              type: string
+            reporter:
+              type: string
+              nullable: true
+            reporter_email:
+              type: string
+              nullable: true
+              description: Reporter email for privileged callers; masked for non-privileged callers.
+            reporter_email_masked:
+              type: boolean
+              description: True when reporter_email is present but masked for this response.
+            converted_card_id:
+              type: string
+              nullable: true
+            created_at:
+              type: string
+            updated_at:
+              type: string
+          required:
+            - id
+            - project_id
+            - type
+            - severity
+            - status
+            - subject
+            - reporter
+            - reporter_email
+            - reporter_email_masked
+            - converted_card_id
+            - created_at
+            - updated_at
+          description: Safe linked support-ticket metadata for converted cards. reporter_email is role-gated/masked.
         pr_url:
           type: string
           nullable: true

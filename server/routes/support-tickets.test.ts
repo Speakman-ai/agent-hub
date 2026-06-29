@@ -9,6 +9,7 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { getStmts } from '../db.js';
 import type { RouteDeps } from '../types.js';
 import createSupportTicketRoutes, { serializeSupportTicket } from './support-tickets.js';
+import createBoardRoutes from './board.js';
 
 // Screenshot files land in the server's real /uploads dir (serverDir = server/).
 const UPLOADS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'uploads');
@@ -154,15 +155,22 @@ describe('support-tickets routes', () => {
       authed.authRole = 'User';
       next();
     });
-    app.use(
-      createSupportTicketRoutes({
-        stmts: getStmts(),
-        broadcast: vi.fn(),
-        findProject: vi.fn((id: string) => (id === project.id ? project : null)),
-        config: {},
-        serverDir: path.dirname(fileURLToPath(import.meta.url)),
-      } as unknown as RouteDeps),
-    );
+    const deps = {
+      stmts: getStmts(),
+      broadcast: vi.fn(),
+      findProject: vi.fn((id: string) => (id === project.id ? project : null)),
+      findAgent: vi.fn(),
+      getEnrichedAgent: vi.fn(),
+      handleChat: vi.fn(),
+      lastDispatchedReviewId: new Map(),
+      scheduleAutonomousEpic: vi.fn(),
+      autonomousCrons: new Map(),
+      runAutonomousLoop: vi.fn(),
+      config: {},
+      serverDir: path.dirname(fileURLToPath(import.meta.url)),
+    } as unknown as RouteDeps;
+    app.use(createSupportTicketRoutes(deps));
+    app.use(createBoardRoutes(deps));
     const st = (await import('supertest')).default;
     const maskedRequest = st(app);
 
@@ -179,6 +187,27 @@ describe('support-tickets routes', () => {
       .expect(200);
     expect(detail.body.reporter_email).toBe('al***@example.com');
     expect(detail.body.reporter_email_masked).toBe(true);
+
+    const converted = await maskedRequest
+      .post(`/api/projects/${project.id}/support-tickets/${created.body.id}/convert`)
+      .expect(201);
+    expect(converted.body.card.support_ticket_id).toBe(created.body.id);
+    expect(converted.body.card.customer_report_id).toBe(created.body.id);
+    expect(converted.body.card.linked_support_ticket).toMatchObject({
+      id: created.body.id,
+      reporter_email: 'al***@example.com',
+      reporter_email_masked: true,
+    });
+    expect(JSON.stringify(converted.body.card)).not.toContain('alice@example.com');
+
+    const board = await maskedRequest.get(`/api/projects/${project.id}/board`).expect(200);
+    const boardCard = board.body.cards.find((c: { id: string }) => c.id === converted.body.card.id);
+    expect(boardCard.linked_support_ticket).toMatchObject({
+      id: created.body.id,
+      reporter_email: 'al***@example.com',
+      reporter_email_masked: true,
+    });
+    expect(JSON.stringify(boardCard)).not.toContain('alice@example.com');
   });
 
   it('serializeSupportTicket leaves backwards-compatible no-email tickets unmasked', () => {
@@ -283,6 +312,7 @@ describe('support-tickets routes', () => {
         subject: 'Broken checkout',
         type: 'bug',
         severity: 'critical',
+        reporter_email: 'reporter@example.com',
       })
       .expect(201);
     const ticketId = created.body.id as string;
@@ -302,6 +332,16 @@ describe('support-tickets routes', () => {
     expect(card.title).toBe('Broken checkout');
     expect(card.priority).toBe('urgent'); // critical → urgent
     expect(card.labels).toBe('support,bug');
+    expect(card.support_ticket_id).toBe(ticketId);
+    expect(card.customer_report_id).toBe(ticketId);
+    expect(card.linked_support_ticket).toMatchObject({
+      id: ticketId,
+      reporter_email: 'reporter@example.com',
+      reporter_email_masked: false,
+      status: 'converted',
+      type: 'bug',
+      severity: 'critical',
+    });
     expect(card.description).toContain('Checkout button does nothing on mobile');
     expect(card.description).toContain(ticketId); // back-link footer
 
@@ -311,6 +351,27 @@ describe('support-tickets routes', () => {
     expect(card.column_id).toBe(todo.id);
     const onBoard = board.body.cards.find((c: { id: string }) => c.id === card.id);
     expect(onBoard).toBeTruthy();
+    expect(onBoard.support_ticket_id).toBe(ticketId);
+    expect(onBoard.customer_report_id).toBe(ticketId);
+    expect(onBoard.linked_support_ticket).toMatchObject({
+      id: ticketId,
+      reporter_email: 'reporter@example.com',
+      reporter_email_masked: false,
+    });
+
+    const cardsList = await request.get(`/api/projects/${projectId}/board/cards`).expect(200);
+    const listCard = cardsList.body.find((c: { id: string }) => c.id === card.id);
+    expect(listCard.linked_support_ticket).toMatchObject({ id: ticketId });
+
+    // Legacy converted cards that predate the new card columns are still
+    // readable because board serialization can derive the link from
+    // support_tickets.converted_card_id.
+    getStmts().linkKanbanCardSupportTicket.run(null, null, card.id);
+    const legacyBoard = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const legacyCard = legacyBoard.body.cards.find((c: { id: string }) => c.id === card.id);
+    expect(legacyCard.support_ticket_id).toBe(ticketId);
+    expect(legacyCard.customer_report_id).toBe(ticketId);
+    expect(legacyCard.linked_support_ticket).toMatchObject({ id: ticketId });
 
     // The source ticket is RETAINED (now converted), not deleted…
     const detail = await request
@@ -429,10 +490,11 @@ describe('support-tickets routes', () => {
     // Only one support-ticket card landed on the board for this ticket.
     const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const supportCards = board.body.cards.filter(
-      (c: { labels: string | null; description: string | null }) =>
-        (c.labels || '').includes('support') && (c.description || '').includes(ticketId),
+      (c: { support_ticket_id: string | null }) => c.support_ticket_id === ticketId,
     );
     expect(supportCards).toHaveLength(1);
+    expect(supportCards[0].customer_report_id).toBe(ticketId);
+    expect(supportCards[0].linked_support_ticket).toMatchObject({ id: ticketId });
   });
 
   it('404s converting an unknown ticket or project', async () => {
