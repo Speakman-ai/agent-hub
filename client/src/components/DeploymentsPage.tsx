@@ -65,6 +65,22 @@ function StatusBadge({ status }: any) {
   );
 }
 
+function releaseItemClasses(item: any): string {
+  return item?.inclusion_status === 'excluded'
+    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200';
+}
+
+function releaseItemLabel(item: any): string {
+  return item?.inclusion_status === 'excluded' ? 'excluded' : 'included';
+}
+
+function releaseItemCardTitle(item: any): string {
+  const title = item?.card?.title || item?.card_title || item?.card_id || 'Card';
+  const shortId = item?.card?.shortId ?? item?.card_short_id ?? null;
+  return shortId ? `#${shortId} ${title}` : String(title);
+}
+
 function StepIcon({ status }: any) {
   const common = 'flex-shrink-0';
   if (status === 'success')
@@ -167,13 +183,13 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
     async (deployment: any) => {
       if (!deployment?.id) return;
       selectedIdRef.current = deployment.id;
-      setSelected({ deployment, steps: [], approvals: [] });
+      setSelected({ deployment, steps: [], approvals: [], releaseItems: [] });
       try {
         const detail = await api.getDeployment(projectId, deployment.id);
         if (selectedIdRef.current === deployment.id) setSelected(detail);
       } catch {
         if (selectedIdRef.current === deployment.id) {
-          setSelected({ deployment, steps: [], approvals: [] });
+          setSelected({ deployment, steps: [], approvals: [], releaseItems: [] });
         }
       }
     },
@@ -263,6 +279,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         deployment,
         steps: snapshot.steps || [],
         approvals: snapshot.approvals || prev?.approvals || [],
+        releaseItems: snapshot.releaseItems || prev?.releaseItems || [],
       }));
     }
     setEvents((prev) =>
@@ -311,6 +328,49 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const environments = config?.environments || [];
   const selectedDeployment = selected?.deployment;
   const selectedSteps = selected?.steps || [];
+  const selectedReleaseItems = selected?.releaseItems || [];
+
+  const adjustReleaseItem = async (item: any, inclusionStatus: 'included' | 'excluded') => {
+    if (!selectedDeployment?.id || !item?.card_id) return;
+    const reason =
+      typeof window === 'undefined'
+        ? ''
+        : window.prompt(
+            `${inclusionStatus === 'included' ? 'Include' : 'Exclude'} ${releaseItemCardTitle(
+              item,
+            )}. Enter a reason:`,
+          );
+    if (!reason || !reason.trim()) return;
+    const key = `release:${item.card_id}:${inclusionStatus}`;
+    setActionKey(key);
+    try {
+      const res = await api.adjustDeploymentReleaseItem(
+        projectId,
+        selectedDeployment.id,
+        item.card_id,
+        {
+          inclusionStatus,
+          reason: reason.trim(),
+        },
+      );
+      setSelected((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              releaseItems: res.releaseItems || prev.releaseItems || [],
+            }
+          : prev,
+      );
+      notify(
+        `${releaseItemCardTitle(item)} ${inclusionStatus === 'included' ? 'included' : 'excluded'}`,
+        'success',
+      );
+    } catch (e: any) {
+      notify(e?.message || 'Failed to update release item', 'error');
+    } finally {
+      setActionKey(null);
+    }
+  };
 
   if (loading && !config) {
     return (
@@ -609,6 +669,96 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {selectedDeployment && (
+                  <div className="mt-4 border-t border-gray-800 pt-4">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h3 className="text-xs font-semibold uppercase text-gray-400">
+                        Release items
+                      </h3>
+                      <span className="text-xs text-gray-500">
+                        {
+                          selectedReleaseItems.filter(
+                            (item: any) => item.inclusion_status !== 'excluded',
+                          ).length
+                        }{' '}
+                        included
+                      </span>
+                    </div>
+                    {selectedReleaseItems.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-gray-800 p-4 text-center text-sm text-gray-500">
+                        No release items recorded for this deployment.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {selectedReleaseItems.map((item: any) => {
+                          const nextStatus =
+                            item.inclusion_status === 'excluded' ? 'included' : 'excluded';
+                          const actionLabel = nextStatus === 'included' ? 'Include' : 'Exclude';
+                          const actionKeyForItem = `release:${item.card_id}:${nextStatus}`;
+                          return (
+                            <div
+                              key={item.id}
+                              className="rounded-md border border-gray-800 bg-gray-950/70 p-3"
+                            >
+                              <div className="flex flex-wrap items-start gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="truncate text-sm font-medium text-gray-200">
+                                      {releaseItemCardTitle(item)}
+                                    </span>
+                                    <span
+                                      className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-medium ${releaseItemClasses(
+                                        item,
+                                      )}`}
+                                    >
+                                      {releaseItemLabel(item)}
+                                    </span>
+                                  </div>
+                                  {item.supportTicket ? (
+                                    <a
+                                      className="mt-1 inline-flex max-w-full truncate text-xs text-sky-300 hover:text-sky-200"
+                                      href={`/projects/${projectId}/support?ticketId=${encodeURIComponent(
+                                        item.supportTicket.id,
+                                      )}`}
+                                    >
+                                      {item.supportTicket.subject || 'Support ticket'} (
+                                      {item.supportTicket.id})
+                                    </a>
+                                  ) : (
+                                    <div className="mt-1 text-xs text-gray-500">
+                                      No linked support ticket
+                                    </div>
+                                  )}
+                                  {item.operator_adjustment_note ? (
+                                    <div className="mt-2 text-xs text-gray-500">
+                                      Last reason: {item.operator_adjustment_note}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => adjustReleaseItem(item, nextStatus)}
+                                  disabled={actionKey === actionKeyForItem}
+                                  className="inline-flex min-h-[30px] items-center gap-1.5 rounded-md border border-gray-700 px-2.5 text-xs text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {actionKey === actionKeyForItem ? (
+                                    <Loader2 size={12} className="animate-spin" />
+                                  ) : nextStatus === 'included' ? (
+                                    <CheckCircle2 size={12} />
+                                  ) : (
+                                    <XCircle size={12} />
+                                  )}
+                                  {actionLabel}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </section>

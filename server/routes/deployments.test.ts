@@ -22,6 +22,7 @@ import {
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
 import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
+import { createSupportTicket } from '../support-tickets-store.js';
 import createDeploymentRoutes, {
   buildDeploySetupKickoffPrompt,
   isDeploySetupWizardSession,
@@ -243,9 +244,14 @@ beforeEach(() => {
   db.exec('DELETE FROM kanban_cards;');
   db.exec('DELETE FROM kanban_columns;');
   db.exec('DELETE FROM kanban_boards;');
+  db.exec('DELETE FROM support_tickets;');
 });
 
-function insertReleaseCard(cardId: string, projectId = PROJECT_ID): string {
+function insertReleaseCard(
+  cardId: string,
+  projectId = PROJECT_ID,
+  opts: { supportTicketId?: string | null; title?: string } = {},
+): string {
   const boardId = `board-${cardId}`;
   const columnId = `col-${cardId}`;
   const db = getDb();
@@ -260,12 +266,9 @@ function insertReleaseCard(cardId: string, projectId = PROJECT_ID): string {
     'Done',
     0,
   );
-  db.prepare('INSERT INTO kanban_cards (id, column_id, board_id, title) VALUES (?, ?, ?, ?)').run(
-    cardId,
-    columnId,
-    boardId,
-    'Release card',
-  );
+  db.prepare(
+    'INSERT INTO kanban_cards (id, column_id, board_id, title, support_ticket_id) VALUES (?, ?, ?, ?, ?)',
+  ).run(cardId, columnId, boardId, opts.title ?? 'Release card', opts.supportTicketId ?? null);
   return cardId;
 }
 
@@ -526,7 +529,16 @@ environments:
   it('lists deployments and returns detail with steps approvals environment and history', async () => {
     const dep = createDeployment({ projectId: PROJECT_ID, environment: 'dev', ref: 'abc' });
     ensureDeploymentEnvironment(PROJECT_ID, 'dev');
-    const cardId = insertReleaseCard('release-card-route');
+    const ticket = createSupportTicket({
+      projectId: PROJECT_ID,
+      subject: 'Login form fails',
+      body: 'customer bug',
+      type: 'bug',
+    });
+    const cardId = insertReleaseCard('release-card-route', PROJECT_ID, {
+      supportTicketId: ticket.id,
+      title: 'Fix login form',
+    });
     const releaseItem = ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId });
 
     const { app } = makeApp();
@@ -548,11 +560,146 @@ environments:
         card_id: cardId,
         source: 'derived',
         inclusion_status: 'included',
+        card: {
+          id: cardId,
+          title: 'Fix login form',
+          shortId: expect.any(Number),
+          priority: 'medium',
+          columnName: 'Done',
+        },
+        supportTicket: {
+          id: ticket.id,
+          subject: 'Login form fails',
+          status: 'new',
+          type: 'bug',
+          releaseState: null,
+        },
       }),
     ]);
     expect(detail.body.environment.name).toBe('dev');
     expect(detail.body.history.map((d: { id: string }) => d.id)).toContain(dep.id);
     expect(detail.body.logs).toEqual([]);
+
+    const items = await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items`)
+      .expect(200);
+    expect(items.body.releaseItems).toEqual(detail.body.releaseItems);
+  });
+
+  it('lets Admin include and exclude release items with an audit reason', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'prod',
+      ref: 'abc',
+      status: 'awaiting_approval',
+    });
+    const existingCardId = insertReleaseCard('release-card-existing', PROJECT_ID, {
+      title: 'Internal cleanup',
+    });
+    const missedCardId = insertReleaseCard('release-card-missed', PROJECT_ID, {
+      title: 'Customer-visible fix',
+    });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: existingCardId });
+
+    const user = makeApp({ role: 'User' });
+    await request(user.app)
+      .put(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items/${existingCardId}`)
+      .send({ inclusionStatus: 'excluded', reason: 'not customer-facing' })
+      .expect(403);
+
+    const admin = makeApp({ role: 'Admin' });
+    const excluded = await request(admin.app)
+      .put(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items/${existingCardId}`)
+      .send({ inclusionStatus: 'excluded', reason: 'not customer-facing' })
+      .expect(200);
+    expect(excluded.body.releaseItem).toMatchObject({
+      card_id: existingCardId,
+      inclusion_status: 'excluded',
+      source: 'operator',
+      operator_adjusted_by: 'user-1',
+      operator_adjustment_note: 'not customer-facing',
+      card: { title: 'Internal cleanup' },
+    });
+    expect(excluded.body.releaseItem.operator_adjusted_at).toBeTruthy();
+
+    const included = await request(admin.app)
+      .put(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items/${missedCardId}`)
+      .send({ inclusionStatus: 'included', reason: 'missed by auto detection' })
+      .expect(200);
+    expect(included.body.releaseItems.map((item: { card_id: string }) => item.card_id)).toEqual([
+      existingCardId,
+      missedCardId,
+    ]);
+    expect(included.body.releaseItem).toMatchObject({
+      card_id: missedCardId,
+      inclusion_status: 'included',
+      source: 'operator',
+      operator_adjustment_note: 'missed by auto detection',
+      card: { title: 'Customer-visible fix' },
+    });
+  });
+
+  it('rejects release item adjustments after deployment finalization', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'prod',
+      ref: 'abc',
+      status: 'success',
+    });
+    const cardId = insertReleaseCard('release-card-finalized', PROJECT_ID);
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId });
+
+    const { app } = makeApp({ role: 'Admin' });
+    const response = await request(app)
+      .put(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items/${cardId}`)
+      .send({ inclusionStatus: 'excluded', reason: 'after release' })
+      .expect(409);
+    expect(response.body.error).toBe(
+      'Release items can only be adjusted while deployment approval is pending',
+    );
+  });
+
+  it('rejects release item adjustments for cards outside the deployment project', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'prod',
+      ref: 'abc',
+      status: 'awaiting_approval',
+    });
+    const foreignCardId = insertReleaseCard('release-card-foreign', 'other-project');
+
+    const { app } = makeApp({ role: 'Admin' });
+    await request(app)
+      .put(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items/${foreignCardId}`)
+      .send({ inclusionStatus: 'included', reason: 'wrong project' })
+      .expect(404);
+  });
+
+  it('rejects release item adjustments with support tickets outside the deployment project', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'prod',
+      ref: 'abc',
+      status: 'awaiting_approval',
+    });
+    const cardId = insertReleaseCard('release-card-foreign-ticket', PROJECT_ID);
+    const foreignTicket = createSupportTicket({
+      projectId: 'other-project',
+      body: 'not this project',
+    });
+
+    const { app } = makeApp({ role: 'Admin' });
+    const response = await request(app)
+      .put(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items/${cardId}`)
+      .send({
+        inclusionStatus: 'included',
+        reason: 'wrong ticket project',
+        supportTicketId: foreignTicket.id,
+      })
+      .expect(400);
+    expect(response.body.error).toBe(
+      `support ticket ${foreignTicket.id} does not belong to the deployment project`,
+    );
   });
 
   it('maps a busy environment to 409 before creating a new runnable deployment', async () => {

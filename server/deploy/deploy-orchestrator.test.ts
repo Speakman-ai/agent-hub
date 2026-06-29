@@ -17,7 +17,9 @@ import {
   listDeploymentApprovals,
   createDeployment,
   ensureDeploymentEnvironment,
+  ensureDeploymentReleaseItem,
   acquireEnvironmentLock,
+  setDeploymentReleaseItemInclusion,
 } from './deployment-store.js';
 import { parseDeployConfig } from './deploy-config.js';
 import {
@@ -37,6 +39,7 @@ const WORKTREE = '/tmp/deploy-orch-fake';
 
 beforeEach(() => {
   const db = getDb();
+  db.exec('DELETE FROM deployment_release_items;');
   db.exec('DELETE FROM deployment_approvals;');
   db.exec('DELETE FROM deployment_steps;');
   db.exec('DELETE FROM deployments;');
@@ -67,6 +70,15 @@ const RELEASE_CONFIG = parseDeployConfig(`
 version: 1
 environments:
   production:
+    steps:
+      - run: ./deploy-prod.sh
+`);
+
+const REVIEW_RELEASE_CONFIG = parseDeployConfig(`
+version: 1
+environments:
+  production:
+    approval: true
     steps:
       - run: ./deploy-prod.sh
 `);
@@ -900,6 +912,140 @@ environments:
     expect(prod.status).toBe('success');
     expect(listDeploymentReleaseItems(prod.id).map((item) => item.card_id)).toEqual([cardId]);
     expect(getSupportTicket(ticket.id)!.release_deployment_id).toBe(prod.id);
+  });
+
+  it('uses adjusted deployment release items as the final production inclusion set', async () => {
+    const includedTicket = createSupportTicket({ projectId: PROJECT, body: 'ship this' });
+    const excludedTicket = createSupportTicket({ projectId: PROJECT, body: 'not this one' });
+    const untouchedTicket = createSupportTicket({ projectId: PROJECT, body: 'auto-resolved card' });
+    const directTicket = createSupportTicket({ projectId: PROJECT, body: 'direct ticket include' });
+    const includedCardId = createLinkedCard(PROJECT, includedTicket.id);
+    const excludedCardId = createLinkedCard(PROJECT, excludedTicket.id);
+    const untouchedCardId = createLinkedCard(PROJECT, untouchedTicket.id);
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'prod-sha',
+        worktreePath: WORKTREE,
+        config: REVIEW_RELEASE_CONFIG,
+        meta: {
+          cardIds: [includedCardId, excludedCardId, untouchedCardId],
+          supportTicketIds: [directTicket.id, excludedTicket.id],
+        },
+      },
+      makeDeps(fb.backend),
+    );
+    expect(parked.status).toBe('awaiting_approval');
+
+    ensureDeploymentReleaseItem({ deploymentId: parked.id, cardId: includedCardId });
+    setDeploymentReleaseItemInclusion({
+      deploymentId: parked.id,
+      cardId: excludedCardId,
+      inclusionStatus: 'excluded',
+      adjustedBy: 'user-1',
+      note: 'internal-only change',
+      meta: { source: 'test' },
+    });
+
+    const broadcast = vi.fn();
+    const approved = await approveDeployment(
+      {
+        deploymentId: parked.id,
+        approverUserId: 'user-1',
+        approverRole: 'Admin',
+      },
+      makeDeps(fb.backend, broadcast),
+    );
+
+    expect(approved.status).toBe('success');
+    expect(getSupportTicket(includedTicket.id)!.release_deployment_id).toBe(parked.id);
+    expect(getSupportTicket(untouchedTicket.id)!.release_deployment_id).toBe(parked.id);
+    expect(getSupportTicket(directTicket.id)!.release_deployment_id).toBe(parked.id);
+    expect(getSupportTicket(excludedTicket.id)!.released_to_prod_at).toBeNull();
+    expect(
+      listDeploymentReleaseItems(parked.id)
+        .map((item) => ({ cardId: item.card_id, inclusionStatus: item.inclusion_status }))
+        .sort((a, b) => String(a.cardId).localeCompare(String(b.cardId))),
+    ).toEqual(
+      [
+        { cardId: excludedCardId, inclusionStatus: 'excluded' },
+        { cardId: includedCardId, inclusionStatus: 'included' },
+        { cardId: untouchedCardId, inclusionStatus: 'included' },
+      ].sort((a, b) => a.cardId.localeCompare(b.cardId)),
+    );
+    const releasedTicketIds = broadcast.mock.calls
+      .map(([msg]) => msg as { type?: string; ticket?: { id?: string } })
+      .filter((msg) => msg.type === 'support_ticket_updated')
+      .map((msg) => msg.ticket?.id);
+    expect(releasedTicketIds).toContain(includedTicket.id);
+    expect(releasedTicketIds).toContain(untouchedTicket.id);
+    expect(releasedTicketIds).toContain(directTicket.id);
+    expect(releasedTicketIds).not.toContain(excludedTicket.id);
+  });
+
+  it('does not release explicit support tickets linked to excluded cards', async () => {
+    const excludedTicket = createSupportTicket({ projectId: PROJECT, body: 'do not ship' });
+    const excludedCardId = createLinkedCard(PROJECT, excludedTicket.id);
+    getDb()
+      .prepare(
+        `UPDATE kanban_columns
+            SET name = 'In Progress'
+          WHERE id = (SELECT column_id FROM kanban_cards WHERE id = ?)`,
+      )
+      .run(excludedCardId);
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+
+    const parked = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'prod-sha',
+        worktreePath: WORKTREE,
+        config: REVIEW_RELEASE_CONFIG,
+        meta: { supportTicketIds: [excludedTicket.id] },
+      },
+      makeDeps(fb.backend),
+    );
+    expect(parked.status).toBe('awaiting_approval');
+
+    setDeploymentReleaseItemInclusion({
+      deploymentId: parked.id,
+      cardId: excludedCardId,
+      inclusionStatus: 'excluded',
+      adjustedBy: 'user-1',
+      note: 'not in this release',
+      supportTicketId: null,
+      meta: { source: 'test' },
+    });
+
+    const broadcast = vi.fn();
+    const approved = await approveDeployment(
+      {
+        deploymentId: parked.id,
+        approverUserId: 'user-1',
+        approverRole: 'Admin',
+      },
+      makeDeps(fb.backend, broadcast),
+    );
+
+    expect(approved.status).toBe('success');
+    expect(getSupportTicket(excludedTicket.id)!.released_to_prod_at).toBeNull();
+    expect(getSupportTicket(excludedTicket.id)!.release_deployment_id).toBeNull();
+    expect(
+      listDeploymentReleaseItems(parked.id).find((item) => item.card_id === excludedCardId),
+    ).toMatchObject({
+      inclusion_status: 'excluded',
+      support_ticket_id: null,
+    });
+    expect(
+      broadcast.mock.calls.some(([msg]) => {
+        const event = msg as { type?: string; ticket?: { id?: string } };
+        return event.type === 'support_ticket_updated' && event.ticket?.id === excludedTicket.id;
+      }),
+    ).toBe(false);
   });
 });
 

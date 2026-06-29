@@ -71,6 +71,7 @@ import {
 import {
   countUnreadSupportTickets,
   markSupportTicketsReleasedToProd,
+  supportTicketIdsForCards,
 } from '../support-tickets-store.js';
 import { serializeSupportTicketForBroadcast } from '../support-ticket-serialization.js';
 
@@ -449,6 +450,7 @@ function markReleasedSupportTicketsForDeployment(
 ): void {
   if (!isProductionEnvironment(deployment.environment)) return;
   const meta = parseReleaseInclusionMeta(deployment.meta);
+  const explicitSupportTicketIds = meta.supportTicketIds;
   const resolution = resolveDeploymentReleaseCandidates({
     projectId: deployment.project_id,
     ...meta,
@@ -460,16 +462,34 @@ function markReleasedSupportTicketsForDeployment(
     deployment,
     candidates: resolution.candidates,
   });
-  const cardIds = releaseItems
+  const includedReleaseItems = releaseItems.filter((item) => item.inclusion_status === 'included');
+  const excludedReleaseItems = releaseItems.filter((item) => item.inclusion_status === 'excluded');
+  const excludedCardIds = excludedReleaseItems
+    .map((item) => item.card_id)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  const excludedSupportTicketIds = new Set(
+    [
+      ...excludedReleaseItems.map((item) => item.support_ticket_id),
+      ...supportTicketIdsForCards(deployment.project_id, excludedCardIds),
+    ].filter((id): id is string => typeof id === 'string' && id.length > 0),
+  );
+  const cardIds = includedReleaseItems
     .map((item) => item.card_id)
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
   const supportTicketIds = [
-    ...new Set([...releaseItems.map((item) => item.support_ticket_id), ...meta.supportTicketIds]),
-  ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+    ...new Set([
+      ...includedReleaseItems.map((item) => item.support_ticket_id),
+      ...explicitSupportTicketIds,
+    ]),
+  ].filter(
+    (id): id is string =>
+      typeof id === 'string' && id.length > 0 && !excludedSupportTicketIds.has(id),
+  );
   console.info(
     `[deploy-release-resolver] deployment=${deployment.id} project=${deployment.project_id} ` +
       `env=${deployment.environment} ref=${deployment.ref} ` +
-      `resolvedItems=${releaseItems.length} resolvedCards=${cardIds.length} ` +
+      `resolvedItems=${releaseItems.length} ` +
+      `resolvedCards=${includedReleaseItems.length} ` +
       `resolvedSupportTickets=${supportTicketIds.length} ` +
       `missingExplicitCards=${resolution.diagnostics.missingExplicitCardIds.length} ` +
       `missingExplicitTickets=${resolution.diagnostics.missingExplicitSupportTicketIds.length}`,

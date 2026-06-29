@@ -9,6 +9,7 @@ import { api } from '../utils/api';
     getProjectBranches: vi.fn(),
     getGitHostBranches: vi.fn(),
     getDeployment: vi.fn(),
+    adjustDeploymentReleaseItem: vi.fn(),
     startDeployWizard: vi.fn(),
     triggerDeployment: vi.fn(),
     rollbackDeployment: vi.fn(),
@@ -53,8 +54,40 @@ function step(over: any = {}) {
   };
 }
 
-function snapshot(dep = deployment(), steps = [step()]) {
-  return { deployment: dep, steps, approvals: [] };
+function releaseItem(over: any = {}) {
+  return {
+    id: 'ri-1',
+    deployment_id: 'dep-1',
+    card_id: 'card-1',
+    support_ticket_id: 'ticket-1',
+    source: 'derived',
+    inclusion_status: 'included',
+    operator_adjusted_by: null,
+    operator_adjustment_note: null,
+    operator_adjustment_meta: null,
+    operator_adjusted_at: null,
+    created_at: '2026-06-25 12:00:00',
+    updated_at: '2026-06-25 12:00:00',
+    card: {
+      id: 'card-1',
+      title: 'Fix export crash',
+      shortId: 1227,
+      priority: 'medium',
+      columnName: 'Done',
+    },
+    supportTicket: {
+      id: 'ticket-1',
+      subject: 'Export fails',
+      status: 'new',
+      type: 'bug',
+      releaseState: null,
+    },
+    ...over,
+  };
+}
+
+function snapshot(dep = deployment(), steps = [step()], releaseItems = [releaseItem()]) {
+  return { deployment: dep, steps, approvals: [], releaseItems };
 }
 
 function env(over: any = {}) {
@@ -99,6 +132,10 @@ beforeEach(() => {
   });
   (api.getGitHostBranches as any).mockRejectedValue(new Error('not hosted'));
   (api.getDeployment as any).mockResolvedValue(snapshot());
+  (api.adjustDeploymentReleaseItem as any).mockResolvedValue({
+    releaseItem: releaseItem({ inclusion_status: 'excluded' }),
+    releaseItems: [releaseItem({ inclusion_status: 'excluded' })],
+  });
   (api.startDeployWizard as any).mockResolvedValue({
     sessionId: 'setup-session-1',
     agentId: 'agent-1',
@@ -125,6 +162,10 @@ describe('DeploymentsPage', () => {
     expect(within(card).getByLabelText('Ref for dev')).toHaveValue('main');
     expect(within(card).getByLabelText('Manual ref for dev')).toHaveValue('main');
     expect(await screen.findByText('1. build')).toBeInTheDocument();
+    expect(await screen.findByText('#1227 Fix export crash')).toBeInTheDocument();
+    expect(screen.getByText(/Export fails/)).toBeInTheDocument();
+    expect(screen.getByText('included')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Exclude' })).toBeInTheDocument();
   });
 
   it('defaults deployment targets to the repo default branch instead of the live SHA', async () => {

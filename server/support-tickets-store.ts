@@ -398,7 +398,7 @@ function rowsByIds(ids: string[]): SupportTicketRow[] {
     .all(...ids) as SupportTicketRow[];
 }
 
-function supportTicketIdsForCards(projectId: string, cardIds: string[]): string[] {
+export function supportTicketIdsForCards(projectId: string, cardIds: string[]): string[] {
   if (!cardIds.length) return [];
   const placeholders = cardIds.map(() => '?').join(',');
   const rows = getDb()

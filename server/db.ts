@@ -3384,6 +3384,28 @@ function initDb(dataDir: string): void {
         WHERE deployment_id = ?
         ORDER BY created_at ASC, rowid ASC`,
     ),
+    listDeploymentReleaseItemsWithContext: db.prepare(
+      `SELECT ri.*,
+              c.title AS card_title,
+              c.short_id AS card_short_id,
+              c.priority AS card_priority,
+              col.name AS card_column_name,
+              st.subject AS support_ticket_subject,
+              st.status AS support_ticket_status,
+              st.type AS support_ticket_type,
+              st.fixed_at AS support_ticket_fixed_at,
+              st.released_to_prod_at AS support_ticket_released_to_prod_at,
+              st.customer_notified_at AS support_ticket_customer_notified_at
+         FROM deployment_release_items ri
+         JOIN kanban_cards c
+           ON c.id = ri.card_id
+         LEFT JOIN kanban_columns col
+           ON col.id = c.column_id
+         LEFT JOIN support_tickets st
+           ON st.id = ri.support_ticket_id
+        WHERE ri.deployment_id = ?
+        ORDER BY ri.created_at ASC, ri.rowid ASC`,
+    ),
     // Sessions
     createSession: db.prepare(
       'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

@@ -341,6 +341,19 @@ export interface DeploymentReleaseItemRow {
   updated_at: string;
 }
 
+export interface DeploymentReleaseItemDetailRow extends DeploymentReleaseItemRow {
+  card_title: string;
+  card_short_id: number | null;
+  card_priority: string | null;
+  card_column_name: string | null;
+  support_ticket_subject: string | null;
+  support_ticket_status: string | null;
+  support_ticket_type: string | null;
+  support_ticket_fixed_at: string | null;
+  support_ticket_released_to_prod_at: string | null;
+  support_ticket_customer_notified_at: string | null;
+}
+
 export interface HeartbeatLogRow {
   id: number;
   agent_id: string;
@@ -1536,6 +1549,7 @@ export interface Stmts {
   updateDeploymentReleaseItemTicket: Stmt;
   updateDeploymentReleaseItemAdjustment: Stmt;
   listDeploymentReleaseItems: Stmt;
+  listDeploymentReleaseItemsWithContext: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;

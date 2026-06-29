@@ -3692,6 +3692,65 @@ components:
         - operator_adjusted_at
         - created_at
         - updated_at
+    DeploymentReleaseItemReview:
+      allOf:
+        - $ref: "#/components/schemas/DeploymentReleaseItem"
+        - type: object
+          properties:
+            card:
+              type: object
+              properties:
+                id:
+                  type: string
+                title:
+                  type: string
+                shortId:
+                  type: integer
+                  nullable: true
+                priority:
+                  type: string
+                  nullable: true
+                columnName:
+                  type: string
+                  nullable: true
+              required:
+                - id
+                - title
+                - shortId
+                - priority
+                - columnName
+            supportTicket:
+              type: object
+              nullable: true
+              properties:
+                id:
+                  type: string
+                subject:
+                  type: string
+                  nullable: true
+                status:
+                  type: string
+                  nullable: true
+                type:
+                  type: string
+                  nullable: true
+                releaseState:
+                  type: string
+                  nullable: true
+                  enum:
+                    - fixed_pending_release
+                    - released_to_prod
+                    - customer_notified
+                    - null
+              required:
+                - id
+                - subject
+                - status
+                - type
+                - releaseState
+          required:
+            - card
+            - supportTicket
     DeploymentEnvironment:
       type: object
       properties:
@@ -3851,7 +3910,7 @@ components:
         releaseItems:
           type: array
           items:
-            $ref: "#/components/schemas/DeploymentReleaseItem"
+            $ref: "#/components/schemas/DeploymentReleaseItemReview"
         environment:
           allOf:
             - $ref: "#/components/schemas/DeploymentEnvironment"
@@ -3875,6 +3934,27 @@ components:
         - environment
         - history
         - logs
+    DeploymentReleaseItemListResponse:
+      type: object
+      properties:
+        releaseItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentReleaseItemReview"
+      required:
+        - releaseItems
+    DeploymentReleaseItemResponse:
+      type: object
+      properties:
+        releaseItem:
+          $ref: "#/components/schemas/DeploymentReleaseItemReview"
+        releaseItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentReleaseItemReview"
+      required:
+        - releaseItem
+        - releaseItems
     DeploymentActionResponse:
       type: object
       properties:
@@ -16356,6 +16436,110 @@ paths:
                 $ref: "#/components/schemas/DeploymentDetailResponse"
         "404":
           description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/release-items:
+    get:
+      tags:
+        - Deployments
+      summary: List reviewed release items for a deployment
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      responses:
+        "200":
+          description: Release items with card and support-ticket review context.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentReleaseItemListResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/release-items/{cardId}:
+    put:
+      tags:
+        - Deployments
+      summary: Include or exclude a linked card in a deployment release
+      description: Admin+. Creates a release item for a missed card or updates an existing item, stamping operator audit fields with the caller, timestamp, and reason.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: cardId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inclusionStatus:
+                  type: string
+                  enum:
+                    - included
+                    - excluded
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                supportTicketId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+              required:
+                - inclusionStatus
+                - reason
+      responses:
+        "200":
+          description: Adjusted release item and refreshed release item list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentReleaseItemResponse"
+        "400":
+          description: Invalid request body or support-ticket link.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project, deployment, or card not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Deployment release items are no longer reviewable.
           content:
             application/json:
               schema:

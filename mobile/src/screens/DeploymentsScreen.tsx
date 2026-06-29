@@ -33,6 +33,9 @@ import {
   isMissingDeployConfigError,
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
+  releaseItemCardLabel,
+  releaseItemStatusLabel,
+  releaseItemSupportLabel,
   shortDeploymentRef,
 } from '../utils/deployments';
 import { parseDate, relativeTime } from '../utils/time';
@@ -136,13 +139,13 @@ export default function DeploymentsScreen({ route, navigation }: any) {
     async (deployment: any) => {
       if (!projectId || !deployment?.id) return;
       selectedIdRef.current = deployment.id;
-      setSelected({ deployment, steps: [], approvals: [] });
+      setSelected({ deployment, steps: [], approvals: [], releaseItems: [] });
       try {
         const detail = await api.getDeployment(projectId, deployment.id);
         if (selectedIdRef.current === deployment.id) setSelected(detail);
       } catch {
         if (selectedIdRef.current === deployment.id) {
-          setSelected({ deployment, steps: [], approvals: [] });
+          setSelected({ deployment, steps: [], approvals: [], releaseItems: [] });
         }
       }
     },
@@ -231,6 +234,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         steps: snapshot.steps || [],
         approvals: snapshot.approvals || prev?.approvals || [],
         logs: snapshot.logs || prev?.logs || [],
+        releaseItems: snapshot.releaseItems || prev?.releaseItems || [],
       }));
     }
     const event = deploymentEventFromSnapshot(snapshot);
@@ -270,6 +274,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const selectedDeployment = selected?.deployment;
   const selectedSteps = selected?.steps || [];
   const selectedLogs = selected?.logs || [];
+  const selectedReleaseItems = selected?.releaseItems || [];
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -545,6 +550,78 @@ export default function DeploymentsScreen({ route, navigation }: any) {
               );
             })
           )}
+
+          {selectedDeployment ? (
+            <View style={styles.releaseSection}>
+              <View style={styles.releaseHeader}>
+                <Text style={styles.releaseTitle}>Release items</Text>
+                <Text style={styles.releaseCount}>
+                  {
+                    selectedReleaseItems.filter((item: any) => item.inclusion_status !== 'excluded')
+                      .length
+                  }{' '}
+                  included
+                </Text>
+              </View>
+              {selectedReleaseItems.length === 0 ? (
+                <Text style={styles.emptyText}>No release items recorded for this deployment.</Text>
+              ) : (
+                selectedReleaseItems.map((item: any) => {
+                  const excluded = item.inclusion_status === 'excluded';
+                  return (
+                    <View key={item.id} style={styles.releaseItemCard}>
+                      <View style={styles.releaseItemHeader}>
+                        <Text style={styles.releaseItemTitle} numberOfLines={1}>
+                          {releaseItemCardLabel(item)}
+                        </Text>
+                        <View
+                          style={[
+                            styles.releaseBadge,
+                            excluded ? styles.releaseBadgeExcluded : styles.releaseBadgeIncluded,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.releaseBadgeText,
+                              excluded
+                                ? styles.releaseBadgeTextExcluded
+                                : styles.releaseBadgeTextIncluded,
+                            ]}
+                          >
+                            {releaseItemStatusLabel(item)}
+                          </Text>
+                        </View>
+                      </View>
+                      {item.supportTicket?.id ? (
+                        <TouchableOpacity
+                          onPress={() =>
+                            navigation.navigate('CustomerSupport', {
+                              projectId,
+                              ticketId: item.supportTicket.id,
+                            })
+                          }
+                          accessibilityRole="link"
+                        >
+                          <Text style={styles.releaseTicketText} numberOfLines={2}>
+                            {releaseItemSupportLabel(item)}
+                          </Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <Text style={styles.releaseTicketMutedText} numberOfLines={2}>
+                          {releaseItemSupportLabel(item)}
+                        </Text>
+                      )}
+                      {item.operator_adjustment_note ? (
+                        <Text style={styles.releaseReasonText} numberOfLines={2}>
+                          Last reason: {item.operator_adjustment_note}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.detailCard}>
@@ -763,6 +840,37 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: colors.black60,
   },
+  releaseSection: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    paddingTop: 10,
+    gap: 8,
+  },
+  releaseHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  releaseTitle: { color: colors.gray300, fontSize: 12, fontWeight: '700' },
+  releaseCount: { color: colors.gray500, fontSize: 12 },
+  releaseItemCard: {
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 7,
+    padding: 10,
+    backgroundColor: colors.gray950,
+    gap: 6,
+  },
+  releaseItemHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  releaseItemTitle: { flex: 1, minWidth: 0, color: colors.gray200, fontSize: 13, fontWeight: '700' },
+  releaseBadge: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
+  releaseBadgeIncluded: {
+    borderColor: colors.emerald500,
+    backgroundColor: colors.emerald900_40,
+  },
+  releaseBadgeExcluded: { borderColor: colors.amber400, backgroundColor: colors.amber900_40 },
+  releaseBadgeText: { fontSize: 11, fontWeight: '700' },
+  releaseBadgeTextIncluded: { color: colors.emerald300 },
+  releaseBadgeTextExcluded: { color: colors.amber400 },
+  releaseTicketText: { color: colors.blue300, fontSize: 12, lineHeight: 17 },
+  releaseTicketMutedText: { color: colors.gray500, fontSize: 12, lineHeight: 17 },
+  releaseReasonText: { color: colors.gray500, fontSize: 11, lineHeight: 16 },
   eventRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -20,6 +20,7 @@ import type {
   DeploymentStepRow,
   DeploymentEnvironmentRow,
   DeploymentApprovalRow,
+  DeploymentReleaseItemDetailRow,
   DeploymentReleaseItemInclusionStatus,
   DeploymentReleaseItemRow,
   DeploymentReleaseItemSource,
@@ -643,6 +644,49 @@ export function getDeploymentReleaseItemByDeploymentCard(
 
 export function listDeploymentReleaseItems(deploymentId: string): DeploymentReleaseItemRow[] {
   return getStmts().listDeploymentReleaseItems.all(deploymentId) as DeploymentReleaseItemRow[];
+}
+
+export function listDeploymentReleaseItemsWithContext(
+  deploymentId: string,
+): DeploymentReleaseItemDetailRow[] {
+  return getStmts().listDeploymentReleaseItemsWithContext.all(
+    deploymentId,
+  ) as DeploymentReleaseItemDetailRow[];
+}
+
+export function listIncludedDeploymentReleaseItems(
+  deploymentId: string,
+): DeploymentReleaseItemRow[] {
+  return listDeploymentReleaseItems(deploymentId).filter(
+    (item) => item.inclusion_status === 'included',
+  );
+}
+
+export interface SetDeploymentReleaseItemInclusionInput {
+  deploymentId: string;
+  cardId: string;
+  inclusionStatus: DeploymentReleaseItemInclusionStatus;
+  adjustedBy?: string | null;
+  note: string;
+  meta?: unknown;
+  supportTicketId?: string | null;
+}
+
+export function setDeploymentReleaseItemInclusion(
+  input: SetDeploymentReleaseItemInclusionInput,
+): DeploymentReleaseItemRow {
+  return ensureDeploymentReleaseItem({
+    deploymentId: input.deploymentId,
+    cardId: input.cardId,
+    supportTicketId: input.supportTicketId,
+    source: 'operator',
+    inclusionStatus: input.inclusionStatus,
+    operatorAdjustment: {
+      adjustedBy: input.adjustedBy ?? null,
+      note: input.note,
+      meta: input.meta,
+    },
+  });
 }
 
 /**

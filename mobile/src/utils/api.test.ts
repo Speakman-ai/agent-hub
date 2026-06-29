@@ -218,6 +218,19 @@ describe('api deployment helpers — URL + body parity with web client', () => {
         expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-1');
         expect(init.method ?? 'GET').toBe('GET');
     });
+    it('adjustDeploymentReleaseItem PUTs inclusion status and reason', async () => {
+        await api.adjustDeploymentReleaseItem('agent-hub', 'dep-1', 'card-1', {
+            inclusionStatus: 'excluded',
+            reason: 'not customer-facing',
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/deployments/dep-1/release-items/card-1');
+        expect(init.method).toBe('PUT');
+        expect(JSON.parse(init.body)).toEqual({
+            inclusionStatus: 'excluded',
+            reason: 'not customer-facing',
+        });
+    });
     it('triggerDeployment posts environment plus ref', async () => {
         await api.triggerDeployment('agent-hub', 'prod', { ref: 'release-1' });
         const [url, init] = lastCall();

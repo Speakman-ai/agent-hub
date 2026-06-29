@@ -44,6 +44,12 @@ export const RollbackDeploymentRequestSchema = z.object({
   meta: z.unknown().optional(),
 });
 
+export const AdjustDeploymentReleaseItemRequestSchema = z.object({
+  inclusionStatus: z.enum(['included', 'excluded']),
+  reason: z.string().trim().min(1).max(2000),
+  supportTicketId: z.string().min(1).nullable().optional(),
+});
+
 export const DeploymentSchema = registerComponent(
   'Deployment',
   z.object({
@@ -109,6 +115,30 @@ export const DeploymentReleaseItemSchema = registerComponent(
     operator_adjusted_at: z.string().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
+  }),
+);
+
+export const DeploymentReleaseItemReviewSchema = registerComponent(
+  'DeploymentReleaseItemReview',
+  DeploymentReleaseItemSchema.extend({
+    card: z.object({
+      id: z.string(),
+      title: z.string(),
+      shortId: z.number().int().nullable(),
+      priority: z.string().nullable(),
+      columnName: z.string().nullable(),
+    }),
+    supportTicket: z
+      .object({
+        id: z.string(),
+        subject: z.string().nullable(),
+        status: z.string().nullable(),
+        type: z.string().nullable(),
+        releaseState: z
+          .enum(['fixed_pending_release', 'released_to_prod', 'customer_notified'])
+          .nullable(),
+      })
+      .nullable(),
   }),
 );
 
@@ -186,10 +216,25 @@ const DeploymentDetailResponseSchema = registerComponent(
     deployment: DeploymentSchema,
     steps: z.array(DeploymentStepSchema),
     approvals: z.array(DeploymentApprovalSchema),
-    releaseItems: z.array(DeploymentReleaseItemSchema),
+    releaseItems: z.array(DeploymentReleaseItemReviewSchema),
     environment: DeploymentEnvironmentSchema.nullable(),
     history: z.array(DeploymentSchema),
     logs: z.array(z.object({}).passthrough()),
+  }),
+);
+
+const DeploymentReleaseItemListResponseSchema = registerComponent(
+  'DeploymentReleaseItemListResponse',
+  z.object({
+    releaseItems: z.array(DeploymentReleaseItemReviewSchema),
+  }),
+);
+
+const DeploymentReleaseItemResponseSchema = registerComponent(
+  'DeploymentReleaseItemResponse',
+  z.object({
+    releaseItem: DeploymentReleaseItemReviewSchema,
+    releaseItems: z.array(DeploymentReleaseItemReviewSchema),
   }),
 );
 
@@ -212,6 +257,11 @@ const errorResponse = (description: string) => ({
 
 const projectParams = z.object({ projectId: z.string() });
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
+const deploymentReleaseItemParams = z.object({
+  projectId: z.string(),
+  deploymentId: z.string(),
+  cardId: z.string(),
+});
 
 registerPath({
   method: 'post',
@@ -296,6 +346,44 @@ registerPath({
       content: jsonContent(DeploymentDetailResponseSchema),
     },
     404: errorResponse('Project or deployment not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deployments/{deploymentId}/release-items',
+  tags: ['Deployments'],
+  summary: 'List reviewed release items for a deployment',
+  request: { params: deploymentParams },
+  responses: {
+    200: {
+      description: 'Release items with card and support-ticket review context.',
+      content: jsonContent(DeploymentReleaseItemListResponseSchema),
+    },
+    404: errorResponse('Project or deployment not found.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/deployments/{deploymentId}/release-items/{cardId}',
+  tags: ['Deployments'],
+  summary: 'Include or exclude a linked card in a deployment release',
+  description:
+    'Admin+. Creates a release item for a missed card or updates an existing item, stamping operator audit fields with the caller, timestamp, and reason.',
+  request: {
+    params: deploymentReleaseItemParams,
+    body: { content: jsonContent(AdjustDeploymentReleaseItemRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Adjusted release item and refreshed release item list.',
+      content: jsonContent(DeploymentReleaseItemResponseSchema),
+    },
+    400: errorResponse('Invalid request body or support-ticket link.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project, deployment, or card not found.'),
+    409: errorResponse('Deployment release items are no longer reviewable.'),
   },
 });
 

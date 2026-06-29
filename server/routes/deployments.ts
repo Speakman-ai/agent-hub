@@ -10,6 +10,7 @@ import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import type {
   Agent,
   DeploymentApprovalRow,
+  DeploymentReleaseItemDetailRow,
   DeploymentRow,
   DeploymentStepRow,
   Project,
@@ -34,17 +35,21 @@ import {
 import {
   getDeployment,
   getDeploymentEnvironment,
-  listDeploymentReleaseItems,
+  DeploymentReleaseItemError,
+  listDeploymentReleaseItemsWithContext,
   listDeploymentApprovals,
   listDeployments,
   listDeploymentsForEnvironment,
   listDeploymentSteps,
+  setDeploymentReleaseItemInclusion,
 } from '../deploy/deployment-store.js';
+import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import {
   DeploymentCheckoutError,
   prepareDeploymentCheckout,
 } from '../deploy/deployment-checkout.js';
 import {
+  AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
   CancelDeploymentRequestSchema,
   DeploymentListQuerySchema,
@@ -71,6 +76,53 @@ function parseMeta(meta: string | null): unknown | null {
 
 function deploymentDto(row: DeploymentRow): Record<string, unknown> {
   return { ...row, meta: parseMeta(row.meta) };
+}
+
+function releaseItemDto(row: DeploymentReleaseItemDetailRow): Record<string, unknown> {
+  const supportTicket =
+    row.support_ticket_id === null
+      ? null
+      : {
+          id: row.support_ticket_id,
+          subject: row.support_ticket_subject,
+          status: row.support_ticket_status,
+          type: row.support_ticket_type,
+          releaseState: deriveSupportTicketReleaseState({
+            fixed_at: row.support_ticket_fixed_at,
+            released_to_prod_at: row.support_ticket_released_to_prod_at,
+            customer_notified_at: row.support_ticket_customer_notified_at,
+          }),
+        };
+  return {
+    id: row.id,
+    deployment_id: row.deployment_id,
+    card_id: row.card_id,
+    support_ticket_id: row.support_ticket_id,
+    source: row.source,
+    inclusion_status: row.inclusion_status,
+    operator_adjusted_by: row.operator_adjusted_by,
+    operator_adjustment_note: row.operator_adjustment_note,
+    operator_adjustment_meta: row.operator_adjustment_meta,
+    operator_adjusted_at: row.operator_adjusted_at,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    card: {
+      id: row.card_id,
+      title: row.card_title,
+      shortId: row.card_short_id,
+      priority: row.card_priority,
+      columnName: row.card_column_name,
+    },
+    supportTicket,
+  };
+}
+
+function releaseItemsDto(deploymentId: string): Record<string, unknown>[] {
+  return listDeploymentReleaseItemsWithContext(deploymentId).map(releaseItemDto);
+}
+
+function deploymentAllowsReleaseItemAdjustments(deployment: DeploymentRow): boolean {
+  return deployment.status === 'awaiting_approval';
 }
 
 function nullableDeploymentDto(
@@ -360,6 +412,17 @@ function mapCancelError(err: unknown, res: Response): Response {
   return res.status(500).json({ error: message });
 }
 
+function mapReleaseItemError(err: unknown, res: Response): Response {
+  if (err instanceof DeploymentReleaseItemError) {
+    if (err.reason === 'not_found' || err.reason === 'cross_project') {
+      return res.status(404).json({ error: err.message });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return res.status(500).json({ error: message });
+}
+
 export default function createDeploymentRoutes(
   deps: RouteDeps,
   opts: DeploymentRouteOptions = {},
@@ -549,13 +612,76 @@ export default function createDeploymentRoutes(
         deployment: deploymentDto(deployment),
         steps: listDeploymentSteps(deployment.id),
         approvals: listDeploymentApprovals(deployment.id),
-        releaseItems: listDeploymentReleaseItems(deployment.id),
+        releaseItems: releaseItemsDto(deployment.id),
         environment: getDeploymentEnvironment(projectId, deployment.environment),
         history: listDeploymentsForEnvironment(projectId, deployment.environment, {
           limit: 25,
         }).map(deploymentDto),
         logs: [],
       });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/deployments/:deploymentId/release-items',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
+      if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+      return res.json({ releaseItems: releaseItemsDto(deployment.id) });
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/deployments/:deploymentId/release-items/:cardId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
+      if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+      if (!deploymentAllowsReleaseItemAdjustments(deployment)) {
+        return res.status(409).json({
+          error: 'Release items can only be adjusted while deployment approval is pending',
+        });
+      }
+
+      const parsed = AdjustDeploymentReleaseItemRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ error: 'Invalid request body' });
+      const requestedSupportTicketId = parsed.data.supportTicketId;
+      if (requestedSupportTicketId) {
+        const ticket = getSupportTicket(requestedSupportTicketId);
+        if (!ticket || ticket.project_id !== projectId) {
+          return res.status(400).json({
+            error: `support ticket ${requestedSupportTicketId} does not belong to the deployment project`,
+          });
+        }
+      }
+
+      try {
+        const item = setDeploymentReleaseItemInclusion({
+          deploymentId: deployment.id,
+          cardId: req.params.cardId as string,
+          inclusionStatus: parsed.data.inclusionStatus,
+          adjustedBy: actorUserId(req as AuthenticatedRequest),
+          note: parsed.data.reason,
+          supportTicketId:
+            parsed.data.supportTicketId === undefined ? undefined : parsed.data.supportTicketId,
+          meta: { source: 'release-review-api' },
+        });
+        const releaseItems = releaseItemsDto(deployment.id);
+        const releaseItem = releaseItems.find((candidate) => candidate.id === item.id);
+        if (!releaseItem) {
+          return res.status(500).json({ error: 'Adjusted release item could not be reloaded' });
+        }
+        return res.json({
+          releaseItem,
+          releaseItems,
+        });
+      } catch (err) {
+        return mapReleaseItemError(err, res);
+      }
     },
   );
 

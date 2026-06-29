@@ -145,3 +145,21 @@ export function deploymentStepLogText(step: any, deploymentLogs: any[] = []): st
   }
   return entries.map(formatDeploymentLogEntry).filter(Boolean).join('\n').trim();
 }
+
+export function releaseItemStatusLabel(item: any): string {
+  return item?.inclusion_status === 'excluded' ? 'Excluded' : 'Included';
+}
+
+export function releaseItemCardLabel(item: any): string {
+  const shortId = item?.card?.shortId ?? item?.card_short_id ?? null;
+  const title = item?.card?.title ?? item?.card_title ?? item?.card_id ?? 'Card';
+  return shortId ? `#${shortId} ${title}` : String(title);
+}
+
+export function releaseItemSupportLabel(item: any): string {
+  const ticket = item?.supportTicket;
+  const id = ticket?.id ?? item?.support_ticket_id ?? null;
+  if (!id) return 'No support ticket';
+  const subject = ticket?.subject ?? item?.support_ticket_subject ?? '';
+  return subject ? `${subject} (${id})` : `Support ticket ${id}`;
+}

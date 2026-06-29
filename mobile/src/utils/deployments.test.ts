@@ -8,6 +8,9 @@ import {
   isMissingDeployConfigError,
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
+  releaseItemCardLabel,
+  releaseItemStatusLabel,
+  releaseItemSupportLabel,
   shortDeploymentRef,
 } from './deployments';
 
@@ -161,5 +164,19 @@ describe('deployment state helpers', () => {
     expect(text).toContain('[stdout] ship started');
     expect(text).toContain('[stderr] ship warning');
     expect(text).not.toContain('ignore me');
+  });
+
+  it('formats deployment release item labels', () => {
+    const item = {
+      inclusion_status: 'excluded',
+      card: { shortId: 1227, title: 'Fix customer export' },
+      supportTicket: { id: 'ticket-1', subject: 'Export fails' },
+    };
+
+    expect(releaseItemStatusLabel(item)).toBe('Excluded');
+    expect(releaseItemCardLabel(item)).toBe('#1227 Fix customer export');
+    expect(releaseItemSupportLabel(item)).toBe('Export fails (ticket-1)');
+    expect(releaseItemStatusLabel({ inclusion_status: 'included' })).toBe('Included');
+    expect(releaseItemSupportLabel({ support_ticket_id: null })).toBe('No support ticket');
   });
 });
