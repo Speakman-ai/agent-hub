@@ -137,6 +137,275 @@ export function setDeploymentRunnerJob(id: string, runnerJobId: string): Deploym
   return getDeployment(id);
 }
 
+function uniqueStrings(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function placeholders(values: string[]): string {
+  return values.map(() => '?').join(',');
+}
+
+export interface DeploymentReleaseCandidate {
+  cardId: string | null;
+  supportTicketId: string | null;
+  sources: string[];
+}
+
+export interface DeploymentReleaseResolution {
+  candidates: DeploymentReleaseCandidate[];
+  diagnostics: {
+    explicitCardIds: number;
+    explicitSupportTicketIds: number;
+    prUrls: number;
+    sessionIds: number;
+    refs: number;
+    branches: number;
+    resolvedItems: number;
+    resolvedCards: number;
+    resolvedSupportTickets: number;
+    missingExplicitCardIds: string[];
+    missingExplicitSupportTicketIds: string[];
+  };
+}
+
+export interface ResolveDeploymentReleaseCandidatesInput {
+  projectId: string;
+  cardIds?: string[];
+  supportTicketIds?: string[];
+  prUrls?: string[];
+  sessionIds?: string[];
+  refs?: string[];
+  branches?: string[];
+}
+
+interface ResolvedCardRow {
+  card_id: string;
+  support_ticket_id: string | null;
+}
+
+function releaseCardLookupSql(whereSql: string): string {
+  return `
+    SELECT c.id AS card_id,
+           COALESCE(c.support_ticket_id, c.customer_report_id, st.id) AS support_ticket_id
+      FROM kanban_cards c
+      JOIN kanban_boards b
+        ON b.id = c.board_id
+       AND b.project_id = ?
+      JOIN kanban_columns col
+        ON col.id = c.column_id
+       AND col.name = 'Done'
+ LEFT JOIN support_tickets st
+        ON st.project_id = b.project_id
+       AND st.converted_card_id = c.id
+     WHERE ${whereSql}`;
+}
+
+function resolveReleaseCardsByIds(projectId: string, cardIds: string[]): ResolvedCardRow[] {
+  const ids = uniqueStrings(cardIds);
+  if (!ids.length) return [];
+  return getDb()
+    .prepare(releaseCardLookupSql(`c.id IN (${placeholders(ids)})`))
+    .all(projectId, ...ids) as ResolvedCardRow[];
+}
+
+function resolveReleaseCardsByPrUrls(projectId: string, prUrls: string[]): ResolvedCardRow[] {
+  const urls = uniqueStrings(prUrls);
+  if (!urls.length) return [];
+  return getDb()
+    .prepare(releaseCardLookupSql(`c.pr_url IN (${placeholders(urls)})`))
+    .all(projectId, ...urls) as ResolvedCardRow[];
+}
+
+function resolveReleaseCardsBySessionIds(
+  projectId: string,
+  sessionIds: string[],
+): ResolvedCardRow[] {
+  const ids = uniqueStrings(sessionIds);
+  if (!ids.length) return [];
+  return getDb()
+    .prepare(releaseCardLookupSql(`c.session_id IN (${placeholders(ids)})`))
+    .all(projectId, ...ids) as ResolvedCardRow[];
+}
+
+function resolveReleaseCardsByFinalizeSql(
+  projectId: string,
+  whereSql: string,
+  values: string[],
+): ResolvedCardRow[] {
+  const bindValues = values.map((value) => value.trim()).filter(Boolean);
+  if (!bindValues.length) return [];
+  return getDb()
+    .prepare(
+      releaseCardLookupSql(`c.id IN (
+        SELECT DISTINCT fr.card_id
+          FROM finalize_runs fr
+         WHERE fr.project_id = ?
+           AND fr.status = 'pushed'
+           AND fr.card_id IS NOT NULL
+           AND ${whereSql}
+      )`),
+    )
+    .all(projectId, projectId, ...bindValues) as ResolvedCardRow[];
+}
+
+function addReleaseCandidate(
+  candidates: Map<string, DeploymentReleaseCandidate>,
+  row: { card_id?: string | null; support_ticket_id?: string | null },
+  source: string,
+): void {
+  const cardId = row.card_id ?? null;
+  const supportTicketId = row.support_ticket_id ?? null;
+  if (!cardId && !supportTicketId) return;
+  const key = cardId ? `card:${cardId}` : `ticket:${supportTicketId}`;
+  const existing = candidates.get(key);
+  if (existing) {
+    if (!existing.sources.includes(source)) existing.sources.push(source);
+    if (!existing.supportTicketId && supportTicketId) existing.supportTicketId = supportTicketId;
+    return;
+  }
+  candidates.set(key, {
+    cardId,
+    supportTicketId,
+    sources: [source],
+  });
+}
+
+function addReleaseCardRows(
+  candidates: Map<string, DeploymentReleaseCandidate>,
+  rows: ResolvedCardRow[],
+  source: string,
+): void {
+  for (const row of rows) addReleaseCandidate(candidates, row, source);
+}
+
+function addSupportTicketRows(
+  projectId: string,
+  candidates: Map<string, DeploymentReleaseCandidate>,
+  supportTicketIds: string[],
+): string[] {
+  const ids = uniqueStrings(supportTicketIds);
+  if (!ids.length) return [];
+  const rows = getDb()
+    .prepare(
+      `SELECT id, converted_card_id
+         FROM support_tickets
+        WHERE project_id = ?
+          AND id IN (${placeholders(ids)})`,
+    )
+    .all(projectId, ...ids) as Array<{ id: string; converted_card_id: string | null }>;
+  const found = new Set(rows.map((row) => row.id));
+  for (const row of rows) {
+    if (row.converted_card_id) {
+      addReleaseCardRows(
+        candidates,
+        resolveReleaseCardsByIds(projectId, [row.converted_card_id]),
+        'explicit_ticket_card',
+      );
+    }
+    const alreadyLinked = [...candidates.values()].some(
+      (candidate) => candidate.supportTicketId === row.id,
+    );
+    if (!alreadyLinked) {
+      addReleaseCandidate(candidates, { support_ticket_id: row.id }, 'explicit_ticket');
+    }
+  }
+  return ids.filter((id) => !found.has(id));
+}
+
+export function resolveDeploymentReleaseCandidates(
+  input: ResolveDeploymentReleaseCandidatesInput,
+): DeploymentReleaseResolution {
+  const projectId = input.projectId;
+  const cardIds = uniqueStrings(input.cardIds);
+  const supportTicketIds = uniqueStrings(input.supportTicketIds);
+  const prUrls = uniqueStrings(input.prUrls);
+  const sessionIds = uniqueStrings(input.sessionIds);
+  const refs = uniqueStrings(input.refs);
+  const branches = uniqueStrings(input.branches);
+  const candidates = new Map<string, DeploymentReleaseCandidate>();
+
+  const explicitCardRows = resolveReleaseCardsByIds(projectId, cardIds);
+  addReleaseCardRows(candidates, explicitCardRows, 'explicit_card');
+  addReleaseCardRows(candidates, resolveReleaseCardsByPrUrls(projectId, prUrls), 'card_pr_url');
+  addReleaseCardRows(
+    candidates,
+    resolveReleaseCardsBySessionIds(projectId, sessionIds),
+    'card_session',
+  );
+  addReleaseCardRows(
+    candidates,
+    resolveReleaseCardsByFinalizeSql(projectId, `fr.pr_url IN (${placeholders(prUrls)})`, prUrls),
+    'finalize_pr_url',
+  );
+  addReleaseCardRows(
+    candidates,
+    resolveReleaseCardsByFinalizeSql(
+      projectId,
+      `fr.session_id IN (${placeholders(sessionIds)})`,
+      sessionIds,
+    ),
+    'finalize_session',
+  );
+  addReleaseCardRows(
+    candidates,
+    resolveReleaseCardsByFinalizeSql(
+      projectId,
+      `(fr.head_sha IN (${placeholders(refs)}) OR fr.validated_head_sha IN (${placeholders(refs)}))`,
+      [...refs, ...refs],
+    ),
+    'finalize_ref',
+  );
+  addReleaseCardRows(
+    candidates,
+    resolveReleaseCardsByFinalizeSql(
+      projectId,
+      `fr.branch IN (${placeholders(branches)})`,
+      branches,
+    ),
+    'finalize_branch',
+  );
+  const missingExplicitSupportTicketIds = addSupportTicketRows(
+    projectId,
+    candidates,
+    supportTicketIds,
+  );
+  const foundExplicitCards = new Set(explicitCardRows.map((row) => row.card_id));
+  const resolved = [...candidates.values()];
+
+  return {
+    candidates: resolved,
+    diagnostics: {
+      explicitCardIds: cardIds.length,
+      explicitSupportTicketIds: supportTicketIds.length,
+      prUrls: prUrls.length,
+      sessionIds: sessionIds.length,
+      refs: refs.length,
+      branches: branches.length,
+      resolvedItems: resolved.length,
+      resolvedCards: resolved.filter((candidate) => candidate.cardId).length,
+      resolvedSupportTickets: resolved.filter((candidate) => candidate.supportTicketId).length,
+      missingExplicitCardIds: cardIds.filter((id) => !foundExplicitCards.has(id)),
+      missingExplicitSupportTicketIds,
+    },
+  };
+}
+
+export function recordDeploymentReleaseItems(input: {
+  deployment: Pick<DeploymentRow, 'id' | 'project_id'>;
+  candidates: DeploymentReleaseCandidate[];
+}): DeploymentReleaseItemRow[] {
+  for (const candidate of input.candidates) {
+    if (!candidate.cardId) continue;
+    ensureDeploymentReleaseItem({
+      deploymentId: input.deployment.id,
+      cardId: candidate.cardId,
+      supportTicketId: candidate.supportTicketId,
+      source: 'derived',
+    });
+  }
+  return listDeploymentReleaseItems(input.deployment.id);
+}
+
 export interface AddDeploymentStepInput {
   deploymentId: string;
   name: string;

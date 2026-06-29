@@ -7,6 +7,9 @@
  *   - `deployments`            — one row per deploy run (a pipeline execution of
  *                                an environment's `.agent-hub/deploy.yaml` steps
  *                                against a single git ref). The unit of history.
+ *   - `deployment_release_items`
+ *                              — auditable card / support-ticket inclusion map
+ *                                for production deployments.
  *   - `deployment_steps`       — per-step state for a run (name, order, status,
  *                                exit code, timing). Mirrors the deploy.yaml step
  *                                list so the UI can render a live progress list.

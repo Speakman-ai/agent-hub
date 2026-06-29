@@ -155,6 +155,30 @@ describe('deployment schema', () => {
     });
   });
 
+  it('defines idempotent release items per deployment/card', () => {
+    db.prepare(
+      "INSERT INTO deployments (id, project_id, environment, ref) VALUES ('d-release','p1','production','abc')",
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO deployment_release_items (id, deployment_id) VALUES ('bad','d-release')",
+        )
+        .run(),
+    ).toThrow(/NOT NULL/i);
+
+    db.prepare(
+      "INSERT INTO deployment_release_items (id, deployment_id, card_id, support_ticket_id) VALUES ('r1','d-release','c1','t1')",
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO deployment_release_items (id, deployment_id, card_id, support_ticket_id) VALUES ('r2','d-release','c1','t1')",
+        )
+        .run(),
+    ).toThrow(/UNIQUE/i);
+  });
+
   it('enforces UNIQUE(project_id, name) on deployment_environments', () => {
     db.prepare(
       "INSERT INTO deployment_environments (id, project_id, name) VALUES ('e1','p1','prod')",

@@ -12,6 +12,7 @@ import { EventEmitter, Readable } from 'stream';
 import { getDb, getStmts } from '../db.js';
 import {
   getDeploymentEnvironment,
+  listDeploymentReleaseItems,
   listDeploymentSteps,
   listDeploymentApprovals,
   createDeployment,
@@ -40,6 +41,7 @@ beforeEach(() => {
   db.exec('DELETE FROM deployment_steps;');
   db.exec('DELETE FROM deployments;');
   db.exec('DELETE FROM deployment_environments;');
+  db.exec('DELETE FROM finalize_runs;');
   db.exec('DELETE FROM support_tickets;');
   db.exec('DELETE FROM kanban_cards;');
   db.exec('DELETE FROM kanban_columns;');
@@ -152,7 +154,11 @@ function makeDeps(backend: RunnerBackend, broadcast = vi.fn()): DeployOrchestrat
   return { broadcast, runnerBackend: backend, env: { PATH: '/usr/bin' } };
 }
 
-function createLinkedCard(projectId: string, supportTicketId: string): string {
+function createLinkedCard(
+  projectId: string,
+  supportTicketId: string,
+  opts: { prUrl?: string; sessionId?: string } = {},
+): string {
   const stmts = getStmts();
   const boardId = `board-${randomUUID()}`;
   const columnId = `col-${randomUUID()}`;
@@ -168,14 +174,55 @@ function createLinkedCard(projectId: string, supportTicketId: string): string {
     'medium',
     null,
     null,
-    null,
+    opts.sessionId ?? null,
     null,
     'test',
     null,
     0,
   );
   stmts.linkKanbanCardSupportTicket.run(supportTicketId, supportTicketId, cardId);
+  if (opts.prUrl) stmts.setCardPrUrl.run(opts.prUrl, cardId);
   return cardId;
+}
+
+function seedPushedFinalizeRun(input: {
+  projectId: string;
+  cardId: string;
+  sessionId?: string | null;
+  branch?: string;
+  headSha: string;
+  validatedHeadSha?: string | null;
+  prUrl?: string | null;
+}): string {
+  const id = `run-${randomUUID()}`;
+  getStmts().insertFinalizeRun.run(
+    id,
+    input.cardId,
+    input.sessionId ?? null,
+    input.projectId,
+    input.branch ?? 'feature/test',
+    input.headSha,
+    `idem-${id}`,
+    'ready_to_push',
+    null,
+    'ui_button',
+    '/tmp/worktree',
+    'user-1',
+    'Agent Hub Dev',
+    'dev@example.com',
+    null,
+    Date.now(),
+    'full',
+    null,
+  );
+  if (input.validatedHeadSha) {
+    getDb()
+      .prepare('UPDATE finalize_runs SET validated_head_sha = ? WHERE id = ?')
+      .run(input.validatedHeadSha, id);
+  }
+  if (input.prUrl) getStmts().updateFinalizeRunPrUrl.run(input.prUrl, id);
+  getStmts().markFinalizeRunPushed.run(id);
+  return id;
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -728,7 +775,7 @@ environments:
     const otherCardId = createLinkedCard(OTHER_PROJECT, otherCardTicket.id);
     const devBackend = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
 
-    await triggerDeployment(
+    const dev = await triggerDeployment(
       {
         projectId: PROJECT,
         environment: 'dev',
@@ -743,6 +790,7 @@ environments:
     expect(getSupportTicket(cardTicket.id)!.released_to_prod_at).toBeNull();
     expect(getSupportTicket(otherTicket.id)!.released_to_prod_at).toBeNull();
     expect(getSupportTicket(otherCardTicket.id)!.released_to_prod_at).toBeNull();
+    expect(listDeploymentReleaseItems(dev.id)).toEqual([]);
 
     const prodBackend = makeFakeBackend([{ exitCode: 0 }]);
     const broadcast = vi.fn();
@@ -768,6 +816,12 @@ environments:
     expect(cardReleased.release_deployment_id).toBe(prod.id);
     expect(getSupportTicket(otherTicket.id)!.released_to_prod_at).toBeNull();
     expect(getSupportTicket(otherCardTicket.id)!.released_to_prod_at).toBeNull();
+    expect(
+      listDeploymentReleaseItems(prod.id).map((item) => ({
+        card_id: item.card_id,
+        support_ticket_id: item.support_ticket_id,
+      })),
+    ).toEqual([{ card_id: cardId, support_ticket_id: cardTicket.id }]);
     const releaseBroadcasts = broadcast.mock.calls
       .map(([msg]) => msg as { type?: string; ticket?: { id?: string; release_state?: string } })
       .filter((msg) => msg.type === 'support_ticket_updated');
@@ -777,6 +831,75 @@ environments:
     expect(releaseBroadcasts.every((msg) => msg.ticket?.release_state === 'released_to_prod')).toBe(
       true,
     );
+  });
+
+  it('derives release items from pushed Finalize metadata when explicit links are partial', async () => {
+    const ticket = createSupportTicket({ projectId: PROJECT, body: 'fixed through finalize' });
+    const cardId = createLinkedCard(PROJECT, ticket.id, {
+      sessionId: 'session-finalize',
+      prUrl: 'https://github.example/acme/app/pull/42',
+    });
+    seedPushedFinalizeRun({
+      projectId: PROJECT,
+      cardId,
+      sessionId: 'session-finalize',
+      branch: 'feature/release-candidate',
+      headSha: 'prod-ref-sha',
+      prUrl: 'https://github.example/acme/app/pull/42',
+    });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    try {
+      const prod = await triggerDeployment(
+        {
+          projectId: PROJECT,
+          environment: 'production',
+          ref: 'prod-ref-sha',
+          worktreePath: WORKTREE,
+          config: RELEASE_CONFIG,
+          meta: {
+            cardIds: ['missing-card'],
+            prUrls: ['https://github.example/acme/app/pull/42'],
+          },
+        },
+        makeDeps(makeFakeBackend([{ exitCode: 0 }]).backend),
+      );
+
+      expect(prod.status).toBe('success');
+      expect(listDeploymentReleaseItems(prod.id).map((item) => item.card_id)).toEqual([cardId]);
+      expect(getSupportTicket(ticket.id)!.release_deployment_id).toBe(prod.id);
+      expect(info).toHaveBeenCalledWith(expect.stringContaining('missingExplicitCards=1'));
+      expect(info).toHaveBeenCalledWith(expect.stringContaining(`deployment=${prod.id}`));
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('derives release items when the production deploy ref is a Finalize branch name', async () => {
+    const ticket = createSupportTicket({ projectId: PROJECT, body: 'fixed from branch deploy' });
+    const cardId = createLinkedCard(PROJECT, ticket.id, { sessionId: 'session-branch' });
+    seedPushedFinalizeRun({
+      projectId: PROJECT,
+      cardId,
+      sessionId: 'session-branch',
+      branch: 'feature/release-candidate',
+      headSha: 'branch-head-sha',
+    });
+
+    const prod = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'feature/release-candidate',
+        worktreePath: WORKTREE,
+        config: RELEASE_CONFIG,
+      },
+      makeDeps(makeFakeBackend([{ exitCode: 0 }]).backend),
+    );
+
+    expect(prod.status).toBe('success');
+    expect(listDeploymentReleaseItems(prod.id).map((item) => item.card_id)).toEqual([cardId]);
+    expect(getSupportTicket(ticket.id)!.release_deployment_id).toBe(prod.id);
   });
 });
 

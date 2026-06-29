@@ -55,7 +55,9 @@ import {
   getDeployment,
   getDeploymentEnvironment,
   listDeploymentSteps,
+  recordDeploymentReleaseItems,
   releaseEnvironmentLock,
+  resolveDeploymentReleaseCandidates,
   setEnvironmentCurrentRef,
   updateDeploymentStatus,
   updateDeploymentStepStatus,
@@ -331,15 +333,14 @@ function parseDeploymentPlan(deployment: DeploymentRow): DeploymentPlanSnapshot 
   };
 }
 
-function stringListFromMetaValue(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .flatMap((item) => {
-      if (typeof item === 'string') return [item];
-      if (!isRecord(item)) return [];
-      const id =
-        item.id ?? item.cardId ?? item.card_id ?? item.supportTicketId ?? item.support_ticket_id;
-      return typeof id === 'string' ? [id] : [];
+function stringListFromMetaValue(value: unknown, keys: string[] = ['id']): string[] {
+  if (typeof value === 'string') return [value.trim()].filter(Boolean);
+  if (Array.isArray(value)) return value.flatMap((item) => stringListFromMetaValue(item, keys));
+  if (!isRecord(value)) return [];
+  return keys
+    .flatMap((key) => {
+      const item = value[key];
+      return typeof item === 'string' ? [item] : [];
     })
     .map((id) => id.trim())
     .filter(Boolean);
@@ -348,29 +349,91 @@ function stringListFromMetaValue(value: unknown): string[] {
 function parseReleaseInclusionMeta(metaText: string | null): {
   cardIds: string[];
   supportTicketIds: string[];
+  prUrls: string[];
+  sessionIds: string[];
+  refs: string[];
+  branches: string[];
 } {
-  if (!metaText) return { cardIds: [], supportTicketIds: [] };
+  const empty = {
+    cardIds: [],
+    supportTicketIds: [],
+    prUrls: [],
+    sessionIds: [],
+    refs: [],
+    branches: [],
+  };
+  if (!metaText) return empty;
   let meta: unknown;
   try {
     meta = JSON.parse(metaText);
   } catch {
-    return { cardIds: [], supportTicketIds: [] };
+    return empty;
   }
-  if (!isRecord(meta)) return { cardIds: [], supportTicketIds: [] };
+  if (!isRecord(meta)) return empty;
   const cardIds = [
-    ...stringListFromMetaValue(meta.cardIds),
-    ...stringListFromMetaValue(meta.card_ids),
-    ...stringListFromMetaValue(meta.cards),
+    ...stringListFromMetaValue(meta.cardId),
+    ...stringListFromMetaValue(meta.card_id),
+    ...stringListFromMetaValue(meta.cardIds, ['id', 'cardId', 'card_id']),
+    ...stringListFromMetaValue(meta.card_ids, ['id', 'cardId', 'card_id']),
+    ...stringListFromMetaValue(meta.cards, ['id', 'cardId', 'card_id']),
   ];
   const supportTicketIds = [
-    ...stringListFromMetaValue(meta.supportTicketIds),
-    ...stringListFromMetaValue(meta.support_ticket_ids),
-    ...stringListFromMetaValue(meta.supportTickets),
-    ...stringListFromMetaValue(meta.support_tickets),
+    ...stringListFromMetaValue(meta.supportTicketId),
+    ...stringListFromMetaValue(meta.support_ticket_id),
+    ...stringListFromMetaValue(meta.supportTicketIds, [
+      'id',
+      'supportTicketId',
+      'support_ticket_id',
+    ]),
+    ...stringListFromMetaValue(meta.support_ticket_ids, [
+      'id',
+      'supportTicketId',
+      'support_ticket_id',
+    ]),
+    ...stringListFromMetaValue(meta.supportTickets, ['id', 'supportTicketId', 'support_ticket_id']),
+    ...stringListFromMetaValue(meta.support_tickets, [
+      'id',
+      'supportTicketId',
+      'support_ticket_id',
+    ]),
+  ];
+  const prUrls = [
+    ...stringListFromMetaValue(meta.prUrl),
+    ...stringListFromMetaValue(meta.pr_url),
+    ...stringListFromMetaValue(meta.prUrls, ['url', 'html_url', 'prUrl', 'pr_url']),
+    ...stringListFromMetaValue(meta.pr_urls, ['url', 'html_url', 'prUrl', 'pr_url']),
+    ...stringListFromMetaValue(meta.pullRequests, ['url', 'html_url', 'prUrl', 'pr_url']),
+    ...stringListFromMetaValue(meta.pull_requests, ['url', 'html_url', 'prUrl', 'pr_url']),
+  ];
+  const sessionIds = [
+    ...stringListFromMetaValue(meta.sessionId),
+    ...stringListFromMetaValue(meta.session_id),
+    ...stringListFromMetaValue(meta.sessionIds, ['id', 'sessionId', 'session_id']),
+    ...stringListFromMetaValue(meta.session_ids, ['id', 'sessionId', 'session_id']),
+  ];
+  const refs = [
+    ...stringListFromMetaValue(meta.ref),
+    ...stringListFromMetaValue(meta.refs),
+    ...stringListFromMetaValue(meta.commit),
+    ...stringListFromMetaValue(meta.commits, ['sha', 'id', 'commit', 'commitSha', 'commit_sha']),
+    ...stringListFromMetaValue(meta.commitSha),
+    ...stringListFromMetaValue(meta.commit_sha),
+    ...stringListFromMetaValue(meta.headSha),
+    ...stringListFromMetaValue(meta.head_sha),
+  ];
+  const branches = [
+    ...stringListFromMetaValue(meta.branch),
+    ...stringListFromMetaValue(meta.branches),
+    ...stringListFromMetaValue(meta.headBranch),
+    ...stringListFromMetaValue(meta.head_branch),
   ];
   return {
     cardIds: [...new Set(cardIds)],
     supportTicketIds: [...new Set(supportTicketIds)],
+    prUrls: [...new Set(prUrls)],
+    sessionIds: [...new Set(sessionIds)],
+    refs: [...new Set(refs)],
+    branches: [...new Set(branches)],
   };
 }
 
@@ -382,9 +445,35 @@ function isProductionEnvironment(environment: string): boolean {
 function markReleasedSupportTicketsForDeployment(
   deps: DeployOrchestratorDeps,
   deployment: DeploymentRow,
+  sessionId?: string | null,
 ): void {
   if (!isProductionEnvironment(deployment.environment)) return;
-  const { cardIds, supportTicketIds } = parseReleaseInclusionMeta(deployment.meta);
+  const meta = parseReleaseInclusionMeta(deployment.meta);
+  const resolution = resolveDeploymentReleaseCandidates({
+    projectId: deployment.project_id,
+    ...meta,
+    refs: [...new Set([deployment.ref, ...meta.refs].filter(Boolean))],
+    branches: [...new Set([deployment.ref, ...meta.branches].filter(Boolean))],
+    sessionIds: [...new Set([sessionId ?? '', ...meta.sessionIds].filter(Boolean))],
+  });
+  const releaseItems = recordDeploymentReleaseItems({
+    deployment,
+    candidates: resolution.candidates,
+  });
+  const cardIds = releaseItems
+    .map((item) => item.card_id)
+    .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  const supportTicketIds = [
+    ...new Set([...releaseItems.map((item) => item.support_ticket_id), ...meta.supportTicketIds]),
+  ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+  console.info(
+    `[deploy-release-resolver] deployment=${deployment.id} project=${deployment.project_id} ` +
+      `env=${deployment.environment} ref=${deployment.ref} ` +
+      `resolvedItems=${releaseItems.length} resolvedCards=${cardIds.length} ` +
+      `resolvedSupportTickets=${supportTicketIds.length} ` +
+      `missingExplicitCards=${resolution.diagnostics.missingExplicitCardIds.length} ` +
+      `missingExplicitTickets=${resolution.diagnostics.missingExplicitSupportTicketIds.length}`,
+  );
   if (!cardIds.length && !supportTicketIds.length) return;
   for (const ticket of markSupportTicketsReleasedToProd({
     projectId: deployment.project_id,
@@ -800,7 +889,9 @@ export async function runDeployment(
   // Success: record the now-live ref on the environment, then mark success.
   setEnvironmentCurrentRef(projectId, environment, ref, deploymentId);
   const successDeployment = updateDeploymentStatus(deploymentId, 'success');
-  if (successDeployment) markReleasedSupportTicketsForDeployment(deps, successDeployment);
+  if (successDeployment) {
+    markReleasedSupportTicketsForDeployment(deps, successDeployment, ctx.sessionId ?? null);
+  }
   emitDeploymentUpdate(deps, projectId, deploymentId);
   return getDeployment(deploymentId) as DeploymentRow;
 }
