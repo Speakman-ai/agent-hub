@@ -3641,6 +3641,57 @@ components:
         - decision
         - note
         - created_at
+    DeploymentReleaseItem:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment_id:
+          type: string
+        card_id:
+          type: string
+        support_ticket_id:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum:
+            - derived
+            - operator
+        inclusion_status:
+          type: string
+          enum:
+            - included
+            - excluded
+        operator_adjusted_by:
+          type: string
+          nullable: true
+        operator_adjustment_note:
+          type: string
+          nullable: true
+        operator_adjustment_meta:
+          type: string
+          nullable: true
+        operator_adjusted_at:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - deployment_id
+        - card_id
+        - support_ticket_id
+        - source
+        - inclusion_status
+        - operator_adjusted_by
+        - operator_adjustment_note
+        - operator_adjustment_meta
+        - operator_adjusted_at
+        - created_at
+        - updated_at
     DeploymentEnvironment:
       type: object
       properties:
@@ -3797,6 +3848,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DeploymentApproval"
+        releaseItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentReleaseItem"
         environment:
           allOf:
             - $ref: "#/components/schemas/DeploymentEnvironment"
@@ -3816,6 +3871,7 @@ components:
         - deployment
         - steps
         - approvals
+        - releaseItems
         - environment
         - history
         - logs

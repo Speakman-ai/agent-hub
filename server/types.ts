@@ -322,6 +322,25 @@ export interface DeploymentApprovalRow {
   created_at: string;
 }
 
+export type DeploymentReleaseItemSource = 'derived' | 'operator';
+export type DeploymentReleaseItemInclusionStatus = 'included' | 'excluded';
+
+/** Deployment Module — cards/tickets included in a deployment release. */
+export interface DeploymentReleaseItemRow {
+  id: string;
+  deployment_id: string;
+  card_id: string;
+  support_ticket_id: string | null;
+  source: DeploymentReleaseItemSource;
+  inclusion_status: DeploymentReleaseItemInclusionStatus;
+  operator_adjusted_by: string | null;
+  operator_adjustment_note: string | null;
+  operator_adjustment_meta: string | null;
+  operator_adjusted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface HeartbeatLogRow {
   id: number;
   agent_id: string;
@@ -1509,6 +1528,14 @@ export interface Stmts {
   claimDeploymentForApproval: Stmt;
   insertDeploymentApproval: Stmt;
   listDeploymentApprovals: Stmt;
+  getScopedDeploymentReleaseCard: Stmt;
+  getScopedDeploymentReleaseTicket: Stmt;
+  insertDeploymentReleaseItem: Stmt;
+  getDeploymentReleaseItem: Stmt;
+  getDeploymentReleaseItemByDeploymentCard: Stmt;
+  updateDeploymentReleaseItemTicket: Stmt;
+  updateDeploymentReleaseItemAdjustment: Stmt;
+  listDeploymentReleaseItems: Stmt;
   // Sessions
   createSession: Stmt;
   getSessions: Stmt;

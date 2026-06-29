@@ -34,6 +34,7 @@ import {
 import {
   getDeployment,
   getDeploymentEnvironment,
+  listDeploymentReleaseItems,
   listDeploymentApprovals,
   listDeployments,
   listDeploymentsForEnvironment,
@@ -548,6 +549,7 @@ export default function createDeploymentRoutes(
         deployment: deploymentDto(deployment),
         steps: listDeploymentSteps(deployment.id),
         approvals: listDeploymentApprovals(deployment.id),
+        releaseItems: listDeploymentReleaseItems(deployment.id),
         environment: getDeploymentEnvironment(projectId, deployment.environment),
         history: listDeploymentsForEnvironment(projectId, deployment.environment, {
           limit: 25,

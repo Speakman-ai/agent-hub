@@ -20,10 +20,23 @@ import type {
   DeploymentStepRow,
   DeploymentEnvironmentRow,
   DeploymentApprovalRow,
+  DeploymentReleaseItemInclusionStatus,
+  DeploymentReleaseItemRow,
+  DeploymentReleaseItemSource,
 } from '../types.js';
 
 export type DeploymentStatus = DeploymentRow['status'];
 export type DeploymentStepStatus = DeploymentStepRow['status'];
+
+export class DeploymentReleaseItemError extends Error {
+  constructor(
+    message: string,
+    public readonly reason: 'not_found' | 'cross_project' | 'invalid_ticket',
+  ) {
+    super(message);
+    this.name = 'DeploymentReleaseItemError';
+  }
+}
 
 export interface CreateDeploymentInput {
   projectId: string;
@@ -278,6 +291,159 @@ export function claimDeploymentApproval(input: RecordApprovalInput): DeploymentA
     return recordDeploymentApproval(approval);
   });
   return claim(input) as DeploymentApprovalRow | null;
+}
+
+export interface EnsureDeploymentReleaseItemInput {
+  deploymentId: string;
+  cardId: string;
+  supportTicketId?: string | null;
+  source?: DeploymentReleaseItemSource;
+  inclusionStatus?: DeploymentReleaseItemInclusionStatus;
+  operatorAdjustment?: {
+    adjustedBy?: string | null;
+    note?: string | null;
+    meta?: unknown;
+    adjustedAt?: string | null;
+  } | null;
+}
+
+interface ScopedReleaseCardRow {
+  project_id: string;
+  card_id: string;
+  support_ticket_id: string | null;
+}
+
+function scopedReleaseCard(deploymentId: string, cardId: string): ScopedReleaseCardRow {
+  const row = getStmts().getScopedDeploymentReleaseCard.get(cardId, deploymentId) as
+    | ScopedReleaseCardRow
+    | undefined;
+  if (row) return row;
+  const deployment = getDeployment(deploymentId);
+  if (!deployment) {
+    throw new DeploymentReleaseItemError(`deployment not found: ${deploymentId}`, 'not_found');
+  }
+  throw new DeploymentReleaseItemError(
+    `card ${cardId} does not belong to deployment project ${deployment.project_id}`,
+    'cross_project',
+  );
+}
+
+function scopedReleaseTicket(deploymentId: string, supportTicketId: string): string {
+  const row = getStmts().getScopedDeploymentReleaseTicket.get(deploymentId, supportTicketId) as
+    | { id: string }
+    | undefined;
+  if (!row) {
+    throw new DeploymentReleaseItemError(
+      `support ticket ${supportTicketId} does not belong to the deployment project`,
+      'invalid_ticket',
+    );
+  }
+  return row.id;
+}
+
+function resolveReleaseSupportTicketId(input: {
+  deploymentId: string;
+  explicitSupportTicketId?: string | null;
+  card: ScopedReleaseCardRow;
+}): string | null {
+  if (input.explicitSupportTicketId !== undefined && input.explicitSupportTicketId !== null) {
+    return scopedReleaseTicket(input.deploymentId, input.explicitSupportTicketId);
+  }
+  if (input.explicitSupportTicketId === null) return null;
+  return input.card.support_ticket_id
+    ? scopedReleaseTicket(input.deploymentId, input.card.support_ticket_id)
+    : null;
+}
+
+export function getDeploymentReleaseItem(id: string): DeploymentReleaseItemRow | null {
+  return (
+    (getStmts().getDeploymentReleaseItem.get(id) as DeploymentReleaseItemRow | undefined) ?? null
+  );
+}
+
+export function getDeploymentReleaseItemByDeploymentCard(
+  deploymentId: string,
+  cardId: string,
+): DeploymentReleaseItemRow | null {
+  return (
+    (getStmts().getDeploymentReleaseItemByDeploymentCard.get(deploymentId, cardId) as
+      | DeploymentReleaseItemRow
+      | undefined) ?? null
+  );
+}
+
+export function listDeploymentReleaseItems(deploymentId: string): DeploymentReleaseItemRow[] {
+  return getStmts().listDeploymentReleaseItems.all(deploymentId) as DeploymentReleaseItemRow[];
+}
+
+/**
+ * Ensure a deployment/card release item exists. If supportTicketId is omitted,
+ * it is derived from the card's durable support-ticket link.
+ * Repeated calls for the same deployment/card return the same row and only fill
+ * a previously-null support_ticket_id or apply an explicit operator adjustment.
+ */
+export function ensureDeploymentReleaseItem(
+  input: EnsureDeploymentReleaseItemInput,
+): DeploymentReleaseItemRow {
+  const ensure = getDb().transaction((value: EnsureDeploymentReleaseItemInput) => {
+    const card = scopedReleaseCard(value.deploymentId, value.cardId);
+    const supportTicketId = resolveReleaseSupportTicketId({
+      deploymentId: value.deploymentId,
+      explicitSupportTicketId: value.supportTicketId,
+      card,
+    });
+    const source = value.source ?? (value.operatorAdjustment ? 'operator' : 'derived');
+    const inclusionStatus = value.inclusionStatus ?? 'included';
+    const operatorAdjustedAt =
+      value.operatorAdjustment !== undefined && value.operatorAdjustment !== null
+        ? (value.operatorAdjustment.adjustedAt ?? null)
+        : null;
+
+    getStmts().insertDeploymentReleaseItem.run({
+      id: randomUUID(),
+      deployment_id: value.deploymentId,
+      card_id: value.cardId,
+      support_ticket_id: supportTicketId,
+      source,
+      inclusion_status: inclusionStatus,
+      operator_adjusted_by: value.operatorAdjustment?.adjustedBy ?? null,
+      operator_adjustment_note: value.operatorAdjustment?.note ?? null,
+      operator_adjustment_meta:
+        value.operatorAdjustment?.meta === undefined
+          ? null
+          : JSON.stringify(value.operatorAdjustment.meta),
+      operator_adjusted_at: operatorAdjustedAt,
+    });
+
+    if (supportTicketId) {
+      getStmts().updateDeploymentReleaseItemTicket.run(
+        supportTicketId,
+        value.deploymentId,
+        value.cardId,
+      );
+    }
+    if (value.operatorAdjustment) {
+      getStmts().updateDeploymentReleaseItemAdjustment.run({
+        deployment_id: value.deploymentId,
+        card_id: value.cardId,
+        source,
+        inclusion_status: inclusionStatus,
+        operator_adjusted_by: value.operatorAdjustment.adjustedBy ?? null,
+        operator_adjustment_note: value.operatorAdjustment.note ?? null,
+        operator_adjustment_meta:
+          value.operatorAdjustment.meta === undefined
+            ? null
+            : JSON.stringify(value.operatorAdjustment.meta),
+        operator_adjusted_at: operatorAdjustedAt,
+      });
+    }
+
+    return getDeploymentReleaseItemByDeploymentCard(
+      value.deploymentId,
+      value.cardId,
+    ) as DeploymentReleaseItemRow;
+  });
+  return ensure(input) as DeploymentReleaseItemRow;
 }
 
 export function listDeploymentApprovals(deploymentId: string): DeploymentApprovalRow[] {

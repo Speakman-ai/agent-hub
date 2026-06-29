@@ -94,6 +94,24 @@ export const DeploymentApprovalSchema = registerComponent(
   }),
 );
 
+export const DeploymentReleaseItemSchema = registerComponent(
+  'DeploymentReleaseItem',
+  z.object({
+    id: z.string(),
+    deployment_id: z.string(),
+    card_id: z.string(),
+    support_ticket_id: z.string().nullable(),
+    source: z.enum(['derived', 'operator']),
+    inclusion_status: z.enum(['included', 'excluded']),
+    operator_adjusted_by: z.string().nullable(),
+    operator_adjustment_note: z.string().nullable(),
+    operator_adjustment_meta: z.string().nullable(),
+    operator_adjusted_at: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }),
+);
+
 export const DeploymentEnvironmentSchema = registerComponent(
   'DeploymentEnvironment',
   z.object({
@@ -168,6 +186,7 @@ const DeploymentDetailResponseSchema = registerComponent(
     deployment: DeploymentSchema,
     steps: z.array(DeploymentStepSchema),
     approvals: z.array(DeploymentApprovalSchema),
+    releaseItems: z.array(DeploymentReleaseItemSchema),
     environment: DeploymentEnvironmentSchema.nullable(),
     history: z.array(DeploymentSchema),
     logs: z.array(z.object({}).passthrough()),

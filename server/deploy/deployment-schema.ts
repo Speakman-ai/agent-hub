@@ -1,7 +1,8 @@
 /**
  * SQLite DDL for the Deployment Module (Phase 2).
  *
- * Four tables model "what is live where" and "how a deploy run went":
+ * Five tables model "what is live where", "how a deploy run went", and what
+ * customer-facing work it included:
  *
  *   - `deployments`            — one row per deploy run (a pipeline execution of
  *                                an environment's `.agent-hub/deploy.yaml` steps
@@ -17,6 +18,8 @@
  *   - `deployment_approvals`   — approver audit trail for gated environments
  *                                (deploy.yaml `approval: true`): who approved,
  *                                with what org role, and when.
+ *   - `deployment_release_items` — auditable inclusion map from a deployment to
+ *                                kanban cards and their optional support ticket.
  *
  * Locked epic decisions this schema encodes (see system prompt + epic 6313c155):
  *   - Concurrency: serialize per (project, environment). The active deploy id
@@ -123,4 +126,30 @@ export const DEPLOYMENT_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_deployment_approvals_deployment
     ON deployment_approvals(deployment_id, created_at ASC);
+
+  CREATE TABLE IF NOT EXISTS deployment_release_items (
+    id TEXT PRIMARY KEY,
+    deployment_id TEXT NOT NULL,
+    card_id TEXT NOT NULL,
+    support_ticket_id TEXT,
+    -- How this item entered the release set. Known v1 values: derived, operator.
+    source TEXT NOT NULL DEFAULT 'derived'
+      CHECK(source IN ('derived', 'operator')),
+    inclusion_status TEXT NOT NULL DEFAULT 'included'
+      CHECK(inclusion_status IN ('included', 'excluded')),
+    operator_adjusted_by TEXT,
+    operator_adjustment_note TEXT,
+    operator_adjustment_meta TEXT,
+    operator_adjusted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (deployment_id, card_id),
+    FOREIGN KEY (deployment_id) REFERENCES deployments(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_deployment_release_items_deployment
+    ON deployment_release_items(deployment_id, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_deployment_release_items_card
+    ON deployment_release_items(card_id);
+  CREATE INDEX IF NOT EXISTS idx_deployment_release_items_ticket
+    ON deployment_release_items(support_ticket_id);
 `;

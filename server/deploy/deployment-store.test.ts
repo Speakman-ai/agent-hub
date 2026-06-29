@@ -6,8 +6,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { getDb } from '../db.js';
 import {
   createDeployment,
+  DeploymentReleaseItemError,
   getDeployment,
+  ensureDeploymentReleaseItem,
   listDeployments,
+  listDeploymentReleaseItems,
   listDeploymentsForEnvironment,
   updateDeploymentStatus,
   setDeploymentRunnerJob,
@@ -23,16 +26,61 @@ import {
   recordDeploymentApproval,
   listDeploymentApprovals,
 } from './deployment-store.js';
+import { createSupportTicket } from '../support-tickets-store.js';
 
 const P = 'proj-deploy-test';
 
 beforeEach(() => {
   const db = getDb();
+  db.exec('DELETE FROM deployment_release_items;');
   db.exec('DELETE FROM deployment_approvals;');
   db.exec('DELETE FROM deployment_steps;');
   db.exec('DELETE FROM deployments;');
   db.exec('DELETE FROM deployment_environments;');
+  db.exec('DELETE FROM kanban_cards;');
+  db.exec('DELETE FROM kanban_columns;');
+  db.exec('DELETE FROM kanban_boards;');
+  db.exec('DELETE FROM support_tickets;');
 });
+
+function insertReleaseCard(
+  args: {
+    projectId?: string;
+    cardId?: string;
+    supportTicketId?: string | null;
+    customerReportId?: string | null;
+  } = {},
+): string {
+  const projectId = args.projectId ?? P;
+  const cardId = args.cardId ?? `card-${Math.random().toString(16).slice(2)}`;
+  const boardId = `board-${cardId}`;
+  const columnId = `col-${cardId}`;
+  const db = getDb();
+  db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)').run(
+    boardId,
+    projectId,
+    'Board',
+  );
+  db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, ?, ?)').run(
+    columnId,
+    boardId,
+    'Done',
+    0,
+  );
+  db.prepare(
+    `INSERT INTO kanban_cards
+       (id, column_id, board_id, title, support_ticket_id, customer_report_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    cardId,
+    columnId,
+    boardId,
+    'Release card',
+    args.supportTicketId ?? null,
+    args.customerReportId ?? null,
+  );
+  return cardId;
+}
 
 describe('createDeployment / getDeployment', () => {
   it('inserts a pending deployment with defaults and round-trips meta', () => {
@@ -259,5 +307,138 @@ describe('deployment approvals', () => {
     expect(approvals.map((a) => a.approver_user_id)).toEqual(['u1', 'u2']);
     expect(approvals[1].decision).toBe('rejected');
     expect(approvals[1].note).toBe('not yet');
+  });
+});
+
+describe('deployment release items', () => {
+  it('inserts and reads a deployment/card release item', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ cardId: 'card-basic' });
+
+    const item = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+
+    expect(item.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(item.deployment_id).toBe(d.id);
+    expect(item.card_id).toBe(cardId);
+    expect(item.support_ticket_id).toBeNull();
+    expect(item.source).toBe('derived');
+    expect(item.inclusion_status).toBe('included');
+    expect(listDeploymentReleaseItems(d.id).map((row) => row.id)).toEqual([item.id]);
+  });
+
+  it('is idempotent for the same deployment/card pair', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ cardId: 'card-idempotent' });
+
+    const first = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+    const second = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+
+    expect(second.id).toBe(first.id);
+    expect(listDeploymentReleaseItems(d.id)).toHaveLength(1);
+  });
+
+  it('derives linked support tickets from the card relationship', () => {
+    const ticket = createSupportTicket({ projectId: P, body: 'customer bug' });
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ cardId: 'card-ticket', supportTicketId: ticket.id });
+
+    const item = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+
+    expect(item.support_ticket_id).toBe(ticket.id);
+  });
+
+  it('rejects derived support ticket ids outside the deployment project', () => {
+    const foreignTicket = createSupportTicket({ projectId: 'other-project', body: 'not mine' });
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({
+      cardId: 'card-stale-ticket',
+      supportTicketId: foreignTicket.id,
+    });
+
+    expect(() => ensureDeploymentReleaseItem({ deploymentId: d.id, cardId })).toThrow(
+      DeploymentReleaseItemError,
+    );
+    expect(listDeploymentReleaseItems(d.id)).toHaveLength(0);
+  });
+
+  it('does not persist customer_report_id values as support_ticket_id', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({
+      cardId: 'card-customer-report-only',
+      customerReportId: 'customer-report-1',
+    });
+
+    const item = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+
+    expect(item.support_ticket_id).toBeNull();
+  });
+
+  it('fills a previously-null support ticket id on a repeated ensure', () => {
+    const ticket = createSupportTicket({ projectId: P, body: 'customer bug' });
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ cardId: 'card-fill' });
+    const first = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+    expect(first.support_ticket_id).toBeNull();
+
+    getDb()
+      .prepare('UPDATE kanban_cards SET support_ticket_id = ? WHERE id = ?')
+      .run(ticket.id, cardId);
+    const filled = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+
+    expect(filled.id).toBe(first.id);
+    expect(filled.support_ticket_id).toBe(ticket.id);
+  });
+
+  it('records operator adjustment metadata on an existing item', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ cardId: 'card-adjusted' });
+    const first = ensureDeploymentReleaseItem({ deploymentId: d.id, cardId });
+
+    const adjusted = ensureDeploymentReleaseItem({
+      deploymentId: d.id,
+      cardId,
+      inclusionStatus: 'excluded',
+      operatorAdjustment: {
+        adjustedBy: 'user-1',
+        note: 'not customer-facing',
+        meta: { source: 'release-editor' },
+        adjustedAt: '2026-06-29 04:00:00',
+      },
+    });
+
+    expect(adjusted.id).toBe(first.id);
+    expect(adjusted.source).toBe('operator');
+    expect(adjusted.inclusion_status).toBe('excluded');
+    expect(adjusted.operator_adjusted_by).toBe('user-1');
+    expect(adjusted.operator_adjustment_note).toBe('not customer-facing');
+    expect(JSON.parse(adjusted.operator_adjustment_meta as string)).toEqual({
+      source: 'release-editor',
+    });
+    expect(adjusted.operator_adjusted_at).toBe('2026-06-29 04:00:00');
+  });
+
+  it('rejects cards outside the deployment project', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ projectId: 'other-project', cardId: 'foreign-card' });
+
+    expect(() => ensureDeploymentReleaseItem({ deploymentId: d.id, cardId })).toThrow(
+      DeploymentReleaseItemError,
+    );
+    expect(listDeploymentReleaseItems(d.id)).toHaveLength(0);
+  });
+
+  it('rejects explicit support tickets outside the deployment project', () => {
+    const foreignTicket = createSupportTicket({ projectId: 'other-project', body: 'not mine' });
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'release-sha' });
+    const cardId = insertReleaseCard({ cardId: 'card-explicit-foreign' });
+
+    expect(() =>
+      ensureDeploymentReleaseItem({
+        deploymentId: d.id,
+        cardId,
+        supportTicketId: foreignTicket.id,
+      }),
+    ).toThrow(DeploymentReleaseItemError);
+    expect(listDeploymentReleaseItems(d.id)).toHaveLength(0);
   });
 });

@@ -3331,6 +3331,59 @@ function initDb(dataDir: string): void {
     listDeploymentApprovals: db.prepare(
       'SELECT * FROM deployment_approvals WHERE deployment_id = ? ORDER BY created_at ASC, rowid ASC',
     ),
+    getScopedDeploymentReleaseCard: db.prepare(
+      `SELECT d.project_id,
+              c.id AS card_id,
+              c.support_ticket_id
+         FROM deployments d
+         JOIN kanban_cards c ON c.id = ?
+         JOIN kanban_boards b ON b.id = c.board_id
+        WHERE d.id = ?
+          AND b.project_id = d.project_id`,
+    ),
+    getScopedDeploymentReleaseTicket: db.prepare(
+      `SELECT st.id
+         FROM support_tickets st
+         JOIN deployments d ON d.project_id = st.project_id
+        WHERE d.id = ?
+          AND st.id = ?`,
+    ),
+    insertDeploymentReleaseItem: db.prepare(
+      `INSERT INTO deployment_release_items
+         (id, deployment_id, card_id, support_ticket_id, source, inclusion_status,
+          operator_adjusted_by, operator_adjustment_note, operator_adjustment_meta,
+          operator_adjusted_at)
+       VALUES (@id, @deployment_id, @card_id, @support_ticket_id, @source, @inclusion_status,
+          @operator_adjusted_by, @operator_adjustment_note, @operator_adjustment_meta,
+          @operator_adjusted_at)
+       ON CONFLICT(deployment_id, card_id) DO NOTHING`,
+    ),
+    getDeploymentReleaseItem: db.prepare('SELECT * FROM deployment_release_items WHERE id = ?'),
+    getDeploymentReleaseItemByDeploymentCard: db.prepare(
+      'SELECT * FROM deployment_release_items WHERE deployment_id = ? AND card_id = ?',
+    ),
+    updateDeploymentReleaseItemTicket: db.prepare(
+      `UPDATE deployment_release_items
+          SET support_ticket_id = COALESCE(support_ticket_id, ?),
+              updated_at = datetime('now')
+        WHERE deployment_id = ? AND card_id = ?`,
+    ),
+    updateDeploymentReleaseItemAdjustment: db.prepare(
+      `UPDATE deployment_release_items
+          SET source = @source,
+              inclusion_status = @inclusion_status,
+              operator_adjusted_by = @operator_adjusted_by,
+              operator_adjustment_note = @operator_adjustment_note,
+              operator_adjustment_meta = @operator_adjustment_meta,
+              operator_adjusted_at = COALESCE(@operator_adjusted_at, datetime('now')),
+              updated_at = datetime('now')
+        WHERE deployment_id = @deployment_id AND card_id = @card_id`,
+    ),
+    listDeploymentReleaseItems: db.prepare(
+      `SELECT * FROM deployment_release_items
+        WHERE deployment_id = ?
+        ORDER BY created_at ASC, rowid ASC`,
+    ),
     // Sessions
     createSession: db.prepare(
       'INSERT INTO sessions (id, agent_id, name, engine, model, use_worktree, ask_mode, wiki_hybrid_rag_budget_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',

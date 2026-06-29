@@ -40,7 +40,7 @@ describe('deployment schema', () => {
     db = freshDb();
   });
 
-  it('creates all four deployment tables', () => {
+  it('creates all five deployment tables', () => {
     const tables = (
       db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'deployment%'")
@@ -49,7 +49,13 @@ describe('deployment schema', () => {
       .map((r) => r.name)
       .sort();
     expect(tables).toEqual(
-      ['deployment_approvals', 'deployment_environments', 'deployment_steps', 'deployments'].sort(),
+      [
+        'deployment_approvals',
+        'deployment_environments',
+        'deployment_release_items',
+        'deployment_steps',
+        'deployments',
+      ].sort(),
     );
   });
 
@@ -107,7 +113,26 @@ describe('deployment schema', () => {
     ).not.toThrow();
   });
 
-  it('cascades step + approval deletes when a deployment is removed', () => {
+  it('defines deployment_release_items columns for auditable release inclusion', () => {
+    expect(colNames(db, 'deployment_release_items')).toEqual(
+      [
+        'id',
+        'deployment_id',
+        'card_id',
+        'support_ticket_id',
+        'source',
+        'inclusion_status',
+        'operator_adjusted_by',
+        'operator_adjustment_note',
+        'operator_adjustment_meta',
+        'operator_adjusted_at',
+        'created_at',
+        'updated_at',
+      ].sort(),
+    );
+  });
+
+  it('cascades step approval and release item deletes when a deployment is removed', () => {
     db.prepare(
       "INSERT INTO deployments (id, project_id, environment, ref) VALUES ('d4','p1','dev','abc')",
     ).run();
@@ -117,11 +142,17 @@ describe('deployment schema', () => {
     db.prepare(
       "INSERT INTO deployment_approvals (id, deployment_id, approver_user_id, approver_role) VALUES ('a1','d4','u1','Admin')",
     ).run();
+    db.prepare(
+      "INSERT INTO deployment_release_items (id, deployment_id, card_id) VALUES ('ri1','d4','card-1')",
+    ).run();
 
     db.prepare("DELETE FROM deployments WHERE id = 'd4'").run();
 
     expect(db.prepare('SELECT COUNT(*) c FROM deployment_steps').get()).toMatchObject({ c: 0 });
     expect(db.prepare('SELECT COUNT(*) c FROM deployment_approvals').get()).toMatchObject({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) c FROM deployment_release_items').get()).toMatchObject({
+      c: 0,
+    });
   });
 
   it('enforces UNIQUE(project_id, name) on deployment_environments', () => {
@@ -165,6 +196,42 @@ describe('deployment schema', () => {
     ).toThrow(/CHECK/i);
   });
 
+  it('constrains deployment release item source and inclusion status', () => {
+    db.prepare(
+      "INSERT INTO deployments (id, project_id, environment, ref) VALUES ('d6','p1','dev','abc')",
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO deployment_release_items (id, deployment_id, card_id, source) VALUES ('ri-bad-source','d6','c1','scan')",
+        )
+        .run(),
+    ).toThrow(/CHECK/i);
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO deployment_release_items (id, deployment_id, card_id, inclusion_status) VALUES ('ri-bad-status','d6','c1','pending')",
+        )
+        .run(),
+    ).toThrow(/CHECK/i);
+  });
+
+  it('enforces one release item per deployment card', () => {
+    db.prepare(
+      "INSERT INTO deployments (id, project_id, environment, ref) VALUES ('d7','p1','dev','abc')",
+    ).run();
+    db.prepare(
+      "INSERT INTO deployment_release_items (id, deployment_id, card_id) VALUES ('ri1','d7','card-1')",
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO deployment_release_items (id, deployment_id, card_id) VALUES ('ri2','d7','card-1')",
+        )
+        .run(),
+    ).toThrow(/UNIQUE/i);
+  });
+
   it('creates the expected named indexes', () => {
     expect(namedIdx(db, 'deployments')).toEqual(
       ['idx_deployments_env_created', 'idx_deployments_project_created'].sort(),
@@ -174,6 +241,13 @@ describe('deployment schema', () => {
       'idx_deployment_environments_project',
     ]);
     expect(namedIdx(db, 'deployment_approvals')).toEqual(['idx_deployment_approvals_deployment']);
+    expect(namedIdx(db, 'deployment_release_items')).toEqual(
+      [
+        'idx_deployment_release_items_card',
+        'idx_deployment_release_items_deployment',
+        'idx_deployment_release_items_ticket',
+      ].sort(),
+    );
   });
 
   it('is idempotent — re-running the DDL is a no-op (CREATE ... IF NOT EXISTS)', () => {

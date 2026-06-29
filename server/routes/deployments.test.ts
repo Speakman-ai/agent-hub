@@ -14,6 +14,7 @@ import {
   acquireEnvironmentLock,
   createDeployment,
   ensureDeploymentEnvironment,
+  ensureDeploymentReleaseItem,
   getDeploymentEnvironment,
   listDeploymentApprovals,
   listDeploymentSteps,
@@ -234,11 +235,39 @@ function makeApp(
 
 beforeEach(() => {
   const db = getDb();
+  db.exec('DELETE FROM deployment_release_items;');
   db.exec('DELETE FROM deployment_approvals;');
   db.exec('DELETE FROM deployment_steps;');
   db.exec('DELETE FROM deployments;');
   db.exec('DELETE FROM deployment_environments;');
+  db.exec('DELETE FROM kanban_cards;');
+  db.exec('DELETE FROM kanban_columns;');
+  db.exec('DELETE FROM kanban_boards;');
 });
+
+function insertReleaseCard(cardId: string, projectId = PROJECT_ID): string {
+  const boardId = `board-${cardId}`;
+  const columnId = `col-${cardId}`;
+  const db = getDb();
+  db.prepare('INSERT INTO kanban_boards (id, project_id, name) VALUES (?, ?, ?)').run(
+    boardId,
+    projectId,
+    'Board',
+  );
+  db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, ?, ?)').run(
+    columnId,
+    boardId,
+    'Done',
+    0,
+  );
+  db.prepare('INSERT INTO kanban_cards (id, column_id, board_id, title) VALUES (?, ?, ?, ?)').run(
+    cardId,
+    columnId,
+    boardId,
+    'Release card',
+  );
+  return cardId;
+}
 
 describe('deployment routes', () => {
   it('matches deploy setup wizard session names', () => {
@@ -497,6 +526,8 @@ environments:
   it('lists deployments and returns detail with steps approvals environment and history', async () => {
     const dep = createDeployment({ projectId: PROJECT_ID, environment: 'dev', ref: 'abc' });
     ensureDeploymentEnvironment(PROJECT_ID, 'dev');
+    const cardId = insertReleaseCard('release-card-route');
+    const releaseItem = ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId });
 
     const { app } = makeApp();
     const list = await request(app)
@@ -510,6 +541,15 @@ environments:
     expect(detail.body.deployment.id).toBe(dep.id);
     expect(detail.body.steps).toEqual([]);
     expect(detail.body.approvals).toEqual([]);
+    expect(detail.body.releaseItems).toEqual([
+      expect.objectContaining({
+        id: releaseItem.id,
+        deployment_id: dep.id,
+        card_id: cardId,
+        source: 'derived',
+        inclusion_status: 'included',
+      }),
+    ]);
     expect(detail.body.environment.name).toBe('dev');
     expect(detail.body.history.map((d: { id: string }) => d.id)).toContain(dep.id);
     expect(detail.body.logs).toEqual([]);
