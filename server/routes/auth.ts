@@ -35,6 +35,7 @@ import {
   isAuthConfigured,
   saveAuthRecord,
   generateJwtSecret,
+  updateAuthUsername,
 } from '../auth-store.js';
 import { requireRole, hasAtLeastRole, parseRole, type Role } from '../roles.js';
 import { isLocalBundledServer, type AuthenticatedRequest } from '../auth.js';
@@ -43,9 +44,9 @@ import {
   createUser,
   getUserById,
   getUserByUsername,
-  listUsers,
   deleteUser,
   updateUserPassword,
+  updateUserUsername,
   countUsers,
   migrateAuthRecordIfNeeded,
   getUserClaudeAuth,
@@ -82,7 +83,19 @@ import {
   markInviteAccepted,
 } from '../invites-store.js';
 import {
-  sanitizeUsername,
+  createPasswordResetToken,
+  getPasswordResetByToken,
+  consumePasswordResetTokenAndUpdatePassword,
+} from '../password-resets-store.js';
+import {
+  buildOwnerPasswordResetUrl,
+  buildPasswordResetUrl,
+  sendPasswordResetEmail,
+} from '../email-sender.js';
+import {
+  sanitizeLoginIdentifier,
+  sanitizeEmailIdentifier,
+  isEmailIdentifier,
   sanitizePassword,
   MIN_PASSWORD_LEN,
   MAX_PASSWORD_LEN,
@@ -110,12 +123,15 @@ import {
   AcceptInviteBody,
   CreateApiKeyBody,
   CreateInviteBody,
+  ForgotPasswordBody,
   CreateUserBody,
   ErrorResponse,
   LoginBody,
   PasswordResetBody,
+  ResetPasswordBody,
   SetupBody,
   TokenResponse,
+  UpdateEmailBody,
   UpdateClaudeAuthBody,
   UpdateSingleKeyAuthBody,
   UpdateUserRoleBody,
@@ -146,7 +162,8 @@ registerPath({
         'application/json': {
           schema: z.object({
             authConfigured: z.boolean(),
-            username: z.string().nullable(),
+            email: z.string().nullable(),
+            needsEmailUpdate: z.boolean(),
             role: z.enum(['Owner', 'Admin', 'User']).nullable(),
             jwtConfigured: z.boolean(),
             apiKeyConfigured: z.boolean(),
@@ -176,7 +193,8 @@ registerPath({
             expiresAt: z.string(),
             user: z.object({
               id: z.string().optional(),
-              username: z.string(),
+              email: z.string().nullable(),
+              needsEmailUpdate: z.boolean().optional(),
               role: z.enum(['Owner', 'Admin', 'User']),
             }),
           }),
@@ -242,7 +260,8 @@ registerPath({
             user: z
               .object({
                 id: z.string().optional(),
-                username: z.string(),
+                email: z.string().nullable(),
+                needsEmailUpdate: z.boolean().optional(),
                 role: z.enum(['Owner', 'Admin', 'User']).nullable(),
               })
               .nullable(),
@@ -252,6 +271,42 @@ registerPath({
           }),
         },
       },
+    },
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/auth/me/email',
+  tags: ['Auth'],
+  summary: "Set the caller's canonical email login identifier.",
+  request: { body: { content: { 'application/json': { schema: UpdateEmailBody } } } },
+  responses: {
+    200: {
+      description: 'Email updated; replacement JWT returned.',
+      content: { 'application/json': { schema: TokenResponse } },
+    },
+    400: {
+      description: 'Invalid email body.',
+      content: {
+        'application/json': { schema: z.union([ZodErrorResponse, ErrorResponse]) },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'Email already taken.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    500: {
+      description: 'Server auth not configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
     },
   },
 });
@@ -898,7 +953,7 @@ registerPath({
       content: { 'application/json': { schema: ErrorResponse } },
     },
     409: {
-      description: 'Username taken.',
+      description: 'Email taken.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -981,6 +1036,73 @@ registerPath({
 
 registerPath({
   method: 'post',
+  path: '/api/auth/forgot-password',
+  tags: ['Auth'],
+  summary: 'Request a password reset for an email address.',
+  request: { body: { content: { 'application/json': { schema: ForgotPasswordBody } } } },
+  responses: {
+    200: {
+      description: 'Enumeration-safe receipt.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/reset-password',
+  tags: ['Auth'],
+  summary: 'Consume a password reset token and set a new password.',
+  request: { body: { content: { 'application/json': { schema: ResetPasswordBody } } } },
+  responses: {
+    200: {
+      description: 'Password updated.',
+      content: { 'application/json': { schema: z.object({ ok: z.literal(true) }) } },
+    },
+    400: {
+      description: 'Invalid body, expired token, or consumed token.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/users/{id}/reset-token',
+  tags: ['Auth'],
+  summary: 'Generate a one-time reset token for a user (Owner only).',
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    201: {
+      description: 'One-time plaintext token. Store only shown once.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            token: z.string(),
+            url: z.string(),
+            expiresAt: z.string(),
+            userId: z.string(),
+          }),
+        },
+      },
+    },
+    403: {
+      description: 'Owner role required.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
   path: '/api/auth/users/{id}/password',
   tags: ['Auth'],
   summary: 'Self-reset or Owner-reset a user password.',
@@ -1024,7 +1146,7 @@ registerPath({
           schema: z.object({
             token: z.string(),
             url: z.string(),
-            role: z.enum(['Owner', 'Admin', 'User']),
+            role: z.enum(['Admin', 'User']),
             email: z.string().nullable(),
             expiresAt: z.string(),
             createdAt: z.string(),
@@ -1058,7 +1180,7 @@ registerPath({
               z.object({
                 token: z.string(),
                 orgId: z.string(),
-                role: z.enum(['Owner', 'Admin', 'User']),
+                role: z.enum(['Admin', 'User']),
                 email: z.string().nullable(),
                 expiresAt: z.string(),
                 createdAt: z.string(),
@@ -1113,7 +1235,7 @@ registerPath({
           schema: z.object({
             orgId: z.string(),
             orgName: z.string(),
-            role: z.enum(['Owner', 'Admin', 'User']),
+            role: z.enum(['Admin', 'User']),
             email: z.string().nullable(),
             expiresAt: z.string(),
             accepted: z.boolean(),
@@ -1155,7 +1277,7 @@ registerPath({
       content: { 'application/json': { schema: ErrorResponse } },
     },
     409: {
-      description: 'Username taken.',
+      description: 'Email taken.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
     410: {
@@ -1189,12 +1311,47 @@ registerPath({
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
 function issueToken(user: { id: string; username: string }, role: Role, jwtSecret: string) {
+  const credentialVersion =
+    'credential_version' in user && typeof user.credential_version === 'number'
+      ? user.credential_version
+      : 0;
   const token = signJwt(user.username, jwtSecret, {
     expiresInSec: DEFAULT_TOKEN_TTL_SEC,
-    claims: { role, uid: user.id },
+    claims: { role, uid: user.id, credentialVersion },
   });
   const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
   return { token, expiresAt };
+}
+
+function emailPayload(username: string): { email: string | null; needsEmailUpdate: boolean } {
+  const email = isEmailIdentifier(username) ? username : null;
+  return { email, needsEmailUpdate: email === null };
+}
+
+function publicStatusEmailPayload(username: string | undefined): {
+  email: null;
+  needsEmailUpdate: boolean;
+} {
+  return {
+    email: null,
+    needsEmailUpdate: username ? !isEmailIdentifier(username) : false,
+  };
+}
+
+function isMissingOrgsDbError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('orgs.db not initialized');
+}
+
+function tokenUserPayload(user: { id?: string; username: string }, role: Role) {
+  return {
+    ...(user.id ? { id: user.id } : {}),
+    ...emailPayload(user.username),
+    role,
+  };
+}
+
+function credentialFromBody(data: { email?: string | null; username?: string | null }): unknown {
+  return data.email ?? data.username;
 }
 
 // ── Rate-limit defaults ────────────────────────────────────────────
@@ -1211,6 +1368,10 @@ export const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
 export const LOGIN_RATE_LIMIT_MAX = 10;
 export const INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
 export const INVITE_ACCEPT_RATE_LIMIT_MAX = 5;
+export const FORGOT_PASSWORD_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
+export const FORGOT_PASSWORD_RATE_LIMIT_MAX = 5;
+export const RESET_PASSWORD_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
+export const RESET_PASSWORD_RATE_LIMIT_MAX = 10;
 
 /**
  * Render a credential for the UI without leaking the secret. Returns
@@ -1234,6 +1395,10 @@ export interface AuthRoutesOptions {
   loginRateLimit?: { windowMs: number; limit: number };
   /** Override invite-accept limiter. */
   inviteAcceptRateLimit?: { windowMs: number; limit: number };
+  /** Override forgot-password limiter. */
+  forgotPasswordRateLimit?: { windowMs: number; limit: number };
+  /** Override reset-password limiter. */
+  resetPasswordRateLimit?: { windowMs: number; limit: number };
   /** Disable rate limiting entirely — used by tests that aren't about the limiter itself. */
   disableRateLimit?: boolean;
   /**
@@ -1259,7 +1424,7 @@ function makeLimitHandler(label: string, pathLabel: string): LimiterHandler {
     // than `req.originalUrl`: the invite-accept URL contains the real
     // invite token, which is a bearer-equivalent secret. A fat-fingered
     // invitee who trips the limiter would otherwise burn that token
-    // straight into PM2 logs. Username is also omitted for the same
+    // straight into PM2 logs. The login identifier is also omitted for the same
     // class of reason — a naive log scrape shouldn't double as an
     // enumerated hit-list of targeted accounts.
     const ip = req.ip ?? 'unknown';
@@ -1321,6 +1486,46 @@ function buildInviteAcceptLimiter(opts: AuthRoutesOptions) {
     // the invite token, which must never hit the logs.
     handler: makeLimitHandler('invite-accept', '/api/auth/invites/:token/accept'),
   });
+}
+
+function buildForgotPasswordLimiter(opts: AuthRoutesOptions) {
+  if (opts.disableRateLimit) {
+    return (_req: Request, _res: Response, next: () => void) => next();
+  }
+  const { windowMs, limit } = opts.forgotPasswordRateLimit ?? {
+    windowMs: FORGOT_PASSWORD_RATE_LIMIT_WINDOW_MS,
+    limit: FORGOT_PASSWORD_RATE_LIMIT_MAX,
+  };
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    handler: makeLimitHandler('forgot-password', '/api/auth/forgot-password'),
+  });
+}
+
+function buildResetPasswordLimiter(opts: AuthRoutesOptions) {
+  if (opts.disableRateLimit) {
+    return (_req: Request, _res: Response, next: () => void) => next();
+  }
+  const { windowMs, limit } = opts.resetPasswordRateLimit ?? {
+    windowMs: RESET_PASSWORD_RATE_LIMIT_WINDOW_MS,
+    limit: RESET_PASSWORD_RATE_LIMIT_MAX,
+  };
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    handler: makeLimitHandler('reset-password', '/api/auth/reset-password'),
+  });
+}
+
+function isUsablePasswordResetToken(token: string): boolean {
+  const row = getPasswordResetByToken(token);
+  if (!row || row.consumed_at) return false;
+  return new Date(row.expires_at).getTime() > Date.now();
 }
 
 /**
@@ -1441,6 +1646,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   const router = Router();
   const loginLimiter = buildLoginLimiter(options);
   const inviteAcceptLimiter = buildInviteAcceptLimiter(options);
+  const forgotPasswordLimiter = buildForgotPasswordLimiter(options);
+  const resetPasswordLimiter = buildResetPasswordLimiter(options);
 
   // ── Status (public) ────────────────────────────────────────────
   router.get('/api/auth/status', (_req: Request, res: Response) => {
@@ -1465,7 +1672,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const activeOrgIsLocal = isLocalBundledServer();
     res.json({
       authConfigured: jwtConfigured,
-      username: record?.username ?? null,
+      ...publicStatusEmailPayload(record?.username),
       // Role is safe to leak publicly — it's the owner's role at install
       // time, not a per-caller claim. The UI uses it to decide whether
       // to show the "first Owner" vs "sign in" copy.
@@ -1488,12 +1695,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json(formatZodError(parsedSetup.error));
       return;
     }
-    const { username: rawUser, password: rawPass } = parsedSetup.data;
-    const username = sanitizeUsername(rawUser);
+    const { password: rawPass } = parsedSetup.data;
+    const username = sanitizeEmailIdentifier(credentialFromBody(parsedSetup.data));
     const password = sanitizePassword(rawPass);
     if (!username) {
       res.status(400).json({
-        error: 'username must be 1–64 chars of letters, digits, ., _, -, @',
+        error: 'email must be a valid email address',
       });
       return;
     }
@@ -1567,11 +1774,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       ok: true,
       token,
       expiresAt,
-      user: {
-        ...(user?.id ? { id: user.id } : {}),
-        username: record.username,
-        role: record.role,
-      },
+      user: tokenUserPayload(user ?? { id: '', username: record.username }, record.role),
     });
   });
 
@@ -1587,9 +1790,17 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json(formatZodError(parsedLogin.error));
       return;
     }
-    const { username: rawUser, password: rawPass } = parsedLogin.data;
-    const username = rawUser.trim();
+    const { password: rawPass } = parsedLogin.data;
+    const rawIdentifier = credentialFromBody(parsedLogin.data);
+    const username = sanitizeLoginIdentifier(rawIdentifier);
     const password = rawPass;
+    if (!username) {
+      const hasIdentifier = typeof rawIdentifier === 'string' && rawIdentifier.trim().length > 0;
+      res.status(400).json({
+        error: hasIdentifier ? 'invalid email or username' : 'email or username is required',
+      });
+      return;
+    }
 
     // Run verifyPassword even on an unknown user so response time doesn't
     // leak whether the username exists. If orgs.db isn't initialized
@@ -1609,7 +1820,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
 
     const ok = await verifyPassword(password, storedHash);
     if ((!user && !usingAuthRecordFallback) || !ok) {
-      res.status(401).json({ error: 'Invalid username or password' });
+      res.status(401).json({ error: 'Invalid email or password' });
       return;
     }
 
@@ -1685,12 +1896,86 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       // follow-up lookup. Omitted on the legacy auth.json fallback where
       // no user row exists yet.
       user: {
-        ...(subject.id ? { id: subject.id } : {}),
-        username: subject.username,
-        role: resolvedRole,
+        ...tokenUserPayload(subject, resolvedRole),
       },
     });
   });
+
+  // POST /api/auth/forgot-password: public, enumeration-safe.
+  router.post(
+    '/api/auth/forgot-password',
+    forgotPasswordLimiter,
+    async (req: Request, res: Response) => {
+      const parsedForgot = ForgotPasswordBody.safeParse(req.body ?? {});
+      if (parsedForgot.success) {
+        const email = sanitizeEmailIdentifier(parsedForgot.data.email);
+        if (email) {
+          try {
+            const user = getUserByUsername(email);
+            if (user) {
+              const reset = createPasswordResetToken({ userId: user.id });
+              const resetUrl = buildPasswordResetUrl(reset.token);
+              if (resetUrl) {
+                await sendPasswordResetEmail({
+                  to: email,
+                  resetUrl,
+                });
+              } else {
+                console.warn(
+                  '[auth] forgot-password email skipped: PUBLIC_ORIGIN or publicUrl is not configured',
+                );
+              }
+            }
+          } catch (err) {
+            console.warn(`[auth] forgot-password token issue failed: ${(err as Error).message}`);
+          }
+        }
+      }
+      res.json({ ok: true });
+    },
+  );
+
+  // POST /api/auth/reset-password: public token consume.
+  router.post(
+    '/api/auth/reset-password',
+    resetPasswordLimiter,
+    async (req: Request, res: Response) => {
+      const parsedReset = ResetPasswordBody.safeParse(req.body ?? {});
+      if (!parsedReset.success) {
+        const pwdIssue = parsedReset.error.issues.some(
+          (i) =>
+            i.path[0] === 'newPassword' && (i.code === 'invalid_type' || i.code === 'too_small'),
+        );
+        if (pwdIssue) {
+          res.status(400).json({
+            error: `newPassword must be ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} chars`,
+          });
+          return;
+        }
+        res.status(400).json(formatZodError(parsedReset.error));
+        return;
+      }
+      const { token, newPassword } = parsedReset.data;
+      const password = sanitizePassword(newPassword);
+      if (!password) {
+        res.status(400).json({
+          error: `newPassword must be ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} chars`,
+        });
+        return;
+      }
+      if (!isUsablePasswordResetToken(token)) {
+        res.status(400).json({ error: 'Reset token is invalid or expired.' });
+        return;
+      }
+      const passwordHash = await hashPassword(password);
+      const row = consumePasswordResetTokenAndUpdatePassword(token, passwordHash);
+      if (!row) {
+        res.status(400).json({ error: 'Reset token is invalid or expired.' });
+        return;
+      }
+      res.json({ ok: true });
+    },
+  );
 
   // ── Current user (protected by auth middleware) ────────────────
   router.get('/api/auth/me', (req: Request, res: Response) => {
@@ -1702,7 +1987,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       user: subject
         ? {
             ...(authedReq.authUserId ? { id: authedReq.authUserId } : {}),
-            username: subject,
+            ...emailPayload(subject),
             role,
           }
         : null,
@@ -1710,6 +1995,122 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       role,
       orgId: authedReq.authOrgId ?? null,
     });
+  });
+
+  router.put('/api/auth/me/email', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    const record = getAuthRecord();
+    const parsedEmail = UpdateEmailBody.safeParse(req.body ?? {});
+    if (!parsedEmail.success) {
+      res.status(400).json(formatZodError(parsedEmail.error));
+      return;
+    }
+    const email = sanitizeEmailIdentifier(parsedEmail.data.email);
+    if (!email) {
+      res.status(400).json({ error: 'email must be a valid email address' });
+      return;
+    }
+
+    if (!record) {
+      res.status(500).json({ error: 'server auth not configured' });
+      return;
+    }
+
+    const isAuthRecordCaller =
+      !authedReq.authUserId &&
+      !authedReq.authViaApiKey &&
+      (authedReq.authUser === record.username || authedReq.authLocalOrgBypass);
+    if (!authedReq.authUserId && !isAuthRecordCaller) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    if (isAuthRecordCaller) {
+      let updatedUser: ReturnType<typeof getUserByUsername> = null;
+      try {
+        const current = getUserByUsername(record.username);
+        const existing = getUserByUsername(email);
+        if (existing && (!current || existing.id !== current.id)) {
+          res.status(409).json({ error: 'email already taken' });
+          return;
+        }
+        if (current) {
+          updatedUser = current;
+          if (current.username !== email) {
+            try {
+              updatedUser = updateUserUsername(current.id, email);
+            } catch {
+              res.status(409).json({ error: 'email already taken' });
+              return;
+            }
+          }
+          if (!updatedUser) {
+            res.status(404).json({ error: 'user not found' });
+            return;
+          }
+        }
+      } catch (error) {
+        if (!isMissingOrgsDbError(error)) {
+          res.status(500).json({ error: 'users store unavailable' });
+          return;
+        }
+        // orgs.db may be absent in auth.json-only legacy installs. In that
+        // state there is no users table to conflict with, so auth.json is the
+        // source of truth for this one-shot migration.
+      }
+      const updatedRecord = updateAuthUsername(email);
+      if (!updatedRecord) {
+        res.status(500).json({ error: 'server auth not configured' });
+        return;
+      }
+      const role: Role = authedReq.authRole ?? updatedRecord.role;
+      const subject = updatedUser ?? { id: '', username: updatedRecord.username };
+      const { token, expiresAt } = issueToken(subject, role, updatedRecord.jwtSecret);
+      res.json({ token, expiresAt, user: tokenUserPayload(subject, role) });
+      return;
+    }
+
+    const authUserId = authedReq.authUserId;
+    if (!authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const existing = getUserByUsername(email);
+    if (existing && existing.id !== authUserId) {
+      res.status(409).json({ error: 'email already taken' });
+      return;
+    }
+
+    const current = getUserById(authUserId);
+    if (!current) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+    if (record.username === email && record.username !== current.username) {
+      res.status(409).json({ error: 'email already taken' });
+      return;
+    }
+
+    let updated = current.username === email ? current : null;
+    if (!updated) {
+      try {
+        updated = updateUserUsername(current.id, email);
+      } catch {
+        res.status(409).json({ error: 'email already taken' });
+        return;
+      }
+    }
+    if (!updated) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+
+    if (record.username === current.username) {
+      updateAuthUsername(email);
+    }
+    const role: Role = authedReq.authRole ?? record.role;
+    const { token, expiresAt } = issueToken(updated, role, record.jwtSecret);
+    res.json({ token, expiresAt, user: tokenUserPayload(updated, role) });
   });
 
   // ── Per-user Claude credentials ────────────────────────────────
@@ -2469,7 +2870,13 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       // to the single-user auth.json view — this keeps the pre-Phase-3
       // behavior intact in those paths.
       const users = record
-        ? [{ username: record.username, role: record.role, createdAt: record.createdAt }]
+        ? [
+            {
+              ...emailPayload(record.username),
+              role: record.role,
+              createdAt: record.createdAt,
+            },
+          ]
         : [];
       res.json({ users });
       return;
@@ -2484,7 +2891,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         users: [
           {
             id: null,
-            username: record.username,
+            ...emailPayload(record.username),
             role: record.role,
             createdAt: record.createdAt,
           },
@@ -2495,7 +2902,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.json({
       users: members.map((m) => ({
         id: m.userId,
-        username: m.username,
+        ...emailPayload(m.username),
         role: m.role,
         createdAt: m.createdAt,
       })),
@@ -2510,12 +2917,12 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json(formatZodError(parsedCreateUser.error));
       return;
     }
-    const { username: rawUser, password: rawPass, role: rawRole } = parsedCreateUser.data;
-    const username = sanitizeUsername(rawUser);
+    const { password: rawPass, role: rawRole } = parsedCreateUser.data;
+    const username = sanitizeEmailIdentifier(credentialFromBody(parsedCreateUser.data));
     const password = sanitizePassword(rawPass);
     const role = parseRole(rawRole) ?? 'User';
     if (!username) {
-      res.status(400).json({ error: 'invalid username' });
+      res.status(400).json({ error: 'email must be a valid email address' });
       return;
     }
     if (!password) {
@@ -2531,7 +2938,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       return;
     }
     if (getUserByUsername(username)) {
-      res.status(409).json({ error: 'username already taken' });
+      res.status(409).json({ error: 'email already taken' });
       return;
     }
     const orgId = getActiveOrgId();
@@ -2541,7 +2948,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     res.status(201).json({
       user: {
         id: user.id,
-        username: user.username,
+        ...emailPayload(user.username),
         role,
         createdAt: user.created_at,
       },
@@ -2670,6 +3077,27 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
+  // POST /api/auth/users/:id/reset-token: Owner-issued no-email fallback.
+  router.post(
+    '/api/auth/users/:id/reset-token',
+    requireRole('Owner'),
+    (req: Request, res: Response) => {
+      const { id } = req.params as { id: string };
+      const target = getUserById(id);
+      if (!target) {
+        res.status(404).json({ error: 'user not found' });
+        return;
+      }
+      const reset = createPasswordResetToken({ userId: id });
+      res.status(201).json({
+        token: reset.token,
+        url: buildOwnerPasswordResetUrl(reset.token),
+        expiresAt: reset.row.expires_at,
+        userId: id,
+      });
+    },
+  );
+
   // POST /api/auth/users/:id/password — self-reset or Owner-reset
   router.post('/api/auth/users/:id/password', async (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
@@ -2745,7 +3173,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json(formatZodError(parsedInvite.error));
       return;
     }
-    const { role: rawRole, email, ttlHours } = parsedInvite.data;
+    const { role: rawRole, ttlHours } = parsedInvite.data;
     const role = parseRole(rawRole);
     if (!role || role === 'Owner') {
       res.status(400).json({ error: 'role must be Admin or User (Owner is never invited)' });
@@ -2758,10 +3186,18 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(400).json({ error: 'invite issuance requires an authenticated user session' });
       return;
     }
+    const inviteEmail =
+      parsedInvite.data.email == null || parsedInvite.data.email === ''
+        ? null
+        : sanitizeEmailIdentifier(parsedInvite.data.email);
+    if (parsedInvite.data.email && !inviteEmail) {
+      res.status(400).json({ error: 'email must be a valid email address' });
+      return;
+    }
     const invite = createInvite({
       orgId: authedReq.authOrgId,
       role,
-      email: email ?? null,
+      email: inviteEmail,
       createdBy: authedReq.authUserId,
       ttlHours,
     });
@@ -2865,8 +3301,11 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         const usernameMissing = parsedAccept.error.issues.some(
           (i) => i.path[0] === 'username' && (i.code === 'invalid_type' || i.code === 'too_small'),
         );
-        if (usernameMissing) {
-          res.status(400).json({ error: 'invalid username' });
+        const emailMissing = parsedAccept.error.issues.some(
+          (i) => i.path[0] === 'email' && (i.code === 'invalid_type' || i.code === 'too_small'),
+        );
+        if (usernameMissing || emailMissing) {
+          res.status(400).json({ error: 'email is required' });
           return;
         }
         const passwordMissing = parsedAccept.error.issues.some(
@@ -2881,11 +3320,11 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         res.status(400).json(formatZodError(parsedAccept.error));
         return;
       }
-      const { username: rawUser, password: rawPass } = parsedAccept.data;
-      const username = sanitizeUsername(rawUser);
+      const { password: rawPass } = parsedAccept.data;
+      const username = sanitizeEmailIdentifier(credentialFromBody(parsedAccept.data));
       const password = sanitizePassword(rawPass);
       if (!username) {
-        res.status(400).json({ error: 'invalid username' });
+        res.status(400).json({ error: 'email must be a valid email address' });
         return;
       }
       if (!password) {
@@ -2895,7 +3334,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         return;
       }
       if (getUserByUsername(username)) {
-        res.status(409).json({ error: 'username already taken' });
+        res.status(409).json({ error: 'email already taken' });
         return;
       }
 
@@ -2941,7 +3380,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       res.status(201).json({
         token: jwt,
         expiresAt,
-        user: { id: user.id, username: user.username, role: row.role },
+        user: tokenUserPayload(user, row.role),
         orgId: row.org_id,
       });
     },

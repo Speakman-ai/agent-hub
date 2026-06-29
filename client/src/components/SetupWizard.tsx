@@ -11,6 +11,10 @@ import MyGrokAuthSection from './MyGrokAuthSection';
 
 const DEFAULT_ORG_NAME = 'Personal';
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 /** Step keys and labels when Hub owner auth is not configured yet. */
 export function getSetupWizardStepPlan(setupStatus: any) {
   const needsHubAccount = setupStatus?.authConfigured === false;
@@ -187,8 +191,8 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
     e.preventDefault();
     const username = hubUsername.trim();
     const password = hubPassword;
-    if (!username || password.length < 12) {
-      setError('Username and a password of at least 12 characters are required.');
+    if (!isValidEmail(username) || password.length < 12) {
+      setError('Email and a password of at least 12 characters are required.');
       return;
     }
     setSaving(true);
@@ -276,23 +280,23 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               </div>
               <h1 className="text-xl font-bold text-white mb-1">Create your Hub account</h1>
               <p className="text-gray-400 text-sm">
-                This username and password protect Agent Hub on this machine — API access, settings,
+                This email and password protect Agent Hub on this machine — API access, settings,
                 and org data. Pick something strong; you can add more users later in Settings.
               </p>
             </div>
             <form onSubmit={handleHubAccountContinue} className="space-y-3">
               <div>
                 <label htmlFor="hub-account-username" className="block text-xs text-gray-400 mb-1">
-                  Username
+                  Email
                 </label>
                 <input
                   id="hub-account-username"
                   data-testid="hub-account-username"
-                  type="text"
+                  type="email"
                   value={hubUsername}
                   onChange={(e: any) => setHubUsername(e.target.value)}
                   autoFocus
-                  autoComplete="username"
+                  autoComplete="email"
                   required
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                 />
@@ -328,7 +332,7 @@ export default function SetupWizard({ onComplete, setupStatus, initialStep = 1 }
               )}
               <button
                 type="submit"
-                disabled={saving || hubUsername.trim().length === 0 || hubPassword.length < 12}
+                disabled={saving || !isValidEmail(hubUsername) || hubPassword.length < 12}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-medium py-2.5 px-6 rounded-lg text-sm transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {saving && <Loader2 size={16} className="animate-spin" />}

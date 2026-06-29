@@ -4,6 +4,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 (vi as any).mock('../utils/auth.js', () => ({
   getAuthStatus: vi.fn(),
   isAuthenticated: vi.fn(),
+  needsEmailUpdate: vi.fn(),
+  updateEmail: vi.fn(),
   setActiveOrgIsLocal: vi.fn(),
 }));
 
@@ -18,7 +20,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 }));
 
 import AuthGate from './AuthGate';
-import { getAuthStatus, isAuthenticated } from '../utils/auth';
+import { getAuthStatus, isAuthenticated, needsEmailUpdate, updateEmail } from '../utils/auth';
 import { getConnectionConfig, saveConnectionConfig } from '../utils/connection';
 
 const Child = () => <div data-testid="app-child">app</div>;
@@ -26,10 +28,13 @@ const Child = () => <div data-testid="app-child">app</div>;
 beforeEach(() => {
   (getAuthStatus as any).mockReset();
   (isAuthenticated as any).mockReset();
+  (needsEmailUpdate as any).mockReset();
+  (updateEmail as any).mockReset();
   (getConnectionConfig as any).mockReset();
   (saveConnectionConfig as any).mockReset();
   (getConnectionConfig as any).mockReturnValue({ mode: 'local', remoteUrl: '', apiKey: '' });
   (isAuthenticated as any).mockReturnValue(false);
+  (needsEmailUpdate as any).mockReturnValue(false);
   delete (window as any).electronAPI;
 });
 
@@ -188,6 +193,49 @@ describe('AuthGate — active-org local bypass', () => {
     await waitFor(() => {
       expect(screen.getByTestId('app-child')).toBeInTheDocument();
     });
+    expect(screen.queryByTestId('login-screen')).toBeNull();
+  });
+
+  it('still prompts authenticated local users whose token needs an email update', async () => {
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      activeOrgIsLocal: true,
+    });
+    (isAuthenticated as any).mockReturnValue(true);
+    (needsEmailUpdate as any).mockReturnValue(true);
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Set your email/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('app-child')).toBeNull();
+    expect(screen.queryByTestId('login-screen')).toBeNull();
+  });
+
+  it('prompts local users when server status reports a legacy auth record before a token exists', async () => {
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      activeOrgIsLocal: true,
+      needsEmailUpdate: true,
+    });
+    (isAuthenticated as any).mockReturnValue(false);
+    (needsEmailUpdate as any).mockReturnValue(false);
+
+    render(
+      <AuthGate>
+        <Child />
+      </AuthGate>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Set your email/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('app-child')).toBeNull();
     expect(screen.queryByTestId('login-screen')).toBeNull();
   });
 

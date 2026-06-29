@@ -60,7 +60,7 @@ export default function DashboardView({
   onOpenProjectSupport,
 }: any) {
   const currentUser = getAuthRecord()?.user || null;
-  const accountName = currentUser?.username || 'Account';
+  const accountName = currentUser?.email || currentUser?.username || 'Account';
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -424,7 +424,7 @@ function ActiveSessionRow({ session: s, onOpenSession }: any) {
 function ActiveSessionsPanel({ sessions = [], onOpenSession, currentUser = null }: any) {
   const list = Array.isArray(sessions) ? sessions : [];
   const currentUserKey = ownerKeyForUser(currentUser);
-  const currentUserName = (currentUser && currentUser.username) || null;
+  const currentUserName = (currentUser && (currentUser.email || currentUser.username)) || null;
   // Default the queue to *your* sessions; "All users" reveals the rest.
   const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
   const ownerOptions = buildOwnerOptions(list, { currentUserKey, currentUserName });

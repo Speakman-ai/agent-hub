@@ -16,7 +16,7 @@ vi.mock('@react-native-async-storage/async-storage', () => {
     };
 });
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { needsFirstRunSetup, shouldShowWizard, shouldGateLoginAfterSetup, loadSetupDismissed, saveSetupDismissed, normalizeServerUrl, validateServerUrl, SETUP_DISMISSED_KEY, } from './setupState';
+import { needsFirstRunSetup, shouldShowWizard, shouldGateLoginAfterSetup, shouldGateAuthFromStatus, loadSetupDismissed, saveSetupDismissed, normalizeServerUrl, validateServerUrl, SETUP_DISMISSED_KEY, } from './setupState';
 describe('needsFirstRunSetup', () => {
     it('returns true for null / undefined state', () => {
         expect(needsFirstRunSetup(null)).toBe(true);
@@ -99,6 +99,50 @@ describe('shouldGateLoginAfterSetup', () => {
     it('treats missing args as not-gated rather than throwing', () => {
         expect(shouldGateLoginAfterSetup()).toBe(false);
         expect(shouldGateLoginAfterSetup({})).toBe(false);
+    });
+});
+describe('shouldGateAuthFromStatus', () => {
+    it('preserves unauthenticated local bundled bypass', () => {
+        expect(shouldGateAuthFromStatus({
+            status: { authConfigured: true, activeOrgIsLocal: true, needsEmailUpdate: false },
+            isAuthenticated: false,
+            needsEmailUpdate: false,
+        })).toBe(false);
+    });
+    it('gates unauthenticated local bundled installs when status reports email update needed', () => {
+        expect(shouldGateAuthFromStatus({
+            status: { authConfigured: true, activeOrgIsLocal: true, needsEmailUpdate: true },
+            isAuthenticated: false,
+            needsEmailUpdate: false,
+        })).toBe(true);
+    });
+    it('gates unauthenticated remote auth servers', () => {
+        expect(shouldGateAuthFromStatus({
+            status: { authConfigured: true, activeOrgIsLocal: false },
+            isAuthenticated: false,
+            needsEmailUpdate: false,
+        })).toBe(true);
+    });
+    it('gates authenticated sessions that need email update', () => {
+        expect(shouldGateAuthFromStatus({
+            status: { authConfigured: true, activeOrgIsLocal: true },
+            isAuthenticated: true,
+            needsEmailUpdate: true,
+        })).toBe(true);
+    });
+    it('gates authenticated stale-token sessions when status reports email update needed', () => {
+        expect(shouldGateAuthFromStatus({
+            status: { authConfigured: true, activeOrgIsLocal: true, needsEmailUpdate: true },
+            isAuthenticated: true,
+            needsEmailUpdate: false,
+        })).toBe(true);
+    });
+    it('does not gate when auth is not configured', () => {
+        expect(shouldGateAuthFromStatus({
+            status: { authConfigured: false, activeOrgIsLocal: false },
+            isAuthenticated: false,
+            needsEmailUpdate: false,
+        })).toBe(false);
     });
 });
 describe('AsyncStorage dismissed flag', () => {

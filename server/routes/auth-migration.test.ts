@@ -90,7 +90,7 @@ describe('GET /api/auth/status — migration signal', () => {
     const setup = await supertest(app)
       .post('/api/auth/setup')
       .set('X-API-Key', 'legacy-shared-secret')
-      .send({ username: 'owner', password: 'a-strong-password' });
+      .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(setup.status).toBe(200);
     reloadAuthRecord();
 
@@ -135,18 +135,18 @@ describe('POST /api/auth/setup — apiKey→JWT migration', () => {
     const res = await supertest(buildGatedApp())
       .post('/api/auth/setup')
       .set('X-API-Key', 'legacy-shared-secret')
-      .send({ username: 'owner', password: 'a-strong-password' });
+      .send({ email: 'owner@example.com', password: 'a-strong-password' });
 
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     // JWT shape: three base64url segments separated by dots.
     expect(res.body.token).toBeTypeOf('string');
     expect(res.body.token.split('.')).toHaveLength(3);
-    expect(res.body.user).toMatchObject({ username: 'owner', role: 'Owner' });
+    expect(res.body.user).toMatchObject({ email: 'owner@example.com', role: 'Owner' });
     expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
 
     // users table populated with exactly one row.
-    const owner = getUserByUsername('owner');
+    const owner = getUserByUsername('owner@example.com');
     expect(owner).not.toBeNull();
     expect(countUsers()).toBe(1);
     // The response also carries the new user row's id so clients can match
@@ -173,14 +173,14 @@ describe('POST /api/auth/setup — apiKey→JWT migration', () => {
     const first = await supertest(app)
       .post('/api/auth/setup')
       .set('X-API-Key', 'legacy-shared-secret')
-      .send({ username: 'owner', password: 'a-strong-password' });
+      .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(first.status).toBe(200);
     reloadAuthRecord();
 
     const second = await supertest(app)
       .post('/api/auth/setup')
       .set('X-API-Key', 'legacy-shared-secret')
-      .send({ username: 'impostor', password: 'takeover-password' });
+      .send({ email: 'impostor@example.com', password: 'takeover-password' });
     expect(second.status).toBe(409);
     expect(second.body.error).toMatch(/already configured/i);
   });
@@ -189,7 +189,7 @@ describe('POST /api/auth/setup — apiKey→JWT migration', () => {
     mockConfig.apiKey = 'legacy-shared-secret';
     const res = await supertest(buildGatedApp())
       .post('/api/auth/setup')
-      .send({ username: 'impostor', password: 'takeover-password' });
+      .send({ email: 'impostor@example.com', password: 'takeover-password' });
     // Middleware refuses the request before the route handler runs, so
     // no auth.json gets written.
     expect(res.status).toBe(401);

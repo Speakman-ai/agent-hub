@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Loader2, WifiOff, Settings as SettingsIcon, Monitor } from 'lucide-react';
+import { Loader2, WifiOff, Settings as SettingsIcon, Monitor, Mail } from 'lucide-react';
 import LoginScreen from './LoginScreen';
-import { isAuthenticated, getAuthStatus, setActiveOrgIsLocal } from '../utils/auth';
+import InviteAcceptPage from './InviteAcceptPage';
+import ResetPasswordPage from './ResetPasswordPage';
+import {
+  isAuthenticated,
+  getAuthStatus,
+  setActiveOrgIsLocal,
+  needsEmailUpdate,
+  updateEmail,
+} from '../utils/auth';
 import { getApiBase, getConnectionConfig, saveConnectionConfig } from '../utils/connection';
 
 /**
@@ -25,6 +33,14 @@ import { getApiBase, getConnectionConfig, saveConnectionConfig } from '../utils/
  * sign-in prompt even when auth is globally configured.
  */
 export default function AuthGate({ children }: any) {
+  const inviteToken =
+    typeof window !== 'undefined'
+      ? window.location.pathname.match(/^\/invite\/([^/?#]+)\/?$/)?.[1]
+      : null;
+  const resetToken =
+    typeof window !== 'undefined' && window.location.pathname === '/reset'
+      ? new URLSearchParams(window.location.search).get('token')
+      : null;
   const [status, setStatus] = useState<any>({
     state: 'loading',
     required: false,
@@ -45,6 +61,7 @@ export default function AuthGate({ children }: any) {
           state: 'ready',
           required: !!res.authConfigured,
           activeOrgIsLocal: !!res.activeOrgIsLocal,
+          needsEmailUpdate: !!res.needsEmailUpdate,
         });
       } catch (err: any) {
         if (cancelled) return;
@@ -80,6 +97,20 @@ export default function AuthGate({ children }: any) {
   }, [nonce]);
 
   if (status.state === 'loading') {
+    if (resetToken) {
+      return (
+        <ResetPasswordPage
+          token={resetToken}
+          onComplete={() => {
+            window.history.replaceState({}, '', '/');
+            setNonce((n: any) => n + 1);
+          }}
+        />
+      );
+    }
+    if (inviteToken) {
+      return <InviteAcceptPage token={decodeURIComponent(inviteToken)} />;
+    }
     return (
       <div
         data-testid="auth-gate-loading"
@@ -88,6 +119,22 @@ export default function AuthGate({ children }: any) {
         <Loader2 size={24} className="animate-spin text-indigo-400" />
         <p className="text-xs text-gray-500">Checking authentication…</p>
       </div>
+    );
+  }
+
+  if (inviteToken) {
+    return <InviteAcceptPage token={decodeURIComponent(inviteToken)} />;
+  }
+
+  if (resetToken) {
+    return (
+      <ResetPasswordPage
+        token={resetToken}
+        onComplete={() => {
+          window.history.replaceState({}, '', '/');
+          setNonce((n: any) => n + 1);
+        }}
+      />
     );
   }
 
@@ -162,5 +209,91 @@ export default function AuthGate({ children }: any) {
     return <LoginScreen onAuthenticated={() => setNonce((n: any) => n + 1)} />;
   }
 
+  const shouldPromptForEmailUpdate =
+    status.required &&
+    (isAuthenticated()
+      ? needsEmailUpdate() || !!status.needsEmailUpdate
+      : !!status.activeOrgIsLocal && !!status.needsEmailUpdate);
+  if (shouldPromptForEmailUpdate) {
+    return <LegacyEmailPrompt onComplete={() => setNonce((n: any) => n + 1)} />;
+  }
+
   return children;
+}
+
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function LegacyEmailPrompt({ onComplete }: any) {
+  const [email, setEmail] = useState('');
+  const [error, setError] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (event: any) => {
+    event.preventDefault();
+    const nextEmail = email.trim();
+    setError(null);
+    if (!isValidEmail(nextEmail)) {
+      setError('Enter a valid email address.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateEmail({ baseUrl: getApiBase(), email: nextEmail });
+      onComplete?.();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save email');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center px-4">
+      <form
+        onSubmit={handleSubmit}
+        className="w-full max-w-sm bg-gray-900 border border-gray-700 rounded-lg p-6 shadow-lg"
+      >
+        <div className="flex flex-col items-center gap-2 mb-5">
+          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
+            <Mail className="w-6 h-6 text-emerald-400" />
+          </div>
+          <h1 className="text-lg font-semibold text-white">Set your email</h1>
+          <p className="text-xs text-gray-400 text-center">
+            Agent Hub now uses email as the sign-in identifier.
+          </p>
+        </div>
+        <label className="block text-xs text-gray-400 mb-1" htmlFor="legacy-email-update">
+          Email
+        </label>
+        <input
+          id="legacy-email-update"
+          type="email"
+          value={email}
+          onChange={(e: any) => setEmail(e.target.value)}
+          autoComplete="email"
+          required
+          autoFocus
+          className="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+        />
+        {error && (
+          <div
+            role="alert"
+            className="mt-3 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-300"
+          >
+            {error}
+          </div>
+        )}
+        <button
+          type="submit"
+          disabled={saving || !email.trim()}
+          className="mt-4 w-full flex items-center justify-center gap-2 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm font-medium rounded transition-colors"
+        >
+          {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+          Save email
+        </button>
+      </form>
+    </div>
+  );
 }

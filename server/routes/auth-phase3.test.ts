@@ -27,10 +27,12 @@ vi.mock('../config.js', () => ({ default: mockConfig }));
 
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
-const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
+const { setAuthFilePathForTests, reloadAuthRecord, saveAuthRecord, getAuthRecord } =
+  await import('../auth-store.js');
 const { initOrgsDb, setOrgsDbPathForTests, getOrgsDb, updateOrg } = await import('../orgs.js');
-const { getUserByUsername } = await import('../users-store.js');
-const { getMembershipRole } = await import('../memberships-store.js');
+const { createUser, getUserByUsername } = await import('../users-store.js');
+const { createMembership, getMembershipRole } = await import('../memberships-store.js');
+const { hashPassword } = await import('../password.js');
 
 function buildGatedApp() {
   const app = express();
@@ -43,7 +45,7 @@ function buildGatedApp() {
 async function setupOwner(app: ReturnType<typeof buildGatedApp>) {
   const res = await supertest(app)
     .post('/api/auth/setup')
-    .send({ username: 'owner', password: 'a-strong-password' });
+    .send({ email: 'owner@example.com', password: 'a-strong-password' });
   if (res.status !== 200)
     throw new Error(`setup failed: ${res.status} ${JSON.stringify(res.body)}`);
   return res.body.token as string;
@@ -72,11 +74,11 @@ describe('POST /api/auth/users (Owner only)', () => {
     const res = await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
     expect(res.status).toBe(201);
-    expect(res.body.user).toMatchObject({ username: 'alice', role: 'User' });
+    expect(res.body.user).toMatchObject({ email: 'alice@example.com', role: 'User' });
 
-    const alice = getUserByUsername('alice');
+    const alice = getUserByUsername('alice@example.com');
     expect(alice).not.toBeNull();
     expect(getMembershipRole(alice!.id, 'default')).toBe('User');
   });
@@ -86,35 +88,40 @@ describe('POST /api/auth/users (Owner only)', () => {
     const ownerToken = await setupOwner(app);
 
     // Create an Admin first.
-    await supertest(app)
-      .post('/api/auth/users')
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'admin', password: 'admins-super-strong-password', role: 'Admin' });
+    await supertest(app).post('/api/auth/users').set('Authorization', `Bearer ${ownerToken}`).send({
+      email: 'admin@example.com',
+      password: 'admins-super-strong-password',
+      role: 'Admin',
+    });
 
     // Log in as the admin to get their token.
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'admin', password: 'admins-super-strong-password' });
+      .send({ email: 'admin@example.com', password: 'admins-super-strong-password' });
     const adminToken: string = login.body.token;
 
     const res = await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ username: 'newbie', password: 'newbies-super-strong-password', role: 'User' });
+      .send({
+        email: 'newbie@example.com',
+        password: 'newbies-super-strong-password',
+        role: 'User',
+      });
     expect(res.status).toBe(403);
   });
 
-  it('rejects duplicate usernames', async () => {
+  it('rejects duplicate emails', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
     const dup = await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'another-strong-password', role: 'User' });
+      .send({ email: 'alice@example.com', password: 'another-strong-password', role: 'User' });
     expect(dup.status).toBe(409);
   });
 });
@@ -123,7 +130,7 @@ describe('PUT /api/auth/users/:id/role (sole-Owner guard)', () => {
   it('refuses to demote the only Owner', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
 
     const res = await supertest(app)
       .put(`/api/auth/users/${owner.id}/role`)
@@ -142,7 +149,7 @@ describe('PUT /api/auth/users/:id/role (sole-Owner guard)', () => {
     const create = await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'coowner', password: 'coowners-strong-password', role: 'User' });
+      .send({ email: 'coowner@example.com', password: 'coowners-strong-password', role: 'User' });
     const coownerId = create.body.user.id;
 
     // Promote to Owner
@@ -154,7 +161,7 @@ describe('PUT /api/auth/users/:id/role (sole-Owner guard)', () => {
     expect(getMembershipRole(coownerId, 'default')).toBe('Owner');
 
     // Now the original owner can be demoted.
-    const original = getUserByUsername('owner')!;
+    const original = getUserByUsername('owner@example.com')!;
     const demote = await supertest(app)
       .put(`/api/auth/users/${original.id}/role`)
       .set('Authorization', `Bearer ${ownerToken}`)
@@ -169,13 +176,14 @@ describe('Invite flow end-to-end', () => {
     const ownerToken = await setupOwner(app);
 
     // Create an Admin to issue the invite.
-    await supertest(app)
-      .post('/api/auth/users')
-      .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'admin', password: 'admins-super-strong-password', role: 'Admin' });
+    await supertest(app).post('/api/auth/users').set('Authorization', `Bearer ${ownerToken}`).send({
+      email: 'admin@example.com',
+      password: 'admins-super-strong-password',
+      role: 'Admin',
+    });
     const adminLogin = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'admin', password: 'admins-super-strong-password' });
+      .send({ email: 'admin@example.com', password: 'admins-super-strong-password' });
     const adminToken: string = adminLogin.body.token;
 
     // Issue an invite.
@@ -195,19 +203,19 @@ describe('Invite flow end-to-end', () => {
     // Accept (public).
     const accept = await supertest(app)
       .post(`/api/auth/invites/${token}/accept`)
-      .send({ username: 'newbie', password: 'newbies-super-strong-password' });
+      .send({ email: 'newbie@example.com', password: 'newbies-super-strong-password' });
     expect(accept.status).toBe(201);
-    expect(accept.body.user.username).toBe('newbie');
+    expect(accept.body.user.email).toBe('newbie@example.com');
     expect(accept.body.user.role).toBe('User');
     expect(accept.body.token.split('.')).toHaveLength(3);
 
-    const newbie = getUserByUsername('newbie')!;
+    const newbie = getUserByUsername('newbie@example.com')!;
     expect(getMembershipRole(newbie.id, 'default')).toBe('User');
 
     // Second accept should fail with 410.
     const replay = await supertest(app)
       .post(`/api/auth/invites/${token}/accept`)
-      .send({ username: 'imposter', password: 'imposter-strong-password' });
+      .send({ email: 'imposter@example.com', password: 'imposter-strong-password' });
     expect(replay.status).toBe(410);
   });
 
@@ -237,8 +245,78 @@ describe('Invite flow end-to-end', () => {
 
     const accept = await supertest(app)
       .post(`/api/auth/invites/${token}/accept`)
-      .send({ username: 'latecomer', password: 'latecomers-strong-password' });
+      .send({ email: 'latecomer@example.com', password: 'latecomers-strong-password' });
     expect(accept.status).toBe(410);
+  });
+});
+
+describe('Legacy username email update', () => {
+  it('rewrites a legacy username to email and clears the prompt flag', async () => {
+    const app = buildGatedApp();
+    const passwordHash = await hashPassword('legacy-strong-password');
+    saveAuthRecord({
+      username: 'legacy-owner',
+      passwordHash,
+      jwtSecret: 'legacy-secret',
+      role: 'Owner',
+    });
+    const legacy = createUser({ username: 'legacy-owner', passwordHash });
+    createMembership(legacy.id, 'default', 'Owner');
+
+    const login = await supertest(app)
+      .post('/api/auth/login')
+      .send({ username: 'legacy-owner', password: 'legacy-strong-password' });
+    expect(login.status).toBe(200);
+    expect(login.body.user).toMatchObject({ email: null, needsEmailUpdate: true });
+
+    const updated = await supertest(app)
+      .put('/api/auth/me/email')
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({ email: 'legacy@example.com' });
+    expect(updated.status).toBe(200);
+    expect(updated.body.user).toMatchObject({
+      id: legacy.id,
+      email: 'legacy@example.com',
+      needsEmailUpdate: false,
+      role: 'Owner',
+    });
+    expect(getUserByUsername('legacy-owner')).toBeNull();
+    expect(getUserByUsername('legacy@example.com')?.id).toBe(legacy.id);
+
+    const relogin = await supertest(app)
+      .post('/api/auth/login')
+      .send({ email: 'legacy@example.com', password: 'legacy-strong-password' });
+    expect(relogin.status).toBe(200);
+    expect(relogin.body.user.needsEmailUpdate).toBe(false);
+  });
+
+  it('does not let a normal user claim or sync the auth-record email', async () => {
+    const app = buildGatedApp();
+    const ownerPasswordHash = await hashPassword('owner-strong-password');
+    saveAuthRecord({
+      username: 'owner@example.com',
+      passwordHash: ownerPasswordHash,
+      jwtSecret: 'owner-secret',
+      role: 'Owner',
+    });
+    const bobPasswordHash = await hashPassword('bob-super-strong-password');
+    const bob = createUser({ username: 'bob@example.com', passwordHash: bobPasswordHash });
+    createMembership(bob.id, 'default', 'User');
+
+    const login = await supertest(app)
+      .post('/api/auth/login')
+      .send({ email: 'bob@example.com', password: 'bob-super-strong-password' });
+    expect(login.status).toBe(200);
+
+    const updated = await supertest(app)
+      .put('/api/auth/me/email')
+      .set('Authorization', `Bearer ${login.body.token}`)
+      .send({ email: 'owner@example.com' });
+
+    expect(updated.status).toBe(409);
+    expect(updated.body.error).toMatch(/email already taken/i);
+    expect(getAuthRecord()?.username).toBe('owner@example.com');
+    expect(getUserByUsername('bob@example.com')?.id).toBe(bob.id);
   });
 });
 
@@ -249,11 +327,11 @@ describe('Password reset', () => {
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
-    const alice = getUserByUsername('alice')!;
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
+    const alice = getUserByUsername('alice@example.com')!;
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'alice', password: 'alices-super-strong-password' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password' });
     const aliceToken: string = login.body.token;
 
     const reset = await supertest(app)
@@ -265,13 +343,13 @@ describe('Password reset', () => {
     // Old password should no longer log in.
     const stale = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'alice', password: 'alices-super-strong-password' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password' });
     expect(stale.status).toBe(401);
 
     // New password does.
     const fresh = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'alice', password: 'a-brand-new-strong-password' });
+      .send({ email: 'alice@example.com', password: 'a-brand-new-strong-password' });
     expect(fresh.status).toBe(200);
   });
 
@@ -282,15 +360,15 @@ describe('Password reset', () => {
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'bob', password: 'bobs-super-strong-password', role: 'User' });
-    const bob = getUserByUsername('bob')!;
+      .send({ email: 'bob@example.com', password: 'bobs-super-strong-password', role: 'User' });
+    const bob = getUserByUsername('bob@example.com')!;
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'alice', password: 'alices-super-strong-password' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password' });
     const aliceToken: string = login.body.token;
 
     const res = await supertest(app)
@@ -308,26 +386,26 @@ describe('DELETE /api/auth/users/:id', () => {
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
-    const alice = getUserByUsername('alice')!;
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
+    const alice = getUserByUsername('alice@example.com')!;
 
     const res = await supertest(app)
       .delete(`/api/auth/users/${alice.id}`)
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ userDeleted: true });
-    expect(getUserByUsername('alice')).toBeNull();
+    expect(getUserByUsername('alice@example.com')).toBeNull();
   });
 
   it('refuses to remove the sole Owner of the active org', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
     const res = await supertest(app)
       .delete(`/api/auth/users/${owner.id}`)
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(400);
-    expect(getUserByUsername('owner')).not.toBeNull();
+    expect(getUserByUsername('owner@example.com')).not.toBeNull();
   });
 });
 
@@ -338,15 +416,15 @@ describe('GET /api/auth/users', () => {
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
 
     const res = await supertest(app)
       .get('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
-    const usernames = res.body.users.map((u: { username: string }) => u.username).sort();
-    expect(usernames).toEqual(['alice', 'owner']);
-    const ownerRow = res.body.users.find((u: { username: string }) => u.username === 'owner');
+    const emails = res.body.users.map((u: { email: string }) => u.email).sort();
+    expect(emails).toEqual(['alice@example.com', 'owner@example.com']);
+    const ownerRow = res.body.users.find((u: { email: string }) => u.email === 'owner@example.com');
     expect(ownerRow.role).toBe('Owner');
   });
 });
@@ -365,12 +443,12 @@ describe('Regression: invites FK ON DELETE SET NULL (blocker 1)', () => {
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'inviter', password: 'inviters-strong-password', role: 'Admin' });
+      .send({ email: 'inviter@example.com', password: 'inviters-strong-password', role: 'Admin' });
     const inviterLogin = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'inviter', password: 'inviters-strong-password' });
+      .send({ email: 'inviter@example.com', password: 'inviters-strong-password' });
     const inviterToken: string = inviterLogin.body.token;
-    const inviter = getUserByUsername('inviter')!;
+    const inviter = getUserByUsername('inviter@example.com')!;
 
     // 1. Inviter mints an invite (populates invites.created_by).
     const mint = await supertest(app)
@@ -391,9 +469,9 @@ describe('Regression: invites FK ON DELETE SET NULL (blocker 1)', () => {
     const acceptorToken: string = acceptorMint.body.token;
     const accept = await supertest(app)
       .post(`/api/auth/invites/${acceptorToken}/accept`)
-      .send({ username: 'acceptor', password: 'acceptors-strong-password' });
+      .send({ email: 'acceptor@example.com', password: 'acceptors-strong-password' });
     expect(accept.status).toBe(201);
-    const acceptor = getUserByUsername('acceptor')!;
+    const acceptor = getUserByUsername('acceptor@example.com')!;
 
     // Sanity: both invite rows reference real user IDs.
     const invitesBefore = getOrgsDb()
@@ -408,7 +486,7 @@ describe('Regression: invites FK ON DELETE SET NULL (blocker 1)', () => {
       .delete(`/api/auth/users/${inviter.id}`)
       .set('Authorization', `Bearer ${ownerToken}`);
     expect(delInviter.status).toBe(200);
-    expect(getUserByUsername('inviter')).toBeNull();
+    expect(getUserByUsername('inviter@example.com')).toBeNull();
 
     // 4. Delete the acceptor too — exercises accepted_by SET NULL.
     const delAcceptor = await supertest(app)
@@ -479,8 +557,8 @@ describe('Regression: login rejects no-membership in a multi-user install (block
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'alice', password: 'alices-super-strong-password', role: 'User' });
-    const alice = getUserByUsername('alice')!;
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password', role: 'User' });
+    const alice = getUserByUsername('alice@example.com')!;
 
     // Yank Alice's membership — simulating "removed from org".
     getOrgsDb()
@@ -490,7 +568,7 @@ describe('Regression: login rejects no-membership in a multi-user install (block
 
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'alice', password: 'alices-super-strong-password' });
+      .send({ email: 'alice@example.com', password: 'alices-super-strong-password' });
     expect(login.status).toBe(403);
     expect(login.body.code).toBe('no_membership');
     expect(login.body.token).toBeUndefined();
@@ -502,7 +580,7 @@ describe('Regression: login rejects no-membership in a multi-user install (block
     // Phase-3 migration story for single-user installs.
     const app = buildGatedApp();
     await setupOwner(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
     // Nuke the auto-created membership to force the recovery path.
     getOrgsDb()
       .prepare('DELETE FROM memberships WHERE user_id = ? AND org_id = ?')
@@ -510,7 +588,7 @@ describe('Regression: login rejects no-membership in a multi-user install (block
 
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'owner', password: 'a-strong-password' });
+      .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(login.status).toBe(200);
     expect(login.body.user.role).toBe('Owner');
     expect(getMembershipRole(owner.id, 'default')).toBe('Owner');
@@ -536,20 +614,20 @@ describe('Regression: invite accept is atomic (blocker 3)', () => {
     // `WHERE accepted_by IS NULL` clause will then refuse the second
     // caller. Using a real user id keeps the FK happy now that
     // accepted_by is enforced with ON DELETE SET NULL.
-    const winner = getUserByUsername('owner')!;
+    const winner = getUserByUsername('owner@example.com')!;
     getOrgsDb()
       .prepare("UPDATE invites SET accepted_by = ?, accepted_at = datetime('now') WHERE token = ?")
       .run(winner.id, token);
 
     const accept = await supertest(app)
       .post(`/api/auth/invites/${token}/accept`)
-      .send({ username: 'loser', password: 'losers-strong-password' });
+      .send({ email: 'loser@example.com', password: 'losers-strong-password' });
     expect(accept.status).toBe(410);
 
     // The losing user row must NOT exist — the transaction should have
     // rolled it back. Under the pre-fix code this assertion fails:
     // `createUser` committed before the race was detected.
-    expect(getUserByUsername('loser')).toBeNull();
+    expect(getUserByUsername('loser@example.com')).toBeNull();
 
     // And no membership was created either.
     const memberships = getOrgsDb().prepare('SELECT COUNT(*) as c FROM memberships').get() as {

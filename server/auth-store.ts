@@ -135,6 +135,18 @@ export function setAuthRole(nextRole: Role): AuthRecord | null {
   });
 }
 
+export function updateAuthUsername(username: string): AuthRecord | null {
+  const current = getAuthRecord();
+  if (!current) return null;
+  return saveAuthRecord({
+    username,
+    passwordHash: current.passwordHash,
+    jwtSecret: current.jwtSecret,
+    role: current.role,
+    createdAt: current.createdAt,
+  });
+}
+
 /**
  * Override the file location used by the store. Intended for tests so they
  * can point at a tmp dir; also resets the cache.

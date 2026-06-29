@@ -75,7 +75,7 @@ function buildStubbedApp(stub: { authUserId?: string; authUser?: string }) {
 async function setupOwner(app: ReturnType<typeof buildGatedApp>) {
   const res = await supertest(app)
     .post('/api/auth/setup')
-    .send({ username: 'owner', password: 'a-strong-password' });
+    .send({ email: 'owner@example.com', password: 'a-strong-password' });
   if (res.status !== 200)
     throw new Error(`setup failed: ${res.status} ${JSON.stringify(res.body)}`);
   return res.body.token as string;
@@ -193,7 +193,7 @@ describe('PUT /api/auth/me/claude-auth', () => {
   it('whitelists fields — stray JSON keys must not reach the DB', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
 
     // Try to smuggle a non-whitelisted key plus a whitelisted one. Only
     // the whitelisted field should round-trip; the smuggled key must
@@ -212,8 +212,8 @@ describe('PUT /api/auth/me/claude-auth', () => {
     expect(stored?.anthropicApiKey).toBe('sk-ant-api03-WHITELISTED');
 
     // Verify the stray keys did not corrupt the user row itself.
-    const reloaded = getUserByUsername('owner');
-    expect(reloaded?.username).toBe('owner');
+    const reloaded = getUserByUsername('owner@example.com');
+    expect(reloaded?.username).toBe('owner@example.com');
     expect(reloaded?.password_hash).not.toBe('INJECTED');
   });
 
@@ -242,7 +242,7 @@ describe('PUT /api/auth/me/claude-auth', () => {
   it('clears a stored field when passed an empty string', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
 
     await supertest(app)
       .put('/api/auth/me/claude-auth')

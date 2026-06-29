@@ -16,6 +16,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 }));
 
 import AccountSection, {
+  inviteRoleOptionsFor,
   PluginApiKeysSection,
   TranscriptionProviderRow,
   roleOptionsFor,
@@ -77,6 +78,14 @@ describe('roleOptionsFor', () => {
     expect(roleOptionsFor('User')).toEqual([]);
     expect(roleOptionsFor(null)).toEqual([]);
     expect(roleOptionsFor(undefined)).toEqual([]);
+  });
+});
+
+describe('inviteRoleOptionsFor', () => {
+  it('offers only server-supported invite roles to Owner/Admin callers', () => {
+    expect(inviteRoleOptionsFor('Owner')).toEqual(['Admin', 'User']);
+    expect(inviteRoleOptionsFor('Admin')).toEqual(['Admin', 'User']);
+    expect(inviteRoleOptionsFor('User')).toEqual([]);
   });
 });
 
@@ -200,7 +209,7 @@ describe('AccountSection — Add user button visibility', () => {
     fireEvent.click(addBtn as any);
 
     expect(await screen.findByRole('dialog', { name: /add user/i })).toBeInTheDocument();
-    expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^email$/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
 
     // The role select inside the modal should expose all three roles to an
@@ -210,6 +219,146 @@ describe('AccountSection — Add user button visibility', () => {
       (o: any) => (o as any).value,
     );
     expect(optionLabels!).toEqual(['Owner', 'Admin', 'User']);
+  });
+});
+
+describe('AccountSection — member invites', () => {
+  beforeEach(() => {
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+  });
+
+  it('lists active invites and supports copy + revoke', async () => {
+    (hasRole as any).mockReturnValue(true);
+    (getUserRole as any).mockReturnValue('Owner');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/me'),
+        response: () =>
+          jsonResponse({ user: { id: 'u-owner', email: 'owner@example.com', role: 'Owner' } }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/users'),
+        response: () =>
+          jsonResponse({
+            users: [
+              { id: 'u-owner', email: 'owner@example.com', role: 'Owner' },
+              { id: 'u-admin', email: 'admin@example.com', role: 'Admin' },
+            ],
+          }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/invites'),
+        response: () =>
+          jsonResponse({
+            invites: [
+              {
+                token: 'tok-1',
+                email: 'new@example.com',
+                role: 'User',
+                createdAt: '2026-06-28T10:00:00.000Z',
+                expiresAt: '2026-06-30T10:00:00.000Z',
+              },
+            ],
+          }),
+      },
+      {
+        match: (u: any, m: any) => m === 'DELETE' && u.endsWith('/auth/invites/tok-1'),
+        response: () => jsonResponse({ ok: true, token: 'tok-1' }),
+      },
+      {
+        match: () => true,
+        response: () => jsonResponse({}),
+      },
+    ]);
+
+    render(<AccountSection />);
+
+    expect(await screen.findByText('Member invites')).toBeInTheDocument();
+    expect(screen.getByText('new@example.com')).toBeInTheDocument();
+    expect(screen.getByText(/Sole-Owner guard is active/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /copy invite link/i }));
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        'http://localhost:3000/invite/tok-1',
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /revoke/i }));
+    await waitFor(() =>
+      expect(
+        (fetchMock as any).mock.calls.some(
+          ([url, init]: any) =>
+            String(url).endsWith('/auth/invites/tok-1') && init?.method === 'DELETE',
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it('creates an invite and reloads the active invite list', async () => {
+    (hasRole as any).mockReturnValue(true);
+    (getUserRole as any).mockReturnValue('Admin');
+
+    const fetchMock = mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/me'),
+        response: () =>
+          jsonResponse({ user: { id: 'u-admin', email: 'admin@example.com', role: 'Admin' } }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/users'),
+        response: () => jsonResponse({ users: [] }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/invites'),
+        response: () => jsonResponse({ invites: [] }),
+      },
+      {
+        match: (u: any, m: any) => m === 'POST' && u.endsWith('/auth/invites'),
+        response: () =>
+          jsonResponse(
+            {
+              token: 'tok-created',
+              url: '/invite/tok-created',
+              email: 'new@example.com',
+              role: 'User',
+              createdAt: '2026-06-28T10:00:00.000Z',
+              expiresAt: '2026-06-30T10:00:00.000Z',
+            },
+            201,
+          ),
+      },
+      {
+        match: () => true,
+        response: () => jsonResponse({}),
+      },
+    ]);
+
+    render(<AccountSection />);
+
+    const email = await screen.findByLabelText(/invite email/i);
+    fireEvent.change(email, { target: { value: 'new@example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /invite member/i }));
+
+    await waitFor(() =>
+      expect(
+        (fetchMock as any).mock.calls.some(([url, init]: any) => {
+          if (!String(url).endsWith('/auth/invites') || init?.method !== 'POST') return false;
+          return JSON.parse(init.body).email === 'new@example.com';
+        }),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        'http://localhost:3000/invite/tok-created',
+      ),
+    );
   });
 });
 

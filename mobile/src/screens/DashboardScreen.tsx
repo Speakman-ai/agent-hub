@@ -40,9 +40,9 @@ export default function DashboardScreen() {
     const [supportError, setSupportError] = useState<any>(null);
     const [activeTypes, setActiveTypes] = useState(() => new Set());
     const currentUser = getAuthRecord()?.user || null;
-    const accountName = currentUser?.username || 'Account';
+    const accountName = currentUser?.email || currentUser?.username || 'Account';
     const currentUserKey = ownerKeyForUser(currentUser);
-    const currentUserName = (currentUser && currentUser.username) || null;
+    const currentUserName = (currentUser && (currentUser.email || currentUser.username)) || null;
     const [ownerFilter, setOwnerFilter] = useState(() => defaultOwnerFilter(currentUserKey));
     // Generation guards keyed on commit order (see
     // `@shared/utils/requestGeneration`): a result lands unless a strictly newer

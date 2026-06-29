@@ -21,6 +21,7 @@ import GeneralSettingsSection from '../components/settings/GeneralSettingsSectio
 import GitHubSettingsSection from '../components/settings/GitHubSettingsSection';
 import ToolErrorsSection from '../components/settings/ToolErrorsSection';
 import ServerLogsSection from '../components/settings/ServerLogsSection';
+import MembersSection from '../components/settings/MembersSection';
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
     const { handleSwitchOrg } = useApp();
@@ -321,6 +322,7 @@ function AccountSection() {
         Your personal CLI credentials and engine overrides for agents you run.
       </Text>
       <MyCliKeysSection />
+      <MembersSection />
     </View>);
 }
 // ─── Usage Analytics Tab ─────────────────────────────────────

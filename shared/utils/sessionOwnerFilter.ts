@@ -9,6 +9,7 @@ export interface SessionOwnerFields {
 
 export interface UserOwnerFields {
   id?: string | null;
+  email?: string | null;
   username?: string | null;
 }
 
@@ -29,6 +30,7 @@ export function ownerKeyForSession(session?: SessionOwnerFields | null): string 
 export function ownerKeyForUser(user: UserOwnerFields | null | undefined): string | null {
   if (!user) return null;
   if (user.id != null && user.id !== '') return `id:${user.id}`;
+  if (user.email) return `name:${user.email}`;
   if (user.username) return `name:${user.username}`;
   return null;
 }

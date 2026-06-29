@@ -49,7 +49,7 @@ function buildApp(opts: Parameters<typeof createAuthRoutes>[0] = {}): ReturnType
 async function setup(app: ReturnType<typeof express>) {
   const res = await supertest(app)
     .post('/api/auth/setup')
-    .send({ username: 'owner', password: 'a-strong-password' });
+    .send({ email: 'owner@example.com', password: 'a-strong-password' });
   if (res.status !== 200) throw new Error(`setup failed: ${res.status}`);
 }
 
@@ -88,14 +88,14 @@ describe('POST /api/auth/login — rate limit', () => {
     for (let i = 0; i < 10; i++) {
       const res = await supertest(app)
         .post('/api/auth/login')
-        .send({ username: 'owner', password: 'nope-nope-nope' });
+        .send({ email: 'owner@example.com', password: 'nope-nope-nope' });
       expect(res.status).toBe(401);
     }
 
     // The 11th is blocked by the limiter before the handler even runs.
     const blocked = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'owner', password: 'nope-nope-nope' });
+      .send({ email: 'owner@example.com', password: 'nope-nope-nope' });
     expect(blocked.status).toBe(429);
     expect(blocked.body).toMatchObject({ code: 'rate_limited' });
     // standardHeaders='draft-7' emits Retry-After + RateLimit-* headers.
@@ -106,7 +106,7 @@ describe('POST /api/auth/login — rate limit', () => {
     // whole point for brute-force mitigation.
     const blockedValid = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'owner', password: 'a-strong-password' });
+      .send({ email: 'owner@example.com', password: 'a-strong-password' });
     expect(blockedValid.status).toBe(429);
   });
 
@@ -122,11 +122,11 @@ describe('POST /api/auth/login — rate limit', () => {
       for (let i = 0; i < 2; i++) {
         await supertest(app)
           .post('/api/auth/login')
-          .send({ username: 'owner', password: 'nope-nope-nope' });
+          .send({ email: 'owner@example.com', password: 'nope-nope-nope' });
       }
       const blocked = await supertest(app)
         .post('/api/auth/login')
-        .send({ username: 'owner', password: 'a-strong-password' });
+        .send({ email: 'owner@example.com', password: 'a-strong-password' });
       expect(blocked.status).toBe(429);
 
       // Advance beyond the window — the default MemoryStore's internal
@@ -138,7 +138,7 @@ describe('POST /api/auth/login — rate limit', () => {
 
       const ok = await supertest(app)
         .post('/api/auth/login')
-        .send({ username: 'owner', password: 'a-strong-password' });
+        .send({ email: 'owner@example.com', password: 'a-strong-password' });
       expect(ok.status).toBe(200);
       expect(ok.body.token.split('.')).toHaveLength(3);
     } finally {
@@ -153,7 +153,7 @@ describe('POST /api/auth/login — rate limit', () => {
     for (let i = 0; i < 25; i++) {
       const res = await supertest(app)
         .post('/api/auth/login')
-        .send({ username: 'owner', password: 'nope-nope-nope' });
+        .send({ email: 'owner@example.com', password: 'nope-nope-nope' });
       expect(res.status).toBe(401);
     }
   });
@@ -171,7 +171,7 @@ describe('POST /api/auth/invites/:token/accept — rate limit', () => {
     for (let i = 0; i < 5; i++) {
       const res = await supertest(app)
         .post('/api/auth/invites/not-a-real-token/accept')
-        .send({ username: 'squatter', password: 'squatters-strong-password' });
+        .send({ email: 'squatter@example.com', password: 'squatters-strong-password' });
       // 404 because the token is bogus — but the request made it past
       // the limiter and ticked the counter.
       expect(res.status).toBe(404);
@@ -179,7 +179,7 @@ describe('POST /api/auth/invites/:token/accept — rate limit', () => {
 
     const blocked = await supertest(app)
       .post('/api/auth/invites/not-a-real-token/accept')
-      .send({ username: 'squatter', password: 'squatters-strong-password' });
+      .send({ email: 'squatter@example.com', password: 'squatters-strong-password' });
     expect(blocked.status).toBe(429);
     expect(blocked.headers['retry-after']).toBeDefined();
     expect(blocked.body).toMatchObject({ code: 'rate_limited' });

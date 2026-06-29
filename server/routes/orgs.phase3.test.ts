@@ -61,7 +61,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
 async function seedOwnerAndLogin(app: ReturnType<typeof buildApp>) {
   const setup = await supertest(app)
     .post('/api/auth/setup')
-    .send({ username: 'owner', password: 'a-strong-password' });
+    .send({ email: 'owner@example.com', password: 'a-strong-password' });
   return setup.body.token as string;
 }
 
@@ -89,7 +89,9 @@ describe('GET /api/orgs/:id/members', () => {
       .get('/api/orgs/default/members')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
-    expect(res.body.members.some((m: { username: string }) => m.username === 'owner')).toBe(true);
+    expect(
+      res.body.members.some((m: { username: string }) => m.username === 'owner@example.com'),
+    ).toBe(true);
     expect(res.body.orgId).toBe('default');
   });
 
@@ -101,7 +103,7 @@ describe('GET /api/orgs/:id/members', () => {
     // different user as Owner so it's listable by that user only.
     createOrg({ id: 'team-b', name: 'Team B' });
     const stranger = (await import('../users-store.js')).createUser({
-      username: 'stranger',
+      username: 'stranger@example.com',
       passwordHash: 'h',
     });
     createMembership(stranger.id, 'team-b', 'Owner');
@@ -110,7 +112,7 @@ describe('GET /api/orgs/:id/members', () => {
     // peek into team-b.
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'owner', password: 'a-strong-password' });
+      .send({ email: 'owner@example.com', password: 'a-strong-password' });
     const ownerToken: string = login.body.token;
 
     const res = await supertest(app)
@@ -124,7 +126,7 @@ describe('POST /api/orgs grants Owner membership to the creator', () => {
   it('owner who creates a new org is seeded as Owner of it', async () => {
     const app = buildApp();
     const token = await seedOwnerAndLogin(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
 
     const res = await supertest(app)
       .post('/api/orgs')
@@ -143,10 +145,10 @@ describe('POST /api/orgs grants Owner membership to the creator', () => {
     await supertest(app)
       .post('/api/auth/users')
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ username: 'peon', password: 'peons-super-strong-password', role: 'User' });
+      .send({ email: 'peon@example.com', password: 'peons-super-strong-password', role: 'User' });
     const login = await supertest(app)
       .post('/api/auth/login')
-      .send({ username: 'peon', password: 'peons-super-strong-password' });
+      .send({ email: 'peon@example.com', password: 'peons-super-strong-password' });
     const peonToken: string = login.body.token;
 
     const res = await supertest(app)
@@ -173,7 +175,7 @@ describe('POST /api/orgs/:id/switch — membership gating', () => {
   it('allows switching to an org the caller is a member of', async () => {
     const app = buildApp();
     const ownerToken = await seedOwnerAndLogin(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
     createOrg({ id: 'home', name: 'Home' });
     createMembership(owner.id, 'home', 'Owner');
 
@@ -195,7 +197,7 @@ describe('POST /api/orgs/:id/switch — membership gating', () => {
       },
     });
     const ownerToken = await seedOwnerAndLogin(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
     createOrg({ id: 'resilient', name: 'Resilient' });
     createMembership(owner.id, 'resilient', 'Owner');
 
@@ -213,7 +215,7 @@ describe('POST /api/orgs/:id/switch — membership gating', () => {
     // return 200, not 500.
     const app = buildApp({ ensureSkillBuilderAgents: undefined });
     const ownerToken = await seedOwnerAndLogin(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
     createOrg({ id: 'no-dep', name: 'No Dep' });
     createMembership(owner.id, 'no-dep', 'Owner');
 
@@ -230,7 +232,7 @@ describe('DELETE /api/orgs/:id — Owner required', () => {
     const app = buildApp();
     const ownerToken = await seedOwnerAndLogin(app);
     createOrg({ id: 'co-op', name: 'Co-op' });
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
     createMembership(owner.id, 'co-op', 'Admin'); // Admin, not Owner
 
     const res = await supertest(app)

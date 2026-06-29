@@ -340,8 +340,11 @@ components:
         id:
           type: string
           nullable: true
-        username:
+        email:
           type: string
+          nullable: true
+        needsEmailUpdate:
+          type: boolean
         role:
           type: string
           enum:
@@ -354,7 +357,7 @@ components:
             - type: number
             - nullable: true
       required:
-        - username
+        - email
         - role
     TokenResponse:
       type: object
@@ -368,7 +371,100 @@ components:
           properties:
             id:
               type: string
+            email:
+              type: string
+              nullable: true
+            needsEmailUpdate:
+              type: boolean
+            role:
+              type: string
+              enum:
+                - Owner
+                - Admin
+                - User
+          required:
+            - email
+            - role
+      required:
+        - token
+        - expiresAt
+        - user
+    AuthSetupBody:
+      anyOf:
+        - type: object
+          properties:
+            email:
+              type: string
             username:
+              type: string
+            password:
+              type: string
+          required:
+            - email
+            - password
+        - type: object
+          properties:
+            username:
+              type: string
+            email:
+              type: string
+            password:
+              type: string
+          required:
+            - username
+            - password
+      description: "`email` is canonical. `username` is accepted for compatibility. One identifier is required."
+    AuthLoginBody:
+      anyOf:
+        - type: object
+          properties:
+            email:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+          required:
+            - email
+            - password
+        - type: object
+          properties:
+            username:
+              type: string
+            email:
+              type: string
+            password:
+              type: string
+          required:
+            - username
+            - password
+      description: "`email` is canonical. `username` is accepted for legacy non-email account login. One identifier is required."
+    AuthCreateUserBody:
+      anyOf:
+        - type: object
+          properties:
+            email:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+            role:
+              type: string
+              enum:
+                - Owner
+                - Admin
+                - User
+          required:
+            - email
+            - password
+        - type: object
+          properties:
+            username:
+              type: string
+            email:
+              type: string
+            password:
               type: string
             role:
               type: string
@@ -378,47 +474,15 @@ components:
                 - User
           required:
             - username
-            - role
-      required:
-        - token
-        - expiresAt
-        - user
-    AuthSetupBody:
+            - password
+      description: "`email` is canonical. `username` is accepted for compatibility. One identifier is required."
+    AuthUpdateEmailBody:
       type: object
       properties:
-        username:
-          type: string
-        password:
+        email:
           type: string
       required:
-        - username
-        - password
-    AuthLoginBody:
-      type: object
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-      required:
-        - username
-        - password
-    AuthCreateUserBody:
-      type: object
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-        role:
-          type: string
-          enum:
-            - Owner
-            - Admin
-            - User
-      required:
-        - username
-        - password
+        - email
     AuthUpdateUserRoleBody:
       type: object
       properties:
@@ -436,6 +500,23 @@ components:
         newPassword:
           type: string
       required:
+        - newPassword
+    AuthForgotPasswordBody:
+      type: object
+      properties:
+        email:
+          type: string
+      required:
+        - email
+    AuthResetPasswordBody:
+      type: object
+      properties:
+        token:
+          type: string
+        newPassword:
+          type: string
+      required:
+        - token
         - newPassword
     CreateApiKeyBody:
       type: object
@@ -456,7 +537,6 @@ components:
         role:
           type: string
           enum:
-            - Owner
             - Admin
             - User
         email:
@@ -465,15 +545,30 @@ components:
         ttlHours:
           type: number
     AcceptInviteBody:
-      type: object
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-      required:
-        - username
-        - password
+      anyOf:
+        - type: object
+          properties:
+            email:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+          required:
+            - email
+            - password
+        - type: object
+          properties:
+            username:
+              type: string
+            email:
+              type: string
+            password:
+              type: string
+          required:
+            - username
+            - password
+      description: "`email` is canonical. `username` is accepted for compatibility. One identifier is required."
     UpdateClaudeAuthBody:
       type: object
       properties:
@@ -8434,9 +8529,11 @@ paths:
                 properties:
                   authConfigured:
                     type: boolean
-                  username:
+                  email:
                     type: string
                     nullable: true
+                  needsEmailUpdate:
+                    type: boolean
                   role:
                     type: string
                     nullable: true
@@ -8455,7 +8552,8 @@ paths:
                     type: boolean
                 required:
                   - authConfigured
-                  - username
+                  - email
+                  - needsEmailUpdate
                   - role
                   - jwtConfigured
                   - apiKeyConfigured
@@ -8492,8 +8590,11 @@ paths:
                     properties:
                       id:
                         type: string
-                      username:
+                      email:
                         type: string
+                        nullable: true
+                      needsEmailUpdate:
+                        type: boolean
                       role:
                         type: string
                         enum:
@@ -8501,7 +8602,7 @@ paths:
                           - Admin
                           - User
                     required:
-                      - username
+                      - email
                       - role
                 required:
                   - ok
@@ -8586,8 +8687,11 @@ paths:
                     properties:
                       id:
                         type: string
-                      username:
+                      email:
                         type: string
+                        nullable: true
+                      needsEmailUpdate:
+                        type: boolean
                       role:
                         type: string
                         nullable: true
@@ -8597,7 +8701,7 @@ paths:
                           - User
                           - null
                     required:
-                      - username
+                      - email
                       - role
                   authConfigured:
                     type: boolean
@@ -8617,6 +8721,55 @@ paths:
                   - authConfigured
                   - role
                   - orgId
+  /api/auth/me/email:
+    put:
+      tags:
+        - Auth
+      summary: Set the caller's canonical email login identifier.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthUpdateEmailBody"
+      responses:
+        "200":
+          description: Email updated; replacement JWT returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Invalid email body.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/ZodErrorResponse"
+                  - $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Server auth not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/auth/me/claude-auth:
     get:
       tags:
@@ -9802,7 +9955,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Username taken.
+          description: Email taken.
           content:
             application/json:
               schema:
@@ -9930,6 +10083,110 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/forgot-password:
+    post:
+      tags:
+        - Auth
+      summary: Request a password reset for an email address.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthForgotPasswordBody"
+      responses:
+        "200":
+          description: Enumeration-safe receipt.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/reset-password:
+    post:
+      tags:
+        - Auth
+      summary: Consume a password reset token and set a new password.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthResetPasswordBody"
+      responses:
+        "200":
+          description: Password updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "400":
+          description: Invalid body, expired token, or consumed token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/users/{id}/reset-token:
+    post:
+      tags:
+        - Auth
+      summary: Generate a one-time reset token for a user (Owner only).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "201":
+          description: One-time plaintext token. Store only shown once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  url:
+                    type: string
+                  expiresAt:
+                    type: string
+                  userId:
+                    type: string
+                required:
+                  - token
+                  - url
+                  - expiresAt
+                  - userId
+        "403":
+          description: Owner role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/auth/users/{id}/password:
     post:
       tags:
@@ -10006,7 +10263,6 @@ paths:
                   role:
                     type: string
                     enum:
-                      - Owner
                       - Admin
                       - User
                   email:
@@ -10059,7 +10315,6 @@ paths:
                         role:
                           type: string
                           enum:
-                            - Owner
                             - Admin
                             - User
                         email:
@@ -10149,7 +10404,6 @@ paths:
                   role:
                     type: string
                     enum:
-                      - Owner
                       - Admin
                       - User
                   email:
@@ -10214,7 +10468,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Username taken.
+          description: Email taken.
           content:
             application/json:
               schema:

@@ -81,6 +81,16 @@ export function getUserRole() {
   return rec?.user?.role || null;
 }
 
+export function getUserEmail() {
+  const rec = safeGet();
+  return rec?.user?.email || null;
+}
+
+export function needsEmailUpdate() {
+  const rec = safeGet();
+  return !!rec?.user?.needsEmailUpdate;
+}
+
 /**
  * True iff the cached user's role is at least `minRole`. Useful for
  * hiding admin-only UI affordances. The server still enforces the
@@ -130,14 +140,15 @@ export function isAuthenticated() {
  * throws on failure. Persists the token on 200.
  */
 export async function login({ baseUrl, username, password }: any) {
+  const email = typeof username === 'string' ? username.trim() : username;
   const res = await fetch(`${baseUrl}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, username: email, password }),
   });
   if (res.status === 401) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || 'Invalid username or password');
+    throw new Error(body.error || 'Invalid email or password');
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -156,13 +167,14 @@ export async function login({ baseUrl, username, password }: any) {
  * creating the Owner — not the long-term UI auth mechanism.
  */
 export async function setup({ baseUrl, username, password, apiKey = '' }: any) {
+  const email = typeof username === 'string' ? username.trim() : username;
   const res = await fetch(`${baseUrl}/auth/setup`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(apiKey ? { 'X-API-Key': apiKey } : {}),
     },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ email, username: email, password }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -173,13 +185,58 @@ export async function setup({ baseUrl, username, password, apiKey = '' }: any) {
   return data;
 }
 
+export async function updateEmail({ baseUrl, email }: any) {
+  const token = getToken();
+  const res = await fetch(`${baseUrl}/auth/me/email`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Email update failed: ${res.status}`);
+  }
+  const data = await res.json();
+  setToken(data);
+  return data;
+}
+
+export async function forgotPassword({ baseUrl, email }: any) {
+  const res = await fetch(`${baseUrl}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Password reset request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function resetPassword({ baseUrl, token, newPassword }: any) {
+  const res = await fetch(`${baseUrl}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, newPassword }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Password reset failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 /**
  * GET /api/auth/status — unauthenticated probe.
  *
  * Returns the parsed JSON body as-is:
  *   {
  *     authConfigured: boolean,
- *     username: string | null,
+ *     email: string | null,
  *     role: 'Owner' | 'Admin' | 'User' | null,
  *     jwtConfigured: boolean,
  *     apiKeyConfigured: boolean,

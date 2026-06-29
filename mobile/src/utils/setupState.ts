@@ -60,6 +60,19 @@ export function shouldShowWizard(state: any, dismissed: any) {
 export function shouldGateLoginAfterSetup({ hasServerUrl, isAuthenticated }: any = {}) {
     return Boolean(hasServerUrl) && !isAuthenticated;
 }
+/**
+ * Decide whether the app-level auth gate should be raised from
+ * `/api/auth/status`. Local bundled installs deliberately allow unauthenticated
+ * local bypass, while remote servers and already-authenticated sessions still
+ * enforce login/email-update state.
+ */
+export function shouldGateAuthFromStatus({ status, isAuthenticated, needsEmailUpdate }: any = {}) {
+    if (!status?.authConfigured)
+        return false;
+    if (status.activeOrgIsLocal && !isAuthenticated && !status.needsEmailUpdate)
+        return false;
+    return !isAuthenticated || Boolean(needsEmailUpdate) || Boolean(status.needsEmailUpdate);
+}
 /** Read the persisted dismissed flag. Defaults to `false` on error. */
 export async function loadSetupDismissed() {
     try {

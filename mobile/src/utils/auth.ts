@@ -10,131 +10,169 @@ const STORAGE_KEY = 'agent-hub-jwt';
 let _cachedToken: any = null;
 /** Warm the in-memory mirror from AsyncStorage. Call on app startup. */
 export async function loadAuthToken() {
-    try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.token === 'string') {
-                if (parsed.expiresAt) {
-                    const exp = new Date(parsed.expiresAt).getTime();
-                    if (Number.isFinite(exp) && exp <= Date.now()) {
-                        await clearToken();
-                        return null;
-                    }
-                }
-                _cachedToken = parsed;
-                return parsed;
-            }
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.token === 'string') {
+        if (parsed.expiresAt) {
+          const exp = new Date(parsed.expiresAt).getTime();
+          if (Number.isFinite(exp) && exp <= Date.now()) {
+            await clearToken();
+            return null;
+          }
         }
+        _cachedToken = parsed;
+        return parsed;
+      }
     }
-    catch { }
-    _cachedToken = null;
-    return null;
+  } catch {}
+  _cachedToken = null;
+  return null;
 }
 /** Synchronously read the in-memory token. Returns null if missing/expired. */
 export function getToken() {
-    if (!_cachedToken)
-        return null;
-    if (_cachedToken.expiresAt) {
-        const exp = new Date(_cachedToken.expiresAt).getTime();
-        if (Number.isFinite(exp) && exp <= Date.now()) {
-            _cachedToken = null;
-            // Fire-and-forget disk cleanup.
-            AsyncStorage.removeItem(STORAGE_KEY).catch(() => { });
-            return null;
-        }
+  if (!_cachedToken) return null;
+  if (_cachedToken.expiresAt) {
+    const exp = new Date(_cachedToken.expiresAt).getTime();
+    if (Number.isFinite(exp) && exp <= Date.now()) {
+      _cachedToken = null;
+      // Fire-and-forget disk cleanup.
+      AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+      return null;
     }
-    return _cachedToken.token;
+  }
+  return _cachedToken.token;
 }
 export function getAuthRecord() {
-    return _cachedToken;
+  return _cachedToken;
+}
+export function needsEmailUpdate() {
+  return !!_cachedToken?.user?.needsEmailUpdate;
 }
 /** Persist a new token record. */
 export async function setToken({ token, expiresAt, user }: any) {
-    const record = { token, expiresAt: expiresAt || null, user: user || null };
-    _cachedToken = record;
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(record));
+  const record = { token, expiresAt: expiresAt || null, user: user || null };
+  _cachedToken = record;
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(record));
 }
 /** Drop the stored token. */
 export async function clearToken() {
-    _cachedToken = null;
-    await AsyncStorage.removeItem(STORAGE_KEY);
+  _cachedToken = null;
+  await AsyncStorage.removeItem(STORAGE_KEY);
 }
 /** True iff a non-expired token is cached. */
 export function isAuthenticated() {
-    return !!getToken();
+  return !!getToken();
 }
 /** POST /api/auth/login. Stores the token on success. */
 export async function login({ baseUrl, username, password }: any) {
-    const res = await fetch(`${baseUrl}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-    });
-    if (res.status === 401) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Invalid username or password');
-    }
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Login failed: ${res.status}`);
-    }
-    const data = await res.json();
-    await setToken(data);
-    return data;
+  const email = typeof username === 'string' ? username.trim() : username;
+  const res = await fetch(`${baseUrl}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, username: email, password }),
+  });
+  if (res.status === 401) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Invalid email or password');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Login failed: ${res.status}`);
+  }
+  const data = await res.json();
+  await setToken(data);
+  return data;
 }
 /** POST /api/auth/setup — first-run bootstrap. */
 export async function setup({ baseUrl, username, password }: any) {
-    const res = await fetch(`${baseUrl}/auth/setup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Setup failed: ${res.status}`);
-    }
-    const data = await res.json();
-    await setToken(data);
-    return data;
+  const email = typeof username === 'string' ? username.trim() : username;
+  const res = await fetch(`${baseUrl}/auth/setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, username: email, password }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Setup failed: ${res.status}`);
+  }
+  const data = await res.json();
+  await setToken(data);
+  return data;
+}
+export async function updateEmail({ baseUrl, email }: any) {
+  const token = getToken();
+  const res = await fetch(`${baseUrl}/auth/me/email`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Email update failed: ${res.status}`);
+  }
+  const data = await res.json();
+  await setToken(data);
+  return data;
+}
+export async function forgotPassword({ baseUrl, email }: any) {
+  const res = await fetch(`${baseUrl}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Password reset request failed: ${res.status}`);
+  }
+  return res.json();
+}
+export async function resetPassword({ baseUrl, token, newPassword }: any) {
+  const res = await fetch(`${baseUrl}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, newPassword }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Password reset failed: ${res.status}`);
+  }
+  return res.json();
 }
 /** GET /api/auth/status — public probe. Pass `timeoutMs: 0` to disable the default 15s cap. */
 export async function getAuthStatus(baseUrl: any, { timeoutMs = 15000 }: any = {}) {
-    const useTimeout = timeoutMs > 0;
-    const controller = useTimeout ? new AbortController() : null;
-    const timer = useTimeout && controller
-        ? setTimeout(() => controller.abort(), timeoutMs)
-        : null;
-    try {
-        const res = await fetch(`${baseUrl}/auth/status`, {
-            ...(controller ? { signal: controller.signal } : {}),
-        });
-        if (!res.ok)
-            throw new Error(`Auth status failed: ${res.status}`);
-        return res.json();
+  const useTimeout = timeoutMs > 0;
+  const controller = useTimeout ? new AbortController() : null;
+  const timer = useTimeout && controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(`${baseUrl}/auth/status`, {
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!res.ok) throw new Error(`Auth status failed: ${res.status}`);
+    return res.json();
+  } catch (err: any) {
+    if (controller && err?.name === 'AbortError') {
+      throw new Error('Auth status request timed out');
     }
-    catch (err: any) {
-        if (controller && err?.name === 'AbortError') {
-            throw new Error('Auth status request timed out');
-        }
-        throw err;
-    }
-    finally {
-        if (timer)
-            clearTimeout(timer);
-    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 /** POST /api/auth/logout — clears local token (stateless server). */
 export async function logout({ baseUrl }: any = {}) {
-    const token = getToken();
-    if (baseUrl && token) {
-        try {
-            await fetch(`${baseUrl}/auth/logout`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-            });
-        }
-        catch { }
-    }
-    await clearToken();
+  const token = getToken();
+  if (baseUrl && token) {
+    try {
+      await fetch(`${baseUrl}/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {}
+  }
+  await clearToken();
 }

@@ -41,6 +41,8 @@ const PUBLIC_PATHS: readonly string[] = [
   // ── Auth bootstrap endpoints ─────────────────────────────────
   '/api/auth/status',
   '/api/auth/login',
+  '/api/auth/forgot-password',
+  '/api/auth/reset-password',
   // GitHub OAuth callback — landed on via a cross-origin redirect from
   // github.com, so no bearer token is sent. Identity is carried by a
   // signed `state` JWT validated inside the route handler itself.
@@ -188,7 +190,7 @@ function extractApiKey(req: Request): string | null {
  * `uid` claim existed are re-resolved by looking up `sub` (username) in
  * the users table created by the migration.
  */
-function resolveJwtCaller(payload: { sub: string; uid?: string }):
+function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersion?: unknown }):
   | {
       userId: string;
       username: string;
@@ -213,6 +215,15 @@ function resolveJwtCaller(payload: { sub: string; uid?: string }):
     return 'orgs-db-unavailable';
   }
   if (!user) return null;
+  const tokenVersion =
+    typeof payload.credentialVersion === 'number' && Number.isFinite(payload.credentialVersion)
+      ? payload.credentialVersion
+      : 0;
+  const currentVersion =
+    typeof user.credential_version === 'number' && Number.isFinite(user.credential_version)
+      ? user.credential_version
+      : 0;
+  if (tokenVersion !== currentVersion) return null;
 
   const orgId = getActiveOrgId();
   const role = getMembershipRole(user.id, orgId);

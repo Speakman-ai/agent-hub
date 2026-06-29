@@ -382,6 +382,14 @@ export const api = {
         body: JSON.stringify(data),
     }),
     deleteMyAgentModelOverride: (agentId: any) => fetchJSON(`/auth/me/agent-model-overrides/${agentId}`, { method: 'DELETE' }),
+    getInvites: () => fetchJSON('/auth/invites'),
+    createInvite: (data: any) => fetchJSON('/auth/invites', { method: 'POST', body: JSON.stringify(data) }),
+    revokeInvite: (token: any) => fetchJSON(`/auth/invites/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+    previewInvite: (token: any) => fetchJSON(`/auth/invites/${encodeURIComponent(token)}`),
+    acceptInvite: (token: any, data: any) => fetchJSON(`/auth/invites/${encodeURIComponent(token)}/accept`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     // Devices (push notifications)
     registerDevice: (token: any, platform: any = 'ios') => fetchJSON('/devices', {
         method: 'POST',
@@ -639,6 +647,7 @@ export const api = {
         return fetchJSON(`/projects/${projectId}/tool-errors${qs ? `?${qs}` : ''}`);
     },
     getServerLogs: () => fetchJSON('/server-logs'),
+    getMe: () => fetchJSON('/auth/me'),
     getUsers: () => fetchJSON('/auth/users'),
     inviteUser: (data: any) => fetchJSON('/auth/invites', { method: 'POST', body: JSON.stringify(data) }),
     getMcpServers: (agentId: any) => fetchJSON(`/agents/${agentId}/mcp-servers`),

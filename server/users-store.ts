@@ -22,6 +22,7 @@ export interface UserRow {
   id: string;
   username: string;
   password_hash: string;
+  credential_version?: number;
   created_at: string;
 }
 
@@ -81,7 +82,26 @@ export function deleteUser(id: string): void {
 
 export function updateUserPassword(id: string, passwordHash: string): void {
   const db = getOrgsDb();
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
+  db.prepare(
+    `UPDATE users
+     SET password_hash = ?, credential_version = COALESCE(credential_version, 0) + 1
+     WHERE id = ?`,
+  ).run(passwordHash, id);
+}
+
+export function bumpUserCredentialVersion(id: string): void {
+  const db = getOrgsDb();
+  db.prepare(
+    `UPDATE users
+     SET credential_version = COALESCE(credential_version, 0) + 1
+     WHERE id = ?`,
+  ).run(id);
+}
+
+export function updateUserUsername(id: string, username: string): UserRow | null {
+  const db = getOrgsDb();
+  db.prepare('UPDATE users SET username = ? WHERE id = ?').run(username, id);
+  return getUserById(id);
 }
 
 // ── Per-user engine credential encryption-at-rest ──────────────────

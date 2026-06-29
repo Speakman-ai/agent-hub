@@ -41,7 +41,7 @@ beforeAll(async () => {
   void path.join(config.dataDir, 'auth.json'); // imported only for parity
   const jwtSecret = generateJwtSecret();
   saveAuthRecord({
-    username: 'apikey-owner',
+    username: 'apikey-owner@example.com',
     passwordHash: 'scrypt$ignored',
     jwtSecret,
     role: 'Owner',
@@ -49,12 +49,12 @@ beforeAll(async () => {
 
   const orgId = getActiveOrgId();
   const aRow = createUser({
-    username: `apikey-user-a-${Date.now()}`,
+    username: `apikey-user-a-${Date.now()}@example.com`,
     passwordHash: 'h',
     createdAt: '2026-01-01T00:00:00Z',
   });
   const bRow = createUser({
-    username: `apikey-user-b-${Date.now()}`,
+    username: `apikey-user-b-${Date.now()}@example.com`,
     passwordHash: 'h',
     createdAt: '2026-01-02T00:00:00Z',
   });
@@ -181,13 +181,15 @@ describe('Auth via Authorization: Bearer ahub_*', () => {
       .get('/api/auth/me')
       .set('Authorization', `Bearer ${created.token}`)
       .expect(200);
-    expect(res.body.user.username).toBe(userA.username);
+    expect(res.body.user.email).toBe(userA.username);
+    expect(res.body.user.username).toBeUndefined();
   });
 
   it('grants access via X-API-Key header', async () => {
     const created = createApiKey(userA.id, 'xapikey-test');
     const res = await request.get('/api/auth/me').set('X-API-Key', created.token).expect(200);
-    expect(res.body.user.username).toBe(userA.username);
+    expect(res.body.user.email).toBe(userA.username);
+    expect(res.body.user.username).toBeUndefined();
   });
 
   it('updates last_used_at on first use', async () => {
@@ -233,7 +235,8 @@ describe('GET /api/auth/keys hides server-minted spawn-creds', () => {
       .get('/api/auth/me')
       .set('Authorization', `Bearer ${hidden.token}`)
       .expect(200);
-    expect(res.body.user.username).toBe(userA.username);
+    expect(res.body.user.email).toBe(userA.username);
+    expect(res.body.user.username).toBeUndefined();
   });
 
   it('cap counter excludes hidden spawn-creds rows', async () => {
@@ -261,7 +264,8 @@ describe('DELETE /api/auth/keys/:id', () => {
       .get('/api/auth/me')
       .set('Authorization', `Bearer ${created.token}`)
       .expect(200);
-    expect(res.body.user.username).toBe(userA.username);
+    expect(res.body.user.email).toBe(userA.username);
+    expect(res.body.user.username).toBeUndefined();
   });
 
   it('hides revoked keys from the list endpoint', async () => {

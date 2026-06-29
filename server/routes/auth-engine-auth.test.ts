@@ -86,7 +86,7 @@ function buildStubbedApp(stub: { authUserId?: string; authUser?: string }) {
 async function setupOwner(app: ReturnType<typeof buildGatedApp>) {
   const res = await supertest(app)
     .post('/api/auth/setup')
-    .send({ username: 'owner', password: 'a-strong-password' });
+    .send({ email: 'owner@example.com', password: 'a-strong-password' });
   if (res.status !== 200)
     throw new Error(`setup failed: ${res.status} ${JSON.stringify(res.body)}`);
   return res.body.token as string;
@@ -262,7 +262,7 @@ for (const fx of engineFixtures) {
     it('whitelists fields — stray JSON keys must not reach the DB', async () => {
       const app = buildGatedApp();
       const ownerToken = await setupOwner(app);
-      const owner = getUserByUsername('owner')!;
+      const owner = getUserByUsername('owner@example.com')!;
 
       const res = await supertest(app)
         .put(fx.path)
@@ -278,8 +278,8 @@ for (const fx of engineFixtures) {
       const stored = fx.read(owner.id);
       expect(stored?.apiKey).toBe(fx.sampleKey);
 
-      const reloaded = getUserByUsername('owner');
-      expect(reloaded?.username).toBe('owner');
+      const reloaded = getUserByUsername('owner@example.com');
+      expect(reloaded?.username).toBe('owner@example.com');
       expect(reloaded?.password_hash).not.toBe('INJECTED');
     });
 
@@ -304,7 +304,7 @@ for (const fx of engineFixtures) {
     it('clears the stored field when passed an empty string', async () => {
       const app = buildGatedApp();
       const ownerToken = await setupOwner(app);
-      const owner = getUserByUsername('owner')!;
+      const owner = getUserByUsername('owner@example.com')!;
 
       await supertest(app)
         .put(fx.path)
@@ -381,7 +381,7 @@ describe('per-user engine routes — write isolation across engines', () => {
   it('writing one engine never bleeds into the others', async () => {
     const app = buildGatedApp();
     const ownerToken = await setupOwner(app);
-    const owner = getUserByUsername('owner')!;
+    const owner = getUserByUsername('owner@example.com')!;
 
     await supertest(app)
       .put('/api/auth/me/cursor-auth')

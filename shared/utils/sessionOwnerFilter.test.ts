@@ -23,6 +23,7 @@ describe('ownerKeyForSession / ownerKeyForUser', () => {
     expect(ownerKeyForSession({})).toBe('__unassigned__');
     // A user's own key matches their sessions' key.
     expect(ownerKeyForUser({ id: 'u1', username: 'alice' })).toBe('id:u1');
+    expect(ownerKeyForUser({ email: 'alice@example.com' })).toBe('name:alice@example.com');
     expect(ownerKeyForUser({ username: 'alice' })).toBe('name:alice');
     expect(ownerKeyForUser(null)).toBe(null);
   });

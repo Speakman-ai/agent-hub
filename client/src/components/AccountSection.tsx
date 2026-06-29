@@ -28,6 +28,14 @@ import { formatDate, parseDate } from '../utils/time';
 
 const ALL_ROLES = ['Owner', 'Admin', 'User'];
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function displayEmail(user: any) {
+  return user?.email || user?.username || 'Account';
+}
+
 /**
  * Returns the list of roles a caller is allowed to assign when creating a new
  * user. Owner can assign any role; Admin can create Admin + User but not
@@ -44,6 +52,11 @@ export function roleOptionsFor(callerRole: any) {
   return [];
 }
 
+export function inviteRoleOptionsFor(callerRole: any) {
+  if (callerRole === 'Owner' || callerRole === 'Admin') return ['Admin', 'User'];
+  return [];
+}
+
 /**
  * Account tab — surfaces the current user's role and, for Admin+ callers,
  * the roster of configured users with create / change-role / remove
@@ -52,6 +65,7 @@ export function roleOptionsFor(callerRole: any) {
 export default function AccountSection() {
   const [me, setMe] = useState<any>(null);
   const [users, setUsers] = useState<any>(null);
+  const [invites, setInvites] = useState<any>(null);
   const [error, setError] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -84,6 +98,15 @@ export default function AccountSection() {
     }
   }, []);
 
+  const loadInvites = useCallback(async () => {
+    try {
+      const body = await api.getInvites();
+      setInvites(body.invites || []);
+    } catch (err: any) {
+      setError(err.message || String(err));
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -99,6 +122,7 @@ export default function AccountSection() {
         // this; we skip the request otherwise to avoid noisy 403s.
         if (hasRole('Admin') || meBody.user?.role === 'Owner' || meBody.user?.role === 'Admin') {
           await loadUsers();
+          await loadInvites();
         }
       } catch (err: any) {
         if (!cancelled) setError(err.message || String(err));
@@ -109,7 +133,7 @@ export default function AccountSection() {
     return () => {
       cancelled = true;
     };
-  }, [loadUsers]);
+  }, [loadInvites, loadUsers]);
 
   if (loading) {
     return (
@@ -154,7 +178,7 @@ export default function AccountSection() {
 
   const handleRemove = async (user: any) => {
     if (!user.id) return;
-    if (!window.confirm(`Remove ${user.username}? This can't be undone.`)) return;
+    if (!window.confirm(`Remove ${displayEmail(user)}? This can't be undone.`)) return;
     setRowError(user.id, null);
     try {
       const res = await fetch(`${getApiBase()}/auth/users/${user.id}`, {
@@ -171,6 +195,10 @@ export default function AccountSection() {
       setRowError(user.id, err.message || String(err));
     }
   };
+
+  const ownerCount = Array.isArray(users)
+    ? users.filter((u: any) => u?.role === 'Owner').length
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -192,7 +220,7 @@ export default function AccountSection() {
         </div>
         {me ? (
           <div className="flex items-center gap-3">
-            <span className="font-mono text-sm text-white">{me.username}</span>
+            <span className="font-mono text-sm text-white">{displayEmail(me)}</span>
             <RoleBadge role={currentRole} />
           </div>
         ) : (
@@ -271,13 +299,16 @@ export default function AccountSection() {
               {users.map((u: any) => {
                 const rowError = u.id ? rowErrors[u.id] : null;
                 return (
-                  <li key={u.id || u.username} className="border border-gray-700 rounded px-3 py-2">
+                  <li
+                    key={u.id || u.email || u.username}
+                    className="border border-gray-700 rounded px-3 py-2"
+                  >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-mono text-sm text-white">{u.username}</span>
+                      <span className="font-mono text-sm text-white">{displayEmail(u)}</span>
                       <div className="flex items-center gap-2">
                         {isAdminPlus && u.id ? (
                           <select
-                            aria-label={`Role for ${u.username}`}
+                            aria-label={`Role for ${displayEmail(u)}`}
                             value={u.role}
                             onChange={(e: any) => handleRoleChange(u, e.target.value)}
                             className="bg-gray-900 border border-gray-700 rounded text-xs text-gray-200 px-2 py-1"
@@ -296,7 +327,7 @@ export default function AccountSection() {
                             type="button"
                             onClick={() => handleRemove(u)}
                             className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-red-500/40 text-red-300 hover:bg-red-500/10"
-                            aria-label={`Remove ${u.username}`}
+                            aria-label={`Remove ${displayEmail(u)}`}
                           >
                             <Trash2 size={12} />
                           </button>
@@ -316,7 +347,17 @@ export default function AccountSection() {
               })}
             </ul>
           )}
+          {ownerCount === 1 && (
+            <div className="mt-3 text-[11px] text-amber-200 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+              Sole-Owner guard is active. Add or promote another Owner before removing or demoting
+              the current Owner.
+            </div>
+          )}
         </div>
+      )}
+
+      {me && isAdminPlus && (
+        <InvitesSection callerRole={currentRole} invites={invites} onChanged={loadInvites} />
       )}
 
       {error && (
@@ -687,6 +728,189 @@ export function HostOpenAIKeySection() {
   return <PluginApiKeysSection />;
 }
 
+function absoluteInviteUrl(invite: any) {
+  const raw = invite?.url || (invite?.token ? `/invite/${invite.token}` : '');
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (typeof window === 'undefined') return raw;
+  return new URL(raw, window.location.origin).toString();
+}
+
+function InvitesSection({ callerRole, invites, onChanged }: any) {
+  const options = inviteRoleOptionsFor(callerRole);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState(options[options.length - 1] || 'User');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<any>(null);
+  const [copiedToken, setCopiedToken] = useState<any>(null);
+
+  useEffect(() => {
+    if (!options.includes(role)) {
+      setRole(options[options.length - 1] || 'User');
+    }
+  }, [options, role]);
+
+  const copyInviteLink = async (invite: any) => {
+    const url = absoluteInviteUrl(invite);
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedToken(invite.token);
+      setStatus({ type: 'success', msg: 'Invite link copied.' });
+    } catch {
+      setStatus({ type: 'error', msg: 'Copy failed. Select the invite link manually.' });
+    }
+  };
+
+  const createInvite = async (event: any) => {
+    event.preventDefault();
+    const nextEmail = email.trim();
+    setStatus(null);
+    if (!isValidEmail(nextEmail)) {
+      setStatus({ type: 'error', msg: 'Enter a valid email address.' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const created = await api.createInvite({ email: nextEmail, role });
+      setEmail('');
+      setStatus({ type: 'success', msg: `Invite created for ${created.email || nextEmail}.` });
+      await onChanged();
+      await copyInviteLink(created);
+    } catch (err: any) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revokeInvite = async (invite: any) => {
+    if (!window.confirm(`Revoke invite for ${invite.email || invite.role}?`)) return;
+    setStatus(null);
+    try {
+      await api.revokeInvite(invite.token);
+      setStatus({ type: 'success', msg: 'Invite revoked.' });
+      await onChanged();
+    } catch (err: any) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    }
+  };
+
+  return (
+    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+      <div>
+        <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <Users size={14} /> Member invites
+        </h4>
+        <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+          Invite links create Admin or User accounts. Promote a member to Owner after they accept.
+        </p>
+      </div>
+
+      <form
+        onSubmit={createInvite}
+        className="grid grid-cols-1 md:grid-cols-[1fr_140px_auto] gap-2"
+      >
+        <input
+          type="email"
+          value={email}
+          onChange={(e: any) => {
+            setEmail(e.target.value);
+            setStatus(null);
+          }}
+          placeholder="teammate@example.com"
+          autoComplete="email"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600"
+          aria-label="Invite email"
+        />
+        <select
+          value={role}
+          onChange={(e: any) => setRole(e.target.value)}
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100"
+          aria-label="Invite role"
+        >
+          {options.map((r: any) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={busy || !isValidEmail(email) || options.length === 0}
+          className="inline-flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm px-3 py-2 rounded-lg"
+        >
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+          Invite member
+        </button>
+      </form>
+
+      {status && (
+        <div
+          role={status.type === 'success' ? 'status' : 'alert'}
+          className={`text-xs rounded px-3 py-2 border ${
+            status.type === 'success'
+              ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+              : 'text-red-300 bg-red-500/10 border-red-500/30'
+          }`}
+        >
+          {status.msg}
+        </div>
+      )}
+
+      {invites === null ? (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 size={12} className="animate-spin" /> Loading invites…
+        </div>
+      ) : !invites?.length ? (
+        <p className="text-xs text-gray-500">No active invites.</p>
+      ) : (
+        <ul className="space-y-2">
+          {invites.map((invite: any) => {
+            const url = absoluteInviteUrl(invite);
+            return (
+              <li key={invite.token} className="border border-gray-700 rounded px-3 py-2">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm text-white">
+                        {invite.email || 'Open invite'}
+                      </span>
+                      <RoleBadge role={invite.role} />
+                    </div>
+                    <div className="text-[11px] text-gray-500 mt-1 flex flex-wrap gap-x-3 gap-y-1">
+                      <span>Created {formatDate(invite.createdAt)}</span>
+                      <span>Expires {formatDate(invite.expiresAt)}</span>
+                    </div>
+                    <div className="text-[11px] text-gray-500 font-mono truncate mt-1">{url}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => copyInviteLink(invite)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-700"
+                    >
+                      <Copy size={12} />
+                      {copiedToken === invite.token ? 'Copied' : 'Copy invite link'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => revokeInvite(invite)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-red-500/40 text-red-300 hover:bg-red-500/10"
+                    >
+                      <Trash2 size={12} /> Revoke
+                    </button>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function AddUserModal({ callerRole, onClose, onCreated }: any) {
   const options = roleOptionsFor(callerRole);
   const [username, setUsername] = useState('');
@@ -698,12 +922,16 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
   const handleSubmit = async (e: any) => {
     e.preventDefault();
     setError(null);
+    if (!isValidEmail(username)) {
+      setError('Enter a valid email address.');
+      return;
+    }
     setBusy(true);
     try {
       const res = await fetch(`${getApiBase()}/auth/users`, {
         method: 'POST',
         headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: username.trim(), password, role }),
+        body: JSON.stringify({ email: username.trim(), username: username.trim(), password, role }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -741,14 +969,14 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
         </div>
 
         <label className="block text-xs text-gray-400 mb-1" htmlFor="add-user-username">
-          Username
+          Email
         </label>
         <input
           id="add-user-username"
-          type="text"
+          type="email"
           value={username}
           onChange={(e: any) => setUsername(e.target.value)}
-          autoComplete="off"
+          autoComplete="email"
           required
           className="w-full mb-3 px-2 py-1 text-sm bg-gray-800 border border-gray-700 rounded text-white"
         />
@@ -801,7 +1029,7 @@ function AddUserModal({ callerRole, onClose, onCreated }: any) {
           </button>
           <button
             type="submit"
-            disabled={busy || !username.trim() || !password}
+            disabled={busy || !isValidEmail(username) || !password}
             className="inline-flex items-center gap-1 px-3 py-1 text-xs rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50"
           >
             {busy ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}

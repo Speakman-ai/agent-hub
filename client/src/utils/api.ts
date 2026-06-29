@@ -981,6 +981,18 @@ export const api = {
   deleteSkillCredential: (id: any) =>
     fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
+  getInvites: () => fetchJSON('/auth/invites'),
+  createInvite: (data: any) =>
+    fetchJSON('/auth/invites', { method: 'POST', body: JSON.stringify(data) }),
+  revokeInvite: (token: any) =>
+    fetchJSON(`/auth/invites/${encodeURIComponent(token)}`, { method: 'DELETE' }),
+  previewInvite: (token: any) => fetchJSON(`/auth/invites/${encodeURIComponent(token)}`),
+  acceptInvite: (token: any, data: any) =>
+    fetchJSON(`/auth/invites/${encodeURIComponent(token)}/accept`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   // Gemini CLI Authentication
   getGeminiAuth: () => fetchJSON('/config/gemini-auth'),
   setGeminiApiKey: (apiKey: any) =>

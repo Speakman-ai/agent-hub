@@ -5,8 +5,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { extractSubmittedAskIds } from '../utils/askAnswers';
 import { loadOrgs, migrateFromLegacy, getOrgs } from '../utils/orgs';
 import { loadConnectionConfig, getApiBaseUrl } from '../utils/config';
-import { loadAuthToken, isAuthenticated, getAuthStatus, getAuthRecord } from '../utils/auth';
-import { loadSetupDismissed, saveSetupDismissed, shouldShowWizard, shouldGateLoginAfterSetup, } from '../utils/setupState';
+import { loadAuthToken, isAuthenticated, getAuthStatus, getAuthRecord, needsEmailUpdate } from '../utils/auth';
+import { loadSetupDismissed, saveSetupDismissed, shouldShowWizard, shouldGateLoginAfterSetup, shouldGateAuthFromStatus, } from '../utils/setupState';
 import { hydrateChangesReady } from '../utils/changesReady';
 import { applyDetectedFlag } from '../utils/worktreeState';
 import { isWorkflowProject } from '../utils/project-mode';
@@ -994,7 +994,11 @@ export function AppProvider({ children }: any) {
                     // Record whether the server enforces auth — drives notification
                     // owner-scoping's local-bypass (see `serverAuthConfiguredRef`).
                     serverAuthConfiguredRef.current = Boolean(status?.authConfigured);
-                    if (status?.authConfigured && !isAuthenticated()) {
+                    if (shouldGateAuthFromStatus({
+                        status,
+                        isAuthenticated: isAuthenticated(),
+                        needsEmailUpdate: needsEmailUpdate(),
+                    })) {
                         setNeedsAuth(true);
                     }
                 }
@@ -1024,7 +1028,7 @@ export function AppProvider({ children }: any) {
         await saveSetupDismissed(true);
         if (shouldGateLoginAfterSetup({
             hasServerUrl: !!getApiBaseUrl(),
-            isAuthenticated: isAuthenticated(),
+            isAuthenticated: isAuthenticated() && !needsEmailUpdate(),
         })) {
             setNeedsAuth(true);
         }

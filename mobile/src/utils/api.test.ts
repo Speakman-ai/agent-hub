@@ -157,6 +157,35 @@ describe('api updateProject — PATCH parity with web client', () => {
         expect(JSON.parse(init.body)).toEqual({ mode: 'workflow' });
     });
 });
+
+describe('api invite helpers — mobile parity with web client', () => {
+    it('getInvites → GET /auth/invites', async () => {
+        await api.getInvites();
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/invites');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('createInvite → POST /auth/invites', async () => {
+        await api.createInvite({ email: 'new@example.com', role: 'User' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/invites');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ email: 'new@example.com', role: 'User' });
+    });
+    it('revokeInvite → DELETE /auth/invites/:token', async () => {
+        await api.revokeInvite('tok/1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/invites/tok%2F1');
+        expect(init.method).toBe('DELETE');
+    });
+    it('acceptInvite → POST /auth/invites/:token/accept', async () => {
+        await api.acceptInvite('tok', { email: 'new@example.com', password: 'secret' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/invites/tok/accept');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ email: 'new@example.com', password: 'secret' });
+    });
+});
 describe('api deployment helpers — URL + body parity with web client', () => {
     it('getDeployConfig(projectId) → GET /projects/:id/deploy/config', async () => {
         await api.getDeployConfig('agent-hub');

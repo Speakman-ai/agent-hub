@@ -20,7 +20,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
   setup: vi.fn().mockResolvedValue({
     token: 'test-jwt',
     expiresAt: null,
-    user: { username: 'owner', role: 'Owner' },
+    user: { email: 'owner@example.com', role: 'Owner' },
   }),
 }));
 
@@ -117,7 +117,7 @@ describe('SetupWizard — Hub account step', () => {
       <SetupWizard setupStatus={{ authConfigured: false, engines: {} }} onComplete={() => {}} />,
     );
     fireEvent.change(screen.getByTestId('hub-account-username' as any), {
-      target: { value: 'admin' },
+      target: { value: 'admin@example.com' },
     });
     fireEvent.change(screen.getByTestId('hub-account-password' as any), {
       target: { value: 'longpassword12' },
@@ -127,7 +127,7 @@ describe('SetupWizard — Hub account step', () => {
     });
     await waitFor(() => {
       expect(setupHubAuth!).toHaveBeenCalledWith(
-        expect.objectContaining({ username: 'admin', password: 'longpassword12' }),
+        expect.objectContaining({ username: 'admin@example.com', password: 'longpassword12' }),
       );
     });
     await waitFor(() => {

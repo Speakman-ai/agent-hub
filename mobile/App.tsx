@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { View, Animated, TouchableOpacity, StyleSheet, ActivityIndicator, Text } from 'react-native';
+import { View, Animated, TouchableOpacity, StyleSheet, ActivityIndicator, Text, Linking } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -34,12 +34,24 @@ import ReviewerScreen from './src/screens/ReviewerScreen';
 import EpicsScreen from './src/screens/EpicsScreen';
 import RepositoryScreen from './src/screens/RepositoryScreen';
 import DeploymentsScreen from './src/screens/DeploymentsScreen';
+import InviteAcceptScreen from './src/screens/InviteAcceptScreen';
 import DrawerContent from './src/components/DrawerContent';
 import SetupWizard from './src/components/SetupWizard';
 import LoginScreen from './src/components/LoginScreen';
 import { colors } from './src/theme/colors';
 const Stack = createNativeStackNavigator();
 const DRAWER_WIDTH = 280;
+function inviteTokenFromUrl(url: any) {
+    const match = String(url || '').match(/\/invite\/([^/?#]+)/);
+    if (!match?.[1])
+        return null;
+    try {
+        return decodeURIComponent(match[1]);
+    }
+    catch {
+        return match[1];
+    }
+}
 const DarkTheme = {
     ...DefaultTheme,
     dark: true,
@@ -59,6 +71,7 @@ function AppContent() {
     const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
     const overlayAnim = useRef(new Animated.Value(0)).current;
     const navigationRef = useRef<any>(null);
+    const [inviteToken, setInviteToken] = useState<any>(null);
     const { setActiveSessionId, configReady, needsSetup, completeSetup, needsAuth, completeAuth, registerNavigator, } = useApp();
     const openSidebar = useCallback(() => {
         sidebarOpenRef.current = true;
@@ -135,6 +148,25 @@ function AppContent() {
         });
         return () => registerNavigator(null);
     }, [registerNavigator, closeSidebar]);
+    useEffect(() => {
+        let mounted = true;
+        Linking.getInitialURL()
+            .then((url: any) => {
+            const token = inviteTokenFromUrl(url);
+            if (mounted && token)
+                setInviteToken(token);
+        })
+            .catch(() => { });
+        const sub = Linking.addEventListener('url', ({ url }: any) => {
+            const token = inviteTokenFromUrl(url);
+            if (token)
+                setInviteToken(token);
+        });
+        return () => {
+            mounted = false;
+            sub.remove();
+        };
+    }, []);
     // Show loading screen while config loads from AsyncStorage
     if (!configReady) {
         return (<View style={styles.loadingContainer}>
@@ -147,6 +179,12 @@ function AppContent() {
     // main drawer/stack so the user can't end up staring at an empty chat.
     if (needsSetup) {
         return <SetupWizard onComplete={completeSetup}/>;
+    }
+    if (inviteToken) {
+        return <InviteAcceptScreen route={{ params: { token: inviteToken } }} onAccepted={() => {
+                setInviteToken(null);
+                completeAuth();
+            }}/>;
     }
     // Server has auth configured and we don't have a valid JWT — gate on login.
     if (needsAuth) {
@@ -184,6 +222,7 @@ function AppContent() {
             <Stack.Screen name="Epics" component={EpicsScreen}/>
             <Stack.Screen name="Repository" component={RepositoryScreen}/>
             <Stack.Screen name="Deployments" component={DeploymentsScreen}/>
+            <Stack.Screen name="Invite" component={InviteAcceptScreen}/>
           </Stack.Navigator>
         </NavigationContainer>
 

@@ -93,6 +93,7 @@ export function initOrgsDb(): void {
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
+      credential_version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -143,6 +144,17 @@ export function initOrgsDb(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix);
+
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash  TEXT NOT NULL UNIQUE,
+      expires_at  TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      consumed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
+    CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash);
   `);
 
   // MCP-server registry (per-user). Replaces the deleted Nango integration.
@@ -358,6 +370,12 @@ export function initOrgsDb(): void {
     orgsDb.prepare('SELECT preferences_json FROM users LIMIT 1').get();
   } catch {
     orgsDb.exec('ALTER TABLE users ADD COLUMN preferences_json TEXT');
+  }
+
+  try {
+    orgsDb.prepare('SELECT credential_version FROM users LIMIT 1').get();
+  } catch {
+    orgsDb.exec('ALTER TABLE users ADD COLUMN credential_version INTEGER NOT NULL DEFAULT 0');
   }
 
   orgsStmts = {

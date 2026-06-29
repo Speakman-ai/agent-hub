@@ -5,11 +5,13 @@
 //   1. Shape validation (this file). Zod parses the request body / query
 //      and confirms each field has the right *type*. Failures surface as
 //      400 with the issue list — see `formatZodError` below.
-//   2. Domain validation (still in the route handlers). Username / password
-//      length & character-set rules live in `auth-validation.ts` because
-//      the boot-time provisioning path needs the same rules. Keeping the
-//      Zod schemas to "is this a string?" preserves the existing
-//      error-message contract that callers and tests depend on.
+//   2. Domain validation (still in the route handlers). Login identifier /
+//      password length and character-set rules live in `auth-validation.ts`
+//      because the boot-time provisioning path needs the same rules. Keeping
+//      the Zod schemas to "is this a string?" preserves the existing
+//      error-message contract that callers and tests depend on. New and updated
+//      login identifiers are emails, while login still accepts legacy
+//      non-email usernames during the deprecation window.
 //
 // Schemas declared here are also registered with the OpenAPI registry so
 // the generated `openapi.yaml` documents every auth body + response.
@@ -59,7 +61,8 @@ export const UserSummary = registerComponent(
   'UserSummary',
   z.object({
     id: z.string().optional().nullable(),
-    username: z.string(),
+    email: z.string().nullable(),
+    needsEmailUpdate: z.boolean().optional(),
     role: z.enum(['Owner', 'Admin', 'User']),
     createdAt: z.union([z.string(), z.number()]).optional().nullable(),
   }),
@@ -72,7 +75,8 @@ export const TokenResponse = registerComponent(
     expiresAt: z.string(),
     user: z.object({
       id: z.string().optional(),
-      username: z.string(),
+      email: z.string().nullable(),
+      needsEmailUpdate: z.boolean().optional(),
       role: z.enum(['Owner', 'Admin', 'User']),
     }),
   }),
@@ -80,28 +84,51 @@ export const TokenResponse = registerComponent(
 
 // ── Bodies (request shapes) ────────────────────────────────────────────
 
+function credentialBody<T extends z.ZodRawShape>(extra: T, description: string) {
+  return z
+    .union([
+      z.object({
+        email: z.string(),
+        username: z.string().optional(),
+        ...extra,
+      }),
+      z.object({
+        username: z.string(),
+        email: z.string().optional(),
+        ...extra,
+      }),
+    ])
+    .openapi({ description });
+}
+
 export const SetupBody = registerComponent(
   'AuthSetupBody',
-  z.object({
-    username: z.string(),
-    password: z.string(),
-  }),
+  credentialBody(
+    { password: z.string() },
+    '`email` is canonical. `username` is accepted for compatibility. One identifier is required.',
+  ),
 );
 
 export const LoginBody = registerComponent(
   'AuthLoginBody',
-  z.object({
-    username: z.string(),
-    password: z.string(),
-  }),
+  credentialBody(
+    { password: z.string() },
+    '`email` is canonical. `username` is accepted for legacy non-email account login. One identifier is required.',
+  ),
 );
 
 export const CreateUserBody = registerComponent(
   'AuthCreateUserBody',
+  credentialBody(
+    { password: z.string(), role: z.enum(['Owner', 'Admin', 'User']).optional() },
+    '`email` is canonical. `username` is accepted for compatibility. One identifier is required.',
+  ),
+);
+
+export const UpdateEmailBody = registerComponent(
+  'AuthUpdateEmailBody',
   z.object({
-    username: z.string(),
-    password: z.string(),
-    role: z.enum(['Owner', 'Admin', 'User']).optional(),
+    email: z.string(),
   }),
 );
 
@@ -119,6 +146,21 @@ export const PasswordResetBody = registerComponent(
   }),
 );
 
+export const ForgotPasswordBody = registerComponent(
+  'AuthForgotPasswordBody',
+  z.object({
+    email: z.string(),
+  }),
+);
+
+export const ResetPasswordBody = registerComponent(
+  'AuthResetPasswordBody',
+  z.object({
+    token: z.string(),
+    newPassword: z.string(),
+  }),
+);
+
 export const CreateApiKeyBody = registerComponent(
   'CreateApiKeyBody',
   z.object({
@@ -132,7 +174,7 @@ export const CreateApiKeyBody = registerComponent(
 export const CreateInviteBody = registerComponent(
   'CreateInviteBody',
   z.object({
-    role: z.enum(['Owner', 'Admin', 'User']).optional(),
+    role: z.enum(['Admin', 'User']).optional(),
     email: z.string().optional().nullable(),
     ttlHours: z.number().optional(),
   }),
@@ -140,10 +182,10 @@ export const CreateInviteBody = registerComponent(
 
 export const AcceptInviteBody = registerComponent(
   'AcceptInviteBody',
-  z.object({
-    username: z.string(),
-    password: z.string(),
-  }),
+  credentialBody(
+    { password: z.string() },
+    '`email` is canonical. `username` is accepted for compatibility. One identifier is required.',
+  ),
 );
 
 export const UpdateClaudeAuthBody = registerComponent(

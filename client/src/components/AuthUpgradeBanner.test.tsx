@@ -89,7 +89,7 @@ describe('AuthUpgradeBanner', () => {
     expect(screen.queryByTestId('auth-upgrade-banner')).toBeNull();
   });
 
-  it('submits username/password to /auth/setup with X-API-Key header and stores the JWT', async () => {
+  it('submits email/password to /auth/setup with X-API-Key header and stores the JWT', async () => {
     (getAuthStatus as any)
       .mockResolvedValueOnce({ needsMigration: true })
       .mockResolvedValueOnce({ needsMigration: false });
@@ -100,7 +100,7 @@ describe('AuthUpgradeBanner', () => {
           ok: true,
           token: 'jwt-abc',
           expiresAt: '2099-01-01T00:00:00.000Z',
-          user: { username: 'alice', role: 'Owner' },
+          user: { email: 'alice@example.com', role: 'Owner' },
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
@@ -113,7 +113,9 @@ describe('AuthUpgradeBanner', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /set up account/i } as any) as any);
 
-    fireEvent.change(screen.getByLabelText(/username/i as any), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText(/email/i as any), {
+      target: { value: 'alice@example.com' },
+    });
     fireEvent.change(screen.getByLabelText(/password/i as any), {
       target: { value: 'super-secret-pw-123' },
     });
@@ -128,13 +130,17 @@ describe('AuthUpgradeBanner', () => {
     expect(init.headers['Content-Type']).toBe('application/json');
     expect(init.headers['X-API-Key']).toBe('legacy-api-key');
     expect(JSON.parse(init.body)).toEqual({
-      username: 'alice',
+      email: 'alice@example.com',
+      username: 'alice@example.com',
       password: 'super-secret-pw-123',
     });
 
     await waitFor(() =>
       expect(setToken!).toHaveBeenCalledWith(
-        expect.objectContaining({ token: 'jwt-abc', user: { username: 'alice', role: 'Owner' } }),
+        expect.objectContaining({
+          token: 'jwt-abc',
+          user: { email: 'alice@example.com', role: 'Owner' },
+        }),
       ),
     );
 
@@ -161,7 +167,9 @@ describe('AuthUpgradeBanner', () => {
     await waitFor(() => expect(screen.getByTestId('auth-upgrade-banner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /set up account/i } as any) as any);
-    fireEvent.change(screen.getByLabelText(/username/i as any), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText(/email/i as any), {
+      target: { value: 'alice@example.com' },
+    });
     fireEvent.change(screen.getByLabelText(/password/i as any), {
       target: { value: 'super-secret-pw-123' },
     });
@@ -180,21 +188,25 @@ describe('AuthUpgradeBanner', () => {
     (getConnectionConfig as any).mockReturnValue({ mode: 'local', remoteUrl: '', apiKey: '' });
     (getAuthStatus as any).mockResolvedValue({ needsMigration: true });
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({ ok: true, token: 't', user: { username: 'alice', role: 'Owner' } }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } },
-        ),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          token: 't',
+          user: { email: 'alice@example.com', role: 'Owner' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     render(<AuthUpgradeBanner />);
     await waitFor(() => expect(screen.getByTestId('auth-upgrade-banner')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /set up account/i } as any) as any);
-    fireEvent.change(screen.getByLabelText(/username/i as any), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText(/email/i as any), {
+      target: { value: 'alice@example.com' },
+    });
     fireEvent.change(screen.getByLabelText(/password/i as any), {
       target: { value: 'super-secret-pw-123' },
     });

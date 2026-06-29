@@ -3,6 +3,10 @@ import { Loader2, ShieldAlert, UserPlus, X } from 'lucide-react';
 import { getAuthStatus, setToken } from '../utils/auth';
 import { getConnectionConfig, getLocalApiBase } from '../utils/connection';
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 /**
  * Phase 3 auth migration — upgrade banner.
  *
@@ -62,6 +66,10 @@ export default function AuthUpgradeBanner() {
   async function handleSubmit(e: any) {
     e.preventDefault();
     setError(null);
+    if (!isValidEmail(username)) {
+      setError('Enter a valid email address.');
+      return;
+    }
     setSubmitting(true);
     try {
       const config = getConnectionConfig();
@@ -72,7 +80,7 @@ export default function AuthUpgradeBanner() {
           'Content-Type': 'application/json',
           ...(apiKey ? { 'X-API-Key': apiKey } : {}),
         },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email: username.trim(), username: username.trim(), password }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -141,14 +149,14 @@ export default function AuthUpgradeBanner() {
                   htmlFor="auth-upgrade-username"
                   className="block text-xs text-amber-200/80 mb-1"
                 >
-                  Username
+                  Email
                 </label>
                 <input
                   id="auth-upgrade-username"
-                  type="text"
+                  type="email"
                   value={username}
                   onChange={(e: any) => setUsername(e.target.value)}
-                  autoComplete="username"
+                  autoComplete="email"
                   required
                   className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-400"
                 />
@@ -188,7 +196,7 @@ export default function AuthUpgradeBanner() {
               <div className="flex items-center gap-2">
                 <button
                   type="submit"
-                  disabled={submitting || !username || !password}
+                  disabled={submitting || !isValidEmail(username) || !password}
                   className="flex items-center justify-center gap-2 py-2 px-3 bg-amber-500 hover:bg-amber-400 disabled:bg-gray-700 disabled:text-gray-500 text-gray-900 text-xs font-medium rounded transition-colors"
                 >
                   {submitting ? (

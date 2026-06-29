@@ -59,7 +59,7 @@ function buildGatedApp() {
 async function setupOwner(app: ReturnType<typeof buildGatedApp>): Promise<string> {
   const res = await supertest(app)
     .post('/api/auth/setup')
-    .send({ username: 'owner', password: 'x'.repeat(20) });
+    .send({ email: 'owner@example.com', password: 'x'.repeat(20) });
   if (res.status !== 200) throw new Error(`setup failed: ${JSON.stringify(res.body)}`);
   return res.body.token as string;
 }

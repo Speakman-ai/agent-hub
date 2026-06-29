@@ -7,6 +7,8 @@ import {
   isAuthenticated,
   login,
   setup,
+  forgotPassword,
+  resetPassword,
   getAuthStatus,
   logout,
   getUserRole,
@@ -94,16 +96,21 @@ describe('auth network helpers', () => {
     });
     expect(result!.token).toBe('t1.t2.t3');
     expect(getToken()).toBe('t1.t2.t3');
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'owner', username: 'owner', password: 'correct' }),
+    });
   });
 
   it('login surfaces the server error message on 401', async () => {
     (globalThis as any).fetch = vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
-      json: () => Promise.resolve({ error: 'Invalid username or password' } as any),
+      json: () => Promise.resolve({ error: 'Invalid email or password' } as any),
     });
     await expect(login({ baseUrl: '/api', username: 'owner', password: 'wrong' })).rejects.toThrow(
-      /Invalid username/,
+      /Invalid email/,
     );
     expect(getToken()).toBeNull();
   });
@@ -189,6 +196,38 @@ describe('auth network helpers', () => {
     (globalThis as any).fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 } as any);
     await logout({ baseUrl: '/api' });
     expect(getToken()).toBeNull();
+  });
+
+  it('forgotPassword posts the account email without auth headers', async () => {
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    } as any);
+    await forgotPassword({ baseUrl: '/api', email: 'owner@example.com' });
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'owner@example.com' }),
+    });
+  });
+
+  it('resetPassword posts the token and new password', async () => {
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    } as any);
+    await resetPassword({
+      baseUrl: '/api',
+      token: 'reset-token',
+      newPassword: 'a-new-strong-password',
+    });
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/auth/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'reset-token', newPassword: 'a-new-strong-password' }),
+    });
   });
 });
 

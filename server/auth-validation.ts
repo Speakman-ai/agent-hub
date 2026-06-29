@@ -7,8 +7,8 @@
  */
 
 /**
- * Username allowlist: 1–64 chars of letters, digits, `.`, `_`, `-`, `@`.
- * Returns the trimmed value on success, or `null` to indicate rejection.
+ * Username allowlist retained only for legacy login compatibility. New account
+ * creation paths use `sanitizeEmailIdentifier` below.
  */
 export function sanitizeUsername(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -16,6 +16,34 @@ export function sanitizeUsername(raw: unknown): string | null {
   if (trimmed.length < 1 || trimmed.length > 64) return null;
   if (!/^[a-zA-Z0-9_.\-@]+$/.test(trimmed)) return null;
   return trimmed;
+}
+
+/**
+ * Login identifier during the username→email compatibility window.
+ * Accepts any legacy username value that could already exist in the DB.
+ */
+export function sanitizeLoginIdentifier(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (isEmailIdentifier(trimmed)) return trimmed.toLowerCase();
+  return sanitizeUsername(trimmed);
+}
+
+export function isEmailIdentifier(value: string): boolean {
+  if (value.length < 3 || value.length > 254) return false;
+  if (/\s/.test(value)) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+/**
+ * Canonical email identifier for new/updated auth users. Stored lower-case in
+ * the legacy `users.username` column until the schema can be renamed.
+ */
+export function sanitizeEmailIdentifier(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!isEmailIdentifier(trimmed)) return null;
+  return trimmed.toLowerCase();
 }
 
 // Minimum password length for every account. These credentials grant full
