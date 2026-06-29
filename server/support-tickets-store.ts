@@ -72,8 +72,32 @@ export interface CreateSupportTicketInput {
   severity?: SupportTicketSeverity;
   subject?: string;
   reporter?: string | null;
+  reporterEmail?: string | null;
   replayRef?: string | null;
   screenshotRef?: string | null;
+}
+
+const SIMPLE_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function normalizeReporterEmail(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string') {
+    throw new Error('reporter_email must be a valid email address');
+  }
+  const email = raw.trim().toLowerCase();
+  if (!email) return null;
+  if (email.length > 254 || !SIMPLE_EMAIL_RE.test(email)) {
+    throw new Error('reporter_email must be a valid email address');
+  }
+  return email;
+}
+
+export function maskReporterEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const [local = '', domain = ''] = email.split('@');
+  if (!local || !domain) return '***';
+  const visible = local.slice(0, Math.min(2, local.length));
+  return `${visible}${'*'.repeat(Math.max(3, local.length - visible.length))}@${domain}`;
 }
 
 /**
@@ -96,6 +120,7 @@ export function createSupportTicket(input: CreateSupportTicketInput): SupportTic
   if (!isSeverity(severity)) {
     throw new Error(`severity must be one of: ${SUPPORT_TICKET_SEVERITIES.join(', ')}`);
   }
+  const reporterEmail = normalizeReporterEmail(input.reporterEmail);
 
   const id = uuidv4();
   getStmts().createSupportTicket.run(
@@ -107,6 +132,7 @@ export function createSupportTicket(input: CreateSupportTicketInput): SupportTic
     input.subject?.trim() ?? '',
     body,
     input.reporter ?? null,
+    reporterEmail,
     input.replayRef ?? null,
     input.screenshotRef ?? null,
   );

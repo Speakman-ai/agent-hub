@@ -48,6 +48,10 @@ const TYPE_FILTERS = [
     { key: 'other', label: 'Other' },
 ];
 const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all');
+function reporterText(ticket: any) {
+    const parts = [ticket.reporter, ticket.reporter_email].filter(Boolean);
+    return parts.length ? `Reported by ${parts.join(' · ')}` : '';
+}
 function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetStatus, onWontDo, onReclassify }: any) {
     const severityColor = SEVERITY_COLOR[item.severity] || colors.gray500;
     const title = item.subject?.trim() || item.body?.trim() || '(no subject)';
@@ -55,6 +59,7 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
     const screenshotUrl = resolveUploadUrl(item.screenshot_ref);
     const isConverted = item.status === 'converted' || !!item.converted_card_id;
     const isUnread = !item.read_at;
+    const reporterLabel = reporterText(item);
     const [converting, setConverting] = useState(false);
     const [convertError, setConvertError] = useState<any>(null);
     // Tri-state auto-merge: only send an explicit preference once the user
@@ -129,7 +134,7 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
           {item.body}
         </Text>) : null}
 
-      {item.reporter ? <Text style={styles.reporter}>Reported by {item.reporter}</Text> : null}
+      {reporterLabel ? <Text style={styles.reporter}>{reporterLabel}</Text> : null}
 
       {item.status === 'wont_do' && item.wont_do_reason ? (<View style={styles.wontDoBox} testID="wont-do-reason">
           <Text style={styles.wontDoLabel}>Won&apos;t do</Text>
@@ -402,7 +407,7 @@ export default function CustomerSupportScreen({ route }: any) {
             <Text style={styles.statusActionText}>Reclassify</Text>
           </TouchableOpacity>
           {selectedTicket.body ? (<Text style={styles.detailBody}>{selectedTicket.body}</Text>) : null}
-          {selectedTicket.reporter ? (<Text style={styles.reporter}>Reported by {selectedTicket.reporter}</Text>) : null}
+          {reporterText(selectedTicket) ? (<Text style={styles.reporter}>{reporterText(selectedTicket)}</Text>) : null}
           {selectedTicket.status === 'wont_do' && selectedTicket.wont_do_reason ? (<View style={styles.wontDoBox} testID="detail-wont-do-reason">
               <Text style={styles.wontDoLabel}>Won&apos;t do</Text>
               <Text style={styles.wontDoText}>{selectedTicket.wont_do_reason}</Text>

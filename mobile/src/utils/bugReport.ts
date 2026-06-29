@@ -1,8 +1,18 @@
 // Bug report helpers for the mobile app.
 // Endpoint is intentionally hard-coded per spec — do not derive from config.
 import { captureScreen } from 'react-native-view-shot';
+import { getAuthRecord } from './auth';
 export const BUG_REPORT_ENDPOINT = 'https://agenthub.surveytracker.io/api/bug-reports';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
+
+function looksLikeEmail(value: any) {
+    return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+export function defaultReporterEmail(record: any = getAuthRecord()) {
+    const username = record?.user?.username;
+    return looksLikeEmail(username) ? username.trim().toLowerCase() : '';
+}
 /**
  * Captures a PNG screenshot of the current screen and returns a local file URI.
  * Android/iOS only (react-native-view-shot captureScreen).
@@ -33,9 +43,10 @@ export async function captureScreenshot() {
  * @param {string} [args.appVersion='']
  * @param {string} [args.currentProjectId=''] accepted-and-ignored; wire field is fixed
  * @param {string} [args.currentAgentId='']
+ * @param {string} [args.reporterEmail]
  * @returns {Promise<{ sessionId: string, status: string }>}
  */
-export async function submitBugReport({ screenshotUri, title, description = '', severity = 'medium', sourceUrl = '', userAgent = '', appVersion = '', currentProjectId = '', currentAgentId = '', }: any) {
+export async function submitBugReport({ screenshotUri, title, description = '', severity = 'medium', sourceUrl = '', userAgent = '', appVersion = '', currentProjectId: _currentProjectId = '', currentAgentId = '', reporterEmail = '', }: any) {
     if (!title || !title.trim()) {
         throw new Error('Title is required');
     }
@@ -59,6 +70,11 @@ export async function submitBugReport({ screenshotUri, title, description = '', 
     form.append('clientType', 'mobile');
     form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
     form.append('currentAgentId', currentAgentId || '');
+    const email = looksLikeEmail(reporterEmail)
+        ? reporterEmail.trim().toLowerCase()
+        : defaultReporterEmail();
+    if (email)
+        form.append('reporter_email', email);
     const res = await fetch(BUG_REPORT_ENDPOINT, {
         method: 'POST',
         // NOTE: do NOT set Content-Type manually — RN/fetch will add the boundary

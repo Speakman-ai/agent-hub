@@ -15,6 +15,7 @@ import {
   setSupportTicketReplayRef,
   setSupportTicketBody,
   countUnreadSupportTickets,
+  maskReporterEmail,
   type CreateSupportTicketInput,
 } from './support-tickets-store.js';
 import { triggerSupportTicketInvestigation } from './support-ticket-investigation.js';
@@ -133,7 +134,11 @@ export async function intakeSupportTicket(
 
   deps.broadcast({
     type: 'support_ticket_created',
-    ticket,
+    ticket: {
+      ...ticket,
+      reporter_email: maskReporterEmail(ticket.reporter_email),
+      reporter_email_masked: Boolean(ticket.reporter_email),
+    },
     projectId: ticket.project_id,
     unreadCount: countUnreadSupportTickets(ticket.project_id),
   });

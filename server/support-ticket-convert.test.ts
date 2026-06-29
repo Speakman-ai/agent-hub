@@ -16,6 +16,7 @@ function ticket(overrides: Partial<SupportTicketRow> = {}): SupportTicketRow {
     subject: 'Login broken',
     body: 'Users cannot log in after the deploy.',
     reporter: null,
+    reporter_email: null,
     ai_summary: null,
     ai_investigation: null,
     ai_investigated_at: null,

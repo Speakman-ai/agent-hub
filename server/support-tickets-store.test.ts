@@ -5,6 +5,8 @@ import {
   createSupportTicket,
   getSupportTicket,
   listSupportTickets,
+  maskReporterEmail,
+  normalizeReporterEmail,
   updateSupportTicketStatus,
   updateSupportTicketType,
   recordSupportTicketInvestigation,
@@ -46,26 +48,46 @@ describe('support-tickets-store — create', () => {
     expect(t.status).toBe('new');
     expect(t.body).toBe('login is broken');
     expect(t.reporter).toBeNull();
+    expect(t.reporter_email).toBeNull();
     expect(t.replay_ref).toBeNull();
     expect(t.converted_card_id).toBeNull();
     expect(t.ai_investigated_at).toBeNull();
   });
 
-  it('persists explicit type, severity, subject, reporter, replayRef', () => {
+  it('persists explicit type, severity, subject, reporter, reporterEmail, replayRef', () => {
     const t = createSupportTicket({
       projectId: 'p1',
       type: 'bug',
       severity: 'critical',
       subject: 'Checkout 500',
       body: 'Stripe webhook fails',
-      reporter: 'alice@example.com',
+      reporter: 'Alice',
+      reporterEmail: ' Alice@Example.COM ',
       replayRef: 'replay-abc',
     });
     expect(t.type).toBe('bug');
     expect(t.severity).toBe('critical');
     expect(t.subject).toBe('Checkout 500');
-    expect(t.reporter).toBe('alice@example.com');
+    expect(t.reporter).toBe('Alice');
+    expect(t.reporter_email).toBe('alice@example.com');
     expect(t.replay_ref).toBe('replay-abc');
+  });
+
+  it('keeps reporterEmail optional for backwards-compatible tickets and rejects invalid emails', () => {
+    expect(
+      createSupportTicket({ projectId: 'p1', body: 'legacy ticket' }).reporter_email,
+    ).toBeNull();
+    expect(() =>
+      createSupportTicket({ projectId: 'p1', body: 'x', reporterEmail: 'not-an-email' }),
+    ).toThrow(/reporter_email must be a valid email address/);
+  });
+
+  it('normalizes and masks reporter email values', () => {
+    expect(normalizeReporterEmail(' Bob@Example.COM ')).toBe('bob@example.com');
+    expect(normalizeReporterEmail('')).toBeNull();
+    expect(maskReporterEmail('alice@example.com')).toBe('al***@example.com');
+    expect(maskReporterEmail('a@example.com')).toBe('a***@example.com');
+    expect(maskReporterEmail(null)).toBeNull();
   });
 
   it('rejects an empty body', () => {

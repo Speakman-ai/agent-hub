@@ -2323,6 +2323,10 @@ components:
           type: string
         currentAgentId:
           type: string
+        reporter_email:
+          type: string
+          format: email
+          description: Optional reporter contact email. Stored as a protected support-ticket field and used later for customer fix notifications; not copied into the ticket body.
         replayRef:
           type: string
           description: Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Attributed to the ticket and surfaced to the AI investigation.
@@ -7316,6 +7320,13 @@ components:
         reporter:
           type: string
           nullable: true
+        reporter_email:
+          type: string
+          nullable: true
+          description: Protected reporter contact email. Returned in full to Admin/Owner/local callers; masked for lower-privilege responses.
+        reporter_email_masked:
+          type: boolean
+          description: True when reporter_email is present but masked for this response. False for privileged full reads or tickets without an email.
         ai_summary:
           type: string
           nullable: true
@@ -7356,6 +7367,8 @@ components:
         - subject
         - body
         - reporter
+        - reporter_email
+        - reporter_email_masked
         - ai_summary
         - ai_investigation
         - ai_investigated_at
@@ -23331,6 +23344,10 @@ paths:
                   type: string
                 reporter:
                   type: string
+                reporter_email:
+                  type: string
+                  format: email
+                  description: Optional reporter contact email. Stored as a protected support-ticket field for release notifications; omitted/blank remains allowed for anonymous-compatible flows.
                 replayRef:
                   type: string
                 screenshot:

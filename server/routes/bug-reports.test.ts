@@ -255,6 +255,7 @@ describe('POST /api/bug-reports', () => {
       .field('description', 'Clicking Save does nothing')
       .field('severity', 'high')
       .field('clientType', 'web')
+      .field('reporter_email', 'Reporter@Example.COM')
       .expect(201);
 
     expect(typeof res.body.ticketId).toBe('string');
@@ -275,10 +276,18 @@ describe('POST /api/bug-reports', () => {
     expect(ticket!.body).toContain('Clicking Save does nothing');
     expect(ticket!.body).toContain('### Reporter Context');
     expect(ticket!.reporter).toBe('bug-report (web)');
+    expect(ticket!.reporter_email).toBe('reporter@example.com');
+    expect(ticket!.body).not.toContain('reporter@example.com');
 
     // Created event broadcast + AI investigation fired for the bug ticket.
     expect(broadcast).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'support_ticket_created' }),
+      expect.objectContaining({
+        type: 'support_ticket_created',
+        ticket: expect.objectContaining({
+          reporter_email: 're******@example.com',
+          reporter_email_masked: true,
+        }),
+      }),
     );
     expect(triggerInvestigation).toHaveBeenCalledTimes(1);
     expect(triggerInvestigation.mock.calls[0]![0]).toBe(res.body.ticketId);
@@ -506,6 +515,16 @@ describe('POST /api/bug-reports', () => {
       .field('severity', 'catastrophic')
       .expect(400);
     expect(res.body.error).toMatch(/severity/i);
+  });
+
+  it('returns 400 for an invalid reporter_email', async () => {
+    const res = await supertest(app)
+      .post('/api/bug-reports')
+      .field('title', 'Something')
+      .field('reporter_email', 'not-an-email')
+      .expect(400);
+    expect(res.body.error).toMatch(/reporter_email/i);
+    expect(triggerInvestigation).not.toHaveBeenCalled();
   });
 
   it('rate-limits to 10 reports per IP per hour', async () => {

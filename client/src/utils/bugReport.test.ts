@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { submitBugReport, BUG_REPORT_ENDPOINT, BUG_REPORT_PROJECT_ID } from './bugReport';
+import {
+  submitBugReport,
+  BUG_REPORT_ENDPOINT,
+  BUG_REPORT_PROJECT_ID,
+  defaultReporterEmail,
+} from './bugReport';
 
 describe('submitBugReport', () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -15,6 +21,7 @@ describe('submitBugReport', () => {
   });
 
   afterEach(() => {
+    localStorage.clear();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -52,6 +59,31 @@ describe('submitBugReport', () => {
     expect((fd as any).get('currentProjectId')).toBe(BUG_REPORT_PROJECT_ID);
     expect((fd as any).get('currentProjectId')).not.toBe('some-other-project');
     expect((fd as any).get('currentAgentId')).toBe('hub-frontend');
+  });
+
+  it('prefills reporter_email from the authenticated user email when available', async () => {
+    localStorage.setItem(
+      'agent-hub-jwt',
+      JSON.stringify({ token: 't', user: { username: 'Reporter@Example.COM' } }),
+    );
+
+    await submitBugReport({ title: 'contact me', description: '', severity: 'medium' });
+
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('reporter_email')).toBe('reporter@example.com');
+    expect(defaultReporterEmail()).toBe('reporter@example.com');
+  });
+
+  it('does not send reporter_email when the cached username is not an email', async () => {
+    localStorage.setItem(
+      'agent-hub-jwt',
+      JSON.stringify({ token: 't', user: { username: 'legacy-user' } }),
+    );
+
+    await submitBugReport({ title: 'anonymous-compatible', description: '', severity: 'medium' });
+
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('reporter_email')).toBeNull();
   });
 
   it('sends screenshotMissReason when no screenshot blob is available', async () => {

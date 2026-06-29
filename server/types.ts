@@ -1074,6 +1074,9 @@ export interface SupportTicketRow {
   subject: string;
   body: string;
   reporter: string | null;
+  // Protected reporter contact. Route responses mask this for non-privileged
+  // callers; store helpers and release notification jobs use the raw row.
+  reporter_email: string | null;
   // AI-investigation fields — populated when an agent investigates the ticket.
   ai_summary: string | null;
   ai_investigation: string | null;

@@ -1,9 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type supertest from 'supertest';
+import express from 'express';
 import { readdirSync, rmSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getRequest, createProject } from '../test/helpers.js';
+import type { AuthenticatedRequest } from '../auth.js';
+import { getStmts } from '../db.js';
+import type { RouteDeps } from '../types.js';
+import createSupportTicketRoutes, { serializeSupportTicket } from './support-tickets.js';
 
 // Screenshot files land in the server's real /uploads dir (serverDir = server/).
 const UPLOADS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'uploads');
@@ -105,6 +110,105 @@ describe('support-tickets routes', () => {
     // Delete.
     await request.delete(`/api/projects/${projectId}/support-tickets/${critical.id}`).expect(200);
     await request.get(`/api/projects/${projectId}/support-tickets/${critical.id}`).expect(404);
+  });
+
+  it('stores reporter_email and returns it in full for privileged local callers', async () => {
+    const projectId = await newProjectId();
+
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({
+        body: 'notify me when this ships',
+        reporter: 'Alice',
+        reporter_email: 'Alice@Example.COM',
+      })
+      .expect(201);
+
+    expect(created.body.reporter).toBe('Alice');
+    expect(created.body.reporter_email).toBe('alice@example.com');
+    expect(created.body.reporter_email_masked).toBe(false);
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .expect(200);
+    expect(detail.body.reporter_email).toBe('alice@example.com');
+  });
+
+  it('rejects invalid reporter_email values', async () => {
+    const projectId = await newProjectId();
+
+    await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'x', reporter_email: 'not-an-email' })
+      .expect(400);
+  });
+
+  it('masks reporter_email for non-privileged support-ticket route callers', async () => {
+    const project = { id: `proj-mask-${Date.now()}`, name: 'Mask Project', cwd: '/tmp' };
+    const app = express();
+    app.use(express.json({ limit: '1mb' }));
+    app.use((req, _res, next) => {
+      const authed = req as AuthenticatedRequest;
+      authed.authUserId = 'user-1';
+      authed.authUser = 'user@example.com';
+      authed.authRole = 'User';
+      next();
+    });
+    app.use(
+      createSupportTicketRoutes({
+        stmts: getStmts(),
+        broadcast: vi.fn(),
+        findProject: vi.fn((id: string) => (id === project.id ? project : null)),
+        config: {},
+        serverDir: path.dirname(fileURLToPath(import.meta.url)),
+      } as unknown as RouteDeps),
+    );
+    const st = (await import('supertest')).default;
+    const maskedRequest = st(app);
+
+    const created = await maskedRequest
+      .post(`/api/projects/${project.id}/support-tickets`)
+      .send({ body: 'private contact', reporter_email: 'alice@example.com' })
+      .expect(201);
+
+    expect(created.body.reporter_email).toBe('al***@example.com');
+    expect(created.body.reporter_email_masked).toBe(true);
+
+    const detail = await maskedRequest
+      .get(`/api/projects/${project.id}/support-tickets/${created.body.id}`)
+      .expect(200);
+    expect(detail.body.reporter_email).toBe('al***@example.com');
+    expect(detail.body.reporter_email_masked).toBe(true);
+  });
+
+  it('serializeSupportTicket leaves backwards-compatible no-email tickets unmasked', () => {
+    const serialized = serializeSupportTicket(
+      {
+        id: 'tkt-1',
+        project_id: 'p1',
+        type: 'bug',
+        severity: 'medium',
+        status: 'new',
+        subject: '',
+        body: 'legacy',
+        reporter: null,
+        reporter_email: null,
+        ai_summary: null,
+        ai_investigation: null,
+        ai_investigated_at: null,
+        replay_ref: null,
+        screenshot_ref: null,
+        converted_card_id: null,
+        wont_do_reason: null,
+        read_at: null,
+        created_at: '2026-06-29 00:00:00',
+        updated_at: '2026-06-29 00:00:00',
+      },
+      { canReadReporterEmail: false },
+    );
+
+    expect(serialized.reporter_email).toBeNull();
+    expect(serialized.reporter_email_masked).toBe(false);
   });
 
   it('PATCH preserves AI fields not present in the body (partial update)', async () => {

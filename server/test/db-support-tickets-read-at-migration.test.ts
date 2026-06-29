@@ -11,8 +11,8 @@ import { describe, it, expect } from 'vitest';
 import path from 'path';
 import Database from 'better-sqlite3';
 
-describe('support_tickets read_at migration ordering', () => {
-  it('initDb survives a legacy support_tickets table missing read_at', async () => {
+describe('support_tickets additive migration ordering', () => {
+  it('initDb survives a legacy support_tickets table missing read_at and reporter_email', async () => {
     const dataDir = process.env.AGENT_HUB_DATA_DIR;
     if (!dataDir) {
       throw new Error('expected AGENT_HUB_DATA_DIR to be set by test/setup.ts');
@@ -55,11 +55,14 @@ describe('support_tickets read_at migration ordering', () => {
       (c) => c.name,
     );
     expect(cols).toContain('read_at');
+    expect(cols).toContain('reporter_email');
 
     const row = verify
-      .prepare('SELECT id, read_at FROM support_tickets WHERE id = ?')
-      .get('ticket-legacy') as { id: string; read_at: string | null } | undefined;
-    expect(row).toEqual({ id: 'ticket-legacy', read_at: null });
+      .prepare('SELECT id, read_at, reporter_email FROM support_tickets WHERE id = ?')
+      .get('ticket-legacy') as
+      | { id: string; read_at: string | null; reporter_email: string | null }
+      | undefined;
+    expect(row).toEqual({ id: 'ticket-legacy', read_at: null, reporter_email: null });
 
     const indexes = (verify.pragma('index_list(support_tickets)') as { name: string }[]).map(
       (i) => i.name,

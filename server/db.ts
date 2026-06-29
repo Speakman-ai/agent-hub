@@ -724,6 +724,7 @@ function initDb(dataDir: string): void {
       subject TEXT NOT NULL DEFAULT '',
       body TEXT NOT NULL DEFAULT '',
       reporter TEXT,
+      reporter_email TEXT,
       ai_summary TEXT,
       ai_investigation TEXT,
       ai_investigated_at TEXT,
@@ -1405,6 +1406,15 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE support_tickets ADD COLUMN screenshot_ref TEXT');
   }
 
+  // Protected reporter contact email on support tickets. Existing tickets
+  // remain valid with NULL so old anonymous-compatible intake flows keep
+  // working.
+  try {
+    db.prepare('SELECT reporter_email FROM support_tickets LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE support_tickets ADD COLUMN reporter_email TEXT');
+  }
+
   // Read/unread state on support tickets (existing installs predate the column
   // in the CREATE TABLE above). NULL = unread; a timestamp = read.
   try {
@@ -1454,6 +1464,7 @@ function initDb(dataDir: string): void {
             subject TEXT NOT NULL DEFAULT '',
             body TEXT NOT NULL DEFAULT '',
             reporter TEXT,
+            reporter_email TEXT,
             ai_summary TEXT,
             ai_investigation TEXT,
             ai_investigated_at TEXT,
@@ -1466,11 +1477,11 @@ function initDb(dataDir: string): void {
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
           );
           INSERT INTO support_tickets_new
-            (id, project_id, type, severity, status, subject, body, reporter,
+            (id, project_id, type, severity, status, subject, body, reporter, reporter_email,
              ai_summary, ai_investigation, ai_investigated_at, replay_ref,
              wont_do_reason, screenshot_ref, converted_card_id, read_at,
              created_at, updated_at)
-            SELECT id, project_id, type, severity, status, subject, body, reporter,
+            SELECT id, project_id, type, severity, status, subject, body, reporter, reporter_email,
              ai_summary, ai_investigation, ai_investigated_at, replay_ref,
              wont_do_reason, screenshot_ref, converted_card_id, read_at,
              created_at, updated_at
@@ -4507,8 +4518,8 @@ function initDb(dataDir: string): void {
     // newest, via a CASE rank since SQLite has no native enum ordering.
     createSupportTicket: db.prepare(
       `INSERT INTO support_tickets
-         (id, project_id, type, severity, status, subject, body, reporter, replay_ref, screenshot_ref)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, project_id, type, severity, status, subject, body, reporter, reporter_email, replay_ref, screenshot_ref)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getSupportTicket: db.prepare('SELECT * FROM support_tickets WHERE id = ?'),
     listSupportTicketsByProject: db.prepare(

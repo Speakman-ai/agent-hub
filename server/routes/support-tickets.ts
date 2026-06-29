@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { Router, Request, Response } from 'express';
+import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps, KanbanCardRow } from '../types.js';
 import {
   getSupportTicket,
@@ -17,6 +18,7 @@ import {
   SUPPORT_TICKET_STATUSES,
   SUPPORT_TICKET_OPEN_STATUSES,
   SUPPORT_TICKET_TYPES,
+  maskReporterEmail,
 } from '../support-tickets-store.js';
 import type { SupportTicketStatus, SupportTicketType, SupportTicketRow } from '../types.js';
 import { intakeSupportTicket, setGuardedReplayRef } from '../support-ticket-intake.js';
@@ -30,6 +32,43 @@ import { getOrCreateBoard } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
 import { ConvertSupportTicketRequestSchema } from './support-tickets.openapi.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+
+export type SupportTicketResponse = SupportTicketRow & {
+  reporter_email_masked: boolean;
+};
+
+function canReadReporterEmail(req: Request): boolean {
+  const caller = resolveVisibilityCaller(req);
+  return Boolean(caller.localBypass || caller.role === 'Owner' || caller.role === 'Admin');
+}
+
+export function serializeSupportTicket(
+  ticket: SupportTicketRow,
+  opts: { canReadReporterEmail: boolean },
+): SupportTicketResponse {
+  const hasEmail = Boolean(ticket.reporter_email);
+  return {
+    ...ticket,
+    reporter_email: opts.canReadReporterEmail
+      ? ticket.reporter_email
+      : maskReporterEmail(ticket.reporter_email),
+    reporter_email_masked: hasEmail && !opts.canReadReporterEmail,
+  };
+}
+
+function serializeForRequest(req: Request, ticket: SupportTicketRow): SupportTicketResponse {
+  return serializeSupportTicket(ticket, { canReadReporterEmail: canReadReporterEmail(req) });
+}
+
+function serializeForBroadcast(ticket: SupportTicketRow): SupportTicketResponse {
+  return serializeSupportTicket(ticket, { canReadReporterEmail: false });
+}
+
+function defaultReporterEmail(req: Request): string | null {
+  const authUser = (req as AuthenticatedRequest).authUser;
+  return typeof authUser === 'string' && authUser.includes('@') ? authUser : null;
+}
 
 /**
  * Best-effort attribution of a session replay (referenced by `replayRef`) to a
@@ -90,7 +129,11 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     projectId: string,
     extra: Record<string, unknown>,
   ): void => {
-    broadcast({ type, projectId, unreadCount: countUnreadSupportTickets(projectId), ...extra });
+    const safeExtra = { ...extra };
+    if (safeExtra.ticket) {
+      safeExtra.ticket = serializeForBroadcast(safeExtra.ticket as SupportTicketRow);
+    }
+    broadcast({ type, projectId, unreadCount: countUnreadSupportTickets(projectId), ...safeExtra });
   };
 
   router.get('/api/projects/:projectId/support-tickets', (req: Request, res: Response) => {
@@ -146,7 +189,9 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       type = rawType as SupportTicketType;
     }
 
-    const tickets = listSupportTickets(project.id, { statuses, type });
+    const tickets = listSupportTickets(project.id, { statuses, type }).map((ticket) =>
+      serializeForRequest(req, ticket),
+    );
     res.json(tickets);
   });
 
@@ -168,19 +213,31 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     if (!ticket || ticket.project_id !== project.id) {
       return res.status(404).json({ error: 'Support ticket not found' });
     }
-    res.json(ticket);
+    res.json(serializeForRequest(req, ticket));
   });
 
   router.post('/api/projects/:projectId/support-tickets', async (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    const { type, severity, subject, body, reporter, replayRef, screenshot } = req.body as {
+    const {
+      type,
+      severity,
+      subject,
+      body,
+      reporter,
+      reporter_email,
+      reporterEmail,
+      replayRef,
+      screenshot,
+    } = req.body as {
       type?: string;
       severity?: string;
       subject?: string;
       body?: string;
       reporter?: string;
+      reporter_email?: string | null;
+      reporterEmail?: string | null;
       replayRef?: string;
       screenshot?: string;
     };
@@ -207,12 +264,13 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           subject,
           body: body ?? '',
           reporter: reporter ?? null,
+          reporterEmail: reporter_email ?? reporterEmail ?? defaultReporterEmail(req),
           replayRef: replayRef ?? null,
           screenshotRef,
         },
         { stmts, broadcast, config: deps.config, serverDir: deps.serverDir, cwd: project.cwd },
       );
-      res.status(201).json(ticket);
+      res.status(201).json(serializeForRequest(req, ticket));
     } catch (err) {
       // The ticket didn't land — remove the screenshot we just wrote so it
       // isn't orphaned (intake validates body/type/severity and can throw).
@@ -325,7 +383,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
           }
         }
         broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
-        res.json(ticket);
+        res.json(serializeForRequest(req, ticket));
       } catch (err) {
         // A later mutation rejected (e.g. invalid status). If we wrote a new
         // screenshot file up-front, roll it back so the rejected PATCH leaves no
@@ -370,7 +428,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
 
       const ticket = markSupportTicketRead(existing.id)!;
       broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
-      res.json(ticket);
+      res.json(serializeForRequest(req, ticket));
     },
   );
 
@@ -387,7 +445,7 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
 
       const ticket = markSupportTicketUnread(existing.id)!;
       broadcastTicket('support_ticket_updated', ticket.project_id, { ticket });
-      res.json(ticket);
+      res.json(serializeForRequest(req, ticket));
     },
   );
 
@@ -529,7 +587,12 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
       // open clients move it out of the default queue rather than dropping it.
       broadcastTicket('support_ticket_updated', project.id, { ticket: converted });
 
-      res.status(201).json({ card, ticket: converted, ticketId: ticket.id, converted: true });
+      res.status(201).json({
+        card,
+        ticket: serializeForRequest(req, converted),
+        ticketId: ticket.id,
+        converted: true,
+      });
     },
   );
 

@@ -67,6 +67,11 @@ const STATUS_LABEL = {
 
 const ALL_STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'];
 
+function reporterText(ticket: any) {
+  const parts = [ticket.reporter, ticket.reporter_email].filter(Boolean);
+  return parts.length ? `Reported by ${parts.join(' · ')}` : '';
+}
+
 // Filter groups. The default ("Open") shows only the working states; the
 // terminal states each get their own filter so resolved tickets are retained
 // but stay out of the way until explicitly requested.
@@ -541,6 +546,7 @@ function SupportTicketCard({
   // Unread = the server hasn't stamped read_at yet. Drives the visual accent
   // and the dot; opening the ticket flips it (see onOpen in the list).
   const isUnread = !ticket.read_at;
+  const reporterLabel = reporterText(ticket);
 
   const [watchingReplay, setWatchingReplay] = useState(false);
   // A ticket is "converted" only for legacy rows that still carry the old
@@ -611,8 +617,8 @@ function SupportTicketCard({
               </div>
             ) : null}
 
-            {ticket.reporter ? (
-              <div className="text-[11px] text-gray-600 mt-1.5">Reported by {ticket.reporter}</div>
+            {reporterLabel ? (
+              <div className="text-[11px] text-gray-600 mt-1.5">{reporterLabel}</div>
             ) : null}
 
             {ticket.ai_summary ? (
@@ -801,7 +807,7 @@ function SupportTicketDetailModal({
               <h2 className="text-base text-gray-100 font-semibold mt-2 break-words">{title}</h2>
               <div className="text-[11px] text-gray-600 mt-1 flex items-center gap-1.5 flex-wrap">
                 <span>Opened {relativeTime(ticket.created_at)}</span>
-                {ticket.reporter ? <span>· Reported by {ticket.reporter}</span> : null}
+                {reporterText(ticket) ? <span>· {reporterText(ticket)}</span> : null}
               </div>
             </div>
             <button

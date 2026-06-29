@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import express from 'express';
 import type { RouteDeps, SupportTicketSeverity } from '../types.js';
 import { intakeSupportTicket } from '../support-ticket-intake.js';
+import { normalizeReporterEmail } from '../support-tickets-store.js';
 import {
   persistSupportTicketScreenshotBuffer,
   deleteSupportTicketScreenshot,
@@ -404,6 +405,12 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
         const appVersion = (fields.appVersion || '').toString();
         const currentProjectId = (fields.currentProjectId || '').toString();
         const currentAgentId = (fields.currentAgentId || '').toString();
+        let reporterEmail: string | null = null;
+        try {
+          reporterEmail = normalizeReporterEmail(fields.reporter_email ?? fields.reporterEmail);
+        } catch (err) {
+          return res.status(400).json({ error: (err as Error).message });
+        }
         const replayRef = sanitizeReplayRef(fields.replayRef);
         const replayMissReason = sanitizeReplayMissReason(fields.replayMissReason, !!replayRef);
         let screenshotMissReason = sanitizeScreenshotMissReason(fields.screenshotMissReason, false);
@@ -472,6 +479,7 @@ export default function createBugReportRoutes(deps: RouteDeps): Router {
             subject: title,
             body: buildBugReportTicketBody({ ...bodyFields, replayRef: null }),
             reporter: clientTypeRaw ? `bug-report (${clientTypeRaw})` : 'bug-report',
+            reporterEmail,
             replayRef,
             screenshotRef,
           },

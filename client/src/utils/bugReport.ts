@@ -3,9 +3,19 @@
 // The endpoint is intentionally hard-coded to the production Agent Hub — bug
 // reports must always flow to the central intake regardless of where the
 // client runs.
+import { getAuthRecord } from './auth';
 
 export const BUG_REPORT_ENDPOINT = 'https://agenthub.surveytracker.io/api/bug-reports';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
+
+function looksLikeEmail(value: any) {
+  return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+export function defaultReporterEmail(record: any = getAuthRecord()) {
+  const username = record?.user?.username;
+  return looksLikeEmail(username) ? username.trim().toLowerCase() : '';
+}
 
 /**
  * Convert a data URL (e.g. "data:image/png;base64,...") into a Blob.
@@ -89,6 +99,7 @@ export async function submitBugReport({
 
   projectId: _projectId,
   agentId,
+  reporterEmail,
   replayRef,
   replayMissReason,
 }: any) {
@@ -117,6 +128,10 @@ export async function submitBugReport({
 
   form.append('currentProjectId', BUG_REPORT_PROJECT_ID);
   if (agentId) form.append('currentAgentId', String(agentId));
+  const email = looksLikeEmail(reporterEmail)
+    ? reporterEmail.trim().toLowerCase()
+    : defaultReporterEmail();
+  if (email) form.append('reporter_email', email);
   if (replayRef) form.append('replayRef', String(replayRef));
   // Only meaningful when no replay attached — names why the capture was missing
   // so the intake agent / operator can diagnose a "didn't capture replay" report.

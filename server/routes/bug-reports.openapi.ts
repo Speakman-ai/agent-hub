@@ -35,6 +35,10 @@ export const BugReportFormFieldsComponent = registerComponent(
       clientType: z.enum(VALID_CLIENT_TYPES).optional(),
       currentProjectId: z.string().optional(),
       currentAgentId: z.string().optional(),
+      reporter_email: z.string().email().optional().openapi({
+        description:
+          'Optional reporter contact email. Stored as a protected support-ticket field and used later for customer fix notifications; not copied into the ticket body.',
+      }),
       replayRef: z.string().optional().openapi({
         description:
           'Optional session-replay ref from POST /api/replays (`/uploads/replay-<id>.json`). Attributed to the ticket and surfaced to the AI investigation.',

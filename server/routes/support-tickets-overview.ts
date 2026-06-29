@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import type { RouteDeps, SupportTicketRow } from '../types.js';
 import { listAllSupportTickets, SUPPORT_TICKET_STATUSES } from '../support-tickets-store.js';
 import type { SupportTicketStatus } from '../types.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { serializeSupportTicket } from './support-tickets.js';
 
 /**
  * Cross-project support overview.
@@ -60,12 +62,17 @@ export default function createSupportTicketsOverviewRoutes(deps: RouteDeps): Rou
 
     const projectNameById = new Map(getProjects().map((p) => [p.id, p.name]));
 
+    const caller = resolveVisibilityCaller(req);
+    const canReadReporterEmail = Boolean(
+      caller.localBypass || caller.role === 'Owner' || caller.role === 'Admin',
+    );
+
     const tickets = listAllSupportTickets({
       projectId: resolvedProjectId,
       statuses: status ? [status as SupportTicketStatus] : undefined,
       unread,
     }).map((t: SupportTicketRow) => ({
-      ...t,
+      ...serializeSupportTicket(t, { canReadReporterEmail }),
       project_name: projectNameById.get(t.project_id) ?? t.project_id,
     }));
 

@@ -105,4 +105,26 @@ describe('intakeSupportTicket — created broadcast payload', () => {
     expect(payload.ticket.id).toBe(ticket.id);
     expect(typeof payload.unreadCount).toBe('number');
   });
+
+  it('masks reporter_email in support_ticket_created broadcasts', async () => {
+    const broadcast = vi.fn();
+    const projectId = `intake-email-${Date.now()}`;
+
+    const ticket = await intakeSupportTicket(
+      {
+        projectId,
+        type: 'question',
+        severity: 'low',
+        body: 'please follow up',
+        reporterEmail: 'alice@example.com',
+      },
+      { stmts, broadcast, config, serverDir: '.' },
+    );
+
+    expect(ticket.reporter_email).toBe('alice@example.com');
+    expect(broadcast.mock.calls[0][0].ticket).toMatchObject({
+      reporter_email: 'al***@example.com',
+      reporter_email_masked: true,
+    });
+  });
 });

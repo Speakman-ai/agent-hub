@@ -33,6 +33,14 @@ export const SupportTicketComponent = registerComponent(
       subject: z.string(),
       body: z.string(),
       reporter: z.string().nullable(),
+      reporter_email: z.string().nullable().openapi({
+        description:
+          'Protected reporter contact email. Returned in full to Admin/Owner/local callers; masked for lower-privilege responses.',
+      }),
+      reporter_email_masked: z.boolean().openapi({
+        description:
+          'True when reporter_email is present but masked for this response. False for privileged full reads or tickets without an email.',
+      }),
       ai_summary: z.string().nullable(),
       ai_investigation: z.string().nullable(),
       ai_investigated_at: z.string().nullable(),
@@ -61,6 +69,10 @@ export const CreateSupportTicketRequestSchema = z.object({
   severity: z.enum(SEVERITIES).optional(),
   subject: z.string().optional(),
   reporter: z.string().optional(),
+  reporter_email: z.string().email().optional().openapi({
+    description:
+      'Optional reporter contact email. Stored as a protected support-ticket field for release notifications; omitted/blank remains allowed for anonymous-compatible flows.',
+  }),
   replayRef: z.string().optional(),
   screenshot: z.string().optional().openapi({
     description:
