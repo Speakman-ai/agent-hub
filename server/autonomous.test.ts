@@ -79,6 +79,7 @@ interface MockStmts {
   // the singular `getAutonomousEpic`, preserving legacy single-epic behavior —
   // which is why the default `makeStmts` intentionally omits it.
   getAutonomousEpics?: { all: Mock };
+  getAutonomousPhases?: { all: Mock };
   getEligibleAutonomousCards: { all: Mock };
   getEligibleAutonomousCardsByPhase?: { all: Mock };
   getEligibleAutonomousSpikeCards?: { all: Mock };
@@ -121,6 +122,7 @@ interface MockStmts {
 function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
   return {
     getAutonomousEpic: { get: vi.fn(() => null) },
+    getAutonomousPhases: { all: vi.fn(() => []) },
     getEligibleAutonomousCards: { all: vi.fn(() => []) },
     getEligibleAutonomousSpikeCards: { all: vi.fn(() => []) },
     getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
@@ -279,7 +281,7 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(mockGetOrCreateBoard).not.toHaveBeenCalled();
   });
 
-  it('does nothing when no autonomous epic', async () => {
+  it('does nothing when no autonomous epic or running phase', async () => {
     const stmts = makeStmts();
     const deps = makeDeps(stmts);
     deps.findProject.mockReturnValue(makeProject());
@@ -290,6 +292,44 @@ describe('runAutonomousLoop — dispatch', () => {
 
     expect(stmts.getEligibleAutonomousCards.all).not.toHaveBeenCalled();
     expect(deps.handleChat).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a running phase even when no epic-level autonomous epic exists', async () => {
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous_running: 1,
+      autonomous: 1,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_send_it: 0,
+      autonomous_interval: 60,
+      description: null,
+      autonomous_enabled_by: 'operator-user',
+    };
+    const card = makeCard({ id: 'phase-card', phase_id: 'phase-1' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => null) },
+      getAutonomousPhases: { all: vi.fn(() => [phase]) },
+      getKanbanEpic: { get: vi.fn(() => ({ ...ACTIVE_EPIC, autonomous: 0 })) },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => [card]) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByPhase: { all: vi.fn(() => [card]) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.getEligibleAutonomousCardsByPhase!.all).toHaveBeenCalledWith('phase-1');
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('phase-card');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'phase-card');
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing when no eligible cards', async () => {

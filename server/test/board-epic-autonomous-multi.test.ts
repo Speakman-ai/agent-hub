@@ -1,5 +1,6 @@
 import type supertest from 'supertest';
 import { getRequest, createProject } from './helpers.js';
+import { getDb } from '../db.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -10,9 +11,9 @@ beforeAll(async () => {
   projectId = project.id as string;
 });
 
-async function createEpic(name: string): Promise<string> {
+async function createEpic(name: string, targetProjectId = projectId): Promise<string> {
   const res = await request
-    .post(`/api/projects/${projectId}/board/epics`)
+    .post(`/api/projects/${targetProjectId}/board/epics`)
     .send({ name, description: '', color: '#6366F1' })
     .expect(200);
   return (res.body as { id: string }).id;
@@ -67,5 +68,36 @@ describe('Multiple epics in autonomous mode at once', () => {
     const ids = body.epics.map((e) => e.epicId);
     expect(ids).toContain(epicA);
     expect(ids).toContain(epicB);
+  });
+
+  it('autonomous/status reports running phases when no epic-level autonomous epic is active', async () => {
+    const phaseOnlyProject = await createProject();
+    const phaseOnlyProjectId = phaseOnlyProject.id as string;
+    const epicId = await createEpic('Status Phase Epic', phaseOnlyProjectId);
+    const phaseRes = await request
+      .post(`/api/projects/${phaseOnlyProjectId}/board/phases`)
+      .send({ epicId, name: 'Status Phase', description: '' })
+      .expect(200);
+    const phaseId = (phaseRes.body as { id: string }).id;
+    getDb().prepare('UPDATE kanban_phases SET autonomous_running = 1 WHERE id = ?').run(phaseId);
+
+    const res = await request
+      .get(`/api/projects/${phaseOnlyProjectId}/board/autonomous/status`)
+      .expect(200);
+    const body = res.body as {
+      active: boolean;
+      epics: Array<{ epicId: string }>;
+      phases: Array<{ phaseId: string; phaseName: string; epicId: string; epicName: string }>;
+    };
+    expect(body.active).toBe(true);
+    expect(body.epics).toEqual([]);
+    expect(body.phases).toContainEqual(
+      expect.objectContaining({
+        phaseId,
+        phaseName: 'Status Phase',
+        epicId,
+        epicName: 'Status Phase Epic',
+      }),
+    );
   });
 });

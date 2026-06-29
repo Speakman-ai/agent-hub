@@ -2557,7 +2557,14 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           return one ? [one] : [];
         })();
 
-    if (epics.length === 0) return res.json({ active: false, epics: [] });
+    const phases =
+      ((
+        stmts as { getAutonomousPhases?: { all?: (id: string) => unknown } }
+      ).getAutonomousPhases?.all?.(boardData.board.id) as KanbanPhaseRow[] | undefined) ?? [];
+
+    if (epics.length === 0 && phases.length === 0) {
+      return res.json({ active: false, epics: [], phases: [] });
+    }
 
     const cols = stmts.getKanbanColumns.all(boardData.board.id) as KanbanColumnRow[];
     const colNameMap = Object.fromEntries(cols.map((c) => [c.id, c.name]));
@@ -2586,9 +2593,40 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       };
     });
 
+    const epicNameById = new Map(epics.map((epic) => [epic.id, epic.name]));
+    const phaseStatuses = phases.map((phase) => {
+      const parentEpic =
+        epicNameById.get(phase.epic_id) ??
+        ((stmts.getKanbanEpic.get(phase.epic_id) as KanbanEpicRow | undefined)?.name || null);
+      const eligible = stmts.getEligibleAutonomousCardsByPhase.all(phase.id) as KanbanCardRow[];
+      const allPhaseCards = stmts.getKanbanCardsByPhase.all(phase.id) as KanbanCardRow[];
+      const inProgress = allPhaseCards.filter((c) => colNameMap[c.column_id] === 'In Progress');
+      const inReview = allPhaseCards.filter((c) => colNameMap[c.column_id] === 'Review');
+      const done = allPhaseCards.filter((c) => colNameMap[c.column_id] === 'Done');
+      const activeCards = inProgress.length + inReview.length;
+      return {
+        phaseId: phase.id,
+        phaseName: phase.name,
+        epicId: phase.epic_id,
+        epicName: parentEpic,
+        model: phase.autonomous_model,
+        interval: phase.autonomous_interval,
+        maxConcurrent: phase.autonomous_max_concurrent,
+        eligibleCards: eligible.length,
+        inProgressCards: inProgress.length,
+        inReviewCards: inReview.length,
+        activeCards,
+        slotsAvailable: Math.max(0, phase.autonomous_max_concurrent - activeCards),
+        doneCards: done.length,
+        totalCards: allPhaseCards.length,
+        cronActive: autonomousCrons.has(`phase:${phase.id}`),
+      };
+    });
+
+    const primaryStatus = epicStatuses[0] ?? phaseStatuses[0] ?? {};
     // Top-level fields mirror the first epic so existing single-epic callers keep
-    // working; `epics` carries the full per-epic breakdown for multi-epic boards.
-    res.json({ active: true, epics: epicStatuses, ...epicStatuses[0] });
+    // working; `epics` and `phases` carry the scoped breakdowns for current UIs.
+    res.json({ active: true, epics: epicStatuses, phases: phaseStatuses, ...primaryStatus });
   });
 
   router.post(

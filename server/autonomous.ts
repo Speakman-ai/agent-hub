@@ -619,11 +619,10 @@ export async function runAutonomousLoop(projectId: string): Promise<void> {
   // independently — every epic carries its own slot cap and its own per-epic
   // single-flight gate, so a slow dispatch on one epic never stalls another.
   const epics = listAutonomousEpics(d.stmts, boardData.board.id);
-  if (epics.length === 0) return Promise.resolve();
+  const phases = (d.stmts.getAutonomousPhases?.all(boardData.board.id) as KanbanPhaseRow[]) ?? [];
+  if (epics.length === 0 && phases.length === 0) return Promise.resolve();
 
   await Promise.all(epics.map((epic) => dispatchEpicGated(projectId, epic)));
-
-  const phases = (d.stmts.getAutonomousPhases?.all(boardData.board.id) as KanbanPhaseRow[]) ?? [];
   await Promise.all(phases.map((phase) => dispatchPhaseGated(projectId, phase)));
 }
 
