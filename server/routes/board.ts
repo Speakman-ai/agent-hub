@@ -151,6 +151,25 @@ function defaultPhaseAutonomousModel(
   return null;
 }
 
+function defaultPhaseAutonomousModelForAgent(
+  cfg: RouteDeps['config'],
+  agentLookup: AgentLookup | null,
+  ownerUserId: string | null,
+): string | null {
+  if (!agentLookup) return null;
+  const agent = agentLookup.agent;
+  const resolved = resolveEffectiveEngineAndModel(cfg, {
+    agentId: agent.id,
+    agentEngine: agent.engine || 'claude-code',
+    agentModel: agent.model ?? null,
+    ownerUserId,
+  });
+  const model = typeof resolved.model === 'string' ? resolved.model.trim() : '';
+  if (!model) return null;
+  const allowed = cfg.engineValidModels?.[resolved.engine] || [];
+  return allowed.includes(model) ? model : null;
+}
+
 interface BoardData {
   board: KanbanBoardRow;
   columns: KanbanColumnRow[];
@@ -1888,16 +1907,28 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const { board } = getOrCreateBoard(stmts, req.params.projectId as string);
     const parsed = parseBody(CreatePhaseRequestSchema, req, res);
     if (!parsed) return;
-    const { epicId, name, description, autonomousModel } = parsed;
+    const { epicId, name, description, autonomousModel, agentId } = parsed;
     const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
     if (!epic || epic.board_id !== board.id) {
       return res.status(404).json({ error: 'Epic not found' });
+    }
+    let defaultAgentModel: string | null = null;
+    if (agentId) {
+      const found = findAgent(agentId);
+      if (!found || found.project.id !== req.params.projectId) {
+        return res.status(400).json({ error: 'agentId does not belong to this project' });
+      }
+      defaultAgentModel = defaultPhaseAutonomousModelForAgent(
+        config,
+        found,
+        resolveOwnerUserId(req as AuthenticatedRequest),
+      );
     }
     const existing = stmts.getKanbanPhasesByEpic.all(epicId) as KanbanPhaseRow[];
     const maxPos = existing.length > 0 ? Math.max(...existing.map((p) => p.position)) + 1 : 0;
     const id = uuidv4();
     stmts.createKanbanPhase.run(id, epicId, board.id, name, description || null, maxPos);
-    const defaultPhaseModel = defaultPhaseAutonomousModel(config);
+    const defaultPhaseModel = defaultAgentModel ?? defaultPhaseAutonomousModel(config);
     const nextAutonomousModel =
       autonomousModel !== undefined
         ? autonomousModel && String(autonomousModel).trim()

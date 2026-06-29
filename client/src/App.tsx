@@ -6247,6 +6247,9 @@ export default function App({ initialView }: any = {}) {
                         sessionId={activeSessionId}
                         projectId={activeChatProject?.id}
                         linkedEpicId={activeSession?.linked_epic_id ?? null}
+                        agent={chatAgent}
+                        sessionEngine={sessionEngine}
+                        sessionModel={sessionModel}
                         onLinkEpic={handleLinkScopingEpic}
                         reloadToken={kanbanRefreshKey}
                       />

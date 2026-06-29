@@ -563,9 +563,13 @@ export const CreatePhaseRequestSchema = z.preprocess(
     epicId: z.string({ error: 'epicId is required' }).min(1, 'epicId is required'),
     name: z.string({ error: 'name is required' }).min(1, 'name is required'),
     description: z.string().nullable().optional(),
+    agentId: z.string().min(1).optional().openapi({
+      description:
+        'Optional agent whose effective default model seeds autonomousModel when autonomousModel is omitted.',
+    }),
     autonomousModel: z.string().nullable().optional().openapi({
       description:
-        'Optional phase autonomous model. Omit to seed from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.',
+        'Optional phase autonomous model. Omit to seed from agentId when supplied, otherwise from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.',
     }),
   }),
 );

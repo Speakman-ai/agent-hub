@@ -15,6 +15,7 @@ import { api } from '../utils/api';
     createSpecItem: vi.fn(),
     updateSpecItem: vi.fn(),
     decideSpecForMe: vi.fn(),
+    getModelConfig: vi.fn(),
   },
 }));
 
@@ -44,6 +45,18 @@ function boardWith(phaseOverrides: Record<string, any> = {}) {
 describe('SessionScopingModePane', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (api.createPhase as any).mockResolvedValue({});
+    (api.getModelConfig as any).mockResolvedValue({
+      defaultModel: 'claude-opus-4-8',
+      engineDefaultModels: {
+        'claude-code': 'claude-opus-4-8',
+        'codex-cli': 'gpt-5.5',
+      },
+      engineValidModels: {
+        'claude-code': ['claude-opus-4-8'],
+        'codex-cli': ['gpt-5.5', 'gpt-5.4'],
+      },
+    });
   });
 
   it('runs a specific phase via runPhase, not the board-wide runAutonomous', async () => {
@@ -84,5 +97,37 @@ describe('SessionScopingModePane', () => {
 
     await waitFor(() => expect(api.stopPhase).toHaveBeenCalledWith('p1', 'ph1'));
     expect(api.runAutonomous).not.toHaveBeenCalled();
+  });
+
+  it('creates phases with the current session owner agent default model', async () => {
+    (api.getBoard as any).mockResolvedValue(boardWith({ autonomous_running: 0 }));
+
+    render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        agent={{ id: 'agent-a', engine: 'codex-cli' }}
+        sessionEngine="codex-cli"
+        sessionModel="gpt-5.4"
+        onLinkEpic={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add phase' }));
+    fireEvent.change(screen.getByPlaceholderText('Phase name'), {
+      target: { value: 'Implementation' },
+    });
+    const addButtons = screen.getAllByRole('button', { name: 'Add' });
+    fireEvent.click(addButtons[addButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(api.createPhase).toHaveBeenCalledWith('p1', {
+        epicId: 'e1',
+        name: 'Implementation',
+        agentId: 'agent-a',
+        autonomousModel: 'gpt-5.4',
+      }),
+    );
   });
 });

@@ -1,6 +1,6 @@
 import type supertest from 'supertest';
 import config from '../config.js';
-import { getRequest, createProject } from './helpers.js';
+import { getRequest, createAgent, createProject } from './helpers.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -60,6 +60,46 @@ describe('Phase autonomous defaults', () => {
       expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBeNull();
     } finally {
       config.defaultModel = originalDefaultModel;
+      config.engineValidModels = originalEngineValidModels;
+    }
+  });
+
+  it('seeds omitted autonomousModel from the supplied agent default model', async () => {
+    const originalDefaultModel = config.defaultModel;
+    const originalEngineDefaultModels = config.engineDefaultModels;
+    const originalEngineValidModels = config.engineValidModels;
+    config.defaultModel = 'claude-opus-4-8';
+    config.engineDefaultModels = {
+      'claude-code': 'claude-opus-4-8',
+      'codex-cli': 'gpt-5.5',
+    };
+    config.engineValidModels = {
+      'claude-code': ['claude-opus-4-8'],
+      'codex-cli': ['gpt-5.5', 'gpt-5.4'],
+    };
+    try {
+      const agent = await createAgent({
+        projectId,
+        id: `phase-codex-agent-${Date.now()}`,
+        name: 'Phase Codex Agent',
+        engine: 'codex-cli',
+        model: 'gpt-5.4',
+      });
+      const epicId = await createEpic('Phase Agent Default Epic');
+      const res = await request
+        .post(`/api/projects/${projectId}/board/phases`)
+        .send({
+          epicId,
+          name: 'Phase Agent Default',
+          description: '',
+          agentId: agent.id,
+        })
+        .expect(200);
+
+      expect((res.body as { autonomous_model?: string | null }).autonomous_model).toBe('gpt-5.4');
+    } finally {
+      config.defaultModel = originalDefaultModel;
+      config.engineDefaultModels = originalEngineDefaultModels;
       config.engineValidModels = originalEngineValidModels;
     }
   });

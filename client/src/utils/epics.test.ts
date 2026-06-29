@@ -221,6 +221,58 @@ describe('autonomous model helpers', () => {
     expect(defaultAutonomousModel(modelConfig)).toBe('gpt-5.5');
   });
 
+  it('prefers the current agent/session model over the global default', () => {
+    expect(
+      defaultAutonomousModel(
+        {
+          ...modelConfig,
+          defaultModel: 'claude-opus-4-8',
+        },
+        { engine: 'codex-cli', model: 'gpt-5.4' },
+      ),
+    ).toBe('gpt-5.4');
+  });
+
+  it('ignores a stale cross-engine session model for the current agent engine', () => {
+    expect(
+      defaultAutonomousModel(
+        {
+          ...modelConfig,
+          defaultModel: 'claude-opus-4-8',
+        },
+        { engine: 'codex-cli', model: 'claude-opus-4-8' },
+      ),
+    ).toBe('gpt-5.5');
+  });
+
+  it('uses the current agent engine default before the global default', () => {
+    expect(
+      defaultAutonomousModel(
+        {
+          ...modelConfig,
+          defaultModel: 'claude-opus-4-8',
+        },
+        { agent: { engine: 'codex-cli' } },
+      ),
+    ).toBe('gpt-5.5');
+  });
+
+  it('prefers agent engine over stale session engine when both are supplied', () => {
+    expect(
+      defaultAutonomousModel(
+        {
+          ...modelConfig,
+          defaultModel: 'claude-opus-4-8',
+        },
+        {
+          agent: { engine: 'codex-cli' },
+          engine: 'claude-code',
+          model: 'gpt-5.4',
+        },
+      ),
+    ).toBe('gpt-5.4');
+  });
+
   it('falls back to the first valid engine default when defaultModel is unavailable', () => {
     expect(defaultAutonomousModel({ ...modelConfig, defaultModel: 'missing-model' })).toBe(
       'claude-opus-4-8',

@@ -18,6 +18,9 @@ export default function SessionScopingModePane({
   sessionId,
   projectId,
   linkedEpicId,
+  agent,
+  sessionEngine,
+  sessionModel,
   onLinkEpic,
   reloadToken = 0,
 }: any) {
@@ -197,10 +200,15 @@ export default function SessionScopingModePane({
     if (!projectId || !linkedEpicId || creatingPhase) return;
     setCreatingPhase(true);
     try {
-      const autonomousModel = defaultAutonomousModel(modelConfig);
+      const autonomousModel = defaultAutonomousModel(modelConfig, {
+        agent,
+        engine: sessionEngine,
+        model: sessionModel,
+      });
       await api.createPhase(projectId, {
         epicId: linkedEpicId,
         name,
+        ...(agent?.id ? { agentId: agent.id } : {}),
         ...(autonomousModel ? { autonomousModel } : {}),
       });
       await fetchBoard();

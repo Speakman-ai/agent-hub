@@ -138,13 +138,46 @@ export function autonomousModelOptions(modelConfig: any) {
   return out;
 }
 
-export function defaultAutonomousModel(modelConfig: any) {
+export function defaultAutonomousModel(modelConfig: any, opts: any = {}) {
   const options = new Set(autonomousModelOptions(modelConfig));
+  const preferredEngine =
+    typeof opts.agent?.engine === 'string' && opts.agent.engine.trim()
+      ? opts.agent.engine.trim()
+      : typeof opts.engine === 'string' && opts.engine.trim()
+        ? opts.engine.trim()
+        : '';
+  const defaults = modelConfig?.engineDefaultModels || {};
+  const preferredModels = preferredEngine
+    ? modelConfig?.engineValidModels?.[preferredEngine]
+    : null;
+  const modelAllowedForPreferredEngine = (model: string) => {
+    if (!model) return false;
+    if (!preferredEngine) return options.has(model);
+    return Array.isArray(preferredModels) && preferredModels.includes(model);
+  };
+
+  const candidate = typeof opts.model === 'string' ? opts.model.trim() : '';
+  if (modelAllowedForPreferredEngine(candidate)) return candidate;
+
+  const agentModel = typeof opts.agent?.model === 'string' ? opts.agent.model.trim() : '';
+  if (modelAllowedForPreferredEngine(agentModel)) return agentModel;
+
+  if (preferredEngine) {
+    const preferredDefault =
+      typeof defaults[preferredEngine] === 'string' ? defaults[preferredEngine].trim() : '';
+    if (
+      preferredDefault &&
+      Array.isArray(preferredModels) &&
+      preferredModels.includes(preferredDefault)
+    ) {
+      return preferredDefault;
+    }
+  }
+
   const defaultModel =
     typeof modelConfig?.defaultModel === 'string' ? modelConfig.defaultModel.trim() : '';
   if (defaultModel && options.has(defaultModel)) return defaultModel;
 
-  const defaults = modelConfig?.engineDefaultModels || {};
   for (const [engine, models] of Object.entries(modelConfig?.engineValidModels || {}) as any[]) {
     const engineDefault = typeof defaults[engine] === 'string' ? defaults[engine].trim() : '';
     if (engineDefault && Array.isArray(models) && models.includes(engineDefault)) {

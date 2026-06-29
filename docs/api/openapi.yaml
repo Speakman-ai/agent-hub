@@ -12518,10 +12518,14 @@ paths:
                 description:
                   type: string
                   nullable: true
+                agentId:
+                  type: string
+                  minLength: 1
+                  description: Optional agent whose effective default model seeds autonomousModel when autonomousModel is omitted.
                 autonomousModel:
                   type: string
                   nullable: true
-                  description: Optional phase autonomous model. Omit to seed from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.
+                  description: Optional phase autonomous model. Omit to seed from agentId when supplied, otherwise from config.defaultModel only when that model is currently listed in engineValidModels; pass null to leave the phase model unset.
               required:
                 - epicId
                 - name
