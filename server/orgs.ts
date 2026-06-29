@@ -366,6 +366,29 @@ export function initOrgsDb(): void {
     }
   }
 
+  // Per-user MFA state. TOTP secrets are encrypted by users-store before
+  // storage; recovery codes are single-use hashes in JSON so plaintext
+  // backup codes only exist in the API response that generates them.
+  const userMfaColumns: Array<{ name: string; ddl: string }> = [
+    { name: 'credential_version', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'mfa_pending_secret', ddl: 'TEXT' },
+    { name: 'mfa_totp_secret', ddl: 'TEXT' },
+    { name: 'mfa_enabled', ddl: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'mfa_recovery_codes_json', ddl: "TEXT NOT NULL DEFAULT '[]'" },
+    { name: 'mfa_enrolled_at', ddl: 'TEXT' },
+    { name: 'mfa_updated_at', ddl: 'TEXT' },
+    { name: 'mfa_reset_at', ddl: 'TEXT' },
+    { name: 'mfa_reset_by_user_id', ddl: 'TEXT REFERENCES users(id) ON DELETE SET NULL' },
+    { name: 'mfa_last_used_step', ddl: 'INTEGER' },
+  ];
+  for (const col of userMfaColumns) {
+    try {
+      orgsDb.prepare(`SELECT ${col.name} FROM users LIMIT 1`).get();
+    } catch {
+      orgsDb.exec(`ALTER TABLE users ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+
   try {
     orgsDb.prepare('SELECT preferences_json FROM users LIMIT 1').get();
   } catch {

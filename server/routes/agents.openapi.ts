@@ -165,11 +165,17 @@ const AllowedSkills = z
   .nullable()
   .optional();
 
+const HeartbeatSharedSchema = z
+  .union([z.boolean(), z.literal(0), z.literal(1), z.literal('0'), z.literal('1')])
+  .optional();
+
 export const HeartbeatConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
     interval: z.string().optional(),
     prompt: z.string().optional(),
+    model: z.string().optional(),
+    shared: HeartbeatSharedSchema,
   })
   .optional();
 

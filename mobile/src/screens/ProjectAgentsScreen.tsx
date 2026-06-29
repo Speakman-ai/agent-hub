@@ -11,7 +11,7 @@ function HeartbeatPanel({ agentId, agentName }: any) {
     const [hb, setHb] = useState<any>(null);
     const [loading, setLoading] = useState(true);
     const [editing, setEditing] = useState(false);
-    const [form, setForm] = useState({ interval: '', prompt: '', model: '' });
+    const [form, setForm] = useState({ interval: '', prompt: '', model: '', shared: false });
     const [running, setRunning] = useState(false);
     const load = useCallback(async () => {
         setLoading(true);
@@ -24,6 +24,7 @@ function HeartbeatPanel({ agentId, agentName }: any) {
                     interval: row.heartbeat.interval || '',
                     prompt: row.heartbeat.prompt || '',
                     model: row.heartbeat.model || '',
+                    shared: !!row.shared,
                 });
             }
         }
@@ -41,21 +42,32 @@ function HeartbeatPanel({ agentId, agentName }: any) {
         if (!hb)
             return;
         const next = !hb.heartbeat?.enabled;
-        await api.updateHeartbeat(agentId, { enabled: next });
-        setHb((prev: any) => prev ? { ...prev, heartbeat: { ...prev.heartbeat, enabled: next } } : prev);
+        try {
+            const updated = await api.updateHeartbeat(agentId, { enabled: next });
+            setHb((prev: any) => (prev ? { ...prev, ...updated } : prev));
+        }
+        catch (err: any) {
+            Alert.alert('Update failed', err?.message || 'Could not update heartbeat');
+        }
     };
     const save = async () => {
         if (!form.interval || !form.prompt) {
             Alert.alert('Missing fields', 'Schedule and prompt are required.');
             return;
         }
-        await api.updateHeartbeat(agentId, {
-            interval: form.interval,
-            prompt: form.prompt,
-            model: form.model || '',
-        });
-        setEditing(false);
-        await load();
+        try {
+            await api.updateHeartbeat(agentId, {
+                interval: form.interval,
+                prompt: form.prompt,
+                model: form.model || '',
+                shared: !!form.shared,
+            });
+            setEditing(false);
+            await load();
+        }
+        catch (err: any) {
+            Alert.alert('Save failed', err?.message || 'Could not save heartbeat');
+        }
     };
     const runNow = async () => {
         setRunning(true);
@@ -79,22 +91,43 @@ function HeartbeatPanel({ agentId, agentName }: any) {
       <Text style={hbStyles.title}>Heartbeat — {agentName}</Text>
       {!hb ? (<Text style={hbStyles.muted}>No heartbeat configured for this agent.</Text>) : (<>
           <View style={hbStyles.row}>
-            <TouchableOpacity style={[hbStyles.chip, enabled && hbStyles.chipOn]} onPress={toggle}>
+            <TouchableOpacity style={[hbStyles.chip, enabled && hbStyles.chipOn, !hb.can_manage && hbStyles.disabled]} onPress={toggle} disabled={!hb.can_manage}>
               <Text style={hbStyles.chipText}>{enabled ? 'Enabled' : 'Disabled'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={hbStyles.chip} onPress={runNow} disabled={running}>
+            <TouchableOpacity style={[hbStyles.chip, !hb.can_manage && hbStyles.disabled]} onPress={runNow} disabled={running || !hb.can_manage}>
               <Text style={hbStyles.chipText}>{running ? 'Running…' : 'Run now'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={hbStyles.chip} onPress={() => setEditing((v: any) => !v)}>
+            <TouchableOpacity style={[hbStyles.chip, !hb.can_manage && hbStyles.disabled]} onPress={() => setEditing((v: any) => !v)} disabled={!hb.can_manage}>
               <Text style={hbStyles.chipText}>{editing ? 'Cancel' : 'Edit'}</Text>
             </TouchableOpacity>
           </View>
+          <View style={hbStyles.badgeRow}>
+            <Text style={hbStyles.badge}>{hb.shared ? 'Shared' : 'Private'}</Text>
+            {!!hb.owner_username && <Text style={hbStyles.badge}>Owner: {hb.owner_username}</Text>}
+          </View>
+          <TouchableOpacity onPress={async () => {
+              try {
+                  const updated = await api.updateHeartbeat(agentId, { shared: !hb.shared });
+                  setHb((prev: any) => (prev ? { ...prev, ...updated } : prev));
+                  setForm((prev: any) => ({ ...prev, shared: !!updated.shared }));
+              }
+              catch (err: any) {
+                  Alert.alert('Update failed', err?.message || 'Could not update heartbeat sharing');
+              }
+          }} disabled={!hb.can_manage} style={[hbStyles.sharedRow, !hb.can_manage && hbStyles.disabled]} accessibilityRole="checkbox" accessibilityState={{ checked: !!hb.shared, disabled: !hb.can_manage }}>
+            <Text style={hbStyles.checkbox}>{hb.shared ? '✓' : ''}</Text>
+            <Text style={hbStyles.muted}>Shared with org</Text>
+          </TouchableOpacity>
           {nextLabel ? <Text style={hbStyles.muted}>Next: {nextLabel}</Text> : null}
           {editing ? (<View style={hbStyles.form}>
               <Text style={hbStyles.label}>Schedule (cron)</Text>
               <TextInput style={hbStyles.input} value={form.interval} onChangeText={(v: any) => setForm({ ...form, interval: v })} placeholder="*/30 * * * *" placeholderTextColor={colors.gray600}/>
               <Text style={hbStyles.label}>Prompt</Text>
               <TextInput style={[hbStyles.input, { minHeight: 60 }]} value={form.prompt} onChangeText={(v: any) => setForm({ ...form, prompt: v })} multiline placeholderTextColor={colors.gray600}/>
+              <TouchableOpacity onPress={() => setForm({ ...form, shared: !form.shared })} style={hbStyles.sharedRow} accessibilityRole="checkbox" accessibilityState={{ checked: !!form.shared }}>
+                <Text style={hbStyles.checkbox}>{form.shared ? '✓' : ''}</Text>
+                <Text style={hbStyles.muted}>Shared with org</Text>
+              </TouchableOpacity>
               <TouchableOpacity style={hbStyles.saveBtn} onPress={save}>
                 <Text style={hbStyles.saveBtnText}>Save heartbeat</Text>
               </TouchableOpacity>
@@ -181,6 +214,33 @@ const hbStyles = StyleSheet.create({
     chipOn: { borderColor: colors.emerald400, backgroundColor: colors.emerald800_50 },
     chipText: { fontSize: 12, color: colors.gray300 },
     muted: { fontSize: 12, color: colors.gray500 },
+    badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
+    badge: {
+        fontSize: 10,
+        color: colors.gray300,
+        backgroundColor: colors.gray800,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    sharedRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginBottom: 8,
+    },
+    checkbox: {
+        width: 18,
+        height: 18,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: colors.gray600,
+        color: colors.blue400,
+        textAlign: 'center',
+        lineHeight: 16,
+        fontSize: 12,
+    },
+    disabled: { opacity: 0.45 },
     form: { marginTop: 8 },
     label: { fontSize: 11, color: colors.gray500, marginBottom: 4 },
     input: {

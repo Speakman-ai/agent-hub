@@ -11,6 +11,7 @@ const EMPTY_FORM: Record<string, any> = {
     schedule: '*/30 * * * *',
     prompt: '',
     enabled: true,
+    shared: false,
 };
 export default function ProjectCronsScreen({ route, navigation }: any) {
     const { projectId, project: routeProject } = route.params || {};
@@ -113,6 +114,13 @@ export default function ProjectCronsScreen({ route, navigation }: any) {
         <Text style={styles.label}>Enabled</Text>
         <Switch value={!!f.enabled} onValueChange={(v: any) => setF({ ...f, enabled: v })} trackColor={{ false: colors.gray700, true: colors.emerald800_50 }} thumbColor={f.enabled ? colors.emerald400 : colors.gray500}/>
       </View>
+      <View style={styles.switchRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.label}>Shared</Text>
+          <Text style={styles.meta}>Visible to the org. Runs still use the owner credentials.</Text>
+        </View>
+        <Switch value={!!f.shared} onValueChange={(v: any) => setF({ ...f, shared: v })} trackColor={{ false: colors.gray700, true: colors.blue500 }} thumbColor={f.shared ? colors.blue400 : colors.gray500}/>
+      </View>
       <TouchableOpacity style={styles.primaryBtn} onPress={onSubmit}>
         <Text style={styles.primaryBtnText}>{submitLabel}</Text>
       </TouchableOpacity>
@@ -138,32 +146,39 @@ export default function ProjectCronsScreen({ route, navigation }: any) {
                 </>) : (<>
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardTitle}>{cronJob.name}</Text>
-                    <Switch value={!!cronJob.enabled} onValueChange={() => toggleCron(cronJob)} trackColor={{ false: colors.gray700, true: colors.emerald800_50 }} thumbColor={cronJob.enabled ? colors.emerald400 : colors.gray500}/>
+                    <Switch value={!!cronJob.enabled} onValueChange={() => toggleCron(cronJob)} disabled={!cronJob.can_manage} trackColor={{ false: colors.gray700, true: colors.emerald800_50 }} thumbColor={cronJob.enabled ? colors.emerald400 : colors.gray500}/>
                   </View>
                   <Text style={styles.mono}>{humanCron(cronJob.schedule)}</Text>
+                  <View style={styles.badgeRow}>
+                    <Text style={styles.badge}>{cronJob.shared ? 'Shared' : 'Private'}</Text>
+                    {!!cronJob.owner_username && (
+                      <Text style={styles.badge}>Owner: {cronJob.owner_username}</Text>
+                    )}
+                  </View>
                   {cronJob.enabled && cronJob.next_run_at && (<Text style={styles.meta}>
                       Next: {relativeFuture(cronJob.next_run_at).label || '—'}
                     </Text>)}
                   <Text style={styles.prompt} numberOfLines={2}>{cronJob.prompt}</Text>
                   {cronJob.last_run && (<Text style={styles.meta}>Last: {relativeTime(cronJob.last_run)}</Text>)}
                   <View style={styles.actions}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => triggerRun(cronJob.id)} disabled={running[cronJob.id]}>
+                    <TouchableOpacity style={[styles.actionBtn, (!cronJob.can_manage || running[cronJob.id]) && styles.disabledBtn]} onPress={() => triggerRun(cronJob.id)} disabled={!cronJob.can_manage || running[cronJob.id]}>
                       <Text style={styles.actionText}>{running[cronJob.id] ? 'Running…' : 'Run'}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => {
+                    <TouchableOpacity style={[styles.actionBtn, !cronJob.can_manage && styles.disabledBtn]} disabled={!cronJob.can_manage} onPress={() => {
                     setEditingId(cronJob.id);
                     setEditForm({
                         name: cronJob.name,
                         schedule: cronJob.schedule,
                         prompt: cronJob.prompt,
                         enabled: cronJob.enabled,
+                        shared: !!cronJob.shared,
                         project_id: projectId,
                         cwd: cronJob.cwd || project?.cwd || '',
                     });
                 }}>
                       <Text style={styles.actionText}>Edit</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => deleteCron(cronJob.id)}>
+                    <TouchableOpacity style={[styles.actionBtn, !cronJob.can_manage && styles.disabledBtn]} disabled={!cronJob.can_manage} onPress={() => deleteCron(cronJob.id)}>
                       <Text style={[styles.actionText, { color: colors.red400 }]}>Delete</Text>
                     </TouchableOpacity>
                   </View>
@@ -217,6 +232,15 @@ const styles = StyleSheet.create({
     cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
     cardTitle: { fontSize: 15, fontWeight: '600', color: colors.white, flex: 1 },
     mono: { fontSize: 12, color: colors.gray400, fontFamily: 'monospace', marginTop: 4 },
+    badgeRow: { flexDirection: 'row', gap: 6, marginTop: 6, flexWrap: 'wrap' },
+    badge: {
+        fontSize: 10,
+        color: colors.gray300,
+        backgroundColor: colors.gray800,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
     prompt: { fontSize: 13, color: colors.gray300, marginTop: 6 },
     meta: { fontSize: 11, color: colors.gray500, marginTop: 4 },
     actions: { flexDirection: 'row', gap: 8, marginTop: 10 },
@@ -226,5 +250,6 @@ const styles = StyleSheet.create({
         borderRadius: 6,
         backgroundColor: colors.gray800,
     },
+    disabledBtn: { opacity: 0.4 },
     actionText: { fontSize: 12, color: colors.gray300 },
 });

@@ -1,10 +1,11 @@
-import { Bot, Clock, FolderGit2 } from 'lucide-react';
-import { AgentConfigSection, CronSection, ProjectsSection } from './SettingsPage';
+import { Bot, Clock, FolderGit2, HeartPulse } from 'lucide-react';
+import { AgentConfigSection, CronSection, HeartbeatSection, ProjectsSection } from './SettingsPage';
 
 const TAB_META = {
   agents: { label: 'Agents', Icon: Bot },
   settings: { label: 'Project settings', Icon: FolderGit2 },
   crons: { label: 'Cron Jobs', Icon: Clock },
+  heartbeats: { label: 'Heartbeats', Icon: HeartPulse },
 } as Record<string, any>;
 
 /**
@@ -72,6 +73,9 @@ export default function ProjectMenuPage({
             onNavigate={onNavigate}
             showToast={showToast}
           />
+        )}
+        {tab === 'heartbeats' && (
+          <HeartbeatSection projectId={projectId} onNavigate={onNavigate} showToast={showToast} />
         )}
       </div>
     </div>

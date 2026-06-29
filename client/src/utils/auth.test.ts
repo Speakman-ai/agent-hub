@@ -6,6 +6,7 @@ import {
   clearToken,
   isAuthenticated,
   login,
+  completeMfaLogin,
   setup,
   forgotPassword,
   resetPassword,
@@ -112,6 +113,56 @@ describe('auth network helpers', () => {
     await expect(login({ baseUrl: '/api', username: 'owner', password: 'wrong' })).rejects.toThrow(
       /Invalid email/,
     );
+    expect(getToken()).toBeNull();
+  });
+
+  it('login returns pending MFA without storing a token', async () => {
+    const body = {
+      mfaRequired: true,
+      challengeId: 'mfa_123',
+      expiresAt: '2026-06-29T12:05:00.000Z',
+    };
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    } as any);
+
+    await expect(
+      login({ baseUrl: '/api', username: 'owner', password: 'correct' }),
+    ).resolves.toEqual(body);
+    expect(getToken()).toBeNull();
+  });
+
+  it('completeMfaLogin stores the returned token and surfaces rate-limit errors', async () => {
+    const body = {
+      token: 'm1.m2.m3',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      user: { email: 'owner@example.com', role: 'Owner', mfaEnabled: true },
+    };
+    (globalThis as any).fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    } as any);
+
+    await completeMfaLogin({ baseUrl: '/api', challengeId: 'mfa_123', code: '123456' });
+    expect(getToken()).toBe('m1.m2.m3');
+    expect((globalThis as any).fetch).toHaveBeenCalledWith('/api/auth/login/mfa', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challengeId: 'mfa_123', code: '123456' }),
+    });
+
+    clearToken();
+    (globalThis as any).fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      json: () => Promise.resolve({ error: 'Too many MFA attempts. Try again later.' }),
+    } as any);
+    await expect(
+      completeMfaLogin({ baseUrl: '/api', challengeId: 'mfa_123', code: '000000' }),
+    ).rejects.toThrow(/Too many MFA attempts/i);
     expect(getToken()).toBeNull();
   });
 

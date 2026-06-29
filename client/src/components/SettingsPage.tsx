@@ -1361,13 +1361,23 @@ export function ProjectsSection({
   );
 }
 
-function HeartbeatSection({ onNavigate, showToast }: any) {
+export function HeartbeatSection({
+  onNavigate,
+  showToast,
+  projectId = null,
+  refreshMs = 60_000,
+}: any) {
   const [heartbeats, setHeartbeats] = useState<any[]>([]);
   const [expandedAgent, setExpandedAgent] = useState<any>(null);
   const [logs, setLogs] = useState<Record<string, any>>({});
   const [running, setRunning] = useState<Record<string, any>>({});
   const [editingId, setEditingId] = useState<any>(null);
-  const [editForm, setEditForm] = useState({ interval: '', prompt: '', model: '' });
+  const [editForm, setEditForm] = useState({
+    interval: '',
+    prompt: '',
+    model: '',
+    shared: false,
+  });
   // Heartbeats always spawn the Claude CLI, so the picker is locked to the
   // claude-code engine catalog from /api/config/models. We fetch it lazily
   // on mount; an empty list means Claude is unauthenticated and the picker
@@ -1377,6 +1387,11 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
   // hitting the network. Server is re-polled every 60s for fresh state.
   const [, setTick] = useState(0);
 
+  const visibleHeartbeats = useMemo(
+    () => (projectId ? heartbeats.filter((hb: any) => hb.projectId === projectId) : heartbeats),
+    [heartbeats, projectId],
+  );
+
   useEffect(() => {
     const refresh = () => api.getHeartbeats().then(setHeartbeats).catch(console.error);
     refresh();
@@ -1384,13 +1399,21 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
       .getModelConfig()
       .then((cfg: any) => setClaudeModels(cfg?.engineValidModels?.['claude-code'] || []))
       .catch((err: any) => console.warn('[HeartbeatSection] getModelConfig failed:', err?.message));
-    const pollId = setInterval(refresh, 60_000);
+    const pollId = setInterval(refresh, refreshMs);
     const tickId = setInterval(() => setTick((t: any) => t + 1), 30_000);
     return () => {
       clearInterval(pollId);
       clearInterval(tickId);
     };
-  }, []);
+  }, [refreshMs]);
+
+  useEffect(() => {
+    if (!editingId) return;
+    const editingHeartbeat = visibleHeartbeats.find((hb: any) => hb.agentId === editingId);
+    if (editingHeartbeat && !editingHeartbeat.can_manage) {
+      setEditingId(null);
+    }
+  }, [editingId, visibleHeartbeats]);
 
   const loadLogs = async (agentId: any) => {
     if (expandedAgent === agentId) {
@@ -1403,12 +1426,15 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
   };
 
   const toggleHeartbeat = async (agentId: any, current: any) => {
-    await api.updateHeartbeat(agentId, { enabled: !current });
-    setHeartbeats((prev: any) =>
-      prev.map((h: any) =>
-        h.agentId === agentId ? { ...h, heartbeat: { ...h.heartbeat, enabled: !current } } : h,
-      ),
-    );
+    try {
+      const updated = await api.updateHeartbeat(agentId, { enabled: !current });
+      setHeartbeats((prev: any) =>
+        prev.map((h: any) => (h.agentId === agentId ? { ...h, ...updated } : h)),
+      );
+    } catch (e: any) {
+      console.error('Failed to update heartbeat:', e);
+      showToast?.(e?.message || 'Failed to update heartbeat.', 'error');
+    }
   };
 
   const triggerRun = async (agentId: any) => {
@@ -1442,43 +1468,43 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
       interval: hb.heartbeat.interval || '',
       prompt: hb.heartbeat.prompt || '',
       model: hb.heartbeat.model || '',
+      shared: !!hb.shared,
     });
   };
 
   const saveEdit = async (e: any) => {
     e.preventDefault();
+    const heartbeat = visibleHeartbeats.find((hb: any) => hb.agentId === editingId);
+    if (!heartbeat?.can_manage) {
+      setEditingId(null);
+      return;
+    }
     // Send empty string explicitly so the server can clear an existing
     // model override (PUT route maps "" → undefined).
-    await api.updateHeartbeat(editingId, {
-      interval: editForm.interval,
-      prompt: editForm.prompt,
-      model: editForm.model || '',
-    });
-    setHeartbeats((prev: any) =>
-      prev.map((h: any) =>
-        h.agentId === editingId
-          ? {
-              ...h,
-              heartbeat: {
-                ...h.heartbeat,
-                interval: editForm.interval,
-                prompt: editForm.prompt,
-                model: editForm.model || undefined,
-              },
-            }
-          : h,
-      ),
-    );
-    setEditingId(null);
+    try {
+      const updated = await api.updateHeartbeat(editingId, {
+        interval: editForm.interval,
+        prompt: editForm.prompt,
+        model: editForm.model || '',
+        shared: editForm.shared,
+      });
+      setHeartbeats((prev: any) =>
+        prev.map((h: any) => (h.agentId === editingId ? { ...h, ...updated } : h)),
+      );
+      setEditingId(null);
+    } catch (e: any) {
+      console.error('Failed to save heartbeat:', e);
+      showToast?.(e?.message || 'Failed to save heartbeat.', 'error');
+    }
   };
 
   return (
     <div>
       <h3 className="text-lg font-semibold mb-4">Agent Heartbeats</h3>
       <div className="space-y-3">
-        {heartbeats.map((hb: any) => (
+        {visibleHeartbeats.map((hb: any) => (
           <div key={hb.agentId} className="bg-gray-800 rounded-xl overflow-hidden">
-            {editingId === hb.agentId ? (
+            {editingId === hb.agentId && hb.can_manage ? (
               <form onSubmit={saveEdit} className="p-4 space-y-3">
                 <div className="flex items-center gap-2 mb-2">
                   <span
@@ -1535,6 +1561,20 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
                     </p>
                   </div>
                 )}
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!!editForm.shared}
+                    onChange={(e: any) => setEditForm({ ...editForm, shared: e.target.checked })}
+                    className="mt-0.5 accent-blue-500"
+                  />
+                  <span className="text-xs text-gray-300">
+                    Shared
+                    <span className="block text-gray-500">
+                      Visible to the org. Runs still use the owner credentials.
+                    </span>
+                  </span>
+                </label>
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -1560,6 +1600,14 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-sm">{hb.agentName}</span>
+                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
+                      {hb.shared ? 'Shared' : 'Private'}
+                    </span>
+                    {hb.owner_username && (
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-900 text-gray-400 border border-gray-700">
+                        Owner: {hb.owner_username}
+                      </span>
+                    )}
                     <span className="text-xs text-gray-500 font-mono" title={hb.heartbeat.interval}>
                       {hb.heartbeat.interval ? humanCron(hb.heartbeat.interval) : 'not set'}
                     </span>
@@ -1589,6 +1637,33 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
                       model: {hb.heartbeat.model}
                     </p>
                   )}
+                  <label className="mt-2 inline-flex items-center gap-2 text-xs text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={!!hb.shared}
+                      disabled={!hb.can_manage}
+                      onChange={async (e: any) => {
+                        try {
+                          const updated = await api.updateHeartbeat(hb.agentId, {
+                            shared: e.target.checked,
+                          });
+                          setHeartbeats((prev: any) =>
+                            prev.map((h: any) =>
+                              h.agentId === hb.agentId ? { ...h, ...updated } : h,
+                            ),
+                          );
+                        } catch (err: any) {
+                          console.error('Failed to update heartbeat sharing:', err);
+                          showToast?.(
+                            err?.message || 'Failed to update heartbeat sharing.',
+                            'error',
+                          );
+                        }
+                      }}
+                      className="accent-blue-500 disabled:opacity-40"
+                    />
+                    Shared
+                  </label>
                   {hb.latestLog && (
                     <p className="text-xs text-gray-600 mt-0.5">
                       Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}
@@ -1618,13 +1693,15 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
                   )}
                   <button
                     onClick={() => startEdit(hb)}
+                    disabled={!hb.can_manage}
+                    aria-label="Edit heartbeat"
                     className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                   >
                     <Pencil size={14} />
                   </button>
                   <button
                     onClick={() => triggerRun(hb.agentId)}
-                    disabled={running[hb.agentId]}
+                    disabled={running[hb.agentId] || !hb.can_manage}
                     className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                   >
                     {running[hb.agentId] ? (
@@ -1635,7 +1712,8 @@ function HeartbeatSection({ onNavigate, showToast }: any) {
                   </button>
                   <button
                     onClick={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)}
-                    className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors min-h-[36px] sm:min-h-0 flex items-center ${
+                    disabled={!hb.can_manage}
+                    className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-40 min-h-[36px] sm:min-h-0 flex items-center ${
                       hb.heartbeat.enabled
                         ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
                         : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
@@ -1736,6 +1814,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
     // Codex/Cursor/Gemini cron run under its real engine instead of the
     // historical claude-code default.
     engine: '',
+    shared: false,
   });
 
   const visibleCrons = useMemo(
@@ -1959,6 +2038,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
       notify_on_run: false,
       model: '',
       engine: '',
+      shared: false,
     });
   };
 
@@ -1975,6 +2055,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
       // Null in the DB = "use engine default" — render as the empty option.
       model: cronJob.model || '',
       engine: cronJob.engine || '',
+      shared: !!cronJob.shared,
       // Preserve the skill principal id so the helper text can compute
       // the inherited engine. The form itself doesn't expose this field
       // (it's set via the project's principal agent), but PUT /api/crons
@@ -2156,6 +2237,20 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
               </span>
             </span>
           </label>
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={!!form.shared}
+              onChange={(e: any) => setForm({ ...form, shared: e.target.checked })}
+              className="mt-0.5 accent-blue-500"
+            />
+            <span className="text-xs text-gray-300">
+              Shared
+              <span className="block text-gray-500">
+                Visible to the org. Runs still use your credentials.
+              </span>
+            </span>
+          </label>
           <button
             type="submit"
             className="bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg transition-colors"
@@ -2314,6 +2409,20 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     </span>
                   </span>
                 </label>
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={!!editForm.shared}
+                    onChange={(e: any) => setEditForm({ ...editForm, shared: e.target.checked })}
+                    className="mt-0.5 accent-blue-500"
+                  />
+                  <span className="text-xs text-gray-300">
+                    Shared
+                    <span className="block text-gray-500">
+                      Visible to the org. Runs still use the owner credentials.
+                    </span>
+                  </span>
+                </label>
                 <div className="flex gap-2">
                   <button
                     type="submit"
@@ -2338,6 +2447,14 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     <span className="text-xs text-gray-500" title={cronJob.schedule}>
                       {humanCron(cronJob.schedule)}
                     </span>
+                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
+                      {cronJob.shared ? 'Shared' : 'Private'}
+                    </span>
+                    {cronJob.owner_username && (
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-900 text-gray-400 border border-gray-700">
+                        Owner: {cronJob.owner_username}
+                      </span>
+                    )}
                     {cronJob.enabled &&
                       cronJob.next_run_at &&
                       (() => {
@@ -2367,6 +2484,23 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     {cronJob.notify_on_run ? <> · 🔔 Notifies on run</> : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
                   </p>
+                  <label className="mt-2 inline-flex items-center gap-2 text-xs text-gray-300">
+                    <input
+                      type="checkbox"
+                      checked={!!cronJob.shared}
+                      disabled={!cronJob.can_manage}
+                      onChange={async (e: any) => {
+                        const updated = await api.updateCron(cronJob.id, {
+                          shared: e.target.checked,
+                        });
+                        setCrons((prev: any) =>
+                          prev.map((c: any) => (c.id === updated.id ? updated : c)),
+                        );
+                      }}
+                      className="accent-blue-500 disabled:opacity-40"
+                    />
+                    Shared
+                  </label>
                   {/* Recent runs — clickable status dots */}
                   {cronLogs[cronJob.id]?.length > 0 && (
                     <div className="mt-1.5">
@@ -2477,7 +2611,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                   )}
                   <button
                     onClick={() => triggerRun(cronJob.id)}
-                    disabled={running[cronJob.id]}
+                    disabled={running[cronJob.id] || !cronJob.can_manage}
                     className="text-xs bg-gray-700 hover:bg-gray-600 px-2.5 py-2 sm:py-1 rounded-md transition-colors disabled:opacity-50 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                   >
                     {running[cronJob.id] ? (
@@ -2488,6 +2622,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                   </button>
                   <button
                     onClick={() => toggleCron(cronJob)}
+                    disabled={!cronJob.can_manage}
                     className={`text-xs px-2.5 py-2 sm:py-1 rounded-md transition-colors min-h-[36px] sm:min-h-0 flex items-center ${
                       cronJob.enabled
                         ? 'bg-emerald-800/50 text-emerald-400 hover:bg-emerald-800'
@@ -2498,14 +2633,16 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                   </button>
                   <button
                     onClick={() => startEditing(cronJob)}
-                    className="text-xs text-gray-500 hover:text-blue-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                    disabled={!cronJob.can_manage}
+                    className="text-xs text-gray-500 hover:text-blue-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors disabled:opacity-40 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                     title="Edit"
                   >
                     <Pencil size={14} />
                   </button>
                   <button
                     onClick={() => deleteCron(cronJob.id)}
-                    className="text-xs text-gray-500 hover:text-red-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+                    disabled={!cronJob.can_manage}
+                    className="text-xs text-gray-500 hover:text-red-400 px-2 py-2 sm:px-1 sm:py-1 transition-colors disabled:opacity-40 min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                   >
                     ✕
                   </button>

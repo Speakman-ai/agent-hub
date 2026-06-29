@@ -28,10 +28,10 @@ describe('PUT /api/heartbeats/:agentId — model field persistence', () => {
       })
       .expect(200);
 
-    expect(putRes.body.model).toBe('claude-opus-4-8');
-    expect(putRes.body.interval).toBe('*/30 * * * *');
-    expect(putRes.body.prompt).toBe('check the queue');
-    expect(putRes.body.enabled).toBe(true);
+    expect(putRes.body.heartbeat.model).toBe('claude-opus-4-8');
+    expect(putRes.body.heartbeat.interval).toBe('*/30 * * * *');
+    expect(putRes.body.heartbeat.prompt).toBe('check the queue');
+    expect(putRes.body.heartbeat.enabled).toBe(true);
 
     const listRes = await request.get('/api/heartbeats').expect(200);
     type HeartbeatOverview = {
@@ -61,9 +61,9 @@ describe('PUT /api/heartbeats/:agentId — model field persistence', () => {
       .send({ prompt: 'updated prompt' })
       .expect(200);
 
-    expect(putRes.body.model).toBe('claude-haiku-4-6');
-    expect(putRes.body.prompt).toBe('updated prompt');
-    expect(putRes.body.interval).toBe('0 */12 * * *');
+    expect(putRes.body.heartbeat.model).toBe('claude-haiku-4-6');
+    expect(putRes.body.heartbeat.prompt).toBe('updated prompt');
+    expect(putRes.body.heartbeat.interval).toBe('0 */12 * * *');
   });
 
   it('clears the override when an empty string is sent explicitly', async () => {
@@ -75,7 +75,7 @@ describe('PUT /api/heartbeats/:agentId — model field persistence', () => {
 
     const putRes = await request.put(`/api/heartbeats/${agent.id}`).send({ model: '' }).expect(200);
 
-    expect(putRes.body.model).toBeUndefined();
+    expect(putRes.body.heartbeat.model).toBeUndefined();
   });
 
   it('returns 404 for unknown agent ID', async () => {

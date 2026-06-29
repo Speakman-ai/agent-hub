@@ -254,9 +254,9 @@ export const PatchConfigRequestSchema = z
       description:
         'Host OpenAI API key for Whisper transcription and session titles. Empty string or null clears it.',
     }),
-    transcriptionProvider: z.enum(['openai', 'gemini']).optional().openapi({
+    transcriptionProvider: z.enum(['xai', 'openai', 'gemini']).optional().openapi({
       description:
-        'Voice-transcription provider for /api/transcribe. Must be `openai` or `gemini`; any other value returns 400.',
+        'Voice-transcription provider for /api/transcribe. Must be `xai`, `openai`, or `gemini`; any other value returns 400.',
     }),
     publicUrl: z.string().optional(),
     codexDangerBypass: z.boolean().optional(),
@@ -298,6 +298,56 @@ export const TestConnectionRequestSchema = z
       'GitHub repo coords. Both fields must match `^[a-zA-Z0-9._-]+$`; the handler enforces the regex.',
   });
 
+export const MaskedSmtpConfigComponent = registerComponent(
+  'MaskedSmtpConfig',
+  z
+    .object({
+      enabled: z.boolean(),
+      host: z.string(),
+      port: z.number().int(),
+      tlsMode: z.enum(['none', 'starttls', 'ssl']),
+      username: z.string().nullable(),
+      password: z.string().nullable().openapi({
+        description: '`••••••••` when a password is stored, null otherwise.',
+      }),
+      passwordSet: z.boolean(),
+      from: z.string(),
+      configured: z.boolean(),
+    })
+    .openapi({ description: 'SMTP settings with password masked.' }),
+);
+
+export const SmtpSettingsPatchRequestSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    host: z.string().nullable().optional(),
+    port: z.union([z.number().int(), z.string()]).optional(),
+    tlsMode: z.enum(['none', 'starttls', 'ssl']).optional(),
+    username: z.string().nullable().optional(),
+    password: z.string().nullable().optional().openapi({
+      description:
+        'Omit or pass `••••••••` to preserve the existing secret; pass empty string/null to clear.',
+    }),
+    from: z.string().nullable().optional(),
+  })
+  .openapi({ description: 'Partial SMTP config update.' });
+
+export const SmtpSettingsResponseSchema = z.object({
+  smtp: MaskedSmtpConfigComponent,
+  passwordReset: z.object({
+    smtpConfigured: z.boolean(),
+    fallbackAvailable: z.boolean(),
+    fallback: z.enum(['owner_generated_reset_code']).nullable(),
+  }),
+});
+
+export const SmtpTestSendRequestSchema = z.object({
+  to: z.string().optional().openapi({
+    description:
+      'Optional recipient. Owners may send to any valid address; Admins can only send to their own email.',
+  }),
+});
+
 const projectIdParams = z.object({
   projectId: z.string().openapi({ description: 'Project slug or id.' }),
 });
@@ -330,6 +380,56 @@ registerPath({
   summary: 'List engines + per-engine authenticated models',
   responses: {
     200: { description: 'Model availability map.', content: jsonContent(ModelsConfigComponent) },
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/config/smtp',
+  tags: ['Config'],
+  summary: 'Read masked SMTP email settings',
+  responses: {
+    200: {
+      description: 'SMTP settings and password-reset fallback status.',
+      content: jsonContent(SmtpSettingsResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/config/smtp',
+  tags: ['Config'],
+  summary: 'Update SMTP email settings',
+  description:
+    'Partial update that preserves the stored password when `password` is omitted or equal to the mask sentinel.',
+  request: { body: { content: jsonContent(SmtpSettingsPatchRequestSchema) } },
+  responses: {
+    200: {
+      description: 'Updated masked SMTP settings.',
+      content: jsonContent(SmtpSettingsResponseSchema.extend({ ok: z.literal(true) })),
+    },
+    400: errorResponse('Invalid SMTP settings.'),
+    403: errorResponse('Admin role required.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/smtp/test',
+  tags: ['Config'],
+  summary: 'Send a test email through the configured SMTP transport',
+  request: { body: { content: jsonContent(SmtpTestSendRequestSchema) } },
+  responses: {
+    200: {
+      description: 'Test email accepted by the SMTP transport.',
+      content: jsonContent(z.object({ ok: z.literal(true), to: z.string() })),
+    },
+    400: errorResponse('SMTP is unconfigured, no usable recipient, or invalid recipient.'),
+    403: errorResponse('Supplied recipient is not allowed for this caller.'),
+    429: errorResponse('Rate-limited.'),
+    502: errorResponse('SMTP transport failed without exposing secrets.'),
   },
 });
 

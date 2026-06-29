@@ -59,7 +59,18 @@ export function shouldDeliverBroadcast(
   //    local mode, global apiKey break-glass, or no-auth-configured.
   if (stamp.localBypass) return true;
 
-  // 3. Try to resolve the event to a project. Unresolvable events keep
+  // 3. Private cron thread entries are scoped to the cron owner plus org
+  //    Owners, even when the backing project is shared. Shared crons carry the
+  //    same ownerUserId for credential attribution, but cronShared=true means
+  //    they should continue through normal project visibility below.
+  if (data.type === 'thread_entry_created' && data.cronShared === false) {
+    const owner =
+      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
+    if (!owner) return true;
+    return stamp.role === 'Owner' || stamp.userId === owner;
+  }
+
+  // 4. Try to resolve the event to a project. Unresolvable events keep
   //    the legacy fan-out semantics; deny-on-unresolved would silently
   //    break new event types and any payload whose project model isn't
   //    encoded in the resolver yet.

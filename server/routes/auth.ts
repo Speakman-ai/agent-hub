@@ -47,6 +47,15 @@ import {
   deleteUser,
   updateUserPassword,
   updateUserUsername,
+  startUserMfaEnrollment,
+  confirmUserMfaEnrollment,
+  getUserMfaState,
+  replaceUserMfaRecoveryCodes,
+  markUserMfaTotpStepUsed,
+  consumeUserMfaRecoveryCodeHash,
+  disableUserMfa,
+  resetUserMfa,
+  getUserCredentialVersion,
   countUsers,
   migrateAuthRecordIfNeeded,
   getUserClaudeAuth,
@@ -78,6 +87,7 @@ import {
   createInvite,
   deleteInvite,
   getInvite,
+  type InviteRow,
   inviteState,
   listActiveInvitesForOrg,
   markInviteAccepted,
@@ -88,11 +98,6 @@ import {
   consumePasswordResetTokenAndUpdatePassword,
 } from '../password-resets-store.js';
 import {
-  buildOwnerPasswordResetUrl,
-  buildPasswordResetUrl,
-  sendPasswordResetEmail,
-} from '../email-sender.js';
-import {
   sanitizeLoginIdentifier,
   sanitizeEmailIdentifier,
   isEmailIdentifier,
@@ -100,6 +105,16 @@ import {
   MIN_PASSWORD_LEN,
   MAX_PASSWORD_LEN,
 } from '../auth-validation.js';
+import {
+  EmailNotConfiguredError,
+  getPasswordResetDeliveryStatus,
+  isSmtpDeliveryConfigured,
+  safeEmailError,
+  sendInviteEmail,
+  buildOwnerPasswordResetUrl,
+  buildPasswordResetUrl,
+  sendPasswordResetEmail,
+} from '../email-sender.js';
 import { parseClaudeOAuthExpiry } from '../oauth-expiry.js';
 import { detectCodexAuthMode } from '../codex-auth.js';
 import { computeCodexUiStatus } from '../codex-device-auth-parse.js';
@@ -127,6 +142,9 @@ import {
   CreateUserBody,
   ErrorResponse,
   LoginBody,
+  MfaCodeBody,
+  MfaLoginBody,
+  MfaRequiredResponse,
   PasswordResetBody,
   ResetPasswordBody,
   SetupBody,
@@ -144,11 +162,51 @@ import {
   ZodErrorResponse,
   formatZodError,
 } from '../openapi/schemas/auth.js';
+import {
+  buildTotpProvisioningUri,
+  clearMfaLoginChallenge,
+  consumeMfaLoginChallenge,
+  findRecoveryCodeHash,
+  generateRecoveryCodes,
+  generateTotpSecret,
+  hashRecoveryCodes,
+  incrementMfaLoginChallengeAttempt,
+  issueMfaLoginChallenge,
+  verifyTotpCode,
+} from '../mfa.js';
 
 // ── OpenAPI registrations (Auth & user management) ─────────────────────
 //
 // Registered at module-load so `server/openapi/generate.ts` picks them up
 // before the router factory runs.
+
+const InviteEmailDeliverySchema = z.union([
+  z.object({
+    attempted: z.literal(false),
+    sent: z.literal(false),
+    reason: z.string(),
+  }),
+  z.object({ attempted: z.literal(true), sent: z.literal(true) }),
+  z.object({
+    attempted: z.literal(true),
+    sent: z.literal(false),
+    reason: z.string(),
+  }),
+]);
+
+const InviteListItemSchema = z.object({
+  token: z.string(),
+  orgId: z.string(),
+  role: z.enum(['Admin', 'User']),
+  email: z.string().nullable(),
+  url: z.string(),
+  expiresAt: z.string(),
+  createdAt: z.string(),
+});
+
+const InviteEmailStatusSchema = z.object({
+  smtpConfigured: z.boolean(),
+});
 
 registerPath({
   method: 'get',
@@ -216,12 +274,12 @@ registerPath({
   method: 'post',
   path: '/api/auth/login',
   tags: ['Auth'],
-  summary: 'Issue a JWT for an existing user.',
+  summary: 'Verify password and either issue a JWT or return an MFA challenge.',
   request: { body: { content: { 'application/json': { schema: LoginBody } } } },
   responses: {
     200: {
-      description: 'Login succeeded.',
-      content: { 'application/json': { schema: TokenResponse } },
+      description: 'Login succeeded, or MFA is required before token issuance.',
+      content: { 'application/json': { schema: z.union([TokenResponse, MfaRequiredResponse]) } },
     },
     400: {
       description: 'Invalid body shape.',
@@ -237,6 +295,32 @@ registerPath({
     },
     409: {
       description: 'Auth not configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/login/mfa',
+  tags: ['Auth'],
+  summary: 'Complete a pending MFA login challenge and issue a JWT.',
+  request: { body: { content: { 'application/json': { schema: MfaLoginBody } } } },
+  responses: {
+    200: {
+      description: 'MFA challenge completed; JWT returned.',
+      content: { 'application/json': { schema: TokenResponse } },
+    },
+    400: {
+      description: 'Invalid body shape.',
+      content: { 'application/json': { schema: ZodErrorResponse } },
+    },
+    401: {
+      description: 'Invalid or expired challenge/code.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
     429: {
@@ -306,6 +390,157 @@ registerPath({
     },
     500: {
       description: 'Server auth not configured.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/mfa/enrollment/start',
+  tags: ['Auth'],
+  summary: 'Start app-based TOTP MFA enrollment for the current user.',
+  responses: {
+    200: {
+      description: 'Pending TOTP secret and provisioning URI generated.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            secret: z.string(),
+            otpauthUri: z.string(),
+            mfaEnabled: z.boolean(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/mfa/enrollment/confirm',
+  tags: ['Auth'],
+  summary: 'Confirm the current TOTP code and enable MFA.',
+  request: { body: { content: { 'application/json': { schema: MfaCodeBody } } } },
+  responses: {
+    200: {
+      description: 'MFA enabled; recovery codes returned once.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            recoveryCodes: z.array(z.string()),
+            mfaEnabled: z.literal(true),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body or no pending enrollment.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Not authenticated.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/mfa/recovery-codes/regenerate',
+  tags: ['Auth'],
+  summary: 'Regenerate single-use recovery codes for the current user.',
+  request: { body: { content: { 'application/json': { schema: MfaCodeBody } } } },
+  responses: {
+    200: {
+      description: 'Replacement recovery codes returned once.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), recoveryCodes: z.array(z.string()) }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body or MFA disabled.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Invalid MFA code.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/me/mfa/disable',
+  tags: ['Auth'],
+  summary: 'Disable MFA for the current user after validating a current second factor.',
+  request: { body: { content: { 'application/json': { schema: MfaCodeBody } } } },
+  responses: {
+    200: {
+      description: 'MFA disabled.',
+      content: {
+        'application/json': {
+          schema: z.object({ ok: z.literal(true), mfaEnabled: z.literal(false) }),
+        },
+      },
+    },
+    400: {
+      description: 'Invalid body or MFA disabled.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    401: {
+      description: 'Invalid MFA code.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate-limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/users/{id}/mfa/reset',
+  tags: ['Auth'],
+  summary: 'Owner/Admin reset for a locked-out user MFA state.',
+  responses: {
+    200: {
+      description: 'Target MFA state reset.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            userId: z.string(),
+            mfaEnabled: z.literal(false),
+            resetAt: z.string().nullable(),
+            resetByUserId: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'User not found.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -1114,7 +1349,17 @@ registerPath({
     200: {
       description: 'Password updated.',
       content: {
-        'application/json': { schema: z.object({ ok: z.literal(true), userId: z.string() }) },
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            userId: z.string(),
+            passwordReset: z.object({
+              smtpConfigured: z.boolean(),
+              fallbackAvailable: z.boolean(),
+              fallback: z.enum(['owner_generated_reset_code']).nullable(),
+            }),
+          }),
+        },
       },
     },
     400: {
@@ -1150,6 +1395,7 @@ registerPath({
             email: z.string().nullable(),
             expiresAt: z.string(),
             createdAt: z.string(),
+            emailDelivery: InviteEmailDeliverySchema,
           }),
         },
       },
@@ -1176,22 +1422,60 @@ registerPath({
       content: {
         'application/json': {
           schema: z.object({
-            invites: z.array(
-              z.object({
-                token: z.string(),
-                orgId: z.string(),
-                role: z.enum(['Admin', 'User']),
-                email: z.string().nullable(),
-                expiresAt: z.string(),
-                createdAt: z.string(),
-              }),
-            ),
+            invites: z.array(InviteListItemSchema),
+            emailDelivery: InviteEmailStatusSchema,
           }),
         },
       },
     },
     403: {
       description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/auth/invites/{token}/email',
+  tags: ['Auth'],
+  summary: 'Send or resend an invite email for an active invite (Admin+, same org only).',
+  request: { params: z.object({ token: z.string() }) },
+  responses: {
+    200: {
+      description: 'Invite email sent.',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            invite: InviteListItemSchema,
+            emailDelivery: InviteEmailDeliverySchema,
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Invite has no email recipient or SMTP is unavailable.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Cross-org or insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Invite not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    410: {
+      description: 'Invite expired or was already accepted.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    429: {
+      description: 'Rate limited.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    502: {
+      description: 'SMTP delivery failed.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },
@@ -1310,14 +1594,22 @@ registerPath({
 
 const DEFAULT_TOKEN_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
-function issueToken(user: { id: string; username: string }, role: Role, jwtSecret: string) {
-  const credentialVersion =
-    'credential_version' in user && typeof user.credential_version === 'number'
+function issueToken(
+  user: { id: string; username: string; credential_version?: number | null },
+  role: Role,
+  jwtSecret: string,
+  credentialVersion?: number,
+) {
+  const resolvedCredentialVersion =
+    credentialVersion ??
+    (typeof user.credential_version === 'number' && Number.isFinite(user.credential_version)
       ? user.credential_version
-      : 0;
+      : user.id
+        ? (getUserCredentialVersion(user.id) ?? 0)
+        : 0);
   const token = signJwt(user.username, jwtSecret, {
     expiresInSec: DEFAULT_TOKEN_TTL_SEC,
-    claims: { role, uid: user.id, credentialVersion },
+    claims: { role, uid: user.id, credentialVersion: resolvedCredentialVersion },
   });
   const expiresAt = new Date(Date.now() + DEFAULT_TOKEN_TTL_SEC * 1000).toISOString();
   return { token, expiresAt };
@@ -1368,10 +1660,20 @@ export const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
 export const LOGIN_RATE_LIMIT_MAX = 10;
 export const INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
 export const INVITE_ACCEPT_RATE_LIMIT_MAX = 5;
+export const INVITE_EMAIL_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 min
+export const INVITE_EMAIL_RATE_LIMIT_MAX = 10;
 export const FORGOT_PASSWORD_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
 export const FORGOT_PASSWORD_RATE_LIMIT_MAX = 5;
 export const RESET_PASSWORD_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 h
 export const RESET_PASSWORD_RATE_LIMIT_MAX = 10;
+export const MFA_ATTEMPT_WINDOW_MS = 5 * 60 * 1000; // 5 min
+export const MFA_ATTEMPT_MAX = 5;
+
+const mfaAttemptBuckets = new Map<string, { count: number; resetAt: number }>();
+
+export function resetMfaAttemptBucketsForTests(): void {
+  mfaAttemptBuckets.clear();
+}
 
 /**
  * Render a credential for the UI without leaking the secret. Returns
@@ -1395,6 +1697,8 @@ export interface AuthRoutesOptions {
   loginRateLimit?: { windowMs: number; limit: number };
   /** Override invite-accept limiter. */
   inviteAcceptRateLimit?: { windowMs: number; limit: number };
+  /** Override invite-email limiter. */
+  inviteEmailRateLimit?: { windowMs: number; limit: number };
   /** Override forgot-password limiter. */
   forgotPasswordRateLimit?: { windowMs: number; limit: number };
   /** Override reset-password limiter. */
@@ -1528,6 +1832,85 @@ function isUsablePasswordResetToken(token: string): boolean {
   return new Date(row.expires_at).getTime() > Date.now();
 }
 
+function buildInviteEmailLimiter(opts: AuthRoutesOptions) {
+  if (opts.disableRateLimit) {
+    return (_req: Request, _res: Response, next: () => void) => next();
+  }
+  const { windowMs, limit } = opts.inviteEmailRateLimit ?? {
+    windowMs: INVITE_EMAIL_RATE_LIMIT_WINDOW_MS,
+    limit: INVITE_EMAIL_RATE_LIMIT_MAX,
+  };
+  return rateLimit({
+    windowMs,
+    limit,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    handler: makeLimitHandler('invite-email', '/api/auth/invites/:token/email'),
+  });
+}
+
+function checkMfaAttemptAllowed(key: string, nowMs = Date.now()): boolean {
+  const bucket = mfaAttemptBuckets.get(key);
+  if (!bucket || bucket.resetAt <= nowMs) {
+    mfaAttemptBuckets.set(key, { count: 0, resetAt: nowMs + MFA_ATTEMPT_WINDOW_MS });
+    return true;
+  }
+  return bucket.count < MFA_ATTEMPT_MAX;
+}
+
+function recordMfaAttemptFailure(key: string, nowMs = Date.now()): void {
+  const bucket = mfaAttemptBuckets.get(key);
+  if (!bucket || bucket.resetAt <= nowMs) {
+    mfaAttemptBuckets.set(key, { count: 1, resetAt: nowMs + MFA_ATTEMPT_WINDOW_MS });
+    return;
+  }
+  bucket.count += 1;
+}
+
+function clearMfaAttemptFailures(key: string): void {
+  mfaAttemptBuckets.delete(key);
+}
+
+function mfaRateLimitedResponse(res: Response): void {
+  res.status(429).json({
+    error: 'Too many requests. Please try again later.',
+    code: 'rate_limited',
+  });
+}
+
+type MfaCodeVerification =
+  | { ok: true; method: 'totp' | 'recovery'; credentialVersion: number }
+  | { ok: false; reason: 'disabled' | 'invalid' | 'replayed' | 'missing-user' };
+
+function verifyUserMfaCode(userId: string, code: string): MfaCodeVerification {
+  const state = getUserMfaState(userId);
+  if (!state) return { ok: false, reason: 'missing-user' };
+  if (!state.enabled || !state.totpSecret) return { ok: false, reason: 'disabled' };
+
+  const recoveryHash = findRecoveryCodeHash(code, state.recoveryCodeHashes);
+  if (recoveryHash) {
+    const consumed = consumeUserMfaRecoveryCodeHash(userId, recoveryHash);
+    if (!consumed) return { ok: false, reason: 'invalid' };
+    return {
+      ok: true,
+      method: 'recovery',
+      credentialVersion: consumed.credentialVersion,
+    };
+  }
+
+  const verified = verifyTotpCode(state.totpSecret, code, {
+    rejectStepAtOrBefore: state.lastUsedStep,
+  });
+  if (!verified.ok || verified.step == null) return { ok: false, reason: 'invalid' };
+  const marked = markUserMfaTotpStepUsed(userId, verified.step);
+  if (marked === 0) return { ok: false, reason: 'replayed' };
+  return {
+    ok: true,
+    method: 'totp',
+    credentialVersion: getUserCredentialVersion(userId) ?? state.credentialVersion,
+  };
+}
+
 /**
  * Validate a `{ [agentId]: { engine, model? } }` PUT body. Returns the
  * trimmed-and-checked map, or a precise `400` error message naming the
@@ -1642,12 +2025,168 @@ function filterStoredAgentModelOverrides(
   return out;
 }
 
+type InviteEmailDelivery =
+  | { attempted: false; sent: false; reason: 'no_email' | 'smtp_not_configured' }
+  | { attempted: true; sent: true }
+  | { attempted: true; sent: false; reason: 'send_failed' };
+
+function buildInviteUrl(req: Request, invite: InviteRow): string {
+  const baseUrl =
+    config.publicUrl ||
+    process.env.PUBLIC_ORIGIN ||
+    (req.get('host') ? `${req.protocol}://${req.get('host')}` : '');
+  return baseUrl
+    ? `${baseUrl.replace(/\/$/, '')}/invite/${invite.token}`
+    : `/invite/${invite.token}`;
+}
+
+function inviteEmailStatus() {
+  return { smtpConfigured: isSmtpDeliveryConfigured(config.smtp) };
+}
+
+function serializeInviteForList(req: Request, invite: InviteRow) {
+  return {
+    token: invite.token,
+    orgId: invite.org_id,
+    role: invite.role,
+    email: invite.email,
+    url: buildInviteUrl(req, invite),
+    expiresAt: invite.expires_at,
+    createdAt: invite.created_at,
+  };
+}
+
+async function deliverInviteEmail(req: Request, invite: InviteRow): Promise<InviteEmailDelivery> {
+  if (!invite.email) return { attempted: false, sent: false, reason: 'no_email' };
+  if (!isSmtpDeliveryConfigured(config.smtp)) {
+    return { attempted: false, sent: false, reason: 'smtp_not_configured' };
+  }
+  try {
+    const org = getOrg(invite.org_id);
+    await sendInviteEmail({
+      to: invite.email,
+      inviteUrl: buildInviteUrl(req, invite),
+      orgName: org?.name || invite.org_id || 'Agent Hub',
+      role: invite.role,
+      expiresAt: invite.expires_at,
+      smtp: config.smtp,
+    });
+    return { attempted: true, sent: true };
+  } catch (err) {
+    if (err instanceof EmailNotConfiguredError) {
+      return { attempted: false, sent: false, reason: 'smtp_not_configured' };
+    }
+    console.warn(`[auth] invite email failed: ${safeInviteEmailError(err, invite)}`);
+    return { attempted: true, sent: false, reason: 'send_failed' };
+  }
+}
+
+function safeInviteEmailError(err: unknown, invite: InviteRow): string {
+  return safeEmailError(err, config.smtp).split(invite.token).join('[redacted]');
+}
+
 export default function createAuthRoutes(options: AuthRoutesOptions = {}): Router {
   const router = Router();
   const loginLimiter = buildLoginLimiter(options);
   const inviteAcceptLimiter = buildInviteAcceptLimiter(options);
+  const inviteEmailLimiter = buildInviteEmailLimiter(options);
   const forgotPasswordLimiter = buildForgotPasswordLimiter(options);
   const resetPasswordLimiter = buildResetPasswordLimiter(options);
+
+  // ── Self-serve password reset (public) ─────────────────────────
+  // POST /api/auth/forgot-password: public, enumeration-safe.
+  router.post(
+    '/api/auth/forgot-password',
+    forgotPasswordLimiter,
+    async (req: Request, res: Response) => {
+      const parsedForgot = ForgotPasswordBody.safeParse(req.body ?? {});
+      if (parsedForgot.success) {
+        const email = sanitizeEmailIdentifier(parsedForgot.data.email);
+        if (email) {
+          try {
+            const user = getUserByUsername(email);
+            if (user) {
+              const reset = createPasswordResetToken({ userId: user.id });
+              const resetUrl = buildPasswordResetUrl(reset.token);
+              if (resetUrl) {
+                await sendPasswordResetEmail({ to: email, resetUrl });
+              } else {
+                console.warn(
+                  '[auth] forgot-password email skipped: PUBLIC_ORIGIN or publicUrl is not configured',
+                );
+              }
+            }
+          } catch (err) {
+            console.warn(`[auth] forgot-password token issue failed: ${(err as Error).message}`);
+          }
+        }
+      }
+      res.json({ ok: true });
+    },
+  );
+
+  // POST /api/auth/reset-password: public token consume.
+  router.post(
+    '/api/auth/reset-password',
+    resetPasswordLimiter,
+    async (req: Request, res: Response) => {
+      const parsedReset = ResetPasswordBody.safeParse(req.body ?? {});
+      if (!parsedReset.success) {
+        const pwdIssue = parsedReset.error.issues.some(
+          (i) =>
+            i.path[0] === 'newPassword' && (i.code === 'invalid_type' || i.code === 'too_small'),
+        );
+        if (pwdIssue) {
+          res.status(400).json({
+            error: `newPassword must be ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} chars`,
+          });
+          return;
+        }
+        res.status(400).json(formatZodError(parsedReset.error));
+        return;
+      }
+      const { token, newPassword } = parsedReset.data;
+      const password = sanitizePassword(newPassword);
+      if (!password) {
+        res.status(400).json({
+          error: `newPassword must be ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} chars`,
+        });
+        return;
+      }
+      if (!isUsablePasswordResetToken(token)) {
+        res.status(400).json({ error: 'Reset token is invalid or expired.' });
+        return;
+      }
+      const passwordHash = await hashPassword(password);
+      const row = consumePasswordResetTokenAndUpdatePassword(token, passwordHash);
+      if (!row) {
+        res.status(400).json({ error: 'Reset token is invalid or expired.' });
+        return;
+      }
+      res.json({ ok: true });
+    },
+  );
+
+  // POST /api/auth/users/:id/reset-token: Owner-issued no-email fallback.
+  router.post(
+    '/api/auth/users/:id/reset-token',
+    requireRole('Owner'),
+    (req: Request, res: Response) => {
+      const { id } = req.params as { id: string };
+      const target = getUserById(id);
+      if (!target) {
+        res.status(404).json({ error: 'user not found' });
+        return;
+      }
+      const reset = createPasswordResetToken({ userId: id });
+      res.status(201).json({
+        token: reset.token,
+        url: buildOwnerPasswordResetUrl(reset.token),
+        expiresAt: reset.row.expires_at,
+        userId: id,
+      });
+    },
+  );
 
   // ── Status (public) ────────────────────────────────────────────
   router.get('/api/auth/status', (_req: Request, res: Response) => {
@@ -1887,6 +2426,23 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     // requests.
     const resolvedRole: Role = role ?? authRecord.role;
     const subject = user ?? { id: '', username: authRecord.username };
+    if (user) {
+      const mfaState = getUserMfaState(user.id);
+      if (mfaState?.enabled) {
+        const challenge = issueMfaLoginChallenge({
+          userId: user.id,
+          username: user.username,
+          role: resolvedRole,
+        });
+        res.json({
+          mfaRequired: true,
+          challengeId: challenge.id,
+          expiresAt: new Date(challenge.expiresAt).toISOString(),
+          user: tokenUserPayload(user, resolvedRole),
+        });
+        return;
+      }
+    }
     const { token, expiresAt } = issueToken(subject, resolvedRole, authRecord.jwtSecret);
     res.json({
       token,
@@ -1901,81 +2457,55 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // POST /api/auth/forgot-password: public, enumeration-safe.
-  router.post(
-    '/api/auth/forgot-password',
-    forgotPasswordLimiter,
-    async (req: Request, res: Response) => {
-      const parsedForgot = ForgotPasswordBody.safeParse(req.body ?? {});
-      if (parsedForgot.success) {
-        const email = sanitizeEmailIdentifier(parsedForgot.data.email);
-        if (email) {
-          try {
-            const user = getUserByUsername(email);
-            if (user) {
-              const reset = createPasswordResetToken({ userId: user.id });
-              const resetUrl = buildPasswordResetUrl(reset.token);
-              if (resetUrl) {
-                await sendPasswordResetEmail({
-                  to: email,
-                  resetUrl,
-                });
-              } else {
-                console.warn(
-                  '[auth] forgot-password email skipped: PUBLIC_ORIGIN or publicUrl is not configured',
-                );
-              }
-            }
-          } catch (err) {
-            console.warn(`[auth] forgot-password token issue failed: ${(err as Error).message}`);
-          }
-        }
-      }
-      res.json({ ok: true });
-    },
-  );
+  router.post('/api/auth/login/mfa', (req: Request, res: Response) => {
+    const authRecord = getAuthRecord();
+    if (!authRecord) {
+      res.status(409).json({ error: 'Auth not configured. Call /api/auth/setup first.' });
+      return;
+    }
+    const parsed = MfaLoginBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    const { challengeId, code } = parsed.data;
+    const challenge = consumeMfaLoginChallenge(challengeId);
+    if (!challenge) {
+      res.status(401).json({ error: 'Invalid or expired MFA challenge' });
+      return;
+    }
+    if (challenge.attempts >= MFA_ATTEMPT_MAX || !checkMfaAttemptAllowed(challenge.userId)) {
+      mfaRateLimitedResponse(res);
+      return;
+    }
 
-  // POST /api/auth/reset-password: public token consume.
-  router.post(
-    '/api/auth/reset-password',
-    resetPasswordLimiter,
-    async (req: Request, res: Response) => {
-      const parsedReset = ResetPasswordBody.safeParse(req.body ?? {});
-      if (!parsedReset.success) {
-        const pwdIssue = parsedReset.error.issues.some(
-          (i) =>
-            i.path[0] === 'newPassword' && (i.code === 'invalid_type' || i.code === 'too_small'),
-        );
-        if (pwdIssue) {
-          res.status(400).json({
-            error: `newPassword must be ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} chars`,
-          });
-          return;
-        }
-        res.status(400).json(formatZodError(parsedReset.error));
-        return;
-      }
-      const { token, newPassword } = parsedReset.data;
-      const password = sanitizePassword(newPassword);
-      if (!password) {
-        res.status(400).json({
-          error: `newPassword must be ${MIN_PASSWORD_LEN}-${MAX_PASSWORD_LEN} chars`,
-        });
-        return;
-      }
-      if (!isUsablePasswordResetToken(token)) {
-        res.status(400).json({ error: 'Reset token is invalid or expired.' });
-        return;
-      }
-      const passwordHash = await hashPassword(password);
-      const row = consumePasswordResetTokenAndUpdatePassword(token, passwordHash);
-      if (!row) {
-        res.status(400).json({ error: 'Reset token is invalid or expired.' });
-        return;
-      }
-      res.json({ ok: true });
-    },
-  );
+    const verification = verifyUserMfaCode(challenge.userId, code);
+    if (!verification.ok) {
+      incrementMfaLoginChallengeAttempt(challenge.id);
+      recordMfaAttemptFailure(challenge.userId);
+      res.status(401).json({ error: 'Invalid MFA code' });
+      return;
+    }
+
+    clearMfaAttemptFailures(challenge.userId);
+    clearMfaLoginChallenge(challenge.id);
+    const user = getUserById(challenge.userId);
+    if (!user) {
+      res.status(401).json({ error: 'Invalid or expired MFA challenge' });
+      return;
+    }
+    const { token, expiresAt } = issueToken(
+      user,
+      challenge.role,
+      authRecord.jwtSecret,
+      verification.credentialVersion,
+    );
+    res.json({
+      token,
+      expiresAt,
+      user: tokenUserPayload(user, challenge.role),
+    });
+  });
 
   // ── Current user (protected by auth middleware) ────────────────
   router.get('/api/auth/me', (req: Request, res: Response) => {
@@ -2111,6 +2641,133 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const role: Role = authedReq.authRole ?? record.role;
     const { token, expiresAt } = issueToken(updated, role, record.jwtSecret);
     res.json({ token, expiresAt, user: tokenUserPayload(updated, role) });
+  });
+
+  router.post('/api/auth/me/mfa/enrollment/start', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId || !authedReq.authUser) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const secret = generateTotpSecret();
+    const state = startUserMfaEnrollment(authedReq.authUserId, secret);
+    if (!state) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+    res.json({
+      ok: true,
+      secret,
+      otpauthUri: buildTotpProvisioningUri({
+        accountName: authedReq.authUser,
+        secret,
+      }),
+      mfaEnabled: state.enabled,
+    });
+  });
+
+  router.post('/api/auth/me/mfa/enrollment/confirm', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const parsed = MfaCodeBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    if (!checkMfaAttemptAllowed(authedReq.authUserId)) {
+      mfaRateLimitedResponse(res);
+      return;
+    }
+    const state = getUserMfaState(authedReq.authUserId);
+    if (!state?.pendingSecret) {
+      res.status(400).json({ error: 'No pending MFA enrollment' });
+      return;
+    }
+    const verified = verifyTotpCode(state.pendingSecret, parsed.data.code);
+    if (!verified.ok || verified.step == null) {
+      recordMfaAttemptFailure(authedReq.authUserId);
+      res.status(401).json({ error: 'Invalid MFA code' });
+      return;
+    }
+    const recoveryCodes = generateRecoveryCodes();
+    const confirmed = confirmUserMfaEnrollment(authedReq.authUserId, {
+      totpSecret: state.pendingSecret,
+      recoveryCodeHashes: hashRecoveryCodes(recoveryCodes),
+      usedStep: verified.step,
+    });
+    if (!confirmed) {
+      res.status(404).json({ error: 'user not found' });
+      return;
+    }
+    clearMfaAttemptFailures(authedReq.authUserId);
+    res.json({ ok: true, recoveryCodes, mfaEnabled: true });
+  });
+
+  router.post('/api/auth/me/mfa/recovery-codes/regenerate', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const parsed = MfaCodeBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    if (!checkMfaAttemptAllowed(authedReq.authUserId)) {
+      mfaRateLimitedResponse(res);
+      return;
+    }
+    const verification = verifyUserMfaCode(authedReq.authUserId, parsed.data.code);
+    if (!verification.ok) {
+      recordMfaAttemptFailure(authedReq.authUserId);
+      res.status(401).json({ error: 'Invalid MFA code' });
+      return;
+    }
+    const recoveryCodes = generateRecoveryCodes();
+    const replaced = replaceUserMfaRecoveryCodes(
+      authedReq.authUserId,
+      hashRecoveryCodes(recoveryCodes),
+    );
+    if (!replaced) {
+      res.status(400).json({ error: 'MFA is not enabled' });
+      return;
+    }
+    clearMfaAttemptFailures(authedReq.authUserId);
+    res.json({ ok: true, recoveryCodes });
+  });
+
+  router.post('/api/auth/me/mfa/disable', (req: Request, res: Response) => {
+    const authedReq = req as AuthenticatedRequest;
+    if (!authedReq.authUserId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+    const parsed = MfaCodeBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json(formatZodError(parsed.error));
+      return;
+    }
+    if (!checkMfaAttemptAllowed(authedReq.authUserId)) {
+      mfaRateLimitedResponse(res);
+      return;
+    }
+    const verification = verifyUserMfaCode(authedReq.authUserId, parsed.data.code);
+    if (!verification.ok) {
+      recordMfaAttemptFailure(authedReq.authUserId);
+      res.status(401).json({ error: 'Invalid MFA code' });
+      return;
+    }
+    const disabled = disableUserMfa(authedReq.authUserId);
+    if (!disabled) {
+      res.status(400).json({ error: 'MFA is not enabled' });
+      return;
+    }
+    clearMfaAttemptFailures(authedReq.authUserId);
+    res.json({ ok: true, mfaEnabled: false });
   });
 
   // ── Per-user Claude credentials ────────────────────────────────
@@ -3077,23 +3734,40 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     });
   });
 
-  // POST /api/auth/users/:id/reset-token: Owner-issued no-email fallback.
   router.post(
-    '/api/auth/users/:id/reset-token',
-    requireRole('Owner'),
+    '/api/auth/users/:id/mfa/reset',
+    requireRole('Admin'),
     (req: Request, res: Response) => {
+      const authedReq = req as AuthenticatedRequest;
       const { id } = req.params as { id: string };
       const target = getUserById(id);
       if (!target) {
         res.status(404).json({ error: 'user not found' });
         return;
       }
-      const reset = createPasswordResetToken({ userId: id });
-      res.status(201).json({
-        token: reset.token,
-        url: buildOwnerPasswordResetUrl(reset.token),
-        expiresAt: reset.row.expires_at,
+
+      const orgId = authedReq.authOrgId || getActiveOrgId();
+      const targetRole = getMembershipRole(id, orgId);
+      if (!targetRole) {
+        res.status(404).json({ error: 'user is not a member of this org' });
+        return;
+      }
+      if (targetRole === 'Owner' && authedReq.authRole !== 'Owner') {
+        res.status(403).json({ error: 'Only Owners can reset Owner MFA.' });
+        return;
+      }
+
+      const reset = resetUserMfa(id, authedReq.authUserId ?? null);
+      if (!reset) {
+        res.status(404).json({ error: 'user not found' });
+        return;
+      }
+      res.json({
+        ok: true,
         userId: id,
+        mfaEnabled: false,
+        resetAt: reset.resetAt,
+        resetByUserId: reset.resetByUserId,
       });
     },
   );
@@ -3147,7 +3821,11 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     // Known limitation: stateless JWTs can't be server-revoked — tokens
     // issued before this call remain valid until their `exp`. Phase 4
     // will layer on a revocation list.
-    res.json({ ok: true, userId: id });
+    res.json({
+      ok: true,
+      userId: id,
+      passwordReset: getPasswordResetDeliveryStatus(config.smtp),
+    });
   });
 
   // ──────────────────────────────────────────────────────────────
@@ -3155,7 +3833,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
   // ──────────────────────────────────────────────────────────────
 
   // POST /api/auth/invites — Admin+
-  router.post('/api/auth/invites', requireRole('Admin'), (req: Request, res: Response) => {
+  router.post('/api/auth/invites', requireRole('Admin'), async (req: Request, res: Response) => {
     const authedReq = req as AuthenticatedRequest;
     const parsedInvite = CreateInviteBody.safeParse(req.body ?? {});
     if (!parsedInvite.success) {
@@ -3201,10 +3879,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       createdBy: authedReq.authUserId,
       ttlHours,
     });
-    const baseUrl = process.env.PUBLIC_ORIGIN || '';
-    const url = baseUrl
-      ? `${baseUrl.replace(/\/$/, '')}/invite/${invite.token}`
-      : `/invite/${invite.token}`;
+    const url = buildInviteUrl(req, invite);
+    const emailDelivery = await deliverInviteEmail(req, invite);
     res.status(201).json({
       token: invite.token,
       url,
@@ -3212,6 +3888,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
       email: invite.email,
       expiresAt: invite.expires_at,
       createdAt: invite.created_at,
+      emailDelivery,
     });
   });
 
@@ -3221,14 +3898,8 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const orgId = authedReq.authOrgId || getActiveOrgId();
     const rows = listActiveInvitesForOrg(orgId);
     res.json({
-      invites: rows.map((r) => ({
-        token: r.token,
-        orgId: r.org_id,
-        role: r.role,
-        email: r.email,
-        expiresAt: r.expires_at,
-        createdAt: r.created_at,
-      })),
+      invites: rows.map((r) => serializeInviteForList(req, r)),
+      emailDelivery: inviteEmailStatus(),
     });
   });
 
@@ -3250,6 +3921,59 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     deleteInvite(token);
     res.json({ ok: true, token });
   });
+
+  // POST /api/auth/invites/:token/email — Admin+
+  router.post(
+    '/api/auth/invites/:token/email',
+    requireRole('Admin'),
+    inviteEmailLimiter,
+    async (req: Request, res: Response) => {
+      const { token } = req.params as { token: string };
+      const row = getInvite(token);
+      const state = inviteState(row);
+      if (!row || state === 'not-found') {
+        res.status(404).json({ error: 'invite not found' });
+        return;
+      }
+      const authedReq = req as AuthenticatedRequest;
+      if (authedReq.authOrgId && row.org_id !== authedReq.authOrgId) {
+        res.status(403).json({ error: 'invite belongs to another org' });
+        return;
+      }
+      if (state === 'expired') {
+        res.status(410).json({ error: 'invite expired' });
+        return;
+      }
+      if (state === 'already-accepted') {
+        res.status(410).json({ error: 'invite already accepted' });
+        return;
+      }
+      if (!row.email) {
+        res.status(400).json({ error: 'invite has no email recipient' });
+        return;
+      }
+      const emailDelivery = await deliverInviteEmail(req, row);
+      if (!emailDelivery.sent) {
+        if (emailDelivery.reason === 'smtp_not_configured') {
+          res.status(400).json({
+            error: 'SMTP email is not configured. Copy the invite link instead.',
+            emailDelivery,
+          });
+          return;
+        }
+        res.status(502).json({
+          error: 'Invite email could not be sent. Check SMTP settings or copy the invite link.',
+          emailDelivery,
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        invite: serializeInviteForList(req, row),
+        emailDelivery,
+      });
+    },
+  );
 
   // GET /api/auth/invites/:token — public landing metadata
   router.get('/api/auth/invites/:token', (req: Request, res: Response) => {

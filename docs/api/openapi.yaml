@@ -389,6 +389,41 @@ components:
         - token
         - expiresAt
         - user
+    MfaRequiredResponse:
+      type: object
+      properties:
+        mfaRequired:
+          type: boolean
+          enum:
+            - true
+        challengeId:
+          type: string
+        expiresAt:
+          type: string
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            email:
+              type: string
+              nullable: true
+            needsEmailUpdate:
+              type: boolean
+            role:
+              type: string
+              enum:
+                - Owner
+                - Admin
+                - User
+          required:
+            - email
+            - role
+      required:
+        - mfaRequired
+        - challengeId
+        - expiresAt
+        - user
     AuthSetupBody:
       anyOf:
         - type: object
@@ -439,6 +474,23 @@ components:
             - username
             - password
       description: "`email` is canonical. `username` is accepted for legacy non-email account login. One identifier is required."
+    AuthMfaCodeBody:
+      type: object
+      properties:
+        code:
+          type: string
+      required:
+        - code
+    AuthMfaLoginBody:
+      type: object
+      properties:
+        challengeId:
+          type: string
+        code:
+          type: string
+      required:
+        - challengeId
+        - code
     AuthCreateUserBody:
       anyOf:
         - type: object
@@ -3116,6 +3168,45 @@ components:
         - message
         - results
       description: Per-section result map — each entry is either `true`/`false` or a human-readable summary like `"3 new, 5 skipped"`.
+    MaskedSmtpConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        host:
+          type: string
+        port:
+          type: integer
+        tlsMode:
+          type: string
+          enum:
+            - none
+            - starttls
+            - ssl
+        username:
+          type: string
+          nullable: true
+        password:
+          type: string
+          nullable: true
+          description: "`••••••••` when a password is stored, null otherwise."
+        passwordSet:
+          type: boolean
+        from:
+          type: string
+        configured:
+          type: boolean
+      required:
+        - enabled
+        - host
+        - port
+        - tlsMode
+        - username
+        - password
+        - passwordSet
+        - from
+        - configured
+      description: SMTP settings with password masked.
     Cron:
       type: object
       properties:
@@ -3160,6 +3251,13 @@ components:
         owner_user_id:
           type: string
           nullable: true
+        owner_username:
+          type: string
+          nullable: true
+        shared:
+          type: integer
+        can_manage:
+          type: boolean
         created_at:
           type: string
       required:
@@ -3179,8 +3277,9 @@ components:
         - skill_principal_agent_id
         - engine
         - owner_user_id
+        - shared
         - created_at
-      description: A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs.
+      description: A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.
     CronLog:
       type: object
       properties:
@@ -4807,6 +4906,13 @@ components:
           type: string
         model:
           type: string
+        owner_user_id:
+          type: string
+          nullable: true
+        shared:
+          anyOf:
+            - type: boolean
+            - type: integer
       required:
         - enabled
         - interval
@@ -4871,6 +4977,8 @@ components:
       properties:
         agentId:
           type: string
+        projectId:
+          type: string
         agentName:
           type: string
         color:
@@ -4885,12 +4993,26 @@ components:
           allOf:
             - $ref: "#/components/schemas/HeartbeatState"
             - nullable: true
+        owner_user_id:
+          type: string
+          nullable: true
+        owner_username:
+          type: string
+          nullable: true
+        shared:
+          type: integer
+        can_manage:
+          type: boolean
       required:
         - agentId
         - agentName
         - heartbeat
         - latestLog
         - state
+        - owner_user_id
+        - owner_username
+        - shared
+        - can_manage
       description: Per-agent heartbeat overview returned by GET /api/heartbeats.
     HeartbeatStateInfo:
       type: object
@@ -8452,6 +8574,23 @@ paths:
                       type: string
                     prompt:
                       type: string
+                    model:
+                      type: string
+                    shared:
+                      anyOf:
+                        - type: boolean
+                        - type: number
+                          enum:
+                            - 0
+                        - type: number
+                          enum:
+                            - 1
+                        - type: string
+                          enum:
+                            - "0"
+                        - type: string
+                          enum:
+                            - "1"
                 browserToolsEnabled:
                   type: boolean
                 browserViewportWidth:
@@ -8537,6 +8676,23 @@ paths:
                       type: string
                     prompt:
                       type: string
+                    model:
+                      type: string
+                    shared:
+                      anyOf:
+                        - type: boolean
+                        - type: number
+                          enum:
+                            - 0
+                        - type: number
+                          enum:
+                            - 1
+                        - type: string
+                          enum:
+                            - "0"
+                        - type: string
+                          enum:
+                            - "1"
                 active:
                   type: boolean
                 reviewer:
@@ -9243,7 +9399,7 @@ paths:
     post:
       tags:
         - Auth
-      summary: Issue a JWT for an existing user.
+      summary: Verify password and either issue a JWT or return an MFA challenge.
       requestBody:
         content:
           application/json:
@@ -9251,11 +9407,13 @@ paths:
               $ref: "#/components/schemas/AuthLoginBody"
       responses:
         "200":
-          description: Login succeeded.
+          description: Login succeeded, or MFA is required before token issuance.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TokenResponse"
+                anyOf:
+                  - $ref: "#/components/schemas/TokenResponse"
+                  - $ref: "#/components/schemas/MfaRequiredResponse"
         "400":
           description: Invalid body shape.
           content:
@@ -9276,6 +9434,41 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Auth not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/login/mfa:
+    post:
+      tags:
+        - Auth
+      summary: Complete a pending MFA login challenge and issue a JWT.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthMfaLoginBody"
+      responses:
+        "200":
+          description: MFA challenge completed; JWT returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          description: Invalid body shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZodErrorResponse"
+        "401":
+          description: Invalid or expired challenge/code.
           content:
             application/json:
               schema:
@@ -9384,6 +9577,233 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: Server auth not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/mfa/enrollment/start:
+    post:
+      tags:
+        - Auth
+      summary: Start app-based TOTP MFA enrollment for the current user.
+      responses:
+        "200":
+          description: Pending TOTP secret and provisioning URI generated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  secret:
+                    type: string
+                  otpauthUri:
+                    type: string
+                  mfaEnabled:
+                    type: boolean
+                required:
+                  - ok
+                  - secret
+                  - otpauthUri
+                  - mfaEnabled
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/mfa/enrollment/confirm:
+    post:
+      tags:
+        - Auth
+      summary: Confirm the current TOTP code and enable MFA.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthMfaCodeBody"
+      responses:
+        "200":
+          description: MFA enabled; recovery codes returned once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  recoveryCodes:
+                    type: array
+                    items:
+                      type: string
+                  mfaEnabled:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+                  - recoveryCodes
+                  - mfaEnabled
+        "400":
+          description: Invalid body or no pending enrollment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/mfa/recovery-codes/regenerate:
+    post:
+      tags:
+        - Auth
+      summary: Regenerate single-use recovery codes for the current user.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthMfaCodeBody"
+      responses:
+        "200":
+          description: Replacement recovery codes returned once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  recoveryCodes:
+                    type: array
+                    items:
+                      type: string
+                required:
+                  - ok
+                  - recoveryCodes
+        "400":
+          description: Invalid body or MFA disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid MFA code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/mfa/disable:
+    post:
+      tags:
+        - Auth
+      summary: Disable MFA for the current user after validating a current second factor.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthMfaCodeBody"
+      responses:
+        "200":
+          description: MFA disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  mfaEnabled:
+                    type: boolean
+                    enum:
+                      - false
+                required:
+                  - ok
+                  - mfaEnabled
+        "400":
+          description: Invalid body or MFA disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Invalid MFA code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/users/{id}/mfa/reset:
+    post:
+      tags:
+        - Auth
+      summary: Owner/Admin reset for a locked-out user MFA state.
+      responses:
+        "200":
+          description: Target MFA state reset.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  userId:
+                    type: string
+                  mfaEnabled:
+                    type: boolean
+                    enum:
+                      - false
+                  resetAt:
+                    type: string
+                    nullable: true
+                  resetByUserId:
+                    type: string
+                    nullable: true
+                required:
+                  - ok
+                  - userId
+                  - mfaEnabled
+                  - resetAt
+                  - resetByUserId
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: User not found.
           content:
             application/json:
               schema:
@@ -10835,9 +11255,27 @@ paths:
                       - true
                   userId:
                     type: string
+                  passwordReset:
+                    type: object
+                    properties:
+                      smtpConfigured:
+                        type: boolean
+                      fallbackAvailable:
+                        type: boolean
+                      fallback:
+                        type: string
+                        nullable: true
+                        enum:
+                          - owner_generated_reset_code
+                          - null
+                    required:
+                      - smtpConfigured
+                      - fallbackAvailable
+                      - fallback
                 required:
                   - ok
                   - userId
+                  - passwordReset
         "400":
           description: Invalid body.
           content:
@@ -10890,6 +11328,53 @@ paths:
                     type: string
                   createdAt:
                     type: string
+                  emailDelivery:
+                    anyOf:
+                      - type: object
+                        properties:
+                          attempted:
+                            type: boolean
+                            enum:
+                              - false
+                          sent:
+                            type: boolean
+                            enum:
+                              - false
+                          reason:
+                            type: string
+                        required:
+                          - attempted
+                          - sent
+                          - reason
+                      - type: object
+                        properties:
+                          attempted:
+                            type: boolean
+                            enum:
+                              - true
+                          sent:
+                            type: boolean
+                            enum:
+                              - true
+                        required:
+                          - attempted
+                          - sent
+                      - type: object
+                        properties:
+                          attempted:
+                            type: boolean
+                            enum:
+                              - true
+                          sent:
+                            type: boolean
+                            enum:
+                              - false
+                          reason:
+                            type: string
+                        required:
+                          - attempted
+                          - sent
+                          - reason
                 required:
                   - token
                   - url
@@ -10897,6 +11382,7 @@ paths:
                   - email
                   - expiresAt
                   - createdAt
+                  - emailDelivery
         "400":
           description: Invalid role or missing user session.
           content:
@@ -10938,6 +11424,8 @@ paths:
                         email:
                           type: string
                           nullable: true
+                        url:
+                          type: string
                         expiresAt:
                           type: string
                         createdAt:
@@ -10947,12 +11435,160 @@ paths:
                         - orgId
                         - role
                         - email
+                        - url
                         - expiresAt
                         - createdAt
+                  emailDelivery:
+                    type: object
+                    properties:
+                      smtpConfigured:
+                        type: boolean
+                    required:
+                      - smtpConfigured
                 required:
                   - invites
+                  - emailDelivery
         "403":
           description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/invites/{token}/email:
+    post:
+      tags:
+        - Auth
+      summary: Send or resend an invite email for an active invite (Admin+, same org only).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: token
+          in: path
+      responses:
+        "200":
+          description: Invite email sent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  invite:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                      orgId:
+                        type: string
+                      role:
+                        type: string
+                        enum:
+                          - Admin
+                          - User
+                      email:
+                        type: string
+                        nullable: true
+                      url:
+                        type: string
+                      expiresAt:
+                        type: string
+                      createdAt:
+                        type: string
+                    required:
+                      - token
+                      - orgId
+                      - role
+                      - email
+                      - url
+                      - expiresAt
+                      - createdAt
+                  emailDelivery:
+                    anyOf:
+                      - type: object
+                        properties:
+                          attempted:
+                            type: boolean
+                            enum:
+                              - false
+                          sent:
+                            type: boolean
+                            enum:
+                              - false
+                          reason:
+                            type: string
+                        required:
+                          - attempted
+                          - sent
+                          - reason
+                      - type: object
+                        properties:
+                          attempted:
+                            type: boolean
+                            enum:
+                              - true
+                          sent:
+                            type: boolean
+                            enum:
+                              - true
+                        required:
+                          - attempted
+                          - sent
+                      - type: object
+                        properties:
+                          attempted:
+                            type: boolean
+                            enum:
+                              - true
+                          sent:
+                            type: boolean
+                            enum:
+                              - false
+                          reason:
+                            type: string
+                        required:
+                          - attempted
+                          - sent
+                          - reason
+                required:
+                  - ok
+                  - invite
+                  - emailDelivery
+        "400":
+          description: Invite has no email recipient or SMTP is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Cross-org or insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Invite not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: Invite expired or was already accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Rate limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: SMTP delivery failed.
           content:
             application/json:
               schema:
@@ -15840,9 +16476,10 @@ paths:
                 transcriptionProvider:
                   type: string
                   enum:
+                    - xai
                     - openai
                     - gemini
-                  description: Voice-transcription provider for /api/transcribe. Must be `openai` or `gemini`; any other value returns 400.
+                  description: Voice-transcription provider for /api/transcribe. Must be `xai`, `openai`, or `gemini`; any other value returns 400.
                 publicUrl:
                   type: string
                 codexDangerBypass:
@@ -15889,6 +16526,186 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ModelsConfig"
+  /api/config/smtp:
+    get:
+      tags:
+        - Config
+      summary: Read masked SMTP email settings
+      responses:
+        "200":
+          description: SMTP settings and password-reset fallback status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  smtp:
+                    $ref: "#/components/schemas/MaskedSmtpConfig"
+                  passwordReset:
+                    type: object
+                    properties:
+                      smtpConfigured:
+                        type: boolean
+                      fallbackAvailable:
+                        type: boolean
+                      fallback:
+                        type: string
+                        nullable: true
+                        enum:
+                          - owner_generated_reset_code
+                          - null
+                    required:
+                      - smtpConfigured
+                      - fallbackAvailable
+                      - fallback
+                required:
+                  - smtp
+                  - passwordReset
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+    patch:
+      tags:
+        - Config
+      summary: Update SMTP email settings
+      description: Partial update that preserves the stored password when `password` is omitted or equal to the mask sentinel.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+                host:
+                  type: string
+                  nullable: true
+                port:
+                  anyOf:
+                    - type: integer
+                    - type: string
+                tlsMode:
+                  type: string
+                  enum:
+                    - none
+                    - starttls
+                    - ssl
+                username:
+                  type: string
+                  nullable: true
+                password:
+                  type: string
+                  nullable: true
+                  description: Omit or pass `••••••••` to preserve the existing secret; pass empty string/null to clear.
+                from:
+                  type: string
+                  nullable: true
+              description: Partial SMTP config update.
+      responses:
+        "200":
+          description: Updated masked SMTP settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  smtp:
+                    $ref: "#/components/schemas/MaskedSmtpConfig"
+                  passwordReset:
+                    type: object
+                    properties:
+                      smtpConfigured:
+                        type: boolean
+                      fallbackAvailable:
+                        type: boolean
+                      fallback:
+                        type: string
+                        nullable: true
+                        enum:
+                          - owner_generated_reset_code
+                          - null
+                    required:
+                      - smtpConfigured
+                      - fallbackAvailable
+                      - fallback
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - smtp
+                  - passwordReset
+                  - ok
+        "400":
+          description: Invalid SMTP settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/smtp/test:
+    post:
+      tags:
+        - Config
+      summary: Send a test email through the configured SMTP transport
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                to:
+                  type: string
+                  description: Optional recipient. Owners may send to any valid address; Admins can only send to their own email.
+      responses:
+        "200":
+          description: Test email accepted by the SMTP transport.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                  to:
+                    type: string
+                required:
+                  - ok
+                  - to
+        "400":
+          description: SMTP is unconfigured, no usable recipient, or invalid recipient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Supplied recipient is not allowed for this caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "429":
+          description: Rate-limited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "502":
+          description: SMTP transport failed without exposing secrets.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
   /api/config/spawn-path:
     get:
       tags:
@@ -16230,7 +17047,8 @@ paths:
     get:
       tags:
         - Crons
-      summary: List every cron job
+      summary: List visible cron jobs
+      description: Returns shared crons, crons owned by the caller, and all crons for org Owners. Private crons are hidden from other non-Owner users.
       responses:
         "200":
           description: Array of cron jobs.
@@ -16244,7 +17062,7 @@ paths:
       tags:
         - Crons
       summary: Create a new cron job
-      description: "`schedule` must be a valid cron expression. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli, grok-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
+      description: "`schedule` must be a valid cron expression. The cron owner is the authenticated caller. `shared` defaults to false; when true the cron is visible to the org but still executes under the owner's credentials. `engine` (when provided) must be one of: claude-code, cursor-agent, codex-cli, gemini-cli, grok-cli — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to `claude-code`. `model` is validated against `engineValidModels[engine]` for whichever engine the cron resolves to. `skill_principal_agent_id` (when provided) must be an agent in the cron's project."
       requestBody:
         content:
           application/json:
@@ -16296,6 +17114,21 @@ paths:
                     - type: string
                       enum:
                         - "false"
+                shared:
+                  anyOf:
+                    - type: boolean
+                    - type: number
+                      enum:
+                        - 0
+                    - type: number
+                      enum:
+                        - 1
+                    - type: string
+                      enum:
+                        - "0"
+                    - type: string
+                      enum:
+                        - "1"
                 model:
                   type: string
                   nullable: true
@@ -16331,7 +17164,7 @@ paths:
       tags:
         - Crons
       summary: Update a cron job
-      description: Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).
+      description: Owner or cron owner only. Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). `shared` toggles org-wide visibility without changing execution owner. When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).
       parameters:
         - schema:
             type: string
@@ -16389,6 +17222,21 @@ paths:
                     - type: string
                       enum:
                         - "false"
+                shared:
+                  anyOf:
+                    - type: boolean
+                    - type: number
+                      enum:
+                        - 0
+                    - type: number
+                      enum:
+                        - 1
+                    - type: string
+                      enum:
+                        - "0"
+                    - type: string
+                      enum:
+                        - "1"
                 model:
                   type: string
                   nullable: true
@@ -19145,13 +19993,28 @@ paths:
                 model:
                   type: string
                   nullable: true
+                shared:
+                  anyOf:
+                    - type: boolean
+                    - type: number
+                      enum:
+                        - 0
+                    - type: number
+                      enum:
+                        - 1
+                    - type: string
+                      enum:
+                        - "0"
+                    - type: string
+                      enum:
+                        - "1"
       responses:
         "200":
-          description: Updated heartbeat config.
+          description: Updated per-agent heartbeat overview.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HeartbeatConfig"
+                $ref: "#/components/schemas/HeartbeatOverview"
         "400":
           description: Validation failed (e.g. invalid cron expression).
           content:

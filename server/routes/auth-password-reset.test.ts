@@ -24,7 +24,10 @@ const emailSenderMock = vi.hoisted(() => ({
 }));
 
 vi.mock('../config.js', () => ({ default: mockConfig, fileConfig: { smtp: { enabled: false } } }));
-vi.mock('../email-sender.js', () => emailSenderMock);
+vi.mock('../email-sender.js', async (importActual) => ({
+  ...(await importActual<typeof import('../email-sender.js')>()),
+  ...emailSenderMock,
+}));
 
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');

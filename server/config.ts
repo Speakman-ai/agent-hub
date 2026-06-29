@@ -25,6 +25,7 @@ import {
   PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS,
   PREVIEW_COMPOSE_READY_TIMEOUT_MIN_MS,
 } from './preview/preview-ready-timeout-bounds.js';
+import { normalizeSmtpConfig } from './smtp-config.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -402,6 +403,7 @@ const config: AppConfig = {
 
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
+  smtp: normalizeSmtpConfig(fileConfig.smtp),
   // AI provider credentials for Claude / Cursor / Codex are strictly
   // per-account — they live encrypted in `orgs.db` `users` and are managed
   // via `/api/auth/me/*-auth` (see server/users-store.ts). There is

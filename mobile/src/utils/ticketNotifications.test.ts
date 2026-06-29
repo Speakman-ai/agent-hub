@@ -124,6 +124,18 @@ describe('mapBroadcastToNotification — account scoping (ownerUserId)', () => {
         // case that permits an owned event through without a matching user id.
         expect(mapBroadcastToNotification(awaitingEvent('kevin'), { localBypass: true })?.event).toBe('awaiting_feedback');
     });
+    it('lets shared cron thread messages notify non-owners but keeps private cron messages scoped', () => {
+        const base = {
+            type: 'thread_entry_created',
+            projectId: 'p1',
+            threadName: 'Nightly audit',
+            threadType: 'cron',
+            ownerUserId: 'kevin',
+            entry: { content: 'Done' },
+        };
+        expect(mapBroadcastToNotification({ ...base, cronShared: false }, { currentUserId: 'ryan' })).toBeNull();
+        expect(mapBroadcastToNotification({ ...base, cronShared: true }, { currentUserId: 'ryan' })?.event).toBe('thread_message');
+    });
     it('never scopes non-session events without a resolvable project', () => {
         const r = mapBroadcastToNotification({ type: 'card_moved', columnName: 'Review', cardTitle: 'T', ownerUserId: 'kevin' }, { currentUserId: 'ryan' });
         expect(r).toBeNull();

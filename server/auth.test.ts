@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response } from 'express';
 import type { AuthRecord } from './auth-store.js';
 import type { Role } from './roles.js';
 import type { UserRow } from './users-store.js';
@@ -45,6 +45,7 @@ vi.mock('./orgs.js', () => ({
 vi.mock('./users-store.js', () => ({
   getUserById: (id: string) => mockUsersById.get(id) ?? null,
   getUserByUsername: (name: string) => mockUsersByName.get(name) ?? null,
+  getUserCredentialVersion: () => 0,
 }));
 vi.mock('./memberships-store.js', () => ({
   getMembershipRole: (userId: string, orgId: string) =>

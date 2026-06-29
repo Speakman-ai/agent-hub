@@ -139,6 +139,9 @@ describe('CronSection — engine picker', () => {
       enabled: 1,
       timeout_ms: null,
       notify_on_run: 0,
+      shared: 1,
+      owner_username: 'alice@example.com',
+      can_manage: true,
       model: 'gpt-5-codex',
       engine: 'codex-cli',
       skill_principal_agent_id: null,
@@ -156,6 +159,7 @@ describe('CronSection — engine picker', () => {
     // The render summarises the row with "Engine: codex-cli" so the
     // operator can see the engine without opening the edit form.
     await findByText(/Engine: codex-cli/);
+    await findByText(/Owner: alice@example.com/);
 
     // Open the edit form — the Edit button is icon-only with title="Edit".
     const editBtn = await waitFor(() => {
@@ -191,6 +195,7 @@ describe('CronSection — engine picker', () => {
     expect(id!).toBe(42);
     expect(payload.engine).toBe('codex-cli');
     expect(payload.model).toBe('gpt-5');
+    expect(payload.shared).toBe(true);
     // The helper-text scratchpad must NOT leak into the PUT — the server's
     // present-key tristate would treat it as an intentional clear.
     expect(payload!).not.toHaveProperty('skill_principal_agent_id');

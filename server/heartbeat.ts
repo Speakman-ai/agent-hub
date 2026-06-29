@@ -15,7 +15,8 @@ import { getOrCreateProcessWorktree } from './worktree.js';
 import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
-import { getProjects } from './project-model.js';
+import { getProjects, saveProjects } from './project-model.js';
+import { backfillHeartbeatOwner, backfillHeartbeatOwners } from './heartbeat-ownership.js';
 import { setSessionOwner } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
 import { hostedBarePathForProject } from './git-host/repo-store.js';
@@ -23,6 +24,7 @@ import { resolveCronEngine } from './cron-engine.js';
 import { runOneShotPrompt, type OneShotDetailed } from './one-shot-spawn.js';
 import type {
   EnrichedAgent,
+  Agent,
   CronRow,
   HeartbeatStateRow,
   ThreadRow,
@@ -43,6 +45,10 @@ const SLACK_WEBHOOK_URL: string | null = config.slackWebhookUrl;
 const scheduledTasks = new Map<string, ScheduledTask>();
 
 const runningHeartbeats = new Set<string>();
+
+function persistedProjectAgents(): Agent[] {
+  return getProjects().flatMap((project) => project.agents ?? []);
+}
 
 let onCronSessionUpdate: ((data: Record<string, unknown>) => void) | null = null;
 export function setOnCronSessionUpdate(fn: (data: Record<string, unknown>) => void): void {
@@ -361,6 +367,16 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
 
   try {
     const hbProject = getProjects().find((p) => p.id === agent.projectId);
+    const persistedAgent = hbProject?.agents.find((a) => a.id === agent.id);
+    if (persistedAgent) backfillHeartbeatOwner(persistedAgent, saveProjects);
+    const persistedHeartbeat = persistedAgent?.heartbeat;
+    if (persistedHeartbeat?.owner_user_id && !agent.heartbeat.owner_user_id) {
+      agent.heartbeat = {
+        ...agent.heartbeat,
+        owner_user_id: persistedHeartbeat.owner_user_id,
+        shared: persistedHeartbeat.shared ?? agent.heartbeat.shared,
+      };
+    }
     const heartbeatCwd = await getOrCreateProcessWorktree(
       agent.cwd,
       `heartbeat-${agent.id}`,
@@ -384,12 +400,10 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
     // NoEnginesAvailableError when nothing is configured — caught below
     // and surfaced as a clear "set up credentials" error in the log.
     const preferredEngine = (agent as EnrichedAgent & { engine?: string }).engine ?? 'claude-code';
-    // Heartbeats are scheduled with no human in-context and carry no stored
-    // user attribution, so there is no acting user. AI auth is strictly
-    // per-account: the per-account engines (Claude/Cursor/Codex) report
-    // unavailable here and the resolver can only land on the host-global
-    // Gemini — otherwise it throws NoEnginesAvailableError (caught below).
-    const heartbeatOwnerId: string | null = null;
+    const heartbeatOwnerId =
+      typeof agent.heartbeat.owner_user_id === 'string' && agent.heartbeat.owner_user_id.trim()
+        ? agent.heartbeat.owner_user_id.trim()
+        : null;
     const resolved = await resolveOneShotEngine(config, {
       preferred: preferredEngine,
       preferredModel: heartbeatModel,
@@ -669,6 +683,8 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
             projectId: thread.project_id,
             threadName: thread.name,
             threadType: thread.type,
+            ownerUserId: cronJob.owner_user_id ?? null,
+            cronShared: Boolean(cronJob.shared),
             entry,
             // When the cron has opted out of "ran" notifications, suppress
             // the mobile push that `handleBroadcastForPush` would otherwise
@@ -703,10 +719,9 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
           0,
           1,
         );
-        // System-spawned cron sessions are owned by nobody — there is no
-        // org-owner fallback, so the row stays NULL-owner (setSessionOwner is
-        // a no-op on null).
-        setSessionOwner(sessionId, null);
+        // Cron sessions belong to the cron creator. Shared visibility on the
+        // cron does not change whose CLI credentials pay for the run.
+        setSessionOwner(sessionId, cronOwnerId);
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       }
@@ -784,6 +799,8 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
             projectId: thread.project_id,
             threadName: thread.name,
             threadType: thread.type,
+            ownerUserId: cronJob.owner_user_id ?? null,
+            cronShared: Boolean(cronJob.shared),
             entry,
             // See success-path comment — honor per-cron notify_on_run on the
             // error path too, so a silenced cron doesn't suddenly start
@@ -814,6 +831,8 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
     task.stop();
   }
   scheduledTasks.clear();
+
+  backfillHeartbeatOwners(persistedProjectAgents, saveProjects);
 
   try {
     const cleaned = db!

@@ -470,6 +470,11 @@ export interface CronRow {
    * resolve from the creator's HOME. Null for legacy/system-created crons.
    */
   owner_user_id: string | null;
+  /**
+   * Visibility toggle. 0 = private to owner plus org Owners, 1 = visible to
+   * every org member. Execution still uses owner_user_id either way.
+   */
+  shared: number;
   created_at: string;
 }
 
@@ -1705,6 +1710,7 @@ export interface Stmts {
   getCron: Stmt;
   createCron: Stmt;
   updateCron: Stmt;
+  backfillCronOwners: Stmt;
   deleteCron: Stmt;
   updateCronResult: Stmt;
   updateCronNextRun: Stmt;
@@ -2428,6 +2434,18 @@ export interface HeartbeatConfig {
    * `claude-code` engine model IDs apply here.
    */
   model?: string;
+  /**
+   * Logical user id for the Hub user that owns this heartbeat. Scheduled runs
+   * use this to build the spawn env so per-user CLI caches and subscriptions
+   * resolve from the creator's HOME. Null/undefined for legacy rows before
+   * route-level backfill.
+   */
+  owner_user_id?: string | null;
+  /**
+   * Visibility toggle. 0/false = private to owner plus org Owners,
+   * 1/true = visible to every org member. Execution still uses owner_user_id.
+   */
+  shared?: number | boolean;
 }
 
 export interface HookEntry {
@@ -3193,6 +3211,11 @@ export interface AppConfig {
   personalOAuth: PersonalOAuthConfig | null;
   apiKey: string | null;
   /**
+   * First-party SMTP email delivery configuration. Stored in
+   * `<dataDir>/config.json` under `smtp`; read responses mask `password`.
+   */
+  smtp: SmtpConfig;
+  /**
    * Host-wide OpenAI API key. NOT an agent-engine credential (Codex spawns
    * use the per-account `codex_api_key`). This powers host utilities that
    * call OpenAI directly: Whisper transcription (`/api/transcribe`) and the
@@ -3293,6 +3316,20 @@ export interface AppConfig {
    */
   replayRetentionDays: number;
   readonly allValidModels: string[];
+}
+
+export interface SmtpConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  /**
+   * `none` = plain SMTP, `starttls` = STARTTLS upgrade required, `ssl` =
+   * implicit TLS (`secure: true` in Nodemailer).
+   */
+  tlsMode: 'none' | 'starttls' | 'ssl';
+  username: string | null;
+  password: string | null;
+  from: string;
 }
 
 // ─── Stream Parser Types ─────────────────────────────────────────

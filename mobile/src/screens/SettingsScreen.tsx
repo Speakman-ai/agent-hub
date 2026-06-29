@@ -22,6 +22,8 @@ import GitHubSettingsSection from '../components/settings/GitHubSettingsSection'
 import ToolErrorsSection from '../components/settings/ToolErrorsSection';
 import ServerLogsSection from '../components/settings/ServerLogsSection';
 import MembersSection from '../components/settings/MembersSection';
+import MfaSettingsSection from '../components/settings/MfaSettingsSection';
+import SmtpSettingsSection from '../components/settings/SmtpSettingsSection';
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
     const { handleSwitchOrg } = useApp();
@@ -311,6 +313,7 @@ function GlobalApiKeysSection() {
       </Text>
 
       <View style={styles.accountCard}>
+        <SmtpSettingsSection />
         {PLUGIN_API_KEYS.map((item: any) => (<PluginApiKeyField key={item.id} item={item}/>))}
       </View>
     </View>);
@@ -321,6 +324,7 @@ function AccountSection() {
       <Text style={styles.sectionDesc}>
         Your personal CLI credentials and engine overrides for agents you run.
       </Text>
+      <MfaSettingsSection />
       <MyCliKeysSection />
       <MembersSection />
     </View>);
@@ -535,7 +539,12 @@ function HeartbeatSection() {
     const [logs, setLogs] = useState<any>({});
     const [running, setRunning] = useState<any>({});
     const [editingId, setEditingId] = useState<any>(null);
-    const [editForm, setEditForm] = useState({ interval: '', prompt: '', model: '' });
+    const [editForm, setEditForm] = useState({
+        interval: '',
+        prompt: '',
+        model: '',
+        shared: false,
+    });
     // Heartbeat always spawns the Claude CLI, so the picker is locked to the
     // claude-code engine catalog from /api/config/models.
     const [claudeModels, setClaudeModels] = useState<any[]>([]);
@@ -566,10 +575,15 @@ function HeartbeatSection() {
         setLogs((prev: any) => ({ ...prev, [agentId]: data }));
     };
     const toggleHeartbeat = async (agentId: any, current: any) => {
-        await api.updateHeartbeat(agentId, { enabled: !current });
-        setHeartbeats((prev: any) => prev.map((h: any) => h.agentId === agentId
-            ? { ...h, heartbeat: { ...h.heartbeat, enabled: !current } }
-            : h));
+        try {
+            const updated = await api.updateHeartbeat(agentId, { enabled: !current });
+            setHeartbeats((prev: any) => prev.map((h: any) => h.agentId === agentId
+                ? { ...h, ...updated }
+                : h));
+        }
+        catch (e: any) {
+            Alert.alert('Update failed', e?.message || 'Could not update heartbeat.');
+        }
     };
     const triggerRun = async (agentId: any) => {
         setRunning((prev: any) => ({ ...prev, [agentId]: true }));
@@ -587,6 +601,7 @@ function HeartbeatSection() {
             interval: hb.heartbeat.interval || '',
             prompt: hb.heartbeat.prompt || '',
             model: hb.heartbeat.model || '',
+            shared: !!hb.shared,
         });
     };
     const saveEdit = async () => {
@@ -595,23 +610,16 @@ function HeartbeatSection() {
             return;
         }
         try {
-            await api.updateHeartbeat(editingId, {
+            const updated = await api.updateHeartbeat(editingId, {
                 interval: editForm.interval,
                 prompt: editForm.prompt,
                 // Send empty string explicitly so the server PUT route can clear an
                 // existing override (it maps "" → undefined).
                 model: editForm.model || '',
+                shared: !!editForm.shared,
             });
             setHeartbeats((prev: any) => prev.map((h: any) => h.agentId === editingId
-                ? {
-                    ...h,
-                    heartbeat: {
-                        ...h.heartbeat,
-                        interval: editForm.interval,
-                        prompt: editForm.prompt,
-                        model: editForm.model || undefined,
-                    },
-                }
+                ? { ...h, ...updated }
                 : h));
             setEditingId(null);
         }
@@ -673,6 +681,20 @@ function HeartbeatSection() {
                         </TouchableOpacity>))}
                     </View>
                   </>)}
+                <TouchableOpacity onPress={() => setEditForm({ ...editForm, shared: !editForm.shared })} style={styles.notifyToggleRow} accessibilityRole="checkbox" accessibilityState={{ checked: !!editForm.shared }}>
+                  <View style={[
+                    styles.notifyCheckbox,
+                    !!editForm.shared && styles.notifyCheckboxChecked,
+                ]}>
+                    {!!editForm.shared && <Text style={styles.notifyCheckboxMark}>✓</Text>}
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.notifyToggleLabel}>Shared</Text>
+                    <Text style={styles.notifyToggleHint}>
+                      Visible to the org. Runs still use the owner credentials.
+                    </Text>
+                  </View>
+                </TouchableOpacity>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity style={styles.primaryBtn} onPress={saveEdit}>
                     <Text style={styles.primaryBtnText}>Save</Text>
@@ -687,12 +709,34 @@ function HeartbeatSection() {
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{hb.agentName}</Text>
                   <Text style={styles.mono}>{hb.heartbeat.interval ? humanCron(hb.heartbeat.interval) : 'not set'}</Text>
+                  <Text style={styles.ownerBadge}>{hb.shared ? 'Shared' : 'Private'}</Text>
+                  {!!hb.owner_username && (
+                    <Text style={styles.ownerBadge}>Owner: {hb.owner_username}</Text>
+                  )}
                   {renderNextRunBadge(hb)}
                 </View>
                 <Text style={styles.cardSubtext} numberOfLines={1}>
                   {hb.heartbeat.prompt || 'No prompt configured'}
                 </Text>
                 {hb.heartbeat.model ? (<Text style={styles.cardMeta}>model: {hb.heartbeat.model}</Text>) : null}
+                <TouchableOpacity onPress={async () => {
+                    try {
+                        const updated = await api.updateHeartbeat(hb.agentId, { shared: !hb.shared });
+                        setHeartbeats((prev: any) => prev.map((h: any) => h.agentId === hb.agentId ? { ...h, ...updated } : h));
+                    }
+                    catch (e: any) {
+                        Alert.alert('Update failed', e?.message || 'Could not update heartbeat sharing.');
+                    }
+                }} disabled={!hb.can_manage} style={styles.inlineToggleRow} accessibilityRole="checkbox" accessibilityState={{ checked: !!hb.shared, disabled: !hb.can_manage }}>
+                  <View style={[
+                    styles.notifyCheckbox,
+                    !!hb.shared && styles.notifyCheckboxChecked,
+                    !hb.can_manage && styles.disabledControl,
+                ]}>
+                    {!!hb.shared && <Text style={styles.notifyCheckboxMark}>✓</Text>}
+                  </View>
+                  <Text style={[styles.notifyToggleLabel, !hb.can_manage && styles.disabledText]}>Shared</Text>
+                </TouchableOpacity>
                 {hb.latestLog && (<Text style={styles.cardMeta}>
                     Last run: {relativeTime(hb.latestLog.timestamp)} —{' '}
                     <Text style={hb.latestLog.status === 'success'
@@ -705,10 +749,10 @@ function HeartbeatSection() {
                   </Text>)}
               </View>
               <View style={styles.actionButtons}>
-                <TouchableOpacity style={styles.smallButton} onPress={() => startEdit(hb)} accessibilityLabel="Edit heartbeat">
+                <TouchableOpacity style={[styles.smallButton, !hb.can_manage && styles.disabledControl]} onPress={() => startEdit(hb)} accessibilityLabel="Edit heartbeat" disabled={!hb.can_manage}>
                   <Text style={styles.smallButtonText}>✎</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.smallButton} onPress={() => triggerRun(hb.agentId)} disabled={running[hb.agentId]}>
+                <TouchableOpacity style={[styles.smallButton, !hb.can_manage && styles.disabledControl]} onPress={() => triggerRun(hb.agentId)} disabled={running[hb.agentId] || !hb.can_manage}>
                   <Text style={styles.smallButtonText}>
                     {running[hb.agentId] ? '...' : 'Run'}
                   </Text>
@@ -716,7 +760,8 @@ function HeartbeatSection() {
                 <TouchableOpacity style={[
                     styles.smallButton,
                     hb.heartbeat.enabled ? styles.buttonOn : styles.buttonOff,
-                ]} onPress={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)}>
+                    !hb.can_manage && styles.disabledControl,
+                ]} onPress={() => toggleHeartbeat(hb.agentId, hb.heartbeat.enabled)} disabled={!hb.can_manage}>
                   <Text style={[
                     styles.smallButtonText,
                     hb.heartbeat.enabled ? styles.buttonOnText : styles.buttonOffText,
@@ -911,6 +956,20 @@ function CronFormFields({ form, setForm, projects, modelConfig }: any) {
           </Text>
         </View>
       </TouchableOpacity>
+      <TouchableOpacity onPress={() => setForm({ ...form, shared: !form.shared })} style={styles.notifyToggleRow} accessibilityRole="checkbox" accessibilityState={{ checked: !!form.shared }}>
+        <View style={[
+            styles.notifyCheckbox,
+            !!form.shared && styles.notifyCheckboxChecked,
+        ]}>
+          {!!form.shared && <Text style={styles.notifyCheckboxMark}>✓</Text>}
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.notifyToggleLabel}>Shared</Text>
+          <Text style={styles.notifyToggleHint}>
+            Visible to the org. Runs still use the owner credentials.
+          </Text>
+        </View>
+      </TouchableOpacity>
     </>);
 }
 function CronSection() {
@@ -942,6 +1001,7 @@ function CronSection() {
         // Codex/Cursor/Gemini cron run under its real engine instead of the
         // historical claude-code default.
         engine: '',
+        shared: false,
     });
     const refreshLogs = async (cronList: any) => {
         const entries = await Promise.all((cronList || crons).map(async (c: any) => {
@@ -1044,6 +1104,7 @@ function CronSection() {
                 notify_on_run: false,
                 model: '',
                 engine: '',
+                shared: false,
             });
         }
         catch (e: any) {
@@ -1062,6 +1123,7 @@ function CronSection() {
                 ? String(Math.round(cronJob.timeout_ms / 60000))
                 : '',
             notify_on_run: !!cronJob.notify_on_run,
+            shared: !!cronJob.shared,
             // Null in the DB = "use engine default" — render as the empty option.
             model: cronJob.model || '',
             engine: cronJob.engine || '',
@@ -1145,6 +1207,10 @@ function CronSection() {
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{cronJob.name}</Text>
                   <Text style={styles.mono}>{humanCron(cronJob.schedule)}</Text>
+                  <Text style={styles.ownerBadge}>{cronJob.shared ? 'Shared' : 'Private'}</Text>
+                  {!!cronJob.owner_username && (
+                    <Text style={styles.ownerBadge}>Owner: {cronJob.owner_username}</Text>
+                  )}
                   {renderNextRunBadge(cronJob)}
                 </View>
                 <Text style={styles.cardSubtext} numberOfLines={1}>
@@ -1236,10 +1302,10 @@ function CronSection() {
                   </View>)}
               </View>
               <View style={styles.actionButtons}>
-                <TouchableOpacity style={styles.smallButton} onPress={() => startEditing(cronJob)} accessibilityLabel="Edit cron">
+                <TouchableOpacity style={[styles.smallButton, !cronJob.can_manage && styles.disabledButton]} onPress={() => startEditing(cronJob)} disabled={!cronJob.can_manage} accessibilityLabel="Edit cron">
                   <Text style={styles.smallButtonText}>✎</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.smallButton} onPress={() => triggerRun(cronJob.id)} disabled={running[cronJob.id]}>
+                <TouchableOpacity style={[styles.smallButton, (!cronJob.can_manage || running[cronJob.id]) && styles.disabledButton]} onPress={() => triggerRun(cronJob.id)} disabled={!cronJob.can_manage || running[cronJob.id]}>
                   <Text style={styles.smallButtonText}>
                     {running[cronJob.id] ? '...' : 'Run'}
                   </Text>
@@ -1247,7 +1313,8 @@ function CronSection() {
                 <TouchableOpacity style={[
                     styles.smallButton,
                     cronJob.enabled ? styles.buttonOn : styles.buttonOff,
-                ]} onPress={() => toggleCron(cronJob)}>
+                    !cronJob.can_manage && styles.disabledButton,
+                ]} onPress={() => toggleCron(cronJob)} disabled={!cronJob.can_manage}>
                   <Text style={[
                     styles.smallButtonText,
                     cronJob.enabled ? styles.buttonOnText : styles.buttonOffText,
@@ -1255,7 +1322,7 @@ function CronSection() {
                     {cronJob.enabled ? 'ON' : 'OFF'}
                   </Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.smallButton} onPress={() => deleteCron(cronJob.id)}>
+                <TouchableOpacity style={[styles.smallButton, !cronJob.can_manage && styles.disabledButton]} onPress={() => deleteCron(cronJob.id)} disabled={!cronJob.can_manage}>
                   <Text style={styles.deleteText}>✕</Text>
                 </TouchableOpacity>
               </View>
@@ -2035,6 +2102,20 @@ const styles = StyleSheet.create({
         color: colors.gray600,
         marginTop: 2,
     },
+    ownerBadge: {
+        fontSize: 10,
+        color: colors.gray300,
+        backgroundColor: colors.gray700,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    inlineToggleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginTop: 6,
+    },
     actionButtons: {
         flexDirection: 'row',
         gap: 4,
@@ -2048,6 +2129,15 @@ const styles = StyleSheet.create({
         minHeight: 36,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    disabledButton: {
+        opacity: 0.4,
+    },
+    disabledControl: {
+        opacity: 0.4,
+    },
+    disabledText: {
+        color: colors.gray600,
     },
     smallButtonText: {
         fontSize: 12,

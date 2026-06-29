@@ -82,6 +82,21 @@ export const TokenResponse = registerComponent(
   }),
 );
 
+export const MfaRequiredResponse = registerComponent(
+  'MfaRequiredResponse',
+  z.object({
+    mfaRequired: z.literal(true),
+    challengeId: z.string(),
+    expiresAt: z.string(),
+    user: z.object({
+      id: z.string().optional(),
+      email: z.string().nullable(),
+      needsEmailUpdate: z.boolean().optional(),
+      role: z.enum(['Owner', 'Admin', 'User']),
+    }),
+  }),
+);
+
 // ── Bodies (request shapes) ────────────────────────────────────────────
 
 function credentialBody<T extends z.ZodRawShape>(extra: T, description: string) {
@@ -115,6 +130,21 @@ export const LoginBody = registerComponent(
     { password: z.string() },
     '`email` is canonical. `username` is accepted for legacy non-email account login. One identifier is required.',
   ),
+);
+
+export const MfaCodeBody = registerComponent(
+  'AuthMfaCodeBody',
+  z.object({
+    code: z.string(),
+  }),
+);
+
+export const MfaLoginBody = registerComponent(
+  'AuthMfaLoginBody',
+  z.object({
+    challengeId: z.string(),
+    code: z.string(),
+  }),
 );
 
 export const CreateUserBody = registerComponent(

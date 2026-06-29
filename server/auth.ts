@@ -41,6 +41,9 @@ const PUBLIC_PATHS: readonly string[] = [
   // ── Auth bootstrap endpoints ─────────────────────────────────
   '/api/auth/status',
   '/api/auth/login',
+  '/api/auth/login/mfa',
+  // Self-serve password reset — public + enumeration-safe; gated by per-IP
+  // rate limiters in the route handlers. (Owner-issued reset-token stays gated.)
   '/api/auth/forgot-password',
   '/api/auth/reset-password',
   // GitHub OAuth callback — landed on via a cross-origin redirect from
@@ -48,13 +51,6 @@ const PUBLIC_PATHS: readonly string[] = [
   // signed `state` JWT validated inside the route handler itself.
   '/api/auth/github/callback',
 ];
-
-/**
- * Path prefixes that are public regardless of trailing path segments.
- * Used for the invite landing + accept flow, which needs to be reachable
- * from an email link by somebody who hasn't yet authenticated.
- */
-const PUBLIC_PREFIXES: readonly string[] = ['/api/auth/invites/'];
 
 /**
  * Public paths that contain a dynamic segment and so can't be matched by
@@ -73,12 +69,13 @@ const PUBLIC_PATTERNS: readonly RegExp[] = [/^\/api\/projects\/[^/]+\/support-re
  * gated — so we can't widen `PUBLIC_PATTERNS` (method-agnostic) for it.
  */
 const PUBLIC_METHOD_PATTERNS: readonly { methods: readonly string[]; re: RegExp }[] = [
+  { methods: ['GET'], re: /^\/api\/auth\/invites\/[^/]+$/ },
+  { methods: ['POST', 'OPTIONS'], re: /^\/api\/auth\/invites\/[^/]+\/accept$/ },
   { methods: ['POST', 'OPTIONS'], re: /^\/api\/replays\/[^/]+\/events$/ },
 ];
 
 function isPublicPath(pathname: string, method: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
-  if (PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
   if (PUBLIC_PATTERNS.some((re) => re.test(pathname))) return true;
   return PUBLIC_METHOD_PATTERNS.some((p) => p.methods.includes(method) && p.re.test(pathname));
 }
@@ -190,7 +187,7 @@ function extractApiKey(req: Request): string | null {
  * `uid` claim existed are re-resolved by looking up `sub` (username) in
  * the users table created by the migration.
  */
-function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersion?: unknown }):
+function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersion?: number }):
   | {
       userId: string;
       username: string;
@@ -198,7 +195,8 @@ function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersio
       orgId: string;
     }
   | null
-  | 'orgs-db-unavailable' {
+  | 'orgs-db-unavailable'
+  | 'stale-token' {
   let user = null;
   try {
     if (typeof payload.uid === 'string' && payload.uid.length > 0) {
@@ -223,7 +221,7 @@ function resolveJwtCaller(payload: { sub: string; uid?: string; credentialVersio
     typeof user.credential_version === 'number' && Number.isFinite(user.credential_version)
       ? user.credential_version
       : 0;
-  if (tokenVersion !== currentVersion) return null;
+  if (tokenVersion !== currentVersion) return 'stale-token';
 
   const orgId = getActiveOrgId();
   const role = getMembershipRole(user.id, orgId);
@@ -401,6 +399,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
           next();
           return;
         }
+        if (resolved === 'stale-token') {
+          res.status(401).json({ error: 'Token is no longer valid.' });
+          return;
+        }
         if (!resolved) {
           // Token verified but the user row is gone (deleted after
           // token issuance). Treat as expired-ish — 401 so the client
@@ -560,6 +562,7 @@ export function authenticateWsDetailed(request: IncomingMessage): WsAuthResult {
         if (resolved === 'orgs-db-unavailable') {
           return { ok: true, subject: verified.payload!.sub, role: authRecord.role };
         }
+        if (resolved === 'stale-token') return { ok: false, reason: 'unauthenticated' };
         if (!resolved) return { ok: false, reason: 'unknown-user' };
         if (!resolved.orgId) return { ok: false, reason: 'no-membership' };
         return {

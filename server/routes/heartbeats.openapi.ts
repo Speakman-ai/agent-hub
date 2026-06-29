@@ -64,6 +64,8 @@ export const HeartbeatConfigComponent = registerComponent(
       interval: z.string(),
       prompt: z.string(),
       model: z.string().optional(),
+      owner_user_id: z.string().nullable().optional(),
+      shared: z.union([z.boolean(), z.number().int()]).optional(),
     })
     .openapi({
       description:
@@ -104,11 +106,16 @@ export const HeartbeatOverviewComponent = registerComponent(
   z
     .object({
       agentId: z.string(),
+      projectId: z.string().optional(),
       agentName: z.string(),
       color: z.string().optional(),
       heartbeat: HeartbeatConfigComponent,
       latestLog: HeartbeatLogComponent.nullable(),
       state: HeartbeatStateComponent.nullable(),
+      owner_user_id: z.string().nullable(),
+      owner_username: z.string().nullable(),
+      shared: z.number().int(),
+      can_manage: z.boolean(),
     })
     .openapi({ description: 'Per-agent heartbeat overview returned by GET /api/heartbeats.' }),
 );
@@ -191,6 +198,9 @@ export const UpdateHeartbeatRequestSchema = z.object({
   interval: cronExpression('interval').optional(),
   prompt: z.string().optional(),
   model: z.string().nullable().optional(),
+  shared: z
+    .union([z.boolean(), z.literal(0), z.literal(1), z.literal('0'), z.literal('1')])
+    .optional(),
 });
 
 // ─── OpenAPI path registrations ───────────────────────────────────
@@ -288,8 +298,8 @@ registerPath({
   },
   responses: {
     200: {
-      description: 'Updated heartbeat config.',
-      content: jsonContent(HeartbeatConfigComponent),
+      description: 'Updated per-agent heartbeat overview.',
+      content: jsonContent(HeartbeatOverviewComponent),
     },
     400: errorResponse('Validation failed (e.g. invalid cron expression).'),
     404: errorResponse('Agent not found.'),

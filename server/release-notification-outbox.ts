@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
-import { sendEmail } from './email-sender.js';
+import { sendEmailResult } from './email-sender.js';
 import { listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
 import { listReleaseDigestRecipients } from './release-notification-settings.js';
 import type {
@@ -299,7 +299,7 @@ export async function deliverReleaseNotificationOutboxBatch(
     const claimed = claimReleaseNotificationOutboxForDelivery(candidate);
     if (!claimed) continue;
     try {
-      const result = await sendEmail({
+      const result = await sendEmailResult({
         to: claimed.recipient_email,
         subject: claimed.subject,
         text: claimed.body_text,

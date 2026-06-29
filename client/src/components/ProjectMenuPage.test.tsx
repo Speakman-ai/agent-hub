@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import ProjectMenuPage from './ProjectMenuPage';
 
 (vi as any).mock('./SettingsPage.jsx', () => ({
   AgentConfigSection: () => <div data-testid="agent-config-section" />,
   ProjectsSection: () => <div data-testid="projects-section" />,
   CronSection: () => <div data-testid="cron-section" />,
+  HeartbeatSection: () => <div data-testid="heartbeat-section" />,
 }));
 
 describe('ProjectMenuPage', () => {
@@ -40,5 +41,11 @@ describe('ProjectMenuPage', () => {
     render(<ProjectMenuPage {...baseProps} tab="crons" />);
     expect(screen.getByTestId('cron-section')).toBeInTheDocument();
     expect(screen.getByText('Cron Jobs')).toBeInTheDocument();
+  });
+
+  it('renders Heartbeats section for heartbeats tab', () => {
+    render(<ProjectMenuPage {...baseProps} tab="heartbeats" />);
+    expect(screen.getByTestId('heartbeat-section')).toBeInTheDocument();
+    expect(screen.getByText('Heartbeats')).toBeInTheDocument();
   });
 });

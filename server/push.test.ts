@@ -577,6 +577,30 @@ describe('handleBroadcastForPush', () => {
 });
 
 describe('filterTokensForBroadcastVisibility', () => {
+  it('keeps cron owner and org Owner tokens for private cron thread entries', () => {
+    const out = filterTokensForBroadcastVisibility(
+      [
+        token('cron-owner', null, 'cron-owner-id'),
+        token('org-owner', null, 'org-owner-id'),
+        token('regular-user', null, 'regular-user-id'),
+        token('legacy-device', null, null),
+      ],
+      {
+        type: 'thread_entry_created',
+        projectId: 'p1',
+        ownerUserId: 'cron-owner-id',
+        cronShared: false,
+      },
+      {
+        resolveProjectId: () => 'p1',
+        findProjectById: () =>
+          ({ id: 'p1', visibility: 'shared', ownerUserId: 'project-owner' }) as any,
+        getUserRoleById: (userId) => (userId === 'org-owner-id' ? 'Owner' : 'User'),
+      },
+    );
+    expect(out.map((t) => t.token)).toEqual(['cron-owner', 'org-owner']);
+  });
+
   it('keeps only the owner token for shared projects with an owner', () => {
     const out = filterTokensForBroadcastVisibility(
       [token('owner', null, 'u1'), token('other', null, 'u2')],

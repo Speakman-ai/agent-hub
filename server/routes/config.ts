@@ -4,10 +4,12 @@ import path from 'path';
 import { promisify } from 'util';
 import { execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
+import rateLimit from 'express-rate-limit';
 import { localDateStr } from '../memory.js';
 import type { RouteDeps, PersonalOAuthConfig, Project } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
+import { requireRole } from '../roles.js';
 import { validateKanbanAssignModel } from '../kanban-assign-model.js';
 import { deriveCardPrefix } from '../kanban-short-id.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
@@ -20,6 +22,15 @@ import { resolveOwnerUserId } from '../session-ownership.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { isPrEnvKillSwitchOn } from '../pr-env-killswitch.js';
 import { syncWikiPageFts } from '../wiki.js';
+import { getUserById } from '../users-store.js';
+import { isEmailIdentifier } from '../auth-validation.js';
+import { applySmtpPatch, maskSmtpConfig } from '../smtp-config.js';
+import {
+  EmailNotConfiguredError,
+  getPasswordResetDeliveryStatus,
+  safeEmailError,
+  sendEmail,
+} from '../email-sender.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -28,6 +39,7 @@ interface FileConfig {
   codexBin?: string;
   grokBin?: string;
   personalOAuth?: PersonalOAuthConfig;
+  smtp?: unknown;
   [key: string]: unknown;
 }
 
@@ -40,6 +52,7 @@ interface CronImportData {
   project_id?: string;
   timeout_ms?: number | null;
   notify_on_run?: boolean | number;
+  shared?: boolean | number;
   /**
    * Optional CLI engine id (`claude-code`, `cursor-agent`, `gemini-cli`,
    * `codex-cli`). Validated against `ALL_SUPPORTED_ENGINES` by
@@ -186,6 +199,69 @@ function resolveRequestOwnerUserId(req: Request): string | null {
   return resolveOwnerUserId(req as AuthenticatedRequest);
 }
 
+export const SMTP_TEST_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+export const SMTP_TEST_RATE_LIMIT_MAX = 5;
+
+export function resolveSmtpTestRecipient({
+  requestedTo,
+  callerRole,
+  callerEmail,
+}: {
+  requestedTo?: unknown;
+  callerRole?: string | null;
+  callerEmail?: string | null;
+}): { ok: true; to: string } | { ok: false; status: number; error: string } {
+  const requested = typeof requestedTo === 'string' ? requestedTo.trim().toLowerCase() : '';
+  const current = callerEmail?.trim().toLowerCase() || '';
+  if (requested) {
+    if (!isEmailIdentifier(requested)) {
+      return { ok: false, status: 400, error: 'to must be a valid email address' };
+    }
+    if (callerRole !== 'Owner' && requested !== current) {
+      return {
+        ok: false,
+        status: 403,
+        error: 'Only Owners can send SMTP tests to another address',
+      };
+    }
+    return { ok: true, to: requested };
+  }
+  if (!current || !isEmailIdentifier(current)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Current user has no email address; provide a test recipient as an Owner',
+    };
+  }
+  return { ok: true, to: current };
+}
+
+function callerEmail(req: Request): string | null {
+  const authedReq = req as AuthenticatedRequest;
+  if (authedReq.authUserId) {
+    try {
+      const user = getUserById(authedReq.authUserId);
+      if (user?.username && isEmailIdentifier(user.username)) return user.username.toLowerCase();
+    } catch {
+      /* orgs db can be unavailable in early tests; fall through to authUser */
+    }
+  }
+  if (authedReq.authUser && isEmailIdentifier(authedReq.authUser)) {
+    return authedReq.authUser.toLowerCase();
+  }
+  return null;
+}
+
+const smtpTestLimiter = rateLimit({
+  windowMs: SMTP_TEST_RATE_LIMIT_WINDOW_MS,
+  limit: SMTP_TEST_RATE_LIMIT_MAX,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req, res) => {
+    res.status(429).json({ error: 'Too many SMTP test sends. Please try again later.' });
+  },
+});
+
 export default function createConfigRoutes(deps: RouteDeps): Router {
   const { stmts, getProjects, setProjects, saveProjects, config, serverDir, getProjectDataDir } =
     deps;
@@ -248,6 +324,81 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       },
     });
   });
+
+  router.get('/api/config/smtp', requireRole('Admin'), (_req: Request, res: Response) => {
+    res.json({
+      smtp: maskSmtpConfig(config.smtp),
+      passwordReset: getPasswordResetDeliveryStatus(config.smtp),
+    });
+  });
+
+  router.patch('/api/config/smtp', requireRole('Admin'), (req: Request, res: Response) => {
+    const result = applySmtpPatch(config.smtp, req.body);
+    if (!result.ok || !result.config) {
+      return res.status(400).json({ error: result.error || 'Invalid SMTP settings' });
+    }
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return res.status(500).json({
+          error: 'Unable to read existing config.json; SMTP settings were not saved.',
+        });
+      }
+    }
+
+    fileConfig.smtp = result.config;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+    config.smtp = result.config;
+
+    res.json({
+      ok: true,
+      smtp: maskSmtpConfig(config.smtp),
+      passwordReset: getPasswordResetDeliveryStatus(config.smtp),
+    });
+  });
+
+  router.post(
+    '/api/config/smtp/test',
+    requireRole('Admin'),
+    smtpTestLimiter,
+    async (req: Request, res: Response) => {
+      const authedReq = req as AuthenticatedRequest;
+      const target = resolveSmtpTestRecipient({
+        requestedTo: (req.body as Record<string, unknown> | undefined)?.to,
+        callerRole: authedReq.authRole,
+        callerEmail: callerEmail(req),
+      });
+      if (!target.ok) {
+        return res.status(target.status).json({ error: target.error });
+      }
+
+      try {
+        await sendEmail({
+          to: target.to,
+          subject: 'Agent Hub SMTP test',
+          text: 'This is a test email from Agent Hub SMTP settings.',
+        });
+        res.json({ ok: true, to: target.to });
+      } catch (err) {
+        if (err instanceof EmailNotConfiguredError) {
+          return res.status(400).json({
+            error: 'SMTP is not configured or enabled.',
+            code: 'smtp_not_configured',
+          });
+        }
+        const detail = safeEmailError(err, config.smtp);
+        console.warn(`[smtp] test-send failed: ${detail}`);
+        res.status(502).json({
+          error: 'SMTP test send failed. Check host, port, credentials, and TLS mode.',
+          code: 'smtp_send_failed',
+        });
+      }
+    },
+  );
 
   router.get('/api/config/models', async (req: Request, res: Response) => {
     // Engine auth resolution lives in `engine-auth-status.ts` (shared with
@@ -794,6 +945,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             importedSkillPrincipal,
             importedEngine,
             ownerUserId,
+            c.shared ? 1 : 0,
           );
           imported++;
         }
@@ -1358,6 +1510,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
             importedSkillPrincipal,
             importedEngine,
             importOwnerUserId,
+            c.shared ? 1 : 0,
           );
           imported++;
         }

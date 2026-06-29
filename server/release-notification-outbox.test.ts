@@ -12,6 +12,7 @@ const sendEmailMock = vi.hoisted(() =>
 
 vi.mock('./email-sender.js', () => ({
   sendEmail: sendEmailMock,
+  sendEmailResult: sendEmailMock,
 }));
 
 import { getDb, getStmts } from './db.js';

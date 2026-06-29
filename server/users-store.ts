@@ -22,8 +22,17 @@ export interface UserRow {
   id: string;
   username: string;
   password_hash: string;
-  credential_version?: number;
   created_at: string;
+  credential_version?: number | null;
+  mfa_pending_secret?: string | null;
+  mfa_totp_secret?: string | null;
+  mfa_enabled?: number | null;
+  mfa_recovery_codes_json?: string | null;
+  mfa_enrolled_at?: string | null;
+  mfa_updated_at?: string | null;
+  mfa_reset_at?: string | null;
+  mfa_reset_by_user_id?: string | null;
+  mfa_last_used_step?: number | null;
 }
 
 /** Insert a new user. Throws on duplicate username (UNIQUE constraint). */
@@ -89,19 +98,251 @@ export function updateUserPassword(id: string, passwordHash: string): void {
   ).run(passwordHash, id);
 }
 
-export function bumpUserCredentialVersion(id: string): void {
-  const db = getOrgsDb();
-  db.prepare(
-    `UPDATE users
-     SET credential_version = COALESCE(credential_version, 0) + 1
-     WHERE id = ?`,
-  ).run(id);
-}
-
 export function updateUserUsername(id: string, username: string): UserRow | null {
   const db = getOrgsDb();
   db.prepare('UPDATE users SET username = ? WHERE id = ?').run(username, id);
   return getUserById(id);
+}
+
+// ── MFA state + JWT revocation version ──────────────────────────────
+
+export interface UserMfaState {
+  userId: string;
+  pendingSecret: string | null;
+  totpSecret: string | null;
+  enabled: boolean;
+  recoveryCodeHashes: string[];
+  enrolledAt: string | null;
+  updatedAt: string | null;
+  resetAt: string | null;
+  resetByUserId: string | null;
+  lastUsedStep: number | null;
+  credentialVersion: number;
+}
+
+interface UserMfaRow {
+  id: string;
+  credential_version: number | null;
+  mfa_pending_secret: string | null;
+  mfa_totp_secret: string | null;
+  mfa_enabled: number | null;
+  mfa_recovery_codes_json: string | null;
+  mfa_enrolled_at: string | null;
+  mfa_updated_at: string | null;
+  mfa_reset_at: string | null;
+  mfa_reset_by_user_id: string | null;
+  mfa_last_used_step: number | null;
+}
+
+export function getUserCredentialVersion(userId: string): number | null {
+  const row = getOrgsDb()
+    .prepare('SELECT credential_version FROM users WHERE id = ?')
+    .get(userId) as { credential_version?: number | null } | undefined;
+  if (!row) return null;
+  return Number(row.credential_version ?? 0);
+}
+
+export function bumpUserCredentialVersion(userId: string): number {
+  const db = getOrgsDb();
+  db.prepare(
+    'UPDATE users SET credential_version = COALESCE(credential_version, 0) + 1 WHERE id = ?',
+  ).run(userId);
+  return getUserCredentialVersion(userId) ?? 0;
+}
+
+export function getUserMfaState(userId: string): UserMfaState | null {
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT id, credential_version, mfa_pending_secret, mfa_totp_secret, mfa_enabled,
+              mfa_recovery_codes_json, mfa_enrolled_at, mfa_updated_at, mfa_reset_at,
+              mfa_reset_by_user_id, mfa_last_used_step
+       FROM users WHERE id = ?`,
+    )
+    .get(userId) as UserMfaRow | undefined;
+  if (!row) return null;
+
+  const pendingSecret = decryptCredentialColumn(row.mfa_pending_secret);
+  if (
+    pendingSecret !== null &&
+    row.mfa_pending_secret &&
+    !looksLikeEncryptedBlob(row.mfa_pending_secret)
+  ) {
+    backfillEncryptedColumn(userId, 'mfa_pending_secret', pendingSecret);
+  }
+  const totpSecret = decryptCredentialColumn(row.mfa_totp_secret);
+  if (totpSecret !== null && row.mfa_totp_secret && !looksLikeEncryptedBlob(row.mfa_totp_secret)) {
+    backfillEncryptedColumn(userId, 'mfa_totp_secret', totpSecret);
+  }
+
+  return {
+    userId,
+    pendingSecret,
+    totpSecret,
+    enabled: row.mfa_enabled === 1,
+    recoveryCodeHashes: parseRecoveryHashes(row.mfa_recovery_codes_json),
+    enrolledAt: row.mfa_enrolled_at ?? null,
+    updatedAt: row.mfa_updated_at ?? null,
+    resetAt: row.mfa_reset_at ?? null,
+    resetByUserId: row.mfa_reset_by_user_id ?? null,
+    lastUsedStep:
+      typeof row.mfa_last_used_step === 'number' && Number.isFinite(row.mfa_last_used_step)
+        ? row.mfa_last_used_step
+        : null,
+    credentialVersion: Number(row.credential_version ?? 0),
+  };
+}
+
+export function startUserMfaEnrollment(userId: string, secret: string): UserMfaState | null {
+  const now = new Date().toISOString();
+  const info = getOrgsDb()
+    .prepare(
+      `UPDATE users
+       SET mfa_pending_secret = ?, mfa_updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(encryptCredentialForStorage(secret), now, userId);
+  if (info.changes === 0) return null;
+  return getUserMfaState(userId);
+}
+
+export function confirmUserMfaEnrollment(
+  userId: string,
+  opts: { totpSecret: string; recoveryCodeHashes: string[]; usedStep: number },
+): UserMfaState | null {
+  const now = new Date().toISOString();
+  const db = getOrgsDb();
+  const txn = db.transaction(() => {
+    const info = db
+      .prepare(
+        `UPDATE users
+         SET mfa_pending_secret = NULL,
+             mfa_totp_secret = ?,
+             mfa_enabled = 1,
+             mfa_recovery_codes_json = ?,
+             mfa_enrolled_at = COALESCE(mfa_enrolled_at, ?),
+             mfa_updated_at = ?,
+             mfa_last_used_step = ?,
+             credential_version = COALESCE(credential_version, 0) + 1
+         WHERE id = ?`,
+      )
+      .run(
+        encryptCredentialForStorage(opts.totpSecret),
+        JSON.stringify(opts.recoveryCodeHashes),
+        now,
+        now,
+        opts.usedStep,
+        userId,
+      );
+    return info.changes;
+  });
+  if (txn() === 0) return null;
+  return getUserMfaState(userId);
+}
+
+export function replaceUserMfaRecoveryCodes(
+  userId: string,
+  recoveryCodeHashes: string[],
+): UserMfaState | null {
+  const now = new Date().toISOString();
+  const db = getOrgsDb();
+  const info = db
+    .prepare(
+      `UPDATE users
+       SET mfa_recovery_codes_json = ?,
+           mfa_updated_at = ?,
+           credential_version = COALESCE(credential_version, 0) + 1
+       WHERE id = ? AND mfa_enabled = 1`,
+    )
+    .run(JSON.stringify(recoveryCodeHashes), now, userId);
+  if (info.changes === 0) return null;
+  return getUserMfaState(userId);
+}
+
+export function markUserMfaTotpStepUsed(userId: string, step: number): number {
+  const db = getOrgsDb();
+  const info = db
+    .prepare(
+      `UPDATE users
+       SET mfa_last_used_step = ?, mfa_updated_at = ?
+       WHERE id = ? AND (mfa_last_used_step IS NULL OR mfa_last_used_step < ?)`,
+    )
+    .run(step, new Date().toISOString(), userId, step);
+  return info.changes;
+}
+
+export function consumeUserMfaRecoveryCodeHash(
+  userId: string,
+  recoveryCodeHash: string,
+): UserMfaState | null {
+  const db = getOrgsDb();
+  const txn = db.transaction(() => {
+    const state = getUserMfaState(userId);
+    if (!state || !state.enabled) return null;
+    if (!state.recoveryCodeHashes.includes(recoveryCodeHash)) return null;
+    const nextHashes = state.recoveryCodeHashes.filter((hash) => hash !== recoveryCodeHash);
+    db.prepare(
+      `UPDATE users
+       SET mfa_recovery_codes_json = ?,
+           mfa_updated_at = ?,
+           credential_version = COALESCE(credential_version, 0) + 1
+       WHERE id = ?`,
+    ).run(JSON.stringify(nextHashes), new Date().toISOString(), userId);
+    return getUserMfaState(userId);
+  });
+  return txn();
+}
+
+export function disableUserMfa(userId: string): UserMfaState | null {
+  const now = new Date().toISOString();
+  const db = getOrgsDb();
+  const info = db
+    .prepare(
+      `UPDATE users
+       SET mfa_pending_secret = NULL,
+           mfa_totp_secret = NULL,
+           mfa_enabled = 0,
+           mfa_recovery_codes_json = '[]',
+           mfa_updated_at = ?,
+           mfa_last_used_step = NULL,
+           credential_version = COALESCE(credential_version, 0) + 1
+       WHERE id = ?`,
+    )
+    .run(now, userId);
+  if (info.changes === 0) return null;
+  return getUserMfaState(userId);
+}
+
+export function resetUserMfa(userId: string, actorUserId: string | null): UserMfaState | null {
+  const now = new Date().toISOString();
+  const db = getOrgsDb();
+  const info = db
+    .prepare(
+      `UPDATE users
+       SET mfa_pending_secret = NULL,
+           mfa_totp_secret = NULL,
+           mfa_enabled = 0,
+           mfa_recovery_codes_json = '[]',
+           mfa_updated_at = ?,
+           mfa_reset_at = ?,
+           mfa_reset_by_user_id = ?,
+           mfa_last_used_step = NULL,
+           credential_version = COALESCE(credential_version, 0) + 1
+       WHERE id = ?`,
+    )
+    .run(now, now, actorUserId, userId);
+  if (info.changes === 0) return null;
+  return getUserMfaState(userId);
+}
+
+function parseRecoveryHashes(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  } catch {
+    return [];
+  }
 }
 
 // ── Per-user engine credential encryption-at-rest ──────────────────

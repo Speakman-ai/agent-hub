@@ -6,8 +6,11 @@ import {
   Key,
   Loader2,
   LogOut,
+  Mail,
   Mic,
   Plus,
+  Send,
+  ShieldOff,
   Sparkles,
   SquareKanban,
   Trash2,
@@ -21,6 +24,7 @@ import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
 import MyGrokAuthSection from './MyGrokAuthSection';
 import MySkillCredentialSection from './MySkillCredentialSection';
+import MfaSettingsPanel from './MfaSettingsPanel';
 import { api } from '../utils/api';
 import { getAuthHeaders, getApiBase } from '../utils/connection';
 import { hasRole, getUserRole, logout } from '../utils/auth';
@@ -66,6 +70,7 @@ export default function AccountSection() {
   const [me, setMe] = useState<any>(null);
   const [users, setUsers] = useState<any>(null);
   const [invites, setInvites] = useState<any>(null);
+  const [inviteEmailStatus, setInviteEmailStatus] = useState({ smtpConfigured: false });
   const [error, setError] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -102,6 +107,7 @@ export default function AccountSection() {
     try {
       const body = await api.getInvites();
       setInvites(body.invites || []);
+      setInviteEmailStatus(body.emailDelivery || { smtpConfigured: false });
     } catch (err: any) {
       setError(err.message || String(err));
     }
@@ -196,6 +202,34 @@ export default function AccountSection() {
     }
   };
 
+  const handleMfaChanged = (enabled: boolean) => {
+    setMe((prev: any) => (prev ? { ...prev, mfaEnabled: enabled } : prev));
+    void loadUsers();
+  };
+
+  const handleResetMfa = async (user: any) => {
+    if (!user.id) return;
+    if (
+      !window.confirm(
+        `Clear MFA for ${displayEmail(user)}? They will be able to sign in with password only.`,
+      )
+    ) {
+      return;
+    }
+    setRowError(user.id, null);
+    try {
+      await api.resetUserMfa(user.id);
+      setUsers((prev: any) =>
+        Array.isArray(prev)
+          ? prev.map((item: any) => (item.id === user.id ? { ...item, mfaEnabled: false } : item))
+          : prev,
+      );
+      if (me?.id === user.id) setMe((prev: any) => (prev ? { ...prev, mfaEnabled: false } : prev));
+    } catch (err: any) {
+      setRowError(user.id, err.message || String(err));
+    }
+  };
+
   const ownerCount = Array.isArray(users)
     ? users.filter((u: any) => u?.role === 'Owner').length
     : 0;
@@ -235,6 +269,8 @@ export default function AccountSection() {
       </div>
 
       {me && <MyClaudeAuthSection />}
+
+      {me && <MfaSettingsPanel mfaEnabled={!!me.mfaEnabled} onMfaChanged={handleMfaChanged} />}
 
       {me && <MyCursorAuthSection />}
 
@@ -304,7 +340,14 @@ export default function AccountSection() {
                     className="border border-gray-700 rounded px-3 py-2"
                   >
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-mono text-sm text-white">{displayEmail(u)}</span>
+                      <div>
+                        <span className="font-mono text-sm text-white">{displayEmail(u)}</span>
+                        <div
+                          className={`text-[11px] ${u.mfaEnabled ? 'text-emerald-300' : 'text-gray-500'}`}
+                        >
+                          MFA {u.mfaEnabled ? 'on' : 'off'}
+                        </div>
+                      </div>
                       <div className="flex items-center gap-2">
                         {isAdminPlus && u.id ? (
                           <select
@@ -332,6 +375,16 @@ export default function AccountSection() {
                             <Trash2 size={12} />
                           </button>
                         )}
+                        {isAdminPlus && u.id && u.mfaEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => handleResetMfa(u)}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-amber-500/40 text-amber-200 hover:bg-amber-500/10"
+                            aria-label={`Clear MFA for ${displayEmail(u)}`}
+                          >
+                            <ShieldOff size={12} />
+                          </button>
+                        )}
                       </div>
                     </div>
                     {rowError && (
@@ -357,7 +410,12 @@ export default function AccountSection() {
       )}
 
       {me && isAdminPlus && (
-        <InvitesSection callerRole={currentRole} invites={invites} onChanged={loadInvites} />
+        <InvitesSection
+          callerRole={currentRole}
+          invites={invites}
+          emailDelivery={inviteEmailStatus}
+          onChanged={loadInvites}
+        />
       )}
 
       {error && (
@@ -571,6 +629,271 @@ const TRANSCRIPTION_PROVIDERS = [
 const KNOWN_TRANSCRIPTION_PROVIDERS = TRANSCRIPTION_PROVIDERS.map((p: any) => p.id);
 const DEFAULT_TRANSCRIPTION_PROVIDER = 'xai';
 
+const DEFAULT_SMTP_FORM = {
+  enabled: false,
+  host: '',
+  port: 587,
+  tlsMode: 'starttls',
+  username: '',
+  password: '',
+  from: '',
+};
+
+export function smtpFormFromSettings(settings: any) {
+  const smtp = settings?.smtp || {};
+  return {
+    enabled: !!smtp.enabled,
+    host: smtp.host || '',
+    port: smtp.port || 587,
+    tlsMode: smtp.tlsMode || 'starttls',
+    username: smtp.username || '',
+    password: '',
+    from: smtp.from || '',
+  };
+}
+
+export function buildSmtpPatch(form: any, original: any, clearPassword = false) {
+  const smtp = original?.smtp || {};
+  const patch: Record<string, any> = {
+    enabled: !!form.enabled,
+    host: form.host.trim(),
+    port: Number(form.port),
+    tlsMode: form.tlsMode,
+    username: form.username.trim() || null,
+    from: form.from.trim(),
+  };
+  if (clearPassword) {
+    patch.password = null;
+  } else if (form.password) {
+    patch.password = form.password;
+  } else if (!smtp.passwordSet) {
+    patch.password = null;
+  }
+  return patch;
+}
+
+export function smtpConfiguredLabel(settings: any) {
+  return settings?.smtp?.configured ? 'Configured' : 'Not configured';
+}
+
+export function SmtpSettingsPanel() {
+  const [settings, setSettings] = useState<any>(null);
+  const [form, setForm] = useState<any>(DEFAULT_SMTP_FORM);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [status, setStatus] = useState<any>(null);
+  const [testTo, setTestTo] = useState('');
+  const [clearPassword, setClearPassword] = useState(false);
+
+  const load = useCallback(async () => {
+    setStatus(null);
+    try {
+      const body = await api.getSmtpSettings();
+      setSettings(body);
+      setForm(smtpFormFromSettings(body));
+      setClearPassword(false);
+    } catch (err: any) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const setField = (key: any, value: any) => {
+    setForm((prev: any) => ({ ...prev, [key]: value }));
+    setStatus(null);
+    if (key === 'password') setClearPassword(false);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const body = await api.updateSmtpSettings(buildSmtpPatch(form, settings, clearPassword));
+      setSettings(body);
+      setForm(smtpFormFromSettings(body));
+      setClearPassword(false);
+      setStatus({ type: 'success', msg: 'Saved SMTP settings.' });
+    } catch (err: any) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const testSend = async () => {
+    setTesting(true);
+    setStatus(null);
+    try {
+      const body = await api.testSmtpSettings(testTo.trim() ? { to: testTo.trim() } : {});
+      setStatus({ type: 'success', msg: `Test email sent to ${body.to}.` });
+    } catch (err: any) {
+      setStatus({ type: 'error', msg: err.message || String(err) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const configured = settings?.smtp?.configured;
+  const passwordSet = settings?.smtp?.passwordSet && !clearPassword;
+
+  return (
+    <div className="border border-gray-700 rounded-lg p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h5 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Mail size={13} /> SMTP email delivery
+          </h5>
+          <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+            Sends auth email such as invite links and password-reset messages.
+          </p>
+        </div>
+        {!loading && (
+          <span
+            className={`text-[11px] mt-0.5 ${configured ? 'text-emerald-300' : 'text-gray-500'}`}
+          >
+            {smtpConfiguredLabel(settings)}
+          </span>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Loader2 size={12} className="animate-spin" /> Loading SMTP settings…
+        </div>
+      ) : (
+        <>
+          <label className="flex items-center gap-2 text-xs text-gray-300">
+            <input
+              type="checkbox"
+              checked={form.enabled}
+              onChange={(e: any) => setField('enabled', e.target.checked)}
+              className="rounded border-gray-700 bg-gray-900"
+            />
+            Enabled
+          </label>
+
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_7rem_9rem] gap-2">
+            <input
+              value={form.host}
+              onChange={(e: any) => setField('host', e.target.value)}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+              placeholder="smtp.example.com"
+              aria-label="SMTP host"
+            />
+            <input
+              value={form.port}
+              onChange={(e: any) => setField('port', e.target.value)}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+              inputMode="numeric"
+              aria-label="SMTP port"
+            />
+            <select
+              value={form.tlsMode}
+              onChange={(e: any) => setField('tlsMode', e.target.value)}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+              aria-label="SMTP TLS mode"
+            >
+              <option value="none">No TLS</option>
+              <option value="starttls">STARTTLS</option>
+              <option value="ssl">SSL/TLS</option>
+            </select>
+          </div>
+
+          <input
+            value={form.from}
+            onChange={(e: any) => setField('from', e.target.value)}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+            placeholder="agenthub@example.com"
+            aria-label="SMTP from address"
+          />
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <input
+              value={form.username}
+              onChange={(e: any) => setField('username', e.target.value)}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+              autoComplete="off"
+              placeholder="Username"
+              aria-label="SMTP username"
+            />
+            <input
+              type="password"
+              value={form.password}
+              onChange={(e: any) => setField('password', e.target.value)}
+              className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+              autoComplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              placeholder={passwordSet ? 'Password configured' : 'Password'}
+              aria-label="SMTP password"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
+            >
+              {saving ? <Loader2 size={12} className="animate-spin" /> : null}
+              {saving ? 'Saving…' : 'Save SMTP'}
+            </button>
+            {settings?.smtp?.passwordSet && (
+              <button
+                type="button"
+                onClick={() => {
+                  setClearPassword(true);
+                  setForm((prev: any) => ({ ...prev, password: '' }));
+                  setStatus({ type: 'success', msg: 'Password will be cleared on save.' });
+                }}
+                disabled={saving}
+                className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50"
+              >
+                Clear password
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2 border-t border-gray-700/70 pt-3">
+            <input
+              value={testTo}
+              onChange={(e: any) => setTestTo(e.target.value)}
+              className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-gray-600"
+              placeholder="Test recipient"
+              aria-label="SMTP test recipient"
+            />
+            <button
+              type="button"
+              onClick={testSend}
+              disabled={testing || !configured}
+              className="inline-flex justify-center items-center gap-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-xs px-3 py-1.5 rounded-lg"
+            >
+              {testing ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+              {testing ? 'Sending…' : 'Send test'}
+            </button>
+          </div>
+        </>
+      )}
+
+      {status && (
+        <div
+          role={status.type === 'success' ? 'status' : 'alert'}
+          className={`text-xs ${status.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}
+        >
+          {status.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Lets an admin choose which provider /api/transcribe uses for chat voice
  * transcription. Persists to host config via PATCH /api/config and warns when
@@ -715,6 +1038,8 @@ export function PluginApiKeysSection() {
         </p>
       </div>
 
+      <SmtpSettingsPanel />
+
       <TranscriptionProviderRow />
 
       {PLUGIN_API_KEYS.map((item: any) => (
@@ -736,11 +1061,13 @@ function absoluteInviteUrl(invite: any) {
   return new URL(raw, window.location.origin).toString();
 }
 
-function InvitesSection({ callerRole, invites, onChanged }: any) {
+export function InvitesSection({ callerRole, invites, emailDelivery, onChanged }: any) {
   const options = inviteRoleOptionsFor(callerRole);
+  const smtpConfigured = !!emailDelivery?.smtpConfigured;
   const [email, setEmail] = useState('');
   const [role, setRole] = useState(options[options.length - 1] || 'User');
   const [busy, setBusy] = useState(false);
+  const [sendingToken, setSendingToken] = useState<any>(null);
   const [status, setStatus] = useState<any>(null);
   const [copiedToken, setCopiedToken] = useState<any>(null);
 
@@ -750,13 +1077,13 @@ function InvitesSection({ callerRole, invites, onChanged }: any) {
     }
   }, [options, role]);
 
-  const copyInviteLink = async (invite: any) => {
+  const copyInviteLink = async (invite: any, successMessage = 'Invite link copied.') => {
     const url = absoluteInviteUrl(invite);
     if (!url) return;
     try {
       await navigator.clipboard.writeText(url);
       setCopiedToken(invite.token);
-      setStatus({ type: 'success', msg: 'Invite link copied.' });
+      setStatus({ type: 'success', msg: successMessage });
     } catch {
       setStatus({ type: 'error', msg: 'Copy failed. Select the invite link manually.' });
     }
@@ -774,13 +1101,38 @@ function InvitesSection({ callerRole, invites, onChanged }: any) {
     try {
       const created = await api.createInvite({ email: nextEmail, role });
       setEmail('');
-      setStatus({ type: 'success', msg: `Invite created for ${created.email || nextEmail}.` });
       await onChanged();
-      await copyInviteLink(created);
+      if (created.emailDelivery?.sent) {
+        setStatus({ type: 'success', msg: `Invite email sent to ${created.email || nextEmail}.` });
+      } else {
+        await copyInviteLink(
+          created,
+          created.emailDelivery?.reason === 'send_failed'
+            ? 'Invite email failed. Invite link copied.'
+            : 'Invite link created and copied.',
+        );
+      }
     } catch (err: any) {
       setStatus({ type: 'error', msg: err.message || String(err) });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const sendInviteEmail = async (invite: any) => {
+    setStatus(null);
+    setSendingToken(invite.token);
+    try {
+      await api.sendInviteEmail(invite.token);
+      setStatus({ type: 'success', msg: `Invite email sent to ${invite.email}.` });
+      await onChanged();
+    } catch (err: any) {
+      setStatus({
+        type: 'error',
+        msg: `${err.message || String(err)} Copy the invite link if delivery is blocked.`,
+      });
+    } finally {
+      setSendingToken(null);
     }
   };
 
@@ -840,8 +1192,14 @@ function InvitesSection({ callerRole, invites, onChanged }: any) {
           disabled={busy || !isValidEmail(email) || options.length === 0}
           className="inline-flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm px-3 py-2 rounded-lg"
         >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
-          Invite member
+          {busy ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : smtpConfigured ? (
+            <Mail size={14} />
+          ) : (
+            <Plus size={14} />
+          )}
+          {busy ? 'Inviting…' : smtpConfigured ? 'Send invite email' : 'Create invite link'}
         </button>
       </form>
 
@@ -885,6 +1243,21 @@ function InvitesSection({ callerRole, invites, onChanged }: any) {
                     <div className="text-[11px] text-gray-500 font-mono truncate mt-1">{url}</div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    {smtpConfigured && invite.email && (
+                      <button
+                        type="button"
+                        onClick={() => sendInviteEmail(invite)}
+                        disabled={sendingToken === invite.token}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-50"
+                      >
+                        {sendingToken === invite.token ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <Mail size={12} />
+                        )}
+                        {sendingToken === invite.token ? 'Sending' : 'Resend email'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => copyInviteLink(invite)}

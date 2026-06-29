@@ -14,6 +14,8 @@ import { canViewProject } from '../project-visibility.js';
 import { isAutonomyLocked, agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { getUserPreferencesRow, mergeUserPreferencesJson } from '../user-preferences-store.js';
+import { resolveOwnerUserId } from '../session-ownership.js';
+import { defaultHeartbeatOwnerUserId } from '../heartbeat-ownership.js';
 import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
@@ -44,6 +46,91 @@ function parseBody<T extends z.ZodTypeAny>(
     return undefined;
   }
   return result.data;
+}
+
+type AgentHeartbeatInput = Partial<
+  Omit<NonNullable<Agent['heartbeat']>, 'shared'> & {
+    shared?: boolean | 0 | 1 | '0' | '1';
+  }
+>;
+
+function coerceHeartbeatShared(raw: boolean | 0 | 1 | '0' | '1' | undefined): 0 | 1 | undefined {
+  if (raw === undefined) return undefined;
+  return raw === true || raw === 1 || raw === '1' ? 1 : 0;
+}
+
+function heartbeatInputConfiguresRun(input: AgentHeartbeatInput | undefined): boolean {
+  return Boolean(
+    input &&
+    (input.enabled || input.interval?.trim() || input.prompt?.trim() || input.model?.trim()),
+  );
+}
+
+function normalizeAgentHeartbeat(
+  input: AgentHeartbeatInput | undefined,
+  existing: Agent['heartbeat'] | undefined,
+  ownerUserId: string | null,
+): Agent['heartbeat'] {
+  const source = input ?? existing ?? { enabled: false, interval: '', prompt: '' };
+  const existingOwner =
+    typeof existing?.owner_user_id === 'string' && existing.owner_user_id.trim()
+      ? existing.owner_user_id.trim()
+      : null;
+  const nextModel = input?.model !== undefined ? input.model : existing?.model;
+  const coercedShared = coerceHeartbeatShared(input?.shared);
+  const nextShared = coercedShared !== undefined ? coercedShared : existing?.shared ? 1 : 0;
+  const claimsOwnership = heartbeatInputConfiguresRun(input);
+  return {
+    enabled: source.enabled ?? existing?.enabled ?? false,
+    interval: source.interval ?? existing?.interval ?? '',
+    prompt: source.prompt ?? existing?.prompt ?? '',
+    ...(nextModel ? { model: nextModel } : {}),
+    owner_user_id: existingOwner ?? (claimsOwnership ? ownerUserId : null),
+    shared: nextShared,
+  };
+}
+
+function heartbeatOwner(agent: Agent): string | null {
+  const owner = agent.heartbeat?.owner_user_id;
+  return typeof owner === 'string' && owner.trim() ? owner.trim() : null;
+}
+
+function heartbeatIsConfigured(agent: Agent): boolean {
+  const heartbeat = agent.heartbeat;
+  return Boolean(
+    heartbeat?.enabled ||
+    heartbeat?.interval?.trim() ||
+    heartbeat?.prompt?.trim() ||
+    heartbeat?.model?.trim(),
+  );
+}
+
+function isOwnerCaller(req: AuthenticatedRequest): boolean {
+  return req.authRole === 'Owner' || Boolean(req.authViaApiKey) || Boolean(req.authLocalOrgBypass);
+}
+
+function canManageAgentHeartbeat(req: AuthenticatedRequest, agent: Agent): boolean {
+  if (isOwnerCaller(req)) return true;
+  const callerId = resolveOwnerUserId(req);
+  if (!callerId) return false;
+  const owner = heartbeatOwner(agent);
+  if (!owner && !heartbeatIsConfigured(agent)) return true;
+  return owner === callerId;
+}
+
+function heartbeatRequestOwner(req: AuthenticatedRequest): string | null {
+  return resolveOwnerUserId(req) ?? defaultHeartbeatOwnerUserId();
+}
+
+function resolveHeartbeatUpdateOwner(
+  req: AuthenticatedRequest,
+  agent: Agent,
+  input: AgentHeartbeatInput | undefined,
+): string | null {
+  const owner = heartbeatOwner(agent);
+  if (owner) return owner;
+  if (!heartbeatInputConfiguresRun(input)) return null;
+  return heartbeatRequestOwner(req);
 }
 
 interface McpServerInput {
@@ -264,13 +351,21 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       }
     }
 
+    if (
+      parsed.heartbeat !== undefined &&
+      !canManageAgentHeartbeat(req as AuthenticatedRequest, agent)
+    ) {
+      return res
+        .status(403)
+        .json({ error: 'Only the heartbeat owner or an org Owner can update it.' });
+    }
+
     const allowed = [
       'name',
       'engine',
       'systemPrompt',
       'color',
       'avatar',
-      'heartbeat',
       'active',
       'reviewer',
       'role',
@@ -281,6 +376,13 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       if ((parsed as Record<string, unknown>)[key] !== undefined) {
         (agent as Record<string, unknown>)[key] = (parsed as Record<string, unknown>)[key];
       }
+    }
+    if (parsed.heartbeat !== undefined) {
+      agent.heartbeat = normalizeAgentHeartbeat(
+        parsed.heartbeat,
+        agent.heartbeat,
+        resolveHeartbeatUpdateOwner(req as AuthenticatedRequest, agent, parsed.heartbeat),
+      );
     }
     // Model picks are per-user (`/api/auth/me/agent-model-overrides`); ignore
     // any `model` field here so a settings save can't rewrite the shared row.
@@ -361,13 +463,13 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     // heartbeat config are optional. Build a fully-populated record so
     // downstream readers (heartbeat scheduler, settings UI) don't have to
     // gate every field.
-    const heartbeatConfig: Agent['heartbeat'] = heartbeat
-      ? {
-          enabled: heartbeat.enabled ?? false,
-          interval: heartbeat.interval ?? '',
-          prompt: heartbeat.prompt ?? '',
-        }
-      : { enabled: false, interval: '', prompt: '' };
+    const heartbeatConfig: Agent['heartbeat'] = normalizeAgentHeartbeat(
+      heartbeat,
+      undefined,
+      heartbeatInputConfiguresRun(heartbeat)
+        ? heartbeatRequestOwner(req as AuthenticatedRequest)
+        : null,
+    );
     const agent: Agent = {
       id,
       name: name || id,

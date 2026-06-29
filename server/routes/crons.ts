@@ -16,6 +16,9 @@ import { DEFAULT_CRON_ENGINE, isSupportedEngine, resolveCronEngine } from '../cr
 import { ALL_SUPPORTED_ENGINES } from '../engine-availability.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
+import { getUserById } from '../users-store.js';
+import { getActiveOrgId } from '../orgs.js';
+import { listMembersForOrg } from '../memberships-store.js';
 
 /**
  * Coerce an `engine` request value into the DB-friendly form: a non-empty
@@ -135,6 +138,11 @@ function coerceNotifyOnRun(raw: boolean | 0 | 1 | '0' | '1' | 'true' | 'false'):
   return 0;
 }
 
+function coerceShared(raw: boolean | 0 | 1 | '0' | '1'): 0 | 1 {
+  if (raw === true || raw === 1 || raw === '1') return 1;
+  return 0;
+}
+
 /**
  * Coerce the parsed `timeout_ms` (number | null | "" | undefined) into the
  * DB-friendly `number | null` form. `undefined` (omitted) is the caller's
@@ -145,16 +153,75 @@ function coerceTimeoutMs(raw: number | null | ''): number | null {
   return raw;
 }
 
+type CronWire = CronRow & {
+  owner_username: string | null;
+  can_manage: boolean;
+};
+
+function isOwnerCaller(req: AuthenticatedRequest): boolean {
+  return req.authRole === 'Owner' || Boolean(req.authViaApiKey) || Boolean(req.authLocalOrgBypass);
+}
+
+function canManageCron(req: AuthenticatedRequest, cronJob: CronRow): boolean {
+  if (isOwnerCaller(req)) return true;
+  const callerId = resolveOwnerUserId(req);
+  return Boolean(callerId && cronJob.owner_user_id && callerId === cronJob.owner_user_id);
+}
+
+function canViewCron(req: AuthenticatedRequest, cronJob: CronRow): boolean {
+  if (canManageCron(req, cronJob)) return true;
+  if (cronJob.shared) return true;
+  const callerId = resolveOwnerUserId(req);
+  return Boolean(callerId && cronJob.owner_user_id && callerId === cronJob.owner_user_id);
+}
+
+function ownerUsername(ownerUserId: string | null): string | null {
+  if (!ownerUserId) return null;
+  try {
+    return getUserById(ownerUserId)?.username ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function toCronWire(req: AuthenticatedRequest, cronJob: CronRow): CronWire {
+  return {
+    ...cronJob,
+    owner_username: ownerUsername(cronJob.owner_user_id ?? null),
+    can_manage: canManageCron(req, cronJob),
+  };
+}
+
+let triedCronOwnerBackfill = false;
+
+function backfillCronOwners(stmts: RouteDeps['stmts']): void {
+  if (triedCronOwnerBackfill) return;
+  try {
+    const owner = listMembersForOrg(getActiveOrgId()).find((m) => m.role === 'Owner');
+    if (owner?.userId) {
+      stmts.backfillCronOwners.run(owner.userId);
+      triedCronOwnerBackfill = true;
+    }
+  } catch {
+    // Org/user stores may be unavailable in first-run or isolated test harnesses.
+  }
+}
+
 export default function createCronRoutes(deps: RouteDeps): Router {
   const { stmts } = deps;
   const router = Router();
 
-  router.get('/api/crons', (_req: Request, res: Response) => {
-    const crons = stmts.getCrons.all() as CronRow[];
+  router.get('/api/crons', (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
+    const authedReq = req as AuthenticatedRequest;
+    const crons = (stmts.getCrons.all() as CronRow[])
+      .filter((cronJob) => canViewCron(authedReq, cronJob))
+      .map((cronJob) => toCronWire(authedReq, cronJob));
     res.json(crons);
   });
 
   router.post('/api/crons', (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
     const parsed = parseBody(CreateCronRequestSchema, req, res);
     if (!parsed) return;
     const {
@@ -169,10 +236,12 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       model,
       skill_principal_agent_id,
       engine,
+      shared,
     } = parsed;
 
     const normalizedTimeout = timeout_ms !== undefined ? coerceTimeoutMs(timeout_ms) : null;
     const normalizedNotify = notify_on_run !== undefined ? coerceNotifyOnRun(notify_on_run) : 0;
+    const normalizedShared = shared !== undefined ? coerceShared(shared) : 0;
 
     let normalizedEngine: string | null;
     try {
@@ -223,15 +292,24 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       normalizedSkillPrincipal,
       normalizedEngine,
       resolveOwnerUserId(req as AuthenticatedRequest),
+      normalizedShared,
     );
     const cronJob = stmts.getCron.get(result.lastInsertRowid) as CronRow;
     rescheduleCron(cronJob);
-    res.json(cronJob);
+    res.json(toCronWire(req as AuthenticatedRequest, cronJob));
   });
 
   router.put('/api/crons/:id', (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
     const existing = stmts.getCron.get(parseInt(req.params.id as string)) as CronRow | undefined;
     if (!existing) return res.status(404).json({ error: 'Cron not found' });
+    const authedReq = req as AuthenticatedRequest;
+    if (!canViewCron(authedReq, existing)) {
+      return res.status(404).json({ error: 'Cron not found' });
+    }
+    if (!canManageCron(authedReq, existing)) {
+      return res.status(403).json({ error: 'Only the cron owner or an org Owner can update it.' });
+    }
 
     const parsed = parseBody(UpdateCronRequestSchema, req, res);
     if (!parsed) return;
@@ -247,6 +325,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       model,
       skill_principal_agent_id,
       engine,
+      shared,
     } = parsed;
 
     let nextTimeout: number | null = existing.timeout_ms;
@@ -260,6 +339,11 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       notify_on_run !== undefined
     ) {
       nextNotify = coerceNotifyOnRun(notify_on_run);
+    }
+
+    let nextShared: 0 | 1 = (existing.shared ? 1 : 0) as 0 | 1;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'shared') && shared !== undefined) {
+      nextShared = coerceShared(shared);
     }
 
     let nextEngine: string | null = existing.engine;
@@ -333,30 +417,54 @@ export default function createCronRoutes(deps: RouteDeps): Router {
       nextModel,
       nextSkillPrincipal,
       nextEngine,
+      nextShared,
       existing.id,
     );
     const updated = stmts.getCron.get(existing.id) as CronRow;
     rescheduleCron(updated);
-    res.json(updated);
+    res.json(toCronWire(authedReq, updated));
   });
 
   router.delete('/api/crons/:id', (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
     const id = parseInt(req.params.id as string);
+    const existing = stmts.getCron.get(id) as CronRow | undefined;
+    if (!existing) return res.status(404).json({ error: 'Cron not found' });
+    const authedReq = req as AuthenticatedRequest;
+    if (!canViewCron(authedReq, existing)) {
+      return res.status(404).json({ error: 'Cron not found' });
+    }
+    if (!canManageCron(authedReq, existing)) {
+      return res.status(403).json({ error: 'Only the cron owner or an org Owner can delete it.' });
+    }
     rescheduleCron({ id, enabled: 0 } as CronRow);
     stmts.deleteCron.run(id);
     res.json({ ok: true });
   });
 
   router.get('/api/crons/:id/logs', (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
     const id = parseInt(req.params.id as string);
+    const cronJob = stmts.getCron.get(id) as CronRow | undefined;
+    if (!cronJob || !canViewCron(req as AuthenticatedRequest, cronJob)) {
+      return res.status(404).json({ error: 'Cron not found' });
+    }
     const limit = Math.min(parseInt(req.query.limit as string) || 3, 50);
     const logs = stmts.getCronLogs.all(id, limit) as CronLogRow[];
     res.json(logs);
   });
 
   router.post('/api/crons/:id/run', async (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
     const cronJob = stmts.getCron.get(parseInt(req.params.id as string)) as CronRow | undefined;
     if (!cronJob) return res.status(404).json({ error: 'Cron not found' });
+    const authedReq = req as AuthenticatedRequest;
+    if (!canViewCron(authedReq, cronJob)) {
+      return res.status(404).json({ error: 'Cron not found' });
+    }
+    if (!canManageCron(authedReq, cronJob)) {
+      return res.status(403).json({ error: 'Only the cron owner or an org Owner can run it.' });
+    }
 
     res.json({ status: 'running' });
     runCronJob(cronJob).catch((err: Error) => {
@@ -365,9 +473,13 @@ export default function createCronRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/crons/:id/thread', (req: Request, res: Response) => {
+    backfillCronOwners(stmts);
     const id = parseInt(req.params.id as string);
     const cron = stmts.getCron.get(id) as CronRow | undefined;
     if (!cron) return res.status(404).json({ error: 'Cron not found' });
+    if (!canViewCron(req as AuthenticatedRequest, cron)) {
+      return res.status(404).json({ error: 'Cron not found' });
+    }
 
     const projects = getProjects();
     const project =

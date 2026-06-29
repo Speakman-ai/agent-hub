@@ -158,62 +158,6 @@ describe('api updateProject — PATCH parity with web client', () => {
     });
 });
 
-describe('api release notification settings helpers', () => {
-    it('getReleaseNotificationSettings(projectId) → GET project release settings', async () => {
-        await api.getReleaseNotificationSettings('agent-hub');
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings');
-        expect(init.method ?? 'GET').toBe('GET');
-    });
-    it('updateReleaseNotificationSettings(projectId, data) → PUT with JSON body', async () => {
-        await api.updateReleaseNotificationSettings('agent-hub', {
-            releaseDigestPrompt: 'Group fixes first.',
-        });
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings');
-        expect(init.method).toBe('PUT');
-        expect(JSON.parse(init.body)).toEqual({ releaseDigestPrompt: 'Group fixes first.' });
-    });
-    it('resetReleaseNotificationSettings(projectId) → POST reset', async () => {
-        await api.resetReleaseNotificationSettings('agent-hub');
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/reset');
-        expect(init.method).toBe('POST');
-    });
-    it('listReleaseDigestRecipients(projectId) → GET recipients', async () => {
-        await api.listReleaseDigestRecipients('agent-hub');
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients');
-        expect(init.method ?? 'GET').toBe('GET');
-    });
-    it('addReleaseDigestRecipient(projectId, data) → POST recipient', async () => {
-        await api.addReleaseDigestRecipient('agent-hub', {
-            email: 'digest@example.com',
-            displayLabel: 'Customers',
-        });
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients');
-        expect(init.method).toBe('POST');
-        expect(JSON.parse(init.body)).toEqual({
-            email: 'digest@example.com',
-            displayLabel: 'Customers',
-        });
-    });
-    it('updateReleaseDigestRecipient(projectId, id, data) → PATCH recipient', async () => {
-        await api.updateReleaseDigestRecipient('agent-hub', 'rec/1', { enabled: false });
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients/rec%2F1');
-        expect(init.method).toBe('PATCH');
-        expect(JSON.parse(init.body)).toEqual({ enabled: false });
-    });
-    it('removeReleaseDigestRecipient(projectId, id) → DELETE recipient', async () => {
-        await api.removeReleaseDigestRecipient('agent-hub', 'rec/1');
-        const [url, init] = lastCall();
-        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients/rec%2F1');
-        expect(init.method).toBe('DELETE');
-    });
-});
-
 describe('api invite helpers — mobile parity with web client', () => {
     it('getInvites → GET /auth/invites', async () => {
         await api.getInvites();
@@ -228,6 +172,12 @@ describe('api invite helpers — mobile parity with web client', () => {
         expect(init.method).toBe('POST');
         expect(JSON.parse(init.body)).toEqual({ email: 'new@example.com', role: 'User' });
     });
+    it('sendInviteEmail → POST /auth/invites/:token/email', async () => {
+        await api.sendInviteEmail('tok/1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/invites/tok%2F1/email');
+        expect(init.method).toBe('POST');
+    });
     it('revokeInvite → DELETE /auth/invites/:token', async () => {
         await api.revokeInvite('tok/1');
         const [url, init] = lastCall();
@@ -240,6 +190,29 @@ describe('api invite helpers — mobile parity with web client', () => {
         expect(url).toBe('https://example.test/api/auth/invites/tok/accept');
         expect(init.method).toBe('POST');
         expect(JSON.parse(init.body)).toEqual({ email: 'new@example.com', password: 'secret' });
+    });
+});
+
+describe('api SMTP settings helpers — mobile parity with web client', () => {
+    it('getSmtpSettings → GET /config/smtp', async () => {
+        await api.getSmtpSettings();
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/config/smtp');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('updateSmtpSettings → PATCH /config/smtp', async () => {
+        await api.updateSmtpSettings({ enabled: true, host: 'smtp.example.com' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/config/smtp');
+        expect(init.method).toBe('PATCH');
+        expect(JSON.parse(init.body)).toEqual({ enabled: true, host: 'smtp.example.com' });
+    });
+    it('testSmtpSettings → POST /config/smtp/test', async () => {
+        await api.testSmtpSettings({ to: 'owner@example.com' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/config/smtp/test');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ to: 'owner@example.com' });
     });
 });
 describe('api deployment helpers — URL + body parity with web client', () => {

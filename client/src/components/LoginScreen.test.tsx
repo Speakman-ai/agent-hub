@@ -5,6 +5,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
   getAuthStatus: vi.fn(),
   login: vi.fn(),
   setup: vi.fn(),
+  completeMfaLogin: vi.fn(),
 }));
 
 (vi as any).mock('../utils/connection.js', () => ({
@@ -12,11 +13,12 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 }));
 
 import LoginScreen from './LoginScreen';
-import { getAuthStatus, login } from '../utils/auth';
+import { completeMfaLogin, getAuthStatus, login } from '../utils/auth';
 
 beforeEach(() => {
   (getAuthStatus as any).mockReset();
   (login as any).mockReset();
+  (completeMfaLogin as any).mockReset();
 });
 
 afterEach(() => {
@@ -53,5 +55,78 @@ describe('LoginScreen', () => {
     });
     expect(screen.queryByText(/Enter a valid email address/i)).toBeNull();
     expect(onAuthenticated).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the MFA challenge after password verification and completes sign-in', async () => {
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      email: 'owner@example.com',
+      needsEmailUpdate: false,
+    });
+    (login as any).mockResolvedValue({
+      mfaRequired: true,
+      challengeId: 'mfa_123',
+      expiresAt: '2026-06-29T12:05:00.000Z',
+    });
+    (completeMfaLogin as any).mockResolvedValue({ token: 'jwt' });
+    const onAuthenticated = vi.fn();
+
+    const { container } = render(<LoginScreen onAuthenticated={onAuthenticated} />);
+    await screen.findByText(/Sign in to Agent Hub/i);
+
+    const inputs = container.querySelectorAll('input');
+    fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
+    fireEvent.change(inputs[1], { target: { value: 'correct-password' } });
+    fireEvent.submit(inputs[1].closest('form')!);
+
+    expect(await screen.findByText(/Verify MFA/i)).toBeInTheDocument();
+    expect(onAuthenticated).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/Authenticator code/i), {
+      target: { value: '123 456' },
+    });
+    fireEvent.submit(screen.getByText(/Verify and sign in/i).closest('form')!);
+
+    await waitFor(() =>
+      expect(completeMfaLogin).toHaveBeenCalledWith({
+        baseUrl: '/api',
+        challengeId: 'mfa_123',
+        code: '123456',
+      }),
+    );
+    expect(onAuthenticated).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports recovery-code fallback and shows MFA errors without clearing the challenge', async () => {
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      email: 'owner@example.com',
+      needsEmailUpdate: false,
+    });
+    (login as any).mockResolvedValue({
+      mfaRequired: true,
+      challengeId: 'mfa_123',
+      expiresAt: '2026-06-29T12:05:00.000Z',
+    });
+    (completeMfaLogin as any).mockRejectedValue(
+      new Error('Too many MFA attempts. Try again later.'),
+    );
+
+    const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
+    await screen.findByText(/Sign in to Agent Hub/i);
+    const inputs = container.querySelectorAll('input');
+    fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
+    fireEvent.change(inputs[1], { target: { value: 'correct-password' } });
+    fireEvent.submit(inputs[1].closest('form')!);
+
+    await screen.findByText(/Verify MFA/i);
+    fireEvent.click(screen.getByRole('button', { name: /Recovery code/i }));
+    fireEvent.change(screen.getByLabelText(/Recovery code/i), {
+      target: { value: 'abcd-efgh' },
+    });
+    fireEvent.submit(screen.getByText(/Verify and sign in/i).closest('form')!);
+
+    expect(await screen.findByText(/Too many MFA attempts/i)).toBeInTheDocument();
+    expect(screen.getByText(/Verify MFA/i)).toBeInTheDocument();
   });
 });

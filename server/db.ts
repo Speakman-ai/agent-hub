@@ -164,6 +164,7 @@ function initDb(dataDir: string): void {
       notify_on_run INTEGER NOT NULL DEFAULT 0,
       engine TEXT,
       owner_user_id TEXT,
+      shared INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -1336,6 +1337,41 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE crons ADD COLUMN owner_user_id TEXT');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_crons_owner ON crons(owner_user_id)');
+
+  try {
+    db.prepare('SELECT shared FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN shared INTEGER NOT NULL DEFAULT 0');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_crons_shared ON crons(shared)');
+
+  const heartbeatStateColumns = db.prepare('PRAGMA table_info(heartbeat_state)').all() as Array<{
+    name: string;
+  }>;
+  const heartbeatStateHasOwnershipColumns = heartbeatStateColumns.some(
+    (column) => column.name === 'owner_user_id' || column.name === 'shared',
+  );
+  if (heartbeatStateHasOwnershipColumns) {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_heartbeat_state_owner;
+      DROP INDEX IF EXISTS idx_heartbeat_state_shared;
+      DROP TABLE IF EXISTS heartbeat_state_next;
+      CREATE TABLE heartbeat_state_next (
+        agent_id TEXT PRIMARY KEY,
+        next_run_at TEXT,
+        last_run_at TEXT
+      );
+      INSERT OR REPLACE INTO heartbeat_state_next (agent_id, next_run_at, last_run_at)
+        SELECT agent_id, next_run_at, last_run_at FROM heartbeat_state;
+      DROP TABLE heartbeat_state;
+      ALTER TABLE heartbeat_state_next RENAME TO heartbeat_state;
+    `);
+  } else {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_heartbeat_state_owner;
+      DROP INDEX IF EXISTS idx_heartbeat_state_shared;
+    `);
+  }
 
   // Threads-as-chatroom: thread_entries grew an author identity + role so
   // humans can post into the same thread the heartbeat / cron daemon
@@ -3808,10 +3844,13 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine, owner_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine, owner_user_id, shared) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ?, shared = ? WHERE id = ?',
+    ),
+    backfillCronOwners: db.prepare(
+      'UPDATE crons SET owner_user_id = ? WHERE owner_user_id IS NULL',
     ),
     deleteCron: db.prepare('DELETE FROM crons WHERE id = ?'),
     updateCronResult: db.prepare(

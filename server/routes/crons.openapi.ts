@@ -95,6 +95,12 @@ const notifyOnRun = z
   )
   .optional();
 
+const sharedFlag = z
+  .union([z.boolean(), z.literal(0), z.literal(1), z.literal('0'), z.literal('1')], {
+    error: 'shared must be a boolean',
+  })
+  .optional();
+
 // ─── Domain component schemas (response shapes) ──────────────────
 
 export const CronComponent = registerComponent(
@@ -117,11 +123,14 @@ export const CronComponent = registerComponent(
       skill_principal_agent_id: z.string().nullable(),
       engine: z.string().nullable(),
       owner_user_id: z.string().nullable(),
+      owner_username: z.string().nullable().optional(),
+      shared: z.number().int(),
+      can_manage: z.boolean().optional(),
       created_at: z.string(),
     })
     .openapi({
       description:
-        'A cron job row. Booleans (`enabled`, `notify_on_run`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs.',
+        'A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.',
     }),
 );
 
@@ -217,6 +226,7 @@ export const CreateCronRequestSchema = z.object({
   project_id: z.string().nullable().optional(),
   timeout_ms: timeoutMs,
   notify_on_run: notifyOnRun,
+  shared: sharedFlag,
   model: z.string().nullable().optional(),
   skill_principal_agent_id: z.string().nullable().optional(),
   engine: cronEngine,
@@ -244,6 +254,7 @@ export const UpdateCronRequestSchema = z.object({
   project_id: z.string().nullable().optional(),
   timeout_ms: timeoutMs,
   notify_on_run: notifyOnRun,
+  shared: sharedFlag,
   model: z.string().nullable().optional(),
   skill_principal_agent_id: z.string().nullable().optional(),
   engine: cronEngine,
@@ -269,7 +280,9 @@ registerPath({
   method: 'get',
   path: '/api/crons',
   tags: ['Crons'],
-  summary: 'List every cron job',
+  summary: 'List visible cron jobs',
+  description:
+    'Returns shared crons, crons owned by the caller, and all crons for org Owners. Private crons are hidden from other non-Owner users.',
   responses: {
     200: { description: 'Array of cron jobs.', content: jsonContent(z.array(CronComponent)) },
   },
@@ -281,7 +294,7 @@ registerPath({
   path: '/api/crons',
   tags: ['Crons'],
   summary: 'Create a new cron job',
-  description: `\`schedule\` must be a valid cron expression. \`engine\` (when provided) must be one of: ${ALL_SUPPORTED_ENGINES.join(', ')} — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to \`claude-code\`. \`model\` is validated against \`engineValidModels[engine]\` for whichever engine the cron resolves to. \`skill_principal_agent_id\` (when provided) must be an agent in the cron's project.`,
+  description: `\`schedule\` must be a valid cron expression. The cron owner is the authenticated caller. \`shared\` defaults to false; when true the cron is visible to the org but still executes under the owner's credentials. \`engine\` (when provided) must be one of: ${ALL_SUPPORTED_ENGINES.join(', ')} — when omitted/null, the cron inherits its engine from the resolved skill principal agent at run time, falling back to \`claude-code\`. \`model\` is validated against \`engineValidModels[engine]\` for whichever engine the cron resolves to. \`skill_principal_agent_id\` (when provided) must be an agent in the cron's project.`,
   request: { body: { content: jsonContent(CreateCronRequestSchema) } },
   responses: {
     200: { description: 'Created cron.', content: jsonContent(CronComponent) },
@@ -296,7 +309,7 @@ registerPath({
   tags: ['Crons'],
   summary: 'Update a cron job',
   description:
-    'Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).',
+    'Owner or cron owner only. Omitted fields preserve the existing value. `timeout_ms` / `notify_on_run` / `model` / `skill_principal_agent_id` / `engine` follow the present-key tristate (`undefined` = preserve, `null`/`""` = clear). `shared` toggles org-wide visibility without changing execution owner. When `engine` changes and an existing `model` is no longer valid for the new engine, the model is cleared (the user can resend a compatible value in the same PUT).',
   request: {
     params: cronIdParams,
     body: { content: jsonContent(UpdateCronRequestSchema) },

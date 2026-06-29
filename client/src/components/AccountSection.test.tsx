@@ -16,8 +16,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 }));
 
 import AccountSection, {
+  buildSmtpPatch,
+  InvitesSection,
   inviteRoleOptionsFor,
   PluginApiKeysSection,
+  SmtpSettingsPanel,
+  smtpConfiguredLabel,
+  smtpFormFromSettings,
   TranscriptionProviderRow,
   roleOptionsFor,
 } from './AccountSection';
@@ -86,6 +91,188 @@ describe('inviteRoleOptionsFor', () => {
     expect(inviteRoleOptionsFor('Owner')).toEqual(['Admin', 'User']);
     expect(inviteRoleOptionsFor('Admin')).toEqual(['Admin', 'User']);
     expect(inviteRoleOptionsFor('User')).toEqual([]);
+  });
+});
+
+describe('InvitesSection — SMTP invite email states', () => {
+  beforeEach(() => {
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+  });
+
+  it('uses email-first actions when SMTP is configured and can resend active invites', async () => {
+    let resendUrl = '';
+    mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'POST' && u.endsWith('/auth/invites/tok-1/email'),
+        response: (u: any) => {
+          resendUrl = u;
+          return jsonResponse({
+            ok: true,
+            invite: {
+              token: 'tok-1',
+              email: 'new@example.com',
+              role: 'User',
+              url: '/invite/tok-1',
+              expiresAt: '2026-07-01T00:00:00.000Z',
+              createdAt: '2026-06-29T00:00:00.000Z',
+            },
+            emailDelivery: { attempted: true, sent: true },
+          });
+        },
+      },
+    ]);
+    const onChanged = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <InvitesSection
+        callerRole="Admin"
+        emailDelivery={{ smtpConfigured: true }}
+        invites={[
+          {
+            token: 'tok-1',
+            email: 'new@example.com',
+            role: 'User',
+            url: '/invite/tok-1',
+            expiresAt: '2026-07-01T00:00:00.000Z',
+            createdAt: '2026-06-29T00:00:00.000Z',
+          },
+        ]}
+        onChanged={onChanged}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /send invite email/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /resend email/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy invite link/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /resend email/i }));
+
+    await waitFor(() => expect(resendUrl).toBe('/api/auth/invites/tok-1/email'));
+    expect(await screen.findByText(/invite email sent to new@example.com/i)).toBeInTheDocument();
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses copy-link fallback actions when SMTP is not configured', () => {
+    render(
+      <InvitesSection
+        callerRole="Admin"
+        emailDelivery={{ smtpConfigured: false }}
+        invites={[
+          {
+            token: 'tok-1',
+            email: 'new@example.com',
+            role: 'User',
+            url: '/invite/tok-1',
+            expiresAt: '2026-07-01T00:00:00.000Z',
+            createdAt: '2026-06-29T00:00:00.000Z',
+          },
+        ]}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /create invite link/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /resend email/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /copy invite link/i })).toBeInTheDocument();
+  });
+});
+
+describe('SmtpSettingsPanel', () => {
+  const configuredSettings = {
+    smtp: {
+      enabled: true,
+      host: 'smtp.example.com',
+      port: 587,
+      tlsMode: 'starttls',
+      username: 'mailer@example.com',
+      password: '••••••••',
+      passwordSet: true,
+      configured: true,
+      from: 'agenthub@example.com',
+    },
+    passwordReset: {
+      smtpConfigured: true,
+      fallbackAvailable: false,
+      fallback: null,
+    },
+  };
+
+  it('builds secret-preserving patches for masked SMTP passwords', () => {
+    expect(smtpConfiguredLabel(configuredSettings)).toBe('Configured');
+    expect(smtpFormFromSettings(configuredSettings)).toMatchObject({
+      enabled: true,
+      host: 'smtp.example.com',
+      port: 587,
+      tlsMode: 'starttls',
+      username: 'mailer@example.com',
+      password: '',
+      from: 'agenthub@example.com',
+    });
+
+    expect(
+      buildSmtpPatch(smtpFormFromSettings(configuredSettings), configuredSettings),
+    ).not.toHaveProperty('password');
+    expect(
+      buildSmtpPatch(smtpFormFromSettings(configuredSettings), configuredSettings, true).password,
+    ).toBeNull();
+    expect(
+      buildSmtpPatch(
+        { ...smtpFormFromSettings(configuredSettings), password: 'new-secret' },
+        configuredSettings,
+      ).password,
+    ).toBe('new-secret');
+  });
+
+  it('loads, saves, and test-sends SMTP settings', async () => {
+    let patchBody: any = null;
+    let testBody: any = null;
+    mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/config/smtp'),
+        response: () => jsonResponse(configuredSettings),
+      },
+      {
+        match: (u: any, m: any) => m === 'PATCH' && u.endsWith('/config/smtp'),
+        response: (_u: any, init: any) => {
+          patchBody = JSON.parse(init.body);
+          return jsonResponse({ ok: true, ...configuredSettings });
+        },
+      },
+      {
+        match: (u: any, m: any) => m === 'POST' && u.endsWith('/config/smtp/test'),
+        response: (_u: any, init: any) => {
+          testBody = JSON.parse(init.body);
+          return jsonResponse({ ok: true, to: 'test@example.com' });
+        },
+      },
+    ]);
+
+    render(<SmtpSettingsPanel />);
+
+    expect(await screen.findByText('Configured')).toBeInTheDocument();
+    expect(screen.getByLabelText('SMTP password')).toHaveAttribute(
+      'placeholder',
+      'Password configured',
+    );
+
+    fireEvent.change(screen.getByLabelText('SMTP host'), {
+      target: { value: 'smtp2.example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /save smtp/i }));
+
+    await waitFor(() => expect(patchBody?.host).toBe('smtp2.example.com'));
+    expect(patchBody).not.toHaveProperty('password');
+
+    fireEvent.change(screen.getByLabelText('SMTP test recipient'), {
+      target: { value: 'test@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send test/i }));
+
+    await waitFor(() => expect(testBody).toEqual({ to: 'test@example.com' }));
+    expect(await screen.findByText(/test email sent to test@example.com/i)).toBeInTheDocument();
   });
 });
 
@@ -210,7 +397,7 @@ describe('AccountSection — Add user button visibility', () => {
 
     expect(await screen.findByRole('dialog', { name: /add user/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/^email$/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
 
     // The role select inside the modal should expose all three roles to an
     // Owner caller.
@@ -222,12 +409,65 @@ describe('AccountSection — Add user button visibility', () => {
   });
 });
 
+describe('AccountSection — member MFA reset', () => {
+  it('lets Admin+ clear MFA for a locked-out member', async () => {
+    (hasRole as any).mockReturnValue(true);
+    (getUserRole as any).mockReturnValue('Admin');
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const fetchMock = mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/me'),
+        response: () =>
+          jsonResponse({
+            user: { id: 'u-admin', email: 'admin@example.com', role: 'Admin', mfaEnabled: false },
+          }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/users'),
+        response: () =>
+          jsonResponse({
+            users: [{ id: 'u-user', email: 'locked@example.com', role: 'User', mfaEnabled: true }],
+          }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/invites'),
+        response: () => jsonResponse({ invites: [] }),
+      },
+      {
+        match: (u: any, m: any) => m === 'POST' && u.endsWith('/auth/users/u-user/mfa/reset'),
+        response: () => jsonResponse({ ok: true, userId: 'u-user', mfaEnabled: false }),
+      },
+      {
+        match: () => true,
+        response: () => jsonResponse({}),
+      },
+    ]);
+
+    render(<AccountSection />);
+
+    expect(await screen.findByText('locked@example.com')).toBeInTheDocument();
+    expect(screen.getByText('MFA on')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear mfa for locked@example.com/i }));
+
+    await waitFor(() =>
+      expect(
+        (fetchMock as any).mock.calls.some(
+          ([url, init]: any) =>
+            String(url).endsWith('/auth/users/u-user/mfa/reset') && init?.method === 'POST',
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByText('MFA off')).toBeInTheDocument();
+  });
+});
+
 describe('AccountSection — member invites', () => {
   beforeEach(() => {
-    Object.assign(navigator, {
-      clipboard: {
-        writeText: vi.fn().mockResolvedValue(undefined),
-      },
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
     });
   });
 
@@ -344,7 +584,7 @@ describe('AccountSection — member invites', () => {
 
     const email = await screen.findByLabelText(/invite email/i);
     fireEvent.change(email, { target: { value: 'new@example.com' } });
-    fireEvent.click(screen.getByRole('button', { name: /invite member/i }));
+    fireEvent.click(screen.getByRole('button', { name: /create invite link/i }));
 
     await waitFor(() =>
       expect(

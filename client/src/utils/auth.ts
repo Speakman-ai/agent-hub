@@ -155,6 +155,28 @@ export async function login({ baseUrl, username, password }: any) {
     throw new Error(body.error || `Login failed: ${res.status}`);
   }
   const data = await res.json();
+  if (data?.mfaRequired) {
+    return data;
+  }
+  setToken(data);
+  return data;
+}
+
+export async function completeMfaLogin({ baseUrl, challengeId, code }: any) {
+  const res = await fetch(`${baseUrl}/auth/login/mfa`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challengeId, code }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const message =
+      res.status === 429
+        ? body.error || 'Too many MFA attempts. Try again later.'
+        : body.error || `MFA verification failed: ${res.status}`;
+    throw new Error(message);
+  }
+  const data = await res.json();
   setToken(data);
   return data;
 }
@@ -202,32 +224,6 @@ export async function updateEmail({ baseUrl, email }: any) {
   const data = await res.json();
   setToken(data);
   return data;
-}
-
-export async function forgotPassword({ baseUrl, email }: any) {
-  const res = await fetch(`${baseUrl}/auth/forgot-password`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Password reset request failed: ${res.status}`);
-  }
-  return res.json();
-}
-
-export async function resetPassword({ baseUrl, token, newPassword }: any) {
-  const res = await fetch(`${baseUrl}/auth/reset-password`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, newPassword }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Password reset failed: ${res.status}`);
-  }
-  return res.json();
 }
 
 /**
@@ -289,4 +285,30 @@ export async function logout({ baseUrl }: any = {}) {
     }
   }
   clearToken();
+}
+
+export async function forgotPassword({ baseUrl, email }: any) {
+  const res = await fetch(`${baseUrl}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Password reset request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function resetPassword({ baseUrl, token, newPassword }: any) {
+  const res = await fetch(`${baseUrl}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, newPassword }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Password reset failed: ${res.status}`);
+  }
+  return res.json();
 }

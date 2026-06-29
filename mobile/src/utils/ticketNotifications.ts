@@ -76,7 +76,8 @@ export function mapBroadcastToNotification(data: any, opts: any = {}) {
     // else — INCLUDING an unattributed / API-key client (`me === null`) on a
     // multi-user server — unless a real local/bundled single-user `localBypass`
     // is set. Same strict semantics as the project gate.
-    if (!shouldNotifyUserForProject(owner, me, { localBypass }))
+    const cronShared = data.type === 'thread_entry_created' && data.cronShared === true;
+    if (!cronShared && !shouldNotifyUserForProject(owner, me, { localBypass }))
         return null;
     if (!shouldDeliverProjectNotification(data, me, opts.projects || [], opts.agents || [], { localBypass })) {
         return null;

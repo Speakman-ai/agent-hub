@@ -27,10 +27,15 @@ export async function loadMemberInvites(apiClient: any) {
   const me = meBody?.user || null;
   const role = me?.role;
   if (role !== 'Owner' && role !== 'Admin') {
-    return { me, invites: [] };
+    return { me, users: [], invites: [], emailDelivery: { smtpConfigured: false } };
   }
-  const inviteBody = await apiClient.getInvites();
-  return { me, invites: inviteBody?.invites || [] };
+  const [usersBody, inviteBody] = await Promise.all([apiClient.getUsers(), apiClient.getInvites()]);
+  return {
+    me,
+    users: usersBody?.users || [],
+    invites: inviteBody?.invites || [],
+    emailDelivery: inviteBody?.emailDelivery || { smtpConfigured: false },
+  };
 }
 
 export async function createInviteAndCopyLink({
@@ -45,14 +50,19 @@ export async function createInviteAndCopyLink({
     return { ok: false, status: { type: 'error', message: 'Enter a valid email address.' } };
   }
   const created = await apiClient.createInvite({ email: nextEmail, role });
-  const copied = await clipboard(inviteUrl(created));
+  const sent = created?.emailDelivery?.sent === true;
+  const copied = sent ? false : await clipboard(inviteUrl(created));
   return {
     ok: true,
     created,
     copied,
     status: {
-      type: copied ? 'success' : 'warning',
-      message: copied ? 'Invite created and link copied.' : 'Invite created.',
+      type: sent || copied ? 'success' : 'warning',
+      message: sent
+        ? `Invite email sent to ${created.email || nextEmail}.`
+        : copied
+          ? 'Invite link created and copied.'
+          : 'Invite created. Copy the invite link if email delivery is blocked.',
     },
   };
 }
@@ -73,9 +83,21 @@ export async function revokeMemberInvite({ apiClient, invite }: any) {
   return { type: 'success', message: 'Invite revoked.' };
 }
 
+export async function sendMemberInviteEmail({ apiClient, invite }: any) {
+  await apiClient.sendInviteEmail(invite.token);
+  return { type: 'success', message: `Invite email sent to ${invite.email}.` };
+}
+
+export async function resetMemberMfa({ apiClient, user }: any) {
+  await apiClient.resetUserMfa(user.id);
+  return { type: 'success', message: `MFA cleared for ${user.email || user.username || 'member'}.` };
+}
+
 export default function MembersSection() {
   const [me, setMe] = useState<any>(null);
+  const [users, setUsers] = useState<any>([]);
   const [invites, setInvites] = useState<any>(null);
+  const [emailDelivery, setEmailDelivery] = useState<any>({ smtpConfigured: false });
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('User');
   const [loading, setLoading] = useState(true);
@@ -89,7 +111,9 @@ export default function MembersSection() {
     try {
       const nextState = await loadMemberInvites(api);
       setMe(nextState.me);
+      setUsers(nextState.users || []);
       setInvites(nextState.invites);
+      setEmailDelivery(nextState.emailDelivery || { smtpConfigured: false });
     } catch (err: any) {
       setStatus({ type: 'error', message: err.message || String(err) });
       setInvites([]);
@@ -159,6 +183,48 @@ export default function MembersSection() {
     setStatus(result.status);
   };
 
+  const sendInviteEmail = async (invite: any) => {
+    setStatus(null);
+    setBusy(true);
+    try {
+      const nextStatus = await sendMemberInviteEmail({ apiClient: api, invite });
+      await load();
+      setStatus(nextStatus);
+    } catch (err: any) {
+      setStatus({
+        type: 'error',
+        message: `${err.message || String(err)} Copy the invite link if delivery is blocked.`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetMfa = async (user: any) => {
+    Alert.alert('Clear MFA', `Clear MFA for ${user.email || user.username || 'this member'}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear MFA',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const nextStatus = await resetMemberMfa({ apiClient: api, user });
+            setUsers((prev: any) =>
+              Array.isArray(prev)
+                ? prev.map((item: any) =>
+                    item.id === user.id ? { ...item, mfaEnabled: false } : item,
+                  )
+                : prev,
+            );
+            setStatus(nextStatus);
+          } catch (err: any) {
+            setStatus({ type: 'error', message: err.message || String(err) });
+          }
+        },
+      },
+    ]);
+  };
+
   if (loading) return <Text style={styles.emptyText}>Loading members...</Text>;
   if (options.length === 0) return null;
 
@@ -204,7 +270,9 @@ export default function MembersSection() {
         onPress={createInvite}
         disabled={!isValidInviteEmail(email) || busy}
       >
-        <Text style={styles.saveBtnText}>{busy ? 'Inviting...' : 'Invite Member'}</Text>
+        <Text style={styles.saveBtnText}>
+          {busy ? 'Inviting...' : emailDelivery?.smtpConfigured ? 'Send Invite Email' : 'Create Invite Link'}
+        </Text>
       </TouchableOpacity>
 
       {status && (
@@ -225,6 +293,27 @@ export default function MembersSection() {
         </Text>
       )}
 
+      <Text style={[styles.inputLabel, { marginTop: 16 }]}>Configured users</Text>
+      {users?.length ? (
+        users.map((user: any) => (
+          <View key={user.id || user.email || user.username} style={styles.inviteCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pluginKeyTitle}>{user.email || user.username || 'Member'}</Text>
+              <Text style={styles.accountMutedText}>
+                {user.role} - MFA {user.mfaEnabled ? 'on' : 'off'}
+              </Text>
+            </View>
+            {user.id && user.mfaEnabled ? (
+              <TouchableOpacity style={styles.accountDangerBtn} onPress={() => resetMfa(user)}>
+                <Text style={styles.accountDangerBtnText}>Clear MFA</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ))
+      ) : (
+        <Text style={styles.emptyText}>No configured users.</Text>
+      )}
+
       <Text style={[styles.inputLabel, { marginTop: 16 }]}>Active invites</Text>
       {invites?.length ? (
         invites.map((invite: any) => (
@@ -237,6 +326,15 @@ export default function MembersSection() {
               </Text>
             </View>
             <View style={styles.inviteActions}>
+              {emailDelivery?.smtpConfigured && invite.email ? (
+                <TouchableOpacity
+                  style={[styles.cancelBtn, busy && { opacity: 0.4 }]}
+                  onPress={() => sendInviteEmail(invite)}
+                  disabled={busy}
+                >
+                  <Text style={styles.cancelBtnText}>Resend email</Text>
+                </TouchableOpacity>
+              ) : null}
               <TouchableOpacity style={styles.cancelBtn} onPress={() => copyInvite(invite)}>
                 <Text style={styles.cancelBtnText}>Copy</Text>
               </TouchableOpacity>

@@ -57,6 +57,36 @@ describe('shouldDeliverBroadcast', () => {
     expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
   });
 
+  it('SKIPS private cron thread entries for non-owners even on shared projects', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u-other', role: 'User' };
+    const data = {
+      type: 'thread_entry_created',
+      projectId: 'proj-1',
+      ownerUserId: 'u-owner',
+      cronShared: false,
+    };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(false);
+  });
+
+  it('delivers shared cron thread entries through normal project visibility', () => {
+    const stamp: WsVisibilityStamp = { userId: 'u-other', role: 'User' };
+    const data = {
+      type: 'thread_entry_created',
+      projectId: 'proj-1',
+      ownerUserId: 'u-owner',
+      cronShared: true,
+    };
+    const deps = makeDeps({
+      resolveProjectId: () => 'proj-1',
+      findProject: () => makeProject({ id: 'proj-1', visibility: 'shared' }),
+    });
+    expect(shouldDeliverBroadcast(data, stamp, deps)).toBe(true);
+  });
+
   it('delivers to the owner of a private project', () => {
     const stamp: WsVisibilityStamp = { userId: 'u-owner', role: 'User' };
     const data = { type: 'done', projectId: 'proj-priv' };

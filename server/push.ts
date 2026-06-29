@@ -24,6 +24,9 @@ import { resolveProjectIdFromEvent } from './event-project-resolver.js';
 import { findProject } from './project-model.js';
 import { isLocalBundledServer } from './auth.js';
 import { getSessionOwner, getSessionAgentId } from './session-ownership.js';
+import { getActiveOrgId } from './orgs.js';
+import { getMembershipRole } from './memberships-store.js';
+import type { Role } from './roles.js';
 import { shouldNotifyUserForProject } from '../shared/utils/notificationProjectScope.js';
 
 // ── Event types that can trigger a push ────────────────────────────────
@@ -227,6 +230,8 @@ export interface PushDispatchDeps {
   getSessionOwnerById?: (sessionId: string) => string | null;
   /** Injectable session→agent lookup for tests; defaults to `getSessionAgentId`. */
   getSessionAgentIdById?: (sessionId: string) => string | null;
+  /** Injectable user-role lookup for tests; defaults to active-org membership. */
+  getUserRoleById?: (userId: string) => Role | null;
 }
 
 function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
@@ -251,14 +256,44 @@ function resolveDeps(deps?: PushDispatchDeps): Required<PushDispatchDeps> {
       deps?.getSessionOwnerById ?? ((sessionId: string) => getSessionOwner(sessionId)),
     getSessionAgentIdById:
       deps?.getSessionAgentIdById ?? ((sessionId: string) => getSessionAgentId(sessionId)),
+    getUserRoleById:
+      deps?.getUserRoleById ??
+      ((userId: string) => {
+        try {
+          return getMembershipRole(userId, getActiveOrgId());
+        } catch {
+          return null;
+        }
+      }),
   };
 }
 
 export function filterTokensForBroadcastVisibility(
   tokens: DeviceTokenRowWithPrefs[],
   data: BroadcastData,
-  deps?: Pick<PushDispatchDeps, 'resolveProjectId' | 'findProjectById'>,
+  deps?: Pick<PushDispatchDeps, 'resolveProjectId' | 'findProjectById' | 'getUserRoleById'>,
 ): DeviceTokenRowWithPrefs[] {
+  if (data.type === 'thread_entry_created' && data.cronShared === false) {
+    if (isLocalBundledServer()) return tokens;
+    const owner =
+      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
+    if (owner) {
+      const getUserRole =
+        deps?.getUserRoleById ??
+        ((userId: string) => {
+          try {
+            return getMembershipRole(userId, getActiveOrgId());
+          } catch {
+            return null;
+          }
+        });
+      return tokens.filter((t) => {
+        if (t.user_id === owner) return true;
+        if (!t.user_id) return false;
+        return getUserRole(t.user_id) === 'Owner';
+      });
+    }
+  }
   const resolveProjectId =
     deps?.resolveProjectId ?? ((payload: BroadcastData) => resolveProjectIdFromEvent(payload));
   const findProjectById = deps?.findProjectById ?? ((projectId: string) => findProject(projectId));

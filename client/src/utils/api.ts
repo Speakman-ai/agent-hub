@@ -959,6 +959,11 @@ export const api = {
   getConfig: () => fetchJSON('/config'),
   updateConfig: (data: any) =>
     fetchJSON('/config', { method: 'PATCH', body: JSON.stringify(data) }),
+  getSmtpSettings: () => fetchJSON('/config/smtp'),
+  updateSmtpSettings: (data: any) =>
+    fetchJSON('/config/smtp', { method: 'PATCH', body: JSON.stringify(data) }),
+  testSmtpSettings: (data: any = {}) =>
+    fetchJSON('/config/smtp/test', { method: 'POST', body: JSON.stringify(data) }),
   getModelConfig: () => fetchJSON('/config/models'),
 
   // Per-user Claude credentials (each Hub user can attach their own
@@ -1028,10 +1033,31 @@ export const api = {
     fetchJSON('/auth/me/skill-credentials', { method: 'PUT', body: JSON.stringify(body) }),
   deleteSkillCredential: (id: any) =>
     fetchJSON(`/auth/me/skill-credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  startMfaEnrollment: () =>
+    fetchJSON('/auth/me/mfa/enrollment/start', { method: 'POST', body: JSON.stringify({}) }),
+  confirmMfaEnrollment: (code: any) =>
+    fetchJSON('/auth/me/mfa/enrollment/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  regenerateMfaRecoveryCodes: (code: any) =>
+    fetchJSON('/auth/me/mfa/recovery-codes/regenerate', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  disableMfa: (code: any) =>
+    fetchJSON('/auth/me/mfa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
+  resetUserMfa: (userId: any) =>
+    fetchJSON(`/auth/users/${encodeURIComponent(userId)}/mfa/reset`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
 
   getInvites: () => fetchJSON('/auth/invites'),
   createInvite: (data: any) =>
     fetchJSON('/auth/invites', { method: 'POST', body: JSON.stringify(data) }),
+  sendInviteEmail: (token: any) =>
+    fetchJSON(`/auth/invites/${encodeURIComponent(token)}/email`, { method: 'POST' }),
   revokeInvite: (token: any) =>
     fetchJSON(`/auth/invites/${encodeURIComponent(token)}`, { method: 'DELETE' }),
   previewInvite: (token: any) => fetchJSON(`/auth/invites/${encodeURIComponent(token)}`),

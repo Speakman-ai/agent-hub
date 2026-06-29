@@ -35,6 +35,16 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import request from 'supertest';
 import type { RouteDeps, Project, Agent } from '../types.js';
 
+vi.mock('../orgs.js', () => ({
+  getActiveOrgId: vi.fn(() => 'default'),
+}));
+
+vi.mock('../memberships-store.js', () => ({
+  listMembersForOrg: vi.fn(() => [
+    { userId: 'owner-a', username: 'owner@example.com', role: 'Owner', createdAt: '1' },
+  ]),
+}));
+
 interface AuthClaims {
   authUserId?: string;
   authUser?: string;
@@ -219,6 +229,157 @@ describe('agents route — project visibility filter', () => {
       const priv = projects.find((p) => p.id === 'proj-private')!;
       expect(priv.agents[0].name).toBe('Renamed');
     });
+
+    it('ignores client-supplied heartbeat owner ids when patching an agent', async () => {
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      shared.agents[0].heartbeat = {
+        enabled: false,
+        interval: '',
+        prompt: '',
+        owner_user_id: 'user-a',
+        shared: 0,
+      };
+      const app = await mount({ authUserId: 'user-a', authUser: 'alice', authRole: 'User' });
+      baseDeps.getEnrichedAgent = ((agentId: string) => {
+        const a = shared.agents[0];
+        return a.id === agentId ? { ...a, projectId: 'proj-shared' } : null;
+      }) as RouteDeps['getEnrichedAgent'];
+
+      await request(app)
+        .patch('/api/agents/a-shared')
+        .send({
+          heartbeat: {
+            prompt: 'updated',
+            owner_user_id: 'victim-user',
+            shared: 1,
+          },
+        })
+        .expect(200);
+
+      expect(shared.agents[0].heartbeat).toMatchObject({
+        prompt: 'updated',
+        owner_user_id: 'user-a',
+        shared: 1,
+      });
+    });
+
+    it('rejects heartbeat mutation by a caller who can view the agent but does not own the heartbeat', async () => {
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      shared.agents[0].heartbeat = {
+        enabled: true,
+        interval: '0 * * * *',
+        prompt: 'owned heartbeat',
+        owner_user_id: 'user-a',
+        shared: 1,
+      };
+      const app = await mount({ authUserId: 'user-b', authUser: 'bob', authRole: 'User' });
+
+      await request(app)
+        .patch('/api/agents/a-shared')
+        .send({
+          name: 'Should Not Change',
+          heartbeat: {
+            enabled: false,
+            interval: '*/5 * * * *',
+            prompt: 'hijacked',
+            shared: false,
+          },
+        })
+        .expect(403);
+
+      expect(shared.agents[0].heartbeat).toMatchObject({
+        enabled: true,
+        interval: '0 * * * *',
+        prompt: 'owned heartbeat',
+        owner_user_id: 'user-a',
+        shared: 1,
+      });
+      expect(shared.agents[0].name).toBe('Shared Agent');
+    });
+
+    it('does not let an org Owner implicitly claim an unowned heartbeat placeholder', async () => {
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      shared.agents[0].heartbeat = {
+        enabled: false,
+        interval: '',
+        prompt: '',
+        owner_user_id: null,
+        shared: 0,
+      };
+      const app = await mount({
+        authUserId: 'org-owner-id',
+        authUser: 'org-owner',
+        authRole: 'Owner',
+      });
+      baseDeps.getEnrichedAgent = ((agentId: string) => {
+        const a = shared.agents[0];
+        return a.id === agentId ? { ...a, projectId: 'proj-shared' } : null;
+      }) as RouteDeps['getEnrichedAgent'];
+
+      await request(app)
+        .patch('/api/agents/a-shared')
+        .send({
+          heartbeat: {
+            shared: true,
+          },
+        })
+        .expect(200);
+
+      expect(shared.agents[0].heartbeat).toMatchObject({
+        owner_user_id: null,
+        shared: 1,
+      });
+    });
+
+    it('rejects invalid heartbeat shared values on patch', async () => {
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      shared.agents[0].heartbeat = {
+        enabled: false,
+        interval: '',
+        prompt: '',
+        owner_user_id: 'user-a',
+        shared: 0,
+      };
+      const app = await mount({ authUserId: 'user-a', authUser: 'alice', authRole: 'User' });
+
+      await request(app)
+        .patch('/api/agents/a-shared')
+        .send({
+          heartbeat: {
+            shared: 2,
+          },
+        })
+        .expect(400);
+
+      expect(shared.agents[0].heartbeat).toMatchObject({ shared: 0 });
+    });
+
+    it('coerces string heartbeat shared values on patch', async () => {
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      shared.agents[0].heartbeat = {
+        enabled: false,
+        interval: '',
+        prompt: '',
+        owner_user_id: 'user-a',
+        shared: 1,
+      };
+      const app = await mount({ authUserId: 'user-a', authUser: 'alice', authRole: 'User' });
+      baseDeps.getEnrichedAgent = ((agentId: string) => {
+        const a = shared.agents[0];
+        return a.id === agentId ? { ...a, projectId: 'proj-shared' } : null;
+      }) as RouteDeps['getEnrichedAgent'];
+
+      await request(app)
+        .patch('/api/agents/a-shared')
+        .send({
+          heartbeat: {
+            shared: '0',
+          },
+        })
+        .expect(200);
+
+      expect(shared.agents[0].heartbeat).toMatchObject({ shared: 0 });
+    });
   });
 
   describe('POST /api/agents', () => {
@@ -232,6 +393,113 @@ describe('agents route — project visibility filter', () => {
       expect(res.body.error).toBe('Project not found');
       const priv = projects.find((p) => p.id === 'proj-private')!;
       expect(priv.agents.find((a) => a.id === 'new-agent')).toBeUndefined();
+    });
+
+    it('derives heartbeat owner from the authenticated creator and ignores spoofed owner ids', async () => {
+      const app = await mount({ authUserId: 'user-a', authUser: 'alice', authRole: 'User' });
+      baseDeps.getEnrichedAgent = ((agentId: string) => {
+        const project = projects.find((p) => p.id === 'proj-shared')!;
+        const agent = project.agents.find((a) => a.id === agentId);
+        return agent ? { ...agent, projectId: 'proj-shared' } : null;
+      }) as RouteDeps['getEnrichedAgent'];
+
+      await request(app)
+        .post('/api/agents')
+        .send({
+          id: 'new-agent',
+          projectId: 'proj-shared',
+          name: 'New Agent',
+          heartbeat: {
+            enabled: true,
+            interval: '0 * * * *',
+            prompt: 'check',
+            owner_user_id: 'victim-user',
+            shared: 1,
+          },
+        })
+        .expect(201);
+
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      expect(shared.agents.find((a) => a.id === 'new-agent')?.heartbeat).toMatchObject({
+        owner_user_id: 'user-a',
+        shared: 1,
+      });
+    });
+
+    it('leaves new agents with empty heartbeat placeholders unowned', async () => {
+      const app = await mount({ authUserId: 'user-a', authUser: 'alice', authRole: 'User' });
+      baseDeps.getEnrichedAgent = ((agentId: string) => {
+        const project = projects.find((p) => p.id === 'proj-shared')!;
+        const agent = project.agents.find((a) => a.id === agentId);
+        return agent ? { ...agent, projectId: 'proj-shared' } : null;
+      }) as RouteDeps['getEnrichedAgent'];
+
+      await request(app)
+        .post('/api/agents')
+        .send({
+          id: 'empty-heartbeat-agent',
+          projectId: 'proj-shared',
+          name: 'Empty Heartbeat Agent',
+        })
+        .expect(201);
+
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      expect(shared.agents.find((a) => a.id === 'empty-heartbeat-agent')?.heartbeat).toMatchObject({
+        enabled: false,
+        interval: '',
+        prompt: '',
+        owner_user_id: null,
+        shared: 0,
+      });
+    });
+
+    it('rejects invalid heartbeat shared values on create', async () => {
+      const app = await mount({ authUserId: 'user-a', authUser: 'alice', authRole: 'User' });
+
+      await request(app)
+        .post('/api/agents')
+        .send({
+          id: 'invalid-shared-agent',
+          projectId: 'proj-shared',
+          name: 'Invalid Shared Agent',
+          heartbeat: {
+            shared: -1,
+          },
+        })
+        .expect(400);
+
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      expect(shared.agents.find((a) => a.id === 'invalid-shared-agent')).toBeUndefined();
+    });
+
+    it('assigns the org Owner to configured heartbeats created without a request user id', async () => {
+      const app = await mount({ authViaApiKey: true, authRole: 'Owner' });
+      baseDeps.getEnrichedAgent = ((agentId: string) => {
+        const project = projects.find((p) => p.id === 'proj-shared')!;
+        const agent = project.agents.find((a) => a.id === agentId);
+        return agent ? { ...agent, projectId: 'proj-shared' } : null;
+      }) as RouteDeps['getEnrichedAgent'];
+
+      await request(app)
+        .post('/api/agents')
+        .send({
+          id: 'api-key-heartbeat-agent',
+          projectId: 'proj-shared',
+          name: 'API Key Heartbeat Agent',
+          heartbeat: {
+            enabled: true,
+            interval: '0 * * * *',
+            prompt: 'check',
+          },
+        })
+        .expect(201);
+
+      const shared = projects.find((p) => p.id === 'proj-shared')!;
+      expect(
+        shared.agents.find((a) => a.id === 'api-key-heartbeat-agent')?.heartbeat,
+      ).toMatchObject({
+        owner_user_id: 'owner-a',
+      });
     });
   });
 });

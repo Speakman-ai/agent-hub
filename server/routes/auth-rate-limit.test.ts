@@ -6,6 +6,7 @@
  *
  *   POST /api/auth/login                      — 10 / 15 min / IP (default)
  *   POST /api/auth/invites/:token/accept      — 5  / 1 h  / IP  (default)
+ *   POST /api/auth/invites/:token/email       — 10 / 15 min / IP (default)
  *
  * These tests pass tiny windowMs overrides so we can exercise the 429
  * path quickly and assert the cooldown recovers cleanly.
@@ -35,6 +36,8 @@ const {
   LOGIN_RATE_LIMIT_WINDOW_MS,
   INVITE_ACCEPT_RATE_LIMIT_MAX,
   INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS,
+  INVITE_EMAIL_RATE_LIMIT_MAX,
+  INVITE_EMAIL_RATE_LIMIT_WINDOW_MS,
 } = await import('./auth.js');
 const { reloadAuthRecord, setAuthFilePathForTests } = await import('../auth-store.js');
 const { setOrgsDbPathForTests, initOrgsDb } = await import('../orgs.js');
@@ -51,6 +54,7 @@ async function setup(app: ReturnType<typeof express>) {
     .post('/api/auth/setup')
     .send({ email: 'owner@example.com', password: 'a-strong-password' });
   if (res.status !== 200) throw new Error(`setup failed: ${res.status}`);
+  return res.body.token as string;
 }
 
 beforeEach(() => {
@@ -74,6 +78,10 @@ describe('Rate-limit defaults — pinned thresholds', () => {
   it('invite-accept defaults to 5 attempts / 1 hour / IP', () => {
     expect(INVITE_ACCEPT_RATE_LIMIT_MAX).toBe(5);
     expect(INVITE_ACCEPT_RATE_LIMIT_WINDOW_MS).toBe(60 * 60 * 1000);
+  });
+  it('invite-email defaults to 10 attempts / 15 minutes / IP', () => {
+    expect(INVITE_EMAIL_RATE_LIMIT_MAX).toBe(10);
+    expect(INVITE_EMAIL_RATE_LIMIT_WINDOW_MS).toBe(15 * 60 * 1000);
   });
 });
 
@@ -180,6 +188,32 @@ describe('POST /api/auth/invites/:token/accept — rate limit', () => {
     const blocked = await supertest(app)
       .post('/api/auth/invites/not-a-real-token/accept')
       .send({ email: 'squatter@example.com', password: 'squatters-strong-password' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers['retry-after']).toBeDefined();
+    expect(blocked.body).toMatchObject({ code: 'rate_limited' });
+  });
+});
+
+describe('POST /api/auth/invites/:token/email — rate limit', () => {
+  it('returns 429 on the 3rd rapid send attempt when configured with a 2-hit window', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      Object.assign(req, {
+        authRole: 'Owner',
+        authUserId: 'owner-user',
+        authOrgId: 'default',
+      });
+      next();
+    });
+    app.use(createAuthRoutes({ inviteEmailRateLimit: { windowMs: 60_000, limit: 2 } }));
+
+    for (let i = 0; i < 2; i++) {
+      const res = await supertest(app).post('/api/auth/invites/not-a-real-token/email').send();
+      expect(res.status).toBe(404);
+    }
+
+    const blocked = await supertest(app).post('/api/auth/invites/not-a-real-token/email').send();
     expect(blocked.status).toBe(429);
     expect(blocked.headers['retry-after']).toBeDefined();
     expect(blocked.body).toMatchObject({ code: 'rate_limited' });

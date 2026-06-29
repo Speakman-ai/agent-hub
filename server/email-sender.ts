@@ -1,22 +1,122 @@
 import nodemailer from 'nodemailer';
-import config, { fileConfig } from './config.js';
+import config from './config.js';
+import type { SmtpConfig } from './types.js';
+import { isSmtpConfigured, normalizeSmtpConfig, smtpTransportOptions } from './smtp-config.js';
 
-type SmtpTlsMode = 'none' | 'starttls' | 'ssl';
+export class EmailNotConfiguredError extends Error {
+  code = 'smtp_not_configured';
 
-interface SmtpConfig {
-  enabled?: boolean;
-  host?: string;
-  port?: number | string;
-  tlsMode?: SmtpTlsMode;
-  username?: string;
-  password?: string;
-  from?: string;
+  constructor() {
+    super('SMTP email is not configured');
+  }
 }
 
-export interface EmailSendResult {
-  sent: boolean;
-  reason?: 'smtp_not_configured' | 'send_failed';
+export interface SendEmailInput {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  smtp?: SmtpConfig;
 }
+
+export interface InviteEmailInput {
+  to: string;
+  inviteUrl: string;
+  orgName: string;
+  role: string;
+  expiresAt?: string;
+  smtp?: SmtpConfig;
+}
+
+export interface PasswordResetDeliveryStatus {
+  smtpConfigured: boolean;
+  fallbackAvailable: boolean;
+  fallback: 'owner_generated_reset_code' | null;
+}
+
+export function getPasswordResetDeliveryStatus(smtp?: SmtpConfig | null) {
+  const normalizedSmtp = normalizeSmtpConfig(smtp ?? config.smtp);
+  const smtpConfigured = isSmtpConfigured(normalizedSmtp);
+  return {
+    smtpConfigured,
+    fallbackAvailable: !smtpConfigured,
+    fallback: smtpConfigured ? null : 'owner_generated_reset_code',
+  } satisfies PasswordResetDeliveryStatus;
+}
+
+export function isSmtpDeliveryConfigured(smtp?: SmtpConfig | null): boolean {
+  return isSmtpConfigured(normalizeSmtpConfig(smtp ?? config.smtp));
+}
+
+export async function sendEmail(input: SendEmailInput) {
+  const smtp = normalizeSmtpConfig(input.smtp ?? config.smtp);
+  if (!isSmtpConfigured(smtp)) {
+    throw new EmailNotConfiguredError();
+  }
+
+  const transport = nodemailer.createTransport(smtpTransportOptions(smtp));
+  return transport.sendMail({
+    from: smtp.from,
+    to: input.to,
+    subject: input.subject,
+    text: input.text,
+    html: input.html,
+  });
+}
+
+export async function sendInviteEmail(input: InviteEmailInput) {
+  const subject = `You're invited to ${input.orgName} on Agent Hub`;
+  const expiresLabel = input.expiresAt ? formatEmailDate(input.expiresAt) : 'automatically';
+  const text = [
+    `You've been invited to join ${input.orgName} on Agent Hub as ${input.role}.`,
+    '',
+    `Accept the invite: ${input.inviteUrl}`,
+    '',
+    `This invite expires ${expiresLabel} and can only be used once.`,
+    '',
+    'If the button does not work, copy and paste the invite URL into your browser.',
+  ].join('\n');
+  const html = [
+    `<p>You've been invited to join <strong>${escapeHtml(input.orgName)}</strong> on Agent Hub as <strong>${escapeHtml(input.role)}</strong>.</p>`,
+    `<p><a href="${escapeHtml(input.inviteUrl)}">Accept the invite</a></p>`,
+    `<p>This invite expires ${escapeHtml(expiresLabel)} and can only be used once.</p>`,
+    '<p>If the button does not work, copy and paste the invite URL into your browser.</p>',
+  ].join('\n');
+
+  return sendEmail({ to: input.to, subject, text, html, smtp: input.smtp });
+}
+
+export function safeEmailError(err: unknown, smtp?: SmtpConfig): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  let safe = raw.replace(/\s+/g, ' ').trim();
+  for (const secret of [smtp?.password, smtp?.username]) {
+    if (secret) {
+      safe = safe.split(secret).join('[redacted]');
+    }
+  }
+  return safe || 'SMTP send failed';
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatEmailDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toISOString();
+}
+
+// ─── Non-throwing send + password-reset helpers ─────────────────────────────
+// The invite path uses the throwing `sendEmail` (it inspects errors via
+// `safeEmailError`). Password reset and the release-notification outbox instead
+// want a non-throwing result they can branch on, so they go through
+// `sendEmailResult`, which maps the throwing API to a `{ sent, reason }` shape.
 
 export interface EmailMessage {
   to: string;
@@ -25,33 +125,29 @@ export interface EmailMessage {
   html?: string;
 }
 
-function smtpConfig():
-  | (Required<Pick<SmtpConfig, 'host' | 'from'>> &
-      SmtpConfig & { port: number; tlsMode: SmtpTlsMode })
-  | null {
-  const raw = fileConfig.smtp as SmtpConfig | undefined;
-  if (!raw?.enabled) return null;
-  const host = typeof raw.host === 'string' ? raw.host.trim() : '';
-  const from = typeof raw.from === 'string' ? raw.from.trim() : '';
-  const port =
-    typeof raw.port === 'number'
-      ? raw.port
-      : typeof raw.port === 'string'
-        ? Number.parseInt(raw.port, 10)
-        : NaN;
-  const tlsMode: SmtpTlsMode =
-    raw.tlsMode === 'none' || raw.tlsMode === 'starttls' || raw.tlsMode === 'ssl'
-      ? raw.tlsMode
-      : 'starttls';
-  if (!host || !from || !Number.isFinite(port) || port <= 0) return null;
-  return { ...raw, host, from, port, tlsMode };
+export interface EmailSendResult {
+  sent: boolean;
+  reason?: 'smtp_not_configured' | 'send_failed';
+}
+
+export async function sendEmailResult(message: EmailMessage): Promise<EmailSendResult> {
+  try {
+    await sendEmail(message);
+    return { sent: true };
+  } catch (err) {
+    if (err instanceof EmailNotConfiguredError) {
+      return { sent: false, reason: 'smtp_not_configured' };
+    }
+    console.warn(`[email] send failed: ${(err as Error).message}`);
+    return { sent: false, reason: 'send_failed' };
+  }
 }
 
 export async function sendPasswordResetEmail(opts: {
   to: string;
   resetUrl: string;
 }): Promise<EmailSendResult> {
-  return sendEmail({
+  return sendEmailResult({
     to: opts.to,
     subject: 'Reset your Agent Hub password',
     text: [
@@ -69,39 +165,6 @@ export async function sendPasswordResetEmail(opts: {
   });
 }
 
-export async function sendEmail(message: EmailMessage): Promise<EmailSendResult> {
-  const smtp = smtpConfig();
-  if (!smtp) return { sent: false, reason: 'smtp_not_configured' };
-
-  const transporter = nodemailer.createTransport({
-    host: smtp.host,
-    port: smtp.port,
-    secure: smtp.tlsMode === 'ssl',
-    requireTLS: smtp.tlsMode === 'starttls',
-    auth:
-      smtp.username && smtp.password
-        ? {
-            user: smtp.username,
-            pass: smtp.password,
-          }
-        : undefined,
-  });
-
-  try {
-    await transporter.sendMail({
-      from: smtp.from,
-      to: message.to,
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
-    });
-    return { sent: true };
-  } catch (err) {
-    console.warn(`[email] send failed: ${(err as Error).message}`);
-    return { sent: false, reason: 'send_failed' };
-  }
-}
-
 export function buildPasswordResetPath(token: string): string {
   return `/reset?token=${encodeURIComponent(token)}`;
 }
@@ -110,8 +173,7 @@ export function buildPasswordResetUrl(token: string): string | null {
   const rawBase = process.env.PUBLIC_ORIGIN || config.publicUrl || '';
   const base = canonicalHttpOrigin(rawBase);
   if (!base) return null;
-  const path = buildPasswordResetPath(token);
-  return `${base.replace(/\/$/, '')}${path}`;
+  return `${base.replace(/\/$/, '')}${buildPasswordResetPath(token)}`;
 }
 
 export function buildOwnerPasswordResetUrl(token: string): string {
@@ -128,13 +190,4 @@ function canonicalHttpOrigin(value: string | null | undefined): string | null {
   } catch {
     return null;
   }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }

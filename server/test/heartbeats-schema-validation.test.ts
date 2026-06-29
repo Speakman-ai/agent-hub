@@ -52,7 +52,9 @@ describe('Schema validation — PUT /api/heartbeats/:agentId', () => {
       .put(`/api/heartbeats/${agent.id}`)
       .send({ enabled: true, interval: '*/30 * * * *', prompt: 'check the queue' })
       .expect(200);
-    expect((res.body as { interval: string }).interval).toBe('*/30 * * * *');
+    expect((res.body as { heartbeat: { interval: string } }).heartbeat.interval).toBe(
+      '*/30 * * * *',
+    );
   });
 
   it('accepts an empty-string interval (200) — preserves "no schedule" semantics', async () => {

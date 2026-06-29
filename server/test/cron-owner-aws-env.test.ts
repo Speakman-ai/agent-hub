@@ -112,6 +112,11 @@ describe('cron owner AWS spawn env', () => {
       `project-aws-config/${projectId}/credentials`,
     );
     expect(input.env.AGENT_HUB_AWS_PROFILE_NAMES).toBe('dev');
+
+    const session = getStmts().getSessionByCronId.get(cron.id) as
+      | { owner_user_id: string | null }
+      | undefined;
+    expect(session?.owner_user_id).toBe(ownerUserId);
   });
 
   it('keeps legacy ownerless crons on the host HOME fallback', async () => {
