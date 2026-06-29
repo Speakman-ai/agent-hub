@@ -238,6 +238,17 @@ const DeploymentReleaseItemResponseSchema = registerComponent(
   }),
 );
 
+const DeploymentReleaseDigestResponseSchema = registerComponent(
+  'DeploymentReleaseDigestResponse',
+  z.object({
+    digestMarkdown: z.string(),
+    settings: z.object({
+      isDefault: z.boolean(),
+      updatedAt: z.string().nullable(),
+    }),
+  }),
+);
+
 const DeploymentActionResponseSchema = registerComponent(
   'DeploymentActionResponse',
   z.object({
@@ -361,6 +372,28 @@ registerPath({
       content: jsonContent(DeploymentReleaseItemListResponseSchema),
     },
     404: errorResponse('Project or deployment not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deployments/{deploymentId}/release-digest',
+  tags: ['Deployments'],
+  summary: 'Generate a deployment release digest draft',
+  description:
+    'Admin+. Generates a customer-facing markdown release digest draft from included release items. The model prompt always wraps the stored project release digest prompt inside the fixed fact-bounded generation template.',
+  request: {
+    params: deploymentParams,
+    body: { content: jsonContent(z.object({}).passthrough()) },
+  },
+  responses: {
+    200: {
+      description: 'Generated release digest draft.',
+      content: jsonContent(DeploymentReleaseDigestResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or deployment not found.'),
+    500: errorResponse('Digest generation failed.'),
   },
 });
 

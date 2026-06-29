@@ -44,6 +44,7 @@ import {
   setDeploymentReleaseItemInclusion,
 } from '../deploy/deployment-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
+import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
   DeploymentCheckoutError,
   prepareDeploymentCheckout,
@@ -63,6 +64,7 @@ interface DeploymentRouteOptions {
   prepareCheckout?: (args: { project: Project; ref: string }) => Promise<CheckoutResult>;
   loadConfig?: (deployYamlPath: string) => Promise<DeployConfig>;
   orchestratorDeps?: Partial<DeployOrchestratorDeps>;
+  releaseDigestRunner?: ReleaseDigestRunner;
 }
 
 function parseMeta(meta: string | null): unknown | null {
@@ -630,6 +632,35 @@ export default function createDeploymentRoutes(
       const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
       if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
       return res.json({ releaseItems: releaseItemsDto(deployment.id) });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/deployments/:deploymentId/release-digest',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+      const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
+      if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+
+      try {
+        const result = await generateDeploymentReleaseDigest({
+          projectId,
+          deploymentId: deployment.id,
+          cfg: deps.config,
+          userId: (req as AuthenticatedRequest).authUserId ?? null,
+          runner: opts.releaseDigestRunner,
+        });
+        return res.json({
+          digestMarkdown: result.digestMarkdown,
+          settings: result.settings,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(message === 'Deployment not found' ? 404 : 500).json({ error: message });
+      }
     },
   );
 

@@ -3955,6 +3955,25 @@ components:
       required:
         - releaseItem
         - releaseItems
+    DeploymentReleaseDigestResponse:
+      type: object
+      properties:
+        digestMarkdown:
+          type: string
+        settings:
+          type: object
+          properties:
+            isDefault:
+              type: boolean
+            updatedAt:
+              type: string
+              nullable: true
+          required:
+            - isDefault
+            - updatedAt
+      required:
+        - digestMarkdown
+        - settings
     DeploymentActionResponse:
       type: object
       properties:
@@ -6090,6 +6109,44 @@ components:
         - dataDir
         - projectsDir
       description: Boot-time setup + engine status. Hit on every app load to decide whether to show the setup wizard and which engines are usable.
+    ReleaseNotificationSettings:
+      type: object
+      properties:
+        projectId:
+          type: string
+        releaseDigestPrompt:
+          type: string
+        defaultReleaseDigestPrompt:
+          type: string
+        isDefault:
+          type: boolean
+        promptMaxLength:
+          type: integer
+        factBoundedSystemTemplate:
+          type: string
+          description: Server-owned release digest generation boundary. The editable prompt is guidance only and cannot expand the allowed source facts.
+        updatedBy:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+          nullable: true
+      required:
+        - projectId
+        - releaseDigestPrompt
+        - defaultReleaseDigestPrompt
+        - isDefault
+        - promptMaxLength
+        - factBoundedSystemTemplate
+        - updatedBy
+        - updatedAt
+    ReleaseNotificationSettingsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
     UserFacingRelease:
       type: object
       properties:
@@ -16469,6 +16526,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/release-digest:
+    post:
+      tags:
+        - Deployments
+      summary: Generate a deployment release digest draft
+      description: Admin+. Generates a customer-facing markdown release digest draft from included release items. The model prompt always wraps the stored project release digest prompt inside the fixed fact-bounded generation template.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+              additionalProperties:
+                nullable: true
+      responses:
+        "200":
+          description: Generated release digest draft.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentReleaseDigestResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "500":
+          description: Digest generation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
   /api/projects/{projectId}/deployments/{deploymentId}/release-items/{cardId}:
     put:
       tags:
@@ -21718,6 +21825,116 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/release-notification-settings:
+    get:
+      tags:
+        - Deployments
+      summary: Read release notification settings
+      description: Returns per-project release notification settings, including the editable release digest guidance prompt and the fixed fact-bounded generation template.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Release notification settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettings"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+    put:
+      tags:
+        - Deployments
+      summary: Update release notification settings
+      description: Admin+ only. Stores the operator guidance prompt used by release digest generation. The prompt is always applied inside the server-owned fact-bounded template.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                releaseDigestPrompt:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+              required:
+                - releaseDigestPrompt
+      responses:
+        "200":
+          description: Updated release notification settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettings"
+        "400":
+          description: Malformed or invalid prompt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+  /api/projects/{projectId}/release-notification-settings/reset:
+    post:
+      tags:
+        - Deployments
+      summary: Reset release notification settings
+      description: Admin+ only. Clears the stored release digest prompt so the project uses the safe server default.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Settings reset to the default prompt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettings"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
   /api/releases:
     get:
       tags:

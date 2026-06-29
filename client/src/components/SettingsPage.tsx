@@ -20,6 +20,7 @@ import PerUserEngineSelect from './PerUserEngineSelect';
 import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOverride';
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
+import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar';
 import { isWorkflowProject } from '../utils/projectMode';
@@ -1133,6 +1134,8 @@ export function ProjectsSection({
       {/* Per-user default Finalize automation level for new sessions in this
           project. Scoped to the signed-in user. */}
       <ProjectDefaultAutomationSection projectId={p.id} />
+
+      <ReleaseNotificationSettingsSection projectId={p.id} showToast={showToast} />
 
       {/* Agent Hub git hosting — host the repo on the Hub itself; GitHub
           becomes an optional downstream mirror. Self-contained: fetches

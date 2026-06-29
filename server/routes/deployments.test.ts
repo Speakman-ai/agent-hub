@@ -19,10 +19,17 @@ import {
   listDeploymentApprovals,
   listDeploymentSteps,
   setEnvironmentCurrentRef,
+  setDeploymentReleaseItemInclusion,
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
 import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
-import { createSupportTicket } from '../support-tickets-store.js';
+import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
+import { updateReleaseNotificationSettings } from '../release-notification-settings.js';
+import {
+  RELEASE_DIGEST_ITEM_LIMIT,
+  RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES,
+  type ReleaseDigestRunner,
+} from '../release-digest.js';
 import createDeploymentRoutes, {
   buildDeploySetupKickoffPrompt,
   isDeploySetupWizardSession,
@@ -122,6 +129,7 @@ function makeApp(
       resolvedRef: string;
     }>;
     loadConfig?: (deployYamlPath: string) => Promise<DeployConfig>;
+    releaseDigestRunner?: ReleaseDigestRunner;
   } = {},
 ) {
   const backend = makeBackend({ autoClose: opts.autoCloseSteps, closeOnKill: opts.closeOnKill });
@@ -229,6 +237,7 @@ function makeApp(
         (async ({ ref }) => ({ worktreePath: `/tmp/deploy-${ref}`, resolvedRef: `${ref}-sha` })),
       loadConfig: opts.loadConfig ?? (async () => opts.config ?? CONFIG),
       orchestratorDeps: { runnerBackend: backend.backend, env: { PATH: '/usr/bin' } },
+      releaseDigestRunner: opts.releaseDigestRunner,
     }),
   );
   return { app, backend, deps, sessions, messages };
@@ -241,6 +250,7 @@ beforeEach(() => {
   db.exec('DELETE FROM deployment_steps;');
   db.exec('DELETE FROM deployments;');
   db.exec('DELETE FROM deployment_environments;');
+  db.exec('DELETE FROM release_notification_settings;');
   db.exec('DELETE FROM kanban_cards;');
   db.exec('DELETE FROM kanban_columns;');
   db.exec('DELETE FROM kanban_boards;');
@@ -250,7 +260,12 @@ beforeEach(() => {
 function insertReleaseCard(
   cardId: string,
   projectId = PROJECT_ID,
-  opts: { supportTicketId?: string | null; title?: string } = {},
+  opts: {
+    supportTicketId?: string | null;
+    title?: string;
+    description?: string | null;
+    labels?: string | null;
+  } = {},
 ): string {
   const boardId = `board-${cardId}`;
   const columnId = `col-${cardId}`;
@@ -267,8 +282,18 @@ function insertReleaseCard(
     0,
   );
   db.prepare(
-    'INSERT INTO kanban_cards (id, column_id, board_id, title, support_ticket_id) VALUES (?, ?, ?, ?, ?)',
-  ).run(cardId, columnId, boardId, opts.title ?? 'Release card', opts.supportTicketId ?? null);
+    `INSERT INTO kanban_cards
+       (id, column_id, board_id, title, description, labels, support_ticket_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    cardId,
+    columnId,
+    boardId,
+    opts.title ?? 'Release card',
+    opts.description ?? null,
+    opts.labels ?? null,
+    opts.supportTicketId ?? null,
+  );
   return cardId;
 }
 
@@ -584,6 +609,131 @@ environments:
       .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items`)
       .expect(200);
     expect(items.body.releaseItems).toEqual(detail.body.releaseItems);
+  });
+
+  it('generates a release digest draft with the stored project prompt inside the fixed template', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const ticket = createSupportTicket({
+      projectId: PROJECT_ID,
+      subject: 'Export fails',
+      body: 'CSV export fails for customers',
+      type: 'bug',
+    });
+    recordSupportTicketInvestigation(ticket.id, {
+      summary: 'CSV export generated blank files for paid workspaces.',
+    });
+    const includedCardId = insertReleaseCard('release-digest-included', PROJECT_ID, {
+      supportTicketId: ticket.id,
+      title: 'Fix CSV export',
+      description: 'CSV exports now include all filtered rows.',
+      labels: 'customer-facing,exports',
+    });
+    const excludedCardId = insertReleaseCard('release-digest-excluded', PROJECT_ID, {
+      title: 'Internal migration',
+    });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: includedCardId });
+    ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId: excludedCardId });
+    setDeploymentReleaseItemInclusion({
+      deploymentId: dep.id,
+      cardId: excludedCardId,
+      inclusionStatus: 'excluded',
+      adjustedBy: 'admin-1',
+      note: 'internal only',
+    });
+    updateReleaseNotificationSettings({
+      projectId: PROJECT_ID,
+      releaseDigestPrompt: 'Put support-ticket fixes first and use a concise customer tone.',
+      updatedBy: 'admin-1',
+    });
+    const prompts: string[] = [];
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      prompts.push(prompt);
+      return '## Release digest\n\nCSV export is fixed.';
+    });
+
+    const { app } = makeApp({ role: 'Admin', releaseDigestRunner });
+    const response = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest`)
+      .send({})
+      .expect(200);
+
+    expect(releaseDigestRunner).toHaveBeenCalledTimes(1);
+    expect(prompts[0]).toContain('Put support-ticket fixes first and use a concise customer tone.');
+    expect(prompts[0]).toContain('Do not expose secrets');
+    expect(prompts[0]).toContain('Fix CSV export');
+    expect(prompts[0]).toContain('CSV exports now include all filtered rows.');
+    expect(prompts[0]).toContain('customer-facing');
+    expect(prompts[0]).toContain('"status": "Done"');
+    expect(prompts[0]).toContain('Export fails');
+    expect(prompts[0]).toContain('CSV export generated blank files for paid workspaces.');
+    expect(prompts[0]).not.toContain('Internal migration');
+    expect(response.body).toMatchObject({
+      digestMarkdown: '## Release digest\n\nCSV export is fixed.',
+      settings: { isDefault: false },
+    });
+    expect(response.body).not.toHaveProperty('prompt');
+    expect(response.body).not.toHaveProperty('facts');
+  });
+
+  it('bounds oversized release digest facts before invoking the model', async () => {
+    const dep = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'production',
+      ref: 'release-sha',
+      status: 'success',
+    });
+    const longDescriptionTail = 'DESCRIPTION_TAIL_SHOULD_NOT_APPEAR';
+    const longSummaryTail = 'SUMMARY_TAIL_SHOULD_NOT_APPEAR';
+    const ticket = createSupportTicket({
+      projectId: PROJECT_ID,
+      subject: 'Large export fails',
+      body: 'CSV export fails for customers',
+      type: 'bug',
+    });
+    recordSupportTicketInvestigation(ticket.id, {
+      summary: `${'S'.repeat(RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES + 100)}${longSummaryTail}`,
+    });
+
+    for (let i = 0; i < RELEASE_DIGEST_ITEM_LIMIT + 2; i += 1) {
+      const title =
+        i >= RELEASE_DIGEST_ITEM_LIMIT ? `Beyond cap release item ${i}` : `Bulk release item ${i}`;
+      const cardId = insertReleaseCard(`release-digest-bulk-${i}`, PROJECT_ID, {
+        supportTicketId: i === 0 ? ticket.id : null,
+        title,
+        description:
+          i === 0
+            ? `${'D'.repeat(RELEASE_DIGEST_TEXT_FIELD_MAX_BYTES + 100)}${longDescriptionTail}`
+            : `Description ${i}`,
+        labels: Array.from({ length: 30 }, (_v, idx) => `label-${idx}`).join(','),
+      });
+      ensureDeploymentReleaseItem({ deploymentId: dep.id, cardId });
+    }
+
+    const prompts: string[] = [];
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      prompts.push(prompt);
+      return 'bounded digest';
+    });
+
+    const { app } = makeApp({ role: 'Admin', releaseDigestRunner });
+    await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-digest`)
+      .send({})
+      .expect(200);
+
+    expect(prompts[0]).toContain(`"maxReleaseItems": ${RELEASE_DIGEST_ITEM_LIMIT}`);
+    expect(prompts[0]).toContain('"omittedReleaseItemCount": 2');
+    expect(prompts[0]).toContain('...[truncated]');
+    expect(prompts[0]).not.toContain(longDescriptionTail);
+    expect(prompts[0]).not.toContain(longSummaryTail);
+    expect(prompts[0]).not.toContain('Beyond cap release item');
+    expect(prompts[0]).toContain('label-19');
+    expect(prompts[0]).not.toContain('label-20');
   });
 
   it('lets Admin include and exclude release items with an audit reason', async () => {

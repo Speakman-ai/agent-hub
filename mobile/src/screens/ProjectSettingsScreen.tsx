@@ -6,6 +6,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import ProjectDefaultAutomationSection from '../components/settings/ProjectDefaultAutomationSection';
+import ReleaseNotificationSettingsSection from '../components/settings/ReleaseNotificationSettingsSection';
 const PROJECT_COLORS = [
     '#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6',
 ];
@@ -139,6 +140,8 @@ export default function ProjectSettingsScreen({ route, navigation }: any) {
         <View style={{ marginTop: 12 }}>
           <ProjectDefaultAutomationSection projectId={projectId}/>
         </View>
+
+        <ReleaseNotificationSettingsSection projectId={projectId}/>
 
         <View style={styles.deleteSection}>
           <TouchableOpacity style={[styles.deleteBtn, confirmDelete && styles.deleteBtnConfirm]} onPress={handleDelete}>

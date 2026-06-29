@@ -172,6 +172,14 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
     }),
+    getReleaseNotificationSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/release-notification-settings`),
+    updateReleaseNotificationSettings: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/release-notification-settings`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
+    resetReleaseNotificationSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/release-notification-settings/reset`, {
+        method: 'POST',
+    }),
     getProjectBranches: (projectId: any) => fetchJSON(`/projects/${projectId}/branches`),
     deleteProject: (projectId: any) => fetch(`${getApiBaseUrl()}/projects/${projectId}`, {
         method: 'DELETE',

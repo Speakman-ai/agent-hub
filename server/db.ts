@@ -11,6 +11,7 @@ import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schem
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
+import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
 import {
   SECURITY_AUDIT_SCHEMA,
   migrateSecurityFindingsAddLastScanId,
@@ -999,6 +1000,10 @@ function initDb(dataDir: string): void {
   // column — CREATE TABLE IF NOT EXISTS never adds it, so legacy DBs threw
   // `no column named last_scan_id` on every scan store. Idempotent.
   migrateSecurityFindingsAddLastScanId(db);
+
+  // Per-project release notification settings. Stores only operator guidance;
+  // release digest generation remains bounded by the fixed server template.
+  db.exec(RELEASE_NOTIFICATION_SETTINGS_SCHEMA);
 
   // Native pull requests — DB-backed PRs for Agent Hub-hosted projects
   // (Project.gitHost === 'agenthub'). The PR's git side (diff, files,
@@ -3389,8 +3394,11 @@ function initDb(dataDir: string): void {
               c.title AS card_title,
               c.short_id AS card_short_id,
               c.priority AS card_priority,
+              c.description AS card_description,
+              c.labels AS card_labels,
               col.name AS card_column_name,
               st.subject AS support_ticket_subject,
+              st.ai_summary AS support_ticket_summary,
               st.status AS support_ticket_status,
               st.type AS support_ticket_type,
               st.fixed_at AS support_ticket_fixed_at,

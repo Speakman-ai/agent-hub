@@ -189,6 +189,14 @@ export interface ArtifactRow {
   created_at: string;
 }
 
+export interface ReleaseNotificationSettingsRow {
+  project_id: string;
+  release_digest_prompt: string;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * Metadata row for a record-on-error session replay. The rrweb event array
  * itself is gzipped and stored as a blob via the artifact store (see
@@ -345,8 +353,11 @@ export interface DeploymentReleaseItemDetailRow extends DeploymentReleaseItemRow
   card_title: string;
   card_short_id: number | null;
   card_priority: string | null;
+  card_description: string | null;
+  card_labels: string | null;
   card_column_name: string | null;
   support_ticket_subject: string | null;
+  support_ticket_summary: string | null;
   support_ticket_status: string | null;
   support_ticket_type: string | null;
   support_ticket_fixed_at: string | null;

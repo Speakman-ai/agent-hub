@@ -158,6 +158,30 @@ describe('api updateProject — PATCH parity with web client', () => {
     });
 });
 
+describe('api release notification settings helpers', () => {
+    it('getReleaseNotificationSettings(projectId) → GET project release settings', async () => {
+        await api.getReleaseNotificationSettings('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('updateReleaseNotificationSettings(projectId, data) → PUT with JSON body', async () => {
+        await api.updateReleaseNotificationSettings('agent-hub', {
+            releaseDigestPrompt: 'Group fixes first.',
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings');
+        expect(init.method).toBe('PUT');
+        expect(JSON.parse(init.body)).toEqual({ releaseDigestPrompt: 'Group fixes first.' });
+    });
+    it('resetReleaseNotificationSettings(projectId) → POST reset', async () => {
+        await api.resetReleaseNotificationSettings('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/reset');
+        expect(init.method).toBe('POST');
+    });
+});
+
 describe('api invite helpers — mobile parity with web client', () => {
     it('getInvites → GET /auth/invites', async () => {
         await api.getInvites();
