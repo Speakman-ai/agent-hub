@@ -1,11 +1,12 @@
 import type { Request } from 'express';
 import type { AuthenticatedRequest } from './auth.js';
 import { resolveVisibilityCaller } from './project-visibility-middleware.js';
-import { maskReporterEmail } from './support-tickets-store.js';
-import type { SupportTicketRow } from './types.js';
+import { deriveSupportTicketReleaseState, maskReporterEmail } from './support-tickets-store.js';
+import type { SupportTicketReleaseState, SupportTicketRow } from './types.js';
 
 export type SupportTicketResponse = SupportTicketRow & {
   reporter_email_masked: boolean;
+  release_state: SupportTicketReleaseState | null;
 };
 
 export interface LinkedSupportTicketMetadata {
@@ -19,6 +20,11 @@ export interface LinkedSupportTicketMetadata {
   reporter_email: string | null;
   reporter_email_masked: boolean;
   converted_card_id: string | null;
+  release_state: SupportTicketReleaseState | null;
+  fixed_at: string | null;
+  released_to_prod_at: string | null;
+  release_deployment_id: string | null;
+  customer_notified_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -39,6 +45,7 @@ export function serializeSupportTicket(
       ? ticket.reporter_email
       : maskReporterEmail(ticket.reporter_email),
     reporter_email_masked: hasEmail && !opts.canReadReporterEmail,
+    release_state: deriveSupportTicketReleaseState(ticket),
   };
 }
 
@@ -71,6 +78,11 @@ export function linkedSupportTicketMetadata(
     reporter_email: serialized.reporter_email,
     reporter_email_masked: serialized.reporter_email_masked,
     converted_card_id: serialized.converted_card_id,
+    release_state: serialized.release_state,
+    fixed_at: serialized.fixed_at,
+    released_to_prod_at: serialized.released_to_prod_at,
+    release_deployment_id: serialized.release_deployment_id,
+    customer_notified_at: serialized.customer_notified_at,
     created_at: serialized.created_at,
     updated_at: serialized.updated_at,
   };

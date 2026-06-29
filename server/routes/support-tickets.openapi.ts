@@ -13,6 +13,7 @@ import { KanbanCardComponent, MAX_ASSIGNMENT_COMMENT_LEN } from './board.openapi
 const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as const;
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
+const RELEASE_STATES = ['fixed_pending_release', 'released_to_prod', 'customer_notified'] as const;
 
 const ErrorResponse = registerComponent(
   'SupportTicketErrorResponse',
@@ -52,6 +53,22 @@ export const SupportTicketComponent = registerComponent(
       converted_card_id: z.string().nullable(),
       wont_do_reason: z.string().nullable().openapi({
         description: "Operator reason the ticket was marked 'wont_do', or null otherwise.",
+      }),
+      release_state: z.enum(RELEASE_STATES).nullable().openapi({
+        description:
+          'Derived release-facing state. fixed_pending_release means a linked card reached Done, released_to_prod means a production deployment included the card/ticket, and customer_notified means the reporter notification has been sent.',
+      }),
+      fixed_at: z.string().nullable().openapi({
+        description: 'Timestamp when a linked kanban card first reached Done, or null.',
+      }),
+      released_to_prod_at: z.string().nullable().openapi({
+        description: 'Timestamp when a production deployment released this ticket, or null.',
+      }),
+      release_deployment_id: z.string().nullable().openapi({
+        description: 'Deployment id that first released this ticket to production, or null.',
+      }),
+      customer_notified_at: z.string().nullable().openapi({
+        description: 'Timestamp when a reporter notification was sent, or null.',
       }),
       read_at: z
         .string()

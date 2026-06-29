@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect, vi } from 'vitest';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, } from './supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, } from './supportTickets';
 vi.mock('./config', () => ({
     getServerBaseUrl: () => 'https://hub.example.com',
 }));
@@ -54,6 +54,17 @@ describe('resolveUploadUrl', () => {
         expect(resolveUploadUrl('https://cdn.test/shot.png')).toBe('https://cdn.test/shot.png');
         expect(resolveUploadUrl(null)).toBe(null);
         expect(resolveReplayUrl).toBe(resolveUploadUrl);
+    });
+});
+describe('releaseStateLabel', () => {
+    it('maps release-facing support-ticket states to compact queue labels', () => {
+        expect(releaseStateLabel('fixed_pending_release')).toBe('Fixed, pending release');
+        expect(releaseStateLabel('released_to_prod')).toBe('Released');
+        expect(releaseStateLabel('customer_notified')).toBe('Customer notified');
+    });
+    it('returns null for empty state and falls back for forward-compatible states', () => {
+        expect(releaseStateLabel(null)).toBeNull();
+        expect(releaseStateLabel('future_state')).toBe('future_state');
     });
 });
 describe('performTicketDelete', () => {

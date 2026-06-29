@@ -15,6 +15,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getStmts, getDb } from './db.js';
 import type {
   SupportTicketRow,
+  SupportTicketReleaseState,
   SupportTicketType,
   SupportTicketSeverity,
   SupportTicketStatus,
@@ -43,6 +44,12 @@ export const SUPPORT_TICKET_STATUSES = [
   'duplicate',
   'wont_do',
 ] as const satisfies readonly SupportTicketStatus[];
+
+export const SUPPORT_TICKET_RELEASE_STATES = [
+  'fixed_pending_release',
+  'released_to_prod',
+  'customer_notified',
+] as const satisfies readonly SupportTicketReleaseState[];
 
 /**
  * The "open" lifecycle states — the queue's default view. Everything else
@@ -98,6 +105,15 @@ export function maskReporterEmail(email: string | null | undefined): string | nu
   if (!local || !domain) return '***';
   const visible = local.slice(0, Math.min(2, local.length));
   return `${visible}${'*'.repeat(Math.max(3, local.length - visible.length))}@${domain}`;
+}
+
+export function deriveSupportTicketReleaseState(
+  ticket: Pick<SupportTicketRow, 'fixed_at' | 'released_to_prod_at' | 'customer_notified_at'>,
+): SupportTicketReleaseState | null {
+  if (ticket.customer_notified_at) return 'customer_notified';
+  if (ticket.released_to_prod_at) return 'released_to_prod';
+  if (ticket.fixed_at) return 'fixed_pending_release';
+  return null;
 }
 
 /**
@@ -362,6 +378,120 @@ export function convertSupportTicketToCard(id: string, cardId: string): SupportT
   if (!getSupportTicket(id)) return null;
   getStmts().convertSupportTicketToCard.run(cardId, id);
   return getSupportTicket(id);
+}
+
+function uniqueStrings(values: unknown[]): string[] {
+  return [
+    ...new Set(
+      values
+        .filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+        .map((v) => v.trim()),
+    ),
+  ];
+}
+
+function rowsByIds(ids: string[]): SupportTicketRow[] {
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  return getDb()
+    .prepare(`SELECT * FROM support_tickets WHERE id IN (${placeholders}) ORDER BY rowid ASC`)
+    .all(...ids) as SupportTicketRow[];
+}
+
+function supportTicketIdsForCards(projectId: string, cardIds: string[]): string[] {
+  if (!cardIds.length) return [];
+  const placeholders = cardIds.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT st.id
+         FROM kanban_cards c
+         JOIN kanban_boards b
+           ON b.id = c.board_id
+          AND b.project_id = ?
+         JOIN support_tickets st
+           ON st.project_id = ?
+          AND (
+            st.id = COALESCE(c.support_ticket_id, c.customer_report_id)
+            OR st.converted_card_id = c.id
+          )
+        WHERE c.id IN (${placeholders})`,
+    )
+    .all(projectId, projectId, ...cardIds) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
+}
+
+export function markSupportTicketsFixedPendingReleaseForCard(
+  projectId: string,
+  cardId: string,
+): SupportTicketRow[] {
+  const ticketIds = supportTicketIdsForCards(projectId, uniqueStrings([cardId]));
+  if (!ticketIds.length) return [];
+  const placeholders = ticketIds.map(() => '?').join(',');
+  getDb()
+    .prepare(
+      `UPDATE support_tickets
+          SET fixed_at = COALESCE(fixed_at, datetime('now')),
+              updated_at = datetime('now')
+        WHERE id IN (${placeholders})
+          AND fixed_at IS NULL`,
+    )
+    .run(...ticketIds);
+  return rowsByIds(ticketIds);
+}
+
+export function markSupportTicketsReleasedToProd(input: {
+  projectId: string;
+  deploymentId: string;
+  cardIds?: string[];
+  supportTicketIds?: string[];
+}): SupportTicketRow[] {
+  const directIds = uniqueStrings(input.supportTicketIds ?? []);
+  const directTicketIds = directIds.length
+    ? (
+        getDb()
+          .prepare(
+            `SELECT id
+               FROM support_tickets
+              WHERE project_id = ?
+                AND id IN (${directIds.map(() => '?').join(',')})`,
+          )
+          .all(input.projectId, ...directIds) as Array<{ id: string }>
+      ).map((row) => row.id)
+    : [];
+  const ids = uniqueStrings([
+    ...directTicketIds,
+    ...supportTicketIdsForCards(input.projectId, uniqueStrings(input.cardIds ?? [])),
+  ]);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  getDb()
+    .prepare(
+      `UPDATE support_tickets
+          SET fixed_at = COALESCE(fixed_at, datetime('now')),
+              released_to_prod_at = COALESCE(released_to_prod_at, datetime('now')),
+              release_deployment_id = COALESCE(release_deployment_id, ?),
+              updated_at = datetime('now')
+        WHERE id IN (${placeholders})`,
+    )
+    .run(input.deploymentId, ...ids);
+  return rowsByIds(ids);
+}
+
+export function markSupportTicketsCustomerNotified(ids: string[]): SupportTicketRow[] {
+  const ticketIds = uniqueStrings(ids);
+  if (!ticketIds.length) return [];
+  const placeholders = ticketIds.map(() => '?').join(',');
+  getDb()
+    .prepare(
+      `UPDATE support_tickets
+          SET fixed_at = COALESCE(fixed_at, datetime('now')),
+              released_to_prod_at = COALESCE(released_to_prod_at, datetime('now')),
+              customer_notified_at = COALESCE(customer_notified_at, datetime('now')),
+              updated_at = datetime('now')
+        WHERE id IN (${placeholders})`,
+    )
+    .run(...ticketIds);
+  return rowsByIds(ticketIds);
 }
 
 /**

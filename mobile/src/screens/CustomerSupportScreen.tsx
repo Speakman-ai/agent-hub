@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
-import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, } from '../utils/supportTickets';
+import { sortTickets, resolveReplayUrl, resolveUploadUrl, performTicketDelete, releaseStateLabel, } from '../utils/supportTickets';
 import { SidebarContext } from '../context/SidebarContext';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
@@ -60,6 +60,7 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
     const isConverted = item.status === 'converted' || !!item.converted_card_id;
     const isUnread = !item.read_at;
     const reporterLabel = reporterText(item);
+    const releaseLabel = releaseStateLabel(item.release_state);
     const [converting, setConverting] = useState(false);
     const [convertError, setConvertError] = useState<any>(null);
     // Tri-state auto-merge: only send an explicit preference once the user
@@ -125,6 +126,9 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
         <View style={styles.statusBadge}>
           <Text style={styles.statusText}>{STATUS_LABEL[item.status] || item.status}</Text>
         </View>
+        {releaseLabel ? (<View style={styles.releaseBadge}>
+          <Text style={styles.releaseText}>{releaseLabel}</Text>
+        </View>) : null}
         <Text style={styles.time}>{relativeTime(item.created_at)}</Text>
       </View>
 
@@ -589,6 +593,15 @@ const styles = StyleSheet.create({
         backgroundColor: colors.gray700_40,
     },
     statusText: { fontSize: 10, color: colors.gray500 },
+    releaseBadge: {
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: colors.emerald500,
+        backgroundColor: colors.gray900,
+    },
+    releaseText: { fontSize: 10, color: colors.emerald300, fontWeight: '600' },
     time: { fontSize: 11, color: colors.gray600, marginLeft: 'auto' },
     cardTitle: { fontSize: 14, color: colors.gray200, fontWeight: '600', marginTop: 6 },
     cardTitleUnread: { color: colors.white, fontWeight: '700' },

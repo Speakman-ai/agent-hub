@@ -65,11 +65,39 @@ const STATUS_LABEL = {
   wont_do: "Won't do",
 } as Record<string, any>;
 
+const RELEASE_STATE_LABEL = {
+  fixed_pending_release: 'Fixed, pending release',
+  released_to_prod: 'Released',
+  customer_notified: 'Customer notified',
+} as Record<string, any>;
+
+const RELEASE_STATE_BADGE = {
+  fixed_pending_release: 'bg-sky-500/10 text-sky-300 border-sky-500/30',
+  released_to_prod: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
+  customer_notified: 'bg-teal-500/10 text-teal-300 border-teal-500/30',
+} as Record<string, any>;
+
 const ALL_STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'];
 
 function reporterText(ticket: any) {
   const parts = [ticket.reporter, ticket.reporter_email].filter(Boolean);
   return parts.length ? `Reported by ${parts.join(' · ')}` : '';
+}
+
+function ReleaseStateBadge({ ticket }: { ticket: any }) {
+  const state = ticket.release_state;
+  if (!state) return null;
+  return (
+    <span
+      data-testid="ticket-release-state"
+      className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+        RELEASE_STATE_BADGE[state] || RELEASE_STATE_BADGE.fixed_pending_release
+      }`}
+      title={RELEASE_STATE_LABEL[state] || state}
+    >
+      {RELEASE_STATE_LABEL[state] || state}
+    </span>
+  );
 }
 
 // Filter groups. The default ("Open") shows only the working states; the
@@ -598,6 +626,7 @@ function SupportTicketCard({
               </span>
               <TypeSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
               <StatusSelect projectId={projectId} ticket={ticket} stretched onUpdated={onUpdated} />
+              <ReleaseStateBadge ticket={ticket} />
               <span className="text-[11px] text-gray-600 ml-auto">
                 {relativeTime(ticket.created_at)}
               </span>

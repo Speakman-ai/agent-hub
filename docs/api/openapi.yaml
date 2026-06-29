@@ -1448,6 +1448,26 @@ components:
         converted_card_id:
           type: string
           nullable: true
+        release_state:
+          type: string
+          nullable: true
+          enum:
+            - fixed_pending_release
+            - released_to_prod
+            - customer_notified
+            - null
+        fixed_at:
+          type: string
+          nullable: true
+        released_to_prod_at:
+          type: string
+          nullable: true
+        release_deployment_id:
+          type: string
+          nullable: true
+        customer_notified_at:
+          type: string
+          nullable: true
         created_at:
           type: string
         updated_at:
@@ -1463,6 +1483,11 @@ components:
         - reporter_email
         - reporter_email_masked
         - converted_card_id
+        - release_state
+        - fixed_at
+        - released_to_prod_at
+        - release_deployment_id
+        - customer_notified_at
         - created_at
         - updated_at
       description: Safe support-ticket metadata attached to a converted kanban card. The full ticket body and raw reporter contact stay on the support-ticket record.
@@ -1617,6 +1642,26 @@ components:
             converted_card_id:
               type: string
               nullable: true
+            release_state:
+              type: string
+              nullable: true
+              enum:
+                - fixed_pending_release
+                - released_to_prod
+                - customer_notified
+                - null
+            fixed_at:
+              type: string
+              nullable: true
+            released_to_prod_at:
+              type: string
+              nullable: true
+            release_deployment_id:
+              type: string
+              nullable: true
+            customer_notified_at:
+              type: string
+              nullable: true
             created_at:
               type: string
             updated_at:
@@ -1632,6 +1677,11 @@ components:
             - reporter_email
             - reporter_email_masked
             - converted_card_id
+            - release_state
+            - fixed_at
+            - released_to_prod_at
+            - release_deployment_id
+            - customer_notified_at
             - created_at
             - updated_at
           description: Safe linked support-ticket metadata for converted cards. reporter_email is role-gated/masked.
@@ -7582,6 +7632,31 @@ components:
           type: string
           nullable: true
           description: Operator reason the ticket was marked 'wont_do', or null otherwise.
+        release_state:
+          type: string
+          nullable: true
+          enum:
+            - fixed_pending_release
+            - released_to_prod
+            - customer_notified
+            - null
+          description: Derived release-facing state. fixed_pending_release means a linked card reached Done, released_to_prod means a production deployment included the card/ticket, and customer_notified means the reporter notification has been sent.
+        fixed_at:
+          type: string
+          nullable: true
+          description: Timestamp when a linked kanban card first reached Done, or null.
+        released_to_prod_at:
+          type: string
+          nullable: true
+          description: Timestamp when a production deployment released this ticket, or null.
+        release_deployment_id:
+          type: string
+          nullable: true
+          description: Deployment id that first released this ticket to production, or null.
+        customer_notified_at:
+          type: string
+          nullable: true
+          description: Timestamp when a reporter notification was sent, or null.
         read_at:
           type: string
           nullable: true
@@ -7608,6 +7683,11 @@ components:
         - screenshot_ref
         - converted_card_id
         - wont_do_reason
+        - release_state
+        - fixed_at
+        - released_to_prod_at
+        - release_deployment_id
+        - customer_notified_at
         - read_at
         - created_at
         - updated_at

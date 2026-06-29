@@ -87,6 +87,13 @@ const LinkedSupportTicketComponent = registerComponent(
         description: 'True when reporter_email is present but masked for this response.',
       }),
       converted_card_id: z.string().nullable(),
+      release_state: z
+        .enum(['fixed_pending_release', 'released_to_prod', 'customer_notified'])
+        .nullable(),
+      fixed_at: z.string().nullable(),
+      released_to_prod_at: z.string().nullable(),
+      release_deployment_id: z.string().nullable(),
+      customer_notified_at: z.string().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
     })

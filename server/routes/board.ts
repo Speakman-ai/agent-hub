@@ -56,8 +56,13 @@ import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
 import {
   canReadReporterEmail,
   linkedSupportTicketMetadata,
+  serializeSupportTicketForBroadcast,
   type LinkedSupportTicketMetadata,
 } from '../support-ticket-serialization.js';
+import {
+  countUnreadSupportTickets,
+  markSupportTicketsFixedPendingReleaseForCard,
+} from '../support-tickets-store.js';
 import {
   buildSpikeSessionContext,
   buildSpikeSessionContextFallback,
@@ -1171,6 +1176,19 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
             sessionId: updatedCard.session_id || undefined,
             agentId,
           });
+          if (String(col.name || '') === 'Done') {
+            for (const ticket of markSupportTicketsFixedPendingReleaseForCard(
+              req.params.projectId as string,
+              updatedCard.id,
+            )) {
+              broadcast({
+                type: 'support_ticket_updated',
+                projectId: ticket.project_id,
+                unreadCount: countUnreadSupportTickets(ticket.project_id),
+                ticket: serializeSupportTicketForBroadcast(ticket),
+              });
+            }
+          }
           // Live merged trigger: when a session-linked card crosses a column
           // boundary (e.g. a PR merge or a human drag lands it in Done), the
           // session's resolved lifecycle state changes — typically to `merged`.

@@ -4,6 +4,14 @@ import { getServerBaseUrl } from './config';
 // Severity → sort rank (most urgent first). Mirrors the server ORDER BY so
 // WebSocket-inserted rows land in the right place without a refetch.
 export const SEVERITY_RANK: Record<string, any> = { critical: 0, high: 1, medium: 2, low: 3 };
+export const RELEASE_STATE_LABEL: Record<string, any> = {
+    fixed_pending_release: 'Fixed, pending release',
+    released_to_prod: 'Released',
+    customer_notified: 'Customer notified',
+};
+export function releaseStateLabel(state: any) {
+    return state ? RELEASE_STATE_LABEL[state] || String(state) : null;
+}
 export function sortTickets(list: any) {
     return [...list].sort((a: any, b: any) => {
         const sa = SEVERITY_RANK[a.severity] ?? 4;

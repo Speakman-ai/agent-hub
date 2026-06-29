@@ -17,6 +17,9 @@ import {
   markSupportTicketUnread,
   markAllSupportTicketsRead,
   countUnreadSupportTickets,
+  deriveSupportTicketReleaseState,
+  markSupportTicketsCustomerNotified,
+  markSupportTicketsReleasedToProd,
   SUPPORT_TICKET_SEVERITIES,
 } from './support-tickets-store.js';
 import { getDb } from './db.js';
@@ -52,6 +55,11 @@ describe('support-tickets-store — create', () => {
     expect(t.replay_ref).toBeNull();
     expect(t.converted_card_id).toBeNull();
     expect(t.ai_investigated_at).toBeNull();
+    expect(t.fixed_at).toBeNull();
+    expect(t.released_to_prod_at).toBeNull();
+    expect(t.release_deployment_id).toBeNull();
+    expect(t.customer_notified_at).toBeNull();
+    expect(deriveSupportTicketReleaseState(t)).toBeNull();
   });
 
   it('persists explicit type, severity, subject, reporter, reporterEmail, replayRef', () => {
@@ -246,6 +254,24 @@ describe('support-tickets-store — lifecycle & mutations', () => {
     expect(deleteSupportTicket(t.id)).toBe(true);
     expect(getSupportTicket(t.id)).toBeNull();
     expect(deleteSupportTicket(t.id)).toBe(false);
+  });
+
+  it('derives release-facing state from fixed, released, and notified timestamps', () => {
+    const t = createSupportTicket({ projectId: 'p1', body: 'b' });
+
+    const released = markSupportTicketsReleasedToProd({
+      projectId: 'p1',
+      deploymentId: 'dep-1',
+      supportTicketIds: [t.id],
+    })[0]!;
+    expect(released.fixed_at).toBeTruthy();
+    expect(released.released_to_prod_at).toBeTruthy();
+    expect(released.release_deployment_id).toBe('dep-1');
+    expect(deriveSupportTicketReleaseState(released)).toBe('released_to_prod');
+
+    const notified = markSupportTicketsCustomerNotified([t.id])[0]!;
+    expect(notified.customer_notified_at).toBeTruthy();
+    expect(deriveSupportTicketReleaseState(notified)).toBe('customer_notified');
   });
 });
 

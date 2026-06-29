@@ -66,6 +66,11 @@ import {
   type DeployEnvironmentConfig,
   type DeployStep,
 } from './deploy-config.js';
+import {
+  countUnreadSupportTickets,
+  markSupportTicketsReleasedToProd,
+} from '../support-tickets-store.js';
+import { serializeSupportTicketForBroadcast } from '../support-ticket-serialization.js';
 
 /** Max lines of combined step output retained for the failure message / step error. */
 const STEP_TAIL_LINES = 50;
@@ -324,6 +329,76 @@ function parseDeploymentPlan(deployment: DeploymentRow): DeploymentPlanSnapshot 
       steps: parsedSteps,
     },
   };
+}
+
+function stringListFromMetaValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .flatMap((item) => {
+      if (typeof item === 'string') return [item];
+      if (!isRecord(item)) return [];
+      const id =
+        item.id ?? item.cardId ?? item.card_id ?? item.supportTicketId ?? item.support_ticket_id;
+      return typeof id === 'string' ? [id] : [];
+    })
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+function parseReleaseInclusionMeta(metaText: string | null): {
+  cardIds: string[];
+  supportTicketIds: string[];
+} {
+  if (!metaText) return { cardIds: [], supportTicketIds: [] };
+  let meta: unknown;
+  try {
+    meta = JSON.parse(metaText);
+  } catch {
+    return { cardIds: [], supportTicketIds: [] };
+  }
+  if (!isRecord(meta)) return { cardIds: [], supportTicketIds: [] };
+  const cardIds = [
+    ...stringListFromMetaValue(meta.cardIds),
+    ...stringListFromMetaValue(meta.card_ids),
+    ...stringListFromMetaValue(meta.cards),
+  ];
+  const supportTicketIds = [
+    ...stringListFromMetaValue(meta.supportTicketIds),
+    ...stringListFromMetaValue(meta.support_ticket_ids),
+    ...stringListFromMetaValue(meta.supportTickets),
+    ...stringListFromMetaValue(meta.support_tickets),
+  ];
+  return {
+    cardIds: [...new Set(cardIds)],
+    supportTicketIds: [...new Set(supportTicketIds)],
+  };
+}
+
+function isProductionEnvironment(environment: string): boolean {
+  const normalized = environment.trim().toLowerCase();
+  return normalized === 'prod' || normalized === 'production';
+}
+
+function markReleasedSupportTicketsForDeployment(
+  deps: DeployOrchestratorDeps,
+  deployment: DeploymentRow,
+): void {
+  if (!isProductionEnvironment(deployment.environment)) return;
+  const { cardIds, supportTicketIds } = parseReleaseInclusionMeta(deployment.meta);
+  if (!cardIds.length && !supportTicketIds.length) return;
+  for (const ticket of markSupportTicketsReleasedToProd({
+    projectId: deployment.project_id,
+    deploymentId: deployment.id,
+    cardIds,
+    supportTicketIds,
+  })) {
+    deps.broadcast({
+      type: 'support_ticket_updated',
+      projectId: ticket.project_id,
+      unreadCount: countUnreadSupportTickets(ticket.project_id),
+      ticket: serializeSupportTicketForBroadcast(ticket),
+    });
+  }
 }
 
 function cleanupDeploymentWorktree(worktreePath: string, deploymentId: string): void {
@@ -724,7 +799,8 @@ export async function runDeployment(
 
   // Success: record the now-live ref on the environment, then mark success.
   setEnvironmentCurrentRef(projectId, environment, ref, deploymentId);
-  updateDeploymentStatus(deploymentId, 'success');
+  const successDeployment = updateDeploymentStatus(deploymentId, 'success');
+  if (successDeployment) markReleasedSupportTicketsForDeployment(deps, successDeployment);
   emitDeploymentUpdate(deps, projectId, deploymentId);
   return getDeployment(deploymentId) as DeploymentRow;
 }

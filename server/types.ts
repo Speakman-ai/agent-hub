@@ -1068,6 +1068,10 @@ export type SupportTicketStatus =
   | 'closed'
   | 'duplicate'
   | 'wont_do';
+export type SupportTicketReleaseState =
+  | 'fixed_pending_release'
+  | 'released_to_prod'
+  | 'customer_notified';
 
 export interface SupportTicketRow {
   id: string;
@@ -1095,6 +1099,14 @@ export interface SupportTicketRow {
   // Operator-supplied reason a ticket was marked "wont_do". Required when the
   // status is 'wont_do'; null/cleared for every other status.
   wont_do_reason: string | null;
+  // Release-facing lifecycle. Derived API state is:
+  // fixed_pending_release when fixed_at is set,
+  // released_to_prod when released_to_prod_at is set,
+  // customer_notified when customer_notified_at is set.
+  fixed_at: string | null;
+  released_to_prod_at: string | null;
+  release_deployment_id: string | null;
+  customer_notified_at: string | null;
   // Timestamp a human first viewed the ticket, or null when still unread.
   // Drives the per-project unread counter on the Support sidebar item.
   read_at: string | null;

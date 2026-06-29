@@ -39,6 +39,11 @@ function ticket(overrides: any = {}) {
     ai_investigated_at: null,
     replay_ref: null,
     converted_card_id: null,
+    release_state: null,
+    fixed_at: null,
+    released_to_prod_at: null,
+    release_deployment_id: null,
+    customer_notified_at: null,
     created_at: '2026-06-14 10:00:00',
     updated_at: '2026-06-14 10:00:00',
     ...overrides,
@@ -402,6 +407,22 @@ describe('CustomerSupportPage — ticket detail view', () => {
     render(<CustomerSupportPage projectId="proj-1" />);
     await waitFor(() => expect(screen.getByText('Something broke')).toBeInTheDocument());
     expect(screen.queryByTestId('ticket-screenshot-thumb')).toBeNull();
+  });
+
+  it('shows the release-facing state as a compact badge', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({
+        id: 't1',
+        subject: 'Ready for customer',
+        release_state: 'released_to_prod',
+        fixed_at: '2026-06-14 10:00:00',
+        released_to_prod_at: '2026-06-15 10:00:00',
+        release_deployment_id: 'dep-1',
+      }),
+    ]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByText('Ready for customer')).toBeInTheDocument());
+    expect(screen.getByTestId('ticket-release-state')).toHaveTextContent('Released');
   });
 
   it('propagates same-ticket WebSocket updates into the open detail modal', async () => {

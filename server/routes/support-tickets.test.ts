@@ -229,6 +229,10 @@ describe('support-tickets routes', () => {
         screenshot_ref: null,
         converted_card_id: null,
         wont_do_reason: null,
+        fixed_at: null,
+        released_to_prod_at: null,
+        release_deployment_id: null,
+        customer_notified_at: null,
         read_at: null,
         created_at: '2026-06-29 00:00:00',
         updated_at: '2026-06-29 00:00:00',
@@ -1020,5 +1024,36 @@ describe('support-tickets routes', () => {
       .get(`/api/projects/${projectId}/support-tickets/${id}`)
       .expect(200);
     expect(detail.body.wont_do_reason).toBeNull();
+  });
+
+  it('marks a linked ticket fixed pending release when its converted card moves to Done', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'released later', severity: 'medium', type: 'bug' })
+      .expect(201);
+    expect(created.body.release_state).toBeNull();
+
+    const convert = await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/convert`)
+      .expect(201);
+    const cardId = convert.body.card.id as string;
+
+    const board = await request.get(`/api/projects/${projectId}/board`).expect(200);
+    const doneColumn = board.body.columns.find((col: { name: string }) => col.name === 'Done');
+    expect(doneColumn).toBeTruthy();
+
+    await request
+      .post(`/api/projects/${projectId}/board/cards/${cardId}/move`)
+      .send({ columnId: doneColumn.id, position: 0 })
+      .expect(200);
+
+    const detail = await request
+      .get(`/api/projects/${projectId}/support-tickets/${created.body.id}`)
+      .expect(200);
+    expect(detail.body.release_state).toBe('fixed_pending_release');
+    expect(detail.body.fixed_at).toBeTruthy();
+    expect(detail.body.released_to_prod_at).toBeNull();
+    expect(detail.body.customer_notified_at).toBeNull();
   });
 });

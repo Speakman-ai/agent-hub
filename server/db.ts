@@ -746,6 +746,13 @@ function initDb(dataDir: string): void {
       -- project, not per-user (matches escalations.acknowledged). See migration
       -- block below for existing installs.
       read_at TEXT,
+      -- Release-facing lifecycle. release_state is derived in route
+      -- serialization from these timestamps so support-ticket status remains
+      -- independent from card/deploy/customer notification state.
+      fixed_at TEXT,
+      released_to_prod_at TEXT,
+      release_deployment_id TEXT,
+      customer_notified_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -1438,6 +1445,19 @@ function initDb(dataDir: string): void {
     db.exec('ALTER TABLE support_tickets ADD COLUMN wont_do_reason TEXT');
   }
 
+  for (const [column, ddl] of [
+    ['fixed_at', 'ALTER TABLE support_tickets ADD COLUMN fixed_at TEXT'],
+    ['released_to_prod_at', 'ALTER TABLE support_tickets ADD COLUMN released_to_prod_at TEXT'],
+    ['release_deployment_id', 'ALTER TABLE support_tickets ADD COLUMN release_deployment_id TEXT'],
+    ['customer_notified_at', 'ALTER TABLE support_tickets ADD COLUMN customer_notified_at TEXT'],
+  ] as const) {
+    try {
+      db.prepare(`SELECT ${column} FROM support_tickets LIMIT 1`).get();
+    } catch {
+      db.exec(ddl);
+    }
+  }
+
   // Widen the support_tickets.status CHECK to allow the 'duplicate' and
   // 'wont_do' lifecycle states. SQLite can't ALTER a CHECK in place, so when an
   // existing install's table DDL predates these states we rebuild the table
@@ -1477,6 +1497,10 @@ function initDb(dataDir: string): void {
             screenshot_ref TEXT,
             converted_card_id TEXT,
             read_at TEXT,
+            fixed_at TEXT,
+            released_to_prod_at TEXT,
+            release_deployment_id TEXT,
+            customer_notified_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
           );
@@ -1484,10 +1508,12 @@ function initDb(dataDir: string): void {
             (id, project_id, type, severity, status, subject, body, reporter, reporter_email,
              ai_summary, ai_investigation, ai_investigated_at, replay_ref,
              wont_do_reason, screenshot_ref, converted_card_id, read_at,
+             fixed_at, released_to_prod_at, release_deployment_id, customer_notified_at,
              created_at, updated_at)
             SELECT id, project_id, type, severity, status, subject, body, reporter, reporter_email,
              ai_summary, ai_investigation, ai_investigated_at, replay_ref,
              wont_do_reason, screenshot_ref, converted_card_id, read_at,
+             fixed_at, released_to_prod_at, release_deployment_id, customer_notified_at,
              created_at, updated_at
             FROM support_tickets;
           DROP TABLE support_tickets;
