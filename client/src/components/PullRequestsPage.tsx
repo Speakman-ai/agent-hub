@@ -1407,6 +1407,14 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
         ),
     [branchData, defaultBranch, excludedBranches],
   );
+  // Stable content key for the candidate set. The branch-scan effect below keys off
+  // this string, not the `rawCandidates` array identity — otherwise any parent
+  // re-render (soft refresh, WS event) that hands down a fresh `excludedBranches`
+  // Set would churn `rawCandidates` and re-trigger the whole scan, resetting every
+  // entry to `{loading:true}` and re-hammering the server (AH-1251).
+  const rawCandidatesKey = useMemo(() => rawCandidates.join('\n'), [rawCandidates]);
+  const rawCandidatesRef = useRef<any[]>(rawCandidates);
+  rawCandidatesRef.current = rawCandidates;
   const candidates = rawCandidates.filter((name: any) => candidateChanges[name]?.hasChanges);
   const candidateScanDone =
     branchData !== null &&
@@ -1420,16 +1428,15 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
   useEffect(() => {
     let alive = true;
     if (branchData === null) return () => {};
-    if (rawCandidates.length === 0) {
+    const names = rawCandidatesRef.current;
+    if (names.length === 0) {
       setCandidateChanges({});
       return () => {
         alive = false;
       };
     }
-    setCandidateChanges(
-      Object.fromEntries(rawCandidates.map((name: any) => [name, { loading: true }])),
-    );
-    mapWithConcurrency(rawCandidates, BRANCH_CHANGE_SCAN_CONCURRENCY, async (name: any) => {
+    setCandidateChanges(Object.fromEntries(names.map((name: any) => [name, { loading: true }])));
+    mapWithConcurrency(names, BRANCH_CHANGE_SCAN_CONCURRENCY, async (name: any) => {
       try {
         const changes = await api.getNativePrBranchChanges(projectId, name);
         return [name, { hasChanges: Number(changes?.stats?.changedFiles || 0) > 0 }];
@@ -1442,7 +1449,11 @@ function NewPrPanel({ projectId, onCreate, onClose, excludedBranches = new Set()
     return () => {
       alive = false;
     };
-  }, [projectId, branchData, rawCandidates]);
+    // Keyed on the candidate content (rawCandidatesKey), not the array identity,
+    // so the scan only re-runs when the actual branch set changes, not on every
+    // reference-churning parent re-render (AH-1251). Candidate names are read from
+    // rawCandidatesRef so the effect body never closes over a stale array.
+  }, [projectId, branchData, rawCandidatesKey]);
 
   useEffect(() => {
     if (branch && candidateChanges[branch]?.hasChanges === false) {
@@ -1983,7 +1994,16 @@ export default function PullRequestsPage({
     }
   }, [projectId, resolveAgentId, pulls, bulkResolving, resolvingFromList, onToast]);
 
-  const openPrHeadBranches = new Set((pulls || []).map(prHeadBranch).filter(Boolean));
+  // Memoized on the head-branch *content* (not the `pulls` array identity, which
+  // gets a fresh reference on every soft refresh / WS-driven reload). A stable Set
+  // reference keeps NewPrPanel's branch-scan effect from re-firing on every parent
+  // render. See AH-1251 (the picker hammered the server and never left "Loading
+  // branches…").
+  const openPrHeadBranchKey = (pulls || []).map(prHeadBranch).filter(Boolean).sort().join('\n');
+  const openPrHeadBranches = useMemo(
+    () => new Set(openPrHeadBranchKey ? openPrHeadBranchKey.split('\n') : []),
+    [openPrHeadBranchKey],
+  );
   const visibleRecentPushes = (recentPushes || []).filter(
     (push: any) =>
       push?.branch &&

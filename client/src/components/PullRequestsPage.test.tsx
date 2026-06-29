@@ -766,6 +766,64 @@ describe('<PullRequestsPage /> — New pull request panel (hosted projects)', ()
     await waitFor(() => expect(base).toHaveTextContent('master'));
     expect(base.textContent).not.toMatch(/main/);
   });
+
+  // Regression: AH-1251 — "Loading branches stays forever".
+  // The branch-change scan keyed off `rawCandidates` array identity, which churned
+  // on every parent re-render (the unmemoized `openPrHeadBranches` Set was rebuilt
+  // each render). A soft refresh re-fetches `pulls` → new array → new Set → new
+  // `rawCandidates` → the scan re-fired, resetting every entry to {loading:true} and
+  // re-hammering the server, so the picker never left "Loading branches…". The scan
+  // must NOT restart when the candidate branch set is unchanged.
+  it('does not re-scan branches when the parent re-renders with the same branch set', async () => {
+    const hostedProject = { ...project, gitHost: 'agenthub' };
+    // An open PR on feature/already-open seeds a non-empty excludedBranches Set,
+    // the reference-unstable input that drove the loop.
+    (api.getProjectPulls as any).mockImplementation(async () => ({
+      pulls: [{ ...prSummary, head: 'feature/already-open' }],
+    }));
+    (api.getGitHostRecentPushes as any).mockResolvedValue({ pushes: [] });
+    (api.getGitHostBranches as any).mockResolvedValue({
+      defaultBranch: 'main',
+      branches: [{ name: 'main' }, { name: 'feature/already-open' }, { name: 'feature/manual' }],
+    });
+    (api.getNativePrBranchChanges as any).mockResolvedValue({
+      headBranch: 'feature/manual',
+      baseBranch: 'main',
+      stats: { changedFiles: 1, additions: 2, deletions: 0 },
+      files: [{ filename: 'manual.txt', status: 'added', additions: 2, deletions: 0 }],
+      truncated: false,
+    });
+
+    render(<PullRequestsPage projectId="proj-1" project={hostedProject} onToast={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('new-pr-button' as any));
+    const select = await screen.findByTestId('new-pr-branch');
+    // Scan settles: placeholder flips to "Select a branch…" and the one eligible
+    // branch (feature/manual; feature/already-open is excluded) is offered.
+    await waitFor(() =>
+      expect(select.querySelector('option')?.textContent).toMatch(/Select a branch/),
+    );
+    expect([...select.querySelectorAll('option')].map((o: any) => o.value)).toEqual([
+      '',
+      'feature/manual',
+    ]);
+
+    const callsAfterInitialScan = (api.getNativePrBranchChanges as any).mock.calls.length;
+    expect(callsAfterInitialScan).toBe(1);
+
+    // Soft refresh — re-fetches pulls (new array reference, identical content) and
+    // re-renders the parent. Pre-fix this re-fired the scan; now it must be a no-op.
+    fireEvent.click(screen.getByText('Refresh'));
+    await waitFor(() => expect(api.getProjectPulls).toHaveBeenCalledTimes(2));
+    // Give any erroneously-scheduled effect a chance to fire.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect((api.getNativePrBranchChanges as any).mock.calls.length).toBe(callsAfterInitialScan);
+    // And the picker stays settled — never falls back to "Loading branches…".
+    expect(select.querySelector('option')?.textContent).toMatch(/Select a branch/);
+  });
 });
 
 describe('<PullRequestsPage /> — PR description markdown', () => {
