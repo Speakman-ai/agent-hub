@@ -180,6 +180,38 @@ describe('api release notification settings helpers', () => {
         expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/reset');
         expect(init.method).toBe('POST');
     });
+    it('listReleaseDigestRecipients(projectId) → GET recipients', async () => {
+        await api.listReleaseDigestRecipients('agent-hub');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+    it('addReleaseDigestRecipient(projectId, data) → POST recipient', async () => {
+        await api.addReleaseDigestRecipient('agent-hub', {
+            email: 'digest@example.com',
+            displayLabel: 'Customers',
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({
+            email: 'digest@example.com',
+            displayLabel: 'Customers',
+        });
+    });
+    it('updateReleaseDigestRecipient(projectId, id, data) → PATCH recipient', async () => {
+        await api.updateReleaseDigestRecipient('agent-hub', 'rec/1', { enabled: false });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients/rec%2F1');
+        expect(init.method).toBe('PATCH');
+        expect(JSON.parse(init.body)).toEqual({ enabled: false });
+    });
+    it('removeReleaseDigestRecipient(projectId, id) → DELETE recipient', async () => {
+        await api.removeReleaseDigestRecipient('agent-hub', 'rec/1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/release-notification-settings/recipients/rec%2F1');
+        expect(init.method).toBe('DELETE');
+    });
 });
 
 describe('api invite helpers — mobile parity with web client', () => {

@@ -10,7 +10,10 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
     const [value, setValue] = useState('');
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [recipientSaving, setRecipientSaving] = useState(false);
     const [error, setError] = useState<any>(null);
+    const [recipientEmail, setRecipientEmail] = useState('');
+    const [recipientLabel, setRecipientLabel] = useState('');
     useEffect(() => {
         let cancelled = false;
         if (!projectId) {
@@ -26,6 +29,8 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
                 return;
             setSettings(res);
             setValue(res?.releaseDigestPrompt || '');
+            setRecipientEmail('');
+            setRecipientLabel('');
         })
             .catch((err: any) => {
             if (!cancelled)
@@ -49,6 +54,19 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
         return null;
     }, [maxLength, trimmed]);
     const dirty = settings ? value !== settings.releaseDigestPrompt : false;
+    const recipients = settings?.releaseDigestRecipients;
+    const normalizedRecipientEmail = recipientEmail.trim().toLowerCase();
+    const recipientValidationError = useMemo(() => {
+        if (!recipientEmail.trim())
+            return null;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail.trim()))
+            return 'Enter a valid recipient email.';
+        if (recipientLabel.trim().length > 120)
+            return 'Recipient label must be 120 characters or fewer.';
+        if (recipients?.some((recipient: any) => recipient.email.trim().toLowerCase() === normalizedRecipientEmail))
+            return 'This recipient is already on the list.';
+        return null;
+    }, [normalizedRecipientEmail, recipientEmail, recipientLabel, recipients]);
     const handleSave = useCallback(async () => {
         if (!projectId || validationError || saving)
             return;
@@ -85,6 +103,76 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
             setSaving(false);
         }
     }, [projectId, saving]);
+    const handleAddRecipient = useCallback(async () => {
+        if (!projectId || recipientSaving || !recipientEmail.trim() || recipientValidationError)
+            return;
+        setRecipientSaving(true);
+        setError(null);
+        try {
+            const recipient = await api.addReleaseDigestRecipient(projectId, {
+                email: recipientEmail.trim(),
+                displayLabel: recipientLabel.trim() || null,
+            });
+            setSettings((current: any) => current
+                ? {
+                    ...current,
+                    releaseDigestRecipients: [...(current.releaseDigestRecipients || []), recipient].sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.email.localeCompare(b.email)),
+                }
+                : current);
+            setRecipientEmail('');
+            setRecipientLabel('');
+        }
+        catch (err: any) {
+            setError(err?.message || 'Failed to add release digest recipient.');
+        }
+        finally {
+            setRecipientSaving(false);
+        }
+    }, [projectId, recipientEmail, recipientLabel, recipientSaving, recipientValidationError]);
+    const handleToggleRecipient = useCallback(async (recipient: any) => {
+        if (!projectId || recipientSaving)
+            return;
+        setRecipientSaving(true);
+        setError(null);
+        try {
+            const updated = await api.updateReleaseDigestRecipient(projectId, recipient.id, {
+                enabled: !recipient.enabled,
+            });
+            setSettings((current: any) => current
+                ? {
+                    ...current,
+                    releaseDigestRecipients: (current.releaseDigestRecipients || []).map((item: any) => item.id === updated.id ? updated : item),
+                }
+                : current);
+        }
+        catch (err: any) {
+            setError(err?.message || 'Failed to update release digest recipient.');
+        }
+        finally {
+            setRecipientSaving(false);
+        }
+    }, [projectId, recipientSaving]);
+    const handleRemoveRecipient = useCallback(async (recipient: any) => {
+        if (!projectId || recipientSaving)
+            return;
+        setRecipientSaving(true);
+        setError(null);
+        try {
+            await api.removeReleaseDigestRecipient(projectId, recipient.id);
+            setSettings((current: any) => current
+                ? {
+                    ...current,
+                    releaseDigestRecipients: (current.releaseDigestRecipients || []).filter((item: any) => item.id !== recipient.id),
+                }
+                : current);
+        }
+        catch (err: any) {
+            setError(err?.message || 'Failed to remove release digest recipient.');
+        }
+        finally {
+            setRecipientSaving(false);
+        }
+    }, [projectId, recipientSaving]);
     return (<View style={styles.section}>
       <View style={styles.headerRow}>
         <Text style={styles.title}>Release digest prompt</Text>
@@ -110,6 +198,37 @@ export default function ReleaseNotificationSettingsSection({ projectId }: any) {
         </View>
       </View>
       {(error || validationError) && <Text style={styles.error}>{error || validationError}</Text>}
+      {recipients && (<View style={styles.recipientsSection}>
+        <Text style={styles.title}>Release digest recipients</Text>
+        <Text style={styles.subtitle}>
+          Admin-only list for production release digest emails. Disabled recipients are skipped.
+        </Text>
+        <TextInput style={styles.input} value={recipientEmail} onChangeText={setRecipientEmail} editable={!recipientSaving} keyboardType="email-address" autoCapitalize="none" placeholder="recipient@example.com" placeholderTextColor={colors.gray600}/>
+        <TextInput style={styles.input} value={recipientLabel} onChangeText={setRecipientLabel} editable={!recipientSaving} maxLength={121} placeholder="Optional label" placeholderTextColor={colors.gray600}/>
+        <TouchableOpacity style={[styles.primaryButton, (!recipientEmail.trim() || !!recipientValidationError || recipientSaving) && styles.buttonDisabled]} onPress={handleAddRecipient} disabled={!recipientEmail.trim() || !!recipientValidationError || recipientSaving}>
+          <Text style={styles.primaryButtonText}>{recipientSaving ? 'Saving' : 'Add recipient'}</Text>
+        </TouchableOpacity>
+        {recipientValidationError && <Text style={styles.error}>{recipientValidationError}</Text>}
+        <View style={styles.recipientList}>
+          {recipients.length === 0 ? (<Text style={styles.emptyText}>No release digest recipients.</Text>) : recipients.map((recipient: any) => (<View key={recipient.id} style={styles.recipientRow}>
+            <View style={styles.recipientInfo}>
+              <Text style={styles.recipientEmail}>{recipient.email}</Text>
+              <Text style={recipient.enabled ? styles.enabledText : styles.disabledText}>
+                {recipient.enabled ? 'Enabled' : 'Disabled'}
+              </Text>
+              {recipient.displayLabel ? <Text style={styles.recipientLabel}>{recipient.displayLabel}</Text> : null}
+            </View>
+            <View style={styles.recipientActions}>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => handleToggleRecipient(recipient)} disabled={recipientSaving}>
+                <Text style={styles.secondaryButtonText}>{recipient.enabled ? 'Disable' : 'Enable'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dangerButton} onPress={() => handleRemoveRecipient(recipient)} disabled={recipientSaving}>
+                <Text style={styles.dangerButtonText}>Remove</Text>
+              </TouchableOpacity>
+            </View>
+          </View>))}
+        </View>
+      </View>)}
     </View>);
 }
 
@@ -133,6 +252,17 @@ const styles = StyleSheet.create({
         paddingVertical: 10,
         color: colors.white,
         fontSize: 14,
+    },
+    input: {
+        backgroundColor: colors.gray900,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        color: colors.white,
+        fontSize: 14,
+        marginBottom: 8,
     },
     actionRow: {
         flexDirection: 'row',
@@ -162,4 +292,33 @@ const styles = StyleSheet.create({
     primaryButtonText: { fontSize: 13, color: colors.white, fontWeight: '600' },
     buttonDisabled: { opacity: 0.5 },
     error: { fontSize: 13, color: colors.red400, marginTop: 8 },
+    recipientsSection: {
+        marginTop: 20,
+        paddingTop: 16,
+        borderTopWidth: 1,
+        borderTopColor: colors.gray800,
+    },
+    recipientList: { marginTop: 12, borderTopWidth: 1, borderTopColor: colors.gray800 },
+    emptyText: { fontSize: 13, color: colors.gray500, paddingVertical: 12 },
+    recipientRow: {
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.gray800,
+        gap: 10,
+    },
+    recipientInfo: { gap: 3 },
+    recipientEmail: { color: colors.gray200, fontSize: 14, fontWeight: '600' },
+    recipientLabel: { color: colors.gray500, fontSize: 12 },
+    enabledText: { color: colors.emerald400, fontSize: 12 },
+    disabledText: { color: colors.gray500, fontSize: 12 },
+    recipientActions: { flexDirection: 'row', gap: 8 },
+    dangerButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.red900_50,
+        backgroundColor: colors.gray900,
+    },
+    dangerButtonText: { fontSize: 13, color: colors.red400, fontWeight: '600' },
 });

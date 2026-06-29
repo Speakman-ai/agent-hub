@@ -197,6 +197,19 @@ export interface ReleaseNotificationSettingsRow {
   updated_at: string;
 }
 
+export interface ReleaseDigestRecipientRow {
+  id: string;
+  project_id: string;
+  email: string;
+  email_normalized: string;
+  display_label: string | null;
+  enabled: number;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * Metadata row for a record-on-error session replay. The rrweb event array
  * itself is gzipped and stored as a blob via the artifact store (see

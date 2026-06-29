@@ -180,6 +180,18 @@ export const api = {
     resetReleaseNotificationSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/release-notification-settings/reset`, {
         method: 'POST',
     }),
+    listReleaseDigestRecipients: (projectId: any) => fetchJSON(`/projects/${projectId}/release-notification-settings/recipients`),
+    addReleaseDigestRecipient: (projectId: any, data: any) => fetchJSON(`/projects/${projectId}/release-notification-settings/recipients`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    updateReleaseDigestRecipient: (projectId: any, recipientId: any, data: any) => fetchJSON(`/projects/${projectId}/release-notification-settings/recipients/${encodeURIComponent(recipientId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+    }),
+    removeReleaseDigestRecipient: (projectId: any, recipientId: any) => fetchJSON(`/projects/${projectId}/release-notification-settings/recipients/${encodeURIComponent(recipientId)}`, {
+        method: 'DELETE',
+    }),
     getProjectBranches: (projectId: any) => fetchJSON(`/projects/${projectId}/branches`),
     deleteProject: (projectId: any) => fetch(`${getApiBaseUrl()}/projects/${projectId}`, {
         method: 'DELETE',

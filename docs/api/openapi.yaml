@@ -6109,6 +6109,41 @@ components:
         - dataDir
         - projectsDir
       description: Boot-time setup + engine status. Hit on every app load to decide whether to show the setup wizard and which engines are usable.
+    ReleaseDigestRecipient:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        email:
+          type: string
+          format: email
+        displayLabel:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        createdBy:
+          type: string
+          nullable: true
+        updatedBy:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - projectId
+        - email
+        - displayLabel
+        - enabled
+        - createdBy
+        - updatedBy
+        - createdAt
+        - updatedAt
     ReleaseNotificationSettings:
       type: object
       properties:
@@ -6131,6 +6166,11 @@ components:
         updatedAt:
           type: string
           nullable: true
+        releaseDigestRecipients:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseDigestRecipient"
+          description: Admin-only release digest recipient list. Omitted for non-admin callers.
       required:
         - projectId
         - releaseDigestPrompt
@@ -6140,6 +6180,22 @@ components:
         - factBoundedSystemTemplate
         - updatedBy
         - updatedAt
+    ReleaseDigestRecipientsResponse:
+      type: object
+      properties:
+        recipients:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseDigestRecipient"
+      required:
+        - recipients
+    ReleaseDigestRecipientDeleteResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required:
+        - ok
     ReleaseNotificationSettingsErrorResponse:
       type: object
       properties:
@@ -21830,7 +21886,7 @@ paths:
       tags:
         - Deployments
       summary: Read release notification settings
-      description: Returns per-project release notification settings, including the editable release digest guidance prompt and the fixed fact-bounded generation template.
+      description: Returns per-project release notification settings, including the editable release digest guidance prompt and the fixed fact-bounded generation template. Admin+ callers also receive release digest recipients; non-admin callers never receive recipient data.
       parameters:
         - schema:
             type: string
@@ -21898,6 +21954,198 @@ paths:
                 $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+  /api/projects/{projectId}/release-notification-settings/recipients:
+    get:
+      tags:
+        - Deployments
+      summary: List release digest recipients
+      description: Admin+ only. Lists project-scoped release digest recipients, including disabled rows for audit and re-enable workflows.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Release digest recipients.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseDigestRecipientsResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+    post:
+      tags:
+        - Deployments
+      summary: Add a release digest recipient
+      description: Admin+ only. Adds a project-scoped release digest recipient. Email uniqueness is enforced case-insensitively per project.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:
+                  type: string
+                  maxLength: 254
+                  format: email
+                displayLabel:
+                  type: string
+                  nullable: true
+                  maxLength: 120
+                enabled:
+                  type: boolean
+              required:
+                - email
+      responses:
+        "201":
+          description: Created release digest recipient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseDigestRecipient"
+        "400":
+          description: Malformed or invalid recipient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "409":
+          description: Recipient email already exists for this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+  /api/projects/{projectId}/release-notification-settings/recipients/{recipientId}:
+    patch:
+      tags:
+        - Deployments
+      summary: Update a release digest recipient
+      description: Admin+ only. Updates a recipient display label and enabled state. Email addresses are immutable; remove and add a recipient to change the address.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Release digest recipient id.
+          required: true
+          description: Release digest recipient id.
+          name: recipientId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayLabel:
+                  type: string
+                  nullable: true
+                  maxLength: 120
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated release digest recipient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseDigestRecipient"
+        "400":
+          description: Malformed or invalid patch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project or recipient not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+    delete:
+      tags:
+        - Deployments
+      summary: Remove a release digest recipient
+      description: Admin+ only. Removes a recipient from the project release digest list.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug.
+          required: true
+          description: Project slug.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Release digest recipient id.
+          required: true
+          description: Release digest recipient id.
+          name: recipientId
+          in: path
+      responses:
+        "200":
+          description: Recipient removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseDigestRecipientDeleteResponse"
+        "403":
+          description: Caller is below Admin role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseNotificationSettingsErrorResponse"
+        "404":
+          description: Project or recipient not found.
           content:
             application/json:
               schema:
