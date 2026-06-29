@@ -66,6 +66,7 @@ import { spawnSync, type ChildProcess, type SpawnOptions } from 'child_process';
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { reclaimFailedPortHolder, reclaimFailedPortsInRange } from './preview-port-reclaim.js';
+import { applyPreviewResourceLimits } from './preview-resource-limits.js';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
@@ -1107,6 +1108,18 @@ export class PreviewComposeRuntime {
               false,
             );
             this.startComposeLogFollow(groupId, { tailLines: this.logTailLines });
+            // Cap the freshly-started containers' CPU (and optionally memory) so
+            // heavy dev servers (ng serve / esbuild / vite) can't starve the
+            // control-plane Hub — the cause of the 502 incident. Best-effort and
+            // fire-and-forget; a failed cap must never fail the preview.
+            void applyPreviewResourceLimits({
+              composeProjectName: projectName,
+              logger: this.logger,
+            }).catch((err: unknown) => {
+              this.logger.warn(
+                `[preview-compose ${groupId}] resource-limit pass failed: ${(err as Error).message}`,
+              );
+            });
           }
         }
       });

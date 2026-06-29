@@ -17,8 +17,16 @@
  * be unit-tested directly; `storeReplay` / `readReplayEventsPage` do the
  * gzip + artifact-store + SQLite orchestration.
  */
-import { gzipSync, gunzipSync } from 'zlib';
+import { gzip, gunzip } from 'zlib';
+import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
+
+// Async zlib so blob (de)compression runs on the libuv threadpool instead of
+// freezing the event loop. The synchronous `gzipSync`/`gunzipSync` on the
+// per-chunk replay-append path were ~21% of the Hub's event-loop CPU (and O(n²)
+// as a capture grows), the dominant cause of API latency under active sessions.
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
 import {
   getArtifactStore,
@@ -71,19 +79,23 @@ export function computeDurationMs(events: ReplayEvent[]): number {
   return span > 0 ? span : 0;
 }
 
-/** Gzip the events + meta into a blob, reporting the pre-gzip byte length. */
-export function encodeReplayBlob(
+/**
+ * Gzip the events + meta into a blob, reporting the pre-gzip byte length.
+ * Async: the gzip runs on the libuv threadpool so a large capture never blocks
+ * the event loop.
+ */
+export async function encodeReplayBlob(
   events: ReplayEvent[],
   meta: Record<string, unknown> | null | undefined,
-): { buffer: Buffer; uncompressedSize: number } {
+): Promise<{ buffer: Buffer; uncompressedSize: number }> {
   const json = JSON.stringify({ events, meta: meta ?? null } satisfies ReplayBlob);
   const raw = Buffer.from(json, 'utf-8');
-  return { buffer: gzipSync(raw), uncompressedSize: raw.length };
+  return { buffer: await gzipAsync(raw), uncompressedSize: raw.length };
 }
 
-/** Inverse of `encodeReplayBlob` — gunzip + parse a stored blob. */
-export function decodeReplayBlob(buf: Buffer): ReplayBlob {
-  const json = gunzipSync(buf).toString('utf-8');
+/** Inverse of `encodeReplayBlob` — gunzip (off-thread) + parse a stored blob. */
+export async function decodeReplayBlob(buf: Buffer): Promise<ReplayBlob> {
+  const json = (await gunzipAsync(buf)).toString('utf-8');
   const parsed = JSON.parse(json) as Partial<ReplayBlob>;
   return {
     events: Array.isArray(parsed.events) ? parsed.events : [],
@@ -150,7 +162,7 @@ export async function storeReplay(
   const { stmts, config } = deps;
   const id = input.id ?? uuidv4();
   const meta = input.meta ?? null;
-  const { buffer, uncompressedSize } = encodeReplayBlob(input.events, meta);
+  const { buffer, uncompressedSize } = await encodeReplayBlob(input.events, meta);
 
   const store = getArtifactStore(config);
   const key = buildReplayKey(id);
@@ -441,14 +453,14 @@ async function appendReplayEventsUnlocked(
   }
 
   const store = getArtifactStoreForLocation(existing, config);
-  const prev = decodeReplayBlob(await store.getBuffer(existing.storage_key));
+  const prev = await decodeReplayBlob(await store.getBuffer(existing.storage_key));
   const mergedEvents = prev.events.concat(input.events);
   if (mergedEvents.length > totalEventCap) {
     throw new ReplayEventCapError(mergedEvents.length, totalEventCap);
   }
 
   const meta = prev.meta ?? input.meta ?? null;
-  const { buffer, uncompressedSize } = encodeReplayBlob(mergedEvents, meta);
+  const { buffer, uncompressedSize } = await encodeReplayBlob(mergedEvents, meta);
 
   // CAS-before-blob, a DB-level backstop UNDER the per-id lock. The lock already
   // makes `linkReplay` mutually exclusive with this whole critical section, so
@@ -541,7 +553,7 @@ export async function readReplayEventsPage(
 ): Promise<EventsPage> {
   const store = getArtifactStoreForLocation(row, deps.config);
   const buf = await store.getBuffer(row.storage_key);
-  const { events } = decodeReplayBlob(buf);
+  const { events } = await decodeReplayBlob(buf);
   return paginateEvents(events, offset, limit);
 }
 

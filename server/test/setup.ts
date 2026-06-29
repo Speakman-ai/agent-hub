@@ -62,6 +62,9 @@ process.env.AGENT_HUB_DISABLE_AUTO_REVIEW = '1';
 // node-owned temp fixtures where stage-1 `rm -rf` is sufficient, and must never
 // shell out to docker — disable the escalation here.
 process.env.AGENT_HUB_DISABLE_FORCE_RM_DOCKER = '1';
+// Preview resource-limit pass (`applyPreviewResourceLimits`) would shell out to
+// `docker update`. Tests never run real preview containers — disable it.
+process.env.AGENT_HUB_DISABLE_PREVIEW_LIMITS = '1';
 // Fresh deploy bootstrap env must not leak from the host (Agent Hub
 // sessions, Docker, Terraform shells). If set, maybeAutoProvisionOwner runs at
 // server boot, auth.json exists, and authMiddleware rejects unauthenticated

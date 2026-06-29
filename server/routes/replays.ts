@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import express from 'express';
 import path from 'path';
 import { gunzipSync } from 'zlib';
-import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import { mkdirSync } from 'fs';
+import { writeFile, rm } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps, SessionReplayRow } from '../types.js';
 import {
@@ -419,7 +420,11 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
           events: parsed.value.events,
         };
         // Legacy plain-JSON companion that `resolveReplayContext` reads back.
-        writeFileSync(dest, JSON.stringify(record));
+        // Async write: synchronous `writeFileSync` of the (uncompressed,
+        // 250-400 KB) record here was ~26% of the Hub's event-loop CPU under
+        // active replay ingest — the single largest blocker. `fs/promises`
+        // moves the write off the main thread.
+        await writeFile(dest, JSON.stringify(record));
         const replayRef = `/uploads/${filename}`;
 
         // Durable gzipped blob + metadata row (the new storage of record). If it
@@ -439,7 +444,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
             },
           );
         } catch (err) {
-          rmSync(dest, { force: true });
+          await rm(dest, { force: true });
           throw err;
         }
 

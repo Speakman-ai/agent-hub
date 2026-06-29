@@ -55,25 +55,25 @@ describe('computeDurationMs', () => {
 });
 
 describe('encodeReplayBlob / decodeReplayBlob', () => {
-  it('round-trips events and meta through gzip', () => {
-    const { buffer, uncompressedSize } = encodeReplayBlob(EVENTS, { trigger: 'bug-report' });
+  it('round-trips events and meta through gzip', async () => {
+    const { buffer, uncompressedSize } = await encodeReplayBlob(EVENTS, { trigger: 'bug-report' });
     expect(Buffer.isBuffer(buffer)).toBe(true);
     expect(uncompressedSize).toBeGreaterThan(buffer.length); // compression helps
     // gzip magic bytes
     expect(buffer[0]).toBe(0x1f);
     expect(buffer[1]).toBe(0x8b);
 
-    const decoded = decodeReplayBlob(buffer);
+    const decoded = await decodeReplayBlob(buffer);
     expect(decoded.events).toHaveLength(3);
     expect(decoded.events[1]).toMatchObject({ type: 2, timestamp: 1001 });
     expect(decoded.meta).toEqual({ trigger: 'bug-report' });
   });
 
-  it('normalizes missing meta to null', () => {
-    const { buffer } = encodeReplayBlob(EVENTS, undefined);
+  it('normalizes missing meta to null', async () => {
+    const { buffer } = await encodeReplayBlob(EVENTS, undefined);
     const raw = JSON.parse(gunzipSync(buffer).toString('utf-8'));
     expect(raw.meta).toBeNull();
-    expect(decodeReplayBlob(buffer).meta).toBeNull();
+    expect((await decodeReplayBlob(buffer)).meta).toBeNull();
   });
 });
 
