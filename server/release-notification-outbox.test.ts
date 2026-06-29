@@ -1,6 +1,20 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { EmailMessage, EmailSendResult } from './email-sender.js';
+
+const sendEmailMock = vi.hoisted(() =>
+  vi.fn(
+    async (_message: EmailMessage): Promise<EmailSendResult> => ({
+      sent: false,
+      reason: 'smtp_not_configured',
+    }),
+  ),
+);
+
+vi.mock('./email-sender.js', () => ({
+  sendEmail: sendEmailMock,
+}));
+
 import { getDb, getStmts } from './db.js';
-import { fileConfig } from './config.js';
 import {
   createDeployment,
   ensureDeploymentReleaseItem,
@@ -32,7 +46,8 @@ beforeEach(() => {
   db.exec('DELETE FROM kanban_columns;');
   db.exec('DELETE FROM kanban_boards;');
   db.exec('DELETE FROM support_tickets;');
-  (fileConfig as Record<string, unknown>).smtp = { enabled: false };
+  sendEmailMock.mockReset();
+  sendEmailMock.mockResolvedValue({ sent: false, reason: 'smtp_not_configured' });
 });
 
 function insertReleaseCard(args: {
@@ -363,5 +378,73 @@ describe('release notification outbox', () => {
       )
       .run(queued.id);
     expect(listRetryEligibleReleaseNotificationOutbox().map((row) => row.id)).toEqual([queued.id]);
+  });
+
+  it('sends pending outbox rows through the shared email sender and marks them sent once', async () => {
+    sendEmailMock.mockResolvedValue({ sent: true });
+    const ticket = createSupportTicket({
+      projectId: P,
+      subject: 'CSV export is broken',
+      body: 'Cannot export CSV.',
+      reporterEmail: 'Reporter@Example.COM',
+    });
+    const deployment = successfulProductionDeployment();
+    const cardId = insertReleaseCard({ cardId: 'card-delivery-1', supportTicketId: ticket.id });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
+    enqueueReleaseNotificationsForDeployment(deployment);
+
+    const first = await deliverReleaseNotificationOutboxBatch();
+    const second = await deliverReleaseNotificationOutboxBatch();
+
+    expect(first.map((row) => row.status)).toEqual(['sent', 'sent']);
+    expect(first.map((row) => row.attempts)).toEqual([1, 1]);
+    expect(first.map((row) => row.last_error)).toEqual([null, null]);
+    expect(second).toEqual([]);
+    expect(sendEmailMock).toHaveBeenCalledTimes(2);
+    expect(sendEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'reporter@example.com',
+        subject: 'Update on your support ticket: CSV export is broken',
+        text: expect.stringContaining('Ticket: CSV export is broken'),
+      }),
+    );
+    expect(sendEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'ops@example.com',
+        subject: 'Release digest for production abc123',
+        text: expect.stringContaining('Release digest for production (abc123)'),
+      }),
+    );
+  });
+
+  it('stores safe retryable errors when the shared email sender throws', async () => {
+    sendEmailMock.mockRejectedValue(new Error('SMTP password super-secret-token leaked'));
+    const deployment = successfulProductionDeployment();
+    const queued = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'throwing-sender-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Digest',
+      bodyText: 'Digest body',
+    });
+
+    const first = await deliverReleaseNotificationOutboxBatch();
+    const immediateRetry = await deliverReleaseNotificationOutboxBatch();
+
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      id: queued.id,
+      status: 'error',
+      attempts: 1,
+      last_error: 'send_failed',
+      sent_at: null,
+      next_attempt_at: expect.any(String),
+    });
+    expect(first[0].last_error).not.toContain('super-secret-token');
+    expect(immediateRetry).toEqual([]);
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
   });
 });

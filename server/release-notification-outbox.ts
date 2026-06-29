@@ -241,11 +241,10 @@ export async function deliverReleaseNotificationOutboxBatch(
           claimed.attempts,
         );
       }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
+    } catch {
       getStmts().markReleaseNotificationOutboxDeliveryError.run(
         nextReleaseNotificationAttemptAt(claimed.attempts),
-        detail.slice(0, 2000),
+        'send_failed',
         claimed.id,
         claimed.attempts,
       );
