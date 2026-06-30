@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ScrollView, StyleSheet, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, ScrollView, StyleSheet, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, Modal, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
@@ -34,7 +34,7 @@ const mdStyles = {
     em: { color: colors.gray300, fontStyle: 'italic' },
 };
 export default function ThreadsScreen({ route, navigation }: any) {
-    const { projects, lastThreadEvent, markProjectThreadsRead, setActiveThreadsProject, setActiveThread, } = useApp();
+    const { projects, agents, lastThreadEvent, markProjectThreadsRead, setActiveThreadsProject, setActiveThread, } = useApp();
     const { openSidebar } = useContext(SidebarContext);
     const projectId = route?.params?.projectId || projects?.[0]?.id;
     const deepLinkThreadId = route?.params?.threadId;
@@ -50,6 +50,12 @@ export default function ThreadsScreen({ route, navigation }: any) {
     const [entriesError, setEntriesError] = useState<any>(null);
     const [composeText, setComposeText] = useState('');
     const [composeSending, setComposeSending] = useState(false);
+    // Per-entry "forward to agent" state.
+    const [forwardEntry, setForwardEntry] = useState<any>(null);
+    const [forwardPrompt, setForwardPrompt] = useState('');
+    const [forwardSubmitting, setForwardSubmitting] = useState(false);
+    const [forwardError, setForwardError] = useState<any>(null);
+    const [forwardDone, setForwardDone] = useState<any>(null);
     const scrollRef = useRef<any>(null);
     const wasAtBottomRef = useRef(true);
     // Announce which project's threads are being viewed (suppresses unread bumps
@@ -174,6 +180,38 @@ export default function ThreadsScreen({ route, navigation }: any) {
             setComposeSending(false);
         }
     }, [selectedThread, composeText, composeSending]);
+    const openForward = useCallback((entry: any) => {
+        setForwardEntry(entry);
+        setForwardPrompt('');
+        setForwardError(null);
+        setForwardDone(null);
+    }, []);
+    const closeForward = useCallback(() => {
+        setForwardEntry(null);
+        setForwardError(null);
+    }, []);
+    const handleForwardToAgent = useCallback(async (targetAgentId: any) => {
+        if (!forwardEntry?.id || !selectedThread?.id || forwardSubmitting)
+            return;
+        setForwardSubmitting(true);
+        setForwardError(null);
+        try {
+            const result = await api.forwardThreadEntry(selectedThread.id, forwardEntry.id, {
+                targetAgentId,
+                prompt: forwardPrompt.trim() || undefined,
+            });
+            setForwardEntry(null);
+            setForwardDone((result as any)?.session?.name || 'a new session');
+        }
+        catch (err: any) {
+            setForwardError(err.message || 'Forward failed');
+        }
+        finally {
+            setForwardSubmitting(false);
+        }
+    }, [forwardEntry, selectedThread, forwardPrompt, forwardSubmitting]);
+    // Forwardable targets: every active agent (the server re-checks visibility).
+    const forwardTargets = (Array.isArray(agents) ? agents : []).filter((a: any) => a && a.active !== false);
     // Clear active-thread tracking when the screen unmounts
     useEffect(() => {
         return () => setActiveThread(null);
@@ -240,9 +278,14 @@ export default function ThreadsScreen({ route, navigation }: any) {
                             styles.entryCard,
                             isError && styles.entryCardError,
                         ]}>
-                      <Text style={styles.entryTimestamp}>
-                        {formatEntryTimestamp(entry.timestamp)}
-                      </Text>
+                      <View style={styles.entryHeader}>
+                        <Text style={styles.entryTimestamp}>
+                          {formatEntryTimestamp(entry.timestamp)}
+                        </Text>
+                        <TouchableOpacity onPress={() => openForward(entry)} style={styles.entryForwardBtn} accessibilityLabel="Forward message to an agent">
+                          <Text style={styles.entryForwardText}>Forward</Text>
+                        </TouchableOpacity>
+                      </View>
                       {isError ? (<Text style={styles.entryErrorText}>{entry.content}</Text>) : (<Markdown style={mdStyles as any}>
                           {entry.content || ''}
                         </Markdown>)}
@@ -259,6 +302,43 @@ export default function ThreadsScreen({ route, navigation }: any) {
               </View>
             </KeyboardAvoidingView>
           </>)}
+
+        {forwardDone && (<View style={styles.forwardToast}>
+            <Text style={styles.forwardToastText}>Forwarded to {forwardDone}</Text>
+            <TouchableOpacity onPress={() => setForwardDone(null)}>
+              <Text style={styles.forwardToastDismiss}>{'✕'}</Text>
+            </TouchableOpacity>
+          </View>)}
+
+        <Modal visible={!!forwardEntry} transparent animationType="fade" onRequestClose={closeForward}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Forward message</Text>
+                <TouchableOpacity onPress={closeForward} disabled={forwardSubmitting}>
+                  <Text style={styles.modalClose}>{'✕'}</Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput style={styles.modalPromptInput} value={forwardPrompt} onChangeText={setForwardPrompt} placeholder="Extra instructions (optional)" placeholderTextColor={colors.gray600} multiline editable={!forwardSubmitting}/>
+              {forwardError && (<Text style={styles.modalError}>{forwardError}</Text>)}
+              {forwardTargets.length === 0 ? (<Text style={styles.modalEmpty}>
+                  No agents available to forward to.
+                </Text>) : (<ScrollView style={styles.modalAgentList}>
+                  {forwardTargets.map((agent: any) => (<TouchableOpacity key={agent.id} style={styles.modalAgentRow} onPress={() => handleForwardToAgent(agent.id)} disabled={forwardSubmitting}>
+                      <View style={[styles.modalAgentDot, { backgroundColor: agent.color || colors.gray500 }]}/>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.modalAgentName} numberOfLines={1}>{agent.name || agent.id}</Text>
+                        <Text style={styles.modalAgentMeta} numberOfLines={1}>{agent.engine}</Text>
+                      </View>
+                    </TouchableOpacity>))}
+                </ScrollView>)}
+              {forwardSubmitting && (<View style={styles.modalSubmitting}>
+                  <ActivityIndicator size="small" color={colors.gray400}/>
+                  <Text style={styles.modalSubmittingText}>Forwarding…</Text>
+                </View>)}
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>);
     }
     // ── List view ──
@@ -450,12 +530,102 @@ const styles = StyleSheet.create({
         borderColor: colors.red600,
         backgroundColor: 'rgba(127, 29, 29, 0.15)',
     },
+    entryHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 6,
+    },
     entryTimestamp: {
         fontSize: 10,
         color: colors.gray600,
         fontFamily: 'Courier',
-        marginBottom: 6,
     },
+    entryForwardBtn: {
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+    },
+    entryForwardText: {
+        fontSize: 11,
+        color: colors.emerald400,
+        fontWeight: '600',
+    },
+    forwardToast: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        marginHorizontal: 12,
+        marginBottom: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 8,
+        backgroundColor: 'rgba(16, 185, 129, 0.12)',
+        borderWidth: 1,
+        borderColor: 'rgba(16, 185, 129, 0.3)',
+    },
+    forwardToastText: { color: colors.emerald400, fontSize: 12, flex: 1 },
+    forwardToastDismiss: { color: colors.emerald400, fontSize: 13, paddingHorizontal: 4 },
+    modalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        justifyContent: 'center',
+        padding: 20,
+    },
+    modalCard: {
+        backgroundColor: colors.gray900,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        padding: 16,
+        maxHeight: '80%',
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 12,
+    },
+    modalTitle: { fontSize: 15, fontWeight: '600', color: colors.white },
+    modalClose: { fontSize: 16, color: colors.gray400, paddingHorizontal: 4 },
+    modalPromptInput: {
+        minHeight: 40,
+        maxHeight: 90,
+        backgroundColor: colors.gray800,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        color: colors.gray200,
+        fontSize: 14,
+        marginBottom: 10,
+    },
+    modalError: { color: colors.red400, fontSize: 12, marginBottom: 8 },
+    modalEmpty: { color: colors.gray500, fontSize: 13, paddingVertical: 12 },
+    modalAgentList: { maxHeight: 280 },
+    modalAgentRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 4,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.gray800,
+    },
+    modalAgentDot: { width: 10, height: 10, borderRadius: 5 },
+    modalAgentName: { fontSize: 14, color: colors.gray200, fontWeight: '500' },
+    modalAgentMeta: { fontSize: 11, color: colors.gray500, marginTop: 1 },
+    modalSubmitting: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 10,
+    },
+    modalSubmittingText: { color: colors.gray400, fontSize: 12 },
     entryErrorText: {
         fontSize: 13,
         color: colors.red400,

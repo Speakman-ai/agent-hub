@@ -1574,6 +1574,22 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ content }),
     }),
+  // Forward a single thread entry to an agent. Creates a new session for the
+  // target agent seeded with that one entry's content as the initial message.
+  forwardThreadEntry: (
+    threadId: any,
+    entryId: any,
+    { targetAgentId, prompt, autoStart }: any = {},
+  ) =>
+    fetchJSON(`/threads/${threadId}/entries/${entryId}/forward`, {
+      method: 'POST',
+      body: JSON.stringify({
+        targetAgentId,
+        ...(prompt ? { prompt } : {}),
+        ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+      }),
+      timeout: 30000,
+    }),
   getCronThread: (cronId: any) => fetchJSON(`/crons/${cronId}/thread`),
   getHeartbeatThread: (agentId: any) => fetchJSON(`/heartbeats/${agentId}/thread`),
 

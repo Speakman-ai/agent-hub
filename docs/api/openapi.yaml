@@ -8514,6 +8514,45 @@ components:
         - agentId
         - importedMessages
         - reused
+    ForwardThreadEntryResponse:
+      type: object
+      properties:
+        session:
+          type: object
+          additionalProperties:
+            nullable: true
+          description: The newly created session for the target agent (client-enriched shape).
+        forwardedMessageId:
+          type: string
+          nullable: true
+          description: ID of the pre-stored forwarded user message, or null when autoStart dispatched the turn instead.
+      required:
+        - session
+        - forwardedMessageId
+    ThreadsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    ForwardThreadEntryRequest:
+      type: object
+      properties:
+        targetAgentId:
+          type: string
+          minLength: 1
+          description: Agent to forward the thread entry to. May belong to a different project; the caller must be able to view the target agent’s project.
+        prompt:
+          type: string
+          maxLength: 50000
+          description: Extra instructions prepended to the forwarded entry (max 50k chars).
+        autoStart:
+          type: boolean
+          description: When true, immediately dispatch the forwarded message to the target agent’s CLI (fire-and-forget).
+      required:
+        - targetAgentId
   parameters: {}
 paths:
   /api/agents:
@@ -26104,6 +26143,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SupportTicketOverviewErrorResponse"
+  /api/threads/{threadId}/entries/{entryId}/forward:
+    post:
+      tags:
+        - Threads
+      summary: Forward a single thread entry to an agent
+      description: Creates a new session for the target agent seeded with the given thread entry as the initial user message. The new session is owned by the caller.
+      parameters:
+        - schema:
+            type: string
+            description: Thread UUID.
+          required: true
+          description: Thread UUID.
+          name: threadId
+          in: path
+        - schema:
+            type: string
+            description: Thread entry UUID to forward.
+          required: true
+          description: Thread entry UUID to forward.
+          name: entryId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForwardThreadEntryRequest"
+      responses:
+        "201":
+          description: Forwarded session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForwardThreadEntryResponse"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadsErrorResponse"
+        "404":
+          description: Thread, entry, or target agent not found / not visible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadsErrorResponse"
+        "503":
+          description: Auto-start requested but chat handler unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadsErrorResponse"
   /api/projects/{projectId}/wiki:
     get:
       tags:

@@ -5608,6 +5608,15 @@ export default function App({ initialView }: any = {}) {
                     key={activeThreadId}
                     threadId={activeThreadId}
                     thread={activeThread}
+                    agents={agents}
+                    onForwarded={(result: any) => {
+                      const session = result?.session;
+                      showToast(
+                        `Forwarded to ${session?.name || 'a new session'}`,
+                        'success',
+                        4000,
+                      );
+                    }}
                     onBack={() => {
                       setActiveThreadId(null);
                       setActiveThread(null);

@@ -816,6 +816,16 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ content }),
     }),
+    // Forward a single thread entry to an agent — creates a new session for
+    // the target agent seeded with that one entry's content.
+    forwardThreadEntry: (threadId: any, entryId: any, { targetAgentId, prompt, autoStart }: any = {}) => fetchJSON(`/threads/${threadId}/entries/${entryId}/forward`, {
+        method: 'POST',
+        body: JSON.stringify({
+            targetAgentId,
+            ...(prompt ? { prompt } : {}),
+            ...(autoStart != null ? { autoStart: !!autoStart } : {}),
+        }),
+    }),
     // Push notification device tokens (Expo)
     registerDeviceToken: (token: any, platform: any) => fetchJSON('/devices', {
         method: 'POST',

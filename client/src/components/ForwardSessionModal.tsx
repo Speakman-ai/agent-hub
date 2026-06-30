@@ -14,9 +14,18 @@ import { Loader2, Send, X, ArrowLeftRight } from 'lucide-react';
  * targets are distinguishable. Exported for testing.
  */
 export function filterForwardTargets(agents: any, sourceAgent: any) {
-  if (!Array.isArray(agents) || !sourceAgent) return [];
-  const sourceProjectId = sourceAgent.projectId;
+  if (!Array.isArray(agents)) return [];
   const active = agents.filter((a: any) => a && a.active !== false);
+  // No source agent (e.g. forwarding a standalone thread entry): there is no
+  // "self" to pin, so just list every active agent grouped by project then
+  // name for a stable, scannable order.
+  if (!sourceAgent) {
+    return [...active].sort((a: any, b: any) => {
+      const p = (a.projectName || '').localeCompare(b.projectName || '');
+      return p !== 0 ? p : (a.name || '').localeCompare(b.name || '');
+    });
+  }
+  const sourceProjectId = sourceAgent.projectId;
   const self = active.find((a: any) => a.id === sourceAgent.id);
   const rest = active.filter((a: any) => a.id !== sourceAgent.id);
   const sameProject = rest.filter((a: any) => a.projectId === sourceProjectId);
@@ -33,6 +42,12 @@ export default function ForwardSessionModal({
   onForwarded,
   onForward,
   onError,
+  // Generic-forward overrides. Defaults keep the session-forward behavior so
+  // existing callers are unaffected; the thread-entry forward passes its own
+  // copy and a `ready` gate (no source session to key off).
+  title = 'Forward session',
+  sourceLabel,
+  ready,
 }: any) {
   const [selectedAgentId, setSelectedAgentId] = useState<any>(null);
   const [prompt, setPrompt] = useState('');
@@ -88,6 +103,11 @@ export default function ForwardSessionModal({
   };
 
   const hasCandidates = candidates.length > 0;
+  // Default readiness mirrors the original "must have a source session" gate;
+  // callers without a session (thread-entry forward) pass `ready` explicitly.
+  const submitReady = ready !== undefined ? !!ready : !!sessionId;
+  const headerSourceLabel =
+    sourceLabel !== undefined ? sourceLabel : sourceAgent?.name ? `from ${sourceAgent.name}` : null;
 
   return (
     <div
@@ -103,10 +123,10 @@ export default function ForwardSessionModal({
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
           <div className="flex items-center gap-2">
             <ArrowLeftRight size={16} className="text-gray-400" />
-            <h3 className="text-sm font-semibold text-gray-100">Forward session</h3>
-            {sourceAgent?.name && (
+            <h3 className="text-sm font-semibold text-gray-100">{title}</h3>
+            {headerSourceLabel && (
               <span className="text-xs text-gray-500 truncate max-w-[180px]">
-                from {sourceAgent.name}
+                {headerSourceLabel}
               </span>
             )}
           </div>
@@ -226,7 +246,7 @@ export default function ForwardSessionModal({
           </button>
           <button
             type="submit"
-            disabled={!selectedAgentId || submitting || !hasCandidates || !sessionId}
+            disabled={!selectedAgentId || submitting || !hasCandidates || !submitReady}
             className="text-xs px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}

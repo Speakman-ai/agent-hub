@@ -76,8 +76,12 @@ describe('filterForwardTargets', () => {
     expect(result!.map((a: any) => a.id)).toEqual(['src-1', 'sib-a']);
   });
 
-  it('returns an empty list when the source agent is missing', () => {
-    expect(filterForwardTargets([source, siblingA], null)).toEqual([]);
+  it('lists every active agent (sorted) when there is no source agent', () => {
+    // No source (e.g. forwarding a standalone thread entry) → all active
+    // agents, grouped by project name then agent name. These fixtures carry
+    // no projectName, so ordering collapses to agent name.
+    const result = filterForwardTargets([source, siblingA, inactive], null);
+    expect(result!.map((a: any) => a.id)).toEqual(['sib-a', 'src-1']);
   });
 
   it('is a no-op on non-array input', () => {
@@ -148,6 +152,29 @@ describe('<ForwardSessionModal />', () => {
     expect(onForward!).toHaveBeenCalledWith(
       expect.objectContaining({ targetAgentId: 'sib-a', autoStart: false }),
     );
+  });
+
+  it('supports source-less forwarding (thread entry) with a custom title and ready gate', async () => {
+    const onForward = vi.fn(() => Promise.resolve({ session: { id: 'fwd' } }));
+    render(
+      <ForwardSessionModal
+        sourceAgent={null}
+        agents={[source, siblingA]}
+        ready={true}
+        title="Forward message"
+        sourceLabel="from Nightly cron"
+        onClose={() => {}}
+        onForward={onForward}
+      />,
+    );
+    // Custom title + source label render; no "this agent" self tag exists.
+    expect(screen.getByText('Forward message')).toBeTruthy();
+    expect(screen.getByText('from Nightly cron')).toBeTruthy();
+    expect(screen.queryByText(/this agent/i)).toBeNull();
+    // Submit is enabled via `ready` even without a sessionId.
+    fireEvent.click(screen.getByText('Hub Backend' as any) as any);
+    fireEvent.click(screen.getByRole('button', { name: /forward/i } as any) as any);
+    expect(onForward!).toHaveBeenCalledWith(expect.objectContaining({ targetAgentId: 'sib-a' }));
   });
 
   it('forwards to the current agent (self-forward) when source is selected', async () => {

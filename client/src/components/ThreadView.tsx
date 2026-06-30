@@ -1,7 +1,17 @@
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { ArrowLeft, Clock, Activity, Cpu, AlertCircle, Send, User } from 'lucide-react';
+import {
+  ArrowLeft,
+  Clock,
+  Activity,
+  Cpu,
+  AlertCircle,
+  Send,
+  User,
+  ArrowLeftRight,
+} from 'lucide-react';
 import { api } from '../utils/api';
 import { MarkdownContent } from './MarkdownRenderer';
+import ForwardSessionModal from './ForwardSessionModal';
 
 /**
  * Classify an entry for rendering. Daemon-written rows ('system') render
@@ -34,7 +44,10 @@ function formatTimestamp(ts: any) {
   return `${time} · ${relative}`;
 }
 
-function ThreadViewInner({ threadId, thread: threadProp, onBack }: any, ref: any) {
+function ThreadViewInner(
+  { threadId, thread: threadProp, onBack, agents, onForwarded }: any,
+  ref: any,
+) {
   const [thread, setThread] = useState(threadProp || null);
   const [entries, setEntries] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,6 +55,8 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }: any, ref: any
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<any>(null);
+  // The thread entry currently being forwarded (drives the forward modal).
+  const [forwardEntry, setForwardEntry] = useState<any>(null);
   const scrollRef = useRef<any>(null);
   const wasAtBottomRef = useRef(true);
   const composerRef = useRef<any>(null);
@@ -123,6 +138,21 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }: any, ref: any
       composerRef.current?.focus?.();
     }
   };
+
+  // Per-entry "forward to agent" affordance — appears on hover (web) so each
+  // individual message can be sent to an agent as the seed of a new session.
+  const renderForwardButton = (entry: any) => (
+    <button
+      type="button"
+      onClick={() => setForwardEntry(entry)}
+      title="Forward to agent"
+      aria-label="Forward message to an agent"
+      data-testid="thread-entry-forward"
+      className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded text-gray-500 hover:text-emerald-300 hover:bg-gray-700/60 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+    >
+      <ArrowLeftRight size={12} />
+    </button>
+  );
 
   const handleComposerKeyDown = (e: any) => {
     // Enter to send, Shift+Enter for newline (chat convention).
@@ -245,7 +275,8 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }: any, ref: any
                 {isHuman ? (
                   /* Human chatroom bubble — right-aligned to read distinctly
                      against the daemon's left-aligned log stream. */
-                  <div className="flex justify-end py-1.5 px-3">
+                  <div className="group flex justify-end items-center gap-1 py-1.5 px-3">
+                    {renderForwardButton(entry)}
                     <div className="max-w-[80%] flex flex-col items-end gap-0.5">
                       <div className="flex items-center gap-1.5 text-[10px] text-emerald-400/70 font-medium">
                         <User size={10} />
@@ -287,6 +318,7 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }: any, ref: any
                         {formatTimestamp(entry.timestamp)}
                       </span>
                     </div>
+                    {renderForwardButton(entry)}
                   </div>
                 )}
               </div>
@@ -328,6 +360,29 @@ function ThreadViewInner({ threadId, thread: threadProp, onBack }: any, ref: any
           </button>
         </div>
       </div>
+
+      {/* Forward a single entry to an agent — reuses the shared forward modal
+          with no source agent (the thread entry stands alone). */}
+      {forwardEntry && (
+        <ForwardSessionModal
+          agents={agents || []}
+          sourceAgent={null}
+          ready={true}
+          title="Forward message"
+          sourceLabel={thread?.name ? `from ${thread.name}` : null}
+          onClose={() => setForwardEntry(null)}
+          onForward={({ targetAgentId, prompt, autoStart }: any) =>
+            api.forwardThreadEntry(threadId, forwardEntry.id, {
+              targetAgentId,
+              prompt,
+              autoStart,
+            })
+          }
+          onForwarded={(result: any) => {
+            if (typeof onForwarded === 'function') onForwarded(result);
+          }}
+        />
+      )}
     </div>
   );
 }
