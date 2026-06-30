@@ -54,6 +54,7 @@ import {
   DeploymentCheckoutError,
   prepareDeploymentCheckout,
 } from '../deploy/deployment-checkout.js';
+import { resolveUserGithubToken } from '../auto-git.js';
 import {
   AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
@@ -449,6 +450,12 @@ export default function createDeploymentRoutes(
     runnerBackend: opts.orchestratorDeps?.runnerBackend,
     now: opts.orchestratorDeps?.now,
     env: opts.orchestratorDeps?.env,
+    // Deploy steps run `gh` / `git push` as the user who triggered the deploy
+    // (no global `gh auth login` exists in the runner container). Resolve their
+    // per-user GitHub OAuth/PAT at run time, refreshing if stale.
+    resolveGithubToken:
+      opts.orchestratorDeps?.resolveGithubToken ??
+      ((userId: string) => resolveUserGithubToken(userId, deps.config)),
   };
 
   router.post(

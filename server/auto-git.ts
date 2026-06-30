@@ -234,6 +234,33 @@ export async function resolveAutoGitGithubToken(
 }
 
 /**
+ * Resolve the per-user GitHub token for a known user id (e.g. the user who
+ * triggered a deploy). Unlike {@link resolveAutoGitGithubToken} this is keyed
+ * directly on a user id rather than a session, for server-side operations that
+ * already know which user initiated the work (deployments record `triggered_by`).
+ *
+ * Precedence / failure handling mirrors the session-scoped resolver:
+ *   1. Per-user OAuth/PAT via `getActiveAccessToken` (auto-refreshes if stale).
+ *   2. `null` when the id is empty, the user has no GitHub connection, or any
+ *      step throws — so the caller can still attempt the operation and surface a
+ *      clearer "Authentication failed" error if there really are no usable creds.
+ */
+export async function resolveUserGithubToken(
+  userId: string | null | undefined,
+  config: Pick<import('./types.js').AppConfig, 'personalOAuth'>,
+): Promise<string | null> {
+  try {
+    if (!userId) return null;
+    const oauthCreds = resolveOAuthAppCredentials(config);
+    return (await getActiveAccessToken(userId, oauthCreds)) ?? null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[auto-git] Could not resolve GitHub token for user ${userId}: ${msg}`);
+    return null;
+  }
+}
+
+/**
  * Resolve a GitHub token for a server-side git operation that has NO session
  * scope (e.g. the autonomous loop's operator base-branch probe, which runs
  * before any per-card dispatch and therefore predates the session that will

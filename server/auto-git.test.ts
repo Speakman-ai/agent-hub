@@ -52,6 +52,7 @@ import {
   STREAM_OUTPUT_MAX_BYTES,
   normalizeCommitInputs,
   pickPrTitleFromCommits,
+  resolveUserGithubToken,
 } from './auto-git.js';
 import path from 'path';
 import type { MessageRow } from './types.js';
@@ -4074,5 +4075,39 @@ describe.skip('commitPushAndCreatePR — existing-PR base retarget', () => {
     // Card still moves to Review (non-fatal).
     const moveRun = (stmts.moveKanbanCard as { run: ReturnType<typeof vi.fn> }).run;
     expect(moveRun).toHaveBeenCalledWith('col-review', 0, 'card-edit-fail');
+  });
+});
+
+describe('resolveUserGithubToken', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns the per-user token resolved from the user id', async () => {
+    const { getActiveAccessToken } = await import('./github-connections-store.js');
+    (getActiveAccessToken as unknown as Mock).mockResolvedValue('ghu_deploy_user');
+    const token = await resolveUserGithubToken('user-7', { personalOAuth: null });
+    expect(token).toBe('ghu_deploy_user');
+    expect(getActiveAccessToken).toHaveBeenCalledWith('user-7', null);
+  });
+
+  it('returns null for an empty user id without hitting the store', async () => {
+    const { getActiveAccessToken } = await import('./github-connections-store.js');
+    expect(await resolveUserGithubToken(null, { personalOAuth: null })).toBeNull();
+    expect(await resolveUserGithubToken(undefined, { personalOAuth: null })).toBeNull();
+    expect(await resolveUserGithubToken('', { personalOAuth: null })).toBeNull();
+    expect(getActiveAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('returns null (swallows) when the store throws', async () => {
+    const { getActiveAccessToken } = await import('./github-connections-store.js');
+    (getActiveAccessToken as unknown as Mock).mockRejectedValue(new Error('orgs.db down'));
+    expect(await resolveUserGithubToken('user-8', { personalOAuth: null })).toBeNull();
+  });
+
+  it('returns null when the user has no connection (store yields null)', async () => {
+    const { getActiveAccessToken } = await import('./github-connections-store.js');
+    (getActiveAccessToken as unknown as Mock).mockResolvedValue(null);
+    expect(await resolveUserGithubToken('user-9', { personalOAuth: null })).toBeNull();
   });
 });

@@ -45,6 +45,7 @@ import { resolveRunnerBackend } from '../finalize/runner-backend.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import { resolveRunsOnImage } from '../finalize/runner-images.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
+import { applyGithubSpawnCredentials } from '../spawn-github-credentials.js';
 import { hasAtLeastRole, parseRole } from '../roles.js';
 import {
   acquireEnvironmentLock,
@@ -169,6 +170,16 @@ export interface DeployOrchestratorDeps {
   env?: NodeJS.ProcessEnv;
   /** orgId for the multi-tenant queue (local backend ignores it). */
   orgId?: string;
+  /**
+   * Resolve the GitHub token to inject into deploy step env on behalf of the
+   * user who triggered the deploy (the deployment row's `triggered_by`). Lets a
+   * deploy step run `gh ...` / `git push` against GitHub HTTPS as the initiating
+   * user instead of relying on a global `gh auth login` on the host (which does
+   * not exist in the runner container). Returns `null` (or omitted) → no token
+   * is injected. Best-effort: a resolver throw is swallowed so the deploy still
+   * runs and surfaces a clearer auth error if creds are genuinely missing.
+   */
+  resolveGithubToken?: (userId: string) => Promise<string | null>;
 }
 
 export interface TriggerDeploymentInput {
@@ -768,6 +779,26 @@ export async function runDeployment(
   const baseEnv: NodeJS.ProcessEnv = buildDeployBaseEnv(deps.env ?? process.env);
   let lease: RunnerLease;
   try {
+    // Inject the initiating user's GitHub token so deploy steps can run
+    // `gh ...` / `git push` over HTTPS as the user who triggered the deploy —
+    // the runner container has no global `gh auth login`. Applied BEFORE the
+    // project-secret merge so an explicit project `GH_TOKEN`/`GITHUB_TOKEN`
+    // secret still wins; best-effort, so a resolver failure never blocks the
+    // deploy (the step then surfaces its own auth error).
+    const triggeredBy = getDeployment(deploymentId)?.triggered_by ?? null;
+    if (triggeredBy && deps.resolveGithubToken) {
+      let userGhToken: string | null = null;
+      try {
+        userGhToken = await deps.resolveGithubToken(triggeredBy);
+      } catch (err) {
+        console.warn(
+          `[deploy-orchestrator] GitHub token resolution failed deployment=${deploymentId} ` +
+            `user=${triggeredBy}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      applyGithubSpawnCredentials(baseEnv, userGhToken);
+    }
+
     mergeProjectSecretsSpawnEnv(baseEnv, {
       projectId,
       sessionId: ctx.sessionId ?? null,

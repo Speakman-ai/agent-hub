@@ -359,6 +359,95 @@ describe('triggerDeployment — happy path', () => {
   });
 });
 
+describe('triggerDeployment — GitHub auth of the triggering user', () => {
+  it('injects the initiating user GitHub token into the deploy step env', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const resolveGithubToken = vi.fn(async () => 'ghu_user_token');
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-gh',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        triggeredBy: 'user-42',
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveGithubToken,
+      },
+    );
+
+    expect(dep.status).toBe('success');
+    // Resolver was asked for the user who triggered the deploy.
+    expect(resolveGithubToken).toHaveBeenCalledWith('user-42');
+    // Token reaches both the lease spec env and the per-step spawn env so
+    // `gh` / `git push` authenticate as that user inside the runner.
+    const spec = fb.acquireCalls[0];
+    expect(spec.env?.GH_TOKEN).toBe('ghu_user_token');
+    expect(spec.env?.GITHUB_TOKEN).toBe('ghu_user_token');
+    expect(fb.spawnArgs[0].env?.GH_TOKEN).toBe('ghu_user_token');
+    // A process-scoped git credential helper for github.com is wired up.
+    const keys = Object.keys(spec.env ?? {}).filter((k) => k.startsWith('GIT_CONFIG_KEY_'));
+    const helperWired = keys.some((k) => spec.env?.[k] === 'credential.https://github.com.helper');
+    expect(helperWired).toBe(true);
+  });
+
+  it('injects no GitHub token for a system/push-driven deploy (no triggeredBy)', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const resolveGithubToken = vi.fn(async () => 'ghu_should_not_be_used');
+    await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-sys',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        // no triggeredBy → system-initiated; never borrow an arbitrary identity
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveGithubToken,
+      },
+    );
+
+    expect(resolveGithubToken).not.toHaveBeenCalled();
+    expect(fb.acquireCalls[0].env?.GH_TOKEN).toBeUndefined();
+    expect(fb.spawnArgs[0].env?.GH_TOKEN).toBeUndefined();
+  });
+
+  it('swallows a resolver failure — deploy still runs without a token', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const resolveGithubToken = vi.fn(async () => {
+      throw new Error('orgs.db unreachable');
+    });
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-throw',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        triggeredBy: 'user-99',
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveGithubToken,
+      },
+    );
+
+    expect(dep.status).toBe('success');
+    expect(resolveGithubToken).toHaveBeenCalledWith('user-99');
+    expect(fb.acquireCalls[0].env?.GH_TOKEN).toBeUndefined();
+  });
+});
+
 describe('triggerDeployment — failure', () => {
   it('fails fast on a non-zero step, skips the rest, marks error', async () => {
     const fb = makeFakeBackend([{ exitCode: 3, stdout: 'boom\n' }]);
