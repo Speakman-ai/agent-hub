@@ -107,6 +107,24 @@ export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = [
 ] as const;
 
 /**
+ * Engines this resolver must NEVER select, even when a caller passes one as
+ * `preferred` (e.g. an agent/cron row with `engine: "gemini-cli"`). Gemini is
+ * reserved for RAG/embeddings + transcription, which call the Gemini API key
+ * directly and never spawn a one-shot agent CLI through this path. It is not a
+ * selectable agent engine (the web/mobile pickers omit it). Crucially, a host
+ * that configures a Gemini key for RAG makes the gemini-cli availability probe
+ * report `available: true` with no acting user — so without this guard a
+ * `preferred: "gemini-cli"` heartbeat/cron would spawn the Gemini CLI and 429
+ * immediately (Google set the Pro free tier to `limit: 0` on 2026-04-01).
+ * Excluding it from the fallback chain alone is not enough; the `preferred`
+ * path bypassed the chain. Keep this aligned with DEFAULT_FALLBACK_CHAIN's
+ * "Gemini is deliberately EXCLUDED" rationale above.
+ */
+const NON_SELECTABLE_ENGINES: ReadonlySet<SupportedEngine> = new Set<SupportedEngine>([
+  'gemini-cli',
+]);
+
+/**
  * Thrown when no engine in the fallback chain is available. Carries
  * per-engine probe results so the caller can render a precise
  * "set up X or Y" message instead of a generic "no engines".
@@ -156,11 +174,22 @@ export async function resolveOneShotEngine(
   const availability =
     input.availability ?? (await probeAllEngineAvailability(cfg, { userId: input.userId ?? null }));
 
-  const chain = input.fallbackChain ?? DEFAULT_FALLBACK_CHAIN;
+  // Drop any non-selectable engine (e.g. gemini-cli) from the chain — defends
+  // against a caller-supplied fallbackChain that includes it.
+  const chain = (input.fallbackChain ?? DEFAULT_FALLBACK_CHAIN).filter(
+    (engine) => !NON_SELECTABLE_ENGINES.has(engine),
+  );
 
-  // Try the caller's preferred engine first when supplied + supported.
+  // Try the caller's preferred engine first when supplied + supported. A
+  // non-selectable engine (gemini-cli) is ignored here so a `preferred:
+  // "gemini-cli"` row falls through to the agent fallback chain instead of
+  // spawning the Gemini CLI (which 429s on the now-zeroed free tier).
   let preferred: SupportedEngine | undefined;
-  if (input.preferred && isSupportedEngine(input.preferred)) {
+  if (
+    input.preferred &&
+    isSupportedEngine(input.preferred) &&
+    !NON_SELECTABLE_ENGINES.has(input.preferred)
+  ) {
     preferred = input.preferred;
   }
 

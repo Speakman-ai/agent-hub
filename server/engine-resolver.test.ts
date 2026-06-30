@@ -164,6 +164,51 @@ describe('resolveOneShotEngine', () => {
     ).rejects.toBeInstanceOf(NoEnginesAvailableError);
   });
 
+  it('never selects gemini-cli even when passed as preferred (heartbeat/cron engine=gemini-cli)', async () => {
+    // Regression for the heartbeat 429 storm: an agent/cron row with
+    // `engine: "gemini-cli"` passes it straight through as `preferred`. The host
+    // Gemini key (for RAG) makes the probe report gemini-cli available, so the
+    // old `preferred` path returned it and the spawn 429'd (Pro free tier
+    // limit:0). The resolver must IGNORE gemini-cli as preferred and walk the
+    // agent fallback chain instead.
+    const r = await resolveOneShotEngine(CFG, {
+      preferred: 'gemini-cli',
+      availability: makeAvailability({
+        'gemini-cli': ok('gemini-cli'),
+        'claude-code': ok('claude-code'),
+      }),
+    });
+    expect(r.engine).toBe('claude-code');
+    expect(r.engine).not.toBe('gemini-cli');
+    // gemini-cli was never a valid "preferred", so this is not a fallback-from-miss.
+    expect(r.fallbackUsed).toBe(false);
+  });
+
+  it('throws NoEnginesAvailableError when preferred=gemini-cli and only gemini is available', async () => {
+    // Userless background work on a Gemini-only (RAG) host: must surface a clear
+    // "set up an engine" error rather than spawning the Gemini CLI and 429ing.
+    await expect(
+      resolveOneShotEngine(CFG, {
+        preferred: 'gemini-cli',
+        availability: makeAvailability({ 'gemini-cli': ok('gemini-cli') }),
+      }),
+    ).rejects.toBeInstanceOf(NoEnginesAvailableError);
+  });
+
+  it('drops gemini-cli from a caller-supplied fallbackChain (defensive)', async () => {
+    // Even if a caller hand-builds a chain that lists gemini-cli, the resolver
+    // must filter it out so it can never be the selected engine.
+    const r = await resolveOneShotEngine(CFG, {
+      fallbackChain: ['gemini-cli', 'cursor-agent'],
+      availability: makeAvailability({
+        'gemini-cli': ok('gemini-cli'),
+        'cursor-agent': ok('cursor-agent'),
+      }),
+    });
+    expect(r.engine).toBe('cursor-agent');
+    expect(r.engine).not.toBe('gemini-cli');
+  });
+
   it('treats an unsupported preferred engine as no preference (walks the chain)', async () => {
     const r = await resolveOneShotEngine(CFG, {
       // Deliberately invalid engine name — resolver should ignore it.
