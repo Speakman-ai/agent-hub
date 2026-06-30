@@ -23,7 +23,15 @@ import { pruneRunnerJobLogs } from './runner-queue.js';
 /** Runs every 5 minutes — frequent enough to keep the spool bounded, cheap given the age index. */
 export const RUNNER_JOB_LOG_REAPER_CRON = '*/5 * * * *';
 
-const DEFAULT_RETENTION_DAYS = 3;
+/**
+ * 1 day. These frames only exist to replay a job's live output across a Hub
+ * restart mid-stream; nothing reads them once a job ends (jobs run ~minutes), so
+ * a day is already generous. The prior 3-day default held ~3M rows / 1.4 GB on a
+ * busy fleet (~1M frames/day) — pure dead weight that bloated orgs.db. Operators
+ * who want a longer window can raise `FINALIZE_RUNNER_JOB_LOG_RETENTION_DAYS`
+ * (fractional days accepted, e.g. `0.5`).
+ */
+const DEFAULT_RETENTION_DAYS = 1;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**

@@ -8,8 +8,8 @@ import {
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 describe('resolveRetentionMs', () => {
-  it('defaults to 3 days when the env var is unset', () => {
-    expect(resolveRetentionMs({})).toBe(3 * MS_PER_DAY);
+  it('defaults to 1 day when the env var is unset', () => {
+    expect(resolveRetentionMs({})).toBe(1 * MS_PER_DAY);
   });
 
   it('honors a positive numeric override', () => {
@@ -18,11 +18,17 @@ describe('resolveRetentionMs', () => {
     );
   });
 
+  it('honors a fractional override (e.g. 0.5 day)', () => {
+    expect(resolveRetentionMs({ FINALIZE_RUNNER_JOB_LOG_RETENTION_DAYS: '0.5' })).toBe(
+      0.5 * MS_PER_DAY,
+    );
+  });
+
   it.each(['0', '-5', 'abc', ''])(
     'falls back to the default for invalid value %j (never collapses retention to zero)',
     (raw) => {
       expect(resolveRetentionMs({ FINALIZE_RUNNER_JOB_LOG_RETENTION_DAYS: raw })).toBe(
-        3 * MS_PER_DAY,
+        1 * MS_PER_DAY,
       );
     },
   );
