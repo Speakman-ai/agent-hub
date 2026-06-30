@@ -113,6 +113,52 @@ describe('buildReplayPlayerSrcDoc', () => {
     expect(html!).toContain('acked');
   });
 
+  it('sizes the replay frame so rrweb-player controls remain visible', () => {
+    type ReplayFrameMessageListener = (event: { source: unknown; data: unknown }) => void;
+    let onMessage: ReplayFrameMessageListener | undefined;
+    let playerOptions: any = null;
+    const parent = {
+      postMessage: vi.fn(),
+    };
+    const windowStub = {
+      innerWidth: 900,
+      innerHeight: 600,
+      parent,
+      rrwebPlayer: function FakePlayer(options: any) {
+        playerOptions = options;
+      },
+      addEventListener: vi.fn((event: string, listener: ReplayFrameMessageListener) => {
+        if (event === 'message') onMessage = listener;
+      }),
+    };
+    const documentStub = {
+      getElementById: vi.fn(() => ({ innerHTML: 'loading' })),
+    };
+
+    const runBootstrap = new Function(
+      'window',
+      'document',
+      'parent',
+      'setInterval',
+      'clearInterval',
+      IFRAME_BOOTSTRAP,
+    );
+    runBootstrap(windowStub, documentStub, parent, vi.fn(), vi.fn());
+
+    expect(onMessage).toBeDefined();
+    const sendMessage = onMessage!;
+    sendMessage({
+      source: parent,
+      data: { ch: REPLAY_CHANNEL, type: 'chunk', events: [{ type: 2, timestamp: 1 }] },
+    });
+    sendMessage({ source: parent, data: { ch: REPLAY_CHANNEL, type: 'end' } });
+
+    expect(playerOptions?.props?.width).toBe(876);
+    expect(playerOptions?.props?.height).toBe(496);
+    expect(playerOptions?.props?.showController).toBe(true);
+    expect(playerOptions?.props?.height + 80 + 24).toBe(600);
+  });
+
   it('escapes a closing script tag hidden in the bundle string', () => {
     const html = buildReplayPlayerSrcDoc('evil</script><img>', 'css');
     // The raw breakout sequence must not survive into the document.

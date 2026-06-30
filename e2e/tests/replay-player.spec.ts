@@ -178,6 +178,41 @@ test.describe('Replay player (sandboxed rrweb-player under CSP)', () => {
     expect(rendered.markerInInnerFrame).toBe(true); // captured DOM actually replayed
     expect(rendered.hasPlayerRoot).toBe(true); // rrweb-player UI mounted
 
+    // The rrweb-player `height` prop is the replay frame height, not the outer
+    // player height. The controller adds 80px below it, so the bootstrap must
+    // reserve that space or the scrubber and play/pause controls are clipped out
+    // of the iframe viewport.
+    await playerFrame!.locator('.rr-controller').waitFor({ state: 'visible' });
+    const controls = await playerFrame!.evaluate(() => {
+      const box = (selector: string) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        return {
+          bottom: rect.bottom,
+          height: rect.height,
+          top: rect.top,
+          width: rect.width,
+        };
+      };
+      return {
+        controller: box('.rr-controller'),
+        progress: box('.rr-progress'),
+        firstButton: box('.rr-controller button'),
+        viewportHeight: window.innerHeight,
+      };
+    });
+    expect(controls.controller).not.toBeNull();
+    expect(controls.progress).not.toBeNull();
+    expect(controls.firstButton).not.toBeNull();
+    expect(controls.controller!.height).toBeGreaterThan(0);
+    expect(controls.progress!.width).toBeGreaterThan(0);
+    expect(controls.firstButton!.width).toBeGreaterThan(0);
+    expect(controls.controller!.bottom).toBeLessThanOrEqual(controls.viewportHeight);
+    expect(controls.progress!.bottom).toBeLessThanOrEqual(controls.viewportHeight);
+    expect(controls.firstButton!.bottom).toBeLessThanOrEqual(controls.viewportHeight);
+    await playerFrame!.locator('.rr-controller button').first().click();
+
     // 6. HOST ISOLATION (the security invariant): the player frame runs at an
     //    opaque origin (data: URL), so it is CROSS-origin to the embedding host
     //    page. Reaching for host JS state, the host document, or host storage

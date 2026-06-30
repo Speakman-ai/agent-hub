@@ -80,8 +80,14 @@ export const IFRAME_BOOTSTRAP = `(function () {
     if (typeof Player !== 'function') { post({ type: 'error', message: 'rrweb-player failed to load' }); return; }
     var root = document.getElementById('root');
     root.innerHTML = '';
-    var width = Math.max(320, window.innerWidth - 24);
-    var height = Math.max(240, window.innerHeight - 24);
+    var FRAME_PADDING = 24;
+    var CONTROLLER_HEIGHT = 80;
+    var width = Math.max(320, window.innerWidth - FRAME_PADDING);
+    // rrweb-player renders the controller below the replay frame and adds this
+    // height back onto the outer .rr-player. Size only the replay frame here so
+    // the scrubber and play/pause controls stay inside the iframe viewport.
+    var availableHeight = Math.max(1, window.innerHeight - FRAME_PADDING);
+    var height = Math.max(1, availableHeight - CONTROLLER_HEIGHT);
     try {
       new Player({
         target: root,
