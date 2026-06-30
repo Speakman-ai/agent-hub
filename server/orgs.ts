@@ -5,6 +5,7 @@ import config from './config.js';
 import type { OrgRow } from './types.js';
 import { MCP_SERVERS_SCHEMA } from './mcp-servers-schema.js';
 import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
+import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
 import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
 
@@ -164,6 +165,10 @@ export function initOrgsDb(): void {
   // server/mcp-servers-store.ts for the read/write surface.
   orgsDb.exec(MCP_SERVERS_SCHEMA);
   orgsDb.exec(USER_SKILL_CREDENTIALS_SCHEMA);
+  // Per-user Google OAuth connection (tokens encrypted at rest). Separate
+  // table rather than columns on `users` — keeps the encrypted token blobs
+  // off the hot identity row. See google-connections-store.ts.
+  orgsDb.exec(GOOGLE_CONNECTIONS_SCHEMA);
   orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
   // Migration: widen the `user_engine_auth_audit.engine` CHECK to admit
   // 'grok'. `CREATE TABLE IF NOT EXISTS` can't alter an existing CHECK, so
