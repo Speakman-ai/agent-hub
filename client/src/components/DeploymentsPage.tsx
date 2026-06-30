@@ -85,6 +85,18 @@ function releaseItemCardTitle(item: any): string {
   return shortId ? `#${shortId} ${title}` : String(title);
 }
 
+function releaseVersionDeployments(deployments: any[]): any[] {
+  return (deployments || []).filter((deployment) => deployment?.status === 'success');
+}
+
+function releaseVersionLabel(deployment: any): string {
+  const ref = String(deployment?.ref || deployment?.id || 'release');
+  const displayRef = ref.startsWith('refs/tags/') ? ref.slice('refs/tags/'.length) : ref;
+  return `${displayRef} / ${deployment?.environment || 'environment'} / ${formatDate(
+    deployment?.completed_at || deployment?.updated_at || deployment?.created_at,
+  )}`;
+}
+
 function notificationRecipientLabel(notification: any): string {
   if (notification?.recipient_type === 'reporter') return 'Reporter';
   if (notification?.recipient_type === 'release_digest') return 'Release digest';
@@ -170,9 +182,17 @@ function loadDeployBranches(projectId: string): Promise<any> {
     .catch(() => api.getGitHostBranches(projectId).catch(() => null));
 }
 
+function loadReleaseVersionDeployments(projectId: string): Promise<any[]> {
+  return api
+    .listDeployments(projectId, { limit: 100 })
+    .then((history: any) => releaseVersionDeployments(history?.deployments || []))
+    .catch(() => []);
+}
+
 export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: any) {
   const [config, setConfig] = useState<any>(null);
   const [branchData, setBranchData] = useState<any>(null);
+  const [releaseDeployments, setReleaseDeployments] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<any[]>([]);
@@ -219,12 +239,14 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         setError(null);
       }
       try {
-        const [res, branches] = await Promise.all([
+        const [res, branches, releaseHistory] = await Promise.all([
           api.getDeployConfig(projectId),
           loadDeployBranches(projectId),
+          loadReleaseVersionDeployments(projectId),
         ]);
         setConfig(res);
         setBranchData(branches);
+        setReleaseDeployments(releaseHistory);
         setMissingConfig(false);
         setRefByEnv((prev) => {
           const next = { ...prev };
@@ -241,6 +263,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         if (isMissingDeployConfigError(e)) {
           setConfig(null);
           setBranchData(null);
+          setReleaseDeployments([]);
           setMissingConfig(true);
           setError(null);
         } else {
@@ -288,6 +311,10 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
     const deployment = snapshot?.deployment;
     if (!deployment) return;
     setConfig((prev: any) => mergeConfigWithSnapshot(prev, snapshot));
+    setReleaseDeployments((prev) => {
+      const withoutCurrent = prev.filter((item) => item?.id !== deployment.id);
+      return deployment.status === 'success' ? [deployment, ...withoutCurrent] : withoutCurrent;
+    });
     if (!selectedIdRef.current || selectedIdRef.current === deployment.id) {
       selectedIdRef.current = deployment.id;
       setSelected((prev: any) => ({
@@ -346,6 +373,15 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const selectedSteps = selected?.steps || [];
   const selectedReleaseItems = selected?.releaseItems || [];
   const selectedReleaseNotifications = selected?.releaseNotifications || [];
+  const releaseOptions =
+    releaseDeployments.length > 0 && selectedDeployment?.status === 'success'
+      ? [
+          selectedDeployment,
+          ...releaseDeployments.filter((deployment) => deployment.id !== selectedDeployment.id),
+        ]
+      : releaseDeployments;
+  const selectedReleaseDeploymentId =
+    selectedDeployment?.status === 'success' ? selectedDeployment.id : '';
 
   const adjustReleaseItem = async (item: any, inclusionStatus: 'included' | 'excluded') => {
     if (!selectedDeployment?.id || !item?.card_id) return;
@@ -693,6 +729,36 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                   )}
                 </div>
 
+                {releaseOptions.length > 0 && (
+                  <div className="mb-4 rounded-md border border-gray-800 bg-gray-950/70 p-3">
+                    <label
+                      htmlFor="deployment-release-version"
+                      className="mb-1 block text-xs font-semibold uppercase text-gray-400"
+                    >
+                      Release version
+                    </label>
+                    <select
+                      id="deployment-release-version"
+                      aria-label="Release version"
+                      value={selectedReleaseDeploymentId}
+                      onChange={(event) => {
+                        const deployment = releaseOptions.find(
+                          (candidate) => candidate.id === event.target.value,
+                        );
+                        if (deployment) selectDeployment(deployment);
+                      }}
+                      className="min-h-[34px] w-full rounded-md border border-gray-700 bg-gray-950 px-2 text-sm text-gray-200 outline-none focus:border-sky-500"
+                    >
+                      <option value="">Select a released version</option>
+                      {releaseOptions.map((deployment) => (
+                        <option key={deployment.id} value={deployment.id}>
+                          {releaseVersionLabel(deployment)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 {!selectedDeployment ? (
                   <div className="p-8 text-center text-gray-500 text-sm border border-dashed border-gray-800 rounded-lg">
                     No deployment selected.
@@ -759,7 +825,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                   <div className="mt-4 border-t border-gray-800 pt-4">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <h3 className="text-xs font-semibold uppercase text-gray-400">
-                        Release items
+                        Release changes
                       </h3>
                       <span className="text-xs text-gray-500">
                         {

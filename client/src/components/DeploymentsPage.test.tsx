@@ -8,6 +8,7 @@ import { api } from '../utils/api';
     getDeployConfig: vi.fn(),
     getProjectBranches: vi.fn(),
     getGitHostBranches: vi.fn(),
+    listDeployments: vi.fn(),
     getDeployment: vi.fn(),
     retryReleaseNotification: vi.fn(),
     adjustDeploymentReleaseItem: vi.fn(),
@@ -161,6 +162,11 @@ beforeEach(() => {
     ],
   });
   (api.getGitHostBranches as any).mockRejectedValue(new Error('not hosted'));
+  (api.listDeployments as any).mockResolvedValue({
+    deployments: [deployment()],
+    limit: 100,
+    offset: 0,
+  });
   (api.getDeployment as any).mockResolvedValue(snapshot());
   (api.adjustDeploymentReleaseItem as any).mockResolvedValue({
     releaseItem: releaseItem({ inclusion_status: 'excluded' }),
@@ -215,6 +221,58 @@ describe('DeploymentsPage', () => {
     expect(screen.getByRole('button', { name: 'Exclude' })).toBeInTheDocument();
   });
 
+  it('selects a release version and lists that deployment changes', async () => {
+    const release = deployment({
+      id: 'dep-release',
+      environment: 'prod',
+      ref: 'refs/tags/v1.8.0',
+      completed_at: '2026-06-26 09:30:00',
+      updated_at: '2026-06-26 09:30:00',
+    });
+    (api.listDeployments as any).mockResolvedValue({
+      deployments: [release, deployment()],
+      limit: 100,
+      offset: 0,
+    });
+    (api.getDeployment as any).mockImplementation((_projectId: string, deploymentId: string) =>
+      deploymentId === 'dep-release'
+        ? Promise.resolve(
+            snapshot(
+              release,
+              [step({ deployment_id: release.id })],
+              [
+                releaseItem({
+                  id: 'ri-release',
+                  deployment_id: release.id,
+                  card: {
+                    id: 'card-release',
+                    title: 'Add release dropdown',
+                    shortId: 1284,
+                    priority: 'medium',
+                    columnName: 'Done',
+                  },
+                  supportTicket: null,
+                }),
+              ],
+            ),
+          )
+        : Promise.resolve(snapshot()),
+    );
+
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const releaseSelect = await screen.findByLabelText('Release version');
+    expect(
+      within(releaseSelect).getByRole('option', { name: /v1\.8\.0 \/ prod/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(releaseSelect, { target: { value: 'dep-release' } });
+
+    await waitFor(() => expect(api.getDeployment).toHaveBeenCalledWith('proj-1', 'dep-release'));
+    expect(await screen.findByText('#1284 Add release dropdown')).toBeInTheDocument();
+    expect(screen.getByText('No linked support ticket')).toBeInTheDocument();
+  });
+
   it('defaults deployment targets to the repo default branch instead of the live SHA', async () => {
     (api.getDeployConfig as any).mockResolvedValue(
       config([env({ currentRef: 'abcdef1234567890' })]),
@@ -262,6 +320,18 @@ describe('DeploymentsPage', () => {
     await waitFor(() =>
       expect(api.triggerDeployment).toHaveBeenCalledWith('proj-1', 'dev', { ref: 'v2.0.0' }),
     );
+  });
+
+  it('keeps deployment controls available when release history fails', async () => {
+    (api.listDeployments as any).mockRejectedValue(new Error('history unavailable'));
+
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const card = await screen.findByTestId('deploy-env-dev');
+    expect(within(card).getByRole('button', { name: 'Deploy' })).toBeInTheDocument();
+    expect(within(card).getByLabelText('Ref for dev')).toHaveValue('main');
+    expect(await screen.findByText('1. build')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Release version')).toBeNull();
   });
 
   it('falls back to hosted git branches when generic branch lookup fails', async () => {

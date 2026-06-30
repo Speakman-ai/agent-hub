@@ -6,6 +6,7 @@ import {
   formatDeploymentLogEntry,
   isTerminalDeploymentStatus,
   isMissingDeployConfigError,
+  loadReleaseVersionDeployments,
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
   releaseItemCardLabel,
@@ -13,6 +14,8 @@ import {
   releaseNotificationStatusLabel,
   releaseItemStatusLabel,
   releaseItemSupportLabel,
+  releaseVersionDeployments,
+  releaseVersionLabel,
   shortDeploymentRef,
 } from './deployments';
 
@@ -180,6 +183,24 @@ describe('deployment state helpers', () => {
     expect(releaseItemSupportLabel(item)).toBe('Export fails (ticket-1)');
     expect(releaseItemStatusLabel({ inclusion_status: 'included' })).toBe('Included');
     expect(releaseItemSupportLabel({ support_ticket_id: null })).toBe('No support ticket');
+  });
+
+  it('builds successful release version picker options', () => {
+    const success = deployment({
+      id: 'dep-release',
+      ref: 'refs/tags/v1.8.0',
+      status: 'success',
+    });
+    const running = deployment({ id: 'dep-running', ref: 'main', status: 'running' });
+
+    expect(releaseVersionDeployments([running, success])).toEqual([success]);
+    expect(releaseVersionLabel(success)).toBe('v1.8.0 · prod');
+  });
+
+  it('degrades release version history failures to an empty picker', async () => {
+    await expect(
+      loadReleaseVersionDeployments(() => Promise.reject(new Error('history unavailable'))),
+    ).resolves.toEqual([]);
   });
 
   it('formats release notification labels', () => {

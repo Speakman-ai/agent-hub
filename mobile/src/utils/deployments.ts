@@ -10,6 +10,30 @@ export function shortDeploymentRef(ref: any) {
   return s.length > 12 ? s.slice(0, 12) : s;
 }
 
+function releaseVersionRef(ref: any) {
+  const value = String(ref || '');
+  return value.startsWith('refs/tags/') ? value.slice('refs/tags/'.length) : value;
+}
+
+export function releaseVersionDeployments(deployments: any[] = []) {
+  return deployments.filter((deployment) => deployment?.status === 'success');
+}
+
+export function releaseVersionLabel(deployment: any) {
+  const ref = releaseVersionRef(deployment?.ref) || deployment?.id || 'release';
+  const environment = deployment?.environment || 'environment';
+  return `${ref} · ${environment}`;
+}
+
+export async function loadReleaseVersionDeployments(loadHistory: () => Promise<any>) {
+  try {
+    const history = await loadHistory();
+    return releaseVersionDeployments(history?.deployments || []);
+  } catch {
+    return [];
+  }
+}
+
 export function mergeDeploymentConfigWithSnapshot(config: any, snapshot: any) {
   const deployment = snapshot?.deployment;
   if (!config || !deployment) return config;

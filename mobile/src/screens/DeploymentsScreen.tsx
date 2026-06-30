@@ -34,6 +34,7 @@ import {
   deploymentStepLogText,
   isTerminalDeploymentStatus,
   isMissingDeployConfigError,
+  loadReleaseVersionDeployments,
   mergeDeploymentConfigWithSnapshot,
   preferredDeploymentFromConfig,
   releaseItemCardLabel,
@@ -41,6 +42,7 @@ import {
   releaseNotificationStatusLabel,
   releaseItemStatusLabel,
   releaseItemSupportLabel,
+  releaseVersionLabel,
   shortDeploymentRef,
 } from '../utils/deployments';
 import { parseDate, relativeTime } from '../utils/time';
@@ -125,6 +127,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const project = route?.params?.project || projects?.find((p: any) => p.id === projectId);
   const [config, setConfig] = useState<any>(null);
   const [branchData, setBranchData] = useState<any>(null);
+  const [releaseDeployments, setReleaseDeployments] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [refByEnv, setRefByEnv] = useState<Record<string, string>>({});
   const [events, setEvents] = useState<any[]>([]);
@@ -167,12 +170,14 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         setError(null);
       }
       try {
-        const [res, branches] = await Promise.all([
+        const [res, branches, releaseHistory] = await Promise.all([
           api.getDeployConfig(projectId),
           loadDeployBranches(projectId),
+          loadReleaseVersionDeployments(() => api.listDeployments(projectId, { limit: 100 })),
         ]);
         setConfig(res);
         setBranchData(branches);
+        setReleaseDeployments(releaseHistory);
         setMissingConfig(false);
         setRefByEnv((prev) => {
           const next = { ...prev };
@@ -189,6 +194,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
         if (isMissingDeployConfigError(err)) {
           setConfig(null);
           setBranchData(null);
+          setReleaseDeployments([]);
           setMissingConfig(true);
           setError(null);
         } else {
@@ -233,6 +239,10 @@ export default function DeploymentsScreen({ route, navigation }: any) {
     const deployment = snapshot?.deployment;
     if (!deployment) return;
     setConfig((prev: any) => mergeDeploymentConfigWithSnapshot(prev, snapshot));
+    setReleaseDeployments((prev) => {
+      const withoutCurrent = prev.filter((item) => item?.id !== deployment.id);
+      return deployment.status === 'success' ? [deployment, ...withoutCurrent] : withoutCurrent;
+    });
     if (!selectedIdRef.current || selectedIdRef.current === deployment.id) {
       selectedIdRef.current = deployment.id;
       setSelected((prev: any) => ({
@@ -283,6 +293,15 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const selectedLogs = selected?.logs || [];
   const selectedReleaseItems = selected?.releaseItems || [];
   const selectedReleaseNotifications = selected?.releaseNotifications || [];
+  const releaseOptions =
+    releaseDeployments.length > 0 && selectedDeployment?.status === 'success'
+      ? [
+          selectedDeployment,
+          ...releaseDeployments.filter((deployment) => deployment.id !== selectedDeployment.id),
+        ]
+      : releaseDeployments;
+  const selectedReleaseDeploymentId =
+    selectedDeployment?.status === 'success' ? selectedDeployment.id : '';
 
   const retryNotification = useCallback(
     async (notification: any) => {
@@ -560,6 +579,47 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           );
         })}
 
+        {releaseOptions.length > 0 ? (
+          <View style={styles.releasePickerCard}>
+            <Text style={styles.releasePickerTitle}>Release version</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.releasePickerScroller}
+              accessibilityLabel="Release versions"
+            >
+              {releaseOptions.map((deployment: any) => {
+                const active = deployment.id === selectedReleaseDeploymentId;
+                return (
+                  <TouchableOpacity
+                    key={deployment.id}
+                    onPress={() => selectDeployment(deployment)}
+                    style={[styles.releaseVersionChip, active && styles.releaseVersionChipActive]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Release version ${releaseVersionLabel(deployment)}`}
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text
+                      style={[
+                        styles.releaseVersionChipText,
+                        active && styles.releaseVersionChipTextActive,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {releaseVersionLabel(deployment)}
+                    </Text>
+                    <Text style={styles.releaseVersionChipMeta} numberOfLines={1}>
+                      {formatDate(
+                        deployment.completed_at || deployment.updated_at || deployment.created_at,
+                      )}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
+
         <View style={styles.detailCard}>
           <View style={styles.sectionHeader}>
             <Terminal size={16} color={colors.gray400} />
@@ -620,7 +680,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           {selectedDeployment ? (
             <View style={styles.releaseSection}>
               <View style={styles.releaseHeader}>
-                <Text style={styles.releaseTitle}>Release items</Text>
+                <Text style={styles.releaseTitle}>Release changes</Text>
                 <Text style={styles.releaseCount}>
                   {
                     selectedReleaseItems.filter((item: any) => item.inclusion_status !== 'excluded')
@@ -924,6 +984,34 @@ const styles = StyleSheet.create({
   approveButtonText: { color: colors.purple400, fontSize: 12, fontWeight: '700' },
   disabled: { opacity: 0.5 },
   lastRun: { color: colors.gray500, fontSize: 12 },
+  releasePickerCard: {
+    borderWidth: 1,
+    borderColor: colors.gray800,
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: colors.gray900,
+    gap: 8,
+  },
+  releasePickerTitle: { color: colors.gray300, fontSize: 12, fontWeight: '700' },
+  releasePickerScroller: { maxHeight: 52 },
+  releaseVersionChip: {
+    maxWidth: 260,
+    minHeight: 46,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    paddingHorizontal: 10,
+    justifyContent: 'center',
+    marginRight: 8,
+    backgroundColor: colors.gray950,
+  },
+  releaseVersionChipActive: {
+    borderColor: colors.blue500,
+    backgroundColor: colors.blue900_40,
+  },
+  releaseVersionChipText: { color: colors.gray200, fontSize: 12, fontWeight: '700' },
+  releaseVersionChipTextActive: { color: colors.blue300 },
+  releaseVersionChipMeta: { marginTop: 2, color: colors.gray500, fontSize: 11 },
   detailCard: {
     borderWidth: 1,
     borderColor: colors.gray800,
