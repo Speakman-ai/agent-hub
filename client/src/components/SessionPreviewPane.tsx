@@ -10,12 +10,15 @@ import {
   CheckCircle2,
   ArrowLeftCircle,
   GripVertical,
+  Smartphone,
+  Tablet,
 } from 'lucide-react';
 import {
   derivePaneState,
   createActivityTouch,
   clampPaneWidth,
   paneWidthStorageKey,
+  PREVIEW_DEVICE_PRESETS,
   DEFAULT_PANE_WIDTH,
   previewIframeSrc,
   previewProxySessionIdFromUrl,
@@ -487,6 +490,39 @@ export default function SessionPreviewPane({
           aria-label="Preview URL"
           data-testid="session-preview-pane-url"
         />
+        <div
+          role="group"
+          aria-label="Snap preview to device width"
+          className="flex items-center gap-0.5 border-l border-gray-800 pl-2"
+          data-testid="session-preview-pane-devices"
+        >
+          {PREVIEW_DEVICE_PRESETS.map((d) => {
+            const active = width === d.width;
+            const isPhone = d.id === 'iphone';
+            const Icon = isPhone ? Smartphone : Tablet;
+            // Shrink the iPad mini glyph so the two tablet presets read
+            // distinctly at a glance; tooltips disambiguate either way.
+            const iconSize = isPhone ? 14 : d.id === 'ipad-mini' ? 12 : 15;
+            return (
+              <button
+                key={d.id}
+                type="button"
+                onClick={() => setWidth(clampPaneWidth(d.width))}
+                title={`${d.label} — ${d.width}px`}
+                aria-label={`Snap preview to ${d.label} width (${d.width}px)`}
+                aria-pressed={active}
+                data-testid={`session-preview-pane-device-${d.id}`}
+                className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                  active
+                    ? 'bg-sky-600/40 text-sky-200'
+                    : 'text-gray-400 hover:bg-gray-800 hover:text-gray-100'
+                }`}
+              >
+                <Icon size={iconSize} />
+              </button>
+            );
+          })}
+        </div>
         <button
           type="button"
           onClick={handleCopyUrl}

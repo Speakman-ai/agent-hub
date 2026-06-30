@@ -314,6 +314,51 @@ describe('SessionPreviewPane', () => {
     expect(window.localStorage.getItem('previewPaneWidth:s-1')).toBe('660');
   });
 
+  it('snaps the pane to a device width when a preset button is clicked', async () => {
+    const { container } = await renderReady();
+    const aside = container.querySelector('aside[data-testid="session-preview-pane"]');
+    expect((aside as any).style.width).toBe('560px');
+
+    fireEvent.click(screen.getByTestId('session-preview-pane-device-iphone'));
+    expect((aside as any).style.width).toBe('390px');
+    expect(window.localStorage.getItem('previewPaneWidth:s-1')).toBe('390');
+    expect(screen.getByTestId('session-preview-pane-device-iphone')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByTestId('session-preview-pane-device-ipad'));
+    expect((aside as any).style.width).toBe('820px');
+    expect(window.localStorage.getItem('previewPaneWidth:s-1')).toBe('820');
+    // Only the active preset is pressed.
+    expect(screen.getByTestId('session-preview-pane-device-iphone')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    expect(screen.getByTestId('session-preview-pane-device-ipad')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('drag-resize still works after using a device preset', async () => {
+    const { container } = await renderReady();
+    const aside = container.querySelector('aside[data-testid="session-preview-pane"]');
+    fireEvent.click(screen.getByTestId('session-preview-pane-device-ipad-mini'));
+    expect((aside as any).style.width).toBe('768px');
+
+    const handle = screen.getByTestId('session-preview-pane-resize-handle');
+    fireEvent.pointerDown(handle, { clientX: 600, button: 0, pointerId: 1 });
+    fireEvent.pointerMove(handle, { clientX: 550, pointerId: 1 });
+    fireEvent.pointerUp(handle, { pointerId: 1 });
+    expect((aside as any).style.width).toBe('818px');
+    // Dragging off a preset clears the pressed state on all presets.
+    expect(screen.getByTestId('session-preview-pane-device-ipad-mini')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
   it('loads per-session width when sessionId changes', async () => {
     window.localStorage.setItem('previewPaneWidth:s-a', '420');
     window.localStorage.setItem('previewPaneWidth:s-b', '900');

@@ -15,6 +15,7 @@ import {
   previewStateApiPath,
   reconcilePreviewEvent,
   resolvePreviewHydration,
+  PREVIEW_DEVICE_PRESETS,
 } from './sessionPreviewState';
 
 describe('derivePaneState', () => {
@@ -155,6 +156,27 @@ describe('clampPaneWidth', () => {
     expect(clampPaneWidth('not a number', { fallback: 560 })).toBe(560);
     expect(clampPaneWidth(NaN, { fallback: 560 })).toBe(560);
     expect(clampPaneWidth(Infinity, { fallback: 560, max: 1400 })).toBe(1400);
+  });
+});
+
+describe('PREVIEW_DEVICE_PRESETS', () => {
+  it('exposes iPhone, iPad mini, and iPad presets in ascending width order', () => {
+    expect(PREVIEW_DEVICE_PRESETS.map((p) => p.id)).toEqual(['iphone', 'ipad-mini', 'ipad']);
+    expect(PREVIEW_DEVICE_PRESETS.map((p) => p.width)).toEqual([390, 768, 820]);
+  });
+
+  it('keeps every preset width within the clamp bounds (no silent clamping)', () => {
+    for (const preset of PREVIEW_DEVICE_PRESETS) {
+      expect(clampPaneWidth(preset.width)).toBe(preset.width);
+    }
+  });
+
+  it('has unique ids and human labels', () => {
+    const ids = PREVIEW_DEVICE_PRESETS.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const preset of PREVIEW_DEVICE_PRESETS) {
+      expect(preset.label).toBeTruthy();
+    }
   });
 });
 

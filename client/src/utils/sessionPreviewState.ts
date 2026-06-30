@@ -394,6 +394,25 @@ export function clearSessionPreviewStorage(sessionId: any) {
 export const DEFAULT_PANE_WIDTH = 560;
 
 /**
+ * Device-width presets for the preview pane's snap buttons. Each width is the
+ * device's CSS (logical) viewport width in portrait, matching the values Chrome
+ * DevTools' device toolbar uses. Clicking a preset sets the pane width to the
+ * device width (still passed through `clampPaneWidth`, so a preset outside the
+ * [min, max] bounds is clamped rather than rejected). Resizing by drag is
+ * unaffected — these are just shortcuts to common widths.
+ *
+ * Single source of truth so the component and its tests don't drift on the
+ * exact pixel values.
+ */
+export const PREVIEW_DEVICE_PRESETS = [
+  { id: 'iphone', label: 'iPhone', width: 390 },
+  { id: 'ipad-mini', label: 'iPad mini', width: 768 },
+  { id: 'ipad', label: 'iPad', width: 820 },
+] as const;
+
+export type PreviewDevicePreset = (typeof PREVIEW_DEVICE_PRESETS)[number];
+
+/**
  * Decide whether the SessionPreviewPane should be visible for the active
  * session.
  *
