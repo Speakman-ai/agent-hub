@@ -1176,13 +1176,27 @@ async function runAutonomousLoopInner(
         // transactions, but the active-count check alone is not enough: both
         // could observe `activeNow < max` and move the SAME To Do card,
         // spawning two sessions for it. Re-read the row and bail if it has
-        // already been claimed (marked dispatched, given a session, or moved
-        // out of its original column by the other loop or a manual move).
+        // already been claimed (marked dispatched, assigned, or moved out of
+        // its original column by the other loop or a manual move).
+        //
+        // This MUST mirror the `getEligibleAutonomousCards` SQL predicate
+        // (To Do column + no assignee), plus the in-run `dispatched_by_autonomous`
+        // flag. Do NOT gate on `session_id`: a card can carry a *stale*
+        // session_id from a dead/cancelled prior link while still sitting
+        // unassigned in To Do. Because the candidate SQL ignores session_id,
+        // such a card is selected as a candidate every tick — and if the claim
+        // rejected it on `session_id`, it would be skipped forever ("already
+        // claimed by a concurrent dispatch loop or moved") and never dispatch:
+        // a permanent livelock. The concurrency case the guard exists for is
+        // fully covered by `dispatched_by_autonomous` + the column move, which
+        // the claiming loop writes together inside this same BEGIN IMMEDIATE
+        // *before* any session_id is stamped (that happens later, after the
+        // session exists), so session_id was never the signal that mattered.
         const fresh = d.stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
         if (
           !fresh ||
           fresh.dispatched_by_autonomous ||
-          fresh.session_id ||
+          (fresh.assignee != null && String(fresh.assignee).trim() !== '') ||
           fresh.column_id !== card.column_id
         ) {
           return 'ineligible';

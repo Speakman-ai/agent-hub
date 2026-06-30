@@ -1006,6 +1006,107 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
   });
 
+  it('dispatches a To Do card that carries a stale session_id (no permanent livelock)', async () => {
+    // Regression: a card left in To Do, unassigned, but with a stale (dead /
+    // cancelled) session_id used to be selected as a candidate every tick
+    // (getEligibleAutonomousCards only gates on To Do + no assignee) yet
+    // rejected by the BEGIN IMMEDIATE claim because it gated on `session_id`.
+    // The card therefore logged "already claimed by a concurrent dispatch loop
+    // or moved" forever and never dispatched. The claim must mirror the SQL
+    // predicate (To Do + unassigned + not dispatched-this-run) and ignore a
+    // stale session_id.
+    const card = makeCard({
+      id: 'stale-session-card',
+      column_id: 'col-todo',
+      assignee: null,
+      session_id: 'dead-session-1, dead-session-1',
+    });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+      // The claim re-read returns the SAME stuck row: still To Do, still
+      // unassigned, not dispatched, but with the stale session_id present.
+      getKanbanCard: {
+        get: vi.fn(() =>
+          makeCard({
+            id: 'stale-session-card',
+            column_id: 'col-todo',
+            assignee: null,
+            session_id: 'dead-session-1, dead-session-1',
+            dispatched_by_autonomous: 0,
+          }),
+        ),
+      },
+    });
+    stmts.getSession.get.mockImplementation((sessionId: string) => {
+      const call = stmts.createSession.run.mock.calls.find((c) => c[0] === sessionId);
+      if (!call) return undefined;
+      return {
+        id: sessionId,
+        agent_id: call[1] as string,
+        name: call[2] as string,
+        engine: call[3] as string,
+        model: call[4] as string,
+        engine_session_id: null,
+        use_worktree: 1,
+        worktree_path: null,
+        worktree_branch: null,
+        git_worktree_detected: null,
+        changes_ready: null,
+        stale_pr_notified_at: null,
+        ask_mode: 0,
+        wiki_hybrid_rag_consumed: 0,
+        cron_id: null,
+        created_at: '2020-01-01T00:00:00.000Z',
+        updated_at: '2020-01-01T00:00:00.000Z',
+        deleted_at: null,
+      } as SessionRow;
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // The claim succeeds: the card is dispatched and a fresh session created.
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('stale-session-card');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'stale-session-card');
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(deps.handleChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim a To Do card that was assigned out-of-band (mirror of SQL predicate)', async () => {
+    // The claim must treat an assignee stamped between candidate selection and
+    // the BEGIN IMMEDIATE re-read as "already taken" — mirrors the
+    // getEligibleAutonomousCards `assignee IS NULL OR ''` filter.
+    const card = makeCard({ id: 'assigned-card', column_id: 'col-todo', assignee: null });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+      getKanbanCard: {
+        get: vi.fn(() =>
+          makeCard({ id: 'assigned-card', column_id: 'col-todo', assignee: 'Someone Else' }),
+        ),
+      },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    expect(stmts.createSession.run).not.toHaveBeenCalled();
+    expect(stmts.markCardDispatchedByAutonomous.run).not.toHaveBeenCalled();
+  });
+
   it('an owner-less card does not consume the slot that a later card needs (max_concurrent=1)', async () => {
     // Regression: the no-owner skip used to run AFTER the dispatch budget was
     // consumed, so under max_concurrent=1 one unresolvable high-priority card
