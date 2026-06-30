@@ -21,11 +21,13 @@ describe('project-mode-guards', () => {
     expect(finalizeAllowedForProject(workflowProject)).toBe(false);
   });
 
-  it('allows consult on both dev and workflow projects', () => {
+  it('allows non-shipping session modes on both dev and workflow projects', () => {
     expect(validateSessionModeForProject(workflowProject, 'consult')).toBeNull();
     expect(validateSessionModeForProject(workflowProject, 'scoping')).toBeNull();
+    expect(validateSessionModeForProject(workflowProject, 'skill-builder')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'consult')).toBeNull();
     expect(validateSessionModeForProject(devProject, 'scoping')).toBeNull();
+    expect(validateSessionModeForProject(devProject, 'skill-builder')).toBeNull();
   });
 
   it('blocks build/chat-style session modes on workflow projects', () => {
@@ -33,9 +35,6 @@ describe('project-mode-guards', () => {
       'session_mode_not_allowed_on_workflow_project',
     );
     expect(validateSessionModeForProject(workflowProject, 'design')?.error).toBe(
-      'session_mode_not_allowed_on_workflow_project',
-    );
-    expect(validateSessionModeForProject(workflowProject, 'skill-builder')?.error).toBe(
       'session_mode_not_allowed_on_workflow_project',
     );
   });

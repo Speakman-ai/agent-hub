@@ -6,7 +6,7 @@ import type { Project } from './types.js';
 import { getProjectMode } from './project-mode.js';
 import { isConsultBehaviorActive, type SessionMode } from './session-mode.js';
 
-const WORKFLOW_SESSION_MODES = new Set<SessionMode>(['consult', 'scoping']);
+const WORKFLOW_SESSION_MODES = new Set<SessionMode>(['consult', 'scoping', 'skill-builder']);
 
 export function isWorkflowProject(project: Project | null | undefined): boolean {
   return getProjectMode(project) === 'workflow';
@@ -34,7 +34,7 @@ export function validateSessionModeForProject(
     return {
       error: 'session_mode_not_allowed_on_workflow_project',
       message:
-        'Workflow projects only support Consult and Scoping session modes. Use a dev project for build/chat-style sessions.',
+        'Workflow projects only support Consult, Scoping, and Skill Builder session modes. Use a dev project for build/chat-style sessions.',
     };
   }
   return null;

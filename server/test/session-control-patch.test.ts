@@ -226,6 +226,34 @@ describe('PATCH /api/sessions/:sessionId — atomic multi-axis control change', 
     expect(disabled.body.ask_mode).toBeFalsy();
   });
 
+  it('allows switching a workflow project session into skill-builder mode', async () => {
+    const workflowId = `workflow-skill-builder-mode-${Date.now()}`;
+    const project = await createProject({
+      id: workflowId,
+      name: 'Workflow Skill Builder Mode',
+      mode: 'workflow',
+    });
+    const workflowAgent = await createAgent({
+      projectId: project.id as string,
+      name: 'Workflow Skill Builder Agent',
+      engine: 'claude-code',
+    });
+    const session = await createSession({
+      agentId: workflowAgent.id as string,
+      name: 'workflow-skill-builder',
+    });
+    expect(session.session_mode).toBe('consult');
+
+    const res = await request
+      .patch(`/api/sessions/${session.id}`)
+      .send({ session_mode: 'skill-builder' })
+      .expect(200);
+
+    expect(res.body.session_mode).toBe('skill-builder');
+    expect(res.body.finalize_automation).toBe('manual');
+    expect(res.body.ask_mode).toBeFalsy();
+  });
+
   it('creates dev sessions in consult mode when session_mode consult is sent', async () => {
     const res = await request
       .post(`/api/agents/${agentId}/sessions`)

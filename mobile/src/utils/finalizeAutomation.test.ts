@@ -3,7 +3,6 @@ import { describe, it, expect } from 'vitest';
 import {
   FINALIZE_AUTOMATION_LEVELS,
   parseFinalizeAutomation,
-  finalizeAutomationFromSession,
   finalizeAutomationLabel,
   deriveSessionFinalizeMode,
   SESSION_CONTROL_OPTIONS,
@@ -78,9 +77,9 @@ describe('sessionControlValue', () => {
     );
   });
   it('returns consult for consult mode and legacy ask_mode', () => {
-    expect(sessionControlValue({ sessionMode: 'consult', askMode: false, automation: 'merge' })).toBe(
-      'consult',
-    );
+    expect(
+      sessionControlValue({ sessionMode: 'consult', askMode: false, automation: 'merge' }),
+    ).toBe('consult');
     expect(sessionControlValue({ sessionMode: 'chat', askMode: true, automation: 'merge' })).toBe(
       'consult',
     );
@@ -108,12 +107,18 @@ describe('planSessionControlChange', () => {
       planSessionControlChange({ sessionMode: 'chat', askMode: false, automation: 'push' }, 'push'),
     ).toEqual([]);
     expect(
-      planSessionControlChange({ sessionMode: 'design', askMode: false, automation: 'push' }, 'design'),
+      planSessionControlChange(
+        { sessionMode: 'design', askMode: false, automation: 'push' },
+        'design',
+      ),
     ).toEqual([]);
   });
   it('legacy ask -> Design clears ask mode before entering design (regression)', () => {
     expect(
-      planSessionControlChange({ sessionMode: 'chat', askMode: true, automation: 'manual' }, 'design'),
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: true, automation: 'manual' },
+        'design',
+      ),
     ).toEqual([
       { type: 'ask', value: false },
       { type: 'mode', value: 'design' },
@@ -121,7 +126,10 @@ describe('planSessionControlChange', () => {
   });
   it('entering Consult clears ship intent', () => {
     expect(
-      planSessionControlChange({ sessionMode: 'chat', askMode: false, automation: 'merge' }, 'consult'),
+      planSessionControlChange(
+        { sessionMode: 'chat', askMode: false, automation: 'merge' },
+        'consult',
+      ),
     ).toEqual([
       { type: 'automation', value: 'manual' },
       { type: 'mode', value: 'consult' },
@@ -141,6 +149,10 @@ describe('planSessionControlChange', () => {
 describe('sessionControlOptionsForProject', () => {
   it('offers only server-accepted workflow modes on workflow projects', () => {
     const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'sub' });
+    expect(opts.map((o: any) => o.value)).toEqual(['consult', 'scoping', 'skill-builder']);
+  });
+  it('hides Skill Builder on workflow projects when the agent is a helper', () => {
+    const opts = sessionControlOptionsForProject({ mode: 'workflow' }, { role: 'docs' });
     expect(opts.map((o: any) => o.value)).toEqual(['consult', 'scoping']);
   });
   it('includes Consult on dev projects', () => {
@@ -157,14 +169,16 @@ describe('sessionControlOptionsForProject', () => {
 
 describe('sessionControlOptionsForAgent', () => {
   it('keeps Skill Builder for a dev agent and hides it for helpers', () => {
-    expect(sessionControlOptionsForAgent({ role: 'sub' }).some((o) => o.value === 'skill-builder')).toBe(
-      true,
-    );
+    expect(
+      sessionControlOptionsForAgent({ role: 'sub' }).some((o) => o.value === 'skill-builder'),
+    ).toBe(true);
     for (const role of ['docs', 'reviewer', 'skill-builder']) {
       expect(sessionControlOptionsForAgent({ role }).some((o) => o.value === 'skill-builder')).toBe(
         false,
       );
     }
-    expect(sessionControlOptionsForAgent(null).some((o) => o.value === 'skill-builder')).toBe(false);
+    expect(sessionControlOptionsForAgent(null).some((o) => o.value === 'skill-builder')).toBe(
+      false,
+    );
   });
 });

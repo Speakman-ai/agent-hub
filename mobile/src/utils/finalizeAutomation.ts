@@ -8,37 +8,37 @@
  */
 export const FINALIZE_AUTOMATION_LEVELS = ['manual', 'review', 'push', 'merge'];
 export const FINALIZE_AUTOMATION_OPTIONS = [
-    {
-        value: 'manual',
-        label: 'Build',
-        description: 'Everything runs manually — keep a back-and-forth with the agent to build what you want',
-    },
-    {
-        value: 'review',
-        label: 'Build and Review',
-        description: 'Tests and a review run after every turn; you push manually',
-    },
-    {
-        value: 'push',
-        label: 'Build and Push',
-        description: 'Build, review, test, and push — no auto-merge',
-    },
-    {
-        value: 'merge',
-        label: 'Auto Merge',
-        description: 'Build, review, test, push, and enable auto-merge if available',
-    },
+  {
+    value: 'manual',
+    label: 'Build',
+    description:
+      'Everything runs manually — keep a back-and-forth with the agent to build what you want',
+  },
+  {
+    value: 'review',
+    label: 'Build and Review',
+    description: 'Tests and a review run after every turn; you push manually',
+  },
+  {
+    value: 'push',
+    label: 'Build and Push',
+    description: 'Build, review, test, and push — no auto-merge',
+  },
+  {
+    value: 'merge',
+    label: 'Auto Merge',
+    description: 'Build, review, test, push, and enable auto-merge if available',
+  },
 ];
 export function parseFinalizeAutomation(value: any) {
-    if (value && FINALIZE_AUTOMATION_LEVELS.includes(value))
-        return value;
-    return 'manual';
+  if (value && FINALIZE_AUTOMATION_LEVELS.includes(value)) return value;
+  return 'manual';
 }
 export function finalizeAutomationFromSession(session: any) {
-    return parseFinalizeAutomation(session?.finalize_automation);
+  return parseFinalizeAutomation(session?.finalize_automation);
 }
 export function finalizeAutomationLabel(value: any) {
-    return FINALIZE_AUTOMATION_OPTIONS.find((o: any) => o.value === value)?.label ?? 'Build';
+  return FINALIZE_AUTOMATION_OPTIONS.find((o: any) => o.value === value)?.label ?? 'Build';
 }
 /**
  * Design folds into the same dropdown as Ask + the finalize levels. It is the
@@ -46,33 +46,34 @@ export function finalizeAutomationLabel(value: any) {
  * exclusive with the others in the UI. Mirror of the web copy.
  */
 export const DESIGN_AUTOMATION_OPTION: Record<string, any> = {
-    value: 'design',
-    label: 'Design',
-    description: 'Iterate on a live canvas with the app as context — nothing ships',
+  value: 'design',
+  label: 'Design',
+  description: 'Iterate on a live canvas with the app as context — nothing ships',
 };
 export const SCOPING_AUTOMATION_OPTION: Record<string, any> = {
-    value: 'scoping',
-    label: 'Scoping',
-    description: 'Plan work as Epic → Phase → Ticket with a live flowchart panel',
+  value: 'scoping',
+  label: 'Scoping',
+  description: 'Plan work as Epic → Phase → Ticket with a live flowchart panel',
 };
 export const SKILL_BUILDER_AUTOMATION_OPTION: Record<string, any> = {
-    value: 'skill-builder',
-    label: 'Skill Builder',
-    description: 'Author or refine project skills conversationally — nothing ships',
+  value: 'skill-builder',
+  label: 'Skill Builder',
+  description: 'Author or refine project skills conversationally — nothing ships',
 };
 export const CONSULT_AUTOMATION_OPTION: Record<string, any> = {
-    value: 'consult',
-    label: 'Consult',
-    description: 'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
+  value: 'consult',
+  label: 'Consult',
+  description:
+    'Answer questions and update Agent Hub project data — board, wiki, workflows — without code ship or Finalize',
 };
-export const WORKFLOW_SESSION_CONTROL_VALUES = new Set(['consult', 'scoping']);
+export const WORKFLOW_SESSION_CONTROL_VALUES = new Set(['consult', 'scoping', 'skill-builder']);
 const SHIP_AUTOMATION_VALUES = new Set(['manual', 'review', 'push', 'merge']);
 export const SESSION_CONTROL_OPTIONS = [
-    CONSULT_AUTOMATION_OPTION,
-    DESIGN_AUTOMATION_OPTION,
-    SCOPING_AUTOMATION_OPTION,
-    SKILL_BUILDER_AUTOMATION_OPTION,
-    ...FINALIZE_AUTOMATION_OPTIONS,
+  CONSULT_AUTOMATION_OPTION,
+  DESIGN_AUTOMATION_OPTION,
+  SCOPING_AUTOMATION_OPTION,
+  SKILL_BUILDER_AUTOMATION_OPTION,
+  ...FINALIZE_AUTOMATION_OPTIONS,
 ];
 /**
  * Agent roles that may NOT run Skill Builder mode. Mirror of
@@ -82,9 +83,8 @@ export const SESSION_CONTROL_OPTIONS = [
 export const SKILL_BUILDER_INELIGIBLE_ROLES = ['skill-builder', 'reviewer', 'docs'];
 /** Whether an agent (by role) is eligible to run Skill Builder mode. */
 export function isSkillBuilderEligibleAgent(agent: any): boolean {
-    if (!agent)
-        return false;
-    return !SKILL_BUILDER_INELIGIBLE_ROLES.includes(agent.role ?? '');
+  if (!agent) return false;
+  return !SKILL_BUILDER_INELIGIBLE_ROLES.includes(agent.role ?? '');
 }
 /**
  * Session-control options for a given agent: the full list minus Skill Builder
@@ -92,24 +92,21 @@ export function isSkillBuilderEligibleAgent(agent: any): boolean {
  * rejects the mode for those roles too, so hiding it keeps the picker honest.
  */
 export function sessionControlOptionsForAgent(agent: any) {
-    if (isSkillBuilderEligibleAgent(agent))
-        return SESSION_CONTROL_OPTIONS;
-    return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
+  if (isSkillBuilderEligibleAgent(agent)) return SESSION_CONTROL_OPTIONS;
+  return SESSION_CONTROL_OPTIONS.filter((o: any) => o.value !== 'skill-builder');
 }
 export function sessionControlOptionsForProject(project: any, agent: any) {
-    const base = sessionControlOptionsForAgent(agent);
-    if (project?.mode === 'workflow') {
-        return base.filter((o: any) => WORKFLOW_SESSION_CONTROL_VALUES.has(o.value));
-    }
-    return base;
+  const base = sessionControlOptionsForAgent(agent);
+  if (project?.mode === 'workflow') {
+    return base.filter((o: any) => WORKFLOW_SESSION_CONTROL_VALUES.has(o.value));
+  }
+  return base;
 }
 export function sessionControlValueForProject(project: any, input: any = {}) {
-    const value = sessionControlValue(input);
-    if (project?.mode !== 'workflow')
-        return value;
-    if (SHIP_AUTOMATION_VALUES.has(value))
-        return 'consult';
-    return value;
+  const value = sessionControlValue(input);
+  if (project?.mode !== 'workflow') return value;
+  if (SHIP_AUTOMATION_VALUES.has(value)) return 'consult';
+  return value;
 }
 /**
  * Resolve the active dropdown value from the three underlying axes. Design >
@@ -119,20 +116,15 @@ export function sessionControlValueForProject(project: any, input: any = {}) {
  * @returns {string}
  */
 export function sessionControlValue({ sessionMode, askMode, automation }: any = {}) {
-    if (sessionMode === 'design')
-        return 'design';
-    if (sessionMode === 'scoping')
-        return 'scoping';
-    if (sessionMode === 'skill-builder')
-        return 'skill-builder';
-    if (sessionMode === 'consult')
-        return 'consult';
-    if (askMode)
-        return 'consult';
-    return parseFinalizeAutomation(automation);
+  if (sessionMode === 'design') return 'design';
+  if (sessionMode === 'scoping') return 'scoping';
+  if (sessionMode === 'skill-builder') return 'skill-builder';
+  if (sessionMode === 'consult') return 'consult';
+  if (askMode) return 'consult';
+  return parseFinalizeAutomation(automation);
 }
 export function sessionControlLabel(value: any) {
-    return SESSION_CONTROL_OPTIONS.find((o: any) => o.value === value)?.label ?? 'Build';
+  return SESSION_CONTROL_OPTIONS.find((o: any) => o.value === value)?.label ?? 'Build';
 }
 /**
  * Plan the ordered mutations to move the session control to `target`. Mirror of
@@ -154,63 +146,61 @@ export function sessionControlLabel(value: any) {
  * @returns {Array<{ type: 'mode'|'ask'|'automation', value: any }>}
  */
 export function planSessionControlChange(current: any, target: any, options: any = {}) {
-    const workflowProject = options?.project?.mode === 'workflow' || current?.projectMode === 'workflow';
-    const sessionMode = current?.sessionMode === 'design'
-        ? 'design'
-        : current?.sessionMode === 'scoping'
-            ? 'scoping'
-            : current?.sessionMode === 'skill-builder'
-                ? 'skill-builder'
-                : current?.sessionMode === 'consult'
-                    ? 'consult'
-                    : 'chat';
-    const askMode = !!current?.askMode;
-    const automation = parseFinalizeAutomation(current?.automation);
-    const currentValue = sessionControlValue({ sessionMode, askMode, automation });
-    if (target === currentValue)
-        return [];
-    const steps = [];
-    const clearShipIntent = () => {
-        if (workflowProject)
-            return;
-        if (automation !== 'manual')
-            steps.push({ type: 'automation', value: 'manual' });
-    };
-    if (target === 'design') {
-        if (askMode)
-            steps.push({ type: 'ask', value: false });
-        clearShipIntent();
-        steps.push({ type: 'mode', value: 'design' });
-        return steps;
-    }
-    if (target === 'scoping') {
-        if (askMode)
-            steps.push({ type: 'ask', value: false });
-        clearShipIntent();
-        steps.push({ type: 'mode', value: 'scoping' });
-        return steps;
-    }
-    if (target === 'skill-builder') {
-        if (askMode)
-            steps.push({ type: 'ask', value: false });
-        clearShipIntent();
-        steps.push({ type: 'mode', value: 'skill-builder' });
-        return steps;
-    }
-    if (target === 'consult') {
-        if (askMode)
-            steps.push({ type: 'ask', value: false });
-        clearShipIntent();
-        steps.push({ type: 'mode', value: 'consult' });
-        return steps;
-    }
-    if (sessionMode === 'design' || sessionMode === 'scoping' || sessionMode === 'skill-builder' || sessionMode === 'consult')
-        steps.push({ type: 'mode', value: 'chat' });
-    if (askMode)
-        steps.push({ type: 'ask', value: false });
-    if (target !== automation)
-        steps.push({ type: 'automation', value: target });
+  const workflowProject =
+    options?.project?.mode === 'workflow' || current?.projectMode === 'workflow';
+  const sessionMode =
+    current?.sessionMode === 'design'
+      ? 'design'
+      : current?.sessionMode === 'scoping'
+        ? 'scoping'
+        : current?.sessionMode === 'skill-builder'
+          ? 'skill-builder'
+          : current?.sessionMode === 'consult'
+            ? 'consult'
+            : 'chat';
+  const askMode = !!current?.askMode;
+  const automation = parseFinalizeAutomation(current?.automation);
+  const currentValue = sessionControlValue({ sessionMode, askMode, automation });
+  if (target === currentValue) return [];
+  const steps = [];
+  const clearShipIntent = () => {
+    if (workflowProject) return;
+    if (automation !== 'manual') steps.push({ type: 'automation', value: 'manual' });
+  };
+  if (target === 'design') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'design' });
     return steps;
+  }
+  if (target === 'scoping') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'scoping' });
+    return steps;
+  }
+  if (target === 'skill-builder') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'skill-builder' });
+    return steps;
+  }
+  if (target === 'consult') {
+    if (askMode) steps.push({ type: 'ask', value: false });
+    clearShipIntent();
+    steps.push({ type: 'mode', value: 'consult' });
+    return steps;
+  }
+  if (
+    sessionMode === 'design' ||
+    sessionMode === 'scoping' ||
+    sessionMode === 'skill-builder' ||
+    sessionMode === 'consult'
+  )
+    steps.push({ type: 'mode', value: 'chat' });
+  if (askMode) steps.push({ type: 'ask', value: false });
+  if (target !== automation) steps.push({ type: 'automation', value: target });
+  return steps;
 }
 /**
  * Collapse the planned steps into a single PATCH body so the change is applied
@@ -223,19 +213,15 @@ export function planSessionControlChange(current: any, target: any, options: any
  * @returns {{ session_mode?: string, ask_mode?: boolean, finalize_automation?: string } | null}
  */
 export function sessionControlPatch(current: any, target: any, options: any = {}) {
-    const steps = planSessionControlChange(current, target, options);
-    if (steps.length === 0)
-        return null;
-    const patch: Record<string, any> = {};
-    for (const step of steps) {
-        if (step.type === 'mode')
-            patch.session_mode = step.value;
-        else if (step.type === 'ask')
-            patch.ask_mode = step.value;
-        else if (step.type === 'automation')
-            patch.finalize_automation = step.value;
-    }
-    return patch;
+  const steps = planSessionControlChange(current, target, options);
+  if (steps.length === 0) return null;
+  const patch: Record<string, any> = {};
+  for (const step of steps) {
+    if (step.type === 'mode') patch.session_mode = step.value;
+    else if (step.type === 'ask') patch.ask_mode = step.value;
+    else if (step.type === 'automation') patch.finalize_automation = step.value;
+  }
+  return patch;
 }
 /**
  * Derive the FinalizeBar dropdown state (automation level + ask-mode flag) from
@@ -253,8 +239,8 @@ export function sessionControlPatch(current: any, target: any, options: any = {}
  * @returns {{ automation: string, askMode: boolean }}
  */
 export function deriveSessionFinalizeMode(session: any) {
-    return {
-        automation: finalizeAutomationFromSession(session),
-        askMode: !!session?.ask_mode,
-    };
+  return {
+    automation: finalizeAutomationFromSession(session),
+    askMode: !!session?.ask_mode,
+  };
 }

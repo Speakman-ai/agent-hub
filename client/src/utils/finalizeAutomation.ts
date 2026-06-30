@@ -63,7 +63,7 @@ export const CONSULT_AUTOMATION_OPTION = {
 } as Record<string, any>;
 
 /** Session-control values offered on workflow projects (no build/push/finalize). */
-export const WORKFLOW_SESSION_CONTROL_VALUES = new Set(['consult', 'scoping']);
+export const WORKFLOW_SESSION_CONTROL_VALUES = new Set(['consult', 'scoping', 'skill-builder']);
 
 const SHIP_AUTOMATION_VALUES = new Set(['manual', 'review', 'push', 'merge']);
 
