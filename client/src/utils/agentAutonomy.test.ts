@@ -11,7 +11,8 @@ describe('agentAutonomy (client)', () => {
     expect(isAutonomyLockedOn({ role: 'dev' })).toBe(true);
     expect(isAutonomyLockedOn({ role: 'lead' })).toBe(true);
     expect(isAutonomyLockedOff({ role: 'reviewer' })).toBe(true);
-    expect(isAutonomyLockedOff({ role: 'intake' })).toBe(true);
+    // Regression: retired `intake` role is no longer special.
+    expect(isAutonomyLockedOff({ role: 'intake' })).toBe(false);
     expect(isAutonomyLockedOff({ role: 'skill-builder' })).toBe(true); // coach, not Dev
     expect(isAutonomyLocked({ role: 'sub' })).toBe(false);
     expect(isAutonomyLocked({ role: 'frontend' })).toBe(false);

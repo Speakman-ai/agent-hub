@@ -101,7 +101,6 @@ import {
   stripFencedCodeBlockBodies,
 } from './action-block-parsing.js';
 import { stripAssistantControlBlocks } from '../shared/utils/stripAssistantControlBlocks.js';
-import { resolveBugReportReroute, extractBugReportTitle } from './bug-report-reroute.js';
 import {
   appendCodexAwsAccessDirs,
   appendCodexExecSandboxFlags,
@@ -134,12 +133,7 @@ import {
   buildNoConversationFoundRecoveryMessage,
 } from './claude-session-id-conflict.js';
 import { allAgents, findProject } from './project-model.js';
-import {
-  setSessionOwner,
-  inheritOwnerFromSession,
-  getWsAuthUserId,
-  type AuthStampedWs,
-} from './session-ownership.js';
+import { setSessionOwner, getWsAuthUserId, type AuthStampedWs } from './session-ownership.js';
 import { broadcastActiveTasksSnapshot } from './active-tasks.js';
 import { shouldResetResumeAttemptsOnTurnStart } from './resume-attempts.js';
 import { broadcastAwaitingInputForSession } from './awaiting-input.js';
@@ -1890,100 +1884,6 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         return;
       }
       const enrichedAgent = getEnrichedAgent(agentId);
-
-      // ── Bug-report reroute guard ──────────────────────────────────
-      // User-request bug reports (payloads starting with "## Bug Report")
-      // must be owned by the project's intake agent — never a lead,
-      // specialist, reviewer, or docs agent. If a bug-report payload is
-      // addressed to anyone else, dispatch a fresh session for the intake
-      // agent and notify the caller. See `server/bug-report-reroute.ts`.
-      const intakeTarget = resolveBugReportReroute(project, agent, content, {
-        fromQueue: msg._fromQueue,
-        alreadyRerouted: msg._reroutedFromBugReport,
-        fromBoardAssign: msg._fromBoardAssign,
-      });
-      if (intakeTarget) {
-        const intakeSessionId = uuidv4();
-        const intakeEngine = intakeTarget.engine || 'claude-code';
-        const intakeOwnerUid = getSessionOwner(sessionId);
-        const intakeModel = resolveEffectiveModel(config, intakeEngine, {
-          agentModel: (intakeTarget as AgentWithModel).model,
-          ownerUserId: intakeOwnerUid,
-        });
-        const title = extractBugReportTitle(content) || 'Bug Report';
-        const sessionName = `[Bug] ${title.substring(0, 80)}`;
-
-        try {
-          const intakeWt = defaultSessionUseWorktreeFlag(project);
-          stmts.createSession.run(
-            intakeSessionId,
-            intakeTarget.id,
-            sessionName,
-            intakeEngine,
-            intakeModel,
-            intakeWt,
-            0,
-            1,
-          );
-          // Bug-report reroute: rerouted intake session inherits ownership from
-          // the user's original session so the bug-report transcript stays
-          // attributable to the same user who filed it.
-          inheritOwnerFromSession(intakeSessionId, sessionId);
-          const taskId = uuidv4();
-          stmts.insertBackgroundTask.run(taskId, intakeSessionId, intakeTarget.id, content);
-        } catch (err) {
-          console.error('[Bug Reroute] Failed to create intake session:', (err as Error).message);
-          if (ws) {
-            ws.send(
-              JSON.stringify({
-                type: 'error',
-                sessionId,
-                error: 'Failed to reroute bug report to intake agent.',
-              }),
-            );
-          }
-          return;
-        }
-
-        if (ws) {
-          ws.send(
-            JSON.stringify({
-              type: 'bug_report_rerouted',
-              originalAgentId: agentId,
-              originalSessionId: sessionId,
-              intakeAgentId: intakeTarget.id,
-              intakeSessionId,
-              message: `Bug reports are handled by ${intakeTarget.name || intakeTarget.id}. Dispatched a fresh session there.`,
-            }),
-          );
-        }
-
-        setImmediate(() => {
-          try {
-            const result = handleChat(null, {
-              type: 'chat',
-              agentId: intakeTarget.id,
-              sessionId: intakeSessionId,
-              content,
-              _reroutedFromBugReport: true,
-            } as InternalChatMessage);
-            if (result && typeof (result as Promise<unknown>).catch === 'function') {
-              (result as Promise<unknown>).catch((err: Error) => {
-                console.error(
-                  `[Bug Reroute] handleChat failed for intake session ${intakeSessionId}:`,
-                  err.message,
-                );
-              });
-            }
-          } catch (err) {
-            console.error(
-              `[Bug Reroute] handleChat threw for intake session ${intakeSessionId}:`,
-              (err as Error).message,
-            );
-          }
-        });
-        return;
-      }
 
       const slashResult = resolveSlashSkill(agent, content, project);
       if (slashResult?.error) {

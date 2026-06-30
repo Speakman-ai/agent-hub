@@ -356,36 +356,6 @@ function loadRequestAssignableUsers(req: Request): ReturnType<typeof loadAssigna
 }
 
 /**
- * Defense-in-depth: when a card-create / card-update payload carries a
- * `session_id` that points at an *intake-role* agent's session, drop it.
- *
- * Background: the `agent-hub-intake` flow (bug-report intake, autonomous-mode
- * triage, etc.) spawns ephemeral sessions whose only job is to *file* a
- * ticket for the user — they never go on to *do* the work themselves. If
- * such a session stamps its own `session_id` on the card it just created,
- * the server treats the card as implicitly assigned, the UI hides the
- * Assignee dropdown, and the autonomous dispatcher refuses to pick the
- * card up because it's "already linked to a live session". The result is
- * a backlog of frozen tickets that can never be worked on.
- *
- * Returns true when the supplied `sessionId` resolves to an intake-role
- * agent's session and the caller should therefore strip both `session_id`
- * and (optionally) `assignee` before persisting. A null/unknown session
- * always returns false — we never strip when we can't prove intent.
- */
-function isIntakeOwnedSession(
-  stmts: Stmts,
-  findAgent: (agentId: string) => AgentLookup | null,
-  sessionId: string | null | undefined,
-): boolean {
-  if (!sessionId) return false;
-  const session = stmts.getSession.get(sessionId) as { agent_id?: string } | undefined;
-  if (!session?.agent_id) return false;
-  const lookup = findAgent(session.agent_id);
-  return lookup?.agent.role === 'intake';
-}
-
-/**
  * Normalize an incoming `assignee` value so the column always stores the
  * agent's **display name** (`agent.name`), never its id slug.
  *
@@ -890,23 +860,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
     const id = uuidv4();
 
-    // Defense-in-depth: an intake-role agent's session must never be
-    // stamped on a card it files for someone else (see `isIntakeOwnedSession`
-    // for the full rationale). Strip both `session_id` and `assignee` when
-    // the calling session resolves to an intake agent — the UI's Assignee
-    // dropdown and the autonomous dispatcher both rely on these being null
-    // for a freshly-filed ticket.
-    let effectiveSessionId: string | null = sessionId || null;
+    const effectiveSessionId: string | null = sessionId || null;
     // Normalize agent.id → agent.name; pass through human-typed names; null
     // when empty/whitespace. See `normalizeAssignee` for the full rationale.
-    let effectiveAssignee: string | null = normalizeAssignee(assignee, findAgent);
-    if (effectiveSessionId && isIntakeOwnedSession(stmts, findAgent, effectiveSessionId)) {
-      console.log(
-        `[Board] Stripping session_id/assignee on card create — session ${effectiveSessionId} belongs to an intake-role agent`,
-      );
-      effectiveSessionId = null;
-      effectiveAssignee = null;
-    }
+    const effectiveAssignee: string | null = normalizeAssignee(assignee, findAgent);
 
     stmts.createKanbanCard.run(
       id,
@@ -1017,26 +974,13 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       nextEpicId = phase.epic_id;
     }
 
-    // Defense-in-depth (matches POST /board/cards): if the client is
-    // setting `session_id` to an intake-role agent's session, strip it.
-    // Only fires when the new value is non-null — explicit clears are
-    // honored verbatim.
-    let effectiveSessionId: string | null | undefined = sessionId;
+    const effectiveSessionId: string | null | undefined = sessionId;
     // Normalize agent.id → agent.name on update too, but only when the
     // caller is explicitly setting `assignee`. If the key isn't present in
     // the payload we leave the value untouched (no normalization sweep).
-    let effectiveAssignee: string | null | undefined = hasAssignee
+    const effectiveAssignee: string | null | undefined = hasAssignee
       ? normalizeAssignee(assignee, findAgent)
       : assignee;
-    if (hasSessionId && sessionId && isIntakeOwnedSession(stmts, findAgent, sessionId)) {
-      console.log(
-        `[Board] Stripping session_id/assignee on card update — session ${sessionId} belongs to an intake-role agent`,
-      );
-      effectiveSessionId = null;
-      // Also drop the assignee being set in the same payload, since intake
-      // agents shouldn't pin themselves as assignee on tickets they file.
-      if (hasAssignee) effectiveAssignee = null;
-    }
 
     const nextAssignee = hasAssignee ? (effectiveAssignee ?? null) : card.assignee;
     // Normalize + validate the engine override first because the model
@@ -1405,43 +1349,17 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           contextLines.push(`\n## Assignment Note\n${assignmentNote}`);
         }
 
-        if (agent.role === 'intake') {
-          contextLines.push(
-            `\n---\n## Ticket Research & Breakdown`,
-            `\nYou have been assigned this card for **research and ticket creation only** — do NOT write code or create PRs.`,
-            `\nYour job:`,
-            `1. **Research** this task — understand the scope, identify sub-tasks, and consider edge cases`,
-            `2. **Check for duplicates** — before creating any new ticket, search the existing board to make sure a similar card doesn't already exist`,
-            `3. **Break it down** into actionable sub-tickets on the kanban board (in To Do)`,
-            `4. **Link sub-tickets** to the same epic as this card (if it has one)${card.epic_id ? ` — epic ID: \`${card.epic_id}\`` : ''}`,
-            `5. **Add a comment** to this card summarizing what you created`,
-            `6. **Move this card to Done** when finished`,
-            `\n### Duplicate Detection`,
-            `Before creating each ticket, fetch all existing cards:`,
-            `\`\`\`bash`,
-            `curl -s http://localhost:3051/api/projects/${req.params.projectId}/board | jq '.cards[] | {id, title, description, column: .column_id}'`,
-            `\`\`\``,
-            `If a card with a similar title or overlapping scope already exists, skip creating a duplicate and note it in your summary comment.`,
-            `\n### Card APIs`,
-            `- **Get board**: \`GET /api/projects/${req.params.projectId}/board\``,
-            `- **Create card**: \`POST /api/projects/${req.params.projectId}/board/cards\` with \`{title, description, priority, labels, columnId, createdBy: "${agent.id}"}\``,
-            `- **Link to epic**: \`POST /api/projects/${req.params.projectId}/board/cards/:cardId/epic\` with \`{epicId}\``,
-            `- **Add comment**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\` with \`{content, author: "${agent.id}"}\``,
-            `- **Move card**: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\` with \`{columnId: "<done-column-id>"}\``,
-          );
-        } else {
-          contextLines.push(
-            `\n---`,
-            `You have been assigned this task from the project kanban board. Review the description above and begin working on it.`,
-            ``,
-            `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
-            `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
-            `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
-            `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
-            ``,
-            `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
-          );
-        }
+        contextLines.push(
+          `\n---`,
+          `You have been assigned this task from the project kanban board. Review the description above and begin working on it.`,
+          ``,
+          `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
+          `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
+          `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
+          `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
+          ``,
+          `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,
+        );
       }
 
       const contextMessage = contextLines.join('\n');
@@ -1458,11 +1376,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         sessionId,
         content: contextMessage,
         hookSpecificOutput: { sessionTitle: card.title },
-        // Explicit user-driven kanban assign — opt out of the bug-report
-        // reroute guard so a card whose description embeds `## Bug Report`
-        // (e.g. one filed through the bug-report intake endpoint) still
-        // lands on the chosen assignee. See `server/bug-report-reroute.ts`.
-        _fromBoardAssign: true,
         ...(Object.keys(extraEnv).length > 0 ? { extraEnv } : {}),
       }).catch((err: Error) => {
         console.error(`[Board Assign] handleChat failed for session ${sessionId}:`, err.message);

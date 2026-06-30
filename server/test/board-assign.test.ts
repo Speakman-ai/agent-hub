@@ -89,35 +89,6 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
     expect(sessionRes.body.model).toBe(fixed);
   });
 
-  it('assigns an intake agent with ticket research prompt (no PR instructions)', async () => {
-    const project = await createProject();
-    const projectId = project.id as string;
-    const agent = await createAgent({
-      projectId,
-      role: 'intake',
-      name: 'Ticket Intake',
-    });
-    const agentId = agent.id as string;
-    const card = await createCard(projectId, {
-      title: 'Design new dashboard',
-      description: 'Plan the new dashboard layout and features',
-    });
-    const cardId = card.id as string;
-
-    const res = await request
-      .post(`/api/projects/${projectId}/board/cards/${cardId}/assign`)
-      .send({ agentId })
-      .expect(200);
-
-    expect(res.body.sessionId).toBeDefined();
-    expect(res.body.card.assignee).toBe('Ticket Intake');
-
-    // Verify the session was created (the intake prompt is sent via handleChat,
-    // which we can't easily inspect in an integration test, but the session exists)
-    const sessionRes = await request.get(`/api/sessions/${res.body.sessionId}`).expect(200);
-    expect(sessionRes.body.name).toBe('Design new dashboard');
-  });
-
   it('returns 404 for missing card', async () => {
     const project = await createProject();
     const projectId = project.id as string;

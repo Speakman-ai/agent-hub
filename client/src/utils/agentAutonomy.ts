@@ -5,15 +5,15 @@
 // toggle's current value should be. Keep in sync with the server + mobile.
 
 // `skill-builder` is a conversational coach (not a code-shipping recipient), so
-// its Dev toggle is locked OFF like docs/intake/reviewer.
-const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer', 'skill-builder']);
+// its Dev toggle is locked OFF like docs/reviewer.
+const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder']);
 const DEFAULT_DEV_ROLES = new Set(['dev', 'lead']);
 
 function roleOf(agent: any) {
   return agent && typeof agent.role === 'string' ? agent.role.trim().toLowerCase() : '';
 }
 
-/** Out-of-band role (docs/intake/reviewer) — the Dev toggle is locked OFF. */
+/** Out-of-band role (docs/reviewer) — the Dev toggle is locked OFF. */
 export function isAutonomyLockedOff(agent: any) {
   return OUT_OF_BAND_ROLES.has(roleOf(agent));
 }

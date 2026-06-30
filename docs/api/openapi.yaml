@@ -98,7 +98,7 @@ components:
           type: boolean
         isDev:
           type: boolean
-          description: Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/intake/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.
+          description: Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.
         active:
           type: boolean
         delegationEnabled:
@@ -7950,65 +7950,6 @@ components:
         - credentials
         - source
       description: A single project-authored skill with its raw SKILL.md content.
-    SupportRequestsErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-      required:
-        - error
-      description: Error envelope for support-request intake.
-    SupportRequestFormFields:
-      type: object
-      properties:
-        type:
-          type: string
-          enum:
-            - bug
-            - feature_request
-          description: Kind of support request.
-        title:
-          type: string
-          minLength: 1
-          maxLength: 200
-        severity:
-          type: string
-          enum:
-            - low
-            - medium
-            - high
-            - critical
-          default: medium
-          description: Used for support-queue ordering (critical first).
-        description:
-          type: string
-        sourceUrl:
-          type: string
-        userAgent:
-          type: string
-        appVersion:
-          type: string
-        clientType:
-          type: string
-          enum:
-            - web
-            - electron
-            - mobile
-        contactEmail:
-          type: string
-        currentAgentId:
-          type: string
-        sessionReplayUrl:
-          type: string
-          description: Reference (URL/id) to a session replay. Only valid when `type` is `bug`.
-        sessionReplay:
-          type: string
-          format: binary
-          description: Optional session-replay attachment (rrweb JSON, zip, or short capture, ≤25 MB). Sent as a binary file part. Only valid when `type` is `bug`.
-      required:
-        - type
-        - title
-      description: Multipart form fields for the support-request intake. Documentation-only; the handler reads multipart bytes directly because the body is `application/octet-stream` to express.
     SupportTicketReleaseNotification:
       type: object
       properties:
@@ -8603,7 +8544,7 @@ paths:
                   type: string
                 isDev:
                   type: boolean
-                  description: Accept autonomously-dispatched kanban tickets. Defaults to false in the UI (opt-in). Sending a value that contradicts a locked role (dev/lead → must be true; docs/intake/reviewer → must be false) is rejected with 400.
+                  description: Accept autonomously-dispatched kanban tickets. Defaults to false in the UI (opt-in). Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400.
                 heartbeat:
                   type: object
                   properties:
@@ -8742,7 +8683,7 @@ paths:
                   type: boolean
                 isDev:
                   type: boolean
-                  description: Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/intake/reviewer → must be false) is rejected with 400; a matching value is a no-op.
+                  description: Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400; a matching value is a no-op.
                 delegationEnabled:
                   type: boolean
                 browserToolsEnabled:
@@ -25528,88 +25469,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SkillWriteError"
-  /api/projects/{projectId}/support-requests:
-    options:
-      tags:
-        - Support Requests
-      summary: CORS preflight (returns 204)
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      responses:
-        "204":
-          description: CORS preflight OK.
-    post:
-      tags:
-        - Support Requests
-      summary: Public support-request intake (multipart)
-      description: Unauthenticated, rate-limited (10 / hour per IP). Body must be `multipart/form-data` with at minimum `type` (`bug` | `feature_request`) and `title`. `severity` drives support-queue ordering. For `bug` requests, an optional `sessionReplayUrl` reference and/or `sessionReplay` attachment (≤25 MB) may be supplied. Spawns a session for the project `intake` agent to land a kanban card under the `support-request` epic.
-      parameters:
-        - schema:
-            type: string
-            description: Project slug or id.
-          required: true
-          description: Project slug or id.
-          name: projectId
-          in: path
-      requestBody:
-        content:
-          multipart/form-data:
-            schema:
-              $ref: "#/components/schemas/SupportRequestFormFields"
-      responses:
-        "202":
-          description: Dispatched.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  sessionId:
-                    type: string
-                  status:
-                    type: string
-                    enum:
-                      - dispatched
-                required:
-                  - sessionId
-                  - status
-                description: The intake session has been spawned. Result is the session id; the kanban card lands when the session completes.
-        "400":
-          description: Validation failed (bad/missing type, missing title, bad severity, session replay on a non-bug request, malformed multipart).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SupportRequestsErrorResponse"
-        "404":
-          description: Project not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SupportRequestsErrorResponse"
-        "413":
-          description: Payload too large — session-replay attachment over 25 MB, or the whole multipart body over 26 MB.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SupportRequestsErrorResponse"
-        "429":
-          description: Per-IP rate limit exceeded.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SupportRequestsErrorResponse"
-        "500":
-          description: Project has no intake agent or handler threw.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SupportRequestsErrorResponse"
   /api/projects/{projectId}/support-tickets:
     get:
       tags:

@@ -1574,7 +1574,7 @@ describe('runAutonomousLoop — owner attribution', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('runAutonomousLoop — assignable agent filtering', () => {
-  it('excludes reviewer, docs, and intake roles from assignment pool', async () => {
+  it('excludes reviewer and docs roles from assignment pool', async () => {
     const card = makeCard();
     const stmts = makeStmts({
       getAutonomousEpic: { get: vi.fn(() => ACTIVE_EPIC) },
@@ -1588,7 +1588,6 @@ describe('runAutonomousLoop — assignable agent filtering', () => {
         agents: [
           { id: 'reviewer-1', name: 'Reviewer', role: 'reviewer', engine: 'claude-code' },
           { id: 'docs-1', name: 'Docs', role: 'docs', engine: 'claude-code' },
-          { id: 'intake-1', name: 'Intake', role: 'intake', engine: 'claude-code' },
           { id: 'dev-1', name: 'Dev', role: 'sub', engine: 'claude-code' },
         ],
       }),

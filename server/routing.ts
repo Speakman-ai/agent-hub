@@ -2,8 +2,8 @@ import type { Agent, KanbanCardRow, Project } from './types.js';
 
 // ─── Label-based routing ─────────────────────────────────────────────────────
 //
-// Replaces the synchronous triage step with a stateless label-match: the
-// intake agent stamps labels on the card at intake time, and the autonomous
+// Replaces the synchronous triage step with a stateless label-match: cards
+// carry specialty labels, and the autonomous
 // dispatcher routes the card to the first specialist whose `id`, `role`, or
 // `name` matches one of those labels (case-insensitive). When no specialist
 // matches, the card falls through to the project lead, who can implement
@@ -74,7 +74,7 @@ export interface RoutingPickContext {
  *   4. null — caller should defer the card to the next dispatch tick.
  *
  * `assignableAgents` is the dispatcher's pool (already filtered for out-of-
- * band roles like docs/intake/reviewer). `lead` is optional — when omitted
+ * band roles like docs/reviewer). `lead` is optional — when omitted
  * the function does NOT use it as fallback.
  *
  * IMPORTANT: this function does NOT decrement slots; the caller is
@@ -92,7 +92,7 @@ export function pickAgentForCard(args: {
 
   // 1. Walk labels in order; first agent with capacity wins. We iterate
   // labels (not agents) so that label order on the card encodes priority
-  // when the intake stamps multiple specialty labels.
+  // when a card carries multiple specialty labels.
   for (const label of labels) {
     for (const agent of assignableAgents) {
       if (!agentClaimsLabel(agent, label)) continue;
@@ -120,7 +120,7 @@ export function pickAgentForCard(args: {
 }
 
 /**
- * Convenience: extract the project lead. Out-of-band roles (docs, intake,
+ * Convenience: extract the project lead. Out-of-band roles (docs,
  * reviewer) are never returned even if labelled `lead`.
  */
 export function pickLead(project: Project): Agent | null {

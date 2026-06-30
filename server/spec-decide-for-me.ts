@@ -55,9 +55,7 @@ export function pickDefaultDecideAgent(project: Project): { id: string; name: st
   const lead = pickLead(project);
   if (lead) return { id: lead.id, name: lead.name };
 
-  const fallback = project.agents.find(
-    (a) => a.role !== 'reviewer' && a.role !== 'docs' && a.role !== 'intake',
-  );
+  const fallback = project.agents.find((a) => a.role !== 'reviewer' && a.role !== 'docs');
   if (fallback) return { id: fallback.id, name: fallback.name };
 
   const resolved = project.agents[0];

@@ -41,6 +41,26 @@ describe('GET /api/health', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// Retired routes
+// ═══════════════════════════════════════════════════════════════════
+
+describe('Retired bug-request → kanban intake route', () => {
+  it('POST /api/projects/:projectId/support-requests is gone (404)', async () => {
+    // Regression: the legacy support-request intake (which dispatched an
+    // intake agent to file a kanban card) has been retired. Only the customer
+    // support module (`POST /api/bug-reports` → support ticket) remains. The
+    // route must no longer be mounted.
+    const project = await createProject();
+    const projectId = project.id as string;
+    await request
+      .post(`/api/projects/${projectId}/support-requests`)
+      .field('type', 'bug')
+      .field('title', 'should not route anywhere')
+      .expect(404);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // Projects CRUD
 // ═══════════════════════════════════════════════════════════════════
 

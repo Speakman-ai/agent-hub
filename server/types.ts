@@ -2533,7 +2533,7 @@ export interface Agent {
    * `false`. `undefined` preserves the pre-flag behaviour (eligible), so
    * existing rosters keep dispatching. Agents whose `role` is a default Dev
    * role (`dev` / `lead`) are always eligible regardless of this field, and
-   * out-of-band roles (`docs` / `intake` / `reviewer`) are never eligible —
+   * out-of-band roles (`docs` / `reviewer`) are never eligible —
    * see `agentAcceptsAutonomousTickets` in `server/agent-autonomy.ts`.
    */
   isDev?: boolean;
@@ -3533,21 +3533,6 @@ export interface ChatMessage {
    * give-up. See `server/resume-attempts.ts`.
    */
   _autoResume?: boolean;
-  /**
-   * Set to true when this message was produced by the bug-report reroute
-   * guard in `handleChat`. Prevents re-entrant reroutes if the intake agent
-   * itself is somehow misconfigured without role === 'intake'.
-   */
-  _reroutedFromBugReport?: boolean;
-  /**
-   * Set to true when this message was dispatched by
-   * `POST /api/projects/:projectId/board/cards/:cardId/assign`. The bug-report
-   * reroute guard treats explicit user-driven assigns as authoritative — the
-   * chosen assignee owns the card even if its description happens to embed a
-   * `## Bug Report` header that would otherwise trip the heuristic. See
-   * `server/bug-report-reroute.ts`.
-   */
-  _fromBoardAssign?: boolean;
   /**
    * Set to true when this message was dispatched by the autonomous-mode
    * loop in `server/autonomous.ts`. Used in `chat.ts` to inform the

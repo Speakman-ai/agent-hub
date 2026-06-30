@@ -52,7 +52,7 @@ export interface InitialBuildOpts {
 /** Seed the lead dev agent when the roster is empty. Returns the agent. */
 function ensureLeadDevAgent(opts: InitialBuildOpts): Agent {
   const { project, deps } = opts;
-  const existing = project.agents.find((a) => a.role !== 'reviewer' && a.role !== 'intake');
+  const existing = project.agents.find((a) => a.role !== 'reviewer');
   if (existing) return existing;
 
   const agentId = `${project.id}-dev`;

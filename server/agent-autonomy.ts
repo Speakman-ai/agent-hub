@@ -12,10 +12,10 @@ import type { Agent } from './types.js';
  * Roles that are never autonomously assigned — out-of-band worker / coach roles.
  * `skill-builder` is a conversational coach that authors skills interactively; it
  * is not a code-shipping recipient, so its Dev toggle is locked OFF like
- * docs/intake/reviewer (otherwise it falls through to the default-eligible branch
+ * docs/reviewer (otherwise it falls through to the default-eligible branch
  * and shows as Dev-on).
  */
-const OUT_OF_BAND_ROLES = new Set(['docs', 'intake', 'reviewer', 'skill-builder']);
+const OUT_OF_BAND_ROLES = new Set(['docs', 'reviewer', 'skill-builder']);
 
 /**
  * The project's "default Dev" roles. These always accept autonomous tickets
@@ -28,7 +28,7 @@ function roleOf(agent: Pick<Agent, 'role'> | null | undefined): string {
   return agent && typeof agent.role === 'string' ? agent.role.trim().toLowerCase() : '';
 }
 
-/** Out-of-band role (docs/intake/reviewer) — the Dev toggle is locked OFF. */
+/** Out-of-band role (docs/reviewer) — the Dev toggle is locked OFF. */
 export function isAutonomyLockedOff(agent: Pick<Agent, 'role'> | null | undefined): boolean {
   return OUT_OF_BAND_ROLES.has(roleOf(agent));
 }
@@ -50,7 +50,7 @@ export function isAutonomyLocked(agent: Pick<Agent, 'role'> | null | undefined):
 /**
  * Effective: may this agent receive an autonomously-dispatched ticket?
  *
- *  - out-of-band roles (docs/intake/reviewer) → never
+ *  - out-of-band roles (docs/reviewer) → never
  *  - default Dev roles (dev/lead)             → always (locked on)
  *  - explicit `isDev === false`               → opt-out, never
  *  - otherwise (`isDev === true`, or `undefined` for pre-flag agents) → eligible

@@ -2542,11 +2542,6 @@ export async function autoCommitAndPR(
       return;
     }
 
-    if (agent.role === 'intake') {
-      console.log(`[auto-commit] Session ${sessionId} — skipping (intake agent, no PR)`);
-      return;
-    }
-
     // Reviewer sessions exist to review existing PRs — they never author new
     // PRs, and the "Create PR" banner / `changes_ready` broadcast is never
     // appropriate for them. Skip before any worktree / PR-discovery work so

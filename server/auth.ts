@@ -54,12 +54,12 @@ const PUBLIC_PATHS: readonly string[] = [
 
 /**
  * Public paths that contain a dynamic segment and so can't be matched by
- * exact string or static prefix. The project-scoped support-request intake
- * (`POST /api/projects/:projectId/support-requests`) is intentionally
- * unauthenticated — same posture as `/api/bug-reports` — and gated only by
- * its own per-IP rate limiter.
+ * exact string or static prefix. Currently none — the public, unauthenticated
+ * intake surface is `/api/bug-reports` (a static path matched elsewhere), which
+ * lands a Customer Support ticket. The legacy project-scoped support-request
+ * intake that dispatched an intake agent has been retired.
  */
-const PUBLIC_PATTERNS: readonly RegExp[] = [/^\/api\/projects\/[^/]+\/support-requests$/];
+const PUBLIC_PATTERNS: readonly RegExp[] = [];
 
 /**
  * Public paths that are method-scoped: the same `:id`-bearing path is public for

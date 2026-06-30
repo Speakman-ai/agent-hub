@@ -2,8 +2,8 @@
  * AI initial investigation for incoming support tickets.
  *
  * When a `bug` support ticket lands in the queue we kick off a one-shot AI
- * investigation pass — analogous to the intake agent enriching bug-report
- * cards. The model is asked to produce a short triage: a repro guess, the
+ * investigation pass that enriches the ticket. The model is asked to produce a
+ * short triage: a repro guess, the
  * suspected area of the codebase, a sanity-check on the reported severity, and
  * a one-line summary. The result is written back onto the ticket's
  * `ai_summary` / `ai_investigation` fields via the store and broadcast so the
@@ -15,9 +15,8 @@
  *    configured (Claude / Cursor / Codex / Gemini) and never spawns an
  *    interactive session.
  *  - The ticket body is anonymous, public, attacker-controlled input. It is
- *    fenced with BEGIN/END markers and escaped the same way the public
- *    support-request intake does, so a malicious ticket body cannot rewrite
- *    the investigator's instructions.
+ *    fenced with BEGIN/END markers and escaped before it reaches the prompt,
+ *    so a malicious ticket body cannot rewrite the investigator's instructions.
  *  - Failures are non-fatal by contract: `triggerSupportTicketInvestigation`
  *    never throws and never rejects. The ticket has already landed; a failed
  *    investigation just leaves the AI fields empty. The route fires it and
@@ -43,15 +42,14 @@ const MAX_REPLAY_CONTEXT_CHARS = 4000;
 const DEFAULT_INVESTIGATION_TIMEOUT_MS = 3 * 60 * 1000;
 
 // Untrusted-data fence. The ticket body arrives from the public, anonymous
-// intake surface, so it gets the same treatment as support-request payloads.
+// bug-report / support-ticket intake surface, so it is fenced and escaped.
 export const TICKET_UNTRUSTED_BEGIN = '----- BEGIN UNTRUSTED SUPPORT-TICKET DATA -----';
 export const TICKET_UNTRUSTED_END = '----- END UNTRUSTED SUPPORT-TICKET DATA -----';
 
 /**
  * Neutralize an attacker-controlled field before embedding it in the
  * investigation prompt: normalize newlines, strip ASCII control characters,
- * and defang any line that tries to forge the BEGIN/END fence markers. Mirrors
- * `escapeUntrusted` in `routes/support-requests.ts`.
+ * and defang any line that tries to forge the BEGIN/END fence markers.
  */
 export function escapeTicketUntrusted(value: string | null | undefined): string {
   if (!value) return '';

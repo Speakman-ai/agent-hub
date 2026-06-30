@@ -928,13 +928,11 @@ async function runAutonomousLoopInner(
     agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
   }
 
-  // Reviewer/docs/intake are out-of-band roles — never autonomously assigned.
+  // Reviewer/docs are out-of-band roles — never autonomously assigned.
   // Leads are always assignable: they can implement directly or `<handoff>`
   // to a specialist, and they're the right safety net when a project's
   // `subAgents` list is stale or empty.
-  const roleFiltered = project.agents.filter(
-    (a) => a.role !== 'docs' && a.role !== 'intake' && a.role !== 'reviewer',
-  );
+  const roleFiltered = project.agents.filter((a) => a.role !== 'docs' && a.role !== 'reviewer');
   const leadAgent = project.agents.find((a) => a.role === 'lead');
   const allLeads = project.agents.filter((a) => a.role === 'lead');
   let assignableAgents: Agent[];
@@ -1070,10 +1068,10 @@ async function runAutonomousLoopInner(
     slotsByAgentId.set(lead.id, perAgentLimit);
   }
 
-  // Label-based routing: every eligible card is dispatchable. The intake
-  // ("ticketing") agent stamps labels at card-creation time; we route to
-  // the first specialist whose id/role/name matches a label, falling back
-  // to the project lead (which can implement directly or `<handoff>`).
+  // Label-based routing: every eligible card is dispatchable. Cards carry
+  // specialty labels; we route to the first specialist whose id/role/name
+  // matches a label, falling back to the project lead (which can implement
+  // directly or `<handoff>`).
   const dispatchable = eligible;
 
   // `cursor` walks the eligible list; `assigned` counts only *actual*

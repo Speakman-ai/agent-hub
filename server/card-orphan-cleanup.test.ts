@@ -28,7 +28,7 @@ describe('classifyCardOnSessionClose', () => {
     expect(d.reason).toBe('abandoned-stub');
   });
 
-  it('never deletes a card it did not file (human / intake / support)', () => {
+  it('never deletes a card it did not file (human / support)', () => {
     const d = classifyCardOnSessionClose({ ...baseSignals, isAgentFiled: false });
     expect(d.action).toBe('keep');
     expect(d.reason).toBe('not-agent-filed');

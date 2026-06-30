@@ -144,19 +144,21 @@ describe('authMiddleware (API key)', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it('passes through for the public project-scoped support-request intake path', () => {
-    // POST /api/projects/:projectId/support-requests is intentionally
-    // unauthenticated (per-IP rate limited in the route handler), so the
-    // dynamic projectId segment must match the public-path pattern even
-    // when an API key is configured.
+  it('does NOT treat the retired support-request intake path as public', () => {
+    // Regression: the legacy `POST /api/projects/:projectId/support-requests`
+    // intake (which dispatched an intake agent to file a kanban card) has been
+    // retired. With an API key configured, the path must now be auth-gated
+    // like any other project route — it is no longer in PUBLIC_PATTERNS.
     config.apiKey = 'secret-key';
     const next = vi.fn();
+    const res = mockRes();
     authMiddleware(
       mockReq({ path: '/api/projects/agent-hub/support-requests' }),
-      mockRes() as unknown as Response,
+      res as unknown as Response,
       next,
     );
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
   });
 
   it('passes through POST/OPTIONS for the public chunked replay-ingest path', () => {

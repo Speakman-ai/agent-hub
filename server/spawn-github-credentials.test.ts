@@ -581,7 +581,6 @@ describe('reviewer spawn env contract (end-to-end composition)', () => {
     { role: 'author', tokenToInject: 'gho_owner_oauth' },
     { role: 'dev', tokenToInject: 'gho_owner_oauth' },
     { role: 'docs', tokenToInject: 'gho_owner_oauth' },
-    { role: 'intake', tokenToInject: 'gho_owner_oauth' },
     { role: 'cli-expert', tokenToInject: 'gho_owner_oauth' },
     { role: undefined, tokenToInject: 'gho_owner_oauth' },
   ] as const)(
@@ -621,7 +620,6 @@ describe('applyReviewerRoleLock', () => {
     'author',
     'dev',
     'docs',
-    'intake',
     'cli-expert',
     undefined,
     '',

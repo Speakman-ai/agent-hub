@@ -23,9 +23,8 @@
  *     GitHub issue / blocker edge, or was dispatched autonomously. We must not
  *     delete real work, but its working session is gone, so we mark it orphaned
  *     for human attention.
- *   - **keep** (do nothing) when the card was not agent-filed — a human, the
- *     intake agent, or a support-ticket conversion created it. Those are never
- *     touched.
+ *   - **keep** (do nothing) when the card was not agent-filed — a human or a
+ *     support-ticket conversion created it. Those are never touched.
  *
  * Everything is best-effort: a failure here must never block session deletion.
  */
@@ -45,13 +44,13 @@ export type OrphanCardAction = 'delete' | 'flag' | 'keep' | 'none';
 
 export interface CardCloseSignals {
   /** Card was filed by the session's own agent (or lazily with no author) —
-   *  i.e. NOT by a human, the intake agent, or a support-ticket conversion. */
+   *  i.e. NOT by a human or a support-ticket conversion. */
   isAgentFiled: boolean;
   /** Card already carries a PR url. */
   hasPr: boolean;
   /** A Finalize run exists for the closing session. */
   hasFinalizeRun: boolean;
-  /** Card sits in a Review / Done / Shipped lane (i.e. advanced past intake). */
+  /** Card sits in a Review / Done / Shipped lane (i.e. advanced past To Do). */
   inAdvancedColumn: boolean;
   /** Card was claimed by autonomous dispatch. */
   isAutonomous: boolean;
@@ -80,7 +79,7 @@ export interface OrphanCardDecision {
  * alone. Kept side-effect-free so it is exhaustively unit-testable.
  */
 export function classifyCardOnSessionClose(signals: CardCloseSignals): OrphanCardDecision {
-  // Never touch cards a human / intake / support flow owns.
+  // Never touch cards a human / support flow owns.
   if (!signals.isAgentFiled) {
     return { action: 'keep', reason: 'not-agent-filed' };
   }
@@ -109,7 +108,7 @@ export function classifyCardOnSessionClose(signals: CardCloseSignals): OrphanCar
   return { action: 'delete', reason: 'abandoned-stub' };
 }
 
-/** Is `columnName` an advanced (post-intake) lane — Review, Shipped, or Done? */
+/** Is `columnName` an advanced (post-To-Do) lane — Review, Shipped, or Done? */
 export function isAdvancedColumn(columnName: string | null | undefined): boolean {
   if (isColumnDone(columnName) || isColumnShippedLane(columnName)) return true;
   return /\breview\b/i.test((columnName ?? '').trim());
@@ -118,8 +117,8 @@ export function isAdvancedColumn(columnName: string | null | undefined): boolean
 /**
  * Decide whether `createdBy` marks an agent-filed card. Agent-filed means the
  * author is empty (lazy/script default) or resolves to the session's own agent
- * (by name or id). Anything else — a human username, `support-ticket`, an
- * intake agent's name — is treated as externally owned and never deleted.
+ * (by name or id). Anything else — a human username or `support-ticket` —
+ * is treated as externally owned and never deleted.
  */
 export function isAgentFiledCard(
   createdBy: string | null | undefined,

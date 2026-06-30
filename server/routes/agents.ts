@@ -325,7 +325,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     }
 
     // The "Dev" flag is derived from role for locked agents (default Dev roles
-    // dev/lead are always on; out-of-band roles docs/intake/reviewer always
+    // dev/lead are always on; out-of-band roles docs/reviewer always
     // off). Reject a contradictory `isDev` with a 400 — checked BEFORE any
     // mutation below — so a client never believes an impossible change took
     // effect. A write that matches the role-fixed value is accepted as a
@@ -481,7 +481,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
     };
     if (role) agent.role = role;
     // "Dev" flag (accepts autonomous tickets). Locked roles (dev/lead,
-    // docs/intake/reviewer) derive eligibility from their role: reject a
+    // docs/reviewer) derive eligibility from their role: reject a
     // contradictory `isDev` with a 400 (before the agent is persisted),
     // accept a matching one as a no-op, and store it for togglable agents.
     if (typeof parsed.isDev === 'boolean') {

@@ -96,7 +96,7 @@ export interface ImportCandidateAgent {
   id: string;
   projectId: string;
   engine?: string | null;
-  /** Reviewer/intake/etc. agents are skipped as import targets. */
+  /** Reviewer agents are skipped as import targets. */
   role?: string | null;
 }
 

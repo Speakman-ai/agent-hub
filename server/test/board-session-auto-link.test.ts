@@ -144,29 +144,6 @@ describe('POST /board/cards session auto-link', () => {
     expect((second.body as { id: string }).id).toBe(firstId);
   });
 
-  it('still strips intake session_id even when auto-filled from header', async () => {
-    const project = await createProject();
-    const projectId = project.id as string;
-    const intakeAgent = await createAgent({
-      projectId,
-      role: 'intake',
-      name: 'Intake Auto Link',
-    });
-    const session = await createSession({ agentId: intakeAgent.id as string });
-    const sessionId = session.id as string;
-    const columnId = await getFirstColumnId(projectId);
-
-    const res = await request
-      .post(`/api/projects/${projectId}/board/cards`)
-      .set(AGENT_HUB_SESSION_ID_HEADER, sessionId)
-      .send({ title: 'Intake filed ticket', columnId })
-      .expect(200);
-
-    const body = res.body as { session_id: string | null; assignee: string | null };
-    expect(body.session_id).toBeNull();
-    expect(body.assignee).toBeNull();
-  });
-
   it('does not rename a user-customized session title when linking via header', async () => {
     const project = await createProject();
     const projectId = project.id as string;

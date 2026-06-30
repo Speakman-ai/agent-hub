@@ -50,7 +50,7 @@ export const AgentComponent = registerComponent(
       canReview: z.boolean().optional(),
       isDev: z.boolean().optional().openapi({
         description:
-          'Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/intake/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.',
+          'Whether this agent accepts autonomously-dispatched kanban tickets. Default Dev roles (dev/lead) are always eligible and out-of-band roles (docs/reviewer) never are, regardless of this field; for other agents an explicit `false` opts out and `undefined` preserves pre-flag eligibility.',
       }),
       active: z.boolean().optional(),
       delegationEnabled: z.boolean().optional(),
@@ -194,7 +194,7 @@ export const CreateAgentRequestSchema = z.object({
   role: z.string().optional(),
   isDev: z.boolean({ error: 'isDev must be a boolean' }).optional().openapi({
     description:
-      'Accept autonomously-dispatched kanban tickets. Defaults to false in the UI (opt-in). Sending a value that contradicts a locked role (dev/lead → must be true; docs/intake/reviewer → must be false) is rejected with 400.',
+      'Accept autonomously-dispatched kanban tickets. Defaults to false in the UI (opt-in). Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400.',
   }),
   heartbeat: HeartbeatConfigSchema,
   browserToolsEnabled: BrowserToolsEnabled,
@@ -223,7 +223,7 @@ export const UpdateAgentRequestSchema = z.object({
   canReview: z.boolean().optional(),
   isDev: z.boolean({ error: 'isDev must be a boolean' }).optional().openapi({
     description:
-      'Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/intake/reviewer → must be false) is rejected with 400; a matching value is a no-op.',
+      'Accept autonomously-dispatched kanban tickets. Sending a value that contradicts a locked role (dev/lead → must be true; docs/reviewer → must be false) is rejected with 400; a matching value is a no-op.',
   }),
   delegationEnabled: z.boolean().optional(),
   browserToolsEnabled: BrowserToolsEnabled,
