@@ -166,6 +166,22 @@ export const api = {
   getGitHostMirror: (projectId: any) => fetchJSON(`/projects/${projectId}/git-host/mirror`),
   reconcileGitHostMirror: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/git-host/mirror/reconcile`, { method: 'POST' }),
+  // Per-user Google connection (Settings -> Account). Never returns tokens.
+  getGoogleStatus: () => fetchJSON('/auth/google/status'),
+  // Returns { authorizeUrl }; the caller does a full-page redirect to it.
+  // `scopes` (string or string[]) requests extra per-surface scopes for
+  // incremental consent; identity scopes are always added server-side.
+  startGoogleOAuth: ({
+    returnTo,
+    scopes,
+  }: { returnTo?: string; scopes?: string | string[] } = {}) => {
+    const params = new URLSearchParams();
+    if (returnTo) params.set('returnTo', returnTo);
+    if (scopes) params.set('scopes', Array.isArray(scopes) ? scopes.join(' ') : scopes);
+    const qs = params.toString();
+    return fetchJSON<{ authorizeUrl: string }>(`/auth/google/start${qs ? `?${qs}` : ''}`);
+  },
+  disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
   getProjectSecrets: (projectId: any) => fetchJSON(`/projects/${projectId}/secrets`),
   putProjectSecrets: (projectId: any, secrets: any) =>
     fetchJSON(`/projects/${projectId}/secrets`, {
