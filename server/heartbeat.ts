@@ -735,6 +735,11 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
         // cron does not change whose CLI credentials pay for the run.
         setSessionOwner(sessionId, cronOwnerId);
         stmts.updateSessionCronId.run(cronJob.id, sessionId);
+        // Scheduled tasks are consult-only: the cron session is a read-only
+        // log/Q&A thread, never a build/ship surface. Tagging it `consult`
+        // keeps any follow-up interaction in consult behavior (no code edits,
+        // no Finalize) and surfaces the consult badge in the sidebar.
+        stmts.updateSessionMode.run('consult', sessionId);
         session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       }
       const msgId = uuidv4();

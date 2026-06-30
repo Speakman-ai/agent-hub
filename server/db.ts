@@ -1802,6 +1802,21 @@ function initDb(dataDir: string): void {
     db.exec("ALTER TABLE sessions ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'chat'");
   }
 
+  // Backfill: scheduled-task (cron) sessions are consult-only — read-only
+  // log/Q&A threads, never a build/ship surface (see runCronJob in
+  // heartbeat.ts). Cron sessions created before the consult tagging shipped
+  // still carry the legacy default 'chat', so flip any cron-linked session
+  // that isn't already consult. NOTE: this is a deliberate FORCE-OVERRIDE of
+  // ANY prior mode, not just a 'chat'→'consult' default backfill — a cron
+  // session that somehow ended up in e.g. 'design' is also flipped, because
+  // "cron sessions are consult-only" is an invariant, not a default. Idempotent
+  // + self-healing: a no-op once every row is consult, and harmless to re-run.
+  // Avoids re-stamping updated_at so the sidebar ordering of historical cron
+  // sessions is preserved.
+  db.exec(
+    "UPDATE sessions SET session_mode = 'consult' WHERE cron_id IS NOT NULL AND session_mode != 'consult'",
+  );
+
   // Codex reasoning-effort preset: 'high' (default) | 'pro' (→ xhigh).
   // NULL on legacy rows / non-Codex sessions; resolver treats NULL as 'high'.
   try {
@@ -4119,7 +4134,11 @@ function initDb(dataDir: string): void {
     // Cron sessions
     getSessionByCronId: db.prepare('SELECT * FROM sessions WHERE cron_id = ? LIMIT 1'),
     getAllCronSessions: db.prepare(
-      `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule
+      // `c.project_id as project_id` lets the client group scheduled-task rows
+      // under their owning project in the sidebar. The sessions table has no
+      // project_id column of its own (cron sessions use the `_cron` pseudo
+      // agent), so the cron row is the authoritative source of the project.
+      `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule, c.project_id as project_id
        FROM sessions s JOIN crons c ON s.cron_id = c.id
        ORDER BY s.updated_at DESC`,
     ),

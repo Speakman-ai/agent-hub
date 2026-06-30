@@ -471,6 +471,7 @@ describe('Sidebar — always-on session state icon', () => {
         {
           id: 'cron-sess',
           agent_id: AGENT_ID,
+          project_id: PROJECT_ID,
           cron_name: 'Nightly reconcile',
           cron_schedule: '0 0 * * *',
         },
@@ -482,6 +483,161 @@ describe('Sidebar — always-on session state icon', () => {
       'data-session-state',
       'working',
     );
+  });
+
+  it('groups scheduled tasks under their owning project, not in a global list', () => {
+    const SECOND_PROJECT_ID = 'proj-2';
+    const props = buildProps({
+      sessions: [],
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: 'Test Project',
+          color: '#22d3ee',
+          agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+        },
+        {
+          id: SECOND_PROJECT_ID,
+          name: 'Other Project',
+          color: '#a78bfa',
+          agents: [{ id: OTHER_AGENT_ID, name: 'Other Agent', color: '#a78bfa', active: true }],
+        },
+      ],
+      cronSessions: [
+        {
+          id: 'cron-alpha',
+          agent_id: AGENT_ID,
+          project_id: PROJECT_ID,
+          cron_name: 'Nightly reconcile',
+          cron_schedule: '0 0 * * *',
+        },
+        {
+          id: 'cron-beta',
+          agent_id: OTHER_AGENT_ID,
+          project_id: SECOND_PROJECT_ID,
+          cron_name: 'Hourly sync',
+          cron_schedule: '0 * * * *',
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+
+    // Each project's scheduled-tasks block contains only its own cron rows.
+    const alphaBlock = screen.getByTestId(`sidebar-project-scheduled-tasks-${PROJECT_ID}`);
+    expect(within(alphaBlock).getByText('Nightly reconcile')).toBeInTheDocument();
+    expect(within(alphaBlock).queryByText('Hourly sync')).not.toBeInTheDocument();
+
+    const betaBlock = screen.getByTestId(`sidebar-project-scheduled-tasks-${SECOND_PROJECT_ID}`);
+    expect(within(betaBlock).getByText('Hourly sync')).toBeInTheDocument();
+    expect(within(betaBlock).queryByText('Nightly reconcile')).not.toBeInTheDocument();
+  });
+
+  it('omits the scheduled-tasks block for a project with no cron sessions', () => {
+    const props = buildProps({
+      sessions: [],
+      cronSessions: [],
+    });
+    render(<Sidebar {...props} />);
+    expect(
+      screen.queryByTestId(`sidebar-project-scheduled-tasks-${PROJECT_ID}`),
+    ).not.toBeInTheDocument();
+  });
+
+  it('surfaces cron sessions with no matching project in an Ungrouped bucket', () => {
+    const props = buildProps({
+      sessions: [],
+      cronSessions: [
+        // project_id is null (project-less / legacy cron) — must not vanish.
+        {
+          id: 'cron-null',
+          agent_id: AGENT_ID,
+          project_id: null,
+          cron_name: 'Legacy global cron',
+          cron_schedule: '0 * * * *',
+        },
+        // project_id points at a project not rendered in the sidebar.
+        {
+          id: 'cron-unknown',
+          agent_id: AGENT_ID,
+          project_id: 'proj-not-here',
+          cron_name: 'Orphaned cron',
+          cron_schedule: '0 0 * * *',
+        },
+        // project_id matches the rendered project — stays grouped, NOT ungrouped.
+        {
+          id: 'cron-grouped',
+          agent_id: AGENT_ID,
+          project_id: PROJECT_ID,
+          cron_name: 'Grouped cron',
+          cron_schedule: '*/5 * * * *',
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+
+    const ungrouped = screen.getByTestId('sidebar-ungrouped-scheduled-tasks');
+    expect(within(ungrouped).getByText('Legacy global cron')).toBeInTheDocument();
+    expect(within(ungrouped).getByText('Orphaned cron')).toBeInTheDocument();
+    // The project-matched cron is NOT in the ungrouped bucket.
+    expect(within(ungrouped).queryByText('Grouped cron')).not.toBeInTheDocument();
+    // ...it lives in its project's block instead.
+    const projectBlock = screen.getByTestId(`sidebar-project-scheduled-tasks-${PROJECT_ID}`);
+    expect(within(projectBlock).getByText('Grouped cron')).toBeInTheDocument();
+  });
+
+  it('renders no Ungrouped bucket when every cron session has a home project', () => {
+    const props = buildProps({
+      sessions: [],
+      cronSessions: [
+        {
+          id: 'cron-grouped',
+          agent_id: AGENT_ID,
+          project_id: PROJECT_ID,
+          cron_name: 'Grouped cron',
+          cron_schedule: '0 0 * * *',
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+    expect(screen.queryByTestId('sidebar-ungrouped-scheduled-tasks')).not.toBeInTheDocument();
+  });
+
+  it('falls a collapsed multi-agent project’s cron back to Ungrouped (never vanishes)', () => {
+    // Default buildProps project has TWO active agents → it collapses (no
+    // single-agent auto-expand). An idle cron in such a project must remain
+    // reachable: grouped while expanded, Ungrouped once collapsed.
+    const props = buildProps({
+      sessions: [],
+      cronSessions: [
+        {
+          id: 'cron-idle',
+          agent_id: AGENT_ID,
+          project_id: PROJECT_ID,
+          cron_name: 'Idle reconcile',
+          cron_schedule: '0 0 * * *',
+        },
+      ],
+    });
+    render(<Sidebar {...props} />);
+
+    // Expanded: the cron lives in the project's own block, not Ungrouped.
+    expect(
+      within(screen.getByTestId(`sidebar-project-scheduled-tasks-${PROJECT_ID}`)).getByText(
+        'Idle reconcile',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-ungrouped-scheduled-tasks')).not.toBeInTheDocument();
+
+    // Collapse the multi-agent project.
+    fireEvent.click(screen.getByText('Test Project' as any) as any);
+
+    // The per-project block is gone — but the cron is NOT lost: it falls back
+    // to the Ungrouped bucket (the predicate matches the render gate exactly).
+    expect(
+      screen.queryByTestId(`sidebar-project-scheduled-tasks-${PROJECT_ID}`),
+    ).not.toBeInTheDocument();
+    const ungrouped = screen.getByTestId('sidebar-ungrouped-scheduled-tasks');
+    expect(within(ungrouped).getByText('Idle reconcile')).toBeInTheDocument();
   });
 
   it('prefers working over waiting when an active task and a stale ask overlap', () => {
