@@ -68,11 +68,13 @@ import CustomerSupportPage from './components/CustomerSupportPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import SheetsViewerPage from './components/SheetsViewerPage';
+import DriveViewerPage from './components/DriveViewerPage';
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import {
   shouldShowCalendarNav,
   shouldShowGmailNav,
   shouldShowSheetsNav,
+  shouldShowDriveNav,
 } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
@@ -477,6 +479,7 @@ export default function App({ initialView }: any = {}) {
   const googleCalendarNavVisible = shouldShowCalendarNav(googleStatus);
   const googleGmailNavVisible = shouldShowGmailNav(googleStatus);
   const googleSheetsNavVisible = shouldShowSheetsNav(googleStatus);
+  const googleDriveNavVisible = shouldShowDriveNav(googleStatus);
   const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
     initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
   );
@@ -5282,6 +5285,7 @@ export default function App({ initialView }: any = {}) {
             googleCalendarNavVisible={googleCalendarNavVisible}
             googleGmailNavVisible={googleGmailNavVisible}
             googleSheetsNavVisible={googleSheetsNavVisible}
+            googleDriveNavVisible={googleDriveNavVisible}
             deploymentsProjectId={deploymentsProjectId}
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
@@ -5690,6 +5694,8 @@ export default function App({ initialView }: any = {}) {
                 <SheetsViewerPage
                   onOpenAccountSettings={() => setCurrentView('settings:account')}
                 />
+              ) : currentView === 'drive' ? (
+                <DriveViewerPage onOpenAccountSettings={() => setCurrentView('settings:account')} />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage
                   projectId={deploymentsProjectId}

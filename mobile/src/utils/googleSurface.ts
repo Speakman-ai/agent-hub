@@ -33,6 +33,11 @@ export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadshee
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 export const SHEETS_SURFACE_SCOPES = [SHEETS_SCOPE, DRIVE_FILE_SCOPE];
 
+// The global Drive surface is a file picker over app-accessible files, so its
+// single incremental-consent request asks only for the NON-restricted drive.file
+// scope — never drive.readonly or full drive (restricted, triggers annual CASA).
+export const DRIVE_SURFACE_SCOPES = [DRIVE_FILE_SCOPE];
+
 /** True only when the calling user has linked a Google account. */
 export function isGoogleConnected(status: any): boolean {
   return !!status?.connected;
@@ -108,5 +113,15 @@ export function hasDriveFileScope(status: any): boolean {
  * Sheets" affordance for incremental consent.
  */
 export function shouldShowSheetsNav(status: any): boolean {
+  return isGoogleConnected(status);
+}
+
+/**
+ * Whether to render the global Drive entry in the drawer. Gated purely on
+ * connection (NOT scope), mirroring Calendar/Gmail/Sheets: a connected-but-
+ * unconsented user still sees the nav item, and the Drive screen shows the
+ * inline "Enable Drive" affordance for incremental consent.
+ */
+export function shouldShowDriveNav(status: any): boolean {
   return isGoogleConnected(status);
 }

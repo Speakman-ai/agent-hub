@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, BookOpen, Bot, CalendarDays, ChartColumn, ChevronDown, ChevronRight, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, KeyRound, LayoutGrid, LifeBuoy, Mail, List, ListOrdered, Palette, Play, Plus, ScanEye, Settings, ShieldAlert, Sparkles, StickyNote, Target, } from 'lucide-react-native';
+import { Activity, BookOpen, Bot, CalendarDays, ChartColumn, ChevronDown, ChevronRight, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Mail, List, ListOrdered, Palette, Play, Plus, ScanEye, Settings, ShieldAlert, Sparkles, StickyNote, Target, } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { HUB_ICON_NAMES } from '../utils/hubIconNames';
 import { resolveLucideIconName } from '../utils/hubIconNative';
@@ -11,6 +11,7 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
     Bot,
     CalendarDays,
     FileSpreadsheet,
+    HardDrive,
     ChevronDown,
     ChevronRight,
     Clock,

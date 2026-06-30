@@ -10,7 +10,7 @@ import { relativeTime, daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectLifecycleEntries, projectSettingsEntries } from '../utils/projectMenu';
-import { shouldShowCalendarNav, shouldShowGmailNav, shouldShowSheetsNav } from '../utils/googleSurface';
+import { shouldShowCalendarNav, shouldShowGmailNav, shouldShowSheetsNav, shouldShowDriveNav } from '../utils/googleSurface';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
@@ -65,6 +65,7 @@ export default function DrawerContent({ navigation }: any) {
     const calendarNavVisible = shouldShowCalendarNav(googleStatus);
     const gmailNavVisible = shouldShowGmailNav(googleStatus);
     const sheetsNavVisible = shouldShowSheetsNav(googleStatus);
+    const driveNavVisible = shouldShowDriveNav(googleStatus);
     const orgState = getOrgs();
     const orgs = orgState?.orgs || [];
     const activeOrg = getActiveOrg();
@@ -417,6 +418,20 @@ export default function DrawerContent({ navigation }: any) {
           }}>
             <HubIcon name="FileSpreadsheet" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
             <Text style={styles.dashboardText}>Sheets</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Global Drive — a per-USER Google surface, not project-scoped. Only
+            shown when the user's Google account is connected
+            (`/api/auth/google/status` connected=true). When not connected, the
+            connect affordance lives in Settings -> Account. */}
+        {driveNavVisible && (
+          <TouchableOpacity testID="drawer-global-drive" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('Drive');
+            navigation.closeDrawer();
+          }}>
+            <HubIcon name="HardDrive" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
+            <Text style={styles.dashboardText}>Drive</Text>
           </TouchableOpacity>
         )}
 

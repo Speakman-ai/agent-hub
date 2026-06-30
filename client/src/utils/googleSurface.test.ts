@@ -22,6 +22,8 @@ import {
   shouldShowCalendarNav,
   shouldShowGmailNav,
   shouldShowSheetsNav,
+  shouldShowDriveNav,
+  DRIVE_SURFACE_SCOPES,
 } from './googleSurface';
 
 describe('googleSurface', () => {
@@ -160,6 +162,28 @@ describe('googleSurface', () => {
       // affordance when the spreadsheets scope is missing.
       expect(shouldShowSheetsNav({ connected: true, grantedScopes: [] })).toBe(true);
       expect(shouldShowSheetsNav({ connected: true, grantedScopes: [SHEETS_SCOPE] })).toBe(true);
+    });
+  });
+
+  describe('DRIVE_SURFACE_SCOPES', () => {
+    it('requests only the non-restricted drive.file scope, never a restricted Drive scope', () => {
+      expect(DRIVE_SURFACE_SCOPES).toEqual([DRIVE_FILE_SCOPE]);
+      expect(DRIVE_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
+      expect(DRIVE_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
+    });
+  });
+
+  describe('shouldShowDriveNav', () => {
+    it('hides the nav entry when signed out', () => {
+      expect(shouldShowDriveNav(null)).toBe(false);
+      expect(shouldShowDriveNav({ connected: false, grantedScopes: [] })).toBe(false);
+    });
+
+    it('shows the nav entry as soon as Google is connected, even before consent', () => {
+      // Gated on connection only — the pane shows the inline "Enable Drive"
+      // affordance when the drive.file scope is missing.
+      expect(shouldShowDriveNav({ connected: true, grantedScopes: [] })).toBe(true);
+      expect(shouldShowDriveNav({ connected: true, grantedScopes: [DRIVE_FILE_SCOPE] })).toBe(true);
     });
   });
 });

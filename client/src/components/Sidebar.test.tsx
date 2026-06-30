@@ -149,6 +149,31 @@ describe('Sidebar — global Sheets nav (per-user Google surface)', () => {
   });
 });
 
+describe('Sidebar — global Drive nav (per-user Google surface)', () => {
+  it('hides the Drive entry when the Google account is not connected', () => {
+    render(<Sidebar {...buildProps({ googleDriveNavVisible: false })} />);
+    expect(screen.queryByTestId('sidebar-global-drive')).not.toBeInTheDocument();
+  });
+
+  it('shows the Drive entry and navigates to the global drive view when connected', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ googleDriveNavVisible: true, onNavigate })} />);
+    const driveNav = screen.getByTestId('sidebar-global-drive');
+    expect(driveNav).toBeInTheDocument();
+    // It navigates to the global 'drive' view, not a project-scoped route.
+    fireEvent.click(driveNav);
+    expect(onNavigate).toHaveBeenCalledWith('drive');
+  });
+
+  it('never nests Drive inside a per-project block (no per-project Drive tab)', () => {
+    render(<Sidebar {...buildProps({ googleDriveNavVisible: true })} />);
+    // Exactly one Drive entry exists, and it lives in the global tier — there is
+    // no per-project Drive tab/browser.
+    expect(screen.getAllByTestId('sidebar-global-drive')).toHaveLength(1);
+    expect(screen.queryByText('Drive', { selector: 'a' })).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — bulk clear affordance', () => {
   it('renders a single "Clear pushed" button and no "Clear merged" button', () => {
     render(<Sidebar {...buildProps()} />);

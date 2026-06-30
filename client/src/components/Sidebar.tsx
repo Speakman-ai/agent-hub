@@ -10,6 +10,7 @@ import {
   CalendarDays,
   Mail,
   FileSpreadsheet,
+  HardDrive,
   List,
   ListOrdered,
   Monitor,
@@ -117,6 +118,10 @@ export default function Sidebar({
    *  Sheets nav entry (under Dashboard) is shown. Sheets is NOT a per-project
    *  surface. */
   googleSheetsNavVisible = false,
+  /** When true, the per-user Google account is connected, so the global
+   *  Drive nav entry (under Dashboard) is shown. Drive is NOT a per-project
+   *  surface. */
+  googleDriveNavVisible = false,
   deploymentsProjectId,
   replaysProjectId,
   securityProjectId,
@@ -545,6 +550,26 @@ export default function Sidebar({
             >
               <FileSpreadsheet size={14} className="flex-shrink-0" />
               <span className="flex-1 truncate text-sm font-medium">Sheets</span>
+            </button>
+          )}
+
+          {/* Global Drive — a per-USER Google surface, not project-scoped. Sits
+              in the Dashboard tier and only appears when the user's Google
+              account is connected (`/api/auth/google/status` connected=true).
+              When not connected, the connect affordance lives in
+              Settings -> Account. */}
+          {googleDriveNavVisible && (
+            <button
+              onClick={() => onNavigate('drive')}
+              data-testid="sidebar-global-drive"
+              className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
+                currentView === 'drive'
+                  ? 'bg-gray-800 text-white'
+                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+              }`}
+            >
+              <HardDrive size={14} className="flex-shrink-0" />
+              <span className="flex-1 truncate text-sm font-medium">Drive</span>
             </button>
           )}
 

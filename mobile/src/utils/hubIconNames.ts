@@ -9,6 +9,7 @@ export const HUB_ICON_NAMES = [
     'Bot',
     'CalendarDays',
     'FileSpreadsheet',
+    'HardDrive',
     'ChevronDown',
     'ChevronRight',
     'Clock',
