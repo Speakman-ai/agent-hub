@@ -25,6 +25,7 @@ import {
   setEnvironmentCurrentRef,
   recordDeploymentApproval,
   listDeploymentApprovals,
+  resolveDeploymentReleaseCandidates,
 } from './deployment-store.js';
 import { createSupportTicket } from '../support-tickets-store.js';
 
@@ -49,6 +50,7 @@ function insertReleaseCard(
     cardId?: string;
     supportTicketId?: string | null;
     customerReportId?: string | null;
+    columnName?: string;
   } = {},
 ): string {
   const projectId = args.projectId ?? P;
@@ -64,7 +66,7 @@ function insertReleaseCard(
   db.prepare('INSERT INTO kanban_columns (id, board_id, name, position) VALUES (?, ?, ?, ?)').run(
     columnId,
     boardId,
-    'Done',
+    args.columnName ?? 'Done',
     0,
   );
   db.prepare(
@@ -335,6 +337,46 @@ describe('deployment release items', () => {
 
     expect(second.id).toBe(first.id);
     expect(listDeploymentReleaseItems(d.id)).toHaveLength(1);
+  });
+
+  it('resolves release candidates for cards in a renamed Done column', () => {
+    // Regression for card #1257: releaseCardLookupSql used an exact `col.name = 'Done'`
+    // match, so support tickets on cards in a renamed Done column never linked and the
+    // reporter's release-notification email never queued. Done-ness must mirror
+    // isColumnDone() (case-insensitive substring) for these to resolve.
+    for (const columnName of ['done', 'DONE', 'Done ✅', 'Deployed / Done']) {
+      const ticket = createSupportTicket({ projectId: P, body: `bug for ${columnName}` });
+      const cardId = insertReleaseCard({
+        cardId: `card-${columnName.replace(/[^a-z0-9]/gi, '')}`,
+        supportTicketId: ticket.id,
+        columnName,
+      });
+
+      const { candidates } = resolveDeploymentReleaseCandidates({
+        projectId: P,
+        cardIds: [cardId],
+      });
+
+      const candidate = candidates.find((c) => c.cardId === cardId);
+      expect(candidate, `column "${columnName}" should resolve`).toBeDefined();
+      expect(candidate?.supportTicketId).toBe(ticket.id);
+    }
+  });
+
+  it('does not treat a non-Done column as a release candidate', () => {
+    const ticket = createSupportTicket({ projectId: P, body: 'still in progress' });
+    const cardId = insertReleaseCard({
+      cardId: 'card-in-progress',
+      supportTicketId: ticket.id,
+      columnName: 'In Progress',
+    });
+
+    const { candidates } = resolveDeploymentReleaseCandidates({
+      projectId: P,
+      cardIds: [cardId],
+    });
+
+    expect(candidates.find((c) => c.cardId === cardId)).toBeUndefined();
   });
 
   it('derives linked support tickets from the card relationship', () => {

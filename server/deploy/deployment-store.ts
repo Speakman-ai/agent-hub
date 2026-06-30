@@ -194,7 +194,12 @@ function releaseCardLookupSql(whereSql: string): string {
        AND b.project_id = ?
       JOIN kanban_columns col
         ON col.id = c.column_id
-       AND col.name = 'Done'
+       -- Done-ness mirrors isColumnDone() (kanban-blockers.ts): a case-insensitive
+       -- substring match on "done", not an exact "Done". Operators rename the Done
+       -- column freely ("done", "Done ✅", "Deployed / Done"); an exact match here
+       -- silently failed to resolve those cards' support tickets, so release-notification
+       -- emails never queued for the reporter (see card #1257).
+       AND lower(col.name) LIKE '%done%'
  LEFT JOIN support_tickets st
         ON st.project_id = b.project_id
        AND st.converted_card_id = c.id
