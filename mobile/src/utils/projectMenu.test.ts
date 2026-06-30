@@ -8,6 +8,7 @@ describe('projectLifecycleEntries', () => {
         expect(keys).toContain('board');
         expect(keys).toContain('epics');
         expect(keys).toContain('deployments');
+        expect(keys).toContain('calendar');
         expect(keys).toContain('threads');
         expect(keys).toContain('support');
         expect(keys).toContain('security');
@@ -21,6 +22,14 @@ describe('projectLifecycleEntries', () => {
             label: 'Deployments',
             icon: 'Cloud',
             screen: 'Deployments',
+        });
+    });
+    it('exposes Calendar as a lifecycle destination', () => {
+        const entry = projectLifecycleEntries({}).find((e: any) => e.key === 'calendar');
+        expect(entry).toMatchObject({
+            label: 'Calendar',
+            icon: 'CalendarDays',
+            screen: 'Calendar',
         });
     });
     it('adds Repository when gitHost is agenthub', () => {

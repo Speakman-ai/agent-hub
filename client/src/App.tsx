@@ -65,6 +65,7 @@ import WikiBrowser from './components/WikiBrowser';
 import ThreadList from './components/ThreadList';
 import ThreadView from './components/ThreadView';
 import CustomerSupportPage from './components/CustomerSupportPage';
+import CalendarAgendaPage from './components/CalendarAgendaPage';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -461,6 +462,9 @@ export default function App({ initialView }: any = {}) {
   const [supportTicketId, setSupportTicketId] = useState<any>(
     initialNavigation.view === 'support' ? initialNavigation.ticketId || null : null,
   );
+  const [calendarProjectId, setCalendarProjectId] = useState<any>(
+    initialNavigation.view === 'calendar' ? initialNavigation.projectId || null : null,
+  );
   const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
     initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
   );
@@ -744,6 +748,8 @@ export default function App({ initialView }: any = {}) {
         return threadsProjectId;
       case 'support':
         return supportProjectId;
+      case 'calendar':
+        return calendarProjectId;
       case 'deployments':
         return deploymentsProjectId;
       case 'replays':
@@ -756,6 +762,7 @@ export default function App({ initialView }: any = {}) {
   }, [
     currentView,
     deploymentsProjectId,
+    calendarProjectId,
     notesProjectId,
     pullsProjectId,
     replaysProjectId,
@@ -785,6 +792,7 @@ export default function App({ initialView }: any = {}) {
       setSupportProjectId(route?.projectId || null);
       setSupportTicketId(route?.ticketId || null);
     }
+    if (view === 'calendar') setCalendarProjectId(route?.projectId || null);
     if (view === 'deployments') setDeploymentsProjectId(route?.projectId || null);
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
@@ -4949,12 +4957,14 @@ export default function App({ initialView }: any = {}) {
     if (currentView === 'pulls' && pullsProjectId) return pullsProjectId;
     if (currentView === 'threads' && threadsProjectId) return threadsProjectId;
     if (currentView === 'support' && supportProjectId) return supportProjectId;
+    if (currentView === 'calendar' && calendarProjectId) return calendarProjectId;
     if (currentView === 'replays' && replaysProjectId) return replaysProjectId;
     if (currentView === 'security' && securityProjectId) return securityProjectId;
     const byAgent = projects.find((p: any) => p.agents?.some((a: any) => a.id === activeAgentId));
     return byAgent?.id || projects[0]?.id || null;
   }, [
     currentView,
+    calendarProjectId,
     workflowEditRoute,
     projectMenuRoute,
     wikiProjectId,
@@ -5243,6 +5253,7 @@ export default function App({ initialView }: any = {}) {
                 // Opening support from the sidebar is not a ticket deep-link.
                 setSupportTicketId(null);
               }
+              if (view === 'calendar' && extra) setCalendarProjectId(extra);
               if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
               if (view === 'replays' && extra) setReplaysProjectId(extra);
               if (view === 'security' && extra) setSecurityProjectId(extra);
@@ -5263,6 +5274,7 @@ export default function App({ initialView }: any = {}) {
             reviewerProjectId={reviewerProjectId}
             threadsProjectId={threadsProjectId}
             supportProjectId={supportProjectId}
+            calendarProjectId={calendarProjectId}
             deploymentsProjectId={deploymentsProjectId}
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
@@ -5660,6 +5672,11 @@ export default function App({ initialView }: any = {}) {
                   initialTicketId={supportTicketId}
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
+                />
+              ) : currentView === 'calendar' && calendarProjectId ? (
+                <CalendarAgendaPage
+                  projectId={calendarProjectId}
+                  onOpenAccountSettings={() => setCurrentView('settings:account')}
                 />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage

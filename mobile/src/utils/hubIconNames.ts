@@ -7,6 +7,7 @@ export const HUB_ICON_NAMES = [
     'BarChart3',
     'BookOpen',
     'Bot',
+    'CalendarDays',
     'ChevronDown',
     'ChevronRight',
     'Clock',

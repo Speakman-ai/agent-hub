@@ -15,6 +15,7 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'pulls',
   'threads',
   'support',
+  'calendar',
   'deployments',
   'replays',
   'security',

@@ -417,6 +417,30 @@ export const api = {
         return fetchJSON(`/auth/google/start${qs ? `?${qs}` : ''}`);
     },
     disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
+    listGoogleCalendarEvents: ({ calendarId, timeMin, timeMax, timeZone, maxResults, pageToken, q, }: any) => {
+        const params = new URLSearchParams();
+        if (calendarId)
+            params.set('calendarId', calendarId);
+        params.set('timeMin', timeMin);
+        params.set('timeMax', timeMax);
+        if (timeZone)
+            params.set('timeZone', timeZone);
+        if (maxResults)
+            params.set('maxResults', String(maxResults));
+        if (pageToken)
+            params.set('pageToken', pageToken);
+        if (q)
+            params.set('q', q);
+        return fetchJSON(`/google/calendar/events?${params.toString()}`);
+    },
+    createGoogleCalendarEvent: (data: any) => fetchJSON('/google/calendar/events', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
+    updateGoogleCalendarEvent: (eventId: any, data: any) => fetchJSON(`/google/calendar/events/${encodeURIComponent(eventId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+    }),
     // Per-user engine/model overrides per agent.
     getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
     putMyAgentEngineOverride: (agentId: any, data: any) => fetchJSON(`/auth/me/agent-engine-overrides/${agentId}`, {

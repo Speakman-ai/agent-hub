@@ -7,6 +7,7 @@ import {
   Trash2,
   GitFork,
   ExternalLink,
+  CalendarDays,
   List,
   ListOrdered,
   Monitor,
@@ -102,6 +103,7 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   supportProjectId,
+  calendarProjectId,
   deploymentsProjectId,
   replaysProjectId,
   securityProjectId,
@@ -760,6 +762,17 @@ export default function Sidebar({
                               <span className="truncate">Deployments</span>
                             </button>
                           )}
+
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('calendar', project.id)}
+                            className={projectMenuLinkClass(
+                              currentView === 'calendar' && calendarProjectId === project.id,
+                            )}
+                          >
+                            <CalendarDays size={14} className="flex-shrink-0" />
+                            <span className="truncate">Calendar</span>
+                          </button>
 
                           <button
                             type="button"

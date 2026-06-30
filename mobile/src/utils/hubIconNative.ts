@@ -15,6 +15,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
     BarChart3: { family: 'feather', name: 'bar-chart-2' },
     BookOpen: { family: 'feather', name: 'book-open' },
     Bot: { family: 'material', name: 'robot' },
+    CalendarDays: { family: 'feather', name: 'calendar' },
     ChevronDown: { family: 'feather', name: 'chevron-down' },
     ChevronRight: { family: 'feather', name: 'chevron-right' },
     Clock: { family: 'feather', name: 'clock' },

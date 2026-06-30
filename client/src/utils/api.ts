@@ -182,6 +182,32 @@ export const api = {
     return fetchJSON<{ authorizeUrl: string }>(`/auth/google/start${qs ? `?${qs}` : ''}`);
   },
   disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
+  listGoogleCalendarEvents: ({
+    calendarId,
+    timeMin,
+    timeMax,
+    timeZone,
+    maxResults,
+    pageToken,
+    q,
+  }: any) => {
+    const params = new URLSearchParams();
+    if (calendarId) params.set('calendarId', calendarId);
+    params.set('timeMin', timeMin);
+    params.set('timeMax', timeMax);
+    if (timeZone) params.set('timeZone', timeZone);
+    if (maxResults) params.set('maxResults', String(maxResults));
+    if (pageToken) params.set('pageToken', pageToken);
+    if (q) params.set('q', q);
+    return fetchJSON(`/google/calendar/events?${params.toString()}`);
+  },
+  createGoogleCalendarEvent: (data: any) =>
+    fetchJSON('/google/calendar/events', { method: 'POST', body: JSON.stringify(data) }),
+  updateGoogleCalendarEvent: (eventId: any, data: any) =>
+    fetchJSON(`/google/calendar/events/${encodeURIComponent(eventId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
   getProjectSecrets: (projectId: any) => fetchJSON(`/projects/${projectId}/secrets`),
   putProjectSecrets: (projectId: any, secrets: any) =>
     fetchJSON(`/projects/${projectId}/secrets`, {
