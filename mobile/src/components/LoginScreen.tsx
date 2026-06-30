@@ -203,7 +203,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.inputLabel}>{mfaMode === 'recovery' ? 'Recovery code' : 'Authenticator code'}</Text>
-                <TextInput style={styles.textInput} value={mfaCode} onChangeText={setMfaCode} placeholder={mfaMode === 'recovery' ? 'Recovery code' : '123456'} placeholderTextColor={colors.gray500} autoCapitalize="none" autoCorrect={false} keyboardType={mfaMode === 'recovery' ? 'default' : 'number-pad'} autoComplete="one-time-code" testID="login-mfa-code"/>
+                <TextInput style={styles.textInput} value={mfaCode} onChangeText={setMfaCode} placeholder={mfaMode === 'recovery' ? 'Recovery code' : '123456'} placeholderTextColor={colors.gray500} autoCapitalize="none" autoCorrect={false} keyboardType={mfaMode === 'recovery' ? 'default' : 'number-pad'} autoComplete="one-time-code" textContentType="oneTimeCode" testID="login-mfa-code"/>
                 <TouchableOpacity onPress={() => {
                 setPendingMfa(null);
                 setMfaCode('');

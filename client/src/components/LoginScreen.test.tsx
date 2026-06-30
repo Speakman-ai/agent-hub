@@ -97,6 +97,41 @@ describe('LoginScreen', () => {
     expect(onAuthenticated).toHaveBeenCalledTimes(1);
   });
 
+  it('exposes password-manager autofill hints on the MFA code field', async () => {
+    // Regression: Bitwarden/1Password did not recognize the authenticator field
+    // because it only carried autocomplete=one-time-code with no name matching
+    // a strong TOTP keyword. The name must hit Bitwarden's TotpFieldNames list
+    // (e.g. "totp"/"totpcode") in TOTP mode and not claim to be a TOTP field in
+    // recovery mode.
+    (getAuthStatus as any).mockResolvedValue({
+      authConfigured: true,
+      email: 'owner@example.com',
+      needsEmailUpdate: false,
+    });
+    (login as any).mockResolvedValue({
+      mfaRequired: true,
+      challengeId: 'mfa_123',
+      expiresAt: '2026-06-29T12:05:00.000Z',
+    });
+
+    const { container } = render(<LoginScreen onAuthenticated={vi.fn()} />);
+    await screen.findByText(/Sign in to Agent Hub/i);
+    const inputs = container.querySelectorAll('input');
+    fireEvent.change(inputs[0], { target: { value: 'owner@example.com' } });
+    fireEvent.change(inputs[1], { target: { value: 'correct-password' } });
+    fireEvent.submit(inputs[1].closest('form')!);
+
+    const totpField = (await screen.findByLabelText(/Authenticator code/i)) as HTMLInputElement;
+    expect(totpField.getAttribute('autocomplete')).toBe('one-time-code');
+    expect(totpField.getAttribute('inputmode')).toBe('numeric');
+    // name must contain a strong Bitwarden TOTP keyword so autofill fires.
+    expect(totpField.getAttribute('name')?.toLowerCase()).toContain('totp');
+
+    fireEvent.click(screen.getByRole('button', { name: /Recovery code/i }));
+    const recoveryField = (await screen.findByLabelText(/Recovery code/i)) as HTMLInputElement;
+    expect(recoveryField.getAttribute('name')?.toLowerCase()).not.toContain('totp');
+  });
+
   it('supports recovery-code fallback and shows MFA errors without clearing the challenge', async () => {
     (getAuthStatus as any).mockResolvedValue({
       authConfigured: true,

@@ -70,6 +70,16 @@ describe('MfaSettingsPanel', () => {
     expect(screen.queryByText('code-one')).toBeNull();
   });
 
+  it('tags the action code field with password-manager autofill hints', () => {
+    // Regression: the regenerate/disable code field needs a name matching
+    // Bitwarden's strong TOTP keyword list plus autocomplete=one-time-code so
+    // 1Password/Bitwarden offer the saved authenticator code.
+    render(<MfaSettingsPanel mfaEnabled onMfaChanged={vi.fn()} />);
+    const field = screen.getByLabelText(/Authenticator or recovery code/i) as HTMLInputElement;
+    expect(field.getAttribute('autocomplete')).toBe('one-time-code');
+    expect(field.getAttribute('name')?.toLowerCase()).toContain('totp');
+  });
+
   it('regenerates recovery codes and disables MFA after a current second factor', async () => {
     (api.regenerateMfaRecoveryCodes as any).mockResolvedValue({
       ok: true,

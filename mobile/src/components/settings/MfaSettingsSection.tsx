@@ -162,6 +162,7 @@ export default function MfaSettingsSection() {
             placeholderTextColor={colors.gray600}
             keyboardType="number-pad"
             autoComplete="one-time-code"
+            textContentType="oneTimeCode"
             testID="mfa-confirm-code"
           />
           <View style={styles.actionRow}>
@@ -209,6 +210,7 @@ export default function MfaSettingsSection() {
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="one-time-code"
+            textContentType="oneTimeCode"
           />
           <View style={styles.actionRow}>
             <TouchableOpacity style={[styles.saveBtn, !normalizeMfaCode(actionCode) && { opacity: 0.4 }]} onPress={regenerate} disabled={!normalizeMfaCode(actionCode) || busy !== null}>

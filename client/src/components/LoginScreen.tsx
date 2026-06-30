@@ -167,6 +167,7 @@ export default function LoginScreen({ onAuthenticated }: any) {
                   </label>
                   <input
                     id="login-mfa-code"
+                    name={mfaMode === 'recovery' ? 'recovery-code' : 'totpCode'}
                     type="text"
                     value={mfaCode}
                     onChange={(e: any) => setMfaCode(e.target.value)}

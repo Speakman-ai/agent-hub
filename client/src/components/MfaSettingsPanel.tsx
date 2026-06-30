@@ -173,6 +173,7 @@ export default function MfaSettingsPanel({ mfaEnabled, onMfaChanged }: any) {
               </label>
               <input
                 id="mfa-confirm-code"
+                name="totpCode"
                 value={code}
                 onChange={(e: any) => setCode(e.target.value)}
                 inputMode="numeric"
@@ -240,6 +241,7 @@ export default function MfaSettingsPanel({ mfaEnabled, onMfaChanged }: any) {
             Authenticator or recovery code
             <input
               id="mfa-action-code"
+              name="totpCode"
               value={actionCode}
               onChange={(e: any) => setActionCode(e.target.value)}
               autoComplete="one-time-code"
