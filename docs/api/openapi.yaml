@@ -5185,6 +5185,121 @@ components:
         - etag
         - recurringEventId
         - hangoutLink
+    GoogleGmailErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        requiredScopes:
+          type: array
+          items:
+            type: string
+      required:
+        - error
+    GoogleGmailThreadSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        snippet:
+          type: string
+          nullable: true
+        historyId:
+          type: string
+          nullable: true
+      required:
+        - id
+        - snippet
+        - historyId
+    GoogleGmailMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        threadId:
+          type: string
+          nullable: true
+        labelIds:
+          type: array
+          items:
+            type: string
+        snippet:
+          type: string
+          nullable: true
+        historyId:
+          type: string
+          nullable: true
+        internalDate:
+          type: string
+          nullable: true
+        sizeEstimate:
+          type: number
+          nullable: true
+        from:
+          type: string
+          nullable: true
+        to:
+          type: string
+          nullable: true
+        cc:
+          type: string
+          nullable: true
+        bcc:
+          type: string
+          nullable: true
+        subject:
+          type: string
+          nullable: true
+        date:
+          type: string
+          nullable: true
+        messageIdHeader:
+          type: string
+          nullable: true
+        bodyText:
+          type: string
+          nullable: true
+        bodyHtml:
+          type: string
+          nullable: true
+      required:
+        - id
+        - threadId
+        - labelIds
+        - snippet
+        - historyId
+        - internalDate
+        - sizeEstimate
+        - from
+        - to
+        - cc
+        - bcc
+        - subject
+        - date
+        - messageIdHeader
+        - bodyText
+        - bodyHtml
+    GoogleGmailThread:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        historyId:
+          type: string
+          nullable: true
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoogleGmailMessage"
+      required:
+        - id
+        - historyId
+        - messages
     HeartbeatConfig:
       type: object
       properties:
@@ -20551,6 +20666,351 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+  /api/google/gmail/threads:
+    get:
+      tags:
+        - Google
+      summary: List Gmail threads for the calling user
+      parameters:
+        - schema:
+            type: string
+            description: Gmail search query, e.g. `from:alice is:unread`.
+            example: is:unread
+          required: false
+          description: Gmail search query, e.g. `from:alice is:unread`.
+          name: q
+          in: query
+        - schema:
+            anyOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
+            description: Restrict to threads carrying all of these label ids.
+          required: false
+          description: Restrict to threads carrying all of these label ids.
+          name: labelIds
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+          required: false
+          name: maxResults
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: pageToken
+          in: query
+        - schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+          required: false
+          name: includeSpamTrash
+          in: query
+      responses:
+        "200":
+          description: Matching thread summaries in reverse-chronological order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  threads:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleGmailThreadSummary"
+                  nextPageToken:
+                    type: string
+                    nullable: true
+                  resultSizeEstimate:
+                    type: number
+                    nullable: true
+                required:
+                  - threads
+                  - nextPageToken
+                  - resultSizeEstimate
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "403":
+          description: Required Gmail scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "429":
+          description: Gmail rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "502":
+          description: Gmail request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+  /api/google/gmail/threads/{threadId}:
+    get:
+      tags:
+        - Google
+      summary: Read a Gmail thread (with shaped messages) for the calling user
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: threadId
+          in: path
+        - schema:
+            type: string
+            enum:
+              - full
+              - metadata
+              - minimal
+          required: false
+          name: format
+          in: query
+      responses:
+        "200":
+          description: The thread and its shaped messages.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailThread"
+        "400":
+          description: Invalid thread id or query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "403":
+          description: Required Gmail scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "404":
+          description: Thread not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "429":
+          description: Gmail rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "502":
+          description: Gmail request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+  /api/google/gmail/messages:
+    post:
+      tags:
+        - Google
+      summary: Send a Gmail message as the calling user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                to:
+                  type: array
+                  items:
+                    type: string
+                    format: email
+                  minItems: 1
+                  maxItems: 50
+                cc:
+                  type: array
+                  items:
+                    type: string
+                    format: email
+                  maxItems: 50
+                bcc:
+                  type: array
+                  items:
+                    type: string
+                    format: email
+                  maxItems: 50
+                subject:
+                  type: string
+                  maxLength: 998
+                text:
+                  type: string
+                html:
+                  type: string
+                threadId:
+                  type: string
+                  minLength: 1
+                inReplyTo:
+                  type: string
+                  maxLength: 998
+                references:
+                  type: string
+                  maxLength: 998
+              required:
+                - to
+              additionalProperties: false
+      responses:
+        "201":
+          description: The sent message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailMessage"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "403":
+          description: Required Gmail send scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "429":
+          description: Gmail rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "502":
+          description: Gmail request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+  /api/google/gmail/messages/{messageId}/modify:
+    post:
+      tags:
+        - Google
+      summary: Add or remove labels on a Gmail message for the calling user
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: messageId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                addLabelIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                removeLabelIds:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+              additionalProperties: false
+      responses:
+        "200":
+          description: The updated message with refreshed label ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailMessage"
+        "400":
+          description: Invalid body or message id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "403":
+          description: Required Gmail modify scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "404":
+          description: Message not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "429":
+          description: Gmail rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "502":
+          description: Gmail request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleGmailErrorResponse"
   /api/auth/google/callback:
     get:
       tags:

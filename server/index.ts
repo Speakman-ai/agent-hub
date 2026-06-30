@@ -156,6 +156,7 @@ import createMcpServerRoutes from './routes/mcp-servers.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
 import createGoogleCalendarRoutes from './routes/google-calendar.js';
+import createGoogleGmailRoutes from './routes/google-gmail.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
@@ -1238,6 +1239,7 @@ app.use(createMcpServerRoutes());
 app.use(createGithubOAuthRoutes(routeDeps));
 app.use(createGoogleOAuthRoutes(routeDeps));
 app.use(createGoogleCalendarRoutes(routeDeps));
+app.use(createGoogleGmailRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();
