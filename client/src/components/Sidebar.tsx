@@ -161,6 +161,8 @@ export default function Sidebar({
   kanbanAssignableUsers = [],
   kanbanSelectedUserIds = new Set(),
   onKanbanSelectedUserIdsChange,
+  kanbanCollapsedColumnIds = new Set(),
+  onKanbanCollapsedColumnIdsChange,
   onOpenKanbanEpics,
   kanbanRefreshKey = 0,
 }: any) {
@@ -487,6 +489,8 @@ export default function Sidebar({
                 assignableUsers={kanbanAssignableUsers}
                 selectedUserIds={kanbanSelectedUserIds}
                 onSelectedUserIdsChange={onKanbanSelectedUserIdsChange}
+                collapsedColumnIds={kanbanCollapsedColumnIds}
+                onCollapsedColumnIdsChange={onKanbanCollapsedColumnIdsChange}
                 refreshKey={kanbanRefreshKey}
               />
             </div>

@@ -1,4 +1,9 @@
-/** Snapshot of the kanban board sidebar filters. */
+/**
+ * Snapshot of a saved kanban board "view" — every sidebar filter plus the
+ * board layout (which columns are collapsed). Named *FilterSet for historical
+ * reasons (and to keep the localStorage key stable); the user-facing concept
+ * is a "view".
+ */
 export type KanbanFilterSetSnapshot = {
   searchQuery: string;
   labelSearch?: string;
@@ -6,6 +11,8 @@ export type KanbanFilterSetSnapshot = {
   epicIds: string[];
   labels: string[];
   userIds: string[];
+  /** Ids of columns collapsed on the board when the view was saved. */
+  collapsedColumnIds?: string[];
 };
 
 export type KanbanFilterSet = KanbanFilterSetSnapshot & {
@@ -34,7 +41,8 @@ export function readFilterSets(projectId: string | null | undefined): KanbanFilt
           typeof row.searchQuery === 'string' &&
           Array.isArray(row.epicIds) &&
           Array.isArray(row.labels) &&
-          (row.userIds === undefined || Array.isArray(row.userIds)),
+          (row.userIds === undefined || Array.isArray(row.userIds)) &&
+          (row.collapsedColumnIds === undefined || Array.isArray(row.collapsedColumnIds)),
       )
       .map((row) => ({
         id: row.id,
@@ -46,6 +54,9 @@ export function readFilterSets(projectId: string | null | undefined): KanbanFilt
         labels: row.labels.filter((label: unknown) => typeof label === 'string'),
         userIds: Array.isArray(row.userIds)
           ? row.userIds.filter((id: unknown) => typeof id === 'string')
+          : [],
+        collapsedColumnIds: Array.isArray(row.collapsedColumnIds)
+          ? row.collapsedColumnIds.filter((id: unknown) => typeof id === 'string')
           : [],
         updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : new Date(0).toISOString(),
       }));
@@ -78,6 +89,7 @@ export function snapshotFromState(
   epicIds: Set<string>,
   labels: Set<string>,
   userIds: Set<string> = new Set(),
+  collapsedColumnIds: Set<string> = new Set(),
 ): KanbanFilterSetSnapshot {
   return {
     searchQuery: searchQuery.trim(),
@@ -86,6 +98,7 @@ export function snapshotFromState(
     epicIds: [...epicIds],
     labels: [...labels],
     userIds: [...userIds],
+    collapsedColumnIds: [...collapsedColumnIds],
   };
 }
 
@@ -96,6 +109,7 @@ export function applySnapshot(snapshot: KanbanFilterSetSnapshot): {
   epicIds: Set<string>;
   labels: Set<string>;
   userIds: Set<string>;
+  collapsedColumnIds: Set<string>;
 } {
   return {
     searchQuery: snapshot.searchQuery,
@@ -104,6 +118,7 @@ export function applySnapshot(snapshot: KanbanFilterSetSnapshot): {
     epicIds: new Set(snapshot.epicIds),
     labels: new Set(snapshot.labels),
     userIds: new Set(snapshot.userIds ?? []),
+    collapsedColumnIds: new Set(snapshot.collapsedColumnIds ?? []),
   };
 }
 
@@ -114,7 +129,8 @@ export function isEmptySnapshot(snapshot: KanbanFilterSetSnapshot): boolean {
     !(snapshot.userSearch ?? '').trim() &&
     snapshot.epicIds.length === 0 &&
     snapshot.labels.length === 0 &&
-    snapshot.userIds.length === 0
+    snapshot.userIds.length === 0 &&
+    (snapshot.collapsedColumnIds ?? []).length === 0
   );
 }
 
@@ -132,7 +148,10 @@ export function filterSetsEqual(a: KanbanFilterSetSnapshot, b: KanbanFilterSetSn
   }
   const userA = [...a.userIds].sort();
   const userB = [...b.userIds].sort();
-  return userA.length === userB.length && userA.every((id, i) => id === userB[i]);
+  if (userA.length !== userB.length || userA.some((id, i) => id !== userB[i])) return false;
+  const colA = [...(a.collapsedColumnIds ?? [])].sort();
+  const colB = [...(b.collapsedColumnIds ?? [])].sort();
+  return colA.length === colB.length && colA.every((id, i) => id === colB[i]);
 }
 
 function newFilterSetId(): string {
@@ -150,10 +169,10 @@ export function saveFilterSet(
 ): KanbanFilterSet[] {
   const trimmedName = name.trim();
   if (!trimmedName) {
-    throw new Error('Filter name is required');
+    throw new Error('View name is required');
   }
   if (isEmptySnapshot(snapshot)) {
-    throw new Error('Add at least one filter before saving');
+    throw new Error('Change a filter or column before saving');
   }
 
   const existing = readFilterSets(projectId);
@@ -174,6 +193,7 @@ export function saveFilterSet(
             epicIds: [...snapshot.epicIds],
             labels: [...snapshot.labels],
             userIds: [...snapshot.userIds],
+            collapsedColumnIds: [...(snapshot.collapsedColumnIds ?? [])],
             updatedAt: now,
           }
         : set,
@@ -190,6 +210,7 @@ export function saveFilterSet(
         epicIds: [...snapshot.epicIds],
         labels: [...snapshot.labels],
         userIds: [...snapshot.userIds],
+        collapsedColumnIds: [...(snapshot.collapsedColumnIds ?? [])],
         updatedAt: now,
       },
     ];

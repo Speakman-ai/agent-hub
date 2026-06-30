@@ -798,6 +798,8 @@ export default function KanbanBoard({
   selectedUserIds = new Set(),
   assignableUsers = [],
   onAssignableUsersChange,
+  collapsedColumnIds: collapsedColumnIdsProp,
+  onCollapsedColumnIdsChange,
   onOpenEpics,
   onOpenTemplates,
 }: any) {
@@ -857,8 +859,30 @@ export default function KanbanBoard({
   const [columnDialog, setColumnDialog] = useState<any>(null); // null | { mode: 'create' } | { mode: 'edit', column }
   const [columnBusy, setColumnBusy] = useState(false);
   const [columnError, setColumnError] = useState<string | null>(null);
-  const [collapsedColumnIds, setCollapsedColumnIds] = useState<Set<string>>(() =>
+  // Collapsed columns can be controlled by the parent (App lifts this state so
+  // the sidebar "Views" panel can capture/restore it). When the controlled prop
+  // is absent we fall back to internal state + localStorage so the board still
+  // works standalone (e.g. in tests).
+  const collapsedControlled = collapsedColumnIdsProp !== undefined;
+  const [internalCollapsedColumnIds, setInternalCollapsedColumnIds] = useState<Set<string>>(() =>
     readCollapsedColumnIds(projectId),
+  );
+  const collapsedColumnIds: Set<string> = collapsedControlled
+    ? collapsedColumnIdsProp
+    : internalCollapsedColumnIds;
+  const updateCollapsedColumnIds = useCallback(
+    (updater: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+      if (collapsedControlled) {
+        const next =
+          typeof updater === 'function'
+            ? (updater as (prev: Set<string>) => Set<string>)(collapsedColumnIdsProp)
+            : updater;
+        if (next !== collapsedColumnIdsProp) onCollapsedColumnIdsChange?.(next);
+      } else {
+        setInternalCollapsedColumnIds(updater);
+      }
+    },
+    [collapsedControlled, collapsedColumnIdsProp, onCollapsedColumnIdsChange],
   );
 
   const closeColumnDialog = useCallback(() => {
@@ -972,35 +996,43 @@ export default function KanbanBoard({
   /** Engine→valid models map from GET /api/config/models (optional model on card assign + epic autonomous). */
   const [modelConfig, setModelConfig] = useState<any>(null);
 
+  // Re-seed + persist only when uncontrolled. In controlled mode the parent
+  // (App) owns seeding from and writing to localStorage.
   useEffect(() => {
-    setCollapsedColumnIds(readCollapsedColumnIds(projectId));
-  }, [projectId]);
+    if (collapsedControlled) return;
+    setInternalCollapsedColumnIds(readCollapsedColumnIds(projectId));
+  }, [projectId, collapsedControlled]);
 
   const hasLoadedProjectColumns = Boolean(board?.project_id === projectId && columns.length > 0);
 
   useEffect(() => {
+    if (collapsedControlled) return;
     if (!hasLoadedProjectColumns) return;
     writeCollapsedColumnIds(projectId, collapsedColumnIds);
-  }, [projectId, collapsedColumnIds, hasLoadedProjectColumns]);
+  }, [projectId, collapsedColumnIds, hasLoadedProjectColumns, collapsedControlled]);
 
+  // Drop ids for columns that no longer exist. Runs in both modes; a no-op
+  // returns the same Set reference so the parent is never notified spuriously.
   useEffect(() => {
     if (!hasLoadedProjectColumns) return;
-    setCollapsedColumnIds((prev) =>
-      pruneCollapsedColumnIds(
-        prev,
-        columns.map((c: any) => c.id),
-      ),
+    const pruned = pruneCollapsedColumnIds(
+      collapsedColumnIds,
+      columns.map((c: any) => c.id),
     );
-  }, [columns, hasLoadedProjectColumns]);
+    if (pruned !== collapsedColumnIds) updateCollapsedColumnIds(pruned);
+  }, [columns, hasLoadedProjectColumns, collapsedColumnIds, updateCollapsedColumnIds]);
 
-  const toggleColumnCollapsed = useCallback((columnId: string) => {
-    setCollapsedColumnIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(columnId)) next.delete(columnId);
-      else next.add(columnId);
-      return next;
-    });
-  }, []);
+  const toggleColumnCollapsed = useCallback(
+    (columnId: string) => {
+      updateCollapsedColumnIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(columnId)) next.delete(columnId);
+        else next.add(columnId);
+        return next;
+      });
+    },
+    [updateCollapsedColumnIds],
+  );
 
   useEffect(() => {
     if (typeof api.getModelConfig !== 'function') return;

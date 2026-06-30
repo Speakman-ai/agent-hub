@@ -2118,3 +2118,70 @@ describe('KanbanBoard epics toolbar', () => {
     expect(onSelectedEpicIdsChange).not.toHaveBeenCalled();
   });
 });
+
+describe('KanbanBoard collapsed-column wiring (controlled vs uncontrolled)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    (api.getBoard as any).mockReset();
+    (api.get as any).mockReset();
+    (api.get as any).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  const STORAGE_KEY = 'kanbanCollapsedColumns:p1';
+
+  it('controlled mode: a toggle notifies the parent and does NOT write localStorage', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 1, title: 'Card A', column_id: 'col-todo', position: 0 }]),
+    );
+    const onCollapsedColumnIdsChange = vi.fn();
+
+    render(
+      <KanbanBoard
+        projectId="p1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        collapsedColumnIds={new Set()}
+        onCollapsedColumnIdsChange={onCollapsedColumnIdsChange}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('column-collapse-col-todo')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('column-collapse-col-todo'));
+
+    // Parent is notified with the next layout...
+    expect(onCollapsedColumnIdsChange).toHaveBeenCalledTimes(1);
+    const next = onCollapsedColumnIdsChange.mock.calls[0][0] as Set<string>;
+    expect(next.has('col-todo')).toBe(true);
+    // ...and the board does NOT persist directly in controlled mode (App owns it).
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it('uncontrolled mode: a toggle falls back to internal state + localStorage', async () => {
+    (api.getBoard as any).mockResolvedValue(
+      makeBoard([{ id: 1, title: 'Card A', column_id: 'col-todo', position: 0 }]),
+    );
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+
+    await waitFor(() => expect(screen.getByTestId('column-collapse-col-todo')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('column-collapse-col-todo'));
+
+    // The column reflects the collapsed state from internal state...
+    await waitFor(() =>
+      expect(screen.getByTestId('kanban-column-col-todo').getAttribute('data-collapsed')).toBe(
+        'true',
+      ),
+    );
+    // ...and the layout is persisted to localStorage.
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      expect(stored).toContain('col-todo');
+    });
+  });
+});

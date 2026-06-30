@@ -38,6 +38,9 @@ type KanbanSidebarEpicsPanelProps = {
   assignableUsers?: AssignableUser[];
   selectedUserIds?: Set<string>;
   onSelectedUserIdsChange?: (userIds: Set<string>) => void;
+  /** Ids of columns currently collapsed on the board. Captured into saved views. */
+  collapsedColumnIds?: Set<string>;
+  onCollapsedColumnIdsChange?: (ids: Set<string>) => void;
   refreshKey?: number;
 };
 
@@ -61,6 +64,8 @@ export default function KanbanSidebarEpicsPanel({
   assignableUsers = [],
   selectedUserIds = new Set(),
   onSelectedUserIdsChange,
+  collapsedColumnIds = new Set(),
+  onCollapsedColumnIdsChange,
   refreshKey,
 }: KanbanSidebarEpicsPanelProps) {
   const [epics, setEpics] = useState<SidebarEpic[]>([]);
@@ -135,8 +140,17 @@ export default function KanbanSidebarEpicsPanel({
         selectedEpicIds,
         selectedLabels,
         selectedUserIds,
+        collapsedColumnIds,
       ),
-    [searchQuery, labelSearch, userSearch, selectedEpicIds, selectedLabels, selectedUserIds],
+    [
+      searchQuery,
+      labelSearch,
+      userSearch,
+      selectedEpicIds,
+      selectedLabels,
+      selectedUserIds,
+      collapsedColumnIds,
+    ],
   );
 
   const activeSavedFilter = useMemo(
@@ -164,8 +178,15 @@ export default function KanbanSidebarEpicsPanel({
       onSelectedEpicIdsChange(new Set(next.epicIds));
       onSelectedLabelsChange?.(new Set(next.labels));
       onSelectedUserIdsChange?.(new Set(next.userIds));
+      onCollapsedColumnIdsChange?.(new Set(next.collapsedColumnIds));
     },
-    [onSearchChange, onSelectedEpicIdsChange, onSelectedLabelsChange, onSelectedUserIdsChange],
+    [
+      onSearchChange,
+      onSelectedEpicIdsChange,
+      onSelectedLabelsChange,
+      onSelectedUserIdsChange,
+      onCollapsedColumnIdsChange,
+    ],
   );
 
   const handleSaveCurrentFilter = () => {
@@ -221,7 +242,7 @@ export default function KanbanSidebarEpicsPanel({
         <div className="mb-4 px-1" data-testid="kanban-sidebar-saved-filters">
           <div className="flex items-center gap-1.5 mb-2 px-1 text-xs font-semibold text-gray-500 uppercase tracking-wider">
             <Bookmark size={12} />
-            Saved filters
+            Views
           </div>
           <ul className="mb-2 max-h-[120px] overflow-y-auto kanban-column-scroll rounded-xl border border-white/[0.06] bg-white/[0.02]">
             {savedFilters.map((filter) => {
@@ -264,7 +285,7 @@ export default function KanbanSidebarEpicsPanel({
               type="text"
               value={saveFilterName}
               onChange={(e) => setSaveFilterName(e.target.value)}
-              placeholder="Filter name"
+              placeholder="View name"
               data-testid="kanban-sidebar-save-filter-name"
               className="w-full h-8 px-3 rounded-lg bg-gray-900 border border-gray-700 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-gray-500"
             />
@@ -300,12 +321,12 @@ export default function KanbanSidebarEpicsPanel({
             data-testid="kanban-sidebar-save-filter"
             title={
               canSaveCurrentFilter
-                ? 'Save the current search, epic, label, and lead-user filters'
-                : 'Add a search term, epic, label, or lead-user filter before saving'
+                ? 'Save the current filters and column layout as a view'
+                : 'Change a filter or collapse a column before saving a view'
             }
             className="w-full h-8 rounded-lg text-xs font-medium text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Save current filter…
+            Save current view…
           </button>
         )}
       </div>

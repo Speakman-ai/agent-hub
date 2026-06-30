@@ -27,4 +27,14 @@ describe('kanbanColumnCollapse', () => {
     const pruned = pruneCollapsedColumnIds(new Set(['a', 'b', 'gone']), ['a', 'b']);
     expect(pruned).toEqual(new Set(['a', 'b']));
   });
+
+  // Load-bearing invariant: a no-op prune MUST return the SAME Set reference.
+  // KanbanBoard's controlled mode notifies its parent only when the pruned set
+  // !== the current one; if prune returned a new-but-equal Set on a no-op, the
+  // parent setState → re-render → prune → notify cycle would loop forever.
+  it('returns the same Set reference when nothing is pruned', () => {
+    const set = new Set(['a', 'b']);
+    expect(pruneCollapsedColumnIds(set, ['a', 'b'])).toBe(set);
+    expect(pruneCollapsedColumnIds(set, ['a', 'b', 'c'])).toBe(set);
+  });
 });

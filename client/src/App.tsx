@@ -89,6 +89,7 @@ import { useVersionCheck } from './hooks/useVersionCheck';
 import useReadback from './hooks/useReadback';
 import { fetchDesktopUpdateHealth } from './utils/desktopUpdateCheck';
 import { api } from './utils/api';
+import { readCollapsedColumnIds, writeCollapsedColumnIds } from './utils/kanbanColumnCollapse';
 import { isWorkflowProject } from './utils/projectMode';
 import { mapDelegationRowsToLiveShape } from './utils/delegationsHydrate';
 import { coalescePromiseByKey } from './utils/coalesceInFlight';
@@ -516,6 +517,12 @@ export default function App({ initialView }: any = {}) {
     { id: string; username: string }[]
   >([]);
   const [kanbanSelectedUserIds, setKanbanSelectedUserIds] = useState<Set<string>>(() => new Set());
+  // Collapsed (hidden) board columns, lifted here so the board and the sidebar
+  // "Views" panel share one source of truth — saving/applying a view captures
+  // and restores the column layout alongside the filters.
+  const [kanbanCollapsedColumnIds, setKanbanCollapsedColumnIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [kanbanPendingCreateTemplate, setKanbanPendingCreateTemplate] = useState<any>(null);
   const kanbanProjectId = currentView.startsWith('kanban:') ? currentView.slice(7) : null;
   const kanbanContextProjectId =
@@ -546,6 +553,31 @@ export default function App({ initialView }: any = {}) {
     }
     previousKanbanProjectIdRef.current = kanbanContextProjectId;
   }, [kanbanContextProjectId, resetKanbanViewState]);
+
+  // Seed the collapsed-column layout from localStorage whenever the active
+  // board project changes (read-only — writes go through the apply helper so we
+  // never clobber a project's layout under another project's key on switch).
+  // useLayoutEffect (not useEffect) so the seeded layout is committed before the
+  // browser paints the board: a plain effect runs after paint, which would flash
+  // the previous project's column layout (or all-expanded) for one frame on
+  // switch. The synchronous-blocking cost is trivial here (one localStorage read
+  // + a setState), so layout-effect timing is the right trade-off.
+  useLayoutEffect(() => {
+    setKanbanCollapsedColumnIds(
+      kanbanProjectId ? readCollapsedColumnIds(kanbanProjectId) : new Set(),
+    );
+  }, [kanbanProjectId]);
+
+  // Single writer for the collapsed-column layout: updates the shared state and
+  // persists it. Driven by board column toggles and "apply view" from the
+  // sidebar Views panel.
+  const applyKanbanCollapsedColumnIds = useCallback(
+    (next: Set<string>) => {
+      setKanbanCollapsedColumnIds(next);
+      if (kanbanProjectId) writeCollapsedColumnIds(kanbanProjectId, next);
+    },
+    [kanbanProjectId],
+  );
   const activeDesignIdRef = useRef(activeDesignId);
   activeDesignIdRef.current = activeDesignId;
 
@@ -5245,6 +5277,8 @@ export default function App({ initialView }: any = {}) {
             kanbanAssignableUsers={kanbanAssignableUsers}
             kanbanSelectedUserIds={kanbanSelectedUserIds}
             onKanbanSelectedUserIdsChange={setKanbanSelectedUserIds}
+            kanbanCollapsedColumnIds={kanbanCollapsedColumnIds}
+            onKanbanCollapsedColumnIdsChange={applyKanbanCollapsedColumnIds}
             onOpenKanbanEpics={() => {
               const projectId = currentView.split(':')[1];
               setCurrentView(`epics:${projectId}`);
@@ -5346,6 +5380,8 @@ export default function App({ initialView }: any = {}) {
                   selectedUserIds={kanbanSelectedUserIds}
                   assignableUsers={kanbanAssignableUsers}
                   onAssignableUsersChange={setKanbanAssignableUsers}
+                  collapsedColumnIds={kanbanCollapsedColumnIds}
+                  onCollapsedColumnIdsChange={applyKanbanCollapsedColumnIds}
                   onOpenEpics={() => {
                     const projectId = currentView.split(':')[1];
                     setCurrentView(`epics:${projectId}`);

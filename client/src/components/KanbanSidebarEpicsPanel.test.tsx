@@ -187,4 +187,64 @@ describe('KanbanSidebarEpicsPanel', () => {
     fireEvent.click(screen.getByTestId(`kanban-sidebar-delete-filter-${saved.id}`));
     expect(readFilterSets('p1')).toEqual([]);
   });
+
+  it('restores the collapsed-column layout when a view is applied', async () => {
+    saveFilterSet('p1', 'Focus', {
+      searchQuery: '',
+      epicIds: ['e1'],
+      labels: [],
+      userIds: [],
+      collapsedColumnIds: ['col-done', 'col-review'],
+    });
+    const saved = readFilterSets('p1')[0];
+    const onCollapsedColumnIdsChange = vi.fn();
+    const onSelectedEpicIdsChange = vi.fn();
+
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set()}
+        onSelectedEpicIdsChange={onSelectedEpicIdsChange}
+        collapsedColumnIds={new Set()}
+        onCollapsedColumnIdsChange={onCollapsedColumnIdsChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId(`kanban-sidebar-saved-filter-${saved.id}`)).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId(`kanban-sidebar-saved-filter-${saved.id}`));
+
+    expect(onSelectedEpicIdsChange).toHaveBeenCalledWith(new Set(['e1']));
+    expect(onCollapsedColumnIdsChange).toHaveBeenCalledWith(new Set(['col-done', 'col-review']));
+  });
+
+  it('enables saving a view that only changes the column layout', async () => {
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set()}
+        onSelectedEpicIdsChange={vi.fn()}
+        collapsedColumnIds={new Set(['col-done'])}
+        onCollapsedColumnIdsChange={vi.fn()}
+      />,
+    );
+
+    const saveBtn = screen.getByTestId('kanban-sidebar-save-filter') as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+
+    fireEvent.click(saveBtn);
+    fireEvent.change(screen.getByTestId('kanban-sidebar-save-filter-name'), {
+      target: { value: 'Hide done' },
+    });
+    fireEvent.click(screen.getByTestId('kanban-sidebar-save-filter-confirm'));
+
+    await waitFor(() => expect(readFilterSets('p1')).toHaveLength(1));
+    expect(readFilterSets('p1')[0].collapsedColumnIds).toEqual(['col-done']);
+  });
 });
