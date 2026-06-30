@@ -557,7 +557,17 @@ function PrDetail({
   };
 
   // Re-run the backing CI run (all jobs, or one) — GitHub's re-run UX.
+  // `ci_run` only points at re-runnable push/pr-ci runs; `checks_run` is the
+  // latest run for the head regardless of trigger (Finalize included) and
+  // carries job rows so the expandable Run → Job → Step detail renders on the
+  // PR page — not just the flat check list. Fall back to ci_run for older
+  // server payloads that predate checks_run.
   const ciRun = detail?.ci_run ?? null;
+  const displayRun = detail?.checks_run ?? ciRun;
+  // Re-run / stop affordances stay gated to the re-runnable push/pr-ci run.
+  // For a Finalize run (displayRun present, ci_run null) the detailed view
+  // renders read-only — finalize re-runs go through the Finalize flow.
+  const isRerunTarget = Boolean(ciRun && displayRun && ciRun.id === displayRun.id);
   const ciRerunnable = isNative && ciRun && ciRun.status !== 'queued' && ciRun.status !== 'running';
   const handleRerunChecks = async (jobId?: any) => {
     try {
@@ -1022,22 +1032,22 @@ function PrDetail({
             </button>
           )}
         </div>
-        {ciRun && (
+        {displayRun && (
           <div className="space-y-1.5" data-testid="pr-ci-run-row">
             <RunRow
               projectId={projectId}
-              run={ciRun}
-              onRerun={ciRerunnable ? () => handleRerunChecks() : null}
-              onStop={handleStopCiRun}
+              run={displayRun}
+              onRerun={isRerunTarget && ciRerunnable ? () => handleRerunChecks() : null}
+              onStop={isRerunTarget ? handleStopCiRun : null}
             />
           </div>
         )}
-        {!ciRun && (!detail.checks || detail.checks.length === 0) && (
+        {!displayRun && (!detail.checks || detail.checks.length === 0) && (
           <p className="text-sm text-gray-500" data-testid="pr-checks-empty-note">
             {detail.checks_note || 'No checks reported.'}
           </p>
         )}
-        {!ciRun && Array.isArray(detail.checks) && detail.checks.length > 0 && (
+        {!displayRun && Array.isArray(detail.checks) && detail.checks.length > 0 && (
           <div className="bg-gray-900/40 border border-gray-800 rounded-lg overflow-hidden">
             {detail.checks.map((chk: any, i: any) => (
               <CheckRow

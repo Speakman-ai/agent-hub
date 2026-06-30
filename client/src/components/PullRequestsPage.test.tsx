@@ -241,6 +241,57 @@ describe('<PullRequestsPage /> — Resolve PR button', () => {
     expect(await screen.findByText('npm test failed')).toBeInTheDocument();
   });
 
+  it('renders the detailed run for a Finalize PR (checks_run, ci_run null) without re-run/stop', async () => {
+    const checksRun = {
+      id: 'fin-1',
+      branch: 'feature/x',
+      head_sha: 'd'.repeat(40),
+      status: 'succeeded',
+      trigger_source: 'finalize',
+      failure_reason: null,
+      started_at: Date.now() - 70_000,
+      ended_at: Date.now() - 30_000,
+      session_title: 'Finalized work',
+      jobs: [
+        {
+          job_id: 'backend',
+          matrix_key: '',
+          state: 'passed',
+          exit_code: 0,
+          started_at: 1,
+          ended_at: 2,
+        },
+      ],
+    };
+    (api.getProjectPullDetail as any).mockResolvedValue({
+      ...detailResponse,
+      source: 'agenthub',
+      // Finalize runs are not re-runnable from the PR page.
+      ci_run: null,
+      checks_run: checksRun,
+      // A flat check exists too — the detailed run must win over it.
+      checks: [
+        { id: 'flat', name: 'finalize/backend', status: 'completed', conclusion: 'success' },
+      ],
+    });
+    (api.getCiRunDetail as any).mockResolvedValue({ run: checksRun, steps: [] });
+    (api.getFinalizeRunResources as any).mockResolvedValue({ jobs: [] });
+
+    (api.getProjectPulls as any).mockResolvedValue({ pulls: [prSummary] });
+    render(<PullRequestsPage projectId="proj-1" project={project} />);
+    fireEvent.click(await screen.findByText('Fix the flaky test' as any));
+
+    const runSection = await screen.findByTestId('pr-ci-run-row');
+    const runRow = within(runSection).getByTestId('ci-run-fin-1');
+    expect(runRow).toHaveTextContent('finalize');
+    // The flat check list is suppressed in favor of the detailed run.
+    expect(screen.queryByTestId('pr-checks-empty-note')).toBeNull();
+    // No re-run / stop affordances for a non-re-runnable Finalize run.
+    expect(within(runSection).queryByTestId('ci-run-rerun-fin-1')).toBeNull();
+    expect(within(runSection).queryByTestId('ci-run-stop-fin-1')).toBeNull();
+    expect(screen.queryByTestId('pr-rerun-checks')).toBeNull();
+  });
+
   it('disables the button while the request is in flight', async () => {
     let resolveFn: any;
     (api.resolvePR as any).mockReturnValue(

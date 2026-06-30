@@ -950,6 +950,70 @@ describe('setup-failure surfacing on PR checks', () => {
   });
 });
 
+describe('checks_run — detailed run for the PR page', () => {
+  it('surfaces the Finalize run (any trigger) with its jobs while ci_run stays null', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'Finalized work' }).expect(201);
+
+    const { stmts } = await import('../db.js');
+    const bare = gitHostRepoPath(id);
+    const headSha = execSync(`git -C "${bare}" rev-parse refs/heads/${branch}`, { stdio: 'pipe' })
+      .toString()
+      .trim();
+    const runId = `fin-${uuidv4().slice(0, 8)}`;
+    stmts!.insertFinalizeRun.run(
+      runId,
+      'card',
+      null,
+      id,
+      branch,
+      headSha,
+      `finalize|${runId}`,
+      'queued',
+      null,
+      // trigger_source `finalize` → NOT a re-runnable push/pr-ci run.
+      'finalize',
+      null,
+      'system',
+      'Dev',
+      'dev@x',
+      null,
+      Date.now(),
+      'full',
+      null,
+    );
+    stmts!.failFinalizeRun.run('succeeded', null, runId);
+    stmts!.upsertFinalizeRunJob.run(runId, 'backend', '', 'passed', 0, 1, 2);
+    stmts!.upsertFinalizeRunJob.run(runId, 'frontend', '', 'passed', 0, 3, 4);
+
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+
+    // Finalize runs are not re-runnable from the PR page → ci_run null.
+    expect(detail.body.ci_run).toBeNull();
+
+    // …but the detailed run surfaces with its job rows so the PR page can
+    // render the expandable Run → Job → Step view instead of the flat list.
+    expect(detail.body.checks_run).toMatchObject({
+      id: runId,
+      trigger_source: 'finalize',
+      status: 'succeeded',
+      branch,
+      head_sha: headSha,
+    });
+    const jobs = detail.body.checks_run.jobs as Array<{ job_id: string; state: string }>;
+    expect(jobs.map((j) => j.job_id).sort()).toEqual(['backend', 'frontend']);
+    expect(jobs.every((j) => j.state === 'passed')).toBe(true);
+  });
+
+  it('is null when no run exists for the head', async () => {
+    const { id, branch } = await hostedProjectWithBranch();
+    await postPulls(id).send({ headBranch: branch, title: 'No runs yet' }).expect(201);
+
+    const detail = await authedGet(`/api/projects/${id}/pulls/1`).expect(200);
+    expect(detail.body.checks_run).toBeNull();
+  });
+});
+
 describe('CI empty-state explanation (checks_note)', () => {
   it('explains missing config, v1 config, and v2-not-started', async () => {
     // hostedProjectWithBranch seeds no ci.yaml → "No CI is configured".

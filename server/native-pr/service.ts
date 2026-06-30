@@ -130,6 +130,15 @@ export interface NativePrService {
     checks_note: string | null;
     /** Backing push/pr-ci run (re-run target); null for Finalize-run checks. */
     ci_run: { id: string; trigger_source: string; status: string } | null;
+    /**
+     * The latest CI-bearing run for the head sha, regardless of trigger
+     * (Finalize, branch push CI, PR CI), carrying its job rows so the PR
+     * page can render the same expandable Run → Job → Step view as the
+     * Runners "Recent runs" list. Null when no run exists for the head.
+     * Distinct from `ci_run`, which only points at re-runnable push/pr-ci
+     * runs and drives the Re-run buttons.
+     */
+    checks_run: DisplayRun | null;
     headSha: string | null;
     commits: PrCommitEntry[];
     /** Raw inline diff comments for in-diff rendering. */
@@ -317,6 +326,73 @@ function ciRunForSha(
   if (!run) return null;
   if (run.trigger_source !== 'git_push' && run.trigger_source !== 'pr_push') return null;
   return { id: run.id, trigger_source: run.trigger_source, status: run.status };
+}
+
+interface DisplayRunJob {
+  job_id: string;
+  matrix_key: string;
+  state: string;
+  exit_code: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
+interface DisplayRun {
+  id: string;
+  branch: string | null;
+  head_sha: string | null;
+  status: string;
+  trigger_source: string;
+  failure_reason: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+  session_id: string | null;
+  session_title: string | null;
+  jobs: DisplayRunJob[];
+}
+
+/**
+ * The latest CI-bearing run for a commit (any trigger) shaped for the PR
+ * page's expandable RunRow — same fields the `/ci-runs` list endpoint
+ * serializes (incl. `jobs` so the Run → Job → Step grouping renders).
+ * Unlike `ciRunForSha` it is NOT trigger-filtered: a Finalize-validated
+ * PR surfaces its run here so the per-job/per-step detail shows up instead
+ * of the flat check list.
+ */
+function displayRunForSha(stmts: Stmts, projectId: string, sha: string): DisplayRun | null {
+  const run = stmts.getLatestFinalizeRunForSha.get(projectId, sha, sha) as
+    | {
+        id: string;
+        branch: string | null;
+        head_sha: string | null;
+        status: string;
+        trigger_source: string;
+        failure_reason: string | null;
+        started_at: number | null;
+        ended_at: number | null;
+        session_id: string | null;
+      }
+    | undefined;
+  if (!run) return null;
+  const jobs = stmts.listFinalizeRunJobsForRun.all(run.id) as DisplayRunJob[];
+  let sessionTitle: string | null = null;
+  if (run.session_id) {
+    const session = stmts.getSession.get(run.session_id) as { name?: string | null } | undefined;
+    sessionTitle = session?.name ?? null;
+  }
+  return {
+    id: run.id,
+    branch: run.branch,
+    head_sha: run.head_sha,
+    status: run.status,
+    trigger_source: run.trigger_source,
+    failure_reason: run.failure_reason,
+    started_at: run.started_at,
+    ended_at: run.ended_at,
+    session_id: run.session_id,
+    session_title: sessionTitle,
+    jobs,
+  };
 }
 
 function requiredChecksBlockReasonFromRows(
@@ -621,6 +697,10 @@ export function createNativePrService(deps: NativePrServiceDeps): NativePrServic
         // Backing CI run when the checks came from the push/pr-ci engine —
         // drives the client's Re-run buttons. Null for Finalize-run checks.
         ci_run: ciRunForSha(stmts, project.id, statusSha),
+        // Latest run for the head (any trigger) with its job rows, so the
+        // PR page renders the expandable Run → Job → Step detail even for
+        // Finalize-validated PRs (where ci_run is null).
+        checks_run: displayRunForSha(stmts, project.id, statusSha),
         headSha,
         commits,
         inline_comments: inline,
