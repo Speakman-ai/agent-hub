@@ -5,6 +5,7 @@ import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { db as _db, stmts as _stmts } from './db.js';
 import config, { buildSpawnEnv, fileConfig } from './config.js';
+import { resolveUserCliCredOverride } from './per-user-cli-spawn.js';
 import { mergeSkillCredentialSpawnEnv } from './skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from './project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from './project-aws-spawn.js';
@@ -411,6 +412,10 @@ export async function runHeartbeat(agent: EnrichedAgent): Promise<HeartbeatResul
     });
     const heartbeatEnv = buildSpawnEnv(config, {
       userId: heartbeatOwnerId,
+      // Inject the owner's stored per-account AI credentials. Without this the
+      // spawned CLI runs logged-out for DB-stored-credential users (no host
+      // fallback for claude/cursor/codex/grok). Null owner => host behavior.
+      userOverride: resolveUserCliCredOverride(heartbeatOwnerId),
       engine: resolved.engine,
     });
     if (hbProject) {
@@ -626,7 +631,14 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
       preferredModel: requestedModel,
       userId: cronOwnerId,
     });
-    const cronEnv = buildSpawnEnv(config, { userId: cronOwnerId, engine: resolved.engine });
+    const cronEnv = buildSpawnEnv(config, {
+      userId: cronOwnerId,
+      // Inject the owner's stored per-account AI credentials. Without this the
+      // spawned CLI runs logged-out for DB-stored-credential users (no host
+      // fallback for claude/cursor/codex/grok). Null owner => host behavior.
+      userOverride: resolveUserCliCredOverride(cronOwnerId),
+      engine: resolved.engine,
+    });
     if (cronProject) {
       if (cronSkillAgentId) {
         mergeSkillCredentialSpawnEnv(cronEnv, {

@@ -184,6 +184,68 @@ export function assertEngineCredsOrThrow(
 }
 
 /**
+ * Load `userId`'s stored per-account CLI credentials (Claude / Cursor / Gemini
+ * / Codex / Grok) into a `SpawnEnvOverride` for `buildSpawnEnv`. Returns `null`
+ * when there is no acting user or the user has no stored keys — the caller then
+ * keeps the inherited (host) behavior, and any on-disk per-user HOME cache
+ * still applies via the HOME pin.
+ *
+ * This is the credential channel that interactive chat, crons, and heartbeats
+ * all share: `buildSpawnEnv` injects per-account engine keys ONLY from this
+ * override (no host fallback for claude/cursor/codex/grok), so any scheduled
+ * spawn that omits it runs the CLI logged-out for DB-stored-credential users.
+ *
+ * Lookup failures are logged as a structured `TOOL_ERROR` and swallowed
+ * (returns `null`) so a transient store read never crashes a spawn.
+ */
+export function resolveUserCliCredOverride(
+  userId: string | null,
+  opts?: { sessionId?: string | null },
+): SpawnEnvOverride | null {
+  if (!userId?.trim()) return null;
+  try {
+    const userClaude = getUserClaudeAuth(userId);
+    const userCursor = getUserCursorAuth(userId);
+    const userGemini = getUserGeminiAuth(userId);
+    const userCodex = getUserCodexAuth(userId);
+    const userGrok = getUserGrokAuth(userId);
+    const hasAny =
+      !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
+      !!(userCursor && userCursor.apiKey) ||
+      !!(userGemini && userGemini.apiKey) ||
+      !!(userCodex && userCodex.apiKey) ||
+      !!(userGrok && userGrok.apiKey);
+    if (!hasAny) return null;
+    return {
+      anthropicApiKey: userClaude?.anthropicApiKey ?? null,
+      claudeCodeOAuthToken: userClaude?.claudeCodeOAuthToken ?? null,
+      cursorApiKey: userCursor?.apiKey ?? null,
+      geminiApiKey: userGemini?.apiKey ?? null,
+      codexApiKey: userCodex?.apiKey ?? null,
+      grokApiKey: userGrok?.apiKey ?? null,
+    };
+  } catch (err) {
+    // Surface the lookup failure as a structured TOOL_ERROR so operator logs
+    // preserve the signal, then fall back to null (host behavior).
+    const summary = (err as Error).message
+      .replace(/[\r\n|]+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    const meta = JSON.stringify({
+      v: 2,
+      sev: 'soft',
+      resolution: 'recovered',
+      session: opts?.sessionId ?? null,
+      tags: ['per-user-cli-auth', 'spawn'],
+    });
+    console.error(
+      `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
+    );
+    return null;
+  }
+}
+
+/**
  * Base CLI spawn env for a chat session (Cursor create-chat, agent spawn, …).
  * Resolves the acting user's own per-account credentials and pins HOME to
  * their per-user tree. There is no host or org-owner fallback: a per-account
@@ -197,51 +259,7 @@ export function resolveSessionCliSpawnEnv(opts: ResolveSessionCliSpawnEnvOpts): 
   // Hard-fail before doing any work: per-account engines must be your own.
   assertEngineCredsOrThrow(engine, actingUserId, cfg.dataDir);
 
-  let userOverride: SpawnEnvOverride | null = null;
-  try {
-    if (actingUserId) {
-      const userClaude = getUserClaudeAuth(actingUserId);
-      const userCursor = getUserCursorAuth(actingUserId);
-      const userGemini = getUserGeminiAuth(actingUserId);
-      const userCodex = getUserCodexAuth(actingUserId);
-      const userGrok = getUserGrokAuth(actingUserId);
-      const hasAny =
-        !!(userClaude && (userClaude.anthropicApiKey || userClaude.claudeCodeOAuthToken)) ||
-        !!(userCursor && userCursor.apiKey) ||
-        !!(userGemini && userGemini.apiKey) ||
-        !!(userCodex && userCodex.apiKey) ||
-        !!(userGrok && userGrok.apiKey);
-      if (hasAny) {
-        userOverride = {
-          anthropicApiKey: userClaude?.anthropicApiKey ?? null,
-          claudeCodeOAuthToken: userClaude?.claudeCodeOAuthToken ?? null,
-          cursorApiKey: userCursor?.apiKey ?? null,
-          geminiApiKey: userGemini?.apiKey ?? null,
-          codexApiKey: userCodex?.apiKey ?? null,
-          grokApiKey: userGrok?.apiKey ?? null,
-        };
-      }
-    }
-  } catch (err) {
-    // Surface the lookup failure as a structured TOOL_ERROR so operator logs
-    // preserve the signal. The spawn still proceeds — but the hard-fail guard
-    // above already rejected per-account engines without creds, so the only
-    // spawns reaching here are Gemini / unknown engines.
-    const summary = (err as Error).message
-      .replace(/[\r\n|]+/g, ' ')
-      .trim()
-      .slice(0, 200);
-    const meta = JSON.stringify({
-      v: 2,
-      sev: 'soft',
-      resolution: 'recovered',
-      session: sessionId ?? null,
-      tags: ['per-user-cli-auth', 'spawn'],
-    });
-    console.error(
-      `TOOL_ERROR | ${new Date().toISOString()} | per-user-cli-auth | spawn lookup | error | ${summary} | ${meta}`,
-    );
-  }
+  const userOverride = resolveUserCliCredOverride(actingUserId, { sessionId });
   // HOME is pinned to the acting user's per-user tree so every engine's CLI
   // cache (`.cursor`, `.codex`, `.claude`, Gemini OAuth) stays isolated under
   // their subtree. No owner → no per-user HOME pin (buildSpawnEnv keeps the
