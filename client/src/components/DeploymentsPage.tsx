@@ -17,6 +17,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { buildNavigationHash } from '../utils/navigation';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
@@ -785,9 +786,11 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                                   {item.supportTicket ? (
                                     <a
                                       className="mt-1 inline-flex max-w-full truncate text-xs text-sky-300 hover:text-sky-200"
-                                      href={`/projects/${projectId}/support?ticketId=${encodeURIComponent(
-                                        item.supportTicket.id,
-                                      )}`}
+                                      href={buildNavigationHash({
+                                        view: 'support',
+                                        projectId,
+                                        ticketId: item.supportTicket.id,
+                                      })}
                                     >
                                       {item.supportTicket.subject || 'Support ticket'} (
                                       {item.supportTicket.id})

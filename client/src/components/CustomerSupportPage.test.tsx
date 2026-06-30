@@ -250,6 +250,37 @@ describe('CustomerSupportPage', () => {
   });
 });
 
+describe('CustomerSupportPage — deep-linked ticket focus', () => {
+  it('opens the initialTicketId detail on arrival by fetching it by id (covers terminal tickets hidden by the Open filter)', async () => {
+    // The default "Open" filter list does NOT contain the converted ticket the
+    // Deployments release-item link points at, so the page must fetch it by id.
+    (api.getSupportTickets as any).mockResolvedValue([
+      ticket({ id: 'open-1', subject: 'An open ticket' }),
+    ]);
+    (api.getSupportTicket as any).mockResolvedValue(
+      ticket({ id: 'conv-1', subject: 'Converted deep link', status: 'converted' }),
+    );
+
+    render(<CustomerSupportPage projectId="proj-1" initialTicketId="conv-1" />);
+
+    await waitFor(() => expect(api.getSupportTicket).toHaveBeenCalledWith('proj-1', 'conv-1'));
+    await waitFor(() =>
+      expect(screen.getByTestId('support-ticket-detail-modal')).toBeInTheDocument(),
+    );
+    expect(
+      within(screen.getByTestId('support-ticket-detail-modal')).getByText('Converted deep link'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not fetch or open a detail when no initialTicketId is provided', async () => {
+    (api.getSupportTickets as any).mockResolvedValue([ticket({ id: 'open-1' })]);
+    render(<CustomerSupportPage projectId="proj-1" />);
+    await waitFor(() => expect(api.getSupportTickets).toHaveBeenCalled());
+    expect(api.getSupportTicket).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('support-ticket-detail-modal')).toBeNull();
+  });
+});
+
 describe('CustomerSupportPage — ticket detail view', () => {
   it('opens a detail modal via the full-card open button and shows the full AI investigation from the detail endpoint', async () => {
     (api.getSupportTickets as any).mockResolvedValue([

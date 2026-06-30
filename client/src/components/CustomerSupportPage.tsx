@@ -1,4 +1,4 @@
-import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   LifeBuoy,
   AlertCircle,
@@ -1079,7 +1079,10 @@ function SupportTicketDetailModal({
   );
 }
 
-function CustomerSupportPageInner({ projectId, agents = [], onNotify }: any, ref: any) {
+function CustomerSupportPageInner(
+  { projectId, agents = [], onNotify, initialTicketId }: any,
+  ref: any,
+) {
   const [tickets, setTickets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -1189,6 +1192,38 @@ function CustomerSupportPageInner({ projectId, agents = [], onNotify }: any, ref
   };
 
   const hasUnread = tickets.some((t: any) => !t.read_at);
+
+  // Deep-link focus: when the page is opened with an `initialTicketId` (e.g. a
+  // Deployments release-item link), open that ticket's detail on arrival. We
+  // fetch it by id rather than scanning the loaded list because the target is
+  // often a terminal ticket (e.g. `converted`) that the default "Open" filter
+  // hides, so it isn't in `tickets`. Guarded by a ref so closing the modal
+  // doesn't immediately reopen it, and so re-renders don't refetch.
+  const focusedTicketIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const targetId = typeof initialTicketId === 'string' ? initialTicketId.trim() : '';
+    if (!targetId || focusedTicketIdRef.current === targetId) return;
+    focusedTicketIdRef.current = targetId;
+    let cancelled = false;
+    api
+      .getSupportTicket(projectId, targetId)
+      .then((ticket: any) => {
+        if (cancelled || !ticket?.id) return;
+        handleOpenTicket(ticket);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        // Allow a later navigation to retry this same id.
+        focusedTicketIdRef.current = null;
+        onNotify?.(err?.message || 'Could not open the linked support ticket', 'error');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // handleOpenTicket is stable enough for this one-shot focus; deps are kept
+    // to the deep-link inputs so it fires once per distinct target.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTicketId, projectId]);
 
   useImperativeHandle(
     ref,

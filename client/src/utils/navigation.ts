@@ -26,6 +26,8 @@ export type NavigationState = {
   prNumber?: number | string | null;
   threadId?: string | null;
   designId?: string | null;
+  /** Support view only: deep-link a specific ticket to focus on open. */
+  ticketId?: string | null;
 };
 
 function cleanSegment(value: any) {
@@ -81,6 +83,7 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     prNumber: parsePositiveInt(params.get('pr')),
     threadId: cleanSegment(params.get('thread')),
     designId: cleanSegment(params.get('design')),
+    ticketId: cleanSegment(params.get('ticket')),
   };
 }
 
@@ -103,6 +106,8 @@ export function buildNavigationHash(state: NavigationState) {
   if (view === 'threads' && threadId) params.set('thread', threadId);
   const designId = cleanSegment(state?.designId);
   if (view === 'design' && designId) params.set('design', designId);
+  const ticketId = cleanSegment(state?.ticketId);
+  if (view === 'support' && ticketId) params.set('ticket', ticketId);
 
   const query = params.toString();
   if (!path && !query) return '';

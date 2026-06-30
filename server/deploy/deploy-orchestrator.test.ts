@@ -167,8 +167,21 @@ function makeFakeBackend(
   };
 }
 
-function makeDeps(backend: RunnerBackend, broadcast = vi.fn()): DeployOrchestratorDeps {
-  return { broadcast, runnerBackend: backend, env: { PATH: '/usr/bin' } };
+function makeDeps(
+  backend: RunnerBackend,
+  broadcast = vi.fn(),
+  collectReleaseRangeLinks?: DeployOrchestratorDeps['collectReleaseRangeLinks'],
+): DeployOrchestratorDeps {
+  return {
+    broadcast,
+    runnerBackend: backend,
+    env: { PATH: '/usr/bin' },
+    // Default to the legacy single-ref behavior so tests never shell out to a
+    // real `git` against the fake WORKTREE path. Tests that exercise the
+    // commit-range resolver inject their own stub.
+    collectReleaseRangeLinks:
+      collectReleaseRangeLinks ?? (async ({ currentRef }) => ({ refs: [currentRef], prUrls: [] })),
+  };
 }
 
 function createLinkedCard(
@@ -1086,6 +1099,79 @@ environments:
     } finally {
       info.mockRestore();
     }
+  });
+
+  it('derives release items from the deploy commit range when the deployed ref is a post-merge main SHA', async () => {
+    // Regression: a "deploy main" production run records `deployment.ref` = the
+    // post-merge main HEAD SHA, which NEVER equals a finalize run's pre-merge
+    // head SHA (and squash-merge deletes the branch). Before the range
+    // resolver, the single deployed SHA matched no finalize linkage, so ZERO
+    // release items were recorded — the reported "no release items" bug. The
+    // range collector surfaces the in-range feature-branch SHA (merge method)
+    // and the native PR URL parsed from the squash subject (squash method); both
+    // must resolve their cards.
+    const mergeTicket = createSupportTicket({
+      projectId: PROJECT,
+      body: 'shipped via merge commit',
+    });
+    const squashTicket = createSupportTicket({ projectId: PROJECT, body: 'shipped via squash' });
+    const mergeCardId = createLinkedCard(PROJECT, mergeTicket.id, { sessionId: 'session-merge' });
+    const squashCardId = createLinkedCard(PROJECT, squashTicket.id, {
+      prUrl: '/projects/' + PROJECT + '/pulls/77',
+    });
+    seedPushedFinalizeRun({
+      projectId: PROJECT,
+      cardId: mergeCardId,
+      sessionId: 'session-merge',
+      branch: 'agent-hub/dev/session-merge',
+      headSha: 'feature-tip-sha', // reachable in the range as a merge second parent
+    });
+
+    // The deployed ref is a brand-new main SHA that matches NOTHING directly.
+    const rangeLinks: DeployOrchestratorDeps['collectReleaseRangeLinks'] = async ({
+      previousRef,
+      currentRef,
+    }) => {
+      expect(previousRef).toBe('main-sha-prev');
+      expect(currentRef).toBe('main-sha-new');
+      return {
+        refs: ['main-sha-new', 'feature-tip-sha'],
+        prUrls: ['/projects/' + PROJECT + '/pulls/77'],
+      };
+    };
+
+    // Seed a prior production deploy so the environment has a previous ref.
+    const first = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'main-sha-prev',
+        worktreePath: WORKTREE,
+        config: RELEASE_CONFIG,
+      },
+      makeDeps(makeFakeBackend([{ exitCode: 0 }]).backend),
+    );
+    expect(first.status).toBe('success');
+
+    const prod = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'main-sha-new',
+        worktreePath: WORKTREE,
+        config: RELEASE_CONFIG,
+      },
+      makeDeps(makeFakeBackend([{ exitCode: 0 }]).backend, vi.fn(), rangeLinks),
+    );
+
+    expect(prod.status).toBe('success');
+    expect(
+      listDeploymentReleaseItems(prod.id)
+        .map((item) => item.card_id)
+        .sort(),
+    ).toEqual([mergeCardId, squashCardId].sort());
+    expect(getSupportTicket(mergeTicket.id)!.release_deployment_id).toBe(prod.id);
+    expect(getSupportTicket(squashTicket.id)!.release_deployment_id).toBe(prod.id);
   });
 
   it('derives release items when the production deploy ref is a Finalize branch name', async () => {

@@ -40,6 +40,7 @@ describe('navigation defaults', () => {
       prNumber: null,
       threadId: null,
       designId: null,
+      ticketId: null,
     });
   });
 
@@ -64,7 +65,38 @@ describe('navigation defaults', () => {
       prNumber: 313,
       threadId: null,
       designId: null,
+      ticketId: null,
     });
+  });
+
+  it('round-trips a support route with a deep-linked ticket id', () => {
+    const hash = buildNavigationHash({
+      view: 'support',
+      projectId: 'agent-hub',
+      ticketId: 'ticket-42',
+    });
+
+    expect(hash).toBe('#/support/agent-hub?ticket=ticket-42');
+    expect(parseNavigationHash(hash)).toEqual({
+      view: 'support',
+      projectId: 'agent-hub',
+      prNumber: null,
+      threadId: null,
+      designId: null,
+      ticketId: 'ticket-42',
+    });
+  });
+
+  it('omits the ticket param for a support route without a ticket', () => {
+    expect(buildNavigationHash({ view: 'support', projectId: 'agent-hub' })).toBe(
+      '#/support/agent-hub',
+    );
+  });
+
+  it('does not emit a ticket param for non-support views', () => {
+    expect(
+      buildNavigationHash({ view: 'deployments', projectId: 'agent-hub', ticketId: 'ticket-1' }),
+    ).toBe('#/deployments/agent-hub');
   });
 
   it('round-trips currentView strings that already carry their own target', () => {

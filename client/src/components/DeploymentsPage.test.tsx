@@ -406,6 +406,22 @@ describe('DeploymentsPage', () => {
     await waitFor(() => expect(screen.queryByText('SMTP is not configured.')).toBeNull());
   });
 
+  it('links a release item support ticket to the in-app support hash route (not an absolute path)', async () => {
+    // Regression: the link used an absolute `/projects/<id>/support?ticketId=...`
+    // href. In the hash-router SPA that triggers a full browser navigation to a
+    // path the app does not serve, so the page "opens then immediately goes
+    // away" (it bounces back to the default route). The href must stay inside
+    // the hash router.
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const link = await screen.findByRole('link', { name: /Export fails \(ticket-1\)/ });
+    const href = link.getAttribute('href') || '';
+    // In-app hash route that focuses the exact ticket (parity with mobile).
+    expect(href).toBe('#/support/proj-1?ticket=ticket-1');
+    // Never an absolute non-hash path (the bug) — that escapes the SPA.
+    expect(href.startsWith('/projects/')).toBe(false);
+  });
+
   it('reveals the release digest prompt from a Settings toggle, hidden by default', async () => {
     render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
 

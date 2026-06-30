@@ -69,6 +69,7 @@ import {
   type DeployEnvironmentConfig,
   type DeployStep,
 } from './deploy-config.js';
+import { collectReleaseRangeLinks, type ReleaseRangeLinks } from './release-range.js';
 import {
   countUnreadSupportTickets,
   markSupportTicketsReleasedToProd,
@@ -191,6 +192,19 @@ export interface DeployOrchestratorDeps {
    * null/undefined → no `GH_REPO` is injected (gh falls back to remote detection).
    */
   resolveProjectGithubRepo?: (projectId: string) => string | null | undefined;
+  /**
+   * Resolve the set of shipped-work linkage (commit SHAs + native PR URLs) that
+   * a production deployment made live, by inspecting the git commit range
+   * between the environment's previous ref and the deployed ref. Defaults to
+   * {@link collectReleaseRangeLinks}. Injected for deterministic tests so they
+   * never shell out to a real `git`.
+   */
+  collectReleaseRangeLinks?: (input: {
+    worktreePath: string;
+    previousRef: string | null;
+    currentRef: string;
+    projectId: string;
+  }) => Promise<ReleaseRangeLinks>;
 }
 
 export interface TriggerDeploymentInput {
@@ -470,14 +484,22 @@ function markReleasedSupportTicketsForDeployment(
   deps: DeployOrchestratorDeps,
   deployment: DeploymentRow,
   sessionId?: string | null,
+  rangeLinks?: ReleaseRangeLinks | null,
 ): void {
   if (!isProductionEnvironment(deployment.environment)) return;
   const meta = parseReleaseInclusionMeta(deployment.meta);
   const explicitSupportTicketIds = meta.supportTicketIds;
+  // The deployed ref is the post-merge main HEAD SHA, which never equals a
+  // finalize run's pre-merge head SHA — so on its own it resolves nothing.
+  // `rangeLinks` carries every in-range commit SHA (catches `merge`-method
+  // head_sha reachability) and the native PR URLs parsed from squash/merge
+  // commit subjects (catches squash merges, where the feature branch is gone),
+  // which is what actually ties a "deploy main" back to the cards it shipped.
   const resolution = resolveDeploymentReleaseCandidates({
     projectId: deployment.project_id,
     ...meta,
-    refs: [...new Set([deployment.ref, ...meta.refs].filter(Boolean))],
+    prUrls: [...new Set([...meta.prUrls, ...(rangeLinks?.prUrls ?? [])].filter(Boolean))],
+    refs: [...new Set([deployment.ref, ...meta.refs, ...(rangeLinks?.refs ?? [])].filter(Boolean))],
     branches: [...new Set([deployment.ref, ...meta.branches].filter(Boolean))],
     sessionIds: [...new Set([sessionId ?? '', ...meta.sessionIds].filter(Boolean))],
   });
@@ -864,6 +886,17 @@ export async function runDeployment(
   let failure: { error: string } | null = null;
   let failedAtOrder = -1;
 
+  // Snapshot the environment's currently-live ref BEFORE we overwrite it on
+  // success. The deploy holds the env lock for the whole run, so no concurrent
+  // deploy can change it underneath us. This is the lower bound of the commit
+  // range used to resolve which cards this production deploy ships.
+  const previousEnvRef = isProductionEnvironment(environment)
+    ? (getDeploymentEnvironment(projectId, environment)?.current_ref ?? null)
+    : null;
+  // Computed below while the deployment worktree still exists (the `finally`
+  // removes it before the post-loop success block runs).
+  let releaseRangeLinks: ReleaseRangeLinks | null = null;
+
   try {
     for (const stepRow of steps) {
       if (currentDeploymentIsCancelled()) {
@@ -941,6 +974,30 @@ export async function runDeployment(
       }
       emitDeploymentUpdate(deps, projectId, deploymentId);
     }
+
+    // On a clean production run, resolve the shipped-work linkage WHILE the
+    // deployment worktree still exists — the `finally` below removes it before
+    // the success block can read its git history. Best-effort: a git failure
+    // inside the collector falls back to the deployed ref alone and never
+    // rejects the deploy.
+    if (!failure && !currentDeploymentIsCancelled() && isProductionEnvironment(environment)) {
+      try {
+        const collect = deps.collectReleaseRangeLinks ?? collectReleaseRangeLinks;
+        releaseRangeLinks = await collect({
+          worktreePath,
+          previousRef: previousEnvRef,
+          currentRef: ref,
+          projectId,
+        });
+      } catch (err) {
+        console.warn(
+          `[deploy-orchestrator] release range resolution failed ` +
+            `deployment=${deploymentId} project=${projectId}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        releaseRangeLinks = null;
+      }
+    }
   } finally {
     try {
       await lease.release();
@@ -967,7 +1024,12 @@ export async function runDeployment(
   setEnvironmentCurrentRef(projectId, environment, ref, deploymentId);
   const successDeployment = updateDeploymentStatus(deploymentId, 'success');
   if (successDeployment) {
-    markReleasedSupportTicketsForDeployment(deps, successDeployment, ctx.sessionId ?? null);
+    markReleasedSupportTicketsForDeployment(
+      deps,
+      successDeployment,
+      ctx.sessionId ?? null,
+      releaseRangeLinks,
+    );
     try {
       enqueueReleaseNotificationsForDeployment(successDeployment);
     } catch (err) {

@@ -456,6 +456,11 @@ export default function App({ initialView }: any = {}) {
   const [supportProjectId, setSupportProjectId] = useState<any>(
     initialNavigation.view === 'support' ? initialNavigation.projectId || null : null,
   );
+  // Deep-linked support ticket to focus on open (e.g. from a Deployments
+  // release item). Cleared whenever support is opened without a ticket.
+  const [supportTicketId, setSupportTicketId] = useState<any>(
+    initialNavigation.view === 'support' ? initialNavigation.ticketId || null : null,
+  );
   const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
     initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
   );
@@ -776,7 +781,10 @@ export default function App({ initialView }: any = {}) {
       setActiveThreadId(route?.threadId || null);
       setActiveThread(null);
     }
-    if (view === 'support') setSupportProjectId(route?.projectId || null);
+    if (view === 'support') {
+      setSupportProjectId(route?.projectId || null);
+      setSupportTicketId(route?.ticketId || null);
+    }
     if (view === 'deployments') setDeploymentsProjectId(route?.projectId || null);
     if (view === 'replays') setReplaysProjectId(route?.projectId || null);
     if (view === 'security') setSecurityProjectId(route?.projectId || null);
@@ -806,6 +814,7 @@ export default function App({ initialView }: any = {}) {
       prNumber: pullsOpenPrNumber,
       threadId: activeThreadId,
       designId: activeDesignId,
+      ticketId: currentView === 'support' ? supportTicketId : null,
     });
     if (window.location.hash === hash) {
       routeUrlInitializedRef.current = true;
@@ -816,7 +825,15 @@ export default function App({ initialView }: any = {}) {
     const method = routeUrlInitializedRef.current ? 'pushState' : 'replaceState';
     window.history[method](null, '', nextUrl);
     routeUrlInitializedRef.current = true;
-  }, [activeDesignId, activeThreadId, currentView, initialView, pullsOpenPrNumber, routeProjectId]);
+  }, [
+    activeDesignId,
+    activeThreadId,
+    currentView,
+    initialView,
+    pullsOpenPrNumber,
+    routeProjectId,
+    supportTicketId,
+  ]);
 
   const isWizardView = (v: any) =>
     v === 'new-project-wizard' || v === 'new-project-adaptive' || v === 'import-project-wizard';
@@ -5221,7 +5238,11 @@ export default function App({ initialView }: any = {}) {
                   return next;
                 });
               }
-              if (view === 'support' && extra) setSupportProjectId(extra);
+              if (view === 'support') {
+                if (extra) setSupportProjectId(extra);
+                // Opening support from the sidebar is not a ticket deep-link.
+                setSupportTicketId(null);
+              }
               if (view === 'deployments' && extra) setDeploymentsProjectId(extra);
               if (view === 'replays' && extra) setReplaysProjectId(extra);
               if (view === 'security' && extra) setSecurityProjectId(extra);
@@ -5636,6 +5657,7 @@ export default function App({ initialView }: any = {}) {
                 <CustomerSupportPage
                   ref={supportListRef}
                   projectId={supportProjectId}
+                  initialTicketId={supportTicketId}
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
                 />
@@ -5705,6 +5727,7 @@ export default function App({ initialView }: any = {}) {
                   }}
                   onOpenProjectSupport={(projectId: any) => {
                     setSupportProjectId(projectId);
+                    setSupportTicketId(null);
                     setCurrentView('support');
                     setSidebarOpen(false);
                   }}
