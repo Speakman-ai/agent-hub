@@ -157,6 +157,8 @@ import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
 import createGoogleCalendarRoutes from './routes/google-calendar.js';
 import createGoogleGmailRoutes from './routes/google-gmail.js';
+import createGoogleSheetsRoutes from './routes/google-sheets.js';
+import createGoogleDriveRoutes from './routes/google-drive.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
@@ -1240,6 +1242,8 @@ app.use(createGithubOAuthRoutes(routeDeps));
 app.use(createGoogleOAuthRoutes(routeDeps));
 app.use(createGoogleCalendarRoutes(routeDeps));
 app.use(createGoogleGmailRoutes(routeDeps));
+app.use(createGoogleSheetsRoutes(routeDeps));
+app.use(createGoogleDriveRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

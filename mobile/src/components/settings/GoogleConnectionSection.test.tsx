@@ -17,10 +17,32 @@ vi.mock('../../utils/api', () => ({ api: {} }));
 
 import {
   ALL_SURFACE_SCOPES,
+  GOOGLE_SURFACES,
   GoogleConnectionContent,
   openGoogleOAuth,
   scopeLabel,
 } from './GoogleConnectionSection';
+
+// Route↔consent contract (mobile parity): the /api/google/* proxy routes gate
+// on specific scopes; the mobile consent surface must keep offering them, or
+// connected users can never satisfy the gate. Pins the exact scope strings the
+// server Sheets/Drive routes require so the wiring can't drift.
+describe('GOOGLE_SURFACES consent ↔ proxy-route scope contract', () => {
+  const surfaceScopes = (key: string) =>
+    GOOGLE_SURFACES.find((s) => s.key === key)?.scopes ?? [];
+
+  it('offers the spreadsheets scope the Sheets proxy routes require', () => {
+    expect(surfaceScopes('sheets')).toContain('https://www.googleapis.com/auth/spreadsheets');
+    expect(ALL_SURFACE_SCOPES).toContain('https://www.googleapis.com/auth/spreadsheets');
+  });
+
+  it('offers drive.file (and NOT a restricted Drive scope) for the Drive picker', () => {
+    expect(surfaceScopes('drive')).toContain('https://www.googleapis.com/auth/drive.file');
+    expect(ALL_SURFACE_SCOPES).toContain('https://www.googleapis.com/auth/drive.file');
+    expect(ALL_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
+    expect(ALL_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
+  });
+});
 
 describe('GoogleConnectionSection mobile rendering', () => {
   it('renders connected email, granted scopes, upgrade, and disconnect controls', () => {

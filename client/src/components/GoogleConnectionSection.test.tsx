@@ -11,7 +11,11 @@ vi.mock('../utils/api', () => ({
   },
 }));
 
-import GoogleConnectionSection, { ALL_SURFACE_SCOPES, scopeLabel } from './GoogleConnectionSection';
+import GoogleConnectionSection, {
+  ALL_SURFACE_SCOPES,
+  GOOGLE_SURFACES,
+  scopeLabel,
+} from './GoogleConnectionSection';
 import { api } from '../utils/api';
 
 const mockApi = api as unknown as {
@@ -59,6 +63,31 @@ describe('scopeLabel', () => {
   it('strips the googleapis auth prefix', () => {
     expect(scopeLabel('https://www.googleapis.com/auth/calendar.events')).toBe('calendar.events');
     expect(scopeLabel('openid')).toBe('openid');
+  });
+});
+
+// Route↔consent contract: the /api/google/* proxy routes gate on specific
+// scopes; if the consent surface stops offering them, normally-connected users
+// can never satisfy the gate and every call 403s. These assertions pin the
+// exact scope strings the server routes require (server/routes/google-sheets.ts
+// SHEETS_SCOPE and google-drive.ts DRIVE_FILE_SCOPE) so the wiring can't drift.
+describe('GOOGLE_SURFACES consent ↔ proxy-route scope contract', () => {
+  const surfaceScopes = (key: string) => GOOGLE_SURFACES.find((s) => s.key === key)?.scopes ?? [];
+
+  it('offers the spreadsheets scope the Sheets proxy routes require', () => {
+    const scopes = surfaceScopes('sheets');
+    expect(scopes).toContain('https://www.googleapis.com/auth/spreadsheets');
+    // The upgrade button requests the union, so the scope must be in it too.
+    expect(ALL_SURFACE_SCOPES).toContain('https://www.googleapis.com/auth/spreadsheets');
+  });
+
+  it('offers drive.file (and NOT a restricted Drive scope) for the Drive picker', () => {
+    const scopes = surfaceScopes('drive');
+    expect(scopes).toContain('https://www.googleapis.com/auth/drive.file');
+    expect(ALL_SURFACE_SCOPES).toContain('https://www.googleapis.com/auth/drive.file');
+    // v1 must never request the restricted Drive scopes (CASA avoidance).
+    expect(ALL_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
+    expect(ALL_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
   });
 });
 
