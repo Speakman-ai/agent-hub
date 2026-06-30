@@ -10,12 +10,14 @@ import {
   RefreshCw,
   Rocket,
   RotateCcw,
+  Settings,
   ShieldCheck,
   Terminal,
   Wrench,
   XCircle,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
 const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled']);
@@ -179,6 +181,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const [missingConfig, setMissingConfig] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [setupStarting, setSetupStarting] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -425,17 +428,40 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
         <div className="flex items-center gap-3 mb-4">
           <Rocket size={22} className="text-sky-400" />
           <h1 className="text-xl font-semibold text-gray-100">Deployments</h1>
-          <button
-            type="button"
-            onClick={() => load({ silent: true })}
-            className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-gray-300 border border-gray-700 hover:bg-gray-800 disabled:opacity-60"
-            disabled={refreshing}
-            title="Refresh"
-          >
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSettings((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border disabled:opacity-60 ${
+                showSettings
+                  ? 'border-sky-500/40 bg-sky-500/15 text-sky-100'
+                  : 'border-gray-700 text-gray-300 hover:bg-gray-800'
+              }`}
+              title="Release digest settings"
+              aria-pressed={showSettings}
+              aria-expanded={showSettings}
+            >
+              <Settings size={13} />
+              Settings
+            </button>
+            <button
+              type="button"
+              onClick={() => load({ silent: true })}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-gray-300 border border-gray-700 hover:bg-gray-800 disabled:opacity-60"
+              disabled={refreshing}
+              title="Refresh"
+            >
+              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
         </div>
+
+        {showSettings && (
+          <div className="mb-4" data-testid="deployments-settings-panel">
+            <ReleaseNotificationSettingsSection projectId={projectId} showToast={onNotify} />
+          </div>
+        )}
 
         {error ? (
           <div className="flex items-center gap-2 p-4 rounded-lg border border-red-500/40 bg-red-500/10 text-red-300 text-sm">

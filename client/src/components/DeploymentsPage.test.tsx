@@ -15,6 +15,9 @@ import { api } from '../utils/api';
     triggerDeployment: vi.fn(),
     rollbackDeployment: vi.fn(),
     approveDeployment: vi.fn(),
+    getReleaseNotificationSettings: vi.fn(),
+    updateReleaseNotificationSettings: vi.fn(),
+    resetReleaseNotificationSettings: vi.fn(),
   },
 }));
 
@@ -182,6 +185,17 @@ beforeEach(() => {
   (api.approveDeployment as any).mockResolvedValue(
     snapshot(deployment({ id: 'dep-prod', environment: 'prod', status: 'running' })),
   );
+  (api.getReleaseNotificationSettings as any).mockResolvedValue({
+    projectId: 'proj-1',
+    releaseDigestPrompt: 'Write a concise customer-facing release digest.',
+    defaultReleaseDigestPrompt: 'Write a concise customer-facing release digest.',
+    isDefault: true,
+    promptMaxLength: 4000,
+    factBoundedSystemTemplate: '',
+    updatedBy: null,
+    updatedAt: null,
+    releaseDigestRecipients: [],
+  });
 });
 
 describe('DeploymentsPage', () => {
@@ -390,6 +404,26 @@ describe('DeploymentsPage', () => {
     );
     expect(onNotify).toHaveBeenCalledWith('Release notification queued for retry', 'success');
     await waitFor(() => expect(screen.queryByText('SMTP is not configured.')).toBeNull());
+  });
+
+  it('reveals the release digest prompt from a Settings toggle, hidden by default', async () => {
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    await screen.findByTestId('deploy-env-dev');
+    expect(screen.queryByTestId('deployments-settings-panel')).toBeNull();
+    expect(api.getReleaseNotificationSettings).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(await screen.findByTestId('deployments-settings-panel')).toBeInTheDocument();
+    expect(await screen.findByText('Release digest prompt')).toBeInTheDocument();
+    expect(screen.getByLabelText('Release digest prompt')).toHaveValue(
+      'Write a concise customer-facing release digest.',
+    );
+    await waitFor(() => expect(api.getReleaseNotificationSettings).toHaveBeenCalledWith('proj-1'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.queryByTestId('deployments-settings-panel')).toBeNull();
   });
 
   it('applies deployment_update WebSocket events to the selected run and live stream', async () => {

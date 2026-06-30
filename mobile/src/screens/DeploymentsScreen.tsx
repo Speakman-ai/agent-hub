@@ -17,12 +17,14 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Settings,
   ShieldCheck,
   Terminal,
   Wrench,
   XCircle,
 } from 'lucide-react-native';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import ReleaseNotificationSettingsSection from '../components/settings/ReleaseNotificationSettingsSection';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
@@ -131,6 +133,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const [missingConfig, setMissingConfig] = useState(false);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [setupStarting, setSetupStarting] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -322,19 +325,35 @@ export default function DeploymentsScreen({ route, navigation }: any) {
             <Text style={styles.title}>Deployments</Text>
             <Text style={styles.subtitle}>deploy.yaml environments and live run status</Text>
           </View>
-          <TouchableOpacity
-            onPress={() => load({ silent: true })}
-            disabled={refreshing}
-            style={[styles.iconButton, refreshing && styles.disabled]}
-            accessibilityLabel="Refresh deployments"
-          >
-            {refreshing ? (
-              <ActivityIndicator color={colors.gray300} size="small" />
-            ) : (
-              <RefreshCw size={16} color={colors.gray300} />
-            )}
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={() => setShowSettings((prev) => !prev)}
+              style={[styles.iconButton, showSettings && styles.iconButtonActive]}
+              accessibilityLabel="Release digest settings"
+              accessibilityState={{ selected: showSettings }}
+            >
+              <Settings size={16} color={showSettings ? colors.blue300 : colors.gray300} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => load({ silent: true })}
+              disabled={refreshing}
+              style={[styles.iconButton, refreshing && styles.disabled]}
+              accessibilityLabel="Refresh deployments"
+            >
+              {refreshing ? (
+                <ActivityIndicator color={colors.gray300} size="small" />
+              ) : (
+                <RefreshCw size={16} color={colors.gray300} />
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {showSettings ? (
+          <View style={styles.settingsPanel} testID="deployments-settings-panel">
+            <ReleaseNotificationSettingsSection projectId={projectId} />
+          </View>
+        ) : null}
 
         {loading && !config ? <ActivityIndicator color={colors.gray400} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -742,6 +761,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray950 },
   content: { padding: 16, paddingBottom: 32, gap: 12 },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { fontSize: 20, fontWeight: '700', color: colors.white },
   subtitle: { marginTop: 2, fontSize: 12, color: colors.gray500 },
   iconButton: {
@@ -754,6 +774,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: colors.gray900,
   },
+  iconButtonActive: { borderColor: colors.blue500, backgroundColor: colors.blue900_40 },
+  settingsPanel: { marginTop: 12 },
   error: { color: colors.red400, fontSize: 13 },
   setupCard: {
     flexDirection: 'row',
