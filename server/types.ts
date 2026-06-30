@@ -3153,6 +3153,19 @@ export interface PersonalOAuthConfig {
 }
 
 /**
+ * Server-global Google OAuth client credentials — the OAuth *app* (web client)
+ * registered in Google Cloud Console. Optional: when unset, the per-user
+ * "Connect Google" flow degrades to a "not configured" state and
+ * `/api/auth/google/start` returns 503. Admin/Owner configure this in-app via
+ * `/api/config/google-oauth`. Distinct from a user's *connection* (the linked
+ * Google account + tokens), which is per-user and stored separately.
+ */
+export interface GoogleOAuthConfig {
+  clientId: string;
+  clientSecret: string;
+}
+
+/**
  * Voice-transcription providers selectable for `/api/transcribe`. `'xai'` (the
  * default) uses the xAI Grok speech-to-text endpoint (`/v1/stt`); `'openai'`
  * uses OpenAI Whisper; `'gemini'` uses the Gemini audio-understanding path.
@@ -3209,6 +3222,13 @@ export interface AppConfig {
    * PAT connect in Settings works without this.
    */
   personalOAuth: PersonalOAuthConfig | null;
+  /**
+   * Optional server-global Google OAuth app credentials (client id/secret) for
+   * the per-user "Connect Google" flow. Null = unconfigured, in which case the
+   * Google connect surfaces degrade gracefully and `/api/auth/google/start`
+   * returns 503.
+   */
+  googleOAuth: GoogleOAuthConfig | null;
   apiKey: string | null;
   /**
    * First-party SMTP email delivery configuration. Stored in

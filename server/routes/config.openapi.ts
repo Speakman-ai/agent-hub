@@ -136,6 +136,23 @@ export const PersonalOAuthStatusComponent = registerComponent(
     }),
 );
 
+export const GoogleOAuthStatusComponent = registerComponent(
+  'GoogleOAuthStatus',
+  z
+    .object({
+      configured: z.boolean(),
+      clientId: z.string().nullable(),
+      redirectUri: z.string().openapi({
+        description:
+          'Canonical OAuth redirect URI the server sends to Google, derived from `publicUrl` (falling back to the request origin). The admin must register this exact value as an authorized redirect URI in the Google Cloud Console.',
+      }),
+    })
+    .openapi({
+      description:
+        'Server-global Google OAuth app status. `configured` is true when both client id and secret are stored; `clientId` is exposed for display, the secret never is.',
+    }),
+);
+
 export const GithubStatusComponent = registerComponent(
   'GithubStatus',
   z
@@ -278,6 +295,15 @@ export const PutPersonalOAuthRequestSchema = z
   })
   .openapi({
     description: 'GitHub OAuth App client credentials. Both fields are required.',
+  });
+
+export const PutGoogleOAuthRequestSchema = z
+  .object({
+    clientId: z.string().min(1, 'clientId is required'),
+    clientSecret: z.string().min(1, 'clientSecret is required'),
+  })
+  .openapi({
+    description: 'Google OAuth app client credentials. Both fields are required.',
   });
 
 export const DetectRepoRequestSchema = z
@@ -525,6 +551,61 @@ registerPath({
       description: 'Removed.',
       content: jsonContent(z.object({ ok: z.boolean() })),
     },
+  },
+});
+
+// ─── Google OAuth app (server-global, Admin/Owner-gated) ──────────
+
+registerPath({
+  method: 'get',
+  path: '/api/config/google-oauth',
+  tags: ['Config'],
+  summary: 'Read server-global Google OAuth app configuration status',
+  responses: {
+    200: {
+      description: 'Google OAuth app status.',
+      content: jsonContent(GoogleOAuthStatusComponent),
+    },
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/config/google-oauth',
+  tags: ['Config'],
+  summary: 'Set server-global Google OAuth app credentials',
+  request: { body: { content: jsonContent(PutGoogleOAuthRequestSchema) } },
+  responses: {
+    200: {
+      description: 'Saved.',
+      content: jsonContent(
+        z.object({
+          ok: z.boolean(),
+          configured: z.literal(true),
+          clientId: z.string(),
+        }),
+      ),
+    },
+    400: errorResponse('clientId and clientSecret are both required.'),
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/config/google-oauth',
+  tags: ['Config'],
+  summary: 'Clear server-global Google OAuth app credentials',
+  responses: {
+    200: {
+      description: 'Removed.',
+      content: jsonContent(z.object({ ok: z.boolean() })),
+    },
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
   },
 });
 

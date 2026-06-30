@@ -154,6 +154,7 @@ import createReplaysDashboardRoutes from './routes/replays-dashboard.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
+import createGoogleOAuthRoutes from './routes/google-oauth.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
@@ -1234,6 +1235,7 @@ app.use(createMcpServerRoutes());
 // Worktree previews (per-session, host-side) are the supported preview
 // surface.
 app.use(createGithubOAuthRoutes(routeDeps));
+app.use(createGoogleOAuthRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

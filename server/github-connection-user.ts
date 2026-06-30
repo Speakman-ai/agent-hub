@@ -53,3 +53,11 @@ export function resolveGithubConnectionUserId(req: Request): string | null {
   if (!orgId) return null;
   return getOrCreateSyntheticLocalOrgUser(orgId);
 }
+
+/**
+ * Provider-agnostic alias for {@link resolveGithubConnectionUserId}. The
+ * resolution logic (JWT user → single-tenant synthetic local-org user → null)
+ * is identity-provider-independent, so per-user OAuth flows for other providers
+ * (Google, …) import this name to avoid implying a GitHub-specific dependency.
+ */
+export const resolveOAuthConnectionUserId = resolveGithubConnectionUserId;

@@ -2985,6 +2985,22 @@ components:
         - configured
         - clientId
       description: Personal GitHub OAuth App status (the OAuth client used for human-identity actions).
+    GoogleOAuthStatus:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        clientId:
+          type: string
+          nullable: true
+        redirectUri:
+          type: string
+          description: Canonical OAuth redirect URI the server sends to Google, derived from `publicUrl` (falling back to the request origin). The admin must register this exact value as an authorized redirect URI in the Google Cloud Console.
+      required:
+        - configured
+        - clientId
+        - redirectUri
+      description: Server-global Google OAuth app status. `configured` is true when both client id and secret are stored; `clientId` is exposed for display, the secret never is.
     GithubStatus:
       type: object
       properties:
@@ -16791,6 +16807,116 @@ paths:
                     type: boolean
                 required:
                   - ok
+  /api/config/google-oauth:
+    get:
+      tags:
+        - Config
+      summary: Read server-global Google OAuth app configuration status
+      responses:
+        "200":
+          description: Google OAuth app status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleOAuthStatus"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+    put:
+      tags:
+        - Config
+      summary: Set server-global Google OAuth app credentials
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                clientId:
+                  type: string
+                  minLength: 1
+                clientSecret:
+                  type: string
+                  minLength: 1
+              required:
+                - clientId
+                - clientSecret
+              description: Google OAuth app client credentials. Both fields are required.
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  configured:
+                    type: boolean
+                    enum:
+                      - true
+                  clientId:
+                    type: string
+                required:
+                  - ok
+                  - configured
+                  - clientId
+        "400":
+          description: clientId and clientSecret are both required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+    delete:
+      tags:
+        - Config
+      summary: Clear server-global Google OAuth app credentials
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
   /api/github/status:
     get:
       tags:
@@ -19860,6 +19986,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/google/start:
+    get:
+      tags:
+        - Auth
+      summary: Mint a signed state token + return the Google authorize URL.
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: returnTo
+          in: query
+        - schema:
+            type: string
+            description: Optional space- or comma-separated extra OAuth scopes for incremental per-surface consent. Identity scopes (openid email profile) are always included.
+          required: false
+          description: Optional space- or comma-separated extra OAuth scopes for incremental per-surface consent. Identity scopes (openid email profile) are always included.
+          name: scopes
+          in: query
+      responses:
+        "200":
+          description: Authorize URL the client should redirect the browser to.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizeUrl:
+                    type: string
+                required:
+                  - authorizeUrl
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "503":
+          description: Google OAuth not configured on the server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+                required:
+                  - error
+                  - code
   /api/heartbeats:
     get:
       tags:

@@ -6,7 +6,7 @@ import { execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import rateLimit from 'express-rate-limit';
 import { localDateStr } from '../memory.js';
-import type { RouteDeps, PersonalOAuthConfig, Project } from '../types.js';
+import type { RouteDeps, PersonalOAuthConfig, GoogleOAuthConfig, Project } from '../types.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { refreshShellPath, getCachedShellPath, coerceConfigBooleanLoose } from '../config.js';
 import { requireRole } from '../roles.js';
@@ -25,6 +25,7 @@ import { syncWikiPageFts } from '../wiki.js';
 import { getUserById } from '../users-store.js';
 import { isEmailIdentifier } from '../auth-validation.js';
 import { applySmtpPatch, maskSmtpConfig } from '../smtp-config.js';
+import { resolveGoogleRedirectUri } from '../google-oauth.js';
 import {
   EmailNotConfiguredError,
   getPasswordResetDeliveryStatus,
@@ -39,6 +40,7 @@ interface FileConfig {
   codexBin?: string;
   grokBin?: string;
   personalOAuth?: PersonalOAuthConfig;
+  googleOAuth?: GoogleOAuthConfig;
   smtp?: unknown;
   [key: string]: unknown;
 }
@@ -663,6 +665,90 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
 
     res.json({ ok: true });
   });
+
+  // ─── Google OAuth App (server-global) ──────────────────────────────────────
+  // The OAuth *app* (web client) registered in Google Cloud Console that the
+  // per-user "Connect Google" flow signs in against. Server-global and
+  // Admin/Owner-gated, distinct from each user's per-user Google *connection*
+  // (linked account + tokens). When unset, the connect surfaces degrade to
+  // "not configured" and `/api/auth/google/start` returns 503. The secret is
+  // never returned on read.
+
+  router.get('/api/config/google-oauth', requireRole('Admin'), (req: Request, res: Response) => {
+    const google = config.googleOAuth;
+    const configured = !!(google?.clientId && google?.clientSecret);
+    res.json({
+      configured,
+      clientId: google?.clientId || null,
+      // Canonical redirect URI the server actually sends to Google, derived
+      // from publicUrl (falling back to request origin) — NOT the browser
+      // origin. The admin must register this exact value in Google Console, so
+      // we compute it server-side to avoid redirect_uri_mismatch when publicUrl
+      // diverges from the browser origin (e.g. behind nginx / a path prefix).
+      redirectUri: resolveGoogleRedirectUri({
+        publicUrl: config.publicUrl,
+        requestOrigin: `${req.protocol}://${req.get('host') || `localhost:${config.port}`}`,
+      }),
+    });
+  });
+
+  router.put('/api/config/google-oauth', requireRole('Admin'), (req: Request, res: Response) => {
+    const { clientId, clientSecret } = req.body as {
+      clientId?: unknown;
+      clientSecret?: unknown;
+    };
+    if (typeof clientId !== 'string' || !clientId.trim()) {
+      return res.status(400).json({ error: 'clientId is required' });
+    }
+    if (typeof clientSecret !== 'string' || !clientSecret.trim()) {
+      return res.status(400).json({ error: 'clientSecret is required' });
+    }
+
+    const googleOAuth: GoogleOAuthConfig = {
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+    };
+
+    const configPath = path.join(config.dataDir, 'config.json');
+    let fileConfig: FileConfig = {};
+    try {
+      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      /* no file yet */
+    }
+    fileConfig.googleOAuth = googleOAuth;
+    writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+    config.googleOAuth = googleOAuth;
+    console.log(`[Google OAuth] Configured (clientId: ${googleOAuth.clientId})`);
+
+    res.json({
+      ok: true,
+      configured: true,
+      clientId: googleOAuth.clientId,
+    });
+  });
+
+  router.delete(
+    '/api/config/google-oauth',
+    requireRole('Admin'),
+    (_req: Request, res: Response) => {
+      const configPath = path.join(config.dataDir, 'config.json');
+      let fileConfig: FileConfig = {};
+      try {
+        fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      } catch {
+        /* no file yet */
+      }
+      delete fileConfig.googleOAuth;
+      writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8');
+
+      config.googleOAuth = null;
+      console.log('[Google OAuth] Configuration removed');
+
+      res.json({ ok: true });
+    },
+  );
 
   // ─── GitHub CLI Status & Repo Detection ────────────────────────────────────
 

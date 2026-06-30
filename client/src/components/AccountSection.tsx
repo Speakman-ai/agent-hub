@@ -24,6 +24,7 @@ import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
 import MyGrokAuthSection from './MyGrokAuthSection';
 import MySkillCredentialSection from './MySkillCredentialSection';
+import GoogleOAuthConfigSection from './GoogleOAuthConfigSection';
 import MfaSettingsPanel from './MfaSettingsPanel';
 import { api } from '../utils/api';
 import { getAuthHeaders, getApiBase } from '../utils/connection';
@@ -306,6 +307,8 @@ export default function AccountSection() {
           }
         />
       )}
+
+      {me && isAdminPlus && <GoogleOAuthConfigSection />}
 
       {me && isAdminPlus && <PluginApiKeysSection />}
 

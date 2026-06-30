@@ -20,6 +20,7 @@ import {
 import { readSpawnCredsFile } from './spawn-creds-file.js';
 import { ensureSpawnCredsForSession } from './spawn-creds-mint.js';
 import { resolvePersonalOAuthConfig } from './personal-oauth-config.js';
+import { resolveGoogleOAuthConfig } from './google-oauth-config.js';
 import {
   DEFAULT_PREVIEW_COMPOSE_READY_TIMEOUT_MS,
   PREVIEW_COMPOSE_READY_TIMEOUT_MAX_MS,
@@ -400,6 +401,9 @@ const config: AppConfig = {
   // removed GitHub App keep working OAuth sign-in + token refresh. See
   // server/personal-oauth-config.ts.
   personalOAuth: resolvePersonalOAuthConfig(fileConfig),
+  // Server-global Google OAuth app credentials for the per-user "Connect
+  // Google" flow. Null when unset. See server/google-oauth-config.ts.
+  googleOAuth: resolveGoogleOAuthConfig(fileConfig),
 
   // ── Auth ───────────────────────────────────────────────────────
   apiKey: resolve('AGENT_HUB_API_KEY', 'apiKey', null),
