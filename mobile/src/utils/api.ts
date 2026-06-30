@@ -397,11 +397,26 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
     }),
-    // Per-user CLI credentials + GitHub connection (web Settings parity).
+    // Per-user CLI credentials + OAuth connections (web Settings parity).
     getMyAuth: (provider: any) => fetchJSON(`/auth/me/${provider}-auth`),
     putMyAuth: (provider: any, data: any) => fetchJSON(`/auth/me/${provider}-auth`, { method: 'PUT', body: JSON.stringify(data) }),
     getGithubAuthStatus: () => fetchJSON('/auth/github/status'),
     disconnectGithub: () => fetchJSON('/auth/github', { method: 'DELETE' }),
+    // Per-user Google connection (Settings -> Account). Never returns tokens.
+    getGoogleStatus: () => fetchJSON('/auth/google/status'),
+    // Returns { authorizeUrl }; the caller opens it in the system browser.
+    // `scopes` (string or string[]) requests extra per-surface scopes for
+    // incremental consent; identity scopes are always added server-side.
+    startGoogleOAuth: ({ returnTo, scopes }: any = {}) => {
+        const params = new URLSearchParams();
+        if (returnTo)
+            params.set('returnTo', returnTo);
+        if (scopes)
+            params.set('scopes', Array.isArray(scopes) ? scopes.join(' ') : scopes);
+        const qs = params.toString();
+        return fetchJSON(`/auth/google/start${qs ? `?${qs}` : ''}`);
+    },
+    disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
     // Per-user engine/model overrides per agent.
     getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
     putMyAgentEngineOverride: (agentId: any, data: any) => fetchJSON(`/auth/me/agent-engine-overrides/${agentId}`, {

@@ -24,6 +24,7 @@ import ServerLogsSection from '../components/settings/ServerLogsSection';
 import MembersSection from '../components/settings/MembersSection';
 import MfaSettingsSection from '../components/settings/MfaSettingsSection';
 import SmtpSettingsSection from '../components/settings/SmtpSettingsSection';
+import GoogleConnectionSection from '../components/settings/GoogleConnectionSection';
 // ─── Organizations (Server Connections) Tab ──────────────────
 function OrganizationsSection() {
     const { handleSwitchOrg } = useApp();
@@ -324,6 +325,7 @@ function AccountSection() {
       <Text style={styles.sectionDesc}>
         Your personal CLI credentials and engine overrides for agents you run.
       </Text>
+      <GoogleConnectionSection />
       <MfaSettingsSection />
       <MyCliKeysSection />
       <MembersSection />

@@ -215,6 +215,35 @@ describe('api SMTP settings helpers — mobile parity with web client', () => {
         expect(JSON.parse(init.body)).toEqual({ to: 'owner@example.com' });
     });
 });
+
+describe('api Google connection helpers — mobile parity with web client', () => {
+    it('getGoogleStatus → GET /auth/google/status', async () => {
+        await api.getGoogleStatus();
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/google/status');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+
+    it('startGoogleOAuth includes returnTo and space-delimited incremental scopes', async () => {
+        await api.startGoogleOAuth({
+            returnTo: '/settings?tab=account',
+            scopes: [
+                'https://www.googleapis.com/auth/calendar.events',
+                'https://www.googleapis.com/auth/gmail.modify',
+            ],
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/google/start?returnTo=%2Fsettings%3Ftab%3Daccount&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.modify');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+
+    it('disconnectGoogle → DELETE /auth/google/connect', async () => {
+        await api.disconnectGoogle();
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/auth/google/connect');
+        expect(init.method).toBe('DELETE');
+    });
+});
 describe('api deployment helpers — URL + body parity with web client', () => {
     it('getDeployConfig(projectId) → GET /projects/:id/deploy/config', async () => {
         await api.getDeployConfig('agent-hub');
