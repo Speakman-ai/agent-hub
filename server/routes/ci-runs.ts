@@ -15,10 +15,11 @@ import type { FinalizeRunRow, Project, RouteDeps } from '../types.js';
 import { getDb } from '../db.js';
 import { rerunCiRun } from '../git-host/push-ci.js';
 import { z, registerPath } from '../openapi/registry.js';
-import { loadCiConfigFromFile, type AnyCiConfig } from '../finalize/ci-config.js';
+import { loadCiConfigFromFile, parseCiConfig, type AnyCiConfig } from '../finalize/ci-config.js';
 import { matrixKeyFromRow } from '../finalize/ci-config-v2.js';
 import { DEFAULT_CI_CONFIG_RELATIVE_PATH } from '../finalize/finalize-keys.js';
 import { isInfraFailureReason } from '../finalize/infra-retry.js';
+import { readRepoFile } from '../git-host/repo-read.js';
 
 const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
@@ -332,6 +333,35 @@ async function loadConfiguredTests(project: Project): Promise<{
   tests: ConfiguredTest[];
   ciConfig: { found: boolean; version: number | null; error: string | null };
 }> {
+  if (project.gitHost === 'agenthub') {
+    const hostedFile = await readRepoFile(project.id, DEFAULT_CI_CONFIG_RELATIVE_PATH);
+    if (!hostedFile) {
+      return {
+        tests: [],
+        ciConfig: {
+          found: false,
+          version: null,
+          error: null,
+        },
+      };
+    }
+    const parsed = parseCiConfig(hostedFile.content);
+    if (!parsed.ok) {
+      return {
+        tests: [],
+        ciConfig: {
+          found: true,
+          version: null,
+          error: parsed.error.message,
+        },
+      };
+    }
+    return {
+      tests: configuredTestsFromCi(parsed.config),
+      ciConfig: { found: true, version: parsed.config.version, error: null },
+    };
+  }
+
   const ciPath = path.join(project.cwd, DEFAULT_CI_CONFIG_RELATIVE_PATH);
   let parsed: Awaited<ReturnType<typeof loadCiConfigFromFile>>;
   try {

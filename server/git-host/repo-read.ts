@@ -9,6 +9,7 @@
  */
 
 import { spawn } from 'child_process';
+import path from 'path';
 import { git } from '../native-pr/git-read.js';
 import { gitHostRepoPath, hostedRepoDefaultBranch, hostedRepoExists } from './repo-store.js';
 import config from '../config.js';
@@ -207,6 +208,16 @@ export interface RepoReadme {
   truncated: boolean;
 }
 
+export interface RepoFile {
+  /** Branch the file was read from. */
+  branch: string;
+  /** Root-relative path that was read. */
+  path: string;
+  /** Raw file content; truncated when it exceeds the requested cap. */
+  content: string;
+  truncated: boolean;
+}
+
 interface BoundedBlob {
   /** Up to {@link maxBytes} bytes of the blob, byte-accurately truncated. */
   buffer: Buffer;
@@ -317,10 +328,48 @@ export async function readRepoReadme(
   return { branch: targetBranch, path: chosen, content, truncated: blob.truncated };
 }
 
+/**
+ * Read a single root-relative file from a Hub-hosted repo branch.
+ * Returns null when the hosted repo, branch, or file is absent.
+ */
+export async function readRepoFile(
+  projectId: string,
+  filePath: string,
+  branch?: string,
+  dataDir: string = config.dataDir,
+  maxBytes = 512 * 1024,
+): Promise<RepoFile | null> {
+  if (!hostedRepoExists(projectId, dataDir)) return null;
+  if (!isSafeRepoPath(filePath)) return null;
+  const repoPath = gitHostRepoPath(projectId, dataDir);
+  const targetBranch = branch || (await hostedRepoDefaultBranch(projectId, dataDir));
+  if (!targetBranch || !isSafeBranchName(targetBranch)) return null;
+
+  const blob = await readGitBlobBounded(
+    repoPath,
+    `refs/heads/${targetBranch}:${filePath}`,
+    maxBytes,
+  );
+  if (!blob) return null;
+  return {
+    branch: targetBranch,
+    path: filePath,
+    content: blob.buffer.toString('utf8'),
+    truncated: blob.truncated,
+  };
+}
+
 /** Branch names come from URLs — refuse anything ref-unsafe. */
 export function isSafeBranchName(name: string): boolean {
   if (!name || name.length > 250) return false;
   if (name.startsWith('-') || name.includes('..') || name.includes('//')) return false;
   // git-check-ref-format subset: printable, no spaces/control/refspec chars.
   return /^[^\s~^:?*[\\]+$/.test(name) && !name.endsWith('.lock') && !name.endsWith('/');
+}
+
+function isSafeRepoPath(filePath: string): boolean {
+  if (!filePath || filePath.length > 500 || path.isAbsolute(filePath)) return false;
+  return filePath
+    .split('/')
+    .every((part) => part.length > 0 && part !== '.' && part !== '..' && !part.includes('\0'));
 }

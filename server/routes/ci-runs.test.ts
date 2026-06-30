@@ -4,21 +4,24 @@
  */
 import '../test/setup.js';
 import type supertest from 'supertest';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import { execSync } from 'child_process';
 import { getRequest } from '../test/helpers.js';
 import { getDb } from '../db.js';
 import type { Stmts } from '../types.js';
 
 let request: supertest.Agent;
 let stmts: Stmts;
+let gitHostRepoPath: typeof import('../git-host/repo-store.js').gitHostRepoPath;
 
 beforeAll(async () => {
   request = await getRequest();
   stmts = (await import('../db.js')).stmts!;
+  ({ gitHostRepoPath } = await import('../git-host/repo-store.js'));
 });
 
 async function freshProject(cwd = '/tmp'): Promise<string> {
@@ -90,6 +93,34 @@ function freshRepoWithCiYaml(content: string): string {
   mkdirSync(path.join(root, '.agent-hub'), { recursive: true });
   writeFileSync(path.join(root, '.agent-hub', 'ci.yaml'), content, 'utf8');
   return root;
+}
+
+function git(cwd: string, cmd: string): string {
+  return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+}
+
+function freshGitRepoWithCiYaml(content: string): string {
+  const root = freshRepoWithCiYaml(content);
+  execSync('git init --initial-branch=main', { cwd: root, stdio: 'pipe' });
+  git(root, 'config user.email "ci-runs-test@example.com"');
+  git(root, 'config user.name "CI Runs Test"');
+  git(root, 'add -A');
+  git(root, 'commit -m initial');
+  return root;
+}
+
+async function enableGitHost(projectId: string): Promise<void> {
+  await request
+    .post(`/api/projects/${projectId}/git-host/enable`)
+    .send({ importFrom: 'cwd' })
+    .expect(202);
+  await vi.waitFor(
+    async () => {
+      const res = await request.get(`/api/projects/${projectId}/git-host`).expect(200);
+      expect(res.body.importState?.status).toBe('ready');
+    },
+    { timeout: 10_000 },
+  );
 }
 
 describe('GET /api/projects/:projectId/ci-runs', () => {
@@ -361,6 +392,62 @@ jobs:
       configured: true,
       total_runs: 1,
     });
+  });
+
+  it('reads hosted project stats from the current default branch instead of stale cwd', async () => {
+    const cwd = freshGitRepoWithCiYaml(`
+version: 2
+on: [finalize]
+jobs:
+  current-tests:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: server
+        - group: client
+    steps:
+      - run: npm test
+`);
+    const projectId = await freshProject(cwd);
+    await enableGitHost(projectId);
+
+    // Simulate a stale project checkout after the hosted default branch has
+    // the new fan-out. Before the route read from the hosted repo, this old
+    // cwd file made the Runners page show stale shards.
+    writeFileSync(
+      path.join(cwd, '.agent-hub', 'ci.yaml'),
+      `
+version: 2
+on: [finalize]
+jobs:
+  old-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npm test
+`,
+      'utf8',
+    );
+
+    const runId = seedRun(projectId, {
+      status: 'succeeded',
+      startedAt: 1_000,
+      endedAt: 31_000,
+    });
+    getDb().prepare('DELETE FROM finalize_run_jobs WHERE run_id = ?').run(runId);
+    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', 'server', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(runId, 'current-tests', 'client', 'passed', 0, 2_000, 12_000);
+    stmts.upsertFinalizeRunJob.run(runId, 'old-tests', '', 'passed', 0, 2_000, 12_000);
+
+    expect(git(gitHostRepoPath(projectId), 'show refs/heads/main:.agent-hub/ci.yaml')).toContain(
+      'current-tests',
+    );
+
+    const res = await request.get(`/api/projects/${projectId}/ci-runs/stats`).expect(200);
+    expect(res.body.tests.map((t: Record<string, unknown>) => t.name)).toEqual([
+      'current-tests / client',
+      'current-tests / server',
+    ]);
+    expect(res.body.tests.map((t: Record<string, unknown>) => t.job_id)).not.toContain('old-tests');
   });
 
   it('returns ci_config.error instead of failing when ci.yaml is invalid', async () => {
