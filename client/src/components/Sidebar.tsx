@@ -103,7 +103,10 @@ export default function Sidebar({
   reviewerProjectId,
   threadsProjectId,
   supportProjectId,
-  calendarProjectId,
+  /** When true, the per-user Google account is connected, so the global
+   *  Calendar nav entry (under Dashboard) is shown. Calendar is NOT a
+   *  per-project surface. */
+  googleCalendarNavVisible = false,
   deploymentsProjectId,
   replaysProjectId,
   securityProjectId,
@@ -475,6 +478,26 @@ export default function Sidebar({
             <span className="flex-1 truncate text-sm font-medium">Dashboard</span>
           </button>
 
+          {/* Global Calendar — a per-USER Google surface, not project-scoped.
+              Sits in the Dashboard tier and only appears when the user's Google
+              account is connected (`/api/auth/google/status` connected=true).
+              When not connected, the connect affordance lives in
+              Settings -> Account. */}
+          {googleCalendarNavVisible && (
+            <button
+              onClick={() => onNavigate('calendar')}
+              data-testid="sidebar-global-calendar"
+              className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
+                currentView === 'calendar'
+                  ? 'bg-gray-800 text-white'
+                  : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+              }`}
+            >
+              <CalendarDays size={14} className="flex-shrink-0" />
+              <span className="flex-1 truncate text-sm font-medium">Calendar</span>
+            </button>
+          )}
+
           {/* Org-wide support overview lives on the Dashboard (Support issues
               panel). Per-project Support links — with unread badges — stay in
               each project's menu below for drill-in. */}
@@ -762,17 +785,6 @@ export default function Sidebar({
                               <span className="truncate">Deployments</span>
                             </button>
                           )}
-
-                          <button
-                            type="button"
-                            onClick={() => onNavigate('calendar', project.id)}
-                            className={projectMenuLinkClass(
-                              currentView === 'calendar' && calendarProjectId === project.id,
-                            )}
-                          >
-                            <CalendarDays size={14} className="flex-shrink-0" />
-                            <span className="truncate">Calendar</span>
-                          </button>
 
                           <button
                             type="button"

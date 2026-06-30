@@ -10,6 +10,7 @@ import { relativeTime, daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectLifecycleEntries, projectSettingsEntries } from '../utils/projectMenu';
+import { shouldShowCalendarNav } from '../utils/googleSurface';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
@@ -42,6 +43,26 @@ export default function DrawerContent({ navigation }: any) {
             cancelled = true;
         };
     }, []);
+    // Per-user Google connection status — gates the global Calendar drawer entry
+    // (shown only when connected). Calendar is NOT a per-project surface.
+    const [googleStatus, setGoogleStatus] = useState<any>(null);
+    useEffect(() => {
+        let cancelled = false;
+        api
+            .getGoogleStatus()
+            .then((s: any) => {
+            if (!cancelled)
+                setGoogleStatus(s);
+        })
+            .catch(() => {
+            if (!cancelled)
+                setGoogleStatus({ connected: false });
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+    const calendarNavVisible = shouldShowCalendarNav(googleStatus);
     const orgState = getOrgs();
     const orgs = orgState?.orgs || [];
     const activeOrg = getActiveOrg();
@@ -354,6 +375,20 @@ export default function DrawerContent({ navigation }: any) {
           <HubIcon name="BarChart3" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
           <Text style={styles.dashboardText}>Dashboard</Text>
         </TouchableOpacity>
+
+        {/* Global Calendar — a per-USER Google surface, not project-scoped.
+            Only shown when the user's Google account is connected
+            (`/api/auth/google/status` connected=true). When not connected, the
+            connect affordance lives in Settings -> Account. */}
+        {calendarNavVisible && (
+          <TouchableOpacity testID="drawer-global-calendar" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('Calendar');
+            navigation.closeDrawer();
+          }}>
+            <HubIcon name="CalendarDays" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
+            <Text style={styles.dashboardText}>Calendar</Text>
+          </TouchableOpacity>
+        )}
 
         {cronSessions.length > 0 && (<View style={{ marginBottom: 16 }}>
             <View style={styles.sectionLabelRow}>

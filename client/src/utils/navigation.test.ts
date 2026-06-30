@@ -99,6 +99,30 @@ describe('navigation defaults', () => {
     ).toBe('#/deployments/agent-hub');
   });
 
+  it('treats calendar as a GLOBAL view, not a project-scoped one', () => {
+    // Regression (card 1287): Calendar moved from a per-project tab to the
+    // global Dashboard tier. It must build a bare `#/calendar` hash and never
+    // carry a projectId segment, even if one is passed.
+    expect(buildNavigationHash({ view: 'calendar' })).toBe('#/calendar');
+    expect(buildNavigationHash({ view: 'calendar', projectId: 'agent-hub' })).toBe('#/calendar');
+
+    expect(parseNavigationHash('#/calendar')).toEqual({
+      view: 'calendar',
+      projectId: null,
+      prNumber: null,
+      threadId: null,
+      designId: null,
+      ticketId: null,
+    });
+  });
+
+  it('does not parse a trailing segment after calendar as a projectId', () => {
+    // A stale `#/calendar/agent-hub` deep link (pre-migration) must resolve to
+    // the global calendar view with no project — the second segment is ignored.
+    expect(parseNavigationHash('#/calendar/agent-hub')?.projectId).toBeNull();
+    expect(parseNavigationHash('#/calendar/agent-hub')?.view).toBe('calendar');
+  });
+
   it('round-trips currentView strings that already carry their own target', () => {
     const hash = buildNavigationHash({ view: 'kanban:agent-hub' });
 

@@ -89,6 +89,31 @@ describe('CalendarScreen mobile parity', () => {
     expect(html).toContain('Connect Google');
   });
 
+  it('renders the inline Enable Calendar affordance when connected but missing consent', () => {
+    const html = renderToStaticMarkup(
+      <CalendarAgendaContent
+        loading={false}
+        eventsLoading={false}
+        error={null}
+        status={{
+          connected: true,
+          email: 'person@example.com',
+          grantedScopes: ['https://www.googleapis.com/auth/gmail.send'],
+          serverConfigured: true,
+        }}
+        events={[]}
+        onRefresh={() => undefined}
+        onConnect={() => undefined}
+        onOpenSettings={() => undefined}
+        onCreate={() => undefined}
+        onEdit={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('Enable Calendar access');
+    expect(html).toContain('Enable Calendar');
+  });
+
   it('builds Google Calendar local dateTimes with explicit timeZone', () => {
     expect(
       buildCalendarEventInput({
@@ -107,7 +132,9 @@ describe('CalendarScreen mobile parity', () => {
     });
   });
 
-  it('starts OAuth with the web calendar hash route for the selected project', async () => {
+  it('starts OAuth with the GLOBAL calendar hash route (no project segment)', async () => {
+    // Regression (card 1287): Calendar is a per-user global surface, so the
+    // OAuth returnTo is a bare `/#/calendar` with no projectId.
     const apiClient = {
       startGoogleOAuth: vi.fn().mockResolvedValue({
         authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=abc',
@@ -115,15 +142,15 @@ describe('CalendarScreen mobile parity', () => {
     };
     const openURL = vi.fn().mockResolvedValue(true);
 
-    await expect(
-      openCalendarOAuth({ apiClient, openURL, projectId: 'agent-hub' }),
-    ).resolves.toBe('https://accounts.google.com/o/oauth2/v2/auth?state=abc');
+    await expect(openCalendarOAuth({ apiClient, openURL })).resolves.toBe(
+      'https://accounts.google.com/o/oauth2/v2/auth?state=abc',
+    );
 
     expect(apiClient.startGoogleOAuth).toHaveBeenCalledWith({
-      returnTo: '/#/calendar/agent-hub',
+      returnTo: '/#/calendar',
       scopes: [CALENDAR_EVENTS_SCOPE],
     });
     expect(openURL).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?state=abc');
-    expect(calendarReturnTo('project/with space')).toBe('/#/calendar/project%2Fwith%20space');
+    expect(calendarReturnTo()).toBe('/#/calendar');
   });
 });

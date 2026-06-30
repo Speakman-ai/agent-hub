@@ -8,7 +8,6 @@ describe('projectLifecycleEntries', () => {
         expect(keys).toContain('board');
         expect(keys).toContain('epics');
         expect(keys).toContain('deployments');
-        expect(keys).toContain('calendar');
         expect(keys).toContain('threads');
         expect(keys).toContain('support');
         expect(keys).toContain('security');
@@ -24,13 +23,13 @@ describe('projectLifecycleEntries', () => {
             screen: 'Deployments',
         });
     });
-    it('exposes Calendar as a lifecycle destination', () => {
-        const entry = projectLifecycleEntries({}).find((e: any) => e.key === 'calendar');
-        expect(entry).toMatchObject({
-            label: 'Calendar',
-            icon: 'CalendarDays',
-            screen: 'Calendar',
-        });
+    it('omits Calendar from per-project navigation (it is a global Google surface)', () => {
+        // Regression (card 1287): Calendar moved out of the per-project lifecycle
+        // menu to the global Dashboard tier of the drawer. It must NOT appear as a
+        // project-scoped entry.
+        const keys = projectLifecycleEntries({}).map((e: any) => e.key);
+        expect(keys).not.toContain('calendar');
+        expect(projectLifecycleEntries({ gitHost: 'agenthub', githubRepo: 'x/y' }).map((e: any) => e.key)).not.toContain('calendar');
     });
     it('adds Repository when gitHost is agenthub', () => {
         const keys = projectLifecycleEntries({ gitHost: 'agenthub' }).map((e: any) => e.key);

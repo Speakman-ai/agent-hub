@@ -15,7 +15,9 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'pulls',
   'threads',
   'support',
-  'calendar',
+  // 'calendar' is intentionally NOT project-scoped: Calendar is a per-user
+  // Google surface that lives in the global Dashboard tier (`#/calendar`),
+  // never inside a single project. See card 1287 / the Google Workspace spec.
   'deployments',
   'replays',
   'security',

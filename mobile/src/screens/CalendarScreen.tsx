@@ -14,7 +14,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useApp } from '../context/AppContext';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
@@ -118,14 +117,14 @@ export function buildCalendarEventInput(form: any) {
   };
 }
 
-export function calendarReturnTo(projectId: any) {
-  const id = typeof projectId === 'string' ? projectId.trim() : '';
-  return `/#/calendar${id ? `/${encodeURIComponent(id)}` : ''}`;
+export function calendarReturnTo() {
+  // Calendar is a global, per-user surface — the return hash carries no project.
+  return '/#/calendar';
 }
 
-export async function openCalendarOAuth({ apiClient, openURL, projectId }: any) {
+export async function openCalendarOAuth({ apiClient, openURL }: any) {
   const body = await apiClient.startGoogleOAuth({
-    returnTo: calendarReturnTo(projectId),
+    returnTo: calendarReturnTo(),
     scopes: [CALENDAR_EVENTS_SCOPE],
   });
   await openURL(body.authorizeUrl);
@@ -295,12 +294,8 @@ function EventModal({ event, saving, error, onClose, onSave }: any) {
   );
 }
 
-export default function CalendarScreen({ route, navigation }: any) {
-  const { projects, agents, activeAgentId } = useApp();
+export default function CalendarScreen({ navigation }: any) {
   const sidebar = React.useContext(SidebarContext);
-  const routeProjectId = route?.params?.projectId || route?.params?.project?.id || '';
-  const activeAgent = agents?.find((agent: any) => agent.id === activeAgentId);
-  const projectId = routeProjectId || activeAgent?.projectId || projects?.[0]?.id || '';
   const [status, setStatus] = useState<any>(null);
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -338,7 +333,7 @@ export default function CalendarScreen({ route, navigation }: any) {
 
   const connect = async () => {
     try {
-      await openCalendarOAuth({ apiClient: api, openURL: Linking.openURL, projectId });
+      await openCalendarOAuth({ apiClient: api, openURL: Linking.openURL });
     } catch (err: any) {
       Alert.alert('Google Calendar', err.message || 'Failed to start Google consent');
     }

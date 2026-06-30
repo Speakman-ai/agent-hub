@@ -32,10 +32,28 @@ describe('CalendarAgendaPage', () => {
       serverConfigured: true,
     });
 
-    render(<CalendarAgendaPage projectId="agent-hub" />);
+    render(<CalendarAgendaPage />);
 
     expect(await screen.findByText('Connect Google to use Calendar')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Connect Google/i })).toBeInTheDocument();
+    expect(mockApi.listGoogleCalendarEvents).not.toHaveBeenCalled();
+  });
+
+  it('shows an inline Enable Calendar affordance when connected but missing consent', async () => {
+    // Connected to Google but the calendar.events scope was never granted →
+    // incremental consent. The pane must surface "Enable Calendar" and must NOT
+    // try to list events.
+    mockApi.getGoogleStatus.mockResolvedValueOnce({
+      connected: true,
+      email: 'person@example.com',
+      grantedScopes: ['https://www.googleapis.com/auth/gmail.send'],
+      serverConfigured: true,
+    });
+
+    render(<CalendarAgendaPage />);
+
+    expect(await screen.findByText('Enable Calendar access')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Enable Calendar/i })).toBeInTheDocument();
     expect(mockApi.listGoogleCalendarEvents).not.toHaveBeenCalled();
   });
 
@@ -65,7 +83,7 @@ describe('CalendarAgendaPage', () => {
     });
     mockApi.createGoogleCalendarEvent.mockResolvedValueOnce({ event: { id: 'event-1' } });
 
-    render(<CalendarAgendaPage projectId="agent-hub" />);
+    render(<CalendarAgendaPage />);
 
     await screen.findByText('No events this week');
     fireEvent.click(screen.getAllByRole('button', { name: /Create event/i })[0]);

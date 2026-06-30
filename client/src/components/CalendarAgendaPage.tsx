@@ -10,15 +10,15 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import {
+  CALENDAR_EVENTS_SCOPE,
+  hasCalendarScope,
+  type GoogleStatusLike,
+} from '../utils/googleSurface';
 
-export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+export { CALENDAR_EVENTS_SCOPE };
 
-type GoogleStatus = {
-  connected: boolean;
-  email?: string | null;
-  grantedScopes?: string[];
-  serverConfigured?: boolean;
-};
+type GoogleStatus = NonNullable<GoogleStatusLike>;
 
 type CalendarEventTime = {
   date?: string;
@@ -176,14 +176,6 @@ function eventTimeLabel(event: CalendarEvent) {
       ? end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
       : '';
   return `${date}, ${startTime}${endTime ? ` to ${endTime}` : ''}`;
-}
-
-function hasCalendarScope(status: GoogleStatus | null) {
-  const scopes = status?.grantedScopes || [];
-  return (
-    scopes.includes(CALENDAR_EVENTS_SCOPE) ||
-    scopes.includes('https://www.googleapis.com/auth/calendar')
-  );
 }
 
 function CalendarEventModal({
@@ -355,10 +347,8 @@ function CalendarEventModal({
 }
 
 export default function CalendarAgendaPage({
-  projectId: _projectId,
   onOpenAccountSettings,
 }: {
-  projectId: string;
   onOpenAccountSettings?: () => void;
 }) {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
