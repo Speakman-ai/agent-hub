@@ -155,6 +155,7 @@ import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
+import createGoogleCalendarRoutes from './routes/google-calendar.js';
 import type { AddressInfo } from 'net';
 import { setActualPort } from './server-port.js';
 
@@ -1236,6 +1237,7 @@ app.use(createMcpServerRoutes());
 // surface.
 app.use(createGithubOAuthRoutes(routeDeps));
 app.use(createGoogleOAuthRoutes(routeDeps));
+app.use(createGoogleCalendarRoutes(routeDeps));
 
 const server = createServer(app);
 const drainingLock = new Set<string>();

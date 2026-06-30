@@ -39,6 +39,8 @@ tags:
     description: Liveness and runtime info.
   - name: Auth
     description: Sign-in, API keys, per-user credential management.
+  - name: Google
+    description: Per-user Google Workspace proxy endpoints.
   - name: Projects
     description: Project CRUD and metadata.
   - name: Agents
@@ -4923,6 +4925,266 @@ components:
       required:
         - ok
       description: Acknowledgement envelope.
+    GoogleCalendarErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        requiredScopes:
+          type: array
+          items:
+            type: string
+      required:
+        - error
+    GoogleCalendarDateTime:
+      type: object
+      properties:
+        date:
+          type: string
+          description: All-day date in YYYY-MM-DD form.
+        dateTime:
+          type: string
+          description: RFC3339 timestamp. Offset is required unless timeZone is specified.
+          example: 2026-06-30T09:00:00-07:00
+        timeZone:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    GoogleCalendarAttendee:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        optional:
+          type: boolean
+        responseStatus:
+          type: string
+          enum:
+            - needsAction
+            - declined
+            - tentative
+            - accepted
+      required:
+        - email
+      additionalProperties: false
+    GoogleCalendarEventInput:
+      type: object
+      properties:
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        start:
+          $ref: "#/components/schemas/GoogleCalendarDateTime"
+        end:
+          $ref: "#/components/schemas/GoogleCalendarDateTime"
+        attendees:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoogleCalendarAttendee"
+        recurrence:
+          type: array
+          items:
+            type: string
+        colorId:
+          type: string
+        transparency:
+          type: string
+          enum:
+            - opaque
+            - transparent
+        visibility:
+          type: string
+          enum:
+            - default
+            - public
+            - private
+            - confidential
+        reminders:
+          type: object
+          properties:
+            useDefault:
+              type: boolean
+            overrides:
+              type: array
+              items:
+                type: object
+                properties:
+                  method:
+                    type: string
+                    enum:
+                      - email
+                      - popup
+                  minutes:
+                    type: integer
+                    minimum: 0
+                    maximum: 40320
+                required:
+                  - method
+                  - minutes
+                additionalProperties: false
+          additionalProperties: false
+      required:
+        - start
+        - end
+      additionalProperties: false
+    GoogleCalendarEventPatch:
+      type: object
+      properties:
+        summary:
+          type: string
+        description:
+          type: string
+        location:
+          type: string
+        start:
+          $ref: "#/components/schemas/GoogleCalendarDateTime"
+        end:
+          $ref: "#/components/schemas/GoogleCalendarDateTime"
+        attendees:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoogleCalendarAttendee"
+        recurrence:
+          type: array
+          items:
+            type: string
+        colorId:
+          type: string
+        transparency:
+          type: string
+          enum:
+            - opaque
+            - transparent
+        visibility:
+          type: string
+          enum:
+            - default
+            - public
+            - private
+            - confidential
+        reminders:
+          type: object
+          properties:
+            useDefault:
+              type: boolean
+            overrides:
+              type: array
+              items:
+                type: object
+                properties:
+                  method:
+                    type: string
+                    enum:
+                      - email
+                      - popup
+                  minutes:
+                    type: integer
+                    minimum: 0
+                    maximum: 40320
+                required:
+                  - method
+                  - minutes
+                additionalProperties: false
+          additionalProperties: false
+      additionalProperties: false
+    GoogleCalendarEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        htmlLink:
+          type: string
+          nullable: true
+        summary:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        location:
+          type: string
+          nullable: true
+        start:
+          allOf:
+            - $ref: "#/components/schemas/GoogleCalendarDateTime"
+            - nullable: true
+        end:
+          allOf:
+            - $ref: "#/components/schemas/GoogleCalendarDateTime"
+            - nullable: true
+        creator:
+          type: object
+          nullable: true
+          properties:
+            email:
+              type: string
+              nullable: true
+            displayName:
+              type: string
+              nullable: true
+          required:
+            - email
+            - displayName
+        organizer:
+          type: object
+          nullable: true
+          properties:
+            email:
+              type: string
+              nullable: true
+            displayName:
+              type: string
+              nullable: true
+          required:
+            - email
+            - displayName
+        attendees:
+          type: array
+          items:
+            $ref: "#/components/schemas/GoogleCalendarAttendee"
+        created:
+          type: string
+          nullable: true
+        updated:
+          type: string
+          nullable: true
+        etag:
+          type: string
+          nullable: true
+        recurringEventId:
+          type: string
+          nullable: true
+        hangoutLink:
+          type: string
+          nullable: true
+      required:
+        - id
+        - status
+        - htmlLink
+        - summary
+        - description
+        - location
+        - start
+        - end
+        - creator
+        - organizer
+        - created
+        - updated
+        - etag
+        - recurringEventId
+        - hangoutLink
     HeartbeatConfig:
       type: object
       properties:
@@ -19998,6 +20260,297 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/google/calendar/events:
+    get:
+      tags:
+        - Google
+      summary: List Google Calendar events for the calling user over a time range
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+            description: Calendar identifier. Defaults to Google Calendar `primary`.
+          required: false
+          description: Calendar identifier. Defaults to Google Calendar `primary`.
+          name: calendarId
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: Lower bound for event end time, as an RFC3339 timestamp with offset.
+            example: 2026-06-30T00:00:00Z
+          required: true
+          description: Lower bound for event end time, as an RFC3339 timestamp with offset.
+          name: timeMin
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: Upper bound for event start time, as an RFC3339 timestamp with offset.
+            example: 2026-07-01T00:00:00Z
+          required: true
+          description: Upper bound for event start time, as an RFC3339 timestamp with offset.
+          name: timeMax
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: timeZone
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 2500
+          required: false
+          name: maxResults
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: pageToken
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: q
+          in: query
+      responses:
+        "200":
+          description: Calendar events in agenda order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendarId:
+                    type: string
+                  timeMin:
+                    type: string
+                  timeMax:
+                    type: string
+                  timeZone:
+                    type: string
+                    nullable: true
+                  nextPageToken:
+                    type: string
+                    nullable: true
+                  nextSyncToken:
+                    type: string
+                    nullable: true
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GoogleCalendarEvent"
+                required:
+                  - calendarId
+                  - timeMin
+                  - timeMax
+                  - timeZone
+                  - nextPageToken
+                  - nextSyncToken
+                  - events
+        "400":
+          description: Invalid query.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "403":
+          description: Required Calendar scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "429":
+          description: Google Calendar rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "502":
+          description: Google Calendar request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+    post:
+      tags:
+        - Google
+      summary: Create a Google Calendar event for the calling user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                calendarId:
+                  type: string
+                  minLength: 1
+                sendUpdates:
+                  type: string
+                  enum:
+                    - all
+                    - externalOnly
+                    - none
+                event:
+                  $ref: "#/components/schemas/GoogleCalendarEventInput"
+              required:
+                - event
+              additionalProperties: false
+      responses:
+        "201":
+          description: Created event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendarId:
+                    type: string
+                  event:
+                    $ref: "#/components/schemas/GoogleCalendarEvent"
+                required:
+                  - calendarId
+                  - event
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "403":
+          description: Required Calendar scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "429":
+          description: Google Calendar rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "502":
+          description: Google Calendar request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+  /api/google/calendar/events/{eventId}:
+    patch:
+      tags:
+        - Google
+      summary: Patch a Google Calendar event for the calling user
+      parameters:
+        - schema:
+            type: string
+            minLength: 1
+          required: true
+          name: eventId
+          in: path
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                calendarId:
+                  type: string
+                  minLength: 1
+                sendUpdates:
+                  type: string
+                  enum:
+                    - all
+                    - externalOnly
+                    - none
+                event:
+                  $ref: "#/components/schemas/GoogleCalendarEventPatch"
+              required:
+                - event
+              additionalProperties: false
+      responses:
+        "200":
+          description: Updated event.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendarId:
+                    type: string
+                  event:
+                    $ref: "#/components/schemas/GoogleCalendarEvent"
+                required:
+                  - calendarId
+                  - event
+        "400":
+          description: Invalid body or event id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "403":
+          description: Required Calendar scope has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "404":
+          description: Calendar or event not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "429":
+          description: Google Calendar rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "502":
+          description: Google Calendar request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleCalendarErrorResponse"
   /api/auth/google/callback:
     get:
       tags:

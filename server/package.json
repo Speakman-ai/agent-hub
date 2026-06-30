@@ -6,7 +6,7 @@
   "scripts": {
     "start": "tsx index.ts",
     "dev": "tsx watch index.ts",
-    "typecheck": "node ./scripts/assert-dev-types.mjs && tsc --noEmit",
+    "typecheck": "node ./scripts/assert-dev-types.mjs && node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -27,6 +27,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "express-rate-limit": "^8.3.2",
+    "googleapis": "^173.0.0",
     "gray-matter": "^4.0.3",
     "node-cron": "^4.2.1",
     "nodemailer": "^9.0.1",

@@ -199,6 +199,7 @@ async function main(): Promise<void> {
     tags: [
       { name: 'Health', description: 'Liveness and runtime info.' },
       { name: 'Auth', description: 'Sign-in, API keys, per-user credential management.' },
+      { name: 'Google', description: 'Per-user Google Workspace proxy endpoints.' },
       { name: 'Projects', description: 'Project CRUD and metadata.' },
       { name: 'Agents', description: 'Agent configuration under a project.' },
       { name: 'Sessions', description: 'Chat sessions and message history.' },
