@@ -8,7 +8,12 @@
 #
 # Requirements on the runner:
 #   - `gh` CLI authenticated (GH_TOKEN / gh auth) with `actions:write` on the repo.
-#   - The repo is auto-detected from the checkout's `origin` remote.
+#   - The target repo comes from the project's configured `githubRepo`, which the
+#     Hub injects as `GH_REPO` into every deploy step. That is what makes `gh`
+#     target GitHub even though this project's `origin` remote is the self-hosted
+#     Hub git forge (`/data/git/<proj>.git`), not github.com — a bare
+#     `gh workflow run` would otherwise fail with "none of the git remotes ...
+#     point to a known GitHub host". Override with a `GH_REPO` project secret.
 #
 # To change the semver bump, edit `-f bump=` below (patch | minor | major).
 version: 1

@@ -448,6 +448,87 @@ describe('triggerDeployment — GitHub auth of the triggering user', () => {
   });
 });
 
+describe('runDeployment — GH_REPO injection (self-hosted-forge gh targeting)', () => {
+  it('injects the project GitHub repo as GH_REPO into the deploy step env', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const resolveProjectGithubRepo = vi.fn(() => 'Speakman-ai/agent-hub');
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-ghrepo',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveProjectGithubRepo,
+      },
+    );
+
+    expect(dep.status).toBe('success');
+    expect(resolveProjectGithubRepo).toHaveBeenCalledWith(PROJECT);
+    // GH_REPO reaches the lease spec env AND the per-step spawn env so `gh`
+    // targets GitHub even when the checkout's `origin` is the Hub git forge.
+    expect(fb.acquireCalls[0].env?.GH_REPO).toBe('Speakman-ai/agent-hub');
+    expect(fb.spawnArgs[0].env?.GH_REPO).toBe('Speakman-ai/agent-hub');
+  });
+
+  it('injects no GH_REPO when the project has no configured GitHub repo', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const resolveProjectGithubRepo = vi.fn(() => null);
+    await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-norepo',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveProjectGithubRepo,
+      },
+    );
+
+    expect(resolveProjectGithubRepo).toHaveBeenCalledWith(PROJECT);
+    expect(fb.acquireCalls[0].env?.GH_REPO).toBeUndefined();
+  });
+
+  it('injects GH_REPO for a gated environment resumed via approveDeployment', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const resolveProjectGithubRepo = vi.fn(() => 'Speakman-ai/agent-hub');
+    const deps: DeployOrchestratorDeps = {
+      broadcast: vi.fn(),
+      runnerBackend: fb.backend,
+      env: { PATH: '/usr/bin' },
+      resolveProjectGithubRepo,
+    };
+    const gated = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'sha-gated',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+      },
+      deps,
+    );
+    expect(gated.status).toBe('awaiting_approval');
+
+    await approveDeployment(
+      { deploymentId: gated.id, approverUserId: 'admin-1', approverRole: 'Admin' },
+      deps,
+    );
+
+    expect(fb.acquireCalls[0].env?.GH_REPO).toBe('Speakman-ai/agent-hub');
+  });
+});
+
 describe('triggerDeployment — failure', () => {
   it('fails fast on a non-zero step, skips the rest, marks error', async () => {
     const fb = makeFakeBackend([{ exitCode: 3, stdout: 'boom\n' }]);

@@ -180,6 +180,17 @@ export interface DeployOrchestratorDeps {
    * runs and surfaces a clearer auth error if creds are genuinely missing.
    */
   resolveGithubToken?: (userId: string) => Promise<string | null>;
+  /**
+   * Resolve the project's configured GitHub repo (`OWNER/REPO`, optionally
+   * `HOST/OWNER/REPO`) so deploy steps can target GitHub via `gh` even when the
+   * checkout's `origin` remote is NOT a GitHub host. Self-hosted-forge projects
+   * have `origin` pointing at the Hub git host (e.g. `/data/git/<proj>.git`), so
+   * a bare `gh workflow run ...` fails with "none of the git remotes ... point to
+   * a known GitHub host". When this returns a repo it is injected as `GH_REPO`,
+   * which overrides gh's local-remote detection for every `gh` command. Returns
+   * null/undefined → no `GH_REPO` is injected (gh falls back to remote detection).
+   */
+  resolveProjectGithubRepo?: (projectId: string) => string | null | undefined;
 }
 
 export interface TriggerDeploymentInput {
@@ -797,6 +808,20 @@ export async function runDeployment(
         );
       }
       applyGithubSpawnCredentials(baseEnv, userGhToken);
+    }
+
+    // Point `gh` at the project's configured GitHub repo regardless of what the
+    // checkout's `origin` remote is. Self-hosted-forge projects set `origin` to
+    // the Hub git host (e.g. `/data/git/<proj>.git`), so a bare `gh workflow run`
+    // in a deploy step fails with "none of the git remotes ... point to a known
+    // GitHub host". `GH_REPO` ([HOST/]OWNER/REPO) overrides gh's local-remote
+    // detection for every gh command. Applied BEFORE the project-secret merge so
+    // an explicit project `GH_REPO` secret still wins.
+    if (deps.resolveProjectGithubRepo) {
+      const repo = deps.resolveProjectGithubRepo(projectId);
+      if (typeof repo === 'string' && repo.trim()) {
+        baseEnv.GH_REPO = repo.trim();
+      }
     }
 
     mergeProjectSecretsSpawnEnv(baseEnv, {

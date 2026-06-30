@@ -456,6 +456,14 @@ export default function createDeploymentRoutes(
     resolveGithubToken:
       opts.orchestratorDeps?.resolveGithubToken ??
       ((userId: string) => resolveUserGithubToken(userId, deps.config)),
+    // Inject the project's configured GitHub repo as `GH_REPO` so deploy steps
+    // can run `gh ...` against GitHub even though the checkout's `origin` remote
+    // is the self-hosted Hub git forge (not a GitHub host). Without this, a step
+    // like `gh workflow run release-all.yml` fails resolving the repo from
+    // `origin`.
+    resolveProjectGithubRepo:
+      opts.orchestratorDeps?.resolveProjectGithubRepo ??
+      ((projectId: string) => deps.findProject(projectId)?.githubRepo ?? null),
   };
 
   router.post(
