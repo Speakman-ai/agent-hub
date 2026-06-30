@@ -19,6 +19,7 @@ import ThreadsScreen from './src/screens/ThreadsScreen';
 import CustomerSupportScreen from './src/screens/CustomerSupportScreen';
 import CalendarScreen from './src/screens/CalendarScreen';
 import GmailScreen from './src/screens/GmailScreen';
+import SheetsScreen from './src/screens/SheetsScreen';
 import SecurityScreen from './src/screens/SecurityScreen';
 import SessionChangesScreen from './src/screens/SessionChangesScreen';
 import DesignsListScreen from './src/screens/DesignsListScreen';
@@ -209,6 +210,7 @@ function AppContent() {
             <Stack.Screen name="CustomerSupport" component={CustomerSupportScreen}/>
             <Stack.Screen name="Calendar" component={CalendarScreen}/>
             <Stack.Screen name="Gmail" component={GmailScreen}/>
+            <Stack.Screen name="Sheets" component={SheetsScreen}/>
             <Stack.Screen name="Security" component={SecurityScreen}/>
             <Stack.Screen name="SessionChanges" component={SessionChangesScreen}/>
             <Stack.Screen name="Designs" component={DesignsListScreen}/>

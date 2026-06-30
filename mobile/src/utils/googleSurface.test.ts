@@ -3,18 +3,26 @@ import { describe, it, expect } from 'vitest';
 import {
   CALENDAR_EVENTS_SCOPE,
   CALENDAR_FULL_SCOPE,
+  DRIVE_FILE_SCOPE,
   GMAIL_FULL_SCOPE,
   GMAIL_MODIFY_SCOPE,
   GMAIL_READONLY_SCOPE,
   GMAIL_SEND_SCOPE,
   GMAIL_SURFACE_SCOPES,
+  SHEETS_READONLY_SCOPE,
+  SHEETS_SCOPE,
+  SHEETS_SURFACE_SCOPES,
   hasCalendarScope,
+  hasDriveFileScope,
   hasGmailReadScope,
   hasGmailSendScope,
   hasGoogleScope,
+  hasSheetsScope,
+  hasSheetsWriteScope,
   isGoogleConnected,
   shouldShowCalendarNav,
   shouldShowGmailNav,
+  shouldShowSheetsNav,
 } from './googleSurface';
 
 describe('googleSurface (mobile)', () => {
@@ -62,5 +70,31 @@ describe('googleSurface (mobile)', () => {
     expect(shouldShowGmailNav(null)).toBe(false);
     expect(shouldShowGmailNav({ connected: false })).toBe(false);
     expect(shouldShowGmailNav({ connected: true, grantedScopes: [] })).toBe(true);
+  });
+
+  it('SHEETS_SURFACE_SCOPES requests full spreadsheets + drive.file, never restricted Drive', () => {
+    expect(SHEETS_SURFACE_SCOPES).toEqual([SHEETS_SCOPE, DRIVE_FILE_SCOPE]);
+    expect(SHEETS_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
+    expect(SHEETS_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
+  });
+
+  it('hasSheetsScope reads with readonly/full; hasSheetsWriteScope needs the full scope', () => {
+    expect(hasSheetsScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(true);
+    expect(hasSheetsScope({ grantedScopes: [SHEETS_READONLY_SCOPE] })).toBe(true);
+    expect(hasSheetsScope({ grantedScopes: [] })).toBe(false);
+    expect(hasSheetsWriteScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(true);
+    expect(hasSheetsWriteScope({ grantedScopes: [SHEETS_READONLY_SCOPE] })).toBe(false);
+  });
+
+  it('hasDriveFileScope is true only with drive.file', () => {
+    expect(hasDriveFileScope({ grantedScopes: [DRIVE_FILE_SCOPE] })).toBe(true);
+    expect(hasDriveFileScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(false);
+    expect(hasDriveFileScope(null)).toBe(false);
+  });
+
+  it('shouldShowSheetsNav gates the drawer entry on connection only', () => {
+    expect(shouldShowSheetsNav(null)).toBe(false);
+    expect(shouldShowSheetsNav({ connected: false })).toBe(false);
+    expect(shouldShowSheetsNav({ connected: true, grantedScopes: [] })).toBe(true);
   });
 });

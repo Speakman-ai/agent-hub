@@ -272,6 +272,54 @@ describe('api Google connection helpers — mobile parity with web client', () =
         expect(url).toBe('https://example.test/api/google/calendar/events/event%2F1');
         expect(init.method).toBe('PATCH');
     });
+
+    it('listGoogleDriveFiles → GET /google/drive/files with picker query params', async () => {
+        await api.listGoogleDriveFiles({
+            q: "mimeType = 'application/vnd.google-apps.spreadsheet'",
+            orderBy: 'modifiedTime desc',
+            pageSize: 50,
+        });
+        const [url, init] = lastCall();
+        expect(url).toContain('https://example.test/api/google/drive/files?');
+        expect(url).toContain('orderBy=modifiedTime+desc');
+        expect(url).toContain('pageSize=50');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+
+    it('getGoogleSpreadsheet and readGoogleSheetValues hit the Sheets proxy', async () => {
+        await api.getGoogleSpreadsheet('sheet-1');
+        let [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/google/sheets/sheet-1');
+        expect(init.method ?? 'GET').toBe('GET');
+
+        mockFetch.mockClear();
+        await api.readGoogleSheetValues('sheet-1', { range: "'Tab1'!A1:B2" });
+        [url, init] = lastCall();
+        expect(url).toContain('https://example.test/api/google/sheets/sheet-1/values?range=');
+        expect(init.method ?? 'GET').toBe('GET');
+    });
+
+    it('updateGoogleSheetValues → PUT and appendGoogleSheetValues → POST', async () => {
+        await api.updateGoogleSheetValues('sheet-1', {
+            range: "'Tab1'!A1",
+            values: [['x']],
+            valueInputOption: 'USER_ENTERED',
+        });
+        let [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/google/sheets/sheet-1/values');
+        expect(init.method).toBe('PUT');
+        expect(JSON.parse(init.body)).toEqual({
+            range: "'Tab1'!A1",
+            values: [['x']],
+            valueInputOption: 'USER_ENTERED',
+        });
+
+        mockFetch.mockClear();
+        await api.appendGoogleSheetValues('sheet-1', { range: "'Tab1'!A1", values: [['y']] });
+        [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/google/sheets/sheet-1/values/append');
+        expect(init.method).toBe('POST');
+    });
 });
 describe('api deployment helpers — URL + body parity with web client', () => {
     it('getDeployConfig(projectId) → GET /projects/:id/deploy/config', async () => {

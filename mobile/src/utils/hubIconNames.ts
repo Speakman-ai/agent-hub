@@ -8,6 +8,7 @@ export const HUB_ICON_NAMES = [
     'BookOpen',
     'Bot',
     'CalendarDays',
+    'FileSpreadsheet',
     'ChevronDown',
     'ChevronRight',
     'Clock',

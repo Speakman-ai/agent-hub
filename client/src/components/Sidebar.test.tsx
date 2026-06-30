@@ -123,6 +123,32 @@ describe('Sidebar — global Gmail nav (per-user Google surface)', () => {
   });
 });
 
+describe('Sidebar — global Sheets nav (per-user Google surface)', () => {
+  it('hides the Sheets entry when the Google account is not connected', () => {
+    render(<Sidebar {...buildProps({ googleSheetsNavVisible: false })} />);
+    expect(screen.queryByTestId('sidebar-global-sheets')).not.toBeInTheDocument();
+  });
+
+  it('renders the Sheets entry in the global Dashboard tier when connected', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ googleSheetsNavVisible: true, onNavigate })} />);
+    const sheetsNav = screen.getByTestId('sidebar-global-sheets');
+    expect(sheetsNav).toBeInTheDocument();
+    // It navigates to the global 'sheets' view, not a project-scoped route.
+    fireEvent.click(sheetsNav);
+    expect(onNavigate).toHaveBeenCalledWith('sheets');
+  });
+
+  it('never nests Sheets inside a per-project block (no per-project spreadsheet tab)', () => {
+    render(<Sidebar {...buildProps({ googleSheetsNavVisible: true })} />);
+    // Exactly one Sheets entry exists, and it lives in the global tier — there is
+    // no per-project Sheets tab. The project block exposes its own menu items
+    // (Wiki, Kanban, etc.) but never a Sheets one.
+    expect(screen.getAllByTestId('sidebar-global-sheets')).toHaveLength(1);
+    expect(screen.queryByText('Sheets', { selector: 'a' })).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — bulk clear affordance', () => {
   it('renders a single "Clear pushed" button and no "Clear merged" button', () => {
     render(<Sidebar {...buildProps()} />);

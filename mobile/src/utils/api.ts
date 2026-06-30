@@ -469,6 +469,43 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
     }),
+    // Drive proxy (user-scoped, drive.file only). Lists app-accessible files so
+    // the Sheets viewer can offer a spreadsheet picker. Tokens stay server-side.
+    listGoogleDriveFiles: ({ q, pageSize, pageToken, orderBy }: any = {}) => {
+        const params = new URLSearchParams();
+        if (q)
+            params.set('q', q);
+        if (pageSize)
+            params.set('pageSize', String(pageSize));
+        if (pageToken)
+            params.set('pageToken', pageToken);
+        if (orderBy)
+            params.set('orderBy', orderBy);
+        const qs = params.toString();
+        return fetchJSON(`/google/drive/files${qs ? `?${qs}` : ''}`);
+    },
+    getGoogleDriveFile: (fileId: any) => fetchJSON(`/google/drive/files/${encodeURIComponent(fileId)}`),
+    // Sheets proxy (user-scoped). Tokens stay server-side; clients never hold them.
+    getGoogleSpreadsheet: (spreadsheetId: any) => fetchJSON(`/google/sheets/${encodeURIComponent(spreadsheetId)}`),
+    readGoogleSheetValues: (spreadsheetId: any, { range, majorDimension, valueRenderOption, dateTimeRenderOption }: any) => {
+        const params = new URLSearchParams();
+        params.set('range', range);
+        if (majorDimension)
+            params.set('majorDimension', majorDimension);
+        if (valueRenderOption)
+            params.set('valueRenderOption', valueRenderOption);
+        if (dateTimeRenderOption)
+            params.set('dateTimeRenderOption', dateTimeRenderOption);
+        return fetchJSON(`/google/sheets/${encodeURIComponent(spreadsheetId)}/values?${params.toString()}`);
+    },
+    updateGoogleSheetValues: (spreadsheetId: any, data: any) => fetchJSON(`/google/sheets/${encodeURIComponent(spreadsheetId)}/values`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+    }),
+    appendGoogleSheetValues: (spreadsheetId: any, data: any) => fetchJSON(`/google/sheets/${encodeURIComponent(spreadsheetId)}/values/append`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     // Per-user engine/model overrides per agent.
     getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
     putMyAgentEngineOverride: (agentId: any, data: any) => fetchJSON(`/auth/me/agent-engine-overrides/${agentId}`, {

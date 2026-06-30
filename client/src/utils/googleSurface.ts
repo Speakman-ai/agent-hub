@@ -32,6 +32,23 @@ export const GMAIL_FULL_SCOPE = 'https://mail.google.com/';
 // round-trip without over-granting mailbox-mutation power.
 export const GMAIL_SURFACE_SCOPES = [GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE];
 
+// Sheets scopes. The viewer reads and writes spreadsheet values, so it requests
+// the full `spreadsheets` scope (sensitive, not restricted). `spreadsheets.readonly`
+// still satisfies the read predicate for accounts that granted it previously, but
+// editing requires the full scope.
+export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
+
+// Drive scope. The picker lists spreadsheets the user has created or opened with
+// the Hub via the NON-restricted `drive.file` scope only — never `drive.readonly`
+// or full `drive` (restricted, triggers annual CASA). Mirrors the server gate.
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+// One incremental-consent request for the Sheets surface asks for the full
+// spreadsheets scope (read + write) plus drive.file so the Drive-backed picker can
+// list spreadsheets after a single round-trip.
+export const SHEETS_SURFACE_SCOPES = [SHEETS_SCOPE, DRIVE_FILE_SCOPE];
+
 export type GoogleStatusLike = {
   connected?: boolean;
   email?: string | null;
@@ -91,5 +108,30 @@ export function hasGmailSendScope(status: GoogleStatusLike): boolean {
  * affordance for incremental consent.
  */
 export function shouldShowGmailNav(status: GoogleStatusLike): boolean {
+  return isGoogleConnected(status);
+}
+
+/** True when the linked Google account can read spreadsheet values (readonly or full). */
+export function hasSheetsScope(status: GoogleStatusLike): boolean {
+  return hasGoogleScope(status, SHEETS_SCOPE) || hasGoogleScope(status, SHEETS_READONLY_SCOPE);
+}
+
+/** True when the linked Google account can WRITE spreadsheet values (full scope only). */
+export function hasSheetsWriteScope(status: GoogleStatusLike): boolean {
+  return hasGoogleScope(status, SHEETS_SCOPE);
+}
+
+/** True when the Drive-backed spreadsheet picker can list app files (drive.file). */
+export function hasDriveFileScope(status: GoogleStatusLike): boolean {
+  return hasGoogleScope(status, DRIVE_FILE_SCOPE);
+}
+
+/**
+ * Whether to render the global Sheets entry in navigation. Gated purely on
+ * connection (NOT scope), mirroring Calendar/Gmail: a connected-but-unconsented
+ * user still sees the nav item, and the Sheets pane shows the inline "Enable
+ * Sheets" affordance for incremental consent.
+ */
+export function shouldShowSheetsNav(status: GoogleStatusLike): boolean {
   return isGoogleConnected(status);
 }

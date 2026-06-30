@@ -2,18 +2,26 @@ import { describe, it, expect } from 'vitest';
 import {
   CALENDAR_EVENTS_SCOPE,
   CALENDAR_FULL_SCOPE,
+  DRIVE_FILE_SCOPE,
   GMAIL_FULL_SCOPE,
   GMAIL_MODIFY_SCOPE,
   GMAIL_READONLY_SCOPE,
   GMAIL_SEND_SCOPE,
   GMAIL_SURFACE_SCOPES,
+  SHEETS_READONLY_SCOPE,
+  SHEETS_SCOPE,
+  SHEETS_SURFACE_SCOPES,
   hasCalendarScope,
+  hasDriveFileScope,
   hasGmailReadScope,
   hasGmailSendScope,
   hasGoogleScope,
+  hasSheetsScope,
+  hasSheetsWriteScope,
   isGoogleConnected,
   shouldShowCalendarNav,
   shouldShowGmailNav,
+  shouldShowSheetsNav,
 } from './googleSurface';
 
 describe('googleSurface', () => {
@@ -106,6 +114,52 @@ describe('googleSurface', () => {
       expect(shouldShowGmailNav({ connected: true, grantedScopes: [GMAIL_MODIFY_SCOPE] })).toBe(
         true,
       );
+    });
+  });
+
+  describe('SHEETS_SURFACE_SCOPES', () => {
+    it('requests the full spreadsheets scope plus drive.file, never a restricted Drive scope', () => {
+      // The viewer reads + edits values (full spreadsheets) and lists files via
+      // the Drive picker (drive.file). It must NOT request drive.readonly or the
+      // full drive scope, which are restricted and trigger annual CASA.
+      expect(SHEETS_SURFACE_SCOPES).toEqual([SHEETS_SCOPE, DRIVE_FILE_SCOPE]);
+      expect(SHEETS_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
+      expect(SHEETS_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
+    });
+  });
+
+  describe('hasSheetsScope / hasSheetsWriteScope', () => {
+    it('reads with full or readonly spreadsheets scope, writes only with the full scope', () => {
+      expect(hasSheetsScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(true);
+      expect(hasSheetsScope({ grantedScopes: [SHEETS_READONLY_SCOPE] })).toBe(true);
+      expect(hasSheetsScope({ grantedScopes: [] })).toBe(false);
+      expect(hasSheetsScope(null)).toBe(false);
+
+      // Write requires the full spreadsheets scope; readonly is read-only.
+      expect(hasSheetsWriteScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(true);
+      expect(hasSheetsWriteScope({ grantedScopes: [SHEETS_READONLY_SCOPE] })).toBe(false);
+    });
+  });
+
+  describe('hasDriveFileScope', () => {
+    it('is true only when drive.file is granted', () => {
+      expect(hasDriveFileScope({ grantedScopes: [DRIVE_FILE_SCOPE] })).toBe(true);
+      expect(hasDriveFileScope({ grantedScopes: [SHEETS_SCOPE] })).toBe(false);
+      expect(hasDriveFileScope(null)).toBe(false);
+    });
+  });
+
+  describe('shouldShowSheetsNav', () => {
+    it('hides the nav entry when signed out', () => {
+      expect(shouldShowSheetsNav(null)).toBe(false);
+      expect(shouldShowSheetsNav({ connected: false, grantedScopes: [] })).toBe(false);
+    });
+
+    it('shows the nav entry as soon as Google is connected, even before consent', () => {
+      // Gated on connection only — the pane shows the inline "Enable Sheets"
+      // affordance when the spreadsheets scope is missing.
+      expect(shouldShowSheetsNav({ connected: true, grantedScopes: [] })).toBe(true);
+      expect(shouldShowSheetsNav({ connected: true, grantedScopes: [SHEETS_SCOPE] })).toBe(true);
     });
   });
 });

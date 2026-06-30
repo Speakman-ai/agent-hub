@@ -10,7 +10,7 @@ import { relativeTime, daysUntilPurge, parseDate } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
 import { isWorkflowProject } from '../utils/project-mode';
 import { projectLifecycleEntries, projectSettingsEntries } from '../utils/projectMenu';
-import { shouldShowCalendarNav, shouldShowGmailNav } from '../utils/googleSurface';
+import { shouldShowCalendarNav, shouldShowGmailNav, shouldShowSheetsNav } from '../utils/googleSurface';
 import { deriveSessionState } from '../utils/deriveSessionState';
 import SessionStateIcon from './SessionStateIcon';
 import HubIcon from './HubIcon';
@@ -64,6 +64,7 @@ export default function DrawerContent({ navigation }: any) {
     }, []);
     const calendarNavVisible = shouldShowCalendarNav(googleStatus);
     const gmailNavVisible = shouldShowGmailNav(googleStatus);
+    const sheetsNavVisible = shouldShowSheetsNav(googleStatus);
     const orgState = getOrgs();
     const orgs = orgState?.orgs || [];
     const activeOrg = getActiveOrg();
@@ -402,6 +403,20 @@ export default function DrawerContent({ navigation }: any) {
           }}>
             <HubIcon name="Mail" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
             <Text style={styles.dashboardText}>Gmail</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Global Sheets — a per-USER Google surface, not project-scoped. Only
+            shown when the user's Google account is connected
+            (`/api/auth/google/status` connected=true). When not connected, the
+            connect affordance lives in Settings -> Account. */}
+        {sheetsNavVisible && (
+          <TouchableOpacity testID="drawer-global-sheets" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('Sheets');
+            navigation.closeDrawer();
+          }}>
+            <HubIcon name="FileSpreadsheet" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
+            <Text style={styles.dashboardText}>Sheets</Text>
           </TouchableOpacity>
         )}
 

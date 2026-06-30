@@ -24,6 +24,15 @@ export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 export const GMAIL_FULL_SCOPE = 'https://mail.google.com/';
 export const GMAIL_SURFACE_SCOPES = [GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE];
 
+// Sheets + Drive scopes. The viewer reads + edits spreadsheet values (full
+// `spreadsheets`, sensitive) and lists spreadsheets via the NON-restricted
+// `drive.file` picker — never `drive.readonly` or full `drive` (restricted,
+// triggers annual CASA). Mirrors the server scope gates and the web client.
+export const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+export const SHEETS_SURFACE_SCOPES = [SHEETS_SCOPE, DRIVE_FILE_SCOPE];
+
 /** True only when the calling user has linked a Google account. */
 export function isGoogleConnected(status: any): boolean {
   return !!status?.connected;
@@ -74,5 +83,30 @@ export function hasGmailSendScope(status: any): boolean {
  * affordance for incremental consent.
  */
 export function shouldShowGmailNav(status: any): boolean {
+  return isGoogleConnected(status);
+}
+
+/** True when the linked Google account can read spreadsheet values (readonly/full). */
+export function hasSheetsScope(status: any): boolean {
+  return hasGoogleScope(status, SHEETS_SCOPE) || hasGoogleScope(status, SHEETS_READONLY_SCOPE);
+}
+
+/** True when the linked Google account can WRITE spreadsheet values (full scope only). */
+export function hasSheetsWriteScope(status: any): boolean {
+  return hasGoogleScope(status, SHEETS_SCOPE);
+}
+
+/** True when the Drive-backed spreadsheet picker can list app files (drive.file). */
+export function hasDriveFileScope(status: any): boolean {
+  return hasGoogleScope(status, DRIVE_FILE_SCOPE);
+}
+
+/**
+ * Whether to render the global Sheets entry in the drawer. Gated purely on
+ * connection (NOT scope), mirroring Calendar/Gmail: a connected-but-unconsented
+ * user still sees the nav item, and the Sheets screen shows the inline "Enable
+ * Sheets" affordance for incremental consent.
+ */
+export function shouldShowSheetsNav(status: any): boolean {
   return isGoogleConnected(status);
 }
