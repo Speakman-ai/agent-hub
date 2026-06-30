@@ -18,6 +18,19 @@ export const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v
 /** Google's OAuth 2.0 token endpoint (code exchange + refresh). */
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
+/** Google's OAuth 2.0 token revocation endpoint (used on disconnect). */
+export const GOOGLE_REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke';
+
+/**
+ * OpenID Connect UserInfo endpoint. Called immediately after a code exchange
+ * with the fresh access token so we can persist the linked account's stable
+ * `sub` + `email` alongside the tokens. Requires the `openid`/`email` scopes,
+ * which {@link GOOGLE_IDENTITY_SCOPES} always requests.
+ *
+ * Ref: https://developers.google.com/identity/openid-connect/openid-connect#an-id-tokens-payload
+ */
+export const GOOGLE_USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo';
+
 /**
  * The OAuth callback path. The full redirect URI (this path appended to the
  * resolved public base) is what must be registered as an *authorized redirect
@@ -186,4 +199,138 @@ export async function refreshGoogleAccessToken(opts: {
     throw new Error('Google OAuth refresh response missing access_token/expires_in');
   }
   return json as GoogleRefreshedTokens;
+}
+
+/**
+ * Shape of a successful authorization-code exchange. `refresh_token` is present
+ * because `/start` requests `access_type=offline` + `prompt=consent`; it is
+ * still typed optional because Google omits it on a re-consent that grants no
+ * new scopes (incremental auth). `scope` echoes the space-delimited granted
+ * scopes. `id_token` is present because `openid` is always requested.
+ *
+ * Ref: https://developers.google.com/identity/protocols/oauth2/web-server#exchange-authorization-code
+ */
+export interface GoogleTokenResponse {
+  access_token: string;
+  expires_in: number;
+  refresh_token?: string;
+  scope?: string;
+  token_type?: string;
+  id_token?: string;
+}
+
+/** The linked Google account, as resolved from the UserInfo endpoint. */
+export interface GoogleUserInfo {
+  /** Stable, never-reassigned account identifier. The canonical account key. */
+  sub: string;
+  email: string;
+  email_verified?: boolean;
+  name?: string | null;
+  picture?: string | null;
+}
+
+/**
+ * Exchange an authorization code (delivered to our callback as `?code=...`) for
+ * an access token + refresh token. Throws on any non-2xx or `error` body; the
+ * callback surfaces that as a 502 status page.
+ */
+export async function exchangeCodeForGoogleTokens(opts: {
+  credentials: GoogleOAuthCredentials;
+  code: string;
+  redirectUri: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GoogleTokenResponse> {
+  const f = opts.fetchImpl ?? fetch;
+  const body = new URLSearchParams({
+    client_id: opts.credentials.clientId,
+    client_secret: opts.credentials.clientSecret,
+    code: opts.code,
+    grant_type: 'authorization_code',
+    redirect_uri: opts.redirectUri,
+  });
+  const res = await f(GOOGLE_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(),
+  });
+  if (!res.ok) {
+    // Read the body once, then parse the captured text — a Response body is a
+    // one-shot stream, so calling res.json() then res.text() would double-read.
+    const rawBody = await res.text().catch(() => '');
+    let parsed: { error?: string; error_description?: string } = {};
+    try {
+      parsed = JSON.parse(rawBody) as typeof parsed;
+    } catch {
+      // Non-JSON error body — fall back to the raw text below.
+    }
+    const detail = parsed.error_description || parsed.error || rawBody;
+    throw new Error(`Google OAuth token exchange failed (${res.status}): ${detail}`);
+  }
+  const json = (await res.json()) as Partial<GoogleTokenResponse> & {
+    error?: string;
+    error_description?: string;
+  };
+  if (json.error) {
+    throw new Error(`Google OAuth error: ${json.error_description || json.error}`);
+  }
+  if (!json.access_token || typeof json.expires_in !== 'number') {
+    throw new Error('Google OAuth token response missing access_token/expires_in');
+  }
+  return json as GoogleTokenResponse;
+}
+
+/**
+ * Resolve the linked account's stable `sub` + email from the OIDC UserInfo
+ * endpoint using a freshly-issued access token. Called right after the code
+ * exchange so the connection row records *which* Google account is linked.
+ */
+export async function fetchGoogleUserInfo(opts: {
+  accessToken: string;
+  fetchImpl?: typeof fetch;
+}): Promise<GoogleUserInfo> {
+  const f = opts.fetchImpl ?? fetch;
+  const res = await f(GOOGLE_USERINFO_ENDPOINT, {
+    headers: { Authorization: `Bearer ${opts.accessToken}`, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Google userinfo fetch failed (${res.status}): ${text}`);
+  }
+  const json = (await res.json()) as Partial<GoogleUserInfo>;
+  if (typeof json.sub !== 'string' || !json.sub) {
+    throw new Error('Google userinfo response missing sub');
+  }
+  return {
+    sub: json.sub,
+    email: typeof json.email === 'string' ? json.email : '',
+    email_verified: json.email_verified,
+    name: json.name ?? null,
+    picture: json.picture ?? null,
+  };
+}
+
+/**
+ * Best-effort revocation of a Google token (access or refresh) at the revoke
+ * endpoint. Used on disconnect so the grant is dropped on Google's side, not
+ * just locally. Never throws — a failed revoke (already-revoked token, network
+ * blip) must not block clearing the local row.
+ */
+export async function revokeGoogleToken(opts: {
+  token: string;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const f = opts.fetchImpl ?? fetch;
+  try {
+    const res = await f(GOOGLE_REVOKE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: opts.token }).toString(),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }

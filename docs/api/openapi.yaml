@@ -19986,6 +19986,130 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/google/callback:
+    get:
+      tags:
+        - Auth
+      summary: Google OAuth callback — exchanges code for tokens (HTML response).
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: code
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: state
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: error
+          in: query
+      responses:
+        "200":
+          description: Successful connect (HTML status page).
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: Missing or invalid parameters / state.
+          content:
+            text/html:
+              schema:
+                type: string
+        "502":
+          description: Google token exchange failed.
+          content:
+            text/html:
+              schema:
+                type: string
+        "503":
+          description: Server not ready or OAuth not configured.
+          content:
+            text/html:
+              schema:
+                type: string
+  /api/auth/google/status:
+    get:
+      tags:
+        - Auth
+      summary: Google connection status for the calling user (never returns tokens).
+      responses:
+        "200":
+          description: Connection summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:
+                    type: boolean
+                  email:
+                    type: string
+                    nullable: true
+                  grantedScopes:
+                    type: array
+                    items:
+                      type: string
+                  connectedAt:
+                    type: string
+                    nullable: true
+                  tokenExpiresAt:
+                    type: string
+                    nullable: true
+                  serverConfigured:
+                    type: boolean
+                required:
+                  - connected
+                  - email
+                  - grantedScopes
+                  - connectedAt
+                  - tokenExpiresAt
+                  - serverConfigured
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/auth/google/connect:
+    delete:
+      tags:
+        - Auth
+      summary: Disconnect the calling user from Google (revoke + clear).
+      responses:
+        "200":
+          description: Disconnected.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
+                required:
+                  - ok
+        "401":
+          description: Not authenticated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/auth/google/start:
     get:
       tags:
