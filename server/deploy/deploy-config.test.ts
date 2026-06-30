@@ -1,6 +1,8 @@
 /**
  * deploy-config.ts parser — pure validation tests (no IO).
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   parseDeployConfig,
@@ -212,6 +214,35 @@ environments:
       expect(err).toBeInstanceOf(DeployConfigError);
       expect((err as DeployConfigError).reason).toBe('missing_workflow_ref');
     }
+  });
+});
+
+describe("this repo's .agent-hub/deploy.yaml", () => {
+  // Regression: the github_workflow dispatch-and-watch step type shipped, but our
+  // own production deploy step kept using a fire-and-forget `run: gh workflow run`
+  // — so deploys reported success the instant the dispatch queued and never
+  // listened for the release workflow's conclusion. Pin the production step to the
+  // watch-to-completion shape so it can't silently regress to fire-and-forget.
+  const deployYamlPath = fileURLToPath(new URL('../../.agent-hub/deploy.yaml', import.meta.url));
+  const raw = readFileSync(deployYamlPath, 'utf8');
+
+  it('parses without error', () => {
+    expect(() => parseDeployConfig(raw)).not.toThrow();
+  });
+
+  it('dispatches release-all.yml AND watches it to completion (not fire-and-forget)', () => {
+    const cfg = parseDeployConfig(raw);
+    const prod = resolveDeployEnvironment(cfg, 'production');
+    const step = prod.steps.find((s) => s.githubWorkflow);
+    expect(step, 'production must use a github_workflow step, not a bare `run:`').toBeTruthy();
+    expect(step!.githubWorkflow).toEqual({
+      workflow: 'release-all.yml',
+      ref: 'main',
+      inputs: { bump: 'patch' },
+    });
+    // The compiled run must actually poll the run to completion.
+    expect(step!.run).toContain('gh run watch');
+    expect(step!.run).toContain('--exit-status');
   });
 });
 

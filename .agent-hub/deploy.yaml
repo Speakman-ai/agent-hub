@@ -15,7 +15,14 @@
 #     `gh workflow run` would otherwise fail with "none of the git remotes ...
 #     point to a known GitHub host". Override with a `GH_REPO` project secret.
 #
-# To change the semver bump, edit `-f bump=` below (patch | minor | major).
+# To change the semver bump, edit `inputs.bump` below (patch | minor | major).
+#
+# This production step uses the `github_workflow:` shape (NOT a plain `run:`), so
+# the deploy DISPATCHES release-all.yml and then POLLS the resulting Actions run
+# to completion: the step exit code mirrors the workflow conclusion and the run
+# url/conclusion are surfaced on the Deployments page. A bare
+# `run: gh workflow run ...` fires-and-forgets — it reports success the instant
+# the dispatch is queued, without ever listening for whether the release passed.
 version: 1
 environments:
   production:
@@ -25,4 +32,8 @@ environments:
     timeout_minutes: 30
     steps:
       - name: trigger-release-all
-        run: gh workflow run release-all.yml --ref main -f bump=patch
+        github_workflow:
+          workflow: release-all.yml
+          ref: main
+          inputs:
+            bump: patch
