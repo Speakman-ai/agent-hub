@@ -6,6 +6,7 @@ import ResetPasswordPage from './ResetPasswordPage';
 import {
   isAuthenticated,
   getAuthStatus,
+  getAuthRecord,
   setActiveOrgIsLocal,
   needsEmailUpdate,
   updateEmail,
@@ -202,13 +203,18 @@ export default function AuthGate({ children }: any) {
     return <LoginScreen onAuthenticated={() => setNonce((n: any) => n + 1)} />;
   }
 
-  const shouldPromptForEmailUpdate =
-    status.required &&
-    (isAuthenticated()
-      ? needsEmailUpdate() || !!status.needsEmailUpdate
-      : !!status.activeOrgIsLocal && !!status.needsEmailUpdate);
+  const shouldPromptForEmailUpdate = shouldShowEmailUpdatePrompt(status);
   if (shouldPromptForEmailUpdate) {
-    return <LegacyEmailPrompt onComplete={() => setNonce((n: any) => n + 1)} />;
+    return (
+      <LegacyEmailPrompt
+        onComplete={() => {
+          // Drop stale status from the first /auth/status fetch so we don't
+          // re-render this form while the nonce-triggered refetch is in flight.
+          setStatus((prev: any) => ({ ...prev, needsEmailUpdate: false }));
+          setNonce((n: any) => n + 1);
+        }}
+      />
+    );
   }
 
   return children;
@@ -216,6 +222,34 @@ export default function AuthGate({ children }: any) {
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+/**
+ * Decide whether to block the app behind the legacy-email migration prompt.
+ *
+ * Once PUT /auth/me/email succeeds, `updateEmail` persists a JWT whose
+ * `user.needsEmailUpdate` is explicitly `false`. That must win over a stale
+ * `needsEmailUpdate` flag from the earlier GET /auth/status response — the
+ * OR that caused the prompt to stick after a successful save.
+ */
+export function shouldShowEmailUpdatePrompt(status: {
+  required?: boolean;
+  needsEmailUpdate?: boolean;
+  activeOrgIsLocal?: boolean;
+}) {
+  if (!status.required) return false;
+
+  if (isAuthenticated()) {
+    // auth.json is the migration source of truth once /auth/status has loaded.
+    if (!status.needsEmailUpdate) return false;
+
+    const tokenUser = getAuthRecord()?.user;
+    if (tokenUser?.needsEmailUpdate === false) return false;
+    if (needsEmailUpdate()) return true;
+    return !!status.needsEmailUpdate;
+  }
+
+  return !!status.activeOrgIsLocal && !!status.needsEmailUpdate;
 }
 
 function LegacyEmailPrompt({ onComplete }: any) {
