@@ -3773,6 +3773,15 @@ components:
         error:
           type: string
           nullable: true
+        github_run_id:
+          type: string
+          nullable: true
+        github_run_url:
+          type: string
+          nullable: true
+        github_conclusion:
+          type: string
+          nullable: true
         started_at:
           type: string
           nullable: true
@@ -3789,6 +3798,9 @@ components:
         - status
         - exit_code
         - error
+        - github_run_id
+        - github_run_url
+        - github_conclusion
         - started_at
         - completed_at
         - created_at

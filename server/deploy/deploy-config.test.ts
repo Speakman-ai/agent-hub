@@ -134,6 +134,87 @@ describe('parseDeployConfig — rejections', () => {
   }
 });
 
+describe('github_workflow steps', () => {
+  it('compiles a github_workflow step into a run script and keeps the spec', () => {
+    const cfg = parseDeployConfig(`
+version: 1
+environments:
+  production:
+    steps:
+      - name: Release
+        github_workflow:
+          workflow: release.yml
+          ref: main
+          inputs:
+            bump: patch
+          poll_interval_seconds: 15
+`);
+    const step = resolveDeployEnvironment(cfg, 'production').steps[0];
+    expect(step.name).toBe('Release');
+    expect(step.githubWorkflow).toEqual({
+      workflow: 'release.yml',
+      ref: 'main',
+      inputs: { bump: 'patch' },
+      pollIntervalSeconds: 15,
+    });
+    // The executable `run` is the compiled dispatch+poll script.
+    expect(step.run).toContain('gh workflow run');
+    expect(step.run).toContain('gh run watch');
+  });
+
+  it('rejects a step that sets both run and github_workflow', () => {
+    try {
+      parseDeployConfig(`
+version: 1
+environments:
+  production:
+    steps:
+      - run: ./x.sh
+        github_workflow:
+          workflow: release.yml
+`);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(DeployConfigError);
+      expect((err as DeployConfigError).reason).toBe('conflicting_step');
+    }
+  });
+
+  it('rejects a github_workflow step missing a workflow', () => {
+    try {
+      parseDeployConfig(`
+version: 1
+environments:
+  production:
+    steps:
+      - github_workflow:
+          ref: main
+`);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(DeployConfigError);
+      expect((err as DeployConfigError).reason).toBe('missing_workflow');
+    }
+  });
+
+  it('rejects a github_workflow step missing a ref (workflow_dispatch needs a branch/tag)', () => {
+    try {
+      parseDeployConfig(`
+version: 1
+environments:
+  production:
+    steps:
+      - github_workflow:
+          workflow: release.yml
+`);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(DeployConfigError);
+      expect((err as DeployConfigError).reason).toBe('missing_workflow_ref');
+    }
+  });
+});
+
 describe('resolveDeployEnvironment', () => {
   it('returns the named environment', () => {
     const cfg = parseDeployConfig(VALID);

@@ -311,6 +311,12 @@ export interface DeploymentStepRow {
   status: 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'cancelled';
   exit_code: number | null;
   error: string | null;
+  /** github_workflow step: dispatched GitHub Actions run id (NULL otherwise). */
+  github_run_id: string | null;
+  /** github_workflow step: dispatched GitHub Actions run URL (NULL otherwise). */
+  github_run_url: string | null;
+  /** github_workflow step: run conclusion (success/failure/…), NULL otherwise. */
+  github_conclusion: string | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
@@ -1585,6 +1591,7 @@ export interface Stmts {
   getDeploymentStep: Stmt;
   listDeploymentSteps: Stmt;
   updateDeploymentStepStatus: Stmt;
+  setDeploymentStepGithubRun: Stmt;
   upsertDeploymentEnvironment: Stmt;
   getDeploymentEnvironment: Stmt;
   listDeploymentEnvironments: Stmt;

@@ -442,6 +442,25 @@ describe('DeploymentsPage', () => {
     expect(screen.queryByTestId('deployments-settings-panel')).toBeNull();
   });
 
+  it('links the dispatched GitHub Actions run and shows its conclusion on a workflow step', async () => {
+    (api.getDeployment as any).mockResolvedValue(
+      snapshot(deployment(), [
+        step({
+          name: 'Release',
+          github_run_id: '4242',
+          github_run_url: 'https://github.com/o/r/actions/runs/4242',
+          github_conclusion: 'success',
+        }),
+      ]),
+    );
+
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const link = await screen.findByRole('link', { name: /View GitHub Actions run #4242/ });
+    expect(link).toHaveAttribute('href', 'https://github.com/o/r/actions/runs/4242');
+    expect(screen.getByText(/workflow success/)).toBeInTheDocument();
+  });
+
   it('applies deployment_update WebSocket events to the selected run and live stream', async () => {
     (api.getDeployConfig as any).mockResolvedValue(config([env({ lastDeployment: null })]));
     (api.getDeployment as any).mockResolvedValue(snapshot());

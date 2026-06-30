@@ -2887,6 +2887,15 @@ function initDb(dataDir: string): void {
   } catch (_e) {
     /* table does not exist yet or column already present */
   }
+  // github_workflow deploy steps: the dispatched GitHub Actions run polled to
+  // completion (run id / url / conclusion) so the Deployments page can link it.
+  for (const col of ['github_run_id', 'github_run_url', 'github_conclusion']) {
+    try {
+      db.exec(`ALTER TABLE deployment_steps ADD COLUMN ${col} TEXT`);
+    } catch (_e) {
+      /* column already present */
+    }
+  }
 
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
@@ -3337,6 +3346,13 @@ function initDb(dataDir: string): void {
               completed_at = CASE
                 WHEN @status IN ('success', 'error', 'skipped', 'cancelled') THEN datetime('now')
                 ELSE completed_at END
+        WHERE id = @id`,
+    ),
+    setDeploymentStepGithubRun: db.prepare(
+      `UPDATE deployment_steps
+          SET github_run_id = @github_run_id,
+              github_run_url = @github_run_url,
+              github_conclusion = @github_conclusion
         WHERE id = @id`,
     ),
     // Idempotent registration of an environment row (created on first deploy or

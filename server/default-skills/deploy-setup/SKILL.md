@@ -49,11 +49,42 @@ Rules:
 - `version` must be `1`.
 - `environments` is a non-empty map.
 - Each environment needs `steps`, a non-empty list.
-- Each step needs a non-empty `run` string.
+- Each step needs EITHER a non-empty `run` string OR a `github_workflow` block
+  (not both).
 - `approval` is optional and defaults to false. Default production to true.
 - `runs-on` defaults to `ubuntu-24.04`.
 - `timeout_minutes` is optional, integer, 1 to 240.
 - Unknown keys fail validation.
+
+### github_workflow steps (dispatch + wait for a GitHub Action)
+
+When a deploy should kick off a GitHub Actions workflow and WAIT for it to
+succeed or fail (instead of returning the moment `gh workflow run` queues it),
+use a `github_workflow` step. Agent Hub dispatches the workflow, polls the
+resulting run to completion, fails the step (and the deploy, fail-fast) if the
+run does not conclude `success`, and surfaces the run's URL + conclusion on the
+Deployments page.
+
+```yaml
+steps:
+  - name: Release
+    github_workflow:
+      workflow: release.yml # workflow file name or numeric id (required)
+      ref: main # REQUIRED branch or tag to dispatch (NOT a commit SHA)
+      inputs: # optional workflow_dispatch inputs
+        bump: patch
+      poll_interval_seconds: 10 # optional (default 10, 5 to 300)
+```
+
+`ref` is required and must be a **branch or tag name**. GitHub
+`workflow_dispatch` only accepts a branch/tag for its ref — a commit SHA is
+rejected — and a deploy's ref is frequently a resolved SHA, so there is
+intentionally no deploy-ref default. Name the branch (or tag) the workflow
+should run on.
+
+The workflow must declare `on: workflow_dispatch`. The dispatch runs as the
+triggering user (their GitHub token is injected) and targets the project's
+configured GitHub repo, so this works even for self-hosted-forge projects.
 
 ## Walkthrough
 

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -592,8 +593,21 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                       <Text style={styles.stepMeta}>
                         {step.started_at ? `started ${formatDate(step.started_at)} ` : ''}
                         {step.completed_at ? `completed ${formatDate(step.completed_at)} ` : ''}
-                        {step.exit_code != null ? `exit ${step.exit_code}` : ''}
+                        {step.exit_code != null ? `exit ${step.exit_code} ` : ''}
+                        {step.github_conclusion
+                          ? `workflow ${String(step.github_conclusion).replaceAll('_', ' ')}`
+                          : ''}
                       </Text>
+                      {step.github_run_url ? (
+                        <TouchableOpacity
+                          onPress={() => Linking.openURL(String(step.github_run_url))}
+                        >
+                          <Text style={styles.stepLink}>
+                            View GitHub Actions run
+                            {step.github_run_id ? ` #${step.github_run_id}` : ''}
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
                       {step.error ? <Text style={styles.stepError}>{step.error}</Text> : null}
                       {logText ? <Text style={styles.stepLog}>{logText}</Text> : null}
                     </View>
@@ -933,6 +947,7 @@ const styles = StyleSheet.create({
   stepTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   stepTitle: { flex: 1, color: colors.gray200, fontSize: 13, fontWeight: '700' },
   stepMeta: { marginTop: 4, color: colors.gray500, fontSize: 11 },
+  stepLink: { marginTop: 4, color: colors.blue300, fontSize: 12 },
   stepError: {
     marginTop: 8,
     color: colors.red400,

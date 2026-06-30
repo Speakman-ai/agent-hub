@@ -47,6 +47,14 @@
  */
 import { promises as fs } from 'fs';
 import { parse as parseYaml, YAMLParseError } from 'yaml';
+import { DeployConfigError } from './deploy-config-error.js';
+import {
+  compileGithubWorkflowRun,
+  parseGithubWorkflowStepConfig,
+  type GithubWorkflowStepSpec,
+} from './github-workflow-step.js';
+
+export { DeployConfigError } from './deploy-config-error.js';
 
 /** Shell prefix the orchestrator uses to execute every `run` step. Matches Finalize. */
 export const DEPLOY_STEP_SHELL = 'bash -euo pipefail -c';
@@ -65,13 +73,23 @@ export const DEPLOY_TIMEOUT_DEFAULT_MINUTES = 60;
 
 const SUPPORTED_TOP_LEVEL_KEYS = new Set(['version', 'environments']);
 const SUPPORTED_ENV_KEYS = new Set(['approval', 'runs-on', 'timeout_minutes', 'steps']);
-const SUPPORTED_STEP_KEYS = new Set(['name', 'run']);
+const SUPPORTED_STEP_KEYS = new Set(['name', 'run', 'github_workflow']);
 
 export interface DeployStep {
   /** Step display name; defaults to `step <index>` (1-indexed) when omitted. */
   name: string;
-  /** Shell command, executed verbatim under `bash -euo pipefail -c <run>`. */
+  /**
+   * Shell command, executed verbatim under `bash -euo pipefail -c <run>`. For a
+   * `github_workflow:` step this is the COMPILED dispatch-and-poll bash script
+   * (see {@link compileGithubWorkflowRun}); {@link DeployStep.githubWorkflow}
+   * carries the original spec for display.
+   */
   run: string;
+  /**
+   * Set when this step was declared as a `github_workflow:` step. The runtime
+   * `run` is compiled from this spec; the orchestrator executes `run`.
+   */
+  githubWorkflow?: GithubWorkflowStepSpec;
 }
 
 export interface DeployEnvironmentConfig {
@@ -91,20 +109,6 @@ export interface DeployConfig {
   version: 1;
   /** Environment name → config. Insertion order preserved from the YAML map. */
   environments: Map<string, DeployEnvironmentConfig>;
-}
-
-/**
- * Thrown on any validation failure. `reason` is a stable machine code so the
- * REST layer (Phase 5) can map specific failures to specific HTTP responses
- * and the UI can render a deterministic message.
- */
-export class DeployConfigError extends Error {
-  readonly reason: string;
-  constructor(reason: string, message: string) {
-    super(message);
-    this.name = 'DeployConfigError';
-    this.reason = reason;
-  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -134,19 +138,37 @@ function parseStep(raw: unknown, index: number, envName: string): DeployStep {
   rejectUnknownKeys(raw, SUPPORTED_STEP_KEYS, where);
 
   const { run, name } = raw;
-  if (typeof run !== 'string' || run.trim() === '') {
-    throw new DeployConfigError(
-      'missing_run',
-      `${where}: "run" is required and must be a non-empty string.`,
-    );
-  }
+  const githubWorkflowRaw = raw['github_workflow'];
+
   if (name !== undefined && (typeof name !== 'string' || name.trim() === '')) {
     throw new DeployConfigError(
       'invalid_name',
       `${where}: "name", when present, must be a non-empty string.`,
     );
   }
-  return { name: typeof name === 'string' ? name : `step ${index}`, run };
+  const stepName = typeof name === 'string' ? name : `step ${index}`;
+
+  const hasRun = run !== undefined;
+  const hasGithubWorkflow = githubWorkflowRaw !== undefined;
+  if (hasRun && hasGithubWorkflow) {
+    throw new DeployConfigError(
+      'conflicting_step',
+      `${where}: a step must use either "run" or "github_workflow", not both.`,
+    );
+  }
+
+  if (hasGithubWorkflow) {
+    const spec = parseGithubWorkflowStepConfig(githubWorkflowRaw, where);
+    return { name: stepName, run: compileGithubWorkflowRun(spec), githubWorkflow: spec };
+  }
+
+  if (typeof run !== 'string' || run.trim() === '') {
+    throw new DeployConfigError(
+      'missing_run',
+      `${where}: "run" is required (or use "github_workflow") and must be a non-empty string.`,
+    );
+  }
+  return { name: stepName, run };
 }
 
 function parseTimeoutMinutes(raw: unknown, envName: string): number {

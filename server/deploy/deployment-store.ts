@@ -451,6 +451,29 @@ export function updateDeploymentStepStatus(
 }
 
 /**
+ * Persist the dispatched GitHub Actions run a `github_workflow` step polled to
+ * completion (run id / url / conclusion), recovered from the step output marker.
+ * Independent of the step's status update so it can be recorded for both a
+ * succeeded and a failed workflow run.
+ */
+export function setDeploymentStepGithubRun(
+  id: string,
+  run: {
+    runId?: string | null;
+    url?: string | null;
+    conclusion?: string | null;
+  },
+): DeploymentStepRow | null {
+  getStmts().setDeploymentStepGithubRun.run({
+    id,
+    github_run_id: run.runId ?? null,
+    github_run_url: run.url ?? null,
+    github_conclusion: run.conclusion ?? null,
+  });
+  return (getStmts().getDeploymentStep.get(id) as DeploymentStepRow | undefined) ?? null;
+}
+
+/**
  * Ensure a `deployment_environments` row exists for (project, name) and return
  * it. Idempotent — a pre-existing row keeps its live-ref / lock columns.
  */

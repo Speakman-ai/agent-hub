@@ -59,6 +59,7 @@ import {
   recordDeploymentReleaseItems,
   releaseEnvironmentLock,
   resolveDeploymentReleaseCandidates,
+  setDeploymentStepGithubRun,
   setEnvironmentCurrentRef,
   updateDeploymentStatus,
   updateDeploymentStepStatus,
@@ -69,6 +70,7 @@ import {
   type DeployEnvironmentConfig,
   type DeployStep,
 } from './deploy-config.js';
+import { parseGithubRunMarker } from './github-workflow-step.js';
 import { collectReleaseRangeLinks, type ReleaseRangeLinks } from './release-range.js';
 import {
   countUnreadSupportTickets,
@@ -931,6 +933,14 @@ export async function runDeployment(
 
       if (currentDeploymentIsCancelled()) {
         return getDeployment(deploymentId) as DeploymentRow;
+      }
+
+      // A `github_workflow` step prints a run marker (run id / url / conclusion)
+      // it polled to completion. Persist it for BOTH outcomes so the Deployments
+      // page can link the dispatched GitHub Actions run whether it passed or not.
+      const githubRun = parseGithubRunMarker(outcome.tail);
+      if (githubRun) {
+        setDeploymentStepGithubRun(stepRow.id, githubRun);
       }
 
       if (outcome.timedOut) {

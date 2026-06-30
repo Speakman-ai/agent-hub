@@ -725,7 +725,24 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                                 <span>completed {formatDate(step.completed_at)}</span>
                               )}
                               {step.exit_code != null && <span>exit {step.exit_code}</span>}
+                              {step.github_conclusion && (
+                                <span>
+                                  workflow {String(step.github_conclusion).replaceAll('_', ' ')}
+                                </span>
+                              )}
                             </div>
+                            {step.github_run_url && (
+                              <a
+                                href={step.github_run_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-1 inline-flex max-w-full items-center gap-1 truncate text-xs text-sky-300 hover:text-sky-200"
+                              >
+                                <Rocket size={11} />
+                                View GitHub Actions run
+                                {step.github_run_id ? ` #${step.github_run_id}` : ''}
+                              </a>
+                            )}
                             {step.error && (
                               <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-black/35 p-2 text-xs text-red-200">
                                 {step.error}

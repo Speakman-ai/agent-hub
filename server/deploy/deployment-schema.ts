@@ -90,6 +90,12 @@ export const DEPLOYMENT_SCHEMA = `
       CHECK(status IN ('pending', 'running', 'success', 'error', 'skipped', 'cancelled')),
     exit_code INTEGER,
     error TEXT,
+    -- For a 'github_workflow' step: the dispatched GitHub Actions run this step
+    -- polled to completion. Populated by the orchestrator from the step's output
+    -- marker so the Deployments page can link the run and show its conclusion.
+    github_run_id TEXT,
+    github_run_url TEXT,
+    github_conclusion TEXT,
     started_at TEXT,
     completed_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),

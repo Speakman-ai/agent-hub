@@ -22,6 +22,7 @@ import {
   setDeploymentReleaseItemInclusion,
 } from './deployment-store.js';
 import { parseDeployConfig } from './deploy-config.js';
+import { GITHUB_RUN_MARKER } from './github-workflow-step.js';
 import {
   approveDeployment,
   triggerDeployment,
@@ -369,6 +370,89 @@ describe('triggerDeployment — happy path', () => {
     expect(env.current_ref).toBe('sha-ok');
     expect(env.active_deployment_id).toBeNull();
     expect(broadcast).toHaveBeenCalled(); // it WAS called (and threw), but was swallowed
+  });
+});
+
+describe('triggerDeployment — github_workflow step (dispatch + poll)', () => {
+  const WF_CONFIG = parseDeployConfig(`
+version: 1
+environments:
+  dev:
+    steps:
+      - name: Release
+        github_workflow:
+          workflow: release.yml
+          ref: main
+`);
+
+  const marker = (payload: object): string => `${GITHUB_RUN_MARKER}${JSON.stringify(payload)}\n`;
+
+  it('persists the dispatched run (url/id/conclusion) on a successful workflow run', async () => {
+    const fb = makeFakeBackend([
+      {
+        exitCode: 0,
+        stdout: marker({
+          runId: '4242',
+          url: 'https://github.com/o/r/actions/runs/4242',
+          status: 'completed',
+          conclusion: 'success',
+        }),
+      },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-wf',
+        worktreePath: WORKTREE,
+        config: WF_CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    const step = listDeploymentSteps(dep.id)[0];
+    expect(step.status).toBe('success');
+    expect(step.github_run_id).toBe('4242');
+    expect(step.github_run_url).toBe('https://github.com/o/r/actions/runs/4242');
+    expect(step.github_conclusion).toBe('success');
+
+    // The compiled dispatch+poll script ran (not a plain `run`), against the
+    // explicit branch/tag ref from the step config.
+    expect(fb.spawnArgs[0].run).toContain('gh run watch');
+    expect(fb.spawnArgs[0].run).toContain(`REF='main'`);
+  });
+
+  it('fails the deploy AND records the run when the workflow concludes failure', async () => {
+    const fb = makeFakeBackend([
+      {
+        exitCode: 1,
+        stdout: marker({
+          runId: '77',
+          url: 'https://github.com/o/r/actions/runs/77',
+          status: 'completed',
+          conclusion: 'failure',
+        }),
+      },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-wf-fail',
+        worktreePath: WORKTREE,
+        config: WF_CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('error');
+    const step = listDeploymentSteps(dep.id)[0];
+    expect(step.status).toBe('error');
+    // Run linkage is still surfaced on the failed step.
+    expect(step.github_run_id).toBe('77');
+    expect(step.github_run_url).toBe('https://github.com/o/r/actions/runs/77');
+    expect(step.github_conclusion).toBe('failure');
   });
 });
 
