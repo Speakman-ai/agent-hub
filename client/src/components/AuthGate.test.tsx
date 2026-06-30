@@ -370,4 +370,20 @@ describe('shouldShowEmailUpdatePrompt', () => {
       }),
     ).toBe(true);
   });
+
+  it('does not prompt when auth.json is migrated but the cached JWT is stale', () => {
+    (isAuthenticated as any).mockReturnValue(true);
+    (getAuthRecord as any).mockReturnValue({
+      user: { email: null, needsEmailUpdate: true, role: 'Owner' },
+    });
+    (needsEmailUpdate as any).mockReturnValue(true);
+
+    expect(
+      shouldShowEmailUpdatePrompt({
+        required: true,
+        needsEmailUpdate: false,
+        activeOrgIsLocal: true,
+      }),
+    ).toBe(false);
+  });
 });

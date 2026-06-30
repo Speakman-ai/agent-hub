@@ -240,6 +240,9 @@ export function shouldShowEmailUpdatePrompt(status: {
   if (!status.required) return false;
 
   if (isAuthenticated()) {
+    // auth.json is the migration source of truth once /auth/status has loaded.
+    if (!status.needsEmailUpdate) return false;
+
     const tokenUser = getAuthRecord()?.user;
     if (tokenUser?.needsEmailUpdate === false) return false;
     if (needsEmailUpdate()) return true;
