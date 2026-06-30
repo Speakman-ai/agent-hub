@@ -303,12 +303,26 @@ describe('Google Gmail proxy routes', () => {
     expect(googleMock.messages.modify).not.toHaveBeenCalled();
   });
 
-  it('returns 403 with the modify scope hint when only the readonly scope was granted', async () => {
-    // gmail.readonly is the restricted scope we deliberately never request — it
-    // must NOT satisfy our read gate (which keys on gmail.modify).
+  it('lets a readonly-scoped connection list threads (least-privilege read)', async () => {
+    // gmail.readonly is the NARROWEST read scope and is exactly what this
+    // surface requests; it must satisfy the read gate.
     connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(
       connectedStatus([GMAIL_READONLY_SCOPE]),
     );
+    googleMock.threads.list.mockResolvedValue({
+      data: { threads: [{ id: 't1', snippet: 's', historyId: '1' }], resultSizeEstimate: 1 },
+    });
+
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).get('/api/google/gmail/threads');
+
+    expect(res.status).toBe(200);
+    expect(googleMock.threads.list).toHaveBeenCalled();
+  });
+
+  it('returns 403 with the readonly scope hint when no read scope was granted', async () => {
+    // The read endpoints now point unconsented users at the narrowest scope.
+    connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(connectedStatus(['openid']));
 
     const app = makeApp(buildDeps(), { authUserId: 'user-123' });
     const res = await request(app).get('/api/google/gmail/threads');
@@ -316,10 +330,29 @@ describe('Google Gmail proxy routes', () => {
     expect(res.status).toBe(403);
     expect(res.body).toMatchObject({
       code: 'google_gmail_scope_required',
-      requiredScopes: [GMAIL_MODIFY_SCOPE],
+      requiredScopes: [GMAIL_READONLY_SCOPE],
     });
     expect(connectionStoreMock.getActiveAccessToken).not.toHaveBeenCalled();
     expect(googleMock.threads.list).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 on /modify when only the readonly scope was granted (readonly cannot mutate)', async () => {
+    // Reading is allowed with readonly, but mutating labels needs gmail.modify.
+    connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(
+      connectedStatus([GMAIL_READONLY_SCOPE]),
+    );
+
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app)
+      .post('/api/google/gmail/messages/m1/modify')
+      .send({ addLabelIds: ['STARRED'] });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: 'google_gmail_scope_required',
+      requiredScopes: [GMAIL_MODIFY_SCOPE],
+    });
+    expect(googleMock.messages.modify).not.toHaveBeenCalled();
   });
 
   it('returns 403 with the send scope hint when only the modify scope is missing for send', async () => {

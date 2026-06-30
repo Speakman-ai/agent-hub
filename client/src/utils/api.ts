@@ -208,6 +208,41 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  // Gmail proxy (user-scoped). Tokens stay server-side; clients never hold them.
+  listGoogleGmailThreads: ({
+    q,
+    labelIds,
+    maxResults,
+    pageToken,
+    includeSpamTrash,
+  }: {
+    q?: string;
+    labelIds?: string | string[];
+    maxResults?: number;
+    pageToken?: string;
+    includeSpamTrash?: boolean;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (labelIds) {
+      for (const id of Array.isArray(labelIds) ? labelIds : [labelIds])
+        params.append('labelIds', id);
+    }
+    if (maxResults) params.set('maxResults', String(maxResults));
+    if (pageToken) params.set('pageToken', pageToken);
+    if (includeSpamTrash !== undefined)
+      params.set('includeSpamTrash', includeSpamTrash ? 'true' : 'false');
+    const qs = params.toString();
+    return fetchJSON(`/google/gmail/threads${qs ? `?${qs}` : ''}`);
+  },
+  getGoogleGmailThread: (threadId: any, { format }: { format?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (format) params.set('format', format);
+    const qs = params.toString();
+    return fetchJSON(`/google/gmail/threads/${encodeURIComponent(threadId)}${qs ? `?${qs}` : ''}`);
+  },
+  sendGoogleGmailMessage: (data: any) =>
+    fetchJSON('/google/gmail/messages', { method: 'POST', body: JSON.stringify(data) }),
   getProjectSecrets: (projectId: any) => fetchJSON(`/projects/${projectId}/secrets`),
   putProjectSecrets: (projectId: any, secrets: any) =>
     fetchJSON(`/projects/${projectId}/secrets`, {

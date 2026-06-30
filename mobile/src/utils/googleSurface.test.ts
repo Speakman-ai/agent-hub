@@ -3,10 +3,18 @@ import { describe, it, expect } from 'vitest';
 import {
   CALENDAR_EVENTS_SCOPE,
   CALENDAR_FULL_SCOPE,
+  GMAIL_FULL_SCOPE,
+  GMAIL_MODIFY_SCOPE,
+  GMAIL_READONLY_SCOPE,
+  GMAIL_SEND_SCOPE,
+  GMAIL_SURFACE_SCOPES,
   hasCalendarScope,
+  hasGmailReadScope,
+  hasGmailSendScope,
   hasGoogleScope,
   isGoogleConnected,
   shouldShowCalendarNav,
+  shouldShowGmailNav,
 } from './googleSurface';
 
 describe('googleSurface (mobile)', () => {
@@ -29,5 +37,30 @@ describe('googleSurface (mobile)', () => {
     expect(shouldShowCalendarNav({ connected: false })).toBe(false);
     // Connected but unconsented still shows the entry (inline Enable affordance).
     expect(shouldShowCalendarNav({ connected: true, grantedScopes: [] })).toBe(true);
+  });
+
+  it('GMAIL_SURFACE_SCOPES requests least-privilege readonly+send, not modify', () => {
+    expect(GMAIL_SURFACE_SCOPES).toEqual([GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE]);
+    expect(GMAIL_SURFACE_SCOPES).not.toContain(GMAIL_MODIFY_SCOPE);
+  });
+
+  it('hasGmailReadScope accepts readonly/modify/full but not send-only', () => {
+    expect(hasGmailReadScope({ grantedScopes: [GMAIL_READONLY_SCOPE] })).toBe(true);
+    expect(hasGmailReadScope({ grantedScopes: [GMAIL_MODIFY_SCOPE] })).toBe(true);
+    expect(hasGmailReadScope({ grantedScopes: [GMAIL_FULL_SCOPE] })).toBe(true);
+    expect(hasGmailReadScope({ grantedScopes: [GMAIL_SEND_SCOPE] })).toBe(false);
+    expect(hasGmailReadScope({ grantedScopes: [] })).toBe(false);
+  });
+
+  it('hasGmailSendScope accepts send/modify/full', () => {
+    expect(hasGmailSendScope({ grantedScopes: [GMAIL_SEND_SCOPE] })).toBe(true);
+    expect(hasGmailSendScope({ grantedScopes: [GMAIL_MODIFY_SCOPE] })).toBe(true);
+    expect(hasGmailSendScope({ grantedScopes: [CALENDAR_EVENTS_SCOPE] })).toBe(false);
+  });
+
+  it('shouldShowGmailNav gates the drawer entry on connection only', () => {
+    expect(shouldShowGmailNav(null)).toBe(false);
+    expect(shouldShowGmailNav({ connected: false })).toBe(false);
+    expect(shouldShowGmailNav({ connected: true, grantedScopes: [] })).toBe(true);
   });
 });

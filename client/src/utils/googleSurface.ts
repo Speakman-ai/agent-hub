@@ -13,6 +13,25 @@
 export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 export const CALENDAR_FULL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 
+// Gmail scopes. This surface only LISTS/READS threads and SENDS mail, so it
+// requests the narrowest scopes for that behavior: `gmail.readonly` (read) +
+// `gmail.send` (send). It deliberately does NOT request `gmail.modify`, which
+// would also grant mailbox-mutation (compose/label/move) power the UI never
+// uses. Per Google's scope table every Gmail *read* scope is restricted, so
+// `gmail.readonly` is simply the least-privilege read scope — not a way to
+// avoid restricted-scope verification (no such non-restricted read scope
+// exists). `gmail.modify` / the legacy full scope still satisfy the read/send
+// predicates below for accounts that granted them previously.
+export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
+export const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+export const GMAIL_FULL_SCOPE = 'https://mail.google.com/';
+
+// The single incremental-consent request for the Gmail surface asks for the
+// narrowest read + send scopes so the inbox and compose work after one
+// round-trip without over-granting mailbox-mutation power.
+export const GMAIL_SURFACE_SCOPES = [GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE];
+
 export type GoogleStatusLike = {
   connected?: boolean;
   email?: string | null;
@@ -44,5 +63,33 @@ export function hasCalendarScope(status: GoogleStatusLike): boolean {
  * item, and the Calendar pane shows the inline "Enable Calendar" affordance.
  */
 export function shouldShowCalendarNav(status: GoogleStatusLike): boolean {
+  return isGoogleConnected(status);
+}
+
+/** True when the linked Google account can read/list Gmail (readonly/modify/full). */
+export function hasGmailReadScope(status: GoogleStatusLike): boolean {
+  return (
+    hasGoogleScope(status, GMAIL_READONLY_SCOPE) ||
+    hasGoogleScope(status, GMAIL_MODIFY_SCOPE) ||
+    hasGoogleScope(status, GMAIL_FULL_SCOPE)
+  );
+}
+
+/** True when the linked Google account can send mail (send, modify, or full). */
+export function hasGmailSendScope(status: GoogleStatusLike): boolean {
+  return (
+    hasGoogleScope(status, GMAIL_SEND_SCOPE) ||
+    hasGoogleScope(status, GMAIL_MODIFY_SCOPE) ||
+    hasGoogleScope(status, GMAIL_FULL_SCOPE)
+  );
+}
+
+/**
+ * Whether to render the global Gmail entry in navigation. Gated purely on
+ * connection (NOT scope), mirroring Calendar: a connected-but-unconsented user
+ * still sees the nav item, and the Gmail pane shows the inline "Enable Gmail"
+ * affordance for incremental consent.
+ */
+export function shouldShowGmailNav(status: GoogleStatusLike): boolean {
   return isGoogleConnected(status);
 }

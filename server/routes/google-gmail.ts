@@ -13,13 +13,25 @@ import { registerComponent, registerPath, z } from '../openapi/registry.js';
  * token from the encrypted connection store, calls the googleapis Gmail SDK,
  * and returns shaped JSON.
  *
- * Scopes (SCOPES epic decision): v1 uses only the sensitive Tier-2 scopes
- * `gmail.modify` (read + label) and `gmail.send` (send). It NEVER requires the
- * restricted `gmail.readonly` scope, which would trigger annual CASA. Reads and
- * label modifications gate on `gmail.modify`; sends gate on `gmail.send`. The
- * broader legacy `https://mail.google.com/` scope satisfies both if granted.
+ * Scopes — least privilege per Google's current Gmail scope table
+ * (https://developers.google.com/workspace/gmail/api/auth/scopes):
+ *   - reading/listing threads gates on `gmail.readonly` (the NARROWEST read
+ *     scope) — `gmail.modify` and the legacy `https://mail.google.com/` also
+ *     satisfy it for back-compat, but we never *request* them for this surface;
+ *   - sending gates on the sensitive `gmail.send`;
+ *   - label add/remove (the modify endpoint) gates on `gmail.modify` (or full),
+ *     since readonly cannot mutate the mailbox.
+ *
+ * NOTE: every Gmail *read* scope (readonly/modify/metadata/full) is classified
+ * RESTRICTED by Google, so an inbox-reading feature unavoidably needs restricted
+ * OAuth verification (and CASA when restricted-scope data is stored/transmitted).
+ * There is no non-restricted way to read mail; requesting `gmail.readonly`
+ * instead of `gmail.modify` does NOT avoid that, it just stops over-granting
+ * mailbox-mutation power the UI never uses. `gmail.send` is the only Gmail scope
+ * here that is merely sensitive (not restricted).
  */
 
+const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
 const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
 const GMAIL_FULL_SCOPE = 'https://mail.google.com/';
@@ -274,6 +286,16 @@ function bad(res: Response, status: number, error: string, code?: string, extra 
 }
 
 function hasGmailReadScope(scopes: string[]): boolean {
+  // readonly is the narrowest read scope; modify/full also grant reading.
+  return (
+    scopes.includes(GMAIL_READONLY_SCOPE) ||
+    scopes.includes(GMAIL_MODIFY_SCOPE) ||
+    scopes.includes(GMAIL_FULL_SCOPE)
+  );
+}
+
+function hasGmailModifyScope(scopes: string[]): boolean {
+  // Mutating labels needs modify (or the legacy full scope); readonly can't.
   return scopes.includes(GMAIL_MODIFY_SCOPE) || scopes.includes(GMAIL_FULL_SCOPE);
 }
 
@@ -554,7 +576,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
       res,
       deps,
       hasGmailReadScope,
-      [GMAIL_MODIFY_SCOPE],
+      [GMAIL_READONLY_SCOPE],
       'google_gmail_scope_required',
     );
     if (!uid) return;
@@ -609,7 +631,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
       res,
       deps,
       hasGmailReadScope,
-      [GMAIL_MODIFY_SCOPE],
+      [GMAIL_READONLY_SCOPE],
       'google_gmail_scope_required',
     );
     if (!uid) return;
@@ -685,7 +707,7 @@ export default function createGoogleGmailRoutes(deps: RouteDeps): Router {
         req,
         res,
         deps,
-        hasGmailReadScope,
+        hasGmailModifyScope,
         [GMAIL_MODIFY_SCOPE],
         'google_gmail_scope_required',
       );

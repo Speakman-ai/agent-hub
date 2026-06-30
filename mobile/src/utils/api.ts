@@ -441,6 +441,34 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(data),
     }),
+    // Gmail proxy (user-scoped). Tokens stay server-side; clients never hold them.
+    listGoogleGmailThreads: ({ q, labelIds, maxResults, pageToken, includeSpamTrash }: any = {}) => {
+        const params = new URLSearchParams();
+        if (q)
+            params.set('q', q);
+        if (labelIds)
+            for (const id of Array.isArray(labelIds) ? labelIds : [labelIds])
+                params.append('labelIds', id);
+        if (maxResults)
+            params.set('maxResults', String(maxResults));
+        if (pageToken)
+            params.set('pageToken', pageToken);
+        if (includeSpamTrash !== undefined)
+            params.set('includeSpamTrash', includeSpamTrash ? 'true' : 'false');
+        const qs = params.toString();
+        return fetchJSON(`/google/gmail/threads${qs ? `?${qs}` : ''}`);
+    },
+    getGoogleGmailThread: (threadId: any, { format }: any = {}) => {
+        const params = new URLSearchParams();
+        if (format)
+            params.set('format', format);
+        const qs = params.toString();
+        return fetchJSON(`/google/gmail/threads/${encodeURIComponent(threadId)}${qs ? `?${qs}` : ''}`);
+    },
+    sendGoogleGmailMessage: (data: any) => fetchJSON('/google/gmail/messages', {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     // Per-user engine/model overrides per agent.
     getMyAgentEngineOverrides: () => fetchJSON('/auth/me/agent-engine-overrides'),
     putMyAgentEngineOverride: (agentId: any, data: any) => fetchJSON(`/auth/me/agent-engine-overrides/${agentId}`, {

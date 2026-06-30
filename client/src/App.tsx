@@ -66,8 +66,9 @@ import ThreadList from './components/ThreadList';
 import ThreadView from './components/ThreadView';
 import CustomerSupportPage from './components/CustomerSupportPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
+import GmailPage from './components/GmailPage';
 import { useGoogleStatus } from './hooks/useGoogleStatus';
-import { shouldShowCalendarNav } from './utils/googleSurface';
+import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
 import ReplaysDashboardPage from './components/ReplaysDashboardPage';
 import SecurityPage from './components/SecurityPage';
@@ -469,6 +470,7 @@ export default function App({ initialView }: any = {}) {
   // Account; Calendar is NOT a per-project surface.
   const { status: googleStatus } = useGoogleStatus();
   const googleCalendarNavVisible = shouldShowCalendarNav(googleStatus);
+  const googleGmailNavVisible = shouldShowGmailNav(googleStatus);
   const [deploymentsProjectId, setDeploymentsProjectId] = useState<any>(
     initialNavigation.view === 'deployments' ? initialNavigation.projectId || null : null,
   );
@@ -5272,6 +5274,7 @@ export default function App({ initialView }: any = {}) {
             threadsProjectId={threadsProjectId}
             supportProjectId={supportProjectId}
             googleCalendarNavVisible={googleCalendarNavVisible}
+            googleGmailNavVisible={googleGmailNavVisible}
             deploymentsProjectId={deploymentsProjectId}
             replaysProjectId={replaysProjectId}
             securityProjectId={securityProjectId}
@@ -5674,6 +5677,8 @@ export default function App({ initialView }: any = {}) {
                 <CalendarAgendaPage
                   onOpenAccountSettings={() => setCurrentView('settings:account')}
                 />
+              ) : currentView === 'gmail' ? (
+                <GmailPage onOpenAccountSettings={() => setCurrentView('settings:account')} />
               ) : currentView === 'deployments' && deploymentsProjectId ? (
                 <DeploymentsPage
                   projectId={deploymentsProjectId}

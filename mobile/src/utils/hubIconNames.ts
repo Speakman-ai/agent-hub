@@ -17,6 +17,7 @@ export const HUB_ICON_NAMES = [
     'KeyRound',
     'LayoutGrid',
     'LifeBuoy',
+    'Mail',
     'List',
     'ListOrdered',
     'Palette',

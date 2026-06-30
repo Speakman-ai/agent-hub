@@ -25,6 +25,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
     KeyRound: { family: 'feather', name: 'key' },
     LayoutGrid: { family: 'feather', name: 'grid' },
     LifeBuoy: { family: 'feather', name: 'life-buoy' },
+    Mail: { family: 'feather', name: 'mail' },
     List: { family: 'feather', name: 'list' },
     ListOrdered: { family: 'material', name: 'format-list-numbered' },
     Palette: { family: 'material', name: 'palette' },

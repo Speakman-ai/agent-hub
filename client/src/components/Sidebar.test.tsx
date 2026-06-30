@@ -97,6 +97,32 @@ describe('Sidebar — loading overlay', () => {
   });
 });
 
+describe('Sidebar — global Gmail nav (per-user Google surface)', () => {
+  it('hides the Gmail entry when the Google account is not connected', () => {
+    render(<Sidebar {...buildProps({ googleGmailNavVisible: false })} />);
+    expect(screen.queryByTestId('sidebar-global-gmail')).not.toBeInTheDocument();
+  });
+
+  it('renders the Gmail entry in the global Dashboard tier when connected', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ googleGmailNavVisible: true, onNavigate })} />);
+    const gmailNav = screen.getByTestId('sidebar-global-gmail');
+    expect(gmailNav).toBeInTheDocument();
+    // It navigates to the global 'gmail' view, not a project-scoped route.
+    fireEvent.click(gmailNav);
+    expect(onNavigate).toHaveBeenCalledWith('gmail');
+  });
+
+  it('never nests Gmail inside a per-project block (no per-project mailbox)', () => {
+    render(<Sidebar {...buildProps({ googleGmailNavVisible: true })} />);
+    // Exactly one Gmail entry exists, and it lives in the global tier — there is
+    // no per-project Gmail tab. The project block exposes its own menu items
+    // (Wiki, Kanban, etc.) but never a Gmail one.
+    expect(screen.getAllByTestId('sidebar-global-gmail')).toHaveLength(1);
+    expect(screen.queryByText('Gmail', { selector: 'a' })).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — bulk clear affordance', () => {
   it('renders a single "Clear pushed" button and no "Clear merged" button', () => {
     render(<Sidebar {...buildProps()} />);
