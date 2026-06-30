@@ -144,6 +144,25 @@ describe('authMiddleware (API key)', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('passes through for /api/auth/google/callback without bearer auth', () => {
+    mockAuthRecord = {
+      username: 'owner',
+      passwordHash: 'scrypt$x$x$x$x$x',
+      jwtSecret: 'secret',
+      role: 'Owner',
+      createdAt: '2026-04-18',
+    };
+    const next = vi.fn();
+    const res = mockRes();
+    authMiddleware(
+      mockReq({ path: '/api/auth/google/callback' }),
+      res as unknown as Response,
+      next,
+    );
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBeNull();
+  });
+
   it('does NOT treat the retired support-request intake path as public', () => {
     // Regression: the legacy `POST /api/projects/:projectId/support-requests`
     // intake (which dispatched an intake agent to file a kanban card) has been

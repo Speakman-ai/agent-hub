@@ -50,6 +50,9 @@ const PUBLIC_PATHS: readonly string[] = [
   // github.com, so no bearer token is sent. Identity is carried by a
   // signed `state` JWT validated inside the route handler itself.
   '/api/auth/github/callback',
+  // Google OAuth callback has the same cross-origin redirect shape as GitHub:
+  // no Hub bearer token is present, and the route validates the signed state.
+  '/api/auth/google/callback',
 ];
 
 /**
