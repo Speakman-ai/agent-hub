@@ -39,7 +39,7 @@
  * stdout/close events (see `deploy-orchestrator.test.ts`).
  */
 import { rmSync } from 'fs';
-import type { BroadcastFn, DeploymentRow } from '../types.js';
+import type { AppConfig, BroadcastFn, DeploymentRow } from '../types.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { resolveRunnerBackend } from '../finalize/runner-backend.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
@@ -79,6 +79,7 @@ import {
 } from '../support-tickets-store.js';
 import { serializeSupportTicketForBroadcast } from '../support-ticket-serialization.js';
 import { enqueueReleaseNotificationsForDeployment } from '../release-notification-outbox.js';
+import type { ReleaseDigestRunner } from '../release-digest.js';
 
 /** Max lines of combined step output retained for the failure message / step error. */
 const STEP_TAIL_LINES = 50;
@@ -207,6 +208,9 @@ export interface DeployOrchestratorDeps {
     currentRef: string;
     projectId: string;
   }) => Promise<ReleaseRangeLinks>;
+  /** Config and runner used to generate release digest recipient emails. */
+  releaseDigestConfig?: AppConfig;
+  releaseDigestRunner?: ReleaseDigestRunner;
 }
 
 export interface TriggerDeploymentInput {
@@ -1041,7 +1045,10 @@ export async function runDeployment(
       releaseRangeLinks,
     );
     try {
-      enqueueReleaseNotificationsForDeployment(successDeployment);
+      await enqueueReleaseNotificationsForDeployment(successDeployment, {
+        cfg: deps.releaseDigestConfig,
+        releaseDigestRunner: deps.releaseDigestRunner,
+      });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       console.error(

@@ -2,8 +2,10 @@ import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
 import { sendEmailResult } from './email-sender.js';
 import { listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
+import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from './release-digest.js';
 import { listReleaseDigestRecipients } from './release-notification-settings.js';
 import type {
+  AppConfig,
   DeploymentReleaseItemDetailRow,
   DeploymentRow,
   ReleaseNotificationOutboxRow,
@@ -48,6 +50,11 @@ export interface ReleaseNotificationHistoryItem {
   can_retry: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface EnqueueReleaseNotificationsOptions {
+  cfg?: AppConfig;
+  releaseDigestRunner?: ReleaseDigestRunner;
 }
 
 function normalizeRecipientEmail(email: string): string {
@@ -109,6 +116,42 @@ function renderReleaseDigestBody(
     lines.push('', `Completed at: ${deployment.completed_at}`);
   }
   return lines.join('\n');
+}
+
+function releaseDigestIdempotencyKey(deploymentId: string, recipientEmail: string): string {
+  return `deployment:${deploymentId}:release-digest:${normalizeRecipientEmail(recipientEmail)}`;
+}
+
+async function renderReleaseDigestBodyForOutbox(
+  deployment: Pick<
+    DeploymentRow,
+    'id' | 'project_id' | 'environment' | 'ref' | 'status' | 'completed_at'
+  >,
+  items: DeploymentReleaseItemDetailRow[],
+  options: EnqueueReleaseNotificationsOptions,
+): Promise<string> {
+  const canGenerateDigest =
+    options.cfg &&
+    (options.releaseDigestRunner || typeof options.cfg.openaiApiKey === 'string') &&
+    (options.releaseDigestRunner || options.cfg.openaiApiKey?.trim());
+  if (canGenerateDigest && options.cfg) {
+    try {
+      const digest = await generateDeploymentReleaseDigest({
+        projectId: deployment.project_id,
+        deploymentId: deployment.id,
+        cfg: options.cfg,
+        runner: options.releaseDigestRunner,
+      });
+      return digest.digestMarkdown;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[release-notification-outbox] release digest generation failed ` +
+          `deployment=${deployment.id} project=${deployment.project_id}: ${detail}`,
+      );
+    }
+  }
+  return renderReleaseDigestBody(deployment, items);
 }
 
 export function enqueueReleaseNotificationOutbox(
@@ -223,12 +266,13 @@ export function markReleaseNotificationOutboxError(
   );
 }
 
-export function enqueueReleaseNotificationsForDeployment(
+export async function enqueueReleaseNotificationsForDeployment(
   deployment: Pick<
     DeploymentRow,
     'id' | 'project_id' | 'environment' | 'ref' | 'status' | 'completed_at'
   >,
-): ReleaseNotificationOutboxRow[] {
+  options: EnqueueReleaseNotificationsOptions = {},
+): Promise<ReleaseNotificationOutboxRow[]> {
   if (deployment.status !== 'success' || !isProductionEnvironment(deployment.environment)) {
     return [];
   }
@@ -260,10 +304,27 @@ export function enqueueReleaseNotificationsForDeployment(
     (recipient) => recipient.enabled,
   );
   if (recipients.length > 0) {
+    const digestRecipients = recipients.map((recipient) => {
+      const idempotencyKey = releaseDigestIdempotencyKey(deployment.id, recipient.email);
+      return {
+        recipient,
+        idempotencyKey,
+        existing: getStmts().getReleaseNotificationOutboxByKey.get(
+          idempotencyKey,
+        ) as ReleaseNotificationOutboxRow | null,
+      };
+    });
+    const missingDigestRecipients = digestRecipients.filter((entry) => !entry.existing);
     const subject = `Release digest for ${deployment.environment} ${deployment.ref}`;
-    const bodyText = renderReleaseDigestBody(deployment, items);
-    for (const recipient of recipients) {
-      const normalized = normalizeRecipientEmail(recipient.email);
+    const bodyText =
+      missingDigestRecipients.length > 0
+        ? await renderReleaseDigestBodyForOutbox(deployment, items, options)
+        : null;
+    for (const { recipient, idempotencyKey, existing } of digestRecipients) {
+      if (existing) {
+        queued.push(existing);
+        continue;
+      }
       queued.push(
         enqueueReleaseNotificationOutbox({
           projectId: deployment.project_id,
@@ -271,10 +332,10 @@ export function enqueueReleaseNotificationsForDeployment(
           releaseItemId: null,
           supportTicketId: null,
           notificationType: 'release_digest',
-          idempotencyKey: `deployment:${deployment.id}:release-digest:${normalized}`,
+          idempotencyKey,
           recipientEmail: recipient.email,
           subject,
-          bodyText,
+          bodyText: bodyText ?? renderReleaseDigestBody(deployment, items),
         }),
       );
     }

@@ -24,9 +24,13 @@ import {
 } from '../deploy/deployment-store.js';
 import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
-import { updateReleaseNotificationSettings } from '../release-notification-settings.js';
+import {
+  addReleaseDigestRecipient,
+  updateReleaseNotificationSettings,
+} from '../release-notification-settings.js';
 import {
   enqueueReleaseNotificationOutbox,
+  listReleaseNotificationOutboxByDeployment,
   markReleaseNotificationOutboxError,
 } from '../release-notification-outbox.js';
 import {
@@ -455,6 +459,52 @@ describe('deployment routes', () => {
     expect(backend.acquireCalls[0].worktreePath).toBe(checkout);
     await flushBackgroundRun();
     expect(existsSync(checkout)).toBe(false);
+  });
+
+  it('uses the release digest runner for automatic production digest emails', async () => {
+    const checkout = makeCheckoutDir('deploy-route-digest-');
+    const cardId = insertReleaseCard('route-generated-digest-card', PROJECT_ID, {
+      title: 'Show customer release changes',
+      labels: 'customer-facing',
+    });
+    addReleaseDigestRecipient({ projectId: PROJECT_ID, email: 'ops@example.com' });
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      expect(prompt).toContain('Show customer release changes');
+      return '## Release digest\n\nCustomers can now review shipped changes from deployments.';
+    });
+    const { app } = makeApp({
+      config: parseDeployConfig(`
+version: 1
+environments:
+  production:
+    steps:
+      - name: deploy
+        run: ./deploy-production.sh
+`),
+      prepareCheckout: async ({ ref }) => ({
+        worktreePath: checkout,
+        resolvedRef: `${ref}-sha`,
+      }),
+      releaseDigestRunner,
+    });
+
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT_ID}/deployments`)
+      .send({ environment: 'production', ref: 'main', meta: { cardIds: [cardId] } })
+      .expect(202);
+
+    const deploymentId = res.body.deployment.id as string;
+    await vi.waitFor(() =>
+      expect(listReleaseNotificationOutboxByDeployment(deploymentId)).toHaveLength(1),
+    );
+    const [digest] = listReleaseNotificationOutboxByDeployment(deploymentId);
+    expect(releaseDigestRunner).toHaveBeenCalledTimes(1);
+    expect(digest).toMatchObject({
+      notification_type: 'release_digest',
+      recipient_email: 'ops@example.com',
+      body_text: '## Release digest\n\nCustomers can now review shipped changes from deployments.',
+    });
+    expect(digest?.body_text).not.toContain('1. Show customer release changes');
   });
 
   it('renders deploy.yaml environments with live ref, last deployment, and rollback target', async () => {

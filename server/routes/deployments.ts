@@ -464,6 +464,8 @@ export default function createDeploymentRoutes(
     resolveProjectGithubRepo:
       opts.orchestratorDeps?.resolveProjectGithubRepo ??
       ((projectId: string) => deps.findProject(projectId)?.githubRepo ?? null),
+    releaseDigestConfig: opts.orchestratorDeps?.releaseDigestConfig ?? deps.config,
+    releaseDigestRunner: opts.orchestratorDeps?.releaseDigestRunner ?? opts.releaseDigestRunner,
   };
 
   router.post(

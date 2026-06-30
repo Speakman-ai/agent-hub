@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { EmailMessage, EmailSendResult } from './email-sender.js';
+import type { ReleaseDigestRunner } from './release-digest.js';
+import type { AppConfig } from './types.js';
 
 const sendEmailMock = vi.hoisted(() =>
   vi.fn(
@@ -92,7 +94,7 @@ function successfulProductionDeployment() {
 }
 
 describe('release notification outbox', () => {
-  it('enqueues reporter and digest notifications idempotently from final release items', () => {
+  it('enqueues reporter and digest notifications idempotently from final release items', async () => {
     const ticket = createSupportTicket({
       projectId: P,
       subject: 'CSV export is broken',
@@ -104,8 +106,8 @@ describe('release notification outbox', () => {
     ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
     addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
 
-    const first = enqueueReleaseNotificationsForDeployment(deployment);
-    const second = enqueueReleaseNotificationsForDeployment(deployment);
+    const first = await enqueueReleaseNotificationsForDeployment(deployment);
+    const second = await enqueueReleaseNotificationsForDeployment(deployment);
     const rows = listReleaseNotificationOutboxByDeployment(deployment.id);
 
     expect(first).toHaveLength(2);
@@ -125,6 +127,45 @@ describe('release notification outbox', () => {
       recipient_email: 'ops@example.com',
       support_ticket_id: null,
     });
+  });
+
+  it('uses the model-generated release digest for recipient outbox rows', async () => {
+    const ticket = createSupportTicket({
+      projectId: P,
+      subject: 'CSV export is broken',
+      body: 'Cannot export CSV.',
+      reporterEmail: 'Reporter@Example.COM',
+    });
+    const deployment = successfulProductionDeployment();
+    const cardId = insertReleaseCard({
+      cardId: 'card-outbox-generated-digest',
+      title: 'Fix CSV export internals',
+      supportTicketId: ticket.id,
+    });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
+    const releaseDigestRunner: ReleaseDigestRunner = vi.fn(async ({ prompt }) => {
+      expect(prompt).toContain('Fix CSV export internals');
+      return '## Release digest\n\nCSV exports now include the customer-selected rows.';
+    });
+
+    const rows = await enqueueReleaseNotificationsForDeployment(deployment, {
+      cfg: { openaiApiKey: 'sk-test' } as AppConfig,
+      releaseDigestRunner,
+    });
+    const duplicateRows = await enqueueReleaseNotificationsForDeployment(deployment, {
+      cfg: { openaiApiKey: 'sk-test' } as AppConfig,
+      releaseDigestRunner,
+    });
+
+    expect(releaseDigestRunner).toHaveBeenCalledTimes(1);
+    const digest = rows.find((row) => row.notification_type === 'release_digest');
+    const duplicateDigest = duplicateRows.find((row) => row.notification_type === 'release_digest');
+    expect(duplicateDigest?.id).toBe(digest?.id);
+    expect(digest?.body_text).toBe(
+      '## Release digest\n\nCSV exports now include the customer-selected rows.',
+    );
+    expect(digest?.body_text).not.toContain('1. Fix CSV export internals');
   });
 
   it('keeps sent rows out of retry eligibility and preserves failure state for retry', () => {
@@ -420,7 +461,7 @@ describe('release notification outbox', () => {
     const cardId = insertReleaseCard({ cardId: 'card-delivery-1', supportTicketId: ticket.id });
     ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
     addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
-    enqueueReleaseNotificationsForDeployment(deployment);
+    await enqueueReleaseNotificationsForDeployment(deployment);
 
     const first = await deliverReleaseNotificationOutboxBatch();
     const second = await deliverReleaseNotificationOutboxBatch();
