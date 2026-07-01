@@ -24,7 +24,7 @@ describe('validateKanbanAssignModel', () => {
   };
 
   it('accepts a model allowed for the assignee engine', () => {
-    const r = validateKanbanAssignModel('claude-sonnet-4-6', project, 'Dev', config);
+    const r = validateKanbanAssignModel('claude-sonnet-5', project, 'Dev', config);
     expect(r).toEqual({ ok: true });
   });
 
@@ -35,7 +35,7 @@ describe('validateKanbanAssignModel', () => {
   });
 
   it('when assignee does not resolve to an agent, requires global allowlist', () => {
-    const r = validateKanbanAssignModel('claude-sonnet-4-6', project, 'Nobody', config);
+    const r = validateKanbanAssignModel('claude-sonnet-5', project, 'Nobody', config);
     expect(r).toEqual({ ok: true });
     const bad = validateKanbanAssignModel('totally-fake-model', project, 'Nobody', config);
     expect(bad.ok).toBe(false);

@@ -16,7 +16,7 @@ describe('POST /api/projects/:projectId/import — kanban assign_model', () => {
     await request.get(`/api/projects/${projectId}/board`).expect(200);
 
     const uniqueTitle = `import-assign-model-${Date.now()}`;
-    const sonnet = 'claude-sonnet-4-6';
+    const sonnet = 'claude-sonnet-5';
 
     await request
       .post(`/api/projects/${projectId}/import`)

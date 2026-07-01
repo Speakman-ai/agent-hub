@@ -15,6 +15,11 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel('claude-fable-5')).toBe('Fable 5');
   });
 
+  it('maps claude-sonnet-5 to Sonnet and keeps claude-sonnet-4-6 as historical', () => {
+    expect(modelPrimaryLabel('claude-sonnet-5')).toBe('Sonnet');
+    expect(modelPrimaryLabel('claude-sonnet-4-6')).toBe('Sonnet 4.6');
+  });
+
   it('prefers stream model and renders Opus 4.8 in banner', () => {
     expect(
       formatSystemBannerModelLine({

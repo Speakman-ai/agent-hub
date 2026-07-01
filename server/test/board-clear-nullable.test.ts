@@ -87,7 +87,7 @@ describe('PUT board card — clearing nullable fields with explicit null', () =>
     const card = await seedCard();
     await request
       .put(`/api/projects/${projectId}/board/cards/${card.id}`)
-      .send({ assignModel: 'claude-sonnet-4-6' })
+      .send({ assignModel: 'claude-sonnet-5' })
       .expect(200);
 
     const res = await request

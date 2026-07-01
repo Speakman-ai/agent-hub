@@ -60,7 +60,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/assign', () => {
     const agentId = agent.id as string;
     const card = await createCard(projectId, { title: 'Model override card' });
     const cardId = card.id as string;
-    const override = 'claude-sonnet-4-6';
+    const override = 'claude-sonnet-5';
 
     const res = await request
       .post(`/api/projects/${projectId}/board/cards/${cardId}/assign`)
@@ -386,7 +386,7 @@ describe('POST /api/projects/:projectId/board/cards/:cardId/unassign', () => {
     const projectId = project.id as string;
     const agent = await createAgent({ projectId });
     const card = await createCard(projectId);
-    const override = 'claude-sonnet-4-6';
+    const override = 'claude-sonnet-5';
 
     const assignRes = await request
       .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)

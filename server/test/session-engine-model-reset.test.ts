@@ -77,7 +77,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
 
     await request
       .put(`/api/sessions/${sessionId}/model`)
-      .send({ model: 'claude-sonnet-4-6' })
+      .send({ model: 'claude-sonnet-5' })
       .expect(200);
 
     const switched = await request
@@ -87,7 +87,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
     expect(switched.body.engine).toBe('claude-code');
     // Model is still valid for the (unchanged) engine, so the server
     // must leave it alone — not reset to the engine default.
-    expect(switched.body.model).toBe('claude-sonnet-4-6');
+    expect(switched.body.model).toBe('claude-sonnet-5');
   });
 
   it('resets a null model to the engine default on engine switch', async () => {

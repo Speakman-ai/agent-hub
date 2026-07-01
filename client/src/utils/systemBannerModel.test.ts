@@ -4,7 +4,9 @@ import { formatSystemBannerModelLine, modelPrimaryLabel } from '@shared/utils/sy
 describe('modelPrimaryLabel', () => {
   it('maps known ids', () => {
     expect(modelPrimaryLabel('gpt-5.3-codex')).toBe('GPT-5.3 Codex');
-    expect(modelPrimaryLabel('claude-sonnet-4-6')).toBe('Sonnet');
+    expect(modelPrimaryLabel('claude-sonnet-5')).toBe('Sonnet');
+    // Retired-from-selection id keeps a clean historical label.
+    expect(modelPrimaryLabel('claude-sonnet-4-6')).toBe('Sonnet 4.6');
   });
 
   it('title-cases unknown ids', () => {

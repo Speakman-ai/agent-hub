@@ -444,7 +444,7 @@ export interface CronRow {
   notify_on_run: number;
   /**
    * Model identifier used when the cron fires (e.g. `claude-opus-4-8`,
-   * `claude-sonnet-4-6`). When null, falls back to
+   * `claude-sonnet-5`). When null, falls back to
    * `defaultModelForEngine('claude-code')` at run time. Stored as a free-form
    * TEXT column so the allowlist can change without breaking existing rows;
    * the API validates against `config.engineValidModels['claude-code']` on

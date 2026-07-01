@@ -68,7 +68,7 @@ describe('buildStagehandOptions', () => {
       viewport: { width: 800, height: 600 },
       timeoutMs: 5_000,
       args: ['--foo'],
-      model: 'anthropic/claude-sonnet-4-6',
+      model: 'anthropic/claude-sonnet-5',
     });
     expect(opts.localBrowserLaunchOptions.headless).toBe(false);
     expect(opts.localBrowserLaunchOptions.viewport).toEqual({ width: 800, height: 600 });
@@ -76,7 +76,7 @@ describe('buildStagehandOptions', () => {
     expect(opts.localBrowserLaunchOptions.connectTimeoutMs).toBe(5_000);
     expect(opts.actTimeoutMs).toBe(5_000);
     expect(opts.domSettleTimeout).toBe(5_000);
-    expect(opts.model).toBe('anthropic/claude-sonnet-4-6');
+    expect(opts.model).toBe('anthropic/claude-sonnet-5');
   });
 
   it('returns a fresh args array (callers mutating the result must not affect defaults)', () => {

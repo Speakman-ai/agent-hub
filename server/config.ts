@@ -184,7 +184,11 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',
-    'claude-sonnet-4-6',
+    // claude-sonnet-5: Anthropic's Sonnet-tier model (API id `claude-sonnet-5`,
+    // released 2026-06-30). Replaces the retired-from-selection claude-sonnet-4-6,
+    // whose display label is retained for historical sessions in TopBar.tsx /
+    // systemBannerModel.ts / mobile engineOptions.ts.
+    'claude-sonnet-5',
     'claude-haiku-4-6',
   ],
   // cursor-agent: only IDs the Hub passes through to `agent --model` (see

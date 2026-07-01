@@ -10,7 +10,9 @@ const MODEL_KNOWN_LABELS: Record<string, string> = {
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',
   'claude-opus-4-6': 'Opus 4.6',
-  'claude-sonnet-4-6': 'Sonnet',
+  'claude-sonnet-5': 'Sonnet',
+  // Retired from selection; label retained for historical sessions.
+  'claude-sonnet-4-6': 'Sonnet 4.6',
   'composer-2.5': 'Composer 2.5',
   'gpt-5.3-codex': 'GPT-5.3 Codex',
   'gpt-5.5': 'GPT-5.5',

@@ -30,7 +30,10 @@ const MODEL_LABELS = {
   'claude-opus-4-8': { label: 'Opus 4.8', short: 'Opus' },
   'claude-opus-4-7': { label: 'Opus 4.7', short: 'Opus 4.7' },
   'claude-opus-4-6': { label: 'Opus 4.6', short: 'Opus 4.6' },
-  'claude-sonnet-4-6': { label: 'Sonnet', short: 'Sonnet' },
+  'claude-sonnet-5': { label: 'Sonnet', short: 'Sonnet' },
+  // Retired from selection but retained so historical sessions/crons still
+  // render a clean label instead of a title-cased id.
+  'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
   'composer-2.5': { label: 'Composer 2.5', short: 'Composer 2.5' },
   'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
   'gpt-5.5': { label: 'GPT-5.5', short: '5.5' },
@@ -59,7 +62,7 @@ function fallbackModelsForEngine(engine: any) {
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',
-    'claude-sonnet-4-6',
+    'claude-sonnet-5',
   ];
 }
 

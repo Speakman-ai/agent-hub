@@ -317,6 +317,16 @@ describe('config.ts — claude-code model defaults', () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['claude-code']).toContain(cfg.engineDefaultModels['claude-code']);
   });
+
+  it('offers claude-sonnet-5 and drops the retired claude-sonnet-4-6', async () => {
+    // Regression: Claude Sonnet 5 (API id `claude-sonnet-5`, released 2026-06-30)
+    // replaces claude-sonnet-4-6 as the selectable Sonnet-tier option. The old id
+    // must no longer be selectable, otherwise the picker offers a retired model.
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['claude-code']).toContain('claude-sonnet-5');
+    expect(cfg.allValidModels).toContain('claude-sonnet-5');
+    expect(cfg.engineValidModels['claude-code']).not.toContain('claude-sonnet-4-6');
+  });
 });
 
 describe('config.ts — CLI binary auto-detection (pickBin)', () => {

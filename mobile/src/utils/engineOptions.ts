@@ -17,7 +17,7 @@ export const ENGINE_MODELS: Record<string, any> = {
         { id: 'claude-opus-4-8', label: 'Opus 4.8', short: 'Opus' },
         { id: 'claude-opus-4-7', label: 'Opus 4.7', short: 'Opus 4.7' },
         { id: 'claude-opus-4-6', label: 'Opus 4.6', short: 'Opus 4.6' },
-        { id: 'claude-sonnet-4-6', label: 'Sonnet', short: 'Sonnet' },
+        { id: 'claude-sonnet-5', label: 'Sonnet', short: 'Sonnet' },
     ],
     'cursor-agent': [{ id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' }],
     // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
@@ -43,12 +43,24 @@ export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
     'codex-cli': 'gpt-5.5',
     'grok-cli': 'grok-composer-2.5-fast',
 };
+// Display labels for models that are no longer selectable but may still appear
+// on historical sessions/crons. Kept OUT of ENGINE_MODELS so the picker never
+// offers a retired model (the server allowlist rejects it), while modelDisplay
+// still renders a clean label instead of a title-cased id. Mirrors the web
+// client's split between MODEL_LABELS (display) and fallbackModelsForEngine
+// (selectable) in client/src/components/TopBar.tsx.
+export const HISTORICAL_MODEL_LABELS: Record<string, { label: string; short: string }> = {
+    'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
+};
 export function modelDisplay(id: any) {
     const known = Object.values(ENGINE_MODELS)
         .flat()
         .find((m: any) => m.id === id);
     if (known)
         return known;
+    const historical = HISTORICAL_MODEL_LABELS[id];
+    if (historical)
+        return { id, ...historical };
     const label = String(id || '')
         .replace(/-/g, ' ')
         .replace(/\b\w/g, (c: any) => c.toUpperCase());

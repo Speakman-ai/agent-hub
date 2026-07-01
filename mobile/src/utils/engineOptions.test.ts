@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { ENGINE_OPTIONS, ENGINE_MODELS, ENGINE_DEFAULT_MODELS, } from './engineOptions';
+import { ENGINE_OPTIONS, ENGINE_MODELS, ENGINE_DEFAULT_MODELS, modelDisplay, } from './engineOptions';
 describe('mobile engine picker constants', () => {
     it('exposes claude-code, cursor-agent, codex-cli, and grok-cli as engine options', () => {
         const ids = ENGINE_OPTIONS.map((e: any) => e.id);
@@ -53,6 +53,24 @@ describe('mobile engine picker constants', () => {
         const fable = models.find((m: any) => m.id === 'claude-fable-5');
         expect(fable.label).toBe('Fable 5');
         expect(fable.short).toBe('Fable');
+    });
+    it('exposes claude-sonnet-5 as the selectable Sonnet and drops retired claude-sonnet-4-6', () => {
+        // Regression: claude-sonnet-4-6 is retired from the server allowlist. It
+        // must NOT be selectable in the mobile picker (offline fallback source),
+        // otherwise a user could pick a model the backend rejects.
+        const ids = ENGINE_MODELS['claude-code'].map((m: any) => m.id);
+        expect(ids).toContain('claude-sonnet-5');
+        expect(ids).not.toContain('claude-sonnet-4-6');
+        const sonnet = ENGINE_MODELS['claude-code'].find((m: any) => m.id === 'claude-sonnet-5');
+        expect(sonnet.label).toBe('Sonnet');
+    });
+    it('still labels the retired claude-sonnet-4-6 cleanly for historical sessions', () => {
+        // The historical label lives in HISTORICAL_MODEL_LABELS (display metadata),
+        // not in the selectable ENGINE_MODELS array, so old sessions/crons render
+        // "Sonnet 4.6" instead of a title-cased id.
+        const d = modelDisplay('claude-sonnet-4-6');
+        expect(d.label).toBe('Sonnet 4.6');
+        expect(d.short).toBe('Sonnet 4.6');
     });
     it('exposes only composer-2.5 as the model for cursor-agent', () => {
         const models = ENGINE_MODELS['cursor-agent'].map((m: any) => m.id);
