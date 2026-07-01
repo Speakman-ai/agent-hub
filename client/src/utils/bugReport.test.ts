@@ -64,7 +64,10 @@ describe('submitBugReport', () => {
   it('prefills reporter_email from the authenticated user email when available', async () => {
     localStorage.setItem(
       'agent-hub-jwt',
-      JSON.stringify({ token: 't', user: { username: 'Reporter@Example.COM' } }),
+      JSON.stringify({
+        token: 't',
+        user: { email: 'Reporter@Example.COM', username: 'legacy-user' },
+      }),
     );
 
     await submitBugReport({ title: 'contact me', description: '', severity: 'medium' });
@@ -74,10 +77,23 @@ describe('submitBugReport', () => {
     expect(defaultReporterEmail()).toBe('reporter@example.com');
   });
 
-  it('does not send reporter_email when the cached username is not an email', async () => {
+  it('falls back to username for legacy username-as-email auth records', async () => {
     localStorage.setItem(
       'agent-hub-jwt',
-      JSON.stringify({ token: 't', user: { username: 'legacy-user' } }),
+      JSON.stringify({ token: 't', user: { username: 'Legacy@Example.COM' } }),
+    );
+
+    await submitBugReport({ title: 'legacy contact', description: '', severity: 'medium' });
+
+    const fd = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    expect((fd as any).get('reporter_email')).toBe('legacy@example.com');
+    expect(defaultReporterEmail()).toBe('legacy@example.com');
+  });
+
+  it('does not send reporter_email when the cached auth record has no valid email', async () => {
+    localStorage.setItem(
+      'agent-hub-jwt',
+      JSON.stringify({ token: 't', user: { email: null, username: 'legacy-user' } }),
     );
 
     await submitBugReport({ title: 'anonymous-compatible', description: '', severity: 'medium' });

@@ -35,7 +35,7 @@ describe('mobile submitBugReport', () => {
   });
 
   it('posts the fixed project id and authenticated reporter email when available', async () => {
-    state.authRecord = { user: { username: 'Reporter@Example.COM' } };
+    state.authRecord = { user: { email: 'Reporter@Example.COM', username: 'legacy-user' } };
 
     await submitBugReport({
       screenshotUri: '',
@@ -55,8 +55,17 @@ describe('mobile submitBugReport', () => {
     expect(defaultReporterEmail()).toBe('reporter@example.com');
   });
 
+  it('falls back to username for legacy username-as-email auth records', async () => {
+    state.authRecord = { user: { username: 'Legacy@Example.COM' } };
+
+    await submitBugReport({ screenshotUri: '', title: 'Legacy email' });
+
+    expect(lastFormData().get('reporter_email')).toBe('legacy@example.com');
+    expect(defaultReporterEmail()).toBe('legacy@example.com');
+  });
+
   it('does not send reporter_email when neither explicit nor cached email is valid', async () => {
-    state.authRecord = { user: { username: 'legacy-user' } };
+    state.authRecord = { user: { email: null, username: 'legacy-user' } };
 
     await submitBugReport({ screenshotUri: '', title: 'No email' });
 

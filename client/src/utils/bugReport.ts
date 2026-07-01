@@ -13,6 +13,8 @@ function looksLikeEmail(value: any) {
 }
 
 export function defaultReporterEmail(record: any = getAuthRecord()) {
+  const email = record?.user?.email;
+  if (looksLikeEmail(email)) return email.trim().toLowerCase();
   const username = record?.user?.username;
   return looksLikeEmail(username) ? username.trim().toLowerCase() : '';
 }
