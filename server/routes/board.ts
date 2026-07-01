@@ -355,6 +355,21 @@ function loadRequestAssignableUsers(req: Request): ReturnType<typeof loadAssigna
   return loadAssignableUsers((req as AuthenticatedRequest).authOrgId);
 }
 
+function normalizeAssignedUserForCreate(
+  req: Request,
+  assignedUserId: string | null | undefined,
+): string | null | 'invalid' {
+  const assignableUsers = loadRequestAssignableUsers(req);
+  if (assignedUserId !== undefined) {
+    return normalizeAssignedUserId(assignedUserId, assignableUsers);
+  }
+
+  const callerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
+  if (!callerUserId) return null;
+  const normalizedCaller = normalizeAssignedUserId(callerUserId, assignableUsers);
+  return normalizedCaller === 'invalid' ? null : normalizedCaller;
+}
+
 /**
  * Normalize an incoming `assignee` value so the column always stores the
  * agent's **display name** (`agent.name`), never its id slug.
@@ -811,17 +826,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    let normalizedAssignedUser: string | null = null;
-    if (parsed.assignedUserId !== undefined) {
-      const normalizedUser = normalizeAssignedUserId(
-        parsed.assignedUserId,
-        loadRequestAssignableUsers(req),
-      );
-      if (normalizedUser === 'invalid') {
-        return res.status(400).json({ error: 'Invalid assignedUserId' });
-      }
-      normalizedAssignedUser = normalizedUser;
+    const normalizedAssignedUser = normalizeAssignedUserForCreate(req, parsed.assignedUserId);
+    if (normalizedAssignedUser === 'invalid') {
+      return res.status(400).json({ error: 'Invalid assignedUserId' });
     }
+    const shouldSetAssignedUser =
+      parsed.assignedUserId !== undefined || normalizedAssignedUser !== null;
 
     // Validate the epic/phase relationship BEFORE inserting, so a rejection
     // never leaves an orphan card on the board. Resolve the final (epic,
@@ -887,7 +897,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (resolvedPhaseId) stmts.updateKanbanCardPhase.run(resolvedPhaseId, id);
     if (resolvedEpicId) recomputeEpicState(stmts, resolvedEpicId);
 
-    if (parsed.assignedUserId !== undefined) {
+    if (shouldSetAssignedUser) {
       stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, id);
     }
 
@@ -1581,17 +1591,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       const parsedBranch = parsePrBaseBranchInput(parsedEpic.prBaseBranch);
       if (!parsedBranch.ok) return res.status(400).json({ error: parsedBranch.error });
     }
-    let normalizedAssignedUser: string | null = null;
-    if (assignedUserId !== undefined) {
-      const normalizedUser = normalizeAssignedUserId(
-        assignedUserId,
-        loadRequestAssignableUsers(req),
-      );
-      if (normalizedUser === 'invalid') {
-        return res.status(400).json({ error: 'Invalid assignedUserId' });
-      }
-      normalizedAssignedUser = normalizedUser;
+    const normalizedAssignedUser = normalizeAssignedUserForCreate(req, assignedUserId);
+    if (normalizedAssignedUser === 'invalid') {
+      return res.status(400).json({ error: 'Invalid assignedUserId' });
     }
+    const shouldSetAssignedUser = assignedUserId !== undefined || normalizedAssignedUser !== null;
     const epics = stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[];
     const maxPos = epics.length > 0 ? Math.max(...epics.map((e) => e.position)) + 1 : 0;
     const id = uuidv4();
@@ -1624,7 +1628,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
     const createdEpic = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
-    if (assignedUserId !== undefined) {
+    if (shouldSetAssignedUser) {
       stmts.setKanbanEpicAssignedUser.run(normalizedAssignedUser, id);
     }
     const createdEpicFinal = stmts.getKanbanEpic.get(id) as KanbanEpicRow;

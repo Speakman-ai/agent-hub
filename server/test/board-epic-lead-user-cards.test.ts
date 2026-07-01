@@ -57,6 +57,32 @@ beforeAll(async () => {
 });
 
 describe('Epic lead user bulk card assign', () => {
+  it('defaults a newly created card lead user to the authenticated creator', async () => {
+    const scopedRequest = buildLeadUserBoardRequest(leadUserId);
+    const boardRes = await scopedRequest.get(`/api/projects/${projectId}/board`).expect(200);
+    const columnId = (boardRes.body as { columns: Array<{ id: string }> }).columns[0]!.id;
+    const suffix = Date.now().toString(36);
+
+    const created = await scopedRequest
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: `Creator lead card ${suffix}`, columnId, createdBy: 'user' })
+      .expect(200);
+
+    expect((created.body as { assigned_user_id: string | null }).assigned_user_id).toBe(leadUserId);
+  });
+
+  it('defaults a newly created epic lead user to the authenticated creator', async () => {
+    const suffix = Date.now().toString(36);
+    const scopedRequest = buildLeadUserBoardRequest(leadUserId);
+
+    const created = await scopedRequest
+      .post(`/api/projects/${projectId}/board/epics`)
+      .send({ name: `Creator lead epic ${suffix}`, description: '', color: '#6366F1' })
+      .expect(200);
+
+    expect((created.body as { assigned_user_id: string | null }).assigned_user_id).toBe(leadUserId);
+  });
+
   it('assigns epic lead user to all cards in the epic', async () => {
     const boardRes = await request.get(`/api/projects/${projectId}/board`).expect(200);
     const users = (boardRes.body as { assignableUsers?: Array<{ id: string; username: string }> })
