@@ -11,6 +11,7 @@ import { WORKTREE_PREVIEW_SECRETS_SCHEMA } from './preview/preview-secrets-schem
 import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
+import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
 import {
   SECURITY_AUDIT_SCHEMA,
@@ -2904,6 +2905,12 @@ function initDb(dataDir: string): void {
     }
   }
 
+  // Multi-environment management (Phase 5): operator-editable per-environment
+  // runtime config (enable/disable now; triggers / schedules / notification
+  // routing in later phases). Co-located schema so its store test can migrate an
+  // in-memory DB in isolation.
+  db.exec(DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA);
+
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
   // "In Progress" and the column dropped (there is no in-UI column editor
@@ -3374,6 +3381,26 @@ function initDb(dataDir: string): void {
     ),
     listDeploymentEnvironments: db.prepare(
       'SELECT * FROM deployment_environments WHERE project_id = ? ORDER BY name ASC',
+    ),
+    // Multi-environment management (Phase 5): per-environment runtime config.
+    // Upsert applies operator edits (enable/disable, meta) without clobbering
+    // created_at; a fresh row defaults enabled=1.
+    upsertDeploymentEnvRuntimeConfig: db.prepare(
+      `INSERT INTO deployment_env_runtime_config (id, project_id, environment_name, enabled, meta)
+       VALUES (@id, @project_id, @environment_name, @enabled, @meta)
+       ON CONFLICT(project_id, environment_name) DO UPDATE SET
+         enabled = excluded.enabled,
+         meta = excluded.meta,
+         updated_at = datetime('now')`,
+    ),
+    getDeploymentEnvRuntimeConfig: db.prepare(
+      'SELECT * FROM deployment_env_runtime_config WHERE project_id = ? AND environment_name = ?',
+    ),
+    listDeploymentEnvRuntimeConfig: db.prepare(
+      'SELECT * FROM deployment_env_runtime_config WHERE project_id = ? ORDER BY environment_name ASC',
+    ),
+    deleteDeploymentEnvRuntimeConfig: db.prepare(
+      'DELETE FROM deployment_env_runtime_config WHERE project_id = ? AND environment_name = ?',
     ),
     // Concurrency lock acquire: only succeeds (changes=1) when no deploy is
     // in-flight for this env. A non-zero result means the lock is held → 409.

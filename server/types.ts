@@ -337,6 +337,25 @@ export interface DeploymentEnvironmentRow {
   updated_at: string;
 }
 
+/**
+ * Deployment Module — operator-editable per-environment RUNTIME config
+ * (multi-environment management, Phase 5). Keyed by (project_id,
+ * environment_name); a missing row means "default" (enabled). deploy.yaml stays
+ * the source of truth for which environments exist — this is the mutable-without-
+ * a-commit layer the triggers / scheduling / notification-routing phases extend.
+ */
+export interface DeploymentEnvironmentRuntimeConfigRow {
+  id: string;
+  project_id: string;
+  environment_name: string;
+  /** Operator on/off switch. 1 = enabled (default), 0 = paused (retained). */
+  enabled: number;
+  /** Free-form JSON stash for forward-compat. */
+  meta: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Deployment Module — approver audit trail for gated environments. */
 export interface DeploymentApprovalRow {
   id: string;
@@ -1602,6 +1621,10 @@ export interface Stmts {
   upsertDeploymentEnvironment: Stmt;
   getDeploymentEnvironment: Stmt;
   listDeploymentEnvironments: Stmt;
+  upsertDeploymentEnvRuntimeConfig: Stmt;
+  getDeploymentEnvRuntimeConfig: Stmt;
+  listDeploymentEnvRuntimeConfig: Stmt;
+  deleteDeploymentEnvRuntimeConfig: Stmt;
   acquireDeploymentEnvironmentLock: Stmt;
   releaseDeploymentEnvironmentLock: Stmt;
   setDeploymentEnvironmentCurrentRef: Stmt;
