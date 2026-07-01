@@ -204,6 +204,13 @@ describe('POST /api/projects/analyze — engine selection wiring', () => {
           systemPrompt: 'You own the test project.',
         },
       ],
+      wikiPages: [
+        {
+          title: 'Architecture',
+          category: 'architecture',
+          content: '# Architecture\n\nExpress routes live under `server/routes`.',
+        },
+      ],
     };
 
     resolveMock.mockResolvedValue({

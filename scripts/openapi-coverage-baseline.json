@@ -16,7 +16,7 @@
   "preview-wizard": { "allowed_unregistered": 0, "note": "fully registered in preview-wizard.openapi.ts" },
   "preview-environment": { "allowed_unregistered": 2, "note": "environment-draft, build" },
   "preview-instances": { "allowed_unregistered": 0, "note": "fully registered in preview-instances.openapi.ts" },
-  "projects": { "allowed_unregistered": 11, "note": "pre-existing migration debt (card 3ed3bfc9); GET /api/projects/:projectId and POST /api/projects/analyze registered in projects.openapi.ts" },
+  "projects": { "allowed_unregistered": 10, "note": "pre-existing migration debt (card 3ed3bfc9); GET /api/projects/:projectId, POST /api/projects/analyze, and POST /api/projects/onboard registered in projects.openapi.ts" },
   "provisioning": { "allowed_unregistered": 2, "note": "pre-existing migration debt (card 3ed3bfc9)" },
   "sessions": { "allowed_unregistered": 19, "note": "pre-existing migration debt (card 3ed3bfc9); advisor endpoints + /forward now registered" },
   "skills": { "allowed_unregistered": 5, "note": "pre-existing migration debt (card 3ed3bfc9); dead registry/install/import/plugin/ClawHub routes removed" },

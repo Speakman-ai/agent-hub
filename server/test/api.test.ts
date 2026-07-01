@@ -378,6 +378,70 @@ describe('Projects', () => {
       expect(res.body.repoUrl).toBeUndefined();
     });
 
+    it('seeds reviewed wiki draft pages into the new project wiki', async () => {
+      const projId = `onboard-wiki-${Date.now()}-${++_uniqueCounter}`;
+      await request
+        .post('/api/projects/onboard')
+        .send({
+          project: { id: projId, name: 'Onboard Wiki', cwd: '/tmp' },
+          agents: [
+            {
+              id: `${projId}-dev`,
+              name: 'Dev',
+              engine: 'claude-code',
+              systemPrompt: 'You are the dev agent.',
+            },
+          ],
+          wikiPages: [
+            {
+              title: ' Architecture Overview ',
+              category: 'architecture',
+              content: '# Architecture Overview\n\nUses a worker queue in `src/jobs.ts`.',
+            },
+            {
+              title: 'Architecture Overview',
+              category: 'general',
+              content: 'Duplicate slug should be ignored.',
+            },
+            {
+              title: 'Runbook',
+              category: 'not-a-category',
+              content: 'Start with `npm run dev`.',
+            },
+            {
+              title: '   ',
+              category: 'onboarding',
+              content: 'Missing title should be ignored.',
+            },
+          ],
+        })
+        .expect(201);
+
+      const pages = await request.get(`/api/projects/${projId}/wiki`).expect(200);
+      expect(pages.body.map((page: { title: string }) => page.title).sort()).toEqual([
+        'Architecture Overview',
+        'Runbook',
+      ]);
+
+      const architecture = await request
+        .get(`/api/projects/${projId}/wiki/architecture-overview`)
+        .expect(200);
+      expect(architecture.body).toMatchObject({
+        title: 'Architecture Overview',
+        category: 'architecture',
+        updated_by: 'project-analysis',
+      });
+      expect(architecture.body.content).toContain('src/jobs.ts');
+
+      const runbook = await request.get(`/api/projects/${projId}/wiki/runbook`).expect(200);
+      expect(runbook.body.category).toBe('onboarding');
+
+      const search = await request.get(`/api/projects/${projId}/wiki?q=worker`).expect(200);
+      expect(
+        search.body.some((page: { slug: string }) => page.slug === 'architecture-overview'),
+      ).toBe(true);
+    });
+
     it('rejects onboard when no valid dev agents remain after parsing', async () => {
       const projId = `onboard-empty-roster-${Date.now()}-${++_uniqueCounter}`;
       const emptyAgents = await request

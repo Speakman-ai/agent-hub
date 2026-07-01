@@ -21,6 +21,16 @@ const CONTEXT_FILE_TABS = ['SOUL.md', 'AGENTS.md', 'USER.md', 'TOOLS.md', 'MEMOR
 
 const STEP_LABELS = ['Select Folder', 'Analyze', 'GitHub', 'Review & Create'];
 
+const WIKI_CATEGORIES = [
+  { id: 'architecture', label: 'Architecture' },
+  { id: 'conventions', label: 'Conventions' },
+  { id: 'test-patterns', label: 'Testing' },
+  { id: 'troubleshooting', label: 'Troubleshooting' },
+  { id: 'onboarding', label: 'Onboarding' },
+  { id: 'api-docs', label: 'API Docs' },
+  { id: 'general', label: 'General' },
+];
+
 const ANALYSIS_ENGINE_ORDER = ['claude-code', 'cursor-agent', 'codex-cli'];
 const ANALYSIS_ENGINE_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
@@ -37,6 +47,24 @@ function deriveIdFromName(name: any) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function normalizeWikiDraftPages(pages: any) {
+  if (!Array.isArray(pages)) return [];
+  return pages
+    .map((page: any) => {
+      const title = typeof page?.title === 'string' ? page.title.trim() : '';
+      if (!title) return null;
+      const category = WIKI_CATEGORIES.some((option) => option.id === page?.category)
+        ? page.category
+        : 'onboarding';
+      return {
+        title,
+        category,
+        content: typeof page?.content === 'string' ? page.content : '',
+      };
+    })
+    .filter(Boolean);
 }
 
 function Spinner({ size = 5 }: any) {
@@ -176,6 +204,8 @@ export default function OpenProjectWizard({
   const [selectedAgents, setSelectedAgents] = useState<Record<string, any>>({});
   const [contextFiles, setContextFiles] = useState<Record<string, any>>({});
   const [activeTab, setActiveTab] = useState('SOUL.md');
+  const [wikiPages, setWikiPages] = useState<any[]>([]);
+  const [activeWikiIndex, setActiveWikiIndex] = useState(0);
   const [creating, setCreating] = useState(false);
 
   // Preview-defaults confirmation state. `detectedPreview` is populated from
@@ -287,12 +317,16 @@ export default function OpenProjectWizard({
       }
       if (data.type === 'analyze-complete') {
         setAnalyzing(false);
+        const normalizedWikiPages = normalizeWikiDraftPages(data.result?.wikiPages);
         // Normalize: server prompt produces `suggestedAgents`; older code expected `agents`.
         const normalized = {
           ...data.result,
           agents: data.result?.agents || data.result?.suggestedAgents || [],
+          wikiPages: normalizedWikiPages,
         };
         setAnalysisResult(normalized);
+        setWikiPages(normalizedWikiPages);
+        setActiveWikiIndex(0);
         // Initialize step 3 state from result
         if (normalized.agents.length) {
           const agentMap: Record<string, any> = {};
@@ -384,6 +418,8 @@ export default function OpenProjectWizard({
     setProgressLog([]);
     setAnalysisResult(null);
     setAnalysisError(null);
+    setWikiPages([]);
+    setActiveWikiIndex(0);
 
     try {
       const res = await fetch(`${getApiBase()}/projects/analyze`, {
@@ -598,6 +634,7 @@ export default function OpenProjectWizard({
           agents,
           contextFiles,
           commands: analysisResult?.commands || null,
+          wikiPages: normalizeWikiDraftPages(wikiPages),
         }),
       });
       if (!res.ok) {
@@ -652,6 +689,7 @@ export default function OpenProjectWizard({
     analysisResult,
     selectedAgents,
     contextFiles,
+    wikiPages,
     projectId,
     name,
     path,
@@ -688,6 +726,8 @@ export default function OpenProjectWizard({
           selectedAgents,
           contextFiles,
           activeTab,
+          wikiPages,
+          activeWikiIndex,
           analysisResult,
           ghStatus,
           repoInfo,
@@ -721,6 +761,8 @@ export default function OpenProjectWizard({
     selectedAgents,
     contextFiles,
     activeTab,
+    wikiPages,
+    activeWikiIndex,
     analysisResult,
     ghStatus,
     repoInfo,
@@ -767,6 +809,8 @@ export default function OpenProjectWizard({
         setSelectedAgents(d.selectedAgents);
       if (d.contextFiles && typeof d.contextFiles === 'object') setContextFiles(d.contextFiles);
       if (typeof d.activeTab === 'string') setActiveTab(d.activeTab);
+      if (Array.isArray(d.wikiPages)) setWikiPages(normalizeWikiDraftPages(d.wikiPages));
+      if (typeof d.activeWikiIndex === 'number') setActiveWikiIndex(Math.max(0, d.activeWikiIndex));
       if (d.analysisResult) setAnalysisResult(d.analysisResult);
       if (d.ghStatus) setGhStatus(d.ghStatus);
       if (d.repoInfo) setRepoInfo(d.repoInfo);
@@ -789,6 +833,44 @@ export default function OpenProjectWizard({
     const t = setTimeout(() => persistDraftSync(), 400);
     return () => clearTimeout(t);
   }, [persistDraftSync]);
+
+  useEffect(() => {
+    if (wikiPages.length === 0 && activeWikiIndex !== 0) {
+      setActiveWikiIndex(0);
+    } else if (activeWikiIndex >= wikiPages.length) {
+      setActiveWikiIndex(Math.max(0, wikiPages.length - 1));
+    }
+  }, [wikiPages.length, activeWikiIndex]);
+
+  const updateWikiPage = useCallback((index: number, patch: Record<string, string>) => {
+    setWikiPages((prev) => prev.map((page, i) => (i === index ? { ...page, ...patch } : page)));
+  }, []);
+
+  const addWikiPage = useCallback(() => {
+    setWikiPages((prev) => [
+      ...prev,
+      {
+        title: 'New Wiki Page',
+        category: 'onboarding',
+        content: '',
+      },
+    ]);
+    setActiveWikiIndex(wikiPages.length);
+  }, [wikiPages.length]);
+
+  const removeWikiPage = useCallback(
+    (index: number) => {
+      setWikiPages((prev) => prev.filter((_, i) => i !== index));
+      setActiveWikiIndex((prev) => {
+        const nextLength = Math.max(0, wikiPages.length - 1);
+        if (nextLength === 0) return 0;
+        if (prev > index) return prev - 1;
+        if (prev >= nextLength) return nextLength - 1;
+        return prev;
+      });
+    },
+    [wikiPages.length],
+  );
 
   useEffect(() => {
     const handleKey = (e: any) => {
@@ -1741,6 +1823,87 @@ export default function OpenProjectWizard({
                 placeholder={`Content for ${activeTab}...`}
                 className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y transition-colors"
               />
+            </div>
+
+            {/* Starter wiki pages */}
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <h4 className="text-sm font-medium text-gray-300">Wiki Pages</h4>
+                <button
+                  type="button"
+                  onClick={addWikiPage}
+                  className="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+                >
+                  Add Page
+                </button>
+              </div>
+              {wikiPages.length > 0 ? (
+                <div className="space-y-3">
+                  <div className="flex gap-1 flex-wrap">
+                    {wikiPages.map((page: any, i: any) => (
+                      <button
+                        key={`${page.title}-${i}`}
+                        type="button"
+                        onClick={() => setActiveWikiIndex(i)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          activeWikiIndex === i
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                        }`}
+                      >
+                        {page.title || `Page ${i + 1}`}
+                      </button>
+                    ))}
+                  </div>
+                  {wikiPages[activeWikiIndex] && (
+                    <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 space-y-3">
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr_180px_auto] gap-3">
+                        <input
+                          value={wikiPages[activeWikiIndex].title || ''}
+                          onChange={(e: any) =>
+                            updateWikiPage(activeWikiIndex, { title: e.target.value })
+                          }
+                          placeholder="Wiki page title"
+                          className="bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+                        />
+                        <select
+                          value={wikiPages[activeWikiIndex].category || 'onboarding'}
+                          onChange={(e: any) =>
+                            updateWikiPage(activeWikiIndex, { category: e.target.value })
+                          }
+                          className="bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+                        >
+                          {WIKI_CATEGORIES.map((category) => (
+                            <option key={category.id} value={category.id}>
+                              {category.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => removeWikiPage(activeWikiIndex)}
+                          className="bg-gray-800 hover:bg-red-900/50 text-gray-300 hover:text-red-200 text-xs font-medium px-3 py-2 rounded-lg transition-colors"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <textarea
+                        value={wikiPages[activeWikiIndex].content || ''}
+                        onChange={(e: any) =>
+                          updateWikiPage(activeWikiIndex, { content: e.target.value })
+                        }
+                        rows={8}
+                        placeholder="Markdown content for this wiki page..."
+                        className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 font-mono placeholder-gray-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y transition-colors"
+                      />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm text-gray-500">
+                  No wiki pages selected.
+                </div>
+              )}
             </div>
 
             {/* Error */}

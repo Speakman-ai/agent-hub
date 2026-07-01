@@ -38,6 +38,7 @@ import { detectComposePreview } from '../scaffolding/detect-compose-preview.js';
 import { normalizeReplayConfig } from '../replays/replay-config.js';
 import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
+import { createPage } from '../wiki.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
 import { userHasEngineCreds } from '../per-user-cli-spawn.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -114,7 +115,14 @@ JSON schema:
     "USER.md": "Placeholder for user preferences with reasonable defaults.",
     "TOOLS.md": "Key tools, scripts, and commands found in this project.",
     "MEMORY.md": "Key architectural decisions, important file locations, and project structure."
-  }
+  },
+  "wikiPages": [
+    {
+      "title": "Short wiki page title",
+      "category": "one of: architecture, conventions, test-patterns, troubleshooting, onboarding, api-docs, general",
+      "content": "Markdown content for a starter wiki page based only on facts found in the repository."
+    }
+  ]
 }
 
 Guidelines for agents — SINGLE FLAT DEV AGENT:
@@ -138,6 +146,12 @@ Guidelines for contextFiles:
 - TOOLS.md: list actual commands from package.json scripts, Makefile targets, etc.
 - MEMORY.md: note the project structure and key directories
 - All content must be specific to this project, not generic
+
+Guidelines for wikiPages:
+- Return 3-5 starter wiki pages that capture facts a new contributor or agent would need on day one.
+- Favor pages for architecture, conventions, key workflows, testing, deployment, and troubleshooting when the repository contains enough evidence.
+- Each page must be self-contained Markdown with concrete file paths, commands, and decisions discovered in the repository.
+- Do not invent undocumented APIs, processes, credentials, or deployment details. If evidence is thin, say what was observed and keep the page short.
 ${ANALYZE_FINALIZE_SHIPPING_GUIDELINES}`;
 
 const ANALYZE_USER_PROMPT = `Analyze the repository at the current working directory.
@@ -228,6 +242,56 @@ interface AnalysisResult {
     lint?: string | null;
   };
   contextFiles?: Record<string, string>;
+  wikiPages?: AnalysisWikiPage[];
+}
+
+interface AnalysisWikiPage {
+  title: string;
+  content?: string;
+  category?: string;
+}
+
+const WIKI_INTAKE_CATEGORIES = new Set([
+  'general',
+  'api-docs',
+  'architecture',
+  'conventions',
+  'test-patterns',
+  'troubleshooting',
+  'onboarding',
+]);
+
+function slugifyWikiDraftTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function normalizeWikiDraftPages(value: unknown): AnalysisWikiPage[] {
+  if (!Array.isArray(value)) return [];
+  const seenSlugs = new Set<string>();
+  const pages: AnalysisWikiPage[] = [];
+
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const page = raw as Record<string, unknown>;
+    const title = typeof page.title === 'string' ? page.title.trim().slice(0, 160) : '';
+    if (!title) continue;
+
+    const slug = slugifyWikiDraftTitle(title);
+    if (!slug || seenSlugs.has(slug)) continue;
+    seenSlugs.add(slug);
+
+    const categoryInput =
+      typeof page.category === 'string' ? page.category.trim().toLowerCase() : '';
+    const category = WIKI_INTAKE_CATEGORIES.has(categoryInput) ? categoryInput : 'onboarding';
+    const content = typeof page.content === 'string' ? page.content.trim().slice(0, 40_000) : '';
+
+    pages.push({ title, category, content });
+  }
+
+  return pages;
 }
 
 function isAnalysisResult(value: unknown): value is AnalysisResult {
@@ -350,6 +414,11 @@ interface OnboardBody {
     test?: string | null;
     lint?: string | null;
   };
+  wikiPages?: Array<{
+    title?: string;
+    content?: string;
+    category?: string;
+  }>;
 }
 
 interface ProjectCommands {
@@ -3167,6 +3236,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
       agents: agentDefs,
       contextFiles,
       commands,
+      wikiPages,
     } = req.body as OnboardBody;
 
     if (!projectData?.id || !/^[a-zA-Z0-9-]+$/.test(projectData.id)) {
@@ -3299,6 +3369,27 @@ This workspace has no git repo and no PR automation — your job is planning, or
     const projects = getProjects();
     projects.push(project);
     saveProjects();
+
+    const seededWikiPages = normalizeWikiDraftPages(wikiPages);
+    try {
+      for (const page of seededWikiPages) {
+        const created = createPage(project.id, {
+          title: page.title,
+          content: page.content || '',
+          category: page.category,
+          updatedBy: 'project-analysis',
+        });
+        broadcast({ type: 'wiki_update', projectId: project.id, page: created });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[Onboard] Wiki seeding failed for "${project.id}": ${message}`);
+      rollbackIncompleteProjectCreation(project, dataDir);
+      return res.status(500).json({
+        error: 'wiki_seeding_failed',
+        message,
+      });
+    }
 
     // Seed the role-specialist agents alongside the analyzed dev roster.
     //   * Docs is seeded for every onboarded project. Ticket Intake is retired
