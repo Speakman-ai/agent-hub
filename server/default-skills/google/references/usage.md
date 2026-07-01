@@ -7,12 +7,12 @@ resolves the owner even on the global break-glass key.
 
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| `0` | 2xx — JSON body on stdout |
-| `2` | Bad invocation (missing/invalid args) — usage on stderr |
-| `3` | Proxy returned 4xx/5xx — a clear, mapped message on stderr |
-| `7` | Could not reach the Hub |
+| Code | Meaning                                                    |
+| ---- | ---------------------------------------------------------- |
+| `0`  | 2xx — JSON body on stdout                                  |
+| `2`  | Bad invocation (missing/invalid args) — usage on stderr    |
+| `3`  | Proxy returned 4xx/5xx — a clear, mapped message on stderr |
+| `7`  | Could not reach the Hub                                    |
 
 A `3` with "has not linked a Google account" means the owner must connect Google
 under **Settings → Account → Google**. Do not retry blindly — relay it.
@@ -55,6 +55,20 @@ scripts/google-sheets.sh update <spreadsheetId> --range 'Sheet1!A1:B2' --values 
 ```
 
 `--values` is a JSON row-major matrix of primitive cells (string/number/boolean/null).
+
+## Drive / Docs
+
+```bash
+scripts/google-drive.sh list --q "mimeType = 'application/pdf'" --page-size 25 --order-by 'modifiedTime desc'
+scripts/google-drive.sh get <fileId>
+scripts/google-drive.sh save --file ./report.pdf --name "Report.pdf" --mime-type application/pdf
+scripts/google-drive.sh save --file ./notes.txt --as-doc --name "Notes" --mime-type text/plain
+```
+
+`save` uploads through the Hub proxy and prints the created file metadata JSON.
+Use `webViewLink` as the link. `--as-doc` creates a Google Docs file using
+Drive's Google Workspace MIME conversion path and still only needs `drive.file`.
+Uploads are capped at 5 MiB.
 
 ## ReAct inline read action
 

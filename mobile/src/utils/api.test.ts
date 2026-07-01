@@ -273,7 +273,7 @@ describe('api Google connection helpers — mobile parity with web client', () =
         expect(init.method).toBe('PATCH');
     });
 
-    it('listGoogleDriveFiles → GET /google/drive/files with picker query params', async () => {
+    it('listGoogleDriveFiles → GET /google/drive/files with query params', async () => {
         await api.listGoogleDriveFiles({
             q: "mimeType = 'application/vnd.google-apps.spreadsheet'",
             orderBy: 'modifiedTime desc',
@@ -284,6 +284,24 @@ describe('api Google connection helpers — mobile parity with web client', () =
         expect(url).toContain('orderBy=modifiedTime+desc');
         expect(url).toContain('pageSize=50');
         expect(init.method ?? 'GET').toBe('GET');
+    });
+
+    it('createGoogleDriveFile → POST /google/drive/files with Drive / Docs payload', async () => {
+        await api.createGoogleDriveFile({
+            name: 'Notes',
+            mimeType: 'text/plain',
+            targetMimeType: 'application/vnd.google-apps.document',
+            content: 'hello',
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/google/drive/files');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({
+            name: 'Notes',
+            mimeType: 'text/plain',
+            targetMimeType: 'application/vnd.google-apps.document',
+            content: 'hello',
+        });
     });
 
     it('getGoogleSpreadsheet and readGoogleSheetValues hit the Sheets proxy', async () => {

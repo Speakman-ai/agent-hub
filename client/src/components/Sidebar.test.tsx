@@ -123,54 +123,15 @@ describe('Sidebar — global Gmail nav (per-user Google surface)', () => {
   });
 });
 
-describe('Sidebar — global Sheets nav (per-user Google surface)', () => {
-  it('hides the Sheets entry when the Google account is not connected', () => {
-    render(<Sidebar {...buildProps({ googleSheetsNavVisible: false })} />);
+describe('Sidebar — no Sheets/Drive pages', () => {
+  it('does not expose Sheets or Drive navigation in the Dashboard tier', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+
     expect(screen.queryByTestId('sidebar-global-sheets')).not.toBeInTheDocument();
-  });
-
-  it('renders the Sheets entry in the global Dashboard tier when connected', () => {
-    const onNavigate = vi.fn();
-    render(<Sidebar {...buildProps({ googleSheetsNavVisible: true, onNavigate })} />);
-    const sheetsNav = screen.getByTestId('sidebar-global-sheets');
-    expect(sheetsNav).toBeInTheDocument();
-    // It navigates to the global 'sheets' view, not a project-scoped route.
-    fireEvent.click(sheetsNav);
-    expect(onNavigate).toHaveBeenCalledWith('sheets');
-  });
-
-  it('never nests Sheets inside a per-project block (no per-project spreadsheet tab)', () => {
-    render(<Sidebar {...buildProps({ googleSheetsNavVisible: true })} />);
-    // Exactly one Sheets entry exists, and it lives in the global tier — there is
-    // no per-project Sheets tab. The project block exposes its own menu items
-    // (Wiki, Kanban, etc.) but never a Sheets one.
-    expect(screen.getAllByTestId('sidebar-global-sheets')).toHaveLength(1);
-    expect(screen.queryByText('Sheets', { selector: 'a' })).not.toBeInTheDocument();
-  });
-});
-
-describe('Sidebar — global Drive nav (per-user Google surface)', () => {
-  it('hides the Drive entry when the Google account is not connected', () => {
-    render(<Sidebar {...buildProps({ googleDriveNavVisible: false })} />);
     expect(screen.queryByTestId('sidebar-global-drive')).not.toBeInTheDocument();
-  });
-
-  it('shows the Drive entry and navigates to the global drive view when connected', () => {
-    const onNavigate = vi.fn();
-    render(<Sidebar {...buildProps({ googleDriveNavVisible: true, onNavigate })} />);
-    const driveNav = screen.getByTestId('sidebar-global-drive');
-    expect(driveNav).toBeInTheDocument();
-    // It navigates to the global 'drive' view, not a project-scoped route.
-    fireEvent.click(driveNav);
-    expect(onNavigate).toHaveBeenCalledWith('drive');
-  });
-
-  it('never nests Drive inside a per-project block (no per-project Drive tab)', () => {
-    render(<Sidebar {...buildProps({ googleDriveNavVisible: true })} />);
-    // Exactly one Drive entry exists, and it lives in the global tier — there is
-    // no per-project Drive tab/browser.
-    expect(screen.getAllByTestId('sidebar-global-drive')).toHaveLength(1);
-    expect(screen.queryByText('Drive', { selector: 'a' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Sheets', { selector: 'button' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Drive', { selector: 'button' })).not.toBeInTheDocument();
   });
 });
 

@@ -243,8 +243,8 @@ export const api = {
   },
   sendGoogleGmailMessage: (data: any) =>
     fetchJSON('/google/gmail/messages', { method: 'POST', body: JSON.stringify(data) }),
-  // Drive proxy (user-scoped, drive.file only). Lists app-accessible files so the
-  // Sheets viewer can offer a spreadsheet picker. Tokens stay server-side.
+  // Drive proxy (user-scoped, drive.file only). Lists and creates
+  // app-accessible Drive / Docs files. Tokens stay server-side.
   listGoogleDriveFiles: ({
     q,
     pageSize,
@@ -266,6 +266,8 @@ export const api = {
   },
   getGoogleDriveFile: (fileId: any) =>
     fetchJSON(`/google/drive/files/${encodeURIComponent(fileId)}`),
+  createGoogleDriveFile: (data: any) =>
+    fetchJSON('/google/drive/files', { method: 'POST', body: JSON.stringify(data) }),
   // Sheets proxy (user-scoped). Tokens stay server-side; clients never hold them.
   getGoogleSpreadsheet: (spreadsheetId: any) =>
     fetchJSON(`/google/sheets/${encodeURIComponent(spreadsheetId)}`),

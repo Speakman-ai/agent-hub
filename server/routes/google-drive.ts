@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { google, type drive_v3 } from 'googleapis';
+import { Readable } from 'node:stream';
 import type { RouteDeps } from '../types.js';
 import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
 import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
@@ -38,6 +39,9 @@ const DRIVE_FILE_FIELDS = [
 ] as const;
 const DRIVE_LIST_FIELDS = `nextPageToken, incompleteSearch, files(${DRIVE_FILE_FIELDS.join(',')})`;
 const DRIVE_GET_FIELDS = DRIVE_FILE_FIELDS.join(',');
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_BASE64_UPLOAD_CHARS = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
+const GOOGLE_DOC_MIME_TYPE = 'application/vnd.google-apps.document';
 
 const ErrorResponse = registerComponent(
   'GoogleDriveErrorResponse',
@@ -82,6 +86,37 @@ const ListDriveFilesQuerySchema = z.object({
 const DriveFileIdParamsSchema = z.object({
   fileId: z.string().min(1),
 });
+
+const CreateDriveFileBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(255).openapi({ example: 'release-notes.md' }),
+    mimeType: z.string().trim().min(1).max(255).optional().openapi({ example: 'text/markdown' }),
+    targetMimeType: z.enum([GOOGLE_DOC_MIME_TYPE]).optional().openapi({
+      description:
+        'Optional Google Workspace MIME type to convert into. Currently supports Google Docs.',
+      example: GOOGLE_DOC_MIME_TYPE,
+    }),
+    description: z.string().max(1024).optional(),
+    folderId: z.string().trim().min(1).optional().openapi({
+      description:
+        'Optional Drive folder id to create the file in. The app must have access to it.',
+    }),
+    content: z.string().max(MAX_UPLOAD_BYTES).optional().openapi({
+      description:
+        'UTF-8 text content to save. Provide exactly one of content or base64Content. Uploads are capped at 5 MiB.',
+    }),
+    base64Content: z
+      .string()
+      .max(MAX_BASE64_UPLOAD_CHARS)
+      .optional()
+      .openapi({
+        description: `Base64-encoded file bytes. Provide exactly one of content or base64Content. Encoded length is capped at ${MAX_BASE64_UPLOAD_CHARS} characters for the 5 MiB upload limit.`,
+      }),
+  })
+  .strict()
+  .refine((body) => (body.content !== undefined) !== (body.base64Content !== undefined), {
+    message: 'Provide exactly one of content or base64Content',
+  });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
   'application/json': { schema },
@@ -133,6 +168,30 @@ registerPath({
     401: errorResponse('Not authenticated or Google not connected.'),
     403: errorResponse('Required Drive scope (drive.file) has not been granted.'),
     404: errorResponse('File not found or not accessible to this app.'),
+    429: errorResponse('Google Drive rate limit exceeded.'),
+    502: errorResponse('Google Drive request failed.'),
+    503: errorResponse('Google OAuth is not configured.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/google/drive/files',
+  tags: ['Google'],
+  summary: 'Create a Drive or Google Docs file for the calling user and return its link',
+  request: {
+    body: { content: jsonContent(CreateDriveFileBodySchema), required: true },
+  },
+  responses: {
+    200: {
+      description: 'The created Drive file metadata, including webViewLink when Google returns it.',
+      content: jsonContent(DriveFileSchema),
+    },
+    400: errorResponse('Invalid file payload.'),
+    401: errorResponse('Not authenticated or Google not connected.'),
+    403: errorResponse('Required Drive scope (drive.file) has not been granted.'),
+    404: errorResponse('Folder not found or not accessible to this app.'),
+    413: errorResponse('File payload is too large.'),
     429: errorResponse('Google Drive rate limit exceeded.'),
     502: errorResponse('Google Drive request failed.'),
     503: errorResponse('Google OAuth is not configured.'),
@@ -237,6 +296,34 @@ function shapeFile(file: drive_v3.Schema$File): z.infer<typeof DriveFileSchema> 
   };
 }
 
+function decodeCreateBody(
+  body: z.infer<typeof CreateDriveFileBodySchema>,
+):
+  | { buffer: Buffer; mediaMimeType: string; targetMimeType: string }
+  | { error: string; status: number } {
+  const targetMimeType =
+    body.targetMimeType?.trim() || body.mimeType?.trim() || 'application/octet-stream';
+  const mediaMimeType =
+    body.mimeType?.trim() || (body.targetMimeType ? 'text/plain' : 'application/octet-stream');
+  let buffer: Buffer;
+  if (body.content !== undefined) {
+    buffer = Buffer.from(body.content, 'utf8');
+  } else {
+    const raw = (body.base64Content ?? '').replace(/\s+/g, '');
+    if (raw.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(raw)) {
+      return { status: 400, error: 'base64Content must be valid standard base64' };
+    }
+    buffer = Buffer.from(raw, 'base64');
+  }
+  if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+    return {
+      status: 413,
+      error: `Drive uploads through Agent Hub are limited to ${MAX_UPLOAD_BYTES} bytes`,
+    };
+  }
+  return { buffer, mediaMimeType, targetMimeType };
+}
+
 function extractGoogleError(err: unknown): { status: number; error: string; code: string } {
   const e = err as GoogleErrorShape;
   const rawStatus =
@@ -305,6 +392,52 @@ function sendGoogleError(res: Response, err: unknown): Response {
 
 export default function createGoogleDriveRoutes(deps: RouteDeps): Router {
   const router = Router();
+
+  router.post('/api/google/drive/files', async (req: Request, res: Response) => {
+    const body = CreateDriveFileBodySchema.safeParse(req.body);
+    if (!body.success) {
+      return bad(
+        res,
+        400,
+        body.error.issues[0]?.message || 'Invalid file payload',
+        'invalid_request',
+      );
+    }
+    const payload = {
+      ...body.data,
+      name: body.data.name.trim(),
+      mimeType: body.data.mimeType?.trim(),
+      folderId: body.data.folderId?.trim(),
+    };
+    const decoded = decodeCreateBody(payload);
+    if ('error' in decoded) {
+      return bad(res, decoded.status, decoded.error, 'invalid_request');
+    }
+    const uid = requireDriveAccess(req, res, deps);
+    if (!uid) return;
+    const token = await resolveDriveToken(uid, deps, res);
+    if (!token) return;
+
+    try {
+      const drive = createDriveClient(token);
+      const result = await drive.files.create({
+        requestBody: {
+          name: payload.name,
+          mimeType: decoded.targetMimeType,
+          description: payload.description,
+          parents: payload.folderId ? [payload.folderId] : undefined,
+        },
+        media: {
+          mimeType: decoded.mediaMimeType,
+          body: Readable.from(decoded.buffer),
+        },
+        fields: DRIVE_GET_FIELDS,
+      });
+      return res.json(shapeFile(result.data));
+    } catch (err: unknown) {
+      return sendGoogleError(res, err);
+    }
+  });
 
   router.get('/api/google/drive/files', async (req: Request, res: Response) => {
     const query = ListDriveFilesQuerySchema.safeParse(req.query);

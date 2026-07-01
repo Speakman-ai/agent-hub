@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express, { type Request } from 'express';
 import request from 'supertest';
+import { text as readStreamText } from 'node:stream/consumers';
 import type { RouteDeps } from '../types.js';
 
 const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
@@ -8,7 +9,7 @@ const DRIVE_READONLY_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const DRIVE_FULL_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 const googleMock = vi.hoisted(() => {
-  const files = { list: vi.fn(), get: vi.fn() };
+  const files = { list: vi.fn(), get: vi.fn(), create: vi.fn() };
   const setCredentials = vi.fn();
   return {
     files,
@@ -54,7 +55,7 @@ function buildDeps(overrides: Record<string, unknown> = {}): RouteDeps {
 
 function makeApp(deps: RouteDeps, opts: FakeAuth = {}): express.Express {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '20mb' }));
   app.use((req, _res, next) => {
     const r = req as Request & FakeAuth;
     if (opts.authUserId) r.authUserId = opts.authUserId;
@@ -74,7 +75,7 @@ function connectedStatus(scopes = [DRIVE_FILE_SCOPE]) {
   };
 }
 
-describe('Google Drive picker proxy routes', () => {
+describe('Google Drive proxy routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     connectionStoreMock.getGoogleConnectionStatus.mockReturnValue(connectedStatus());
@@ -161,6 +162,134 @@ describe('Google Drive picker proxy routes', () => {
     expect(res.status).toBe(200);
     expect(googleMock.files.get).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'f1' }));
     expect(res.body).toMatchObject({ id: 'f1', name: 'Notes' });
+  });
+
+  it('POST /files creates a Drive file and returns its link without leaking the token', async () => {
+    googleMock.files.create.mockResolvedValue({
+      data: {
+        id: 'created-1',
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        webViewLink: 'https://drive.google.com/file/d/created-1/view',
+        createdTime: '2026-07-01T00:00:00.000Z',
+        trashed: false,
+      },
+    });
+
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).post('/api/google/drive/files').send({
+      name: 'notes.md',
+      mimeType: 'text/markdown',
+      content: '# Release notes\n',
+    });
+
+    expect(res.status).toBe(200);
+    expect(googleMock.files.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: expect.objectContaining({ name: 'notes.md', mimeType: 'text/markdown' }),
+        media: expect.objectContaining({ mimeType: 'text/markdown' }),
+        fields: expect.stringContaining('webViewLink'),
+      }),
+    );
+    const createArg = googleMock.files.create.mock.calls[0][0];
+    await expect(readStreamText(createArg.media.body)).resolves.toBe('# Release notes\n');
+    expect(res.body).toMatchObject({
+      id: 'created-1',
+      name: 'notes.md',
+      mimeType: 'text/markdown',
+      webViewLink: 'https://drive.google.com/file/d/created-1/view',
+    });
+    expect(JSON.stringify(res.body)).not.toContain('fresh-access-token');
+  });
+
+  it('POST /files uses trimmed parsed metadata when creating the Drive file', async () => {
+    googleMock.files.create.mockResolvedValue({
+      data: {
+        id: 'created-2',
+        name: 'Notes',
+        mimeType: 'text/plain',
+        webViewLink: 'https://drive.google.com/file/d/created-2/view',
+      },
+    });
+
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).post('/api/google/drive/files').send({
+      name: '  Notes  ',
+      mimeType: '  text/plain  ',
+      folderId: '  folder-1  ',
+      content: 'Trim me',
+    });
+
+    expect(res.status).toBe(200);
+    expect(googleMock.files.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: expect.objectContaining({
+          name: 'Notes',
+          mimeType: 'text/plain',
+          parents: ['folder-1'],
+        }),
+        media: expect.objectContaining({ mimeType: 'text/plain' }),
+      }),
+    );
+  });
+
+  it('POST /files can convert text content into a Google Docs file', async () => {
+    googleMock.files.create.mockResolvedValue({
+      data: {
+        id: 'doc-1',
+        name: 'Notes',
+        mimeType: 'application/vnd.google-apps.document',
+        webViewLink: 'https://docs.google.com/document/d/doc-1/edit',
+      },
+    });
+
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).post('/api/google/drive/files').send({
+      name: 'Notes',
+      mimeType: 'text/plain',
+      targetMimeType: 'application/vnd.google-apps.document',
+      content: 'Meeting notes',
+    });
+
+    expect(res.status).toBe(200);
+    expect(googleMock.files.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: expect.objectContaining({
+          name: 'Notes',
+          mimeType: 'application/vnd.google-apps.document',
+        }),
+        media: expect.objectContaining({ mimeType: 'text/plain' }),
+      }),
+    );
+    expect(res.body.webViewLink).toBe('https://docs.google.com/document/d/doc-1/edit');
+  });
+
+  it('POST /files rejects payloads that provide both text and base64 content', async () => {
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const res = await request(app).post('/api/google/drive/files').send({
+      name: 'bad.txt',
+      content: 'a',
+      base64Content: 'Yg==',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_request');
+    expect(googleMock.files.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /files rejects oversized base64 payloads at schema validation', async () => {
+    const app = makeApp(buildDeps(), { authUserId: 'user-123' });
+    const overLimitBase64 = 'A'.repeat(Math.ceil((5 * 1024 * 1024) / 3) * 4 + 1);
+
+    const res = await request(app).post('/api/google/drive/files').send({
+      name: 'huge.bin',
+      base64Content: overLimitBase64,
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_request');
+    expect(googleMock.files.create).not.toHaveBeenCalled();
+    expect(connectionStoreMock.getActiveAccessToken).not.toHaveBeenCalled();
   });
 
   it('rejects a connection that only granted restricted drive.readonly (no drive.file)', async () => {

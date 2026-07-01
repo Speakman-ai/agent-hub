@@ -1,19 +1,20 @@
 ---
 name: google
 description: >-
-  Read and write the SESSION OWNER's Google Workspace (Calendar, Gmail, Sheets)
+  Read and write the SESSION OWNER's Google Workspace (Calendar, Gmail, Sheets,
+  Drive, Docs)
   through Agent Hub's server-side proxy. The Hub holds the OAuth tokens
   (encrypted at rest) and scopes every call to the user who linked their Google
   account, so wrappers never touch a Google access token. TRIGGER when the user
   asks to read/list/search/create calendar events, read/search/send/label Gmail
-  threads or messages, or read/append/update Google Sheets values for the
+  threads or messages, read/append/update Google Sheets values, or save/link
+  files in Google Drive or Google Docs for the
   account linked in Settings → Account → Google. Also trigger on "my calendar",
   "my agenda", "my inbox", "email <person>", "add to the spreadsheet" when an
   Agent Hub Google connection is in view. DO NOT TRIGGER on: third-party
   calendars/mail (Outlook, Apple, Proton, Fastmail); spreadsheet work in
-  Excel/CSV files on disk; Google Drive file management (no wrapper yet — use
-  ah-api.sh GET /api/google/drive/files); or generic OAuth/Google-Cloud
-  questions with no Workspace data request.
+  Excel/CSV files on disk; or generic OAuth/Google-Cloud questions with no
+  Workspace data request.
 category: integration
 version: 1.0.0
 keep-coding-instructions: true
@@ -21,11 +22,11 @@ keep-coding-instructions: true
 
 # Google Workspace
 
-Read and act on the **session owner's** Google Calendar, Gmail, and Sheets via
-the Hub proxy under `/api/google/*`. The connection is per-Hub-user and lives in
-**Settings → Account → Google**. All calls run server-side: the Hub fetches a
-fresh access token for the owner, calls Google, and returns shaped JSON.
-**Agents never receive a Google token.**
+Read and act on the **session owner's** Google Calendar, Gmail, Sheets, Drive,
+and Docs via the Hub proxy under `/api/google/*`. The connection is
+per-Hub-user and lives in **Settings → Account → Google**. All calls run
+server-side: the Hub fetches a fresh access token for the owner, calls Google,
+and returns shaped JSON. **Agents never receive a Google token.**
 
 ## Scope of access (v1)
 
@@ -35,6 +36,9 @@ Only **non-sensitive + sensitive** scopes, requested incrementally per surface:
 - **Gmail** — read threads, send mail, add/remove labels (`gmail.modify` +
   `gmail.send`). No permanent delete, no `gmail.readonly`.
 - **Sheets** — read and write values (`spreadsheets`).
+- **Drive / Docs** — list/get app-accessible files and save new files
+  (`drive.file`). Docs creation uses Drive upload conversion to
+  `application/vnd.google-apps.document`; no separate Docs scope is requested.
 
 If a surface's scope was never granted, the proxy returns a `*_scope_required`
 error and the wrapper tells you to enable it under Settings → Account → Google.
@@ -64,11 +68,19 @@ scripts/google-sheets.sh get    <spreadsheetId>
 scripts/google-sheets.sh values <spreadsheetId> --range Sheet1!A1:C10 [--major-dimension ROWS|COLUMNS] [--value-render …]
 scripts/google-sheets.sh append <spreadsheetId> --range Sheet1!A1 --values '[["Name","Score"],["Alice",42]]' [--input-option USER_ENTERED]
 scripts/google-sheets.sh update <spreadsheetId> --range Sheet1!A1:B2 --values '[["a",1],["b",2]]' [--input-option RAW]
+
+# Drive / Docs
+scripts/google-drive.sh list [--q TEXT] [--page-size N] [--page-token TOKEN] [--order-by TEXT]
+scripts/google-drive.sh get  <fileId>
+scripts/google-drive.sh save --file ./report.pdf [--name "Report.pdf"] [--mime-type application/pdf] [--folder-id ID]
+scripts/google-drive.sh save --file ./notes.txt --as-doc [--name "Notes"] [--mime-type text/plain]
 ```
 
 Timestamps are RFC3339 (`2026-06-30T09:00:00-07:00`), or pass `--timezone` with
 an offset-less local time. `--values` is a JSON row-major matrix. Read ops need
-no extra tooling; create/send/append/update build the request body with `jq`.
+no extra tooling; create/send/append/update/save build the request body with
+`jq`. Drive `save` prints JSON metadata including `webViewLink` when Google
+returns one; use that as the shareable link. Drive uploads are capped at 5 MiB.
 
 ## Not linked?
 
@@ -98,8 +110,8 @@ shape and response examples.
   the owner's real account. Confirm intent for anything user-visible (an email
   going out, an invite, a destructive overwrite) unless the user already said
   "go ahead".
-- Drive is not wrapped in v1; for app-created/opened files use
-  `ah-api.sh GET /api/google/drive/files`.
+- Drive and Docs writes create real files in the owner's Google Drive. Confirm
+  intent unless the user already asked you to save/link the file.
 
 ## See also
 

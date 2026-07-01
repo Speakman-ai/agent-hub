@@ -16,7 +16,7 @@ import { formatDate } from '../utils/time';
  *   DELETE /api/auth/google/connect  — disconnect
  *
  * Scopes are requested incrementally per surface (Calendar / Gmail / Sheets /
- * Drive) per the epic's sensitive-scope tiering. The connect button requests
+ * Drive / Docs) per the epic's sensitive-scope tiering. The connect button requests
  * identity-only; the "re-consent / upgrade access" button requests the full
  * surface set in one consent round (Google keeps already-granted scopes via
  * include_granted_scopes). The individual surface views own their own inline
@@ -56,7 +56,7 @@ export const GOOGLE_SURFACES: GoogleSurface[] = [
   },
   {
     key: 'drive',
-    label: 'Drive (app files)',
+    label: 'Drive / Docs (app files)',
     scopes: ['https://www.googleapis.com/auth/drive.file'],
   },
 ];
@@ -239,8 +239,8 @@ export default function GoogleConnectionSection() {
       ) : (
         <div className="space-y-3">
           <p className="text-xs text-gray-400 leading-relaxed">
-            Link your Google account so Agent Hub can work with your Calendar, Gmail, and Sheets on
-            your behalf. You can grant individual surfaces later from their own views.
+            Link your Google account so Agent Hub can work with your Calendar, Gmail, Sheets, Drive,
+            and Docs on your behalf. You can grant individual surfaces later here.
           </p>
           {serverConfigured && (
             <button

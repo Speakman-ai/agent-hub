@@ -1,6 +1,5 @@
 /**
- * Shared predicates for gating global Google Workspace surfaces (Calendar,
- * and later Gmail / Sheets / Drive) in the web client.
+ * Shared predicates for Google Workspace surfaces in the web client.
  *
  * The connection is per-USER and lives in Settings -> Account. Surface
  * navigation and panes are connection-gated: they appear only when
@@ -44,15 +43,10 @@ export const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadshee
 // or full `drive` (restricted, triggers annual CASA). Mirrors the server gate.
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-// One incremental-consent request for the Sheets surface asks for the full
-// spreadsheets scope (read + write) plus drive.file so the Drive-backed picker can
-// list spreadsheets after a single round-trip.
-export const SHEETS_SURFACE_SCOPES = [SHEETS_SCOPE, DRIVE_FILE_SCOPE];
-
-// The global Drive surface is a file picker over app-accessible files, so its
-// single incremental-consent request asks only for the NON-restricted drive.file
-// scope. v1 never requests drive.readonly or full drive (restricted, triggers
-// annual CASA).
+// Agent/API Sheets writes need the full spreadsheets scope. Drive/Docs saves
+// need only the NON-restricted drive.file scope. v1 never requests
+// drive.readonly or full drive (restricted, triggers annual CASA).
+export const SHEETS_SURFACE_SCOPES = [SHEETS_SCOPE];
 export const DRIVE_SURFACE_SCOPES = [DRIVE_FILE_SCOPE];
 
 export type GoogleStatusLike = {
@@ -127,27 +121,7 @@ export function hasSheetsWriteScope(status: GoogleStatusLike): boolean {
   return hasGoogleScope(status, SHEETS_SCOPE);
 }
 
-/** True when the Drive-backed spreadsheet picker can list app files (drive.file). */
+/** True when the linked account can create/list app-accessible Drive or Docs files. */
 export function hasDriveFileScope(status: GoogleStatusLike): boolean {
   return hasGoogleScope(status, DRIVE_FILE_SCOPE);
-}
-
-/**
- * Whether to render the global Sheets entry in navigation. Gated purely on
- * connection (NOT scope), mirroring Calendar/Gmail: a connected-but-unconsented
- * user still sees the nav item, and the Sheets pane shows the inline "Enable
- * Sheets" affordance for incremental consent.
- */
-export function shouldShowSheetsNav(status: GoogleStatusLike): boolean {
-  return isGoogleConnected(status);
-}
-
-/**
- * Whether to render the global Drive entry in navigation. Gated purely on
- * connection (NOT scope), mirroring Calendar/Gmail/Sheets: a connected-but-
- * unconsented user still sees the nav item, and the Drive pane shows the inline
- * "Enable Drive" affordance for incremental consent.
- */
-export function shouldShowDriveNav(status: GoogleStatusLike): boolean {
-  return isGoogleConnected(status);
 }

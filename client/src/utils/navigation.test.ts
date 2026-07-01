@@ -123,14 +123,16 @@ describe('navigation defaults', () => {
     expect(parseNavigationHash('#/calendar/agent-hub')?.view).toBe('calendar');
   });
 
-  it('treats sheets as a GLOBAL view, not a project-scoped one', () => {
-    // Sheets is a per-user Google surface in the global Dashboard tier. It must
-    // build a bare `#/sheets` hash and never carry a projectId segment, so there
-    // is no per-project spreadsheet route.
-    expect(buildNavigationHash({ view: 'sheets' })).toBe('#/sheets');
-    expect(buildNavigationHash({ view: 'sheets', projectId: 'agent-hub' })).toBe('#/sheets');
-    expect(parseNavigationHash('#/sheets/agent-hub')?.projectId).toBeNull();
-    expect(parseNavigationHash('#/sheets/agent-hub')?.view).toBe('sheets');
+  it('maps stale Sheets and Drive page links back to Dashboard', () => {
+    expect(parseNavigationHash('#/sheets/agent-hub')).toEqual({
+      view: 'dashboard',
+      projectId: null,
+      prNumber: null,
+      threadId: null,
+      designId: null,
+      ticketId: null,
+    });
+    expect(parseNavigationHash('#/drive')).toMatchObject({ view: 'dashboard', projectId: null });
   });
 
   it('round-trips currentView strings that already carry their own target', () => {

@@ -23,6 +23,8 @@ const PROJECT_SCOPED_VIEWS = new Set([
   'security',
 ]);
 
+const REMOVED_GLOBAL_VIEWS = new Set(['sheets', 'drive']);
+
 export type NavigationState = {
   view: string;
   projectId?: string | null;
@@ -75,6 +77,10 @@ export function parseNavigationHash(hash?: any): NavigationState | null {
     view = segments[1];
   } else if (PROJECT_SCOPED_VIEWS.has(view) && segments[1]) {
     projectId = segments[1];
+  }
+  if (REMOVED_GLOBAL_VIEWS.has(view)) {
+    view = DEFAULT_VIEW;
+    projectId = null;
   }
 
   const explicitProject = cleanSegment(params.get('project'));

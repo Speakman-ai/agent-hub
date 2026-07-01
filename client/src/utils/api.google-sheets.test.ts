@@ -33,6 +33,25 @@ describe('api Google Sheets + Drive helpers', () => {
     expect(init.method ?? 'GET').toBe('GET');
   });
 
+  it('creates Drive or Docs files through the user-scoped proxy', async () => {
+    await api.createGoogleDriveFile({
+      name: 'Notes',
+      mimeType: 'text/plain',
+      targetMimeType: 'application/vnd.google-apps.document',
+      content: 'hello',
+    });
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toContain('/api/google/drive/files');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'Notes',
+      mimeType: 'text/plain',
+      targetMimeType: 'application/vnd.google-apps.document',
+      content: 'hello',
+    });
+  });
+
   it('reads spreadsheet metadata and a value range', async () => {
     await api.getGoogleSpreadsheet('sheet/1');
     await api.readGoogleSheetValues('sheet/1', { range: "'Tab1'!A1:B2" });

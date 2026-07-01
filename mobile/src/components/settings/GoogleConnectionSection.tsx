@@ -49,7 +49,7 @@ export const GOOGLE_SURFACES: GoogleSurface[] = [
   },
   {
     key: 'drive',
-    label: 'Drive (app files)',
+    label: 'Drive / Docs (app files)',
     scopes: ['https://www.googleapis.com/auth/drive.file'],
   },
 ];
@@ -115,7 +115,7 @@ export function GoogleConnectionContent({
         <View>
           <Text style={styles.title}>Google Account</Text>
           <Text style={styles.hint}>
-            Connect Calendar, Gmail, Sheets, and Drive access to your account.
+            Connect Calendar, Gmail, Sheets, Drive, and Docs access to your account.
           </Text>
         </View>
         {connected ? (

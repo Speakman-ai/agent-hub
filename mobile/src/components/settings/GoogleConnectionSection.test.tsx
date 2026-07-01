@@ -36,7 +36,7 @@ describe('GOOGLE_SURFACES consent ↔ proxy-route scope contract', () => {
     expect(ALL_SURFACE_SCOPES).toContain('https://www.googleapis.com/auth/spreadsheets');
   });
 
-  it('offers drive.file (and NOT a restricted Drive scope) for the Drive picker', () => {
+  it('offers drive.file (and NOT a restricted Drive scope) for Drive / Docs access', () => {
     expect(surfaceScopes('drive')).toContain('https://www.googleapis.com/auth/drive.file');
     expect(ALL_SURFACE_SCOPES).toContain('https://www.googleapis.com/auth/drive.file');
     expect(ALL_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');

@@ -22,8 +22,6 @@ import {
   isGoogleConnected,
   shouldShowCalendarNav,
   shouldShowGmailNav,
-  shouldShowSheetsNav,
-  shouldShowDriveNav,
   DRIVE_SURFACE_SCOPES,
 } from './googleSurface';
 
@@ -74,8 +72,8 @@ describe('googleSurface (mobile)', () => {
     expect(shouldShowGmailNav({ connected: true, grantedScopes: [] })).toBe(true);
   });
 
-  it('SHEETS_SURFACE_SCOPES requests full spreadsheets + drive.file, never restricted Drive', () => {
-    expect(SHEETS_SURFACE_SCOPES).toEqual([SHEETS_SCOPE, DRIVE_FILE_SCOPE]);
+  it('SHEETS_SURFACE_SCOPES requests full spreadsheets without Drive UI scopes', () => {
+    expect(SHEETS_SURFACE_SCOPES).toEqual([SHEETS_SCOPE]);
     expect(SHEETS_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
     expect(SHEETS_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
   });
@@ -94,21 +92,9 @@ describe('googleSurface (mobile)', () => {
     expect(hasDriveFileScope(null)).toBe(false);
   });
 
-  it('shouldShowSheetsNav gates the drawer entry on connection only', () => {
-    expect(shouldShowSheetsNav(null)).toBe(false);
-    expect(shouldShowSheetsNav({ connected: false })).toBe(false);
-    expect(shouldShowSheetsNav({ connected: true, grantedScopes: [] })).toBe(true);
-  });
-
   it('DRIVE_SURFACE_SCOPES requests only the non-restricted drive.file scope', () => {
     expect(DRIVE_SURFACE_SCOPES).toEqual([DRIVE_FILE_SCOPE]);
     expect(DRIVE_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive.readonly');
     expect(DRIVE_SURFACE_SCOPES).not.toContain('https://www.googleapis.com/auth/drive');
-  });
-
-  it('shouldShowDriveNav gates the drawer entry on connection only', () => {
-    expect(shouldShowDriveNav(null)).toBe(false);
-    expect(shouldShowDriveNav({ connected: false })).toBe(false);
-    expect(shouldShowDriveNav({ connected: true, grantedScopes: [] })).toBe(true);
   });
 });

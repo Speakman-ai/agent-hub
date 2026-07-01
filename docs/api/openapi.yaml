@@ -20920,6 +20920,106 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GoogleDriveErrorResponse"
+    post:
+      tags:
+        - Google
+      summary: Create a Drive or Google Docs file for the calling user and return its link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: release-notes.md
+                mimeType:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: text/markdown
+                targetMimeType:
+                  type: string
+                  enum:
+                    - application/vnd.google-apps.document
+                  description: Optional Google Workspace MIME type to convert into. Currently supports Google Docs.
+                  example: application/vnd.google-apps.document
+                description:
+                  type: string
+                  maxLength: 1024
+                folderId:
+                  type: string
+                  minLength: 1
+                  description: Optional Drive folder id to create the file in. The app must have access to it.
+                content:
+                  type: string
+                  maxLength: 5242880
+                  description: UTF-8 text content to save. Provide exactly one of content or base64Content. Uploads are capped at 5 MiB.
+                base64Content:
+                  type: string
+                  maxLength: 6990508
+                  description: Base64-encoded file bytes. Provide exactly one of content or base64Content. Encoded length is capped at 6990508 characters for the 5 MiB upload limit.
+              required:
+                - name
+              additionalProperties: false
+      responses:
+        "200":
+          description: The created Drive file metadata, including webViewLink when Google returns it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveFile"
+        "400":
+          description: Invalid file payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "401":
+          description: Not authenticated or Google not connected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "403":
+          description: Required Drive scope (drive.file) has not been granted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "404":
+          description: Folder not found or not accessible to this app.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "413":
+          description: File payload is too large.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "429":
+          description: Google Drive rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "502":
+          description: Google Drive request failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
+        "503":
+          description: Google OAuth is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoogleDriveErrorResponse"
   /api/google/drive/files/{fileId}:
     get:
       tags:
