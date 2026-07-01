@@ -15,26 +15,19 @@ import {
   hasCalendarScope,
   type GoogleStatusLike,
 } from '../utils/googleSurface';
+import {
+  defaultCalendarRange,
+  eventStartMillis,
+  eventTimeLabel,
+  localTimeZone,
+  type CalendarEventLike,
+} from '@shared/utils/calendarEvents';
 
-export { CALENDAR_EVENTS_SCOPE };
+export { CALENDAR_EVENTS_SCOPE, defaultCalendarRange };
 
 type GoogleStatus = NonNullable<GoogleStatusLike>;
 
-type CalendarEventTime = {
-  date?: string;
-  dateTime?: string;
-  timeZone?: string;
-};
-
-type CalendarEvent = {
-  id: string | null;
-  summary: string | null;
-  description: string | null;
-  location: string | null;
-  htmlLink: string | null;
-  start: CalendarEventTime | null;
-  end: CalendarEventTime | null;
-};
+type CalendarEvent = CalendarEventLike & { id: string | null };
 
 type EventFormState = {
   summary: string;
@@ -47,14 +40,6 @@ type EventFormState = {
   endDateTime: string;
   timeZone: string;
 };
-
-function localTimeZone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
-}
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
@@ -82,16 +67,6 @@ function parseEventDateTime(value: string | undefined | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 16);
   return localDateTime(date);
-}
-
-export function defaultCalendarRange(now = new Date()) {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = addDays(start, 7);
-  return {
-    timeMin: start.toISOString(),
-    timeMax: end.toISOString(),
-  };
 }
 
 function defaultFormState(): EventFormState {
@@ -148,34 +123,6 @@ export function buildCalendarEventInput(form: EventFormState) {
       ? { date: form.endDate }
       : { dateTime: withSeconds(form.endDateTime), timeZone: form.timeZone.trim() || 'UTC' },
   };
-}
-
-function eventStartMillis(event: CalendarEvent) {
-  const raw = event.start?.dateTime || event.start?.date;
-  if (!raw) return 0;
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
-}
-
-function eventTimeLabel(event: CalendarEvent) {
-  if (event.start?.date) {
-    const start = new Date(`${event.start.date}T00:00:00`);
-    return Number.isNaN(start.getTime()) ? event.start.date : start.toLocaleDateString();
-  }
-  const start = event.start?.dateTime ? new Date(event.start.dateTime) : null;
-  const end = event.end?.dateTime ? new Date(event.end.dateTime) : null;
-  if (!start || Number.isNaN(start.getTime())) return 'Time not set';
-  const date = start.toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  });
-  const startTime = start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  const endTime =
-    end && !Number.isNaN(end.getTime())
-      ? end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-      : '';
-  return `${date}, ${startTime}${endTime ? ` to ${endTime}` : ''}`;
 }
 
 function CalendarEventModal({

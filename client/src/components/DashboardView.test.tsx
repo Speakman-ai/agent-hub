@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react';
 import DashboardView, { sortSupportBySeverity } from './DashboardView';
+import { CALENDAR_EVENTS_SCOPE } from '../utils/googleSurface';
 
 const SAMPLE = {
   orgId: 'org-1',
@@ -167,10 +168,21 @@ const SUPPORT_SAMPLE = {
 
 // A fetch stub that routes by URL: the support panel hits `/support-tickets`,
 // everything else is the org dashboard payload.
-function routedFetch(dashboardPayload: any = SAMPLE, supportPayload: any = SUPPORT_SAMPLE) {
+function routedFetch(
+  dashboardPayload: any = SAMPLE,
+  supportPayload: any = SUPPORT_SAMPLE,
+  googleStatus: any = { connected: false, grantedScopes: [], serverConfigured: true },
+  calendarPayload: any = { events: [] },
+) {
   return vi.fn((url: any) => {
     const u = String(url);
-    const body = u.includes('/support-tickets') ? supportPayload : dashboardPayload;
+    const body = u.includes('/support-tickets')
+      ? supportPayload
+      : u.includes('/auth/google/status')
+        ? googleStatus
+        : u.includes('/google/calendar/events')
+          ? calendarPayload
+          : dashboardPayload;
     return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
   });
 }
@@ -204,6 +216,54 @@ describe('DashboardView', () => {
     );
     expect(dashCalls!).toHaveLength(1);
     expect((fetch as any).mock.calls[0][0]).toMatch(/\/orgs\/org-1\/dashboard$/);
+  });
+
+  it("shows this week's Google Calendar events on the dashboard", async () => {
+    vi.stubGlobal(
+      'fetch',
+      routedFetch(
+        SAMPLE,
+        SUPPORT_SAMPLE,
+        {
+          connected: true,
+          email: 'person@example.com',
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+          serverConfigured: true,
+        },
+        {
+          events: [
+            {
+              id: 'event-2',
+              summary: 'Design review',
+              location: 'Room 4',
+              start: { dateTime: '2026-07-03T17:00:00Z' },
+              end: { dateTime: '2026-07-03T18:00:00Z' },
+            },
+            {
+              id: 'event-1',
+              summary: 'Planning',
+              start: { dateTime: '2026-07-01T17:00:00Z' },
+              end: { dateTime: '2026-07-01T18:00:00Z' },
+            },
+          ],
+        },
+      ),
+    );
+
+    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
+
+    const calendar = await screen.findByTestId('dashboard-calendar');
+    await waitFor(() => {
+      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
+      expect(within(calendar).getByText('Design review')).toBeInTheDocument();
+    });
+
+    const calendarCalls = (fetch as any).mock.calls.filter((c: any) =>
+      /\/google\/calendar\/events\?/.test(String(c[0])),
+    );
+    expect(calendarCalls).toHaveLength(1);
+    expect(String(calendarCalls[0][0])).toContain('maxResults=20');
+    expect(within(calendar).getByText('Room 4')).toBeInTheDocument();
   });
 
   it('loads under React.StrictMode (mountedRef survives dev remount)', async () => {

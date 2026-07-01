@@ -17,7 +17,9 @@ import { api } from '../utils/api';
 import { createRequestGenerationState, beginRequest } from '@shared/utils/requestGeneration';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { openPrDashboardStatusBadge } from '../utils/prFormatting';
+import { hasCalendarScope } from '../utils/googleSurface';
 import { activityLabel, filterActivity, countByType, ACTIVITY_TYPE_KEYS, sortSupportBySeverity, SUPPORT_SEVERITY_DOT, PR_PRIORITY_DOT, resolveActivityTarget, activityIsActionable, resolveOpenPrTarget, openPrIsActionable, } from '../utils/dashboard';
+import { defaultCalendarRange, eventTimeLabel, localTimeZone, sortCalendarEvents } from '@shared/utils/calendarEvents';
 /** How often the dashboard silently re-polls while the app is foregrounded. */
 const DASHBOARD_REFRESH_MS = 5000;
 const ACTIVITY_DOT: Record<string, any> = {
@@ -38,6 +40,10 @@ export default function DashboardScreen() {
     const [supportTickets, setSupportTickets] = useState<any[]>([]);
     const [supportLoading, setSupportLoading] = useState(true);
     const [supportError, setSupportError] = useState<any>(null);
+    const [calendarStatus, setCalendarStatus] = useState<any>(null);
+    const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+    const [calendarLoading, setCalendarLoading] = useState(true);
+    const [calendarError, setCalendarError] = useState<any>(null);
     const [activeTypes, setActiveTypes] = useState(() => new Set());
     const currentUser = getAuthRecord()?.user || null;
     const accountName = currentUser?.email || currentUser?.username || 'Account';
@@ -52,6 +58,7 @@ export default function DashboardScreen() {
     const mountedRef = useRef(true);
     const dashGenRef = useRef(createRequestGenerationState());
     const supportGenRef = useRef(createRequestGenerationState());
+    const calendarGenRef = useRef(createRequestGenerationState());
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -239,15 +246,61 @@ export default function DashboardScreen() {
                 setSupportLoading(false);
         }
     }, []);
+    const loadCalendar = useCallback(async ({ silent }: any = {}) => {
+        const req = beginRequest(calendarGenRef.current, { silent });
+        if (!silent) {
+            setCalendarLoading(true);
+            setCalendarError(null);
+        }
+        let committed = false;
+        try {
+            const nextStatus = await api.getGoogleStatus();
+            let nextEvents: any[] = [];
+            if (nextStatus?.connected && hasCalendarScope(nextStatus)) {
+                const body = await api.listGoogleCalendarEvents({
+                    ...defaultCalendarRange(),
+                    timeZone: localTimeZone(),
+                    maxResults: 20,
+                });
+                nextEvents = sortCalendarEvents(Array.isArray(body?.events) ? body.events : []);
+            }
+            if (mountedRef.current && req.canCommit()) {
+                req.commit();
+                committed = true;
+                setCalendarStatus(nextStatus);
+                setCalendarEvents(nextEvents);
+                setCalendarError(null);
+            }
+        }
+        catch (err: any) {
+            if (!silent && mountedRef.current && req.canCommit()) {
+                req.commit();
+                committed = true;
+                setCalendarError(err.message || String(err));
+                setCalendarEvents([]);
+            }
+        }
+        finally {
+            if (mountedRef.current && (committed || req.ownsLoading()))
+                setCalendarLoading(false);
+        }
+    }, []);
     useEffect(() => {
         load();
     }, [load]);
     useEffect(() => {
         loadSupport();
     }, [loadSupport]);
+    useEffect(() => {
+        loadCalendar();
+    }, [loadCalendar]);
     // Return the combined promise so the hook's in-flight guard waits for both
     // requests — a slow poll then skips the next 5s tick instead of stacking.
-    useVisibleIntervalRefresh(() => Promise.all([load({ silent: true }), loadSupport({ silent: true })]), DASHBOARD_REFRESH_MS);
+    useVisibleIntervalRefresh(() => Promise.all([
+        load({ silent: true }),
+        loadSupport({ silent: true }),
+        loadCalendar({ silent: true }),
+    ]), DASHBOARD_REFRESH_MS);
     const sortedSupport = useMemo<any>(() => sortSupportBySeverity(supportTickets), [supportTickets]);
     const allActivity = data?.recentActivity || [];
     const activity = filterActivity(allActivity, activeTypes);
@@ -272,6 +325,7 @@ export default function DashboardScreen() {
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => {
                 load({ asRefresh: true });
                 loadSupport();
+                loadCalendar();
             }} tintColor={colors.gray400}/>}>
         {error ? (<View style={styles.errorBox}>
             <Text style={styles.errorText}>Failed to load dashboard: {error}</Text>
@@ -355,6 +409,26 @@ export default function DashboardScreen() {
                     </View>)}
                 </>);
             })()}
+
+            <SectionHeader title="This week"/>
+            <View style={styles.card} testID="dashboard-calendar">
+              {calendarError ? (<Text style={styles.errorInline}>
+                  Failed to load Calendar: {calendarError}
+                </Text>) : calendarLoading ? (<Text style={styles.muted}>Loading Calendar...</Text>) : !calendarStatus?.connected ? (<DashboardCalendarEmpty title={calendarStatus?.serverConfigured === false ? 'Google is not configured' : 'Connect Google to show Calendar'} body={calendarStatus?.serverConfigured === false
+                    ? 'An Admin needs to add the Google OAuth app before Calendar can connect.'
+                    : 'Link your Google account in Account settings to show this week on the dashboard.'} action="Account settings" onPress={() => navigation.navigate('Settings', { tab: 'account' })}/>) : !hasCalendarScope(calendarStatus) ? (<DashboardCalendarEmpty title="Enable Calendar access" body={`Connected as ${calendarStatus?.email || 'Google account'}, but Calendar access has not been granted yet.`} action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : calendarEvents.length === 0 ? (<DashboardCalendarEmpty title="No events this week" body="Your primary Google Calendar has no events in the next seven days." action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : (calendarEvents.slice(0, 6).map((event: any, index: number) => (<TouchableOpacity key={event.id || `${event.summary}-${index}`} style={styles.activityRow} onPress={() => navigation.navigate('Calendar')}>
+                    <HubIcon name="CalendarDays" size={16} color={colors.blue400} style={styles.prIcon}/>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.activityTitle} numberOfLines={1}>
+                        {event.summary || '(no title)'}
+                      </Text>
+                      <Text style={styles.activityMeta} numberOfLines={1}>
+                        {eventTimeLabel(event)}
+                        {event.location ? ` · ${event.location}` : ''}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>)))}
+            </View>
 
             <SectionHeader title="Open PRs" subtitle={`${openPrs.length} open PR${openPrs.length === 1 ? '' : 's'}`}/>
             <View style={styles.card} testID="open-prs">
@@ -480,6 +554,15 @@ function SectionHeader({ title, subtitle }: any) {
       {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
     </View>);
 }
+function DashboardCalendarEmpty({ title, body, action, onPress }: any) {
+    return (<View style={styles.calendarEmpty}>
+      <Text style={styles.calendarEmptyTitle}>{title}</Text>
+      <Text style={styles.calendarEmptyBody}>{body}</Text>
+      {action ? (<TouchableOpacity onPress={onPress} style={styles.calendarAction}>
+          <Text style={styles.calendarActionText}>{action}</Text>
+        </TouchableOpacity>) : null}
+    </View>);
+}
 const styles = StyleSheet.create({
     container: {
         flex: 1,
@@ -584,6 +667,36 @@ const styles = StyleSheet.create({
     muted: {
         color: colors.gray600,
         fontSize: 12,
+    },
+    calendarEmpty: {
+        alignItems: 'center',
+        paddingVertical: 12,
+        gap: 6,
+    },
+    calendarEmptyTitle: {
+        color: colors.gray300,
+        fontSize: 13,
+        fontWeight: '600',
+        textAlign: 'center',
+    },
+    calendarEmptyBody: {
+        color: colors.gray500,
+        fontSize: 12,
+        textAlign: 'center',
+        lineHeight: 17,
+    },
+    calendarAction: {
+        borderColor: colors.gray700,
+        borderWidth: 1,
+        borderRadius: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        marginTop: 4,
+    },
+    calendarActionText: {
+        color: colors.gray300,
+        fontSize: 12,
+        fontWeight: '500',
     },
     filterRow: {
         flexDirection: 'row',

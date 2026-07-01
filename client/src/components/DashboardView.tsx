@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   BarChart3,
+  CalendarDays,
   GitPullRequest,
   AlertTriangle,
   Plus,
@@ -12,7 +13,14 @@ import {
   Folder,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { hasCalendarScope } from '../utils/googleSurface';
 import { createRequestGenerationState, beginRequest } from '@shared/utils/requestGeneration';
+import {
+  defaultCalendarRange,
+  eventTimeLabel,
+  localTimeZone,
+  sortCalendarEvents,
+} from '@shared/utils/calendarEvents';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { getApiBase, getAuthHeaders } from '../utils/connection';
 import { getAuthRecord } from '../utils/auth';
@@ -218,6 +226,7 @@ export default function DashboardView({
               onOpenSession={onOpenSession}
               currentUser={currentUser}
             />
+            <WeeklyCalendarPanel onNavigate={onNavigate} />
             <OpenPRsPanel
               prs={data.openPRs}
               onOpenPulls={onOpenPulls}
@@ -244,6 +253,152 @@ const PR_PRIORITY_DOT = {
   medium: 'bg-amber-400',
   low: 'bg-emerald-400',
 } as Record<string, any>;
+
+function WeeklyCalendarPanel({ onNavigate }: any) {
+  const [status, setStatus] = useState<any>(null);
+  const [events, setEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<any>(null);
+  const mountedRef = useRef(true);
+  const genRef = useRef(createRequestGenerationState());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const load = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    const req = beginRequest(genRef.current, { silent });
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
+    let committed = false;
+    try {
+      const nextStatus = await api.getGoogleStatus();
+      let nextEvents: any[] = [];
+      if (nextStatus?.connected && hasCalendarScope(nextStatus)) {
+        const body = await api.listGoogleCalendarEvents({
+          ...defaultCalendarRange(),
+          timeZone: localTimeZone(),
+          maxResults: 20,
+        });
+        nextEvents = sortCalendarEvents(Array.isArray(body?.events) ? body.events : []);
+      }
+      if (mountedRef.current && req.canCommit()) {
+        req.commit();
+        committed = true;
+        setStatus(nextStatus);
+        setEvents(nextEvents);
+        setError(null);
+      }
+    } catch (err: any) {
+      if (!silent && mountedRef.current && req.canCommit()) {
+        req.commit();
+        committed = true;
+        setError(err.message || String(err));
+        setEvents([]);
+      }
+    } finally {
+      if (mountedRef.current && (committed || req.ownsLoading())) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const connected = !!status?.connected;
+  const configured = status?.serverConfigured !== false;
+  const calendarEnabled = hasCalendarScope(status);
+  const canOpenCalendar = connected && onNavigate;
+  const canOpenAccount = onNavigate;
+
+  let emptyTitle = 'No events this week';
+  let emptyBody = 'Your primary Google Calendar has no events in the next seven days.';
+  let actionLabel: string | null = canOpenCalendar ? 'Open Calendar' : null;
+  let actionTarget = 'calendar';
+
+  if (!configured && !connected) {
+    emptyTitle = 'Google is not configured';
+    emptyBody = 'An Admin needs to add the Google OAuth app before Calendar can connect.';
+    actionLabel = canOpenAccount ? 'Account settings' : null;
+    actionTarget = 'settings:account';
+  } else if (!connected) {
+    emptyTitle = 'Connect Google to show Calendar';
+    emptyBody = 'Link your Google account in Account settings to show this week on the dashboard.';
+    actionLabel = canOpenAccount ? 'Account settings' : null;
+    actionTarget = 'settings:account';
+  } else if (!calendarEnabled) {
+    emptyTitle = 'Enable Calendar access';
+    emptyBody = `Connected as ${status?.email || 'Google account'}, but Calendar access has not been granted yet.`;
+    actionLabel = canOpenCalendar ? 'Open Calendar' : null;
+    actionTarget = 'calendar';
+  }
+
+  return (
+    <section aria-label="This week's calendar" className="mb-8">
+      <div className="flex items-baseline justify-between mb-3 gap-3">
+        <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+          <CalendarDays size={14} className="text-blue-400" />
+          This week
+        </h2>
+        <button
+          type="button"
+          onClick={() => load()}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+          Refresh
+        </button>
+      </div>
+      <div
+        data-testid="dashboard-calendar"
+        className="bg-gray-900 border border-gray-800 rounded-xl divide-y divide-gray-800"
+      >
+        {error ? (
+          <div className="px-4 py-6 text-center text-xs text-red-400">
+            Failed to load Calendar: {error}
+          </div>
+        ) : loading ? (
+          <div className="px-4 py-6 text-center text-xs text-gray-600">Loading Calendar…</div>
+        ) : !connected || !calendarEnabled || events.length === 0 ? (
+          <div className="px-4 py-6 text-center">
+            <div className="text-sm font-medium text-gray-300">{emptyTitle}</div>
+            <div className="mx-auto mt-1 max-w-md text-xs text-gray-500">{emptyBody}</div>
+            {actionLabel && (
+              <button
+                type="button"
+                onClick={() => onNavigate?.(actionTarget)}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-gray-700 px-2.5 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
+              >
+                <CalendarDays size={12} />
+                {actionLabel}
+              </button>
+            )}
+          </div>
+        ) : (
+          events.slice(0, 6).map((event: any, index) => (
+            <div key={event.id || `${event.summary}-${index}`} className="px-4 py-3 flex gap-3">
+              <div className="w-32 flex-shrink-0 text-[11px] text-gray-500">
+                {eventTimeLabel(event)}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-white truncate">{event.summary || '(no title)'}</div>
+                {event.location ? (
+                  <div className="mt-0.5 text-[11px] text-gray-500 truncate">{event.location}</div>
+                ) : null}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
 
 /**
  * Open pull requests: kanban cards carrying an unmerged `pr_url` that have

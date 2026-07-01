@@ -17,16 +17,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
+import {
+  defaultCalendarRange,
+  eventStartMillis,
+  eventTimeLabel,
+  localTimeZone,
+} from '@shared/utils/calendarEvents';
+
+export { defaultCalendarRange };
 
 export const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
-
-function localTimeZone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
-}
 
 function pad(n: number) {
   return String(n).padStart(2, '0');
@@ -54,12 +54,6 @@ function parseEventDateTime(value: any) {
   }
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? raw.slice(0, 16) : localDateTime(d);
-}
-
-export function defaultCalendarRange(now = new Date()) {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  return { timeMin: start.toISOString(), timeMax: addDays(start, 7).toISOString() };
 }
 
 function defaultFormState() {
@@ -134,26 +128,6 @@ export async function openCalendarOAuth({ apiClient, openURL }: any) {
 function hasCalendarScope(status: any) {
   const scopes = status?.grantedScopes || [];
   return scopes.includes(CALENDAR_EVENTS_SCOPE) || scopes.includes('https://www.googleapis.com/auth/calendar');
-}
-
-function eventStartMillis(event: any) {
-  const raw = event?.start?.dateTime || event?.start?.date;
-  if (!raw) return 0;
-  const d = new Date(raw);
-  return Number.isNaN(d.getTime()) ? 0 : d.getTime();
-}
-
-function eventTimeLabel(event: any) {
-  if (event?.start?.date) {
-    const d = new Date(`${event.start.date}T00:00:00`);
-    return Number.isNaN(d.getTime()) ? event.start.date : d.toLocaleDateString();
-  }
-  const start = event?.start?.dateTime ? new Date(event.start.dateTime) : null;
-  const end = event?.end?.dateTime ? new Date(event.end.dateTime) : null;
-  if (!start || Number.isNaN(start.getTime())) return 'Time not set';
-  const startText = start.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  const endText = end && !Number.isNaN(end.getTime()) ? end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
-  return `${startText}${endText ? ` to ${endText}` : ''}`;
 }
 
 export function CalendarAgendaContent({
