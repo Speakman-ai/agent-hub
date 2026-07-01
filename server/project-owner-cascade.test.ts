@@ -10,13 +10,15 @@
  *   - Survive a single project's delete throwing — others still run.
  *
  * We mock the `Stmts` API at the call-site level rather than spinning up
- * the real DB; the cascade does no SQL of its own, just dispatches to
- * prepared statements that the caller supplies. That keeps this test
- * tightly focused on the cascade logic.
+ * the real DB; the cascade dispatches to prepared statements that the
+ * caller supplies. That keeps this test tightly focused on the cascade logic.
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import path from 'path';
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
+import { resolveProjectSkillsDir } from './project-skill-paths.js';
 import type { Project, Stmts } from './types.js';
 
 function makeStmts(
@@ -68,6 +70,31 @@ describe('cascadeDeleteUserPrivateProjects', () => {
     expect(result.deletedProjectIds.sort()).toEqual(['p1', 'p2']);
     expect(projects).toHaveLength(0);
     expect(saveProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes canonical project skill stores for deleted private projects', () => {
+    const project = makeProject({
+      id: `skill-cleanup-${Date.now()}`,
+      visibility: 'private',
+      ownerUserId: 'u1',
+    });
+    const skillsDir = resolveProjectSkillsDir(project);
+    rmSync(skillsDir, { recursive: true, force: true });
+    mkdirSync(path.join(skillsDir, 'owned-skill'), { recursive: true });
+    writeFileSync(path.join(skillsDir, 'owned-skill', 'SKILL.md'), '---\nname: Owned\n---\n');
+
+    try {
+      const projects: Project[] = [project];
+      const result = cascadeDeleteUserPrivateProjects(
+        { stmts: makeStmts(), getProjects: () => projects, saveProjects: vi.fn() },
+        'u1',
+      );
+
+      expect(result.deletedProjectIds).toEqual([project.id]);
+      expect(existsSync(skillsDir)).toBe(false);
+    } finally {
+      rmSync(skillsDir, { recursive: true, force: true });
+    }
   });
 
   it('leaves shared projects in place and reports them as orphaned', () => {

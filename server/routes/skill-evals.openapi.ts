@@ -160,11 +160,11 @@ registerPath({
   tags: ['Skills'],
   summary: 'Read a skill eval suite',
   description:
-    'Returns the eval suite at `<project.ahw>/skills/<skillId>/evals/evals.json`. An absent file yields `{ evals: [] }`. A present-but-invalid file returns 422.',
+    'Returns the eval suite at `<dataDir>/project-skills/<projectId>/<skillId>/evals/evals.json`. An absent file yields `{ evals: [] }`. A present-but-invalid file returns 422.',
   request: { params },
   responses: {
     200: { description: 'The eval suite.', content: jsonContent(EvalsListSchema) },
-    400: errorResponse('No workspace / invalid skill id.'),
+    400: errorResponse('No project skill store / invalid skill id.'),
     404: errorResponse('Project or skill not found.'),
     422: errorResponse('evals.json present but invalid.'),
   },

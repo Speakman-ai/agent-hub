@@ -4,6 +4,7 @@ import { existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import { getRequest, createProject } from './helpers.js';
+import { migrateProjectSkillDirectories, resolveProjectSkillsDir } from '../project-model.js';
 
 let request: supertest.Agent;
 
@@ -31,6 +32,10 @@ describe('Project skills — write API (POST/PUT)', () => {
     return p;
   }
 
+  function skillsDirFor(project: { id: string; ahw?: string }): string {
+    return resolveProjectSkillsDir(project);
+  }
+
   it('POST creates a project skill and writes SKILL.md to disk', async () => {
     const proj = await newProject();
     const res = await request
@@ -48,8 +53,8 @@ describe('Project skills — write API (POST/PUT)', () => {
     expect(body.id).toBe('my-skill');
     expect(body.name).toBe('my-skill');
 
-    const skillMd = path.join(proj.ahw, 'skills', 'my-skill', 'SKILL.md');
-    created.push(path.join(proj.ahw, 'skills', 'my-skill'));
+    const skillMd = path.join(skillsDirFor(proj), 'my-skill', 'SKILL.md');
+    created.push(path.join(skillsDirFor(proj), 'my-skill'));
     expect(existsSync(skillMd)).toBe(true);
 
     const parsed = matter(readFileSync(skillMd, 'utf-8'));
@@ -66,7 +71,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'findable-skill', description: 'Find me.' })
       .expect(201);
-    created.push(path.join(proj.ahw, 'skills', 'findable-skill'));
+    created.push(path.join(skillsDirFor(proj), 'findable-skill'));
 
     // Read back through the same GET route the loader / Settings UI use.
     // (Read route is agent-scoped; create an agent under this project.)
@@ -90,13 +95,37 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'listed-skill', description: 'List me on the project page.' })
       .expect(201);
-    created.push(path.join(proj.ahw, 'skills', 'listed-skill'));
+    created.push(path.join(skillsDirFor(proj), 'listed-skill'));
 
     const list = await request.get(`/api/projects/${proj.id}/skills`).expect(200);
     const rows = list.body as Array<{ id: string; source?: string }>;
     const found = rows.find((s) => s.id === 'listed-skill');
     expect(found).toBeTruthy();
     expect(found?.source).toBe('project');
+  });
+
+  it('migrates legacy workspace skills into the persistent project skill store', async () => {
+    // Regression: project-authored skills used to live under project.ahw/skills,
+    // which restart/hosted flows can recreate. Startup migration must copy them
+    // into the central data dir store before the list/runtime paths read skills.
+    const proj = await newProject();
+    const legacyDir = path.join(proj.ahw, 'skills', 'legacy-skill');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(
+      path.join(legacyDir, 'SKILL.md'),
+      '---\nname: legacy-skill\ndescription: Migrated from old workspace storage.\n---\n# Legacy\n',
+    );
+    created.push(legacyDir);
+    created.push(path.join(skillsDirFor(proj), 'legacy-skill'));
+
+    migrateProjectSkillDirectories();
+
+    const migrated = path.join(skillsDirFor(proj), 'legacy-skill', 'SKILL.md');
+    expect(existsSync(migrated)).toBe(true);
+    expect(readFileSync(migrated, 'utf-8')).toContain('Migrated from old workspace storage');
+
+    const list = await request.get(`/api/projects/${proj.id}/skills`).expect(200);
+    expect((list.body as Array<{ id: string }>).some((s) => s.id === 'legacy-skill')).toBe(true);
   });
 
   it('GET project skill reads its SKILL.md without an agent (project-owned read)', async () => {
@@ -107,7 +136,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'editable-proj-skill', description: 'Edit me.', body: '# Body here' })
       .expect(201);
-    created.push(path.join(proj.ahw, 'skills', 'editable-proj-skill'));
+    created.push(path.join(skillsDirFor(proj), 'editable-proj-skill'));
 
     const res = await request
       .get(`/api/projects/${proj.id}/skills/editable-proj-skill`)
@@ -132,7 +161,7 @@ describe('Project skills — write API (POST/PUT)', () => {
     // as editable, so the write paths must accept them too — otherwise edit
     // loads but save 404s.
     const proj = await newProject();
-    const skillsDir = path.join(proj.ahw, 'skills');
+    const skillsDir = skillsDirFor(proj);
     const flatPath = path.join(skillsDir, 'flat-skill.md');
     mkdirSync(skillsDir, { recursive: true });
     writeFileSync(
@@ -168,7 +197,7 @@ describe('Project skills — write API (POST/PUT)', () => {
     // skill dir that contained a subfolder (references/). The recursive rmSync
     // must remove it cleanly.
     const proj = await newProject();
-    const skillDir = path.join(proj.ahw, 'skills', 'nested-skill');
+    const skillDir = path.join(skillsDirFor(proj), 'nested-skill');
     mkdirSync(path.join(skillDir, 'references'), { recursive: true });
     writeFileSync(
       path.join(skillDir, 'SKILL.md'),
@@ -190,11 +219,11 @@ describe('Project skills — write API (POST/PUT)', () => {
           '---\nname: raw-only\ndescription: Authored from a single textarea.\ncategory: tooling\n---\n# Raw Only\n\nbody\n',
       })
       .expect(201);
-    created.push(path.join(proj.ahw, 'skills', 'raw-only'));
+    created.push(path.join(skillsDirFor(proj), 'raw-only'));
 
     expect((res.body as SkillResult).id).toBe('raw-only');
     const parsed = matter(
-      readFileSync(path.join(proj.ahw, 'skills', 'raw-only', 'SKILL.md'), 'utf-8'),
+      readFileSync(path.join(skillsDirFor(proj), 'raw-only', 'SKILL.md'), 'utf-8'),
     );
     expect(parsed.data.name).toBe('raw-only');
     expect(parsed.data.description).toBe('Authored from a single textarea.');
@@ -207,7 +236,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'raw-edit', description: 'original' })
       .expect(201);
-    const dir = path.join(proj.ahw, 'skills', 'raw-edit');
+    const dir = path.join(skillsDirFor(proj), 'raw-edit');
     created.push(dir);
 
     await request
@@ -225,7 +254,7 @@ describe('Project skills — write API (POST/PUT)', () => {
     const raw =
       '---\nname: roundtrip\ndescription: keep my extras\ncategory: tooling\nallowed-tools:\n  - Bash\nlicense: MIT\n---\n# Roundtrip\n\nbody\n';
     await request.post(`/api/projects/${proj.id}/skills`).send({ content: raw }).expect(201);
-    const dir = path.join(proj.ahw, 'skills', 'roundtrip');
+    const dir = path.join(skillsDirFor(proj), 'roundtrip');
     created.push(dir);
 
     // Simulate the editor: fetch the raw file and PUT it straight back unchanged.
@@ -283,7 +312,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .expect(409);
     expect((res.body as { error: string }).error).toContain('bundled default');
     // Nothing should have been written.
-    expect(existsSync(path.join(proj.ahw, 'skills', 'agent-hub-kanban'))).toBe(false);
+    expect(existsSync(path.join(skillsDirFor(proj), 'agent-hub-kanban'))).toBe(false);
   });
 
   it('POST rejects a duplicate project skill with 409 (use PUT)', async () => {
@@ -292,7 +321,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'dup-skill', description: 'first' })
       .expect(201);
-    created.push(path.join(proj.ahw, 'skills', 'dup-skill'));
+    created.push(path.join(skillsDirFor(proj), 'dup-skill'));
     await request
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'dup-skill', description: 'second' })
@@ -305,7 +334,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'edit-me', description: 'original', body: 'v1' })
       .expect(201);
-    const dir = path.join(proj.ahw, 'skills', 'edit-me');
+    const dir = path.join(skillsDirFor(proj), 'edit-me');
     created.push(dir);
 
     await request
@@ -324,7 +353,7 @@ describe('Project skills — write API (POST/PUT)', () => {
       .post(`/api/projects/${proj.id}/skills`)
       .send({ name: 'fixed-id', description: 'x' })
       .expect(201);
-    created.push(path.join(proj.ahw, 'skills', 'fixed-id'));
+    created.push(path.join(skillsDirFor(proj), 'fixed-id'));
 
     await request
       .put(`/api/projects/${proj.id}/skills/fixed-id`)

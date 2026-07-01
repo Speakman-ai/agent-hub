@@ -1,10 +1,20 @@
 import { v4 as uuidv4 } from 'uuid';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'fs';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  readdirSync,
+  cpSync,
+} from 'fs';
 import { execSync } from 'child_process';
 import path from 'path';
 import config from './config.js';
 import { getDb, getStmts } from './db.js';
+import { resolveProjectSkillsDir, setProjectSkillsDataDir } from './project-skill-paths.js';
 import type { Project, Agent, EnrichedAgent, AgentLookup } from './types.js';
+export { deleteProjectSkillsDir, resolveProjectSkillsDir } from './project-skill-paths.js';
 
 // ─── Mutable state ──────────────────────────────────────────────────
 let PROJECTS_PATH: string = path.join(config.dataDir, 'projects.json');
@@ -14,6 +24,7 @@ let projects: Project[] = [];
 
 function initProjects(dataDir?: string): void {
   if (dataDir) {
+    setProjectSkillsDataDir(dataDir);
     PROJECTS_PATH = path.join(dataDir, 'projects.json');
   }
   if (!existsSync(PROJECTS_PATH)) {
@@ -22,6 +33,7 @@ function initProjects(dataDir?: string): void {
   }
   projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
   hydrateProjects();
+  migrateProjectSkillDirectories();
   migrateWebhookRepoToProject();
 }
 
@@ -47,19 +59,51 @@ function getProjectDataDir(projectId: string): string {
 
 /**
  * The single source of truth for a project's **writable** skills directory
- * (`<project data dir>/skills`). Every project-skill read and write path must
+ * (`<active data dir>/project-skills/<projectId>`). Every project-skill read and write path must
  * derive the directory through here so the list endpoint never disagrees with
  * the create/update/delete endpoints.
  *
- * `ahw` (the project's agent-home workspace) is normally hydrated to
- * `<projectsDir>/<id>`, but fall back to deriving it from the id when it's
- * absent so a not-yet-hydrated project resolves to the same dir the writes use
- * instead of silently yielding "" (which would list zero skills even right
- * after a successful save).
+ * This intentionally lives under the central Hub data dir rather than the
+ * operational project workspace (`project.ahw`). Hosted/restart flows may
+ * recreate workspace directories, but project-authored skills are user data and
+ * must survive with the rest of the instance state.
  */
-export function resolveProjectSkillsDir(project: { id: string; ahw?: string }): string {
+function resolveLegacyProjectSkillsDir(project: { id: string; ahw?: string }): string {
   const base = project.ahw || (project.id ? getProjectDataDir(project.id) : '');
   return base ? path.join(base, 'skills') : '';
+}
+
+function copyMissingDirectoryEntries(srcDir: string, destDir: string): boolean {
+  if (!existsSync(srcDir)) return false;
+  mkdirSync(destDir, { recursive: true });
+  let copied = false;
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (existsSync(dest)) continue;
+    cpSync(src, dest, { recursive: true });
+    copied = true;
+  }
+  return copied;
+}
+
+function migrateProjectSkillDirectories(): void {
+  for (const project of projects) {
+    const canonicalDir = resolveProjectSkillsDir(project);
+    const legacyDir = resolveLegacyProjectSkillsDir(project);
+    if (!canonicalDir || !legacyDir || canonicalDir === legacyDir) continue;
+    try {
+      if (copyMissingDirectoryEntries(legacyDir, canonicalDir)) {
+        console.log(
+          `[skills] Migrated project skills for "${project.id}" from ${legacyDir} to ${canonicalDir}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[skills] Failed to migrate project skills for "${project.id}": ${(err as Error).message}`,
+      );
+    }
+  }
 }
 
 function hydrateProjects(): void {
@@ -97,6 +141,7 @@ function saveProjects(): void {
 }
 
 function reloadProjects(dataDir: string): void {
+  setProjectSkillsDataDir(dataDir);
   PROJECTS_PATH = path.join(dataDir, 'projects.json');
   if (!existsSync(PROJECTS_PATH)) {
     mkdirSync(dataDir, { recursive: true });
@@ -104,6 +149,7 @@ function reloadProjects(dataDir: string): void {
   }
   projects = JSON.parse(readFileSync(PROJECTS_PATH, 'utf-8')) as Project[];
   hydrateProjects();
+  migrateProjectSkillDirectories();
   // Auto-seeding Docs/Intake/Reviewer on reload is deprecated alongside the
   // sub-agent model (see CLAUDE.md "Flat Agent Model"). Context files are
   // still seeded so projects always have SOUL.md/AGENTS.md/etc. on disk.
@@ -610,6 +656,7 @@ export {
   saveProjects,
   reloadProjects,
   hydrateProjects,
+  migrateProjectSkillDirectories,
   // Auto-create helpers
   ensureDocsAgents,
   retireIntakeAgents,

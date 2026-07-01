@@ -132,7 +132,7 @@ import {
   deleteUserSkillCredentialByKey,
 } from '../skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from '../skill-credentials-resolve.js';
-import { findAgent } from '../project-model.js';
+import { findAgent, resolveProjectSkillsDir } from '../project-model.js';
 import { registerPath, z } from '../openapi/registry.js';
 import {
   AcceptInviteBody,
@@ -3288,15 +3288,15 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
 
     // Two flows:
     //   (A) agent_id provided → SkillsPage editor. The schema is read from
-    //       the agent's project workspace first (per-agent skill overrides
+    //       the agent's canonical project skill store first (per-agent skill overrides
     //       are allowed). Requires JWT callers to be a member of the agent's
     //       active org.
     //   (B) agent_id omitted → Account page personal-credentials section.
     //       The schema MUST resolve from bundled `server/default-skills/`
-    //       (or the global `skill_registry`); the per-project workspace is
+    //       (or the global `skill_registry`); the per-project skill store is
     //       never consulted. No agent-scoped RBAC applies — any
     //       authenticated user may store their own personal credential.
-    let projectWorkspaces: string[] = [];
+    let projectSkillsDirs: string[] = [];
     if (agent_id) {
       const foundAgent = findAgent(agent_id);
       if (!foundAgent) {
@@ -3319,17 +3319,16 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
           return;
         }
       }
-      const workspace =
-        typeof foundAgent.project.ahw === 'string' ? foundAgent.project.ahw.trim() : '';
-      if (!workspace) {
-        res.status(404).json({ error: 'No workspace configured for this agent' });
+      const skillsDir = resolveProjectSkillsDir(foundAgent.project);
+      if (!skillsDir) {
+        res.status(404).json({ error: 'No project skill store configured for this agent' });
         return;
       }
-      projectWorkspaces = [workspace];
+      projectSkillsDirs = [skillsDir];
     }
 
     const parsed = readCredentialsSchemaForSkill(skill_id, {
-      projectWorkspaces,
+      projectSkillsDirs,
     });
     if (parsed.error) {
       res.status(400).json({ error: `invalid credential schema for skill: ${parsed.error}` });

@@ -1,5 +1,6 @@
 import path from 'path';
 import type { ProjectPaths, Project, Agent } from './types.js';
+import { resolveProjectSkillsDir } from './project-skill-paths.js';
 
 /** Workspace data dir aligned with `resolveSlashSkill` / agent tooling: project.ahw → agent.ahw → workspace. */
 export function resolveWorkspaceDataDir(project: Project | undefined, agent: Agent): string {
@@ -28,7 +29,7 @@ export function resolveProjectPaths(project: Project, agent: Agent): ProjectPath
     toolsMd: dataDir ? path.join(dataDir, 'TOOLS.md') : '',
     memoryMd: dataDir ? path.join(dataDir, 'MEMORY.md') : '',
 
-    skillsDir: dataDir ? path.join(dataDir, 'skills') : '',
+    skillsDir: project.id ? resolveProjectSkillsDir(project) : '',
     memoryDir: dataDir ? path.join(dataDir, 'memory') : '',
 
     identityMd: agentDir ? path.join(agentDir, 'IDENTITY.md') : '',

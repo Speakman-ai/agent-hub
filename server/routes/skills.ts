@@ -350,7 +350,8 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     const found = findAgent(req.params.agentId as string);
     if (!found) return res.status(404).json({ error: 'Agent not found' });
     const projectSkillsDir = resolveProjectSkillsDir(found.project);
-    if (!projectSkillsDir) return res.status(404).json({ error: 'No workspace configured' });
+    if (!projectSkillsDir)
+      return res.status(404).json({ error: 'No project skill store configured' });
 
     const skillPath = path.join(projectSkillsDir, req.params.skillId as string);
     try {
@@ -441,7 +442,8 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
     if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
     const projectSkillsDir = resolveProjectSkillsDir(project);
-    if (!projectSkillsDir) return res.status(404).json({ error: 'No workspace configured' });
+    if (!projectSkillsDir)
+      return res.status(404).json({ error: 'No project skill store configured' });
     // Resolve directory OR flat form so a flat <slug>.md project skill is
     // editable too. No fallback to bundled defaults: this reads project-owned
     // skills only.
@@ -472,14 +474,14 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     }
   });
 
-  // Create a project skill. Writes <project.ahw>/skills/<slug>/SKILL.md.
+  // Create a project skill. Writes <dataDir>/project-skills/<projectId>/<slug>/SKILL.md.
   // Phase 1 of the Skill Builder epic — see wiki `skill-builder-architecture`.
   router.post('/api/projects/:projectId/skills', (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const projectSkillsDir = resolveProjectSkillsDir(project);
     if (!projectSkillsDir)
-      return res.status(400).json({ error: 'No workspace configured for project' });
+      return res.status(400).json({ error: 'No project skill store configured for project' });
 
     const composed = validateAndComposeSkill(req.body ?? {});
     if (!composed.ok) return res.status(400).json({ error: composed.error });
@@ -532,7 +534,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const projectSkillsDir = resolveProjectSkillsDir(project);
     if (!projectSkillsDir)
-      return res.status(400).json({ error: 'No workspace configured for project' });
+      return res.status(400).json({ error: 'No project skill store configured for project' });
 
     const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
     if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
@@ -583,7 +585,7 @@ export default function createSkillRoutes(deps: RouteDeps): Router {
     const project = findProject(req.params.projectId as string);
     if (!project) return res.status(404).json({ error: 'Project not found' });
     const projectSkillsDir = resolveProjectSkillsDir(project);
-    if (!projectSkillsDir) return res.status(400).json({ error: 'No workspace' });
+    if (!projectSkillsDir) return res.status(400).json({ error: 'No project skill store' });
 
     const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
     if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });

@@ -176,7 +176,9 @@ const ProjectSkillListItemSchema = registerComponent(
       category: z.string().optional(),
       source: z.enum(['project', 'global', 'default']),
     })
-    .openapi({ description: 'A project-authored skill in `<project.ahw>/skills`.' }),
+    .openapi({
+      description: 'A project-authored skill in `<dataDir>/project-skills/<projectId>`.',
+    }),
 );
 
 registerPath({
@@ -185,7 +187,7 @@ registerPath({
   tags: ['Skills'],
   summary: 'List project skills library',
   description:
-    'Returns project-authored skills only (`<project.ahw>/skills`). Built-in and shared global skills are listed via `GET /api/global-skills`.',
+    'Returns project-authored skills only (`<dataDir>/project-skills/<projectId>`). Built-in and shared global skills are listed via `GET /api/global-skills`.',
   request: { params: projectIdParam },
   responses: {
     200: {
@@ -203,7 +205,7 @@ registerPath({
   tags: ['Skills'],
   summary: 'Create a project skill',
   description:
-    'Validates the author payload, composes a canonical `SKILL.md` (YAML frontmatter + Markdown body), and writes it to `<project.ahw>/skills/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md whose frontmatter carries them. Rejects a slug that shadows a bundled default skill (409) or an already-existing project skill (409 — use PUT). Invalid frontmatter (bad slug, missing description, disallowed category, malformed credentials) returns 400.',
+    'Validates the author payload, composes a canonical `SKILL.md` (YAML frontmatter + Markdown body), and writes it to `<dataDir>/project-skills/<projectId>/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md whose frontmatter carries them. Rejects a slug that shadows a bundled default skill (409) or an already-existing project skill (409 — use PUT). Invalid frontmatter (bad slug, missing description, disallowed category, malformed credentials) returns 400.',
   request: { params: projectIdParam, body: { content: jsonContent(CreateSkillBodySchema) } },
   responses: {
     201: { description: 'Skill created.', content: jsonContent(SkillWriteResultSchema) },
@@ -382,7 +384,7 @@ registerPath({
       content: jsonContent(ProjectSkillDetailSchema),
     },
     400: errorResponse('Invalid skill id or malformed credentials frontmatter.'),
-    404: errorResponse('Project, workspace, or project skill not found.'),
+    404: errorResponse('Project or project skill not found.'),
     500: errorResponse('Filesystem read error.'),
   },
 });

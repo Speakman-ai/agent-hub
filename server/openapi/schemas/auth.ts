@@ -250,7 +250,7 @@ export const UpsertSkillCredentialBody = registerComponent(
       skill_id: z.string(),
       key_name: z.string(),
       // Optional. When provided, the skill schema is read from that agent's
-      // project workspace (`{ahw}/skills/{skill_id}/SKILL.md`) before
+      // project skill store (`<dataDir>/project-skills/<projectId>/{skill_id}/SKILL.md`) before
       // falling back to bundled defaults — this is the flow used by the
       // SkillsPage credential editor (per-agent context). When omitted,
       // the schema must resolve from bundled `server/default-skills/`

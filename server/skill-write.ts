@@ -5,7 +5,7 @@
  * lives in `agent-skills-list.ts`. This module is the pure, framework-free
  * core that validates an author-supplied skill payload and composes the
  * canonical `SKILL.md` (YAML frontmatter + Markdown body) that gets written to
- * `<project.ahw>/skills/<id>/SKILL.md`.
+ * `<dataDir>/project-skills/<projectId>/<id>/SKILL.md`.
  *
  * Kept side-effect free (no fs, no express) so the route handlers stay thin
  * and the validation rules are unit-testable in isolation. Credential

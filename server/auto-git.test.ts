@@ -30,10 +30,11 @@ vi.mock('./finalize/automation-runner.js', () => ({
 }));
 
 import { exec, execFile, spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 import {
   checkWorktreeChanges,
   initAutoGit,
+  resolveSlashSkill,
   autoCommitAndPR,
   buildCardDescription,
   buildPrTitle,
@@ -57,6 +58,7 @@ import {
 import path from 'path';
 import type { MessageRow } from './types.js';
 import { maybeAutoStartFinalizeForSession } from './finalize/automation-runner.js';
+import { resolveProjectSkillsDir } from './project-skill-paths.js';
 
 function makeMsg(role: 'user' | 'assistant', content: string): MessageRow {
   return {
@@ -486,6 +488,46 @@ describe('checkWorktreeChanges', () => {
     expect(result.hasUncommitted).toBe(false);
     expect(result.hasUnpushed).toBe(false);
     expect(result.branch).toBe('solo-branch');
+  });
+});
+
+describe('resolveSlashSkill', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    initAutoGit({
+      stmts: {} as never,
+      broadcast: vi.fn(),
+      getConfig: vi.fn(() => ({}) as never),
+      DEFAULT_SKILLS_DIR: '/tmp/default-skills',
+    });
+  });
+
+  it('falls back to legacy project workspace skills before agent workspaces', () => {
+    const project = { id: 'proj-legacy', ahw: '/project-ahw' };
+    const agent = { id: 'agent-1', ahw: '/agent-ahw', workspace: '/agent-workspace' };
+    const canonicalDir = resolveProjectSkillsDir(project);
+    const projectSkillsDir = path.join(project.ahw, 'skills');
+    const agentSkillsDir = path.join(agent.ahw, 'skills');
+    const checkedPaths: string[] = [];
+
+    (existsSync as unknown as Mock).mockImplementation((rawPath: string) => {
+      checkedPaths.push(rawPath);
+      return (
+        rawPath === projectSkillsDir ||
+        rawPath === path.join(projectSkillsDir, 'legacy-skill') ||
+        rawPath === path.join(projectSkillsDir, 'legacy-skill', 'SKILL.md')
+      );
+    });
+    (statSync as unknown as Mock).mockImplementation((rawPath: string) => ({
+      isDirectory: () => rawPath === path.join(projectSkillsDir, 'legacy-skill'),
+    }));
+
+    const result = resolveSlashSkill(agent as never, '/legacy-skill arg', project as never);
+
+    expect(result).toEqual({ skillName: 'legacy-skill', userArgs: 'arg' });
+    expect(checkedPaths[0]).toBe(canonicalDir);
+    expect(checkedPaths[1]).toBe(projectSkillsDir);
+    expect(checkedPaths).not.toContain(agentSkillsDir);
   });
 });
 

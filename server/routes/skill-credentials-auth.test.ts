@@ -42,7 +42,7 @@ vi.mock('../config.js', async () => {
   };
 });
 
-const { reloadProjects } = await import('../project-model.js');
+const { reloadProjects, resolveProjectSkillsDir } = await import('../project-model.js');
 const { default: createAuthRoutes } = await import('./auth.js');
 const { authMiddleware } = await import('../auth.js');
 const { setAuthFilePathForTests, reloadAuthRecord } = await import('../auth-store.js');
@@ -168,7 +168,7 @@ describe('/api/auth/me/skill-credentials', () => {
     reloadProjects(_skillCredTestRoot);
 
     const ahw = path.join(_skillCredTestRoot, 'persist', 'projects', 'p1');
-    const wsSkill = path.join(ahw, 'skills', 'ws-only-skill');
+    const wsSkill = path.join(resolveProjectSkillsDir({ id: 'p1', ahw }), 'ws-only-skill');
     mkdirSync(wsSkill, { recursive: true });
     writeFileSync(
       path.join(wsSkill, 'SKILL.md'),
@@ -424,8 +424,8 @@ credentials:
     const ahwB = path.join(_skillCredTestRoot, 'persist', 'projects', 'p-beta');
     const dup = 'dup-skill';
 
-    function writeDupSkill(ahwRoot: string, keyName: string) {
-      const dir = path.join(ahwRoot, 'skills', dup);
+    function writeDupSkill(projectId: string, ahwRoot: string, keyName: string) {
+      const dir = path.join(resolveProjectSkillsDir({ id: projectId, ahw: ahwRoot }), dup);
       mkdirSync(dir, { recursive: true });
       writeFileSync(
         path.join(dir, 'SKILL.md'),
@@ -441,8 +441,8 @@ credentials:
         'utf8',
       );
     }
-    writeDupSkill(ahwA, 'KEY_ALPHA');
-    writeDupSkill(ahwB, 'KEY_BETA');
+    writeDupSkill('p-alpha', ahwA, 'KEY_ALPHA');
+    writeDupSkill('p-beta', ahwB, 'KEY_BETA');
 
     const app = buildGatedApp();
     const token = await setupOwner(app);

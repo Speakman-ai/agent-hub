@@ -46,6 +46,7 @@ import {
   allAgents,
   getEnrichedAgent,
   getProjectDataDir,
+  resolveProjectSkillsDir,
   saveProjects,
   reloadProjects,
   ensureDocsAgents,
@@ -53,6 +54,7 @@ import {
   ensureSkillBuilderAgents,
   ensureReviewerAgents,
   ensureContextFiles,
+  migrateProjectSkillDirectories,
 } from './project-model.js';
 import { backfillSkillBuilderAgents } from './migrations/backfill-skill-builder-agents.js';
 import {
@@ -332,6 +334,7 @@ if (_startupOrgId !== 'default') {
 // fallback. Such rows belong to nobody and are not auto-granted on upgrade.
 
 migrateAhwDirectories();
+migrateProjectSkillDirectories();
 // Auto-seeding Docs/Intake/Reviewer at startup is deprecated alongside the
 // sub-agent model (see CLAUDE.md "Flat Agent Model"). We no longer
 // retroactively backfill them on existing projects — projects keep
@@ -386,7 +389,7 @@ try {
 // bundled, global (shared), and per-project skills register at startup.
 try {
   const projectSkillDirs = getProjects()
-    .map((p) => (p.ahw ? path.join(p.ahw, 'skills') : ''))
+    .map((p) => resolveProjectSkillsDir(p))
     .filter((d) => !!d);
   // TODO(skill-gateway): remove after one release once no active sessions rely on the native Skill tool.
   syncSkillsToClaude([resolveGlobalSkillsDir(), ...projectSkillDirs]);

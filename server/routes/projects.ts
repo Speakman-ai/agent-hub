@@ -80,6 +80,7 @@ import {
   previewDetectSuggestionToJson,
 } from '../preview-detect-suggestion.js';
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
+import { resolveProjectSkillsDir } from '../project-model.js';
 
 const ANALYZE_SYSTEM_PROMPT = `You are a project analyzer for Agent Hub, an AI-powered workspace manager. Analyze the code repository at your current working directory and return structured JSON.
 
@@ -2293,7 +2294,7 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     }
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
-    mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
+    mkdirSync(resolveProjectSkillsDir(project), { recursive: true });
     mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
 
     projects.push(project);
@@ -3284,7 +3285,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
 
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
-    mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
+    mkdirSync(resolveProjectSkillsDir(project), { recursive: true });
     mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
 
     if (contextFiles) {

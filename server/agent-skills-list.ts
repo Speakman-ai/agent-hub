@@ -97,7 +97,7 @@ export function listMergedSkills(skillsDir: string): SkillWithSource[] {
   return merged;
 }
 
-/** Project-authored skills only — `<project.ahw>/skills`. */
+/** Project-authored skills only — `<dataDir>/project-skills/<projectId>`. */
 export function listProjectSkills(skillsDir: string): SkillWithSource[] {
   return collectSkillsFromDir(skillsDir).map((s) => ({ ...s, source: 'project' as const }));
 }

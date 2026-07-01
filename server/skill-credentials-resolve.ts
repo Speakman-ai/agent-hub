@@ -14,22 +14,24 @@ const DEFAULT_SKILL_ROOT = path.join(__dirname, 'default-skills');
 
 export interface ReadCredentialsSchemaOptions {
   /**
-   * Project agent-workspace dirs (`project.ahw`). Each `{ahw}/skills/{skillId}` is
-   * tried before bundled defaults — same layout as `GET /api/agents/:agentId/skills/:skillId`.
+   * Canonical project skill dirs. Each `{skillsDir}/{skillId}` is tried before
+   * bundled defaults — same layout as `GET /api/agents/:agentId/skills/:skillId`.
    */
+  projectSkillsDirs?: readonly string[];
+  /** Legacy workspace roots. Each `{ahw}/skills/{skillId}` is tried as a fallback. */
   projectWorkspaces?: readonly string[];
 }
 
 /**
- * Read SKILL.md under `{ahw}/skills/{skillId}` (directory + SKILL.md, or legacy flat .md path).
+ * Read SKILL.md under `{skillsDir}/{skillId}` (directory + SKILL.md, or legacy flat .md path).
  */
-function tryParseCredentialsFromProjectWorkspace(
-  ahw: string,
+function tryParseCredentialsFromSkillsDir(
+  skillsDir: string,
   skillId: string,
 ): ParsedCredentials | null {
-  const root = ahw.trim();
+  const root = skillsDir.trim();
   if (!root) return null;
-  const skillPath = path.join(root, 'skills', skillId);
+  const skillPath = path.join(root, skillId);
   if (!existsSync(skillPath)) return null;
   try {
     if (statSync(skillPath).isDirectory()) {
@@ -47,15 +49,19 @@ function tryParseCredentialsFromProjectWorkspace(
 
 /**
  * Parse `credentials` declaration for a skill id:
- * loaded project workspaces (when provided), bundled default-skills dir, then
+ * loaded project skill stores (when provided), bundled default-skills dir, then
  * the central skill_registry row contents.
  */
 export function readCredentialsSchemaForSkill(
   skillId: string,
   opts?: ReadCredentialsSchemaOptions,
 ): ParsedCredentials {
-  for (const ahw of opts?.projectWorkspaces ?? []) {
-    const fromProject = tryParseCredentialsFromProjectWorkspace(ahw, skillId);
+  const projectSkillsDirs = [
+    ...(opts?.projectSkillsDirs ?? []),
+    ...(opts?.projectWorkspaces ?? []).map((ahw) => path.join(ahw, 'skills')),
+  ];
+  for (const skillsDir of projectSkillsDirs) {
+    const fromProject = tryParseCredentialsFromSkillsDir(skillsDir, skillId);
     if (fromProject === null) continue;
     // Workspace copy exists but omits `credentials:` (or `credentials: []`); keep
     // scanning so bundled defaults / registry still apply (stub dirs must not

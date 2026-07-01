@@ -3,6 +3,7 @@ import path from 'path';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { getRequest, createProject, createAgent } from './helpers.js';
 import type supertest from 'supertest';
+import { resolveProjectSkillsDir } from '../project-model.js';
 
 let request: supertest.Agent;
 
@@ -14,8 +15,10 @@ describe('GET /api/agents/:agentId/skills/:skillId — credential schema', () =>
   it('returns 400 when SKILL.md credentials frontmatter is invalid', async () => {
     const project = await createProject();
     const agent = await createAgent({ projectId: project.id as string });
-    const ahw = project.ahw as string;
-    const skillDir = path.join(ahw, 'skills', 'bad-cred-skill');
+    const skillDir = path.join(
+      resolveProjectSkillsDir({ id: project.id as string, ahw: project.ahw as string }),
+      'bad-cred-skill',
+    );
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(
       path.join(skillDir, 'SKILL.md'),

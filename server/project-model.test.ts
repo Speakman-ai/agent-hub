@@ -492,18 +492,15 @@ describe('retireIntakeAgents (retired — never creates, purges existing)', () =
 });
 
 describe('resolveProjectSkillsDir', () => {
-  it('returns <ahw>/skills when the project has an agent-home workspace', () => {
+  it('returns the central data-dir project skill store when ahw is present', () => {
     expect(resolveProjectSkillsDir({ id: 'proj-x', ahw: '/data/projects/proj-x' })).toBe(
-      path.join('/data/projects/proj-x', 'skills'),
+      path.join(config.dataDir, 'project-skills', 'proj-x'),
     );
   });
 
-  it('falls back to the derived data dir when ahw is missing, so reads match writes', () => {
-    // A project whose ahw was not hydrated must still resolve to the same
-    // skills dir the write paths use — keyed off config.projectsDir + id —
-    // rather than silently yielding "" (which would list zero skills).
+  it('does not require ahw, so reads match writes during startup hydration', () => {
     const resolved = resolveProjectSkillsDir({ id: 'proj-y' });
-    expect(resolved).toBe(path.join(config.projectsDir, 'proj-y', 'skills'));
+    expect(resolved).toBe(path.join(config.dataDir, 'project-skills', 'proj-y'));
     expect(resolved).not.toBe('');
   });
 

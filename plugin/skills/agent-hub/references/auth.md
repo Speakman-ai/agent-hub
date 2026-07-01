@@ -10,7 +10,7 @@ automation).
 Back to [SKILL.md](../SKILL.md).
 
 **Endpoint contracts:** <https://speakman-ai.github.io/agent-hub/#tag/Auth>
-(request/response shapes, every field). This page is the *how*.
+(request/response shapes, every field). This page is the _how_.
 
 ## Contents
 
@@ -103,11 +103,11 @@ secret.
 
 **Distinct from the two other auth surfaces:**
 
-| Mechanism                       | Lifetime         | Identity                         | Revocable individually |
-| ------------------------------- | ---------------- | -------------------------------- | ---------------------- |
-| JWT (`/api/auth/login`)         | 7 days           | The user who logged in           | No (logout = client drop) |
-| `AGENT_HUB_API_KEY` (global)    | Until rotated    | None — forced Owner role         | No                     |
-| `ahub_*` per-user API key       | Until revoked    | The owning user's membership role| **Yes**                |
+| Mechanism                    | Lifetime      | Identity                          | Revocable individually    |
+| ---------------------------- | ------------- | --------------------------------- | ------------------------- |
+| JWT (`/api/auth/login`)      | 7 days        | The user who logged in            | No (logout = client drop) |
+| `AGENT_HUB_API_KEY` (global) | Until rotated | None — forced Owner role          | No                        |
+| `ahub_*` per-user API key    | Until revoked | The owning user's membership role | **Yes**                   |
 
 **Token format.** `ahub_<43 url-safe base64 chars>` (32 bytes of CSPRNG
 entropy). The first 12 chars (`ahub_xxxxxx`) are stored unhashed in the
@@ -127,11 +127,11 @@ WebSocket handshake accepts the token as `?token=ahub_…` or
 
 **Endpoints.**
 
-| Endpoint                  | Method | Purpose                                            |
-| ------------------------- | ------ | -------------------------------------------------- |
-| `/api/auth/keys`          | POST   | Create a key. Body: `{ name, expiresInDays? }`. Returns `{ id, name, token, prefix, createdAt, expiresAt }` — `token` shown ONCE. |
-| `/api/auth/keys`          | GET    | List the caller's active keys. Never includes the plaintext token or hash. |
-| `/api/auth/keys/:id`      | DELETE | Soft-revoke. 404 if the key isn't owned by the caller. |
+| Endpoint             | Method | Purpose                                                                                                                           |
+| -------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/auth/keys`     | POST   | Create a key. Body: `{ name, expiresInDays? }`. Returns `{ id, name, token, prefix, createdAt, expiresAt }` — `token` shown ONCE. |
+| `/api/auth/keys`     | GET    | List the caller's active keys. Never includes the plaintext token or hash.                                                        |
+| `/api/auth/keys/:id` | DELETE | Soft-revoke. 404 if the key isn't owned by the caller.                                                                            |
 
 **Authorization model.** Auth via an `ahub_*` key resolves to the
 **owning user's membership-derived role** in the active org — same as a
@@ -169,33 +169,35 @@ on `user_id` and `prefix`. See `server/api-keys-store.ts`.
 Prefix everything with `/api/auth`. All require auth unless flagged
 **public**.
 
-| Endpoint                                       | Min role     | Purpose                                  |
-| ---------------------------------------------- | ------------ | ---------------------------------------- |
-| `GET  /status`, `POST /setup`, `POST /login`   | public       | bootstrap + sign-in                      |
-| `GET  /me`                                     | any          | current user + role                      |
-| `GET  /users`                                  | Admin        | list org members                         |
-| `POST /users`                                  | Owner        | create user + membership                 |
-| `PUT  /users/:id/role`                         | Admin        | change role (sole-Owner guard applies)   |
-| `DELETE /users/:id`                            | Owner        | remove user (sole-Owner guard)           |
-| `POST /users/:id/password`                     | self/Owner   | reset password                           |
-| `POST /invites`, `GET /invites`, `DELETE …`    | Admin        | invite lifecycle                         |
-| `GET  /invites/:token`                         | **public**   | preview invite before accepting          |
-| `POST /invites/:token/accept`                  | **public**   | redeem invite (per-IP rate-limited)      |
-| `GET  /me/claude-auth`                         | any          | masked per-user Claude credentials       |
-| `PUT  /me/claude-auth`                         | any          | upsert per-user Claude credentials       |
-| `GET  /me/cursor-auth`                         | any          | masked per-user Cursor API key           |
-| `PUT  /me/cursor-auth`                         | any          | upsert per-user Cursor API key           |
-| `GET  /me/gemini-auth`                         | any          | masked per-user Gemini API key           |
-| `PUT  /me/gemini-auth`                         | any          | upsert per-user Gemini API key           |
-| `GET  /me/codex-auth`                          | any          | masked per-user Codex (OpenAI) API key   |
-| `PUT  /me/codex-auth`                          | any          | upsert per-user Codex (OpenAI) API key   |
-| `GET  /me/skill-credentials`                   | any          | masked per-user skill secrets (optional `?skillId=`) |
-| `PUT  /me/skill-credentials`                   | any          | upsert one skill credential key (schema-enforced)    |
-| `DELETE /me/skill-credentials/:id`             | any          | revoke a stored skill credential row                 |
-| `POST /keys`                                   | any          | create per-user `ahub_*` API key (token returned ONCE) |
-| `GET  /keys`                                   | any          | list caller's active API keys (no token) |
-| `DELETE /keys/:id`                             | any          | revoke an API key the caller owns        |
-| `POST /logout`                                 | any          | revoke session                           |
+| Endpoint                                     | Min role   | Purpose                                                                                      |
+| -------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------- |
+| `GET  /status`, `POST /setup`, `POST /login` | public     | bootstrap + sign-in                                                                          |
+| `GET  /me`                                   | any        | current user + role                                                                          |
+| `GET  /users`                                | Admin      | list org members                                                                             |
+| `POST /users`                                | Owner      | create user + membership                                                                     |
+| `PUT  /users/:id/role`                       | Admin      | change role (sole-Owner guard applies)                                                       |
+| `DELETE /users/:id`                          | Owner      | remove user (sole-Owner guard; cascades user's private projects — see "User-delete cascade") |
+| `POST /users/:id/password`                   | self/Owner | reset password                                                                               |
+| `POST /invites`, `GET /invites`, `DELETE …`  | Admin      | invite lifecycle                                                                             |
+| `GET  /invites/:token`                       | **public** | preview invite before accepting                                                              |
+| `POST /invites/:token/accept`                | **public** | redeem invite (per-IP rate-limited)                                                          |
+| `GET  /me/claude-auth`                       | any        | masked per-user Claude credentials                                                           |
+| `PUT  /me/claude-auth`                       | any        | upsert per-user Claude credentials                                                           |
+| `GET  /me/cursor-auth`                       | any        | masked per-user Cursor API key                                                               |
+| `PUT  /me/cursor-auth`                       | any        | upsert per-user Cursor API key                                                               |
+| `GET  /me/gemini-auth`                       | any        | masked per-user Gemini API key                                                               |
+| `PUT  /me/gemini-auth`                       | any        | upsert per-user Gemini API key                                                               |
+| `GET  /me/codex-auth`                        | any        | masked Codex API key + `deviceLogin` (per-user `CODEX_HOME` probe)                           |
+| `PUT  /me/codex-auth`                        | any        | upsert per-user Codex (OpenAI) API key                                                       |
+| `POST /me/codex-auth/login`                  | any        | start per-user `codex login --device-auth` (engine-isolated `CODEX_HOME`)                    |
+| `POST /me/codex-auth/login/cancel`           | any        | kill the active per-user Codex device login                                                  |
+| `GET  /me/skill-credentials`                 | any        | masked per-user skill secrets (optional `?skillId=`)                                         |
+| `PUT  /me/skill-credentials`                 | any        | upsert one skill credential key (schema-enforced)                                            |
+| `DELETE /me/skill-credentials/:id`           | any        | revoke a stored skill credential row                                                         |
+| `POST /keys`                                 | any        | create per-user `ahub_*` API key (token returned ONCE)                                       |
+| `GET  /keys`                                 | any        | list caller's active API keys (no token)                                                     |
+| `DELETE /keys/:id`                           | any        | revoke an API key the caller owns                                                            |
+| `POST /logout`                               | any        | revoke session                                                                               |
 
 Public paths live in `PUBLIC_PATHS` / `PUBLIC_PREFIXES` (`server/auth.ts`);
 everything else falls through `authMiddleware`.
@@ -219,6 +221,43 @@ Both surfaces share HTTP 400. The published `docs/api/openapi.yaml`
 auth section is now generated from these schemas — do not hand-edit it
 for auth changes; update the schema + run `npm run generate:openapi`.
 
+## User-delete cascade
+
+`DELETE /api/auth/users/:id` removes the caller's membership in the active
+org, and only deletes the underlying `users` row when that was the user's
+**last** membership across all orgs (`countMembershipsForUser(id) === 0`).
+When the row is deleted, the route fires a cascade callback
+(`AuthRoutesOptions.onUserDeleted`, wired in `server/index.ts` to
+`cascadeDeleteUserPrivateProjects`) which sweeps the now-orphaned project
+state:
+
+- **Private projects** owned by the deleted user are auto-deleted — no
+  remaining member of any org could pass the visibility gate, so the
+  rows are unreachable. The cascade tears down each project's scoped
+  rows via the shared `deleteProjectScopedRows` helper (kept in sync
+  with the DELETE `/api/projects/:id` handler) so there's no drift.
+- **Shared projects** owned by the deleted user stay alive but their
+  `ownerUserId` is now stale. They are logged but not deleted — shared
+  projects can be re-owned manually or left for an Owner to delete via
+  the kill switch.
+
+The response shape adds two fields:
+
+```json
+{
+  "ok": true,
+  "userId": "...",
+  "orgId": "...",
+  "userDeleted": true,
+  "cascadedPrivateProjects": ["proj-id-1", "proj-id-2"],
+  "orphanedSharedProjects": ["proj-id-3"]
+}
+```
+
+The cascade is **best-effort**: per-project failures are logged but do
+not fail the user-delete response. The user row is gone either way; an
+operator can clean up any stragglers manually.
+
 ## Per-user Claude credentials
 
 `GET` / `PUT /api/auth/me/claude-auth` let an authenticated user attach
@@ -229,7 +268,8 @@ own credentials. There is **no host/global key and no org-owner
 fallback** — the legacy `config.anthropicApiKey` /
 `config.claudeCodeOAuthToken` host fields were removed. A spawn for a
 user with no Claude creds **hard-fails** with `EngineAuthRequiredError`
-rather than borrowing another identity.
+rather than borrowing another identity (see
+`assertEngineCredsOrThrow` in `server/per-user-cli-spawn.ts`).
 
 **Resolution.** For each of `ANTHROPIC_API_KEY` and
 `CLAUDE_CODE_OAUTH_TOKEN`, the resolver uses the
@@ -240,14 +280,14 @@ There is no ambient-env or host-config inheritance for Claude.
 
 **Endpoint shape.**
 
-| Field                       | `GET`                                          | `PUT`                                                                                |
-| --------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `anthropicApiKey`           | masked (`sk-ant-api03-…`) or `null`            | accepts string or `null`; empty string clears                                        |
-| `claudeCodeOAuthToken`      | masked or `null`                               | accepts string or `null`; empty string clears                                        |
-| `claudeCodeOAuthExpiresAt`  | normalised ISO-8601 string or `null`           | accepts ISO-8601 _or_ a numeric string in Unix seconds / epoch ms; server normalises |
-| `claudeCodeOAuthExpired`    | server-computed boolean (`null` when no expiry stored) | not accepted — derived from `claudeCodeOAuthExpiresAt`                       |
-| `updatedAt`                 | last-write timestamp                           | last-write timestamp                                                                 |
-| `hostConfigFallback`        | `{ anthropicApiKey, claudeCodeOAuthToken }` (booleans) — does the host have a fallback? | same shape — clients can re-render the "falling back to host" hint after save        |
+| Field                      | `GET`                                                                                                                                          | `PUT`                                                                                |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `anthropicApiKey`          | masked (`sk-ant-api03-…`) or `null`                                                                                                            | accepts string or `null`; empty string clears                                        |
+| `claudeCodeOAuthToken`     | masked or `null`                                                                                                                               | accepts string or `null`; empty string clears                                        |
+| `claudeCodeOAuthExpiresAt` | normalised ISO-8601 string or `null`                                                                                                           | accepts ISO-8601 _or_ a numeric string in Unix seconds / epoch ms; server normalises |
+| `claudeCodeOAuthExpired`   | server-computed boolean (`null` when no expiry stored)                                                                                         | not accepted — derived from `claudeCodeOAuthExpiresAt`                               |
+| `updatedAt`                | last-write timestamp                                                                                                                           | last-write timestamp                                                                 |
+| `hostConfigFallback`       | `{ anthropicApiKey, claudeCodeOAuthToken }` (booleans) — **always `false`**: Claude has no host fallback (kept for response-shape back-compat) | same shape — always `false`                                                          |
 
 Both endpoints route the stored expiry through `parseClaudeOAuthExpiry`
 (`server/oauth-expiry.ts`), which uses the same seconds-vs-ms threshold
@@ -288,11 +328,11 @@ exception** — it retains a host-wide key (used for wiki embeddings) with
 the per-user key taking precedence. `buildSpawnEnv` (`server/config.ts`)
 injects the right variable for each engine:
 
-| Engine | Env var injected into the spawn | Host config field    | User column                |
-| ------ | ------------------------------- | -------------------- | -------------------------- |
-| Cursor | `CURSOR_API_KEY`                | — (per-account only) | `users.cursor_api_key`     |
-| Gemini | `GEMINI_API_KEY`                | `geminiApiKey`       | `users.gemini_api_key`     |
-| Codex  | `OPENAI_API_KEY`                | — (per-account only) | `users.codex_api_key`      |
+| Engine | Env var injected into the spawn | Host config field    | User column            |
+| ------ | ------------------------------- | -------------------- | ---------------------- |
+| Cursor | `CURSOR_API_KEY`                | — (per-account only) | `users.cursor_api_key` |
+| Gemini | `GEMINI_API_KEY`                | `geminiApiKey`       | `users.gemini_api_key` |
+| Codex  | `OPENAI_API_KEY`                | — (per-account only) | `users.codex_api_key`  |
 
 **Cursor / Codex resolution.** The resolver uses **only** the acting
 user's `users.<engine>_api_key` (or their per-user HOME OAuth cache).
@@ -310,12 +350,12 @@ for that engine **hard-fails** with `EngineAuthRequiredError`.
 **REST shape.** Each engine exposes a `GET` / `PUT` pair at
 `/api/auth/me/{engine}-auth`. All three share the same compact shape:
 
-| Field                | `GET`                                                       | `PUT`                                              |
-| -------------------- | ----------------------------------------------------------- | -------------------------------------------------- |
-| `engine`             | `"cursor" \| "gemini" \| "codex"`                           | — (derived from URL)                               |
-| `apiKey`             | masked (e.g. `sk-…abcd`) or `null`                          | accepts string or `null`; empty string clears      |
-| `updatedAt`          | last-write timestamp                                        | last-write timestamp                               |
-| `hostConfigFallback` | `{ apiKey: boolean }` — does the host have a fallback key?  | same shape — UI re-renders "falling back to host"  |
+| Field                | `GET`                                                                                                                  | `PUT`                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `engine`             | `"cursor" \| "gemini" \| "codex"`                                                                                      | — (derived from URL)                                            |
+| `apiKey`             | masked (e.g. `sk-…abcd`) or `null`                                                                                     | accepts string or `null`; empty string clears                   |
+| `updatedAt`          | last-write timestamp                                                                                                   | last-write timestamp                                            |
+| `hostConfigFallback` | `{ apiKey: boolean }` — **only Gemini can be `true`**; Cursor / Codex are per-account-only so theirs is always `false` | same shape — UI re-renders "falling back to host" (Gemini only) |
 
 `PUT` whitelists exactly `apiKey` via
 `Object.prototype.hasOwnProperty.call`; stray keys are ignored. Both
@@ -336,13 +376,46 @@ implemented atop a generic `getSingleKeyAuth` / `setSingleKeyAuth`
 pair. The DB columns (`<engine>_api_key`, `<engine>_auth_updated_at`)
 are added via idempotent `ensureColumn` migrations on boot.
 
-## Per-engine HOME shim (P3/P4 foundation)
+**"Sign in with browser" — per-user HOME isolation.** Cursor Agent,
+Codex CLI, and Gemini OAuth all authenticate via files in `$HOME`
+(`~/.cursor`, `~/.codex`, `~/.config/gcloud`, …) rather than an
+environment variable. Sharing the operator's HOME across all Hub users
+would leak login state between accounts. To prevent that,
+`buildSpawnEnv(cfg, { userId })` (`server/config.ts`) pins the spawn's
+`HOME` to `<dataDir>/per-user-creds/<userId>/home` whenever a session
+owner is known. The directory is materialized on demand by
+`ensurePerUserHome` (`server/per-user-home.ts`); FS errors fall back to
+the host HOME so a transient failure never blocks a chat. When
+`userId` is unset (system spawns with no resolvable human) the
+per-account engine spawn hard-fails instead of falling back.
 
-The legacy single-HOME path documented above
-(`<dataDir>/per-user-creds/<userId>/home`) keeps Cursor and Codex
-sharing one filesystem subtree per user. The follow-up
-`server/per-user-cli-home.ts` helper carves out a separate tree **per
-(engine, user) pair**:
+Every spawn site resolves a `credOwnerId` from the **real acting human**
+(`getSessionOwner(sessionId)`, the authenticated WS/JWT user, the card
+creator, etc.) and threads it through as `{ userId: credOwnerId }`, so
+the per-user HOME and engine creds reach the right child. There is **no
+org-owner fallback**: when no human can be resolved, `credOwnerId` is
+`null` and the per-account spawn hard-fails (`EngineAuthRequiredError`).
+Spawn sites:
+
+- `server/chat.ts` — interactive chat sessions.
+- `server/heartbeat.ts` — scheduled heartbeat runs.
+- `server/room-chat.ts` — conference-room turns.
+- `server/design-chat.ts` — Design Studio sessions.
+- `server/slack.ts` — Slack-bot mediated runs.
+- `server/delegation.ts` — both `<delegate>` sub-agent spawns and
+  the synthesis pass that summarizes their results.
+
+The practical effect: when a user has authenticated `cursor-agent` /
+`codex` via "Sign in with browser" once, every downstream spawn the
+platform makes on their behalf — including delegated sub-agents and
+synthesis — reads the same per-user token cache without re-prompting.
+
+### Per-engine HOME shim (P3/P4 foundation)
+
+The legacy single-HOME path above (`<dataDir>/per-user-creds/<userId>/home`)
+keeps Cursor and Codex sharing one filesystem subtree per user. The
+follow-up `server/per-user-cli-home.ts` helper carves out a separate
+tree **per (engine, user) pair**:
 
 ```
 <dataDir>/per-user-cli-home/<engine>/<userId>/
@@ -350,15 +423,44 @@ sharing one filesystem subtree per user. The follow-up
 
 Used as `HOME` (Cursor) or `CODEX_HOME` (Codex) so the two engines'
 caches can never read each other and a single-engine logout cannot
-damage the other. The helper exposes `perUserCliHomePath` (path math,
-no FS), `ensurePerUserCliHome` (mode-0700 create + UID ownership guard
-that refuses to hand a misowned dir to a spawn), and
-`clearPerUserCliHome` (logout-leaf removal that keeps the parent
-`<engine>/` dir). Engine names are an allowlist (`cursor`, `codex`,
-`gemini`) and user ids are constrained to a strict path-safe charset
-before becoming a path segment. Wiring of the per-user login flows
-(P3/P4) is deliberately separate; this module just provides the safe
-primitive those endpoints pick up.
+damage the other. The helper exposes
+`perUserCliHomePath` (path math, no FS), `ensurePerUserCliHome`
+(mode-0700 create + UID ownership guard that refuses to hand a misowned
+dir to a spawn), and `clearPerUserCliHome` (logout-leaf removal that
+keeps the parent `<engine>/` dir). Engine names are an allowlist
+(`cursor`, `codex`, `gemini`) and user ids are constrained to a strict
+path-safe charset before becoming a path segment.
+
+### P4 — Per-user Codex device login (`CODEX_HOME`-isolated)
+
+Codex is the first engine wired to the per-engine HOME shim. The
+endpoints are mounted by `server/routes/per-user-engine-auth.ts` and the
+shared state lives in `server/per-user-codex-device-login.ts`:
+
+| Verb + path                                 | Behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/auth/me/codex-auth/login`        | Spawns `codex login --device-auth` with `CODEX_HOME=<dataDir>/per-user-cli-home/codex/<userId>`. Streams stdout/stderr until a device URL + user code parse, then returns `{ ok, loginId, deviceAuthUrl, userCode }`. Fast-exit (CLI exits 0 before emitting a code, e.g. cache hit) returns `{ ok: true, loginId, output }`; a 45s timeout collapses to `{ ok: false, output: 'Timed out…' }`. A second `POST` for the same user kills the prior proc and starts fresh — the latest click wins. |
+| `POST /api/auth/me/codex-auth/login/cancel` | Idempotent — kills the per-user proc if one is running, otherwise returns `{ ok: true, output: 'No device login in progress' }`.                                                                                                                                                                                                                                                                                                                                                                 |
+| `GET  /api/auth/me/codex-auth`              | Extends the single-key apiKey response with `deviceLogin: { uiStatus, loginInProgress, oauth: { loggedIn, mode, authJsonPath }, codexHomePath }` — the UI uses this to render "Signed in with ChatGPT" alongside the API-key state. Cursor / Gemini GETs keep the compact apiKey-only shape.                                                                                                                                                                                                     |
+
+The active-login map is keyed by `userId` so two users can sign in
+simultaneously without stomping each other (mirrors the per-user
+isolation that `ensurePerUserCliHome` enforces at the FS layer).
+
+**`buildSpawnEnv` injection.** `server/config.ts:buildSpawnEnv(cfg, {
+userId })` now also sets `env.CODEX_HOME = perUserCliHomePath('codex',
+userId, cfg.dataDir)` whenever the per-user `auth.json` is populated
+(detected by `hasPopulatedCodexDeviceAuth`, which accepts both
+`chatgpt` and `apikey` modes). When the user has not signed in,
+`CODEX_HOME` is **explicitly deleted** from the spawn env so a stale
+host-process value cannot leak the operator's Codex cache into a user
+spawn. Net effect: once a user completes the per-user device login,
+every chat / heartbeat / cron / room / Slack / delegation spawn owned
+by them reads the same `~/.codex` clone without re-prompting.
+
+The matching Cursor/Gemini wiring is a planned follow-up (the cleanup
+of the older `/api/auth/me/cursor-auth/browser/*` flow onto the
+engine-isolated shim).
 
 ## Per-user engine-credential audit (`user_engine_auth_audit`)
 
@@ -367,15 +469,15 @@ appends one row to `user_engine_auth_audit` in `orgs.db`. The table
 parallels `user_skill_credential_audit` and is created alongside it in
 `initOrgsDb()` from `server/auth-credential-audit-schema.ts`:
 
-| Column          | Notes                                                             |
-| --------------- | ----------------------------------------------------------------- |
-| `id`            | UUID                                                              |
-| `user_id`       | Owner of the credential row that changed                          |
-| `engine`        | `claude` \| `cursor` \| `gemini` \| `codex` (CHECK-constrained)   |
-| `field`         | Column name (e.g. `anthropic_api_key`, `cursor_api_key`)          |
-| `action`        | `upsert` for set / rotate, `delete` when the new value clears a previously-set field |
+| Column          | Notes                                                                                                      |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `id`            | UUID                                                                                                       |
+| `user_id`       | Owner of the credential row that changed                                                                   |
+| `engine`        | `claude` \| `cursor` \| `gemini` \| `codex` (CHECK-constrained)                                            |
+| `field`         | Column name (e.g. `anthropic_api_key`, `cursor_api_key`)                                                   |
+| `action`        | `upsert` for set / rotate, `delete` when the new value clears a previously-set field                       |
 | `actor_user_id` | Who performed the write (today: same as `user_id`; left distinct for a future admin-impersonation surface) |
-| `created_at`    | `datetime('now')` default                                         |
+| `created_at`    | `datetime('now')` default                                                                                  |
 
 A single PUT that touches multiple secret fields (e.g. claude-auth
 sending both `anthropicApiKey` and `claudeCodeOAuthToken`) emits
@@ -399,18 +501,18 @@ migration. One sub-map today, managed by
 
 One REST pair backs the sub-map:
 
-| Verb + path                                  | Body shape                                                                 |
-| -------------------------------------------- | -------------------------------------------------------------------------- |
-| `GET /api/auth/me/agent-engine-overrides`    | `{ agentEngineOverrides: { [agentId]: { engine, model? } } }`              |
-| `PUT /api/auth/me/agent-engine-overrides`    | same                                                                       |
+| Verb + path                               | Body shape                                                    |
+| ----------------------------------------- | ------------------------------------------------------------- |
+| `GET /api/auth/me/agent-engine-overrides` | `{ agentEngineOverrides: { [agentId]: { engine, model? } } }` |
+| `PUT /api/auth/me/agent-engine-overrides` | same                                                          |
 
-The PUT replaces the sub-map; `mergeUserPreferencesJson` still goes
-through a JSON merge so any future sub-map next to `agentEngineOverrides`
-isn't clobbered. PUT bodies are validated against `cfg.engineValidModels`;
-unknown engines and models outside the engine's allowlist 400. The GET
-also strips stale entries (engines / models that rotated out of the
-catalogue) before responding, so the client never sees state the server
-would refuse to honour.
+The PUT replaces the sub-map; the store's `mergeUserPreferencesJson`
+helper still goes through a JSON merge so any future sub-map added next
+to `agentEngineOverrides` isn't clobbered. PUT bodies are validated
+against `cfg.engineValidModels`; unknown engines and models outside the
+engine's allowlist 400. The GET also strips stale entries (engines /
+models that rotated out of the catalogue) before responding, so the
+client never sees state the server would refuse to honour.
 
 > **Removed:** a previous `engineDefaultModels` sub-map (and its
 > `/api/auth/me/engine-default-models` route pair) exposed a per-user
@@ -455,7 +557,7 @@ request body carries `agent_id`:
 
 - **(A) `agent_id` provided** — the SkillsPage editor on a specific agent.
   The server resolves the skill's `credentials:` block using **that agent's
-  project workspace** `{project.ahw}/skills/{skill_id}` (directory +
+  project skill store** `<dataDir>/project-skills/<projectId>/{skill_id}` (directory +
   `SKILL.md`, or legacy flat `.md`), **then** bundled
   `server/default-skills/{skill_id}/SKILL.md`, **then** the matching
   `skill_registry` row — the same order as
@@ -466,7 +568,7 @@ request body carries `agent_id`:
   callers must also be a member of the agent's active org (apiKey /
   local-bundled bypass are unaffected).
 - **(B) `agent_id` omitted** — the Account page **My Skill Credentials**
-  panel. Resolution skips every per-project workspace and walks **only**
+  panel. Resolution skips every per-project skill store and walks **only**
   bundled `server/default-skills/{skill_id}/SKILL.md` → `skill_registry`.
   The agent-scoped RBAC gate does not run — any authenticated user may
   store their own personal credential for a bundled skill (e.g. Linear).
@@ -485,11 +587,11 @@ AES-256-GCM key file as PR-env tier-2 secrets).
 **REST surface** (all under `/api/auth`, JWT required — `authUserId` must
 be present; global `x-api-key` break-glass alone returns **401**):
 
-| Endpoint | Method | Purpose |
-| -------- | ------ | ------- |
-| `/me/skill-credentials` | GET | `{ credentials: [...] }` — `masked_preview`, timestamps; filter with `?skillId=` |
-| `/me/skill-credentials` | PUT | Body `{ skill_id, key_name, value, agent_id? }` — `agent_id` is **optional**; when set, schema resolution starts from that agent's project workspace (with org-membership RBAC). When omitted, the schema resolves from bundled `server/default-skills/` + `skill_registry` only, no per-agent context. `key_name` must appear in the resolved schema either way. |
-| `/me/skill-credentials/:id` | DELETE | Hard-delete the row |
+| Endpoint                    | Method | Purpose                                                                                                                                                                                                                                                                                                                                                             |
+| --------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/me/skill-credentials`     | GET    | `{ credentials: [...] }` — `masked_preview`, timestamps; filter with `?skillId=`                                                                                                                                                                                                                                                                                    |
+| `/me/skill-credentials`     | PUT    | Body `{ skill_id, key_name, value, agent_id? }` — `agent_id` is **optional**; when set, schema resolution starts from that agent's project skill store (with org-membership RBAC). When omitted, the schema resolves from bundled `server/default-skills/` + `skill_registry` only, no per-agent context. `key_name` must appear in the resolved schema either way. |
+| `/me/skill-credentials/:id` | DELETE | Hard-delete the row                                                                                                                                                                                                                                                                                                                                                 |
 
 **Spawn merge.** `mergeSkillCredentialSpawnEnv` in
 `server/skill-credentials-spawn.ts` decrypts stored values and merges them
@@ -497,24 +599,28 @@ into the child `env` for every **enabled** skill for that agent (project +
 bundled defaults, honouring per-agent disable overrides). Keys already set in
 the resolved env are **not** overwritten. Call sites:
 
-| Surface | Call path | Whose credential rows (`user_id`) |
-| ------- | --------- | ----------------------------------- |
-| Interactive 1:1 chat | `server/chat.ts` | Session owner (`ownerId` from the session row) |
-| Session rewind | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env) | Session owner (`getSessionOwner`); `null` when unknown |
-| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript` | Session owner; `null` when unknown |
-| Chat auto-summarize (long reply) | `server/chat.ts` → `summarizeTranscript` | Interactive session owner (`ownerId` in chat) |
-| Conference room — WebSocket one-shot CLI | `server/room-chat.ts` | Authenticated WebSocket user (`getWsAuthUserId`); `null` when absent |
-| Conference room — REST **summarize** | `server/routes/rooms.ts` → `summarizeTranscript` | Authenticated caller; `null` when absent |
-| Design Studio chat | `server/design-chat.ts` | WebSocket user (`getWsAuthUserId`); `null` when absent |
-| Heartbeats | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`) | `null` — no human in-context (per-account AI hard-fails; only host Gemini can run) |
-| Crons | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | `null` — no human in-context |
-| Workflows | `server/workflow-runner.ts` | `null` — workflow steps carry no human attribution |
-| Slack bot replies | `server/slack.ts` | `null` — no human in-context |
-| Delegation / synthesis spawns | `server/delegation.ts` | Parent session owner (`getSessionOwner`); `null` when unknown |
+There is **no org-owner fallback** anywhere below — when no real human can
+be resolved, the principal is `null`, skill creds are merged for nobody,
+and any per-account AI engine spawn hard-fails.
 
-On **single-user** installs the org owner and the interactive user are usually
-the same — differences matter in multi-user orgs (saved secrets follow the
-`user_id` column, not the agent).
+| Surface                                                            | Call path                                                                     | Whose credential rows (`user_id`)                                                  |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Interactive 1:1 chat                                               | `server/chat.ts`                                                              | Session owner (`ownerId` from the session row)                                     |
+| Session rewind                                                     | `server/routes/sessions.ts` (`mergeSkillCredentialSpawnEnv` on rewind env)    | Session owner (`getSessionOwner`); `null` when unknown                             |
+| Session summarize — REST `POST /api/sessions/:sessionId/summarize` | `server/routes/sessions.ts` → `summarizeTranscript`                           | Session owner; `null` when unknown                                                 |
+| Chat auto-summarize (long reply)                                   | `server/chat.ts` → `summarizeTranscript`                                      | Interactive session owner (`ownerId` in chat)                                      |
+| Conference room — WebSocket one-shot CLI                           | `server/room-chat.ts`                                                         | Authenticated WebSocket user (`getWsAuthUserId`); `null` when absent               |
+| Conference room — REST **summarize**                               | `server/routes/rooms.ts` → `summarizeTranscript`                              | Authenticated caller; `null` when absent                                           |
+| Design Studio chat                                                 | `server/design-chat.ts`                                                       | WebSocket user (`getWsAuthUserId`); `null` when absent                             |
+| Heartbeats                                                         | `server/heartbeat.ts` (`runClaude` `skillCredentialMerge`)                    | `null` — no human in-context (per-account AI hard-fails; only host Gemini can run) |
+| Crons                                                              | `server/heartbeat.ts` (`runCronJob` → `runClaude`; `cron-skill-principal.ts`) | `null` — no human in-context                                                       |
+| Workflows                                                          | `server/workflow-runner.ts`                                                   | `null` — workflow steps carry no human attribution                                 |
+| Slack bot replies                                                  | `server/slack.ts`                                                             | `null` — no human in-context                                                       |
+| Delegation / synthesis spawns                                      | `server/delegation.ts`                                                        | Parent session owner (`getSessionOwner`); `null` when unknown                      |
+
+Saved secrets follow the `user_id` column, not the agent. System spawns
+with no resolvable human (`null` principal) merge no per-user skill creds
+and cannot run a per-account AI engine.
 
 ## JWT `uid` claim & pre-migration fallback
 
@@ -528,14 +634,14 @@ backward compatibility, but newly minted tokens always carry `uid`.
 server currently exposes. Clients use it to decide between "sign in",
 "first-Owner setup", and "upgrade your auth" flows.
 
-| Field               | Meaning                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------ |
-| `authConfigured`    | Alias of `jwtConfigured`. True once `/api/auth/setup` has written `auth.json`.       |
-| `jwtConfigured`     | A JWT auth record exists — users can sign in.                                        |
-| `apiKeyConfigured`  | The legacy shared-secret `apiKey` is set in `config.json` (break-glass header).      |
-| `needsMigration`    | `apiKeyConfigured && !jwtConfigured` — the server is still running apiKey-only.      |
-| `activeOrgIsLocal`  | Server was launched with `AGENT_HUB_MODE=local` — the auth gate is short-circuited.  |
-| `username`, `role`  | The first-Owner's username + role at install time, or `null` pre-setup.              |
+| Field              | Meaning                                                                             |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| `authConfigured`   | Alias of `jwtConfigured`. True once `/api/auth/setup` has written `auth.json`.      |
+| `jwtConfigured`    | A JWT auth record exists — users can sign in.                                       |
+| `apiKeyConfigured` | The legacy shared-secret `apiKey` is set in `config.json` (break-glass header).     |
+| `needsMigration`   | `apiKeyConfigured && !jwtConfigured` — the server is still running apiKey-only.     |
+| `activeOrgIsLocal` | Server was launched with `AGENT_HUB_MODE=local` — the auth gate is short-circuited. |
+| `username`, `role` | The first-Owner's username + role at install time, or `null` pre-setup.             |
 
 `needsMigration` is the signal for the **"upgrade my auth" banner**: the
 server is already protected by the legacy shared secret, but no JWT

@@ -803,6 +803,22 @@ describe('Projects', () => {
       await request.get(`/api/projects/${proj.id}/board`).expect(404);
       await request.get(`/api/projects/${proj.id}/threads`).expect(404);
     });
+
+    it('removes the canonical project skill store', async () => {
+      const { existsSync, mkdirSync, rmSync, writeFileSync } = await import('fs');
+      const path = await import('path');
+      const { resolveProjectSkillsDir } = await import('../project-model.js');
+      const proj = await createProject();
+      const skillsDir = resolveProjectSkillsDir(proj as { id: string; ahw?: string });
+
+      rmSync(skillsDir, { recursive: true, force: true });
+      mkdirSync(path.join(skillsDir, 'custom-skill'), { recursive: true });
+      writeFileSync(path.join(skillsDir, 'custom-skill', 'SKILL.md'), '---\nname: Custom\n---\n');
+
+      await request.delete(`/api/projects/${proj.id}`).expect(204);
+
+      expect(existsSync(skillsDir)).toBe(false);
+    });
   });
 });
 

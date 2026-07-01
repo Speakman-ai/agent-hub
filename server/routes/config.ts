@@ -32,6 +32,7 @@ import {
   safeEmailError,
   sendEmail,
 } from '../email-sender.js';
+import { resolveProjectSkillsDir } from '../project-model.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -1424,7 +1425,7 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
 
       mkdirSync(dataDir, { recursive: true });
       mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
-      mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
+      mkdirSync(resolveProjectSkillsDir(newProject), { recursive: true });
       mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
 
       projects.push(newProject);

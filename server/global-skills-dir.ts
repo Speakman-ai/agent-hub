@@ -7,7 +7,7 @@ import config from './config.js';
  * Agent Hub has two skill scopes today, decided purely by filesystem location:
  *   - **Bundled defaults** — `server/default-skills/`, baked into the repo at
  *     deploy time, available to every agent in every project.
- *   - **Project skills** — `<project.ahw>/skills/`, visible only to that
+ *   - **Project skills** — `<dataDir>/project-skills/<projectId>/`, visible only to that
  *     project's agents.
  *
  * The gap this dir closes: there was no *runtime-writable* shared tier — a skill

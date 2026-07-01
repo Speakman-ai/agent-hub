@@ -7,7 +7,7 @@ the run options; the SKILL.md body has the workflow.
 
 ## Where evals live
 
-`<project.ahw>/skills/<skill-id>/evals/evals.json`. You never touch the file
+`<dataDir>/project-skills/<projectId>/<skill-id>/evals/evals.json`. You never touch the file
 directly — go through the REST API (the wrappers handle auth and the canonical
 serialization).
 

@@ -5,6 +5,7 @@ import path from 'path';
 import matter from 'gray-matter';
 import { getRequest, createProject, createAgent } from './helpers.js';
 import { resolveGlobalSkillsDir } from '../global-skills-dir.js';
+import { resolveProjectSkillsDir } from '../project-model.js';
 
 let request: supertest.Agent;
 
@@ -116,7 +117,7 @@ describe('Global (shared) skills — write/read API', () => {
       .post(`/api/projects/${project.id}/skills`)
       .send({ name: 'precedence-skill', description: 'project version' })
       .expect(201);
-    created.push(path.join(project.ahw, 'skills', 'precedence-skill'));
+    created.push(path.join(resolveProjectSkillsDir(project), 'precedence-skill'));
 
     const agent = await createAgent({ projectId: project.id });
     const res = await request.get(`/api/agents/${agent.id}/skills`).expect(200);

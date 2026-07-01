@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import express from 'express';
 import supertest from 'supertest';
 import { tmpdir } from 'os';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import path from 'path';
 import type { Role } from '../roles.js';
 
@@ -25,6 +25,7 @@ vi.mock('../engine-resolver.js', async (importOriginal) => {
 const { runOneShotPrompt } = await import('../one-shot-spawn.js');
 const { resolveOneShotEngine, NoEnginesAvailableError } = await import('../engine-resolver.js');
 const { default: createSkillEvalRoutes } = await import('./skill-evals.js');
+const { resolveProjectSkillsDir } = await import('../project-model.js');
 
 const spawnMock = runOneShotPrompt as unknown as ReturnType<typeof vi.fn>;
 const resolveMock = resolveOneShotEngine as unknown as ReturnType<typeof vi.fn>;
@@ -34,7 +35,9 @@ const SKILL_ID = 'tester';
 
 function makeWorkspace(): string {
   const ahw = mkdtempSync(path.join(tmpdir(), 'skill-evals-'));
-  const skillDir = path.join(ahw, 'skills', SKILL_ID);
+  const projectSkillsDir = resolveProjectSkillsDir({ id: PROJECT_ID, ahw });
+  rmSync(projectSkillsDir, { recursive: true, force: true });
+  const skillDir = path.join(projectSkillsDir, SKILL_ID);
   mkdirSync(skillDir, { recursive: true });
   writeFileSync(
     path.join(skillDir, 'SKILL.md'),
@@ -68,6 +71,7 @@ const base = `/api/projects/${PROJECT_ID}/skills/${SKILL_ID}/evals`;
 
 describe('skill eval routes', () => {
   let ahw = '';
+  let skillsDir = '';
   let app: express.Express;
 
   beforeEach(() => {
@@ -75,6 +79,7 @@ describe('skill eval routes', () => {
     resolveMock.mockReset();
     resolveMock.mockResolvedValue({ engine: 'claude-code', model: 'sonnet' });
     ahw = makeWorkspace();
+    skillsDir = resolveProjectSkillsDir({ id: PROJECT_ID, ahw });
     app = buildApp(ahw);
   });
 
@@ -109,7 +114,7 @@ describe('skill eval routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.evals).toEqual(evals);
 
-      const file = path.join(ahw, 'skills', SKILL_ID, 'evals', 'evals.json');
+      const file = path.join(skillsDir, SKILL_ID, 'evals', 'evals.json');
       expect(existsSync(file)).toBe(true);
       expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ version: 1, evals });
     });
@@ -129,7 +134,7 @@ describe('skill eval routes', () => {
         .send({ evals: [{ id: 'a', prompt: 'x' }] });
       expect(res.status).toBe(403);
       expect(res.body.requiredRole).toBe('Admin');
-      expect(existsSync(path.join(ahw, 'skills', SKILL_ID, 'evals', 'evals.json'))).toBe(false);
+      expect(existsSync(path.join(skillsDir, SKILL_ID, 'evals', 'evals.json'))).toBe(false);
     });
   });
 

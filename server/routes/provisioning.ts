@@ -30,6 +30,7 @@ import { createGithubExecutor } from '../provisioning/github.js';
 import { detectPreviewDefaults } from '../scaffolding/detect-preview-defaults.js';
 import { bootstrapHostedGit } from '../provisioning/hosted-git-bootstrap.js';
 import { kickoffInitialBuild } from '../provisioning/initial-build.js';
+import { resolveProjectSkillsDir } from '../project-model.js';
 import {
   resolveTemplateId,
   isKnownTemplateId,
@@ -405,17 +406,6 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
 
     const projects = getProjects();
     const dataDir = getProjectDataDir(projectId);
-    try {
-      mkdirSync(dataDir, { recursive: true });
-      mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
-      mkdirSync(path.join(dataDir, 'skills'), { recursive: true });
-      mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
-    } catch (err: unknown) {
-      return res.status(500).json({
-        error: `Failed to create project workspace: ${(err as Error).message}`,
-      });
-    }
-
     const project: Project = {
       id: projectId,
       name: displayName,
@@ -428,6 +418,16 @@ export default function createProvisioningRoutes(deps: RouteDeps): Router {
       mode: 'dev',
       agents: [],
     };
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      mkdirSync(path.join(dataDir, 'agents'), { recursive: true });
+      mkdirSync(resolveProjectSkillsDir(project), { recursive: true });
+      mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
+    } catch (err: unknown) {
+      return res.status(500).json({
+        error: `Failed to create project workspace: ${(err as Error).message}`,
+      });
+    }
     projects.push(project);
     try {
       saveProjects();

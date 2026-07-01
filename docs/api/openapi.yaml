@@ -8371,7 +8371,7 @@ components:
         - name
         - description
         - source
-      description: A project-authored skill in `<project.ahw>/skills`.
+      description: A project-authored skill in `<dataDir>/project-skills/<projectId>`.
     GlobalSkillListItem:
       type: object
       properties:
@@ -27232,7 +27232,7 @@ paths:
       tags:
         - Skills
       summary: Read a skill eval suite
-      description: "Returns the eval suite at `<project.ahw>/skills/<skillId>/evals/evals.json`. An absent file yields `{ evals: [] }`. A present-but-invalid file returns 422."
+      description: "Returns the eval suite at `<dataDir>/project-skills/<projectId>/<skillId>/evals/evals.json`. An absent file yields `{ evals: [] }`. A present-but-invalid file returns 422."
       parameters:
         - schema:
             type: string
@@ -27256,7 +27256,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SkillEvalsList"
         "400":
-          description: No workspace / invalid skill id.
+          description: No project skill store / invalid skill id.
           content:
             application/json:
               schema:
@@ -27409,7 +27409,7 @@ paths:
       tags:
         - Skills
       summary: List project skills library
-      description: Returns project-authored skills only (`<project.ahw>/skills`). Built-in and shared global skills are listed via `GET /api/global-skills`.
+      description: Returns project-authored skills only (`<dataDir>/project-skills/<projectId>`). Built-in and shared global skills are listed via `GET /api/global-skills`.
       parameters:
         - schema:
             type: string
@@ -27443,7 +27443,7 @@ paths:
       tags:
         - Skills
       summary: Create a project skill
-      description: Validates the author payload, composes a canonical `SKILL.md` (YAML frontmatter + Markdown body), and writes it to `<project.ahw>/skills/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md whose frontmatter carries them. Rejects a slug that shadows a bundled default skill (409) or an already-existing project skill (409 — use PUT). Invalid frontmatter (bad slug, missing description, disallowed category, malformed credentials) returns 400.
+      description: Validates the author payload, composes a canonical `SKILL.md` (YAML frontmatter + Markdown body), and writes it to `<dataDir>/project-skills/<projectId>/<slug>/SKILL.md`. Accepts EITHER structured fields (`name` + `description`) OR a raw `content` SKILL.md whose frontmatter carries them. Rejects a slug that shadows a bundled default skill (409) or an already-existing project skill (409 — use PUT). Invalid frontmatter (bad slug, missing description, disallowed category, malformed credentials) returns 400.
       parameters:
         - schema:
             type: string
@@ -27728,7 +27728,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SkillWriteError"
         "404":
-          description: Project, workspace, or project skill not found.
+          description: Project or project skill not found.
           content:
             application/json:
               schema:

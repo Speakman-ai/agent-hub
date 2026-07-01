@@ -31,6 +31,7 @@ import {
 import { getSessionOwner } from './session-ownership.js';
 import { resolveNativePrAuthorUserId } from './native-pr/author-user.js';
 import { getActiveAccessToken } from './github-connections-store.js';
+import { resolveProjectSkillsDir } from './project-skill-paths.js';
 import {
   ensureSessionWorktreeDependenciesInstalled,
   ensureOriginPointsAtHostedRepo,
@@ -867,7 +868,6 @@ export function resolveSlashSkill(
   content: string,
   project: Project | undefined,
 ): SlashSkillResult | SlashSkillError | null {
-  const ahw = project?.ahw || agent.ahw || (agent as Record<string, unknown>).workspace;
   if (!content.startsWith('/')) return null;
 
   const match = content.match(/^\/([a-zA-Z0-9_.-]+)(\s[\s\S]*)?$/);
@@ -878,7 +878,16 @@ export function resolveSlashSkill(
 
   const d = getDeps();
   const searchDirs: string[] = [];
-  if (ahw) searchDirs.push(path.join(ahw as string, 'skills'));
+  if (project?.id) searchDirs.push(resolveProjectSkillsDir(project));
+  const legacyWorkspaces = [
+    project?.ahw,
+    agent.ahw,
+    (agent as Record<string, unknown>).workspace,
+  ].filter((workspace): workspace is string => typeof workspace === 'string' && workspace !== '');
+  for (const legacyWorkspace of legacyWorkspaces) {
+    const skillsDir = path.join(legacyWorkspace, 'skills');
+    if (!searchDirs.includes(skillsDir)) searchDirs.push(skillsDir);
+  }
   searchDirs.push(d.DEFAULT_SKILLS_DIR);
 
   for (const skillsDir of searchDirs) {

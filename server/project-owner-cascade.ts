@@ -21,6 +21,7 @@
 import type { Project } from './types.js';
 import type { Stmts } from './types.js';
 import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-store.js';
+import { deleteProjectSkillsDir } from './project-skill-paths.js';
 
 export interface CascadeDeps {
   stmts: Stmts;
@@ -43,6 +44,7 @@ export interface CascadeResult {
  * delete paths will pick it up automatically.
  */
 export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
+  deleteProjectSkillsDir(project);
   try {
     deleteAllPreviewSecretsForProject(project.id);
   } catch (err) {

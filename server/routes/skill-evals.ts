@@ -21,6 +21,7 @@ import { loadSkillBody, buildSkillInjection } from '../skill-invoke.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
 import { runOneShotPrompt } from '../one-shot-spawn.js';
 import { buildSpawnEnv } from '../config.js';
+import { resolveProjectSkillsDir } from '../project-model.js';
 
 /**
  * Skill Builder, Phase 3 — eval-driven test loop REST surface.
@@ -29,7 +30,8 @@ import { buildSpawnEnv } from '../config.js';
  *   PUT    /api/projects/:projectId/skills/:skillId/evals       write evals.json
  *   POST   /api/projects/:projectId/skills/:skillId/evals/run   run with-skill vs baseline
  *
- * Evals live at `<project.ahw>/skills/<skillId>/evals/evals.json`. The run
+ * Evals live beside the project-authored skill under the central project skill
+ * store. The run
  * endpoint loads the skill's SKILL.md, injects it as the system prompt for the
  * with-skill pass, runs an identical baseline pass without it, grades both, and
  * returns a structured summary plus a rendered Markdown report. The Skill
@@ -73,12 +75,12 @@ const RunBodySchema = z
   })
   .strict();
 
-function evalsFilePath(projectAhw: string, skillId: string): string {
-  return path.join(projectAhw, 'skills', skillId, 'evals', 'evals.json');
+function evalsFilePath(skillsDir: string, skillId: string): string {
+  return path.join(skillsDir, skillId, 'evals', 'evals.json');
 }
 
-function skillDirExists(projectAhw: string, skillId: string): boolean {
-  const dir = path.join(projectAhw, 'skills', skillId);
+function skillDirExists(skillsDir: string, skillId: string): boolean {
+  const dir = path.join(skillsDir, skillId);
   return existsSync(dir) && statSync(dir).isDirectory();
 }
 
@@ -95,12 +97,13 @@ export default function createSkillEvalRoutes(deps: RouteDeps): Router {
     const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
     if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
     const skillId = slugRes.slug;
+    const skillsDir = resolveProjectSkillsDir(project);
 
-    if (!skillDirExists(project.ahw, skillId)) {
+    if (!skillDirExists(skillsDir, skillId)) {
       return res.status(404).json({ error: 'Project skill not found' });
     }
 
-    const file = evalsFilePath(project.ahw, skillId);
+    const file = evalsFilePath(skillsDir, skillId);
     if (!existsSync(file)) return res.json({ evals: [] });
 
     try {
@@ -131,8 +134,9 @@ export default function createSkillEvalRoutes(deps: RouteDeps): Router {
       const slugRes = validateSkillSlug(req.params.skillId, 'skillId');
       if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
       const skillId = slugRes.slug;
+      const skillsDir = resolveProjectSkillsDir(project);
 
-      if (!skillDirExists(project.ahw, skillId)) {
+      if (!skillDirExists(skillsDir, skillId)) {
         return res.status(404).json({ error: 'Project skill not found' });
       }
 
@@ -140,7 +144,7 @@ export default function createSkillEvalRoutes(deps: RouteDeps): Router {
       if (!parsed.ok) return res.status(400).json({ error: parsed.error });
 
       try {
-        const dir = path.join(project.ahw, 'skills', skillId, 'evals');
+        const dir = path.join(skillsDir, skillId, 'evals');
         mkdirSync(dir, { recursive: true });
         writeFileSync(path.join(dir, 'evals.json'), serializeEvals(parsed.evals));
         return res.json({ evals: parsed.evals });
@@ -169,8 +173,8 @@ export default function createSkillEvalRoutes(deps: RouteDeps): Router {
       if ('error' in slugRes) return res.status(400).json({ error: slugRes.error });
       const skillId = slugRes.slug;
 
-      const skillsDir = path.join(project.ahw, 'skills');
-      if (!skillDirExists(project.ahw, skillId)) {
+      const skillsDir = resolveProjectSkillsDir(project);
+      if (!skillDirExists(skillsDir, skillId)) {
         return res.status(404).json({ error: 'Project skill not found' });
       }
 
@@ -195,7 +199,7 @@ export default function createSkillEvalRoutes(deps: RouteDeps): Router {
         if (!parsed.ok) return res.status(400).json({ error: parsed.error });
         evals = parsed.evals;
       } else {
-        const file = evalsFilePath(project.ahw, skillId);
+        const file = evalsFilePath(skillsDir, skillId);
         if (!existsSync(file)) {
           return res
             .status(400)

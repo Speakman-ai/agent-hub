@@ -1,9 +1,9 @@
-import path from 'path';
 import type { Project } from './types.js';
 import { listEnabledSkills } from './agent-skills-list.js';
 import { mergeDecryptedSkillCredentialsIntoEnv } from './skill-credentials-store.js';
 import { readCredentialsSchemaForSkill } from './skill-credentials-resolve.js';
 import { hasLinearApiKey } from './linear-skill-auth-resolve.js';
+import { resolveProjectSkillsDir } from './project-model.js';
 
 /**
  * Injects per-user skill credential env vars for every skill currently enabled
@@ -11,7 +11,7 @@ import { hasLinearApiKey } from './linear-skill-auth-resolve.js';
  * soft TOOL_ERROR-shaped line on failure without blocking spawn.
  *
  * Crucial invariant: rows are gated by the credential schema *resolved for
- * the spawning agent's workspace* (workspace `{ahw}/skills/{id}/SKILL.md` →
+ * the spawning agent's project skill store (`project-skills/<projectId>/<id>/SKILL.md` →
  * bundled default → registry — same priority as `listEnabledSkills` /
  * `GET /api/agents/:agentId/skills/:skillId`). A key accepted via project B's
  * forked SKILL.md must NOT show up in project A's spawn env, even though the
@@ -28,7 +28,7 @@ export function mergeSkillCredentialSpawnEnv(
   const { ownerId, agentId, project } = opts;
   if (!ownerId) return;
   try {
-    const skillsRoot = project.ahw ? path.join(project.ahw, 'skills') : '';
+    const skillsRoot = resolveProjectSkillsDir(project);
     // Resolve the agent's allowlist from the project we already hold (the
     // authoritative record). Access boundary: if the agent can't be resolved
     // from its project, fail CLOSED (empty allowlist → no skills → no
@@ -40,10 +40,9 @@ export function mergeSkillCredentialSpawnEnv(
       : [];
     const enabled = listEnabledSkills(agentId, skillsRoot, allowedSkills);
     const skillIds = enabled.map((s) => s.id);
-    const projectWorkspaces = project.ahw ? [project.ahw] : [];
     const allowedKeysBySkillId = new Map<string, ReadonlySet<string>>();
     for (const skillId of skillIds) {
-      const schema = readCredentialsSchemaForSkill(skillId, { projectWorkspaces });
+      const schema = readCredentialsSchemaForSkill(skillId, { projectSkillsDirs: [skillsRoot] });
       // Malformed frontmatter → empty allowlist: refuse to leak unverified
       // env vars from a row whose declaration we can't trust right now.
       if (schema.error) {

@@ -8,11 +8,12 @@ import {
   ALL_CONTEXT_FILES,
 } from './project-paths.js';
 import type { Project, Agent } from './types.js';
+import config from './config.js';
 
 describe('resolveProjectPaths', () => {
   it('resolves all paths for a project with ahw', () => {
     const paths = resolveProjectPaths(
-      { cwd: '/projects/myapp', ahw: '/data/projects/myapp' } as Project,
+      { id: 'myapp', cwd: '/projects/myapp', ahw: '/data/projects/myapp' } as Project,
       { id: 'agent-1' } as Agent,
     );
 
@@ -24,7 +25,7 @@ describe('resolveProjectPaths', () => {
     expect(paths.userMd).toBe('/data/projects/myapp/USER.md');
     expect(paths.toolsMd).toBe('/data/projects/myapp/TOOLS.md');
     expect(paths.memoryMd).toBe('/data/projects/myapp/MEMORY.md');
-    expect(paths.skillsDir).toBe('/data/projects/myapp/skills');
+    expect(paths.skillsDir).toBe(`${config.dataDir}/project-skills/myapp`);
     expect(paths.memoryDir).toBe('/data/projects/myapp/memory');
     expect(paths.identityMd).toBe('/data/projects/myapp/agents/agent-1/IDENTITY.md');
   });
@@ -98,7 +99,7 @@ describe('resolveWorkspaceSkillsDir (slash / loadSkill parity)', () => {
 
 describe('contextFilePath', () => {
   const paths = resolveProjectPaths(
-    { cwd: '/projects/myapp', ahw: '/data/projects/myapp' } as Project,
+    { id: 'myapp', cwd: '/projects/myapp', ahw: '/data/projects/myapp' } as Project,
     { id: 'agent-1' } as Agent,
   );
 
