@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   GITHUB_RUN_MARKER,
@@ -76,9 +80,91 @@ describe('compileGithubWorkflowRun', () => {
     expect(script).toContain('gh run list --workflow "${WORKFLOW}" --branch "${REF}"');
     expect(script).toContain('--event workflow_dispatch');
     expect(script).toContain('gh run watch "${RUN_ID}" --interval "${POLL}" --exit-status');
+    expect(script).toContain('polling run status directly');
     expect(script).toContain(GITHUB_RUN_MARKER);
     expect(script.indexOf(GITHUB_RUN_MARKER)).toBeLessThan(script.indexOf('gh run watch'));
-    expect(script).toContain('exit "${WATCH_EXIT}"');
+    expect(script).toContain('RUN_STATUS="$(gh run view "${RUN_ID}" --json status');
+    expect(script).toContain('RUN_CONCLUSION="$(gh run view "${RUN_ID}" --json conclusion');
+  });
+
+  it('falls back to run-view polling when gh run watch exits before a successful workflow completes', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'github-workflow-step-'));
+    try {
+      const fakeGh = path.join(dir, 'gh');
+      writeFileSync(
+        fakeGh,
+        `#!/usr/bin/env bash
+set -euo pipefail
+STATE_DIR="${dir}"
+if [ "$1 $2" = "workflow run" ]; then
+  touch "$STATE_DIR/dispatched"
+  exit 0
+fi
+if [ "$1 $2" = "run list" ]; then
+  if [ -f "$STATE_DIR/dispatched" ]; then
+    printf '77\\n'
+  else
+    printf '[]\\n'
+  fi
+  exit 0
+fi
+if [ "$1 $2" = "run watch" ]; then
+  echo "context canceled" >&2
+  exit 1
+fi
+if [ "$1 $2" = "run view" ]; then
+  args="$*"
+  count_file="$STATE_DIR/status-count"
+  count=0
+  if [ -f "$count_file" ]; then count="$(cat "$count_file")"; fi
+  if [[ "$args" == *"--json status"* ]]; then
+    if [ "$count" -eq 0 ]; then
+      echo 1 > "$count_file"
+      printf 'in_progress\\n'
+    else
+      printf 'completed\\n'
+    fi
+    exit 0
+  fi
+  if [[ "$args" == *"--json conclusion"* ]]; then
+    if [ "$count" -eq 0 ]; then
+      printf '\\n'
+    else
+      printf 'success\\n'
+    fi
+    exit 0
+  fi
+  if [ "$count" -eq 0 ]; then
+    printf '{"runId":"77","url":"https://github.com/o/r/actions/runs/77","status":"in_progress","conclusion":null,"workflowName":"Release","displayTitle":"Release"}\\n'
+  else
+    printf '{"runId":"77","url":"https://github.com/o/r/actions/runs/77","status":"completed","conclusion":"success","workflowName":"Release","displayTitle":"Release"}\\n'
+  fi
+  exit 0
+fi
+echo "unexpected gh call: $*" >&2
+exit 2
+`,
+      );
+      chmodSync(fakeGh, 0o755);
+
+      const script = compileGithubWorkflowRun({
+        workflow: 'release.yml',
+        ref: 'main',
+        pollIntervalSeconds: 0,
+      });
+      const stdout = execFileSync('bash', ['-c', script], {
+        cwd: dir,
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      expect(stdout).toContain(`${GITHUB_RUN_MARKER}`);
+      expect(stdout).toContain('"status":"completed"');
+      expect(stdout).toContain('"conclusion":"success"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('resolves the run id by diffing against a pre-dispatch snapshot (no clock dependency)', () => {

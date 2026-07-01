@@ -200,6 +200,50 @@ function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function githubRunMarkerLines(fallbackStatus: string): string[] {
+  return [
+    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
+    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || printf '{"runId":"%s","status":"${fallbackStatus}"}' "\${RUN_ID}")"`,
+    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
+  ];
+}
+
+function githubRunStateLines(): string[] {
+  return [
+    `RUN_STATUS="$(gh run view "\${RUN_ID}" --json status --jq '.status // ""' 2>/dev/null || true)"`,
+    `RUN_CONCLUSION="$(gh run view "\${RUN_ID}" --json conclusion --jq '.conclusion // ""' 2>/dev/null || true)"`,
+  ];
+}
+
+function githubWorkflowWatchLines(context: string): string[] {
+  return [
+    ...githubRunMarkerLines('queued'),
+    `echo "Watching workflow run \${RUN_ID} ..."`,
+    `set +e`,
+    `gh run watch "\${RUN_ID}" --interval "\${POLL}" --exit-status`,
+    `WATCH_EXIT=$?`,
+    `set -e`,
+    ...githubRunMarkerLines('unknown'),
+    ...githubRunStateLines(),
+    `if [ "\${WATCH_EXIT}" -ne 0 ] && [ -n "\${RUN_STATUS}" ] && [ "\${RUN_STATUS}" != "completed" ]; then`,
+    `  echo "${context}: gh run watch exited \${WATCH_EXIT} while run \${RUN_ID} was \${RUN_STATUS:-unknown}; polling run status directly" >&2`,
+    `  while [ -n "\${RUN_STATUS}" ] && [ "\${RUN_STATUS}" != "completed" ]; do`,
+    `    sleep "\${POLL}"`,
+    ...githubRunMarkerLines('unknown'),
+    ...githubRunStateLines(),
+    `  done`,
+    `fi`,
+    `if [ "\${WATCH_EXIT}" -eq 0 ]; then`,
+    `  exit 0`,
+    `fi`,
+    `if [ "\${RUN_STATUS}" = "completed" ] && [ "\${RUN_CONCLUSION}" = "success" ]; then`,
+    `  exit 0`,
+    `fi`,
+    `echo "${context}: run \${RUN_ID} did not succeed (status \${RUN_STATUS:-unknown}, conclusion \${RUN_CONCLUSION:-unknown}, watch exit \${WATCH_EXIT})" >&2`,
+    `exit 1`,
+  ];
+}
+
 /**
  * Compile a {@link GithubWorkflowStepSpec} into the `run` bash script the
  * orchestrator executes via `bash -euo pipefail -c <run>`. `spec.ref` is a
@@ -253,21 +297,7 @@ export function compileGithubWorkflowRun(spec: GithubWorkflowStepSpec): string {
     `  echo "github_workflow step: could not resolve a workflow run for \${WORKFLOW} on \${REF} after dispatch" >&2`,
     `  exit 1`,
     `fi`,
-    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
-    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || printf '{"runId":"%s","status":"queued"}' "\${RUN_ID}")"`,
-    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
-    `echo "Watching workflow run \${RUN_ID} ..."`,
-    `set +e`,
-    `gh run watch "\${RUN_ID}" --interval "\${POLL}" --exit-status`,
-    `WATCH_EXIT=$?`,
-    `set -e`,
-    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
-    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || echo '{}')"`,
-    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
-    `if [ "\${WATCH_EXIT}" -ne 0 ]; then`,
-    `  echo "github_workflow step: run \${RUN_ID} did not succeed (exit \${WATCH_EXIT})" >&2`,
-    `fi`,
-    `exit "\${WATCH_EXIT}"`,
+    ...githubWorkflowWatchLines('github_workflow step'),
   ].join('\n');
 }
 
@@ -307,23 +337,7 @@ export function compileGithubWorkflowResumeRun(spec: GithubWorkflowResumeSpec): 
     );
   }
 
-  lines.push(
-    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
-    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || printf '{"runId":"%s","status":"in_progress"}' "\${RUN_ID}")"`,
-    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
-    `echo "Watching workflow run \${RUN_ID} ..."`,
-    `set +e`,
-    `gh run watch "\${RUN_ID}" --interval "\${POLL}" --exit-status`,
-    `WATCH_EXIT=$?`,
-    `set -e`,
-    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
-    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || echo '{}')"`,
-    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
-    `if [ "\${WATCH_EXIT}" -ne 0 ]; then`,
-    `  echo "github_workflow recovery: run \${RUN_ID} did not succeed (exit \${WATCH_EXIT})" >&2`,
-    `fi`,
-    `exit "\${WATCH_EXIT}"`,
-  );
+  lines.push(...githubWorkflowWatchLines('github_workflow recovery'));
   return lines.join('\n');
 }
 
