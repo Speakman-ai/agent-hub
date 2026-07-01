@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { getDb } from '../db.js';
+import { wipeTables } from '../test/destructive-db.js';
 import {
   createDeployment,
   DeploymentReleaseItemError,
@@ -32,16 +33,19 @@ import { createSupportTicket } from '../support-tickets-store.js';
 const P = 'proj-deploy-test';
 
 beforeEach(() => {
-  const db = getDb();
-  db.exec('DELETE FROM deployment_release_items;');
-  db.exec('DELETE FROM deployment_approvals;');
-  db.exec('DELETE FROM deployment_steps;');
-  db.exec('DELETE FROM deployments;');
-  db.exec('DELETE FROM deployment_environments;');
-  db.exec('DELETE FROM kanban_cards;');
-  db.exec('DELETE FROM kanban_columns;');
-  db.exec('DELETE FROM kanban_boards;');
-  db.exec('DELETE FROM support_tickets;');
+  // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
+  // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
+  wipeTables(getDb(), [
+    'deployment_release_items',
+    'deployment_approvals',
+    'deployment_steps',
+    'deployments',
+    'deployment_environments',
+    'kanban_cards',
+    'kanban_columns',
+    'kanban_boards',
+    'support_tickets',
+  ]);
 });
 
 function insertReleaseCard(

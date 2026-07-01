@@ -8,6 +8,7 @@ import path from 'path';
 import createDesignRoutes from './designs.js';
 import { createDesign, linkProject, ensureDesignsRoot, designDir } from '../designs-store.js';
 import { getDb, getStmts } from '../db.js';
+import { wipeTables } from '../test/destructive-db.js';
 import { initOrgsDb } from '../orgs.js';
 import type { AppConfig, Project, RouteDeps, SessionRow } from '../types.js';
 
@@ -51,11 +52,9 @@ beforeEach(() => {
   projects.set('p1', { id: 'p1', name: 'P1', cwd: '/tmp', ahw: '/tmp', agents: [] });
   provision = vi.fn(async () => worktreeRoot);
 
-  const db = getDb();
-  if (!db.name.startsWith(tmpdir())) throw new Error('refusing to wipe non-temp DB');
   initOrgsDb(); // prepare org statements used by getActiveOrgId() in the routes
-  db.exec('DELETE FROM design_messages; DELETE FROM design_projects; DELETE FROM designs;');
-  db.exec('DELETE FROM messages; DELETE FROM sessions;');
+  // wipeTables enforces the scratch-DB check (server/test/destructive-db.ts).
+  wipeTables(getDb(), ['design_messages', 'design_projects', 'designs', 'messages', 'sessions']);
 });
 
 function seedDesign(linked = ['p1']): string {

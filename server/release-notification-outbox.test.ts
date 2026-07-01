@@ -18,6 +18,7 @@ vi.mock('./email-sender.js', () => ({
 }));
 
 import { getDb, getStmts } from './db.js';
+import { wipeTables } from './test/destructive-db.js';
 import {
   createDeployment,
   ensureDeploymentReleaseItem,
@@ -38,18 +39,21 @@ import {
 const P = 'release-outbox-test';
 
 beforeEach(() => {
-  const db = getDb();
-  db.exec('DELETE FROM release_notification_outbox;');
-  db.exec('DELETE FROM deployment_release_items;');
-  db.exec('DELETE FROM deployment_steps;');
-  db.exec('DELETE FROM deployments;');
-  db.exec('DELETE FROM deployment_environments;');
-  db.exec('DELETE FROM release_digest_recipients;');
-  db.exec('DELETE FROM release_notification_settings;');
-  db.exec('DELETE FROM kanban_cards;');
-  db.exec('DELETE FROM kanban_columns;');
-  db.exec('DELETE FROM kanban_boards;');
-  db.exec('DELETE FROM support_tickets;');
+  // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
+  // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
+  wipeTables(getDb(), [
+    'release_notification_outbox',
+    'deployment_release_items',
+    'deployment_steps',
+    'deployments',
+    'deployment_environments',
+    'release_digest_recipients',
+    'release_notification_settings',
+    'kanban_cards',
+    'kanban_columns',
+    'kanban_boards',
+    'support_tickets',
+  ]);
   sendEmailMock.mockReset();
   sendEmailMock.mockResolvedValue({ sent: false, reason: 'smtp_not_configured' });
 });

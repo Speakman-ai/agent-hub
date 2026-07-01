@@ -7,6 +7,7 @@ import path from 'path';
 import { EventEmitter, Readable } from 'stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb } from '../db.js';
+import { wipeTables } from '../test/destructive-db.js';
 import type { SpawnedStep } from '../finalize/step-runner.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import type { Project, RouteDeps } from '../types.js';
@@ -255,18 +256,21 @@ function makeApp(
 }
 
 beforeEach(() => {
-  const db = getDb();
-  db.exec('DELETE FROM deployment_release_items;');
-  db.exec('DELETE FROM deployment_approvals;');
-  db.exec('DELETE FROM deployment_steps;');
-  db.exec('DELETE FROM release_notification_outbox;');
-  db.exec('DELETE FROM deployments;');
-  db.exec('DELETE FROM deployment_environments;');
-  db.exec('DELETE FROM release_notification_settings;');
-  db.exec('DELETE FROM kanban_cards;');
-  db.exec('DELETE FROM kanban_columns;');
-  db.exec('DELETE FROM kanban_boards;');
-  db.exec('DELETE FROM support_tickets;');
+  // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
+  // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
+  wipeTables(getDb(), [
+    'deployment_release_items',
+    'deployment_approvals',
+    'deployment_steps',
+    'release_notification_outbox',
+    'deployments',
+    'deployment_environments',
+    'release_notification_settings',
+    'kanban_cards',
+    'kanban_columns',
+    'kanban_boards',
+    'support_tickets',
+  ]);
 });
 
 function insertReleaseCard(

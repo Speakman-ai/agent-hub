@@ -4,6 +4,7 @@ import express from 'express';
 import supertest from 'supertest';
 import createSupportTicketRoutes from './support-tickets.js';
 import { getDb, getStmts } from '../db.js';
+import { wipeTables } from '../test/destructive-db.js';
 import type { Project, RouteDeps, SessionReplayRow } from '../types.js';
 
 /**
@@ -60,11 +61,8 @@ function seedReplay(id: string): { id: string; ref: string } {
 }
 
 beforeEach(() => {
-  const db = getDb();
-  if (!db.name.startsWith(tmpdir())) {
-    throw new Error(`Refusing to wipe tables in non-tmp DB at ${db.name}`);
-  }
-  db.exec('DELETE FROM support_tickets; DELETE FROM session_replays;');
+  // wipeTables enforces the scratch-DB check (server/test/destructive-db.ts).
+  wipeTables(getDb(), ['support_tickets', 'session_replays']);
 });
 
 describe('support-ticket creation links the referenced replay', () => {

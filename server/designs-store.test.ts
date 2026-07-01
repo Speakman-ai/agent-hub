@@ -20,6 +20,7 @@ import {
   designDir,
 } from './designs-store.js';
 import { getDb } from './db.js';
+import { wipeTables } from './test/destructive-db.js';
 import type { Project } from './types.js';
 
 // Each test gets its own designs root on disk and a clean slate in the
@@ -53,15 +54,10 @@ beforeEach(() => {
   // Wipe the three design tables between tests so rows don't leak across
   // test files that share the setup.ts DB.
   const db = getDb();
-  // Safety net: last line of defence against test-env leaking into prod.
-  // Lost production design rows once when AGENT_HUB_DATA_DIR wasn't set in
-  // vitest.config.ts test.env — see PR feature/designs-wipe-guard.
-  if (!db.name.startsWith(tmpdir())) {
-    throw new Error(
-      `Refusing to wipe designs in non-tmp DB at ${db.name} — expected path under ${tmpdir()}`,
-    );
-  }
-  db.exec('DELETE FROM design_messages; DELETE FROM design_projects; DELETE FROM designs;');
+  // wipeTables enforces the scratch-DB check (server/test/destructive-db.ts)
+  // — the successor to the inline guard added after the designs-wipe incident
+  // (see PR feature/designs-wipe-guard).
+  wipeTables(db, ['design_messages', 'design_projects', 'designs']);
   projects.clear();
 });
 

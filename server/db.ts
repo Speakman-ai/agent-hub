@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import config from './config.js';
+import { assertSafeTestDataDir } from './db-safety.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
@@ -56,6 +57,12 @@ export function supportTicketsStatusCheckNeedsRebuild(ddl: string): boolean {
  * a different dataDir does NOT close the previous one.
  */
 function initDb(dataDir: string): void {
+  // Fail-closed: never let a test-runner process open a database outside
+  // os.tmpdir(). This is the guard that would have prevented the 2026-07-01
+  // prod kanban wipe (deploy tests ran with inherited AGENT_HUB_DATA_DIR=/data
+  // and without the vitest setup isolation loading). See server/db-safety.ts.
+  assertSafeTestDataDir(dataDir);
+
   const cached = dbRegistry.get(dataDir);
   if (cached) {
     db = cached.db;

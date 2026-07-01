@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { tmpdir } from 'os';
 
 import {
   createSupportTicket,
@@ -23,17 +22,14 @@ import {
   SUPPORT_TICKET_SEVERITIES,
 } from './support-tickets-store.js';
 import { getDb } from './db.js';
+import { wipeTables } from './test/destructive-db.js';
 
 // The DB is initialized once by test/setup.ts via AGENT_HUB_DATA_DIR (a fresh
 // per-process tmp dir). Wipe support_tickets between tests so rows don't leak
 // across cases / files that share the setup DB.
 beforeEach(() => {
-  const db = getDb();
-  // Last line of defence against ever wiping a non-test DB.
-  if (!db.name.startsWith(tmpdir())) {
-    throw new Error(`Refusing to wipe support_tickets in non-tmp DB at ${db.name}`);
-  }
-  db.exec('DELETE FROM support_tickets;');
+  // wipeTables enforces the scratch-DB check (server/test/destructive-db.ts).
+  wipeTables(getDb(), ['support_tickets']);
 });
 
 /** Force a deterministic created_at so DESC tiebreaks are testable. */

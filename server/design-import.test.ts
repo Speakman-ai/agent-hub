@@ -19,6 +19,7 @@ import {
 import { createDesign, linkProject, ensureDesignsRoot, designDir } from './designs-store.js';
 import { setSessionOwner } from './session-ownership.js';
 import { getDb, getStmts } from './db.js';
+import { wipeTables } from './test/destructive-db.js';
 import type { DesignMessageRow, DesignWithProjects, Project, SessionRow } from './types.js';
 
 const projects = new Map<string, Project>();
@@ -38,12 +39,8 @@ beforeEach(() => {
   ensureDesignsRoot(designsRoot);
   projects.clear();
 
-  const db = getDb();
-  if (!db.name.startsWith(tmpdir())) {
-    throw new Error(`Refusing to wipe non-temp DB in tests: ${db.name}`);
-  }
-  db.exec('DELETE FROM design_messages; DELETE FROM design_projects; DELETE FROM designs;');
-  db.exec('DELETE FROM messages; DELETE FROM sessions;');
+  // wipeTables enforces the scratch-DB check (server/test/destructive-db.ts).
+  wipeTables(getDb(), ['design_messages', 'design_projects', 'designs', 'messages', 'sessions']);
 });
 
 function row(

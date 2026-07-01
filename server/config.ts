@@ -2,6 +2,7 @@ import { readFileSync, copyFileSync, cpSync, existsSync, mkdirSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { assertSafeTestDataDir } from './db-safety.js';
 import type { AppConfig } from './types.js';
 import { CURSOR_AGENT_HUB_MODEL_ALLOWLIST } from './cursor-agent-allowlist.js';
 import {
@@ -57,18 +58,22 @@ export function resolveSkillsDir(): string | null {
 const DEFAULT_DATA_DIR = path.join(HOME, '.agent-hub', 'data');
 const DATA_DIR = process.env.AGENT_HUB_DATA_DIR || DEFAULT_DATA_DIR;
 
-// Hard safety rail: refuse to boot in test mode pointing at the production
-// data dir. This caught us once already — `server/designs-store.test.ts`'s
-// bulk-wipe beforeEach deleted production design rows because
-// AGENT_HUB_DATA_DIR was being set inside setup.ts instead of vitest.config.ts
-// `test.env`, leaving a window where config.ts loaded with the default path.
-// See PR adding `feature/designs-wipe-guard`.
-if (process.env.AGENT_HUB_TEST_MODE === '1' && DATA_DIR === DEFAULT_DATA_DIR) {
-  throw new Error(
-    `[config] AGENT_HUB_TEST_MODE=1 but AGENT_HUB_DATA_DIR resolves to the production default (${DEFAULT_DATA_DIR}). ` +
-      'Refusing to initialize — set AGENT_HUB_DATA_DIR to a tmp path in vitest.config.ts test.env.',
-  );
-}
+// Hard safety rail: refuse to load in test context pointing at a real data
+// dir. History: (1) `server/designs-store.test.ts`'s bulk-wipe beforeEach
+// once deleted production design rows because AGENT_HUB_DATA_DIR was set in
+// setup.ts instead of vitest.config.ts `test.env`. The original rail here
+// (`TEST_MODE=1 && DATA_DIR === DEFAULT`) fixed that — then failed us twice
+// over on 2026-07-01: a vitest run that never loaded vitest.config.ts had no
+// AGENT_HUB_TEST_MODE, and its inherited AGENT_HUB_DATA_DIR (the server
+// exports its dataDir to every spawned process) wasn't the *default* path, so
+// the deploy tests' unqualified DELETEs wiped every kanban board in prod.
+// `assertSafeTestDataDir` closes both holes: it detects test context from
+// vitest's own worker env (VITEST / VITEST_WORKER_ID — present regardless of
+// whether any config/setup file loaded) and rejects ANY dir outside
+// os.tmpdir(), not just the default. `initDb()` (server/db.ts) re-runs the
+// same check, and destructive test helpers verify the concrete DB file path
+// (server/test/destructive-db.ts) — three independent layers.
+assertSafeTestDataDir(DATA_DIR);
 
 mkdirSync(DATA_DIR, { recursive: true });
 

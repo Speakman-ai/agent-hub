@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { EventEmitter, Readable } from 'stream';
 import { getDb, getStmts } from '../db.js';
+import { wipeTables } from '../test/destructive-db.js';
 import {
   getDeploymentEnvironment,
   listDeploymentReleaseItems,
@@ -46,20 +47,23 @@ const OTHER_PROJECT = 'proj-deploy-other';
 const WORKTREE = '/tmp/deploy-orch-fake';
 
 beforeEach(() => {
-  const db = getDb();
-  db.exec('DELETE FROM release_notification_outbox;');
-  db.exec('DELETE FROM deployment_release_items;');
-  db.exec('DELETE FROM deployment_approvals;');
-  db.exec('DELETE FROM deployment_steps;');
-  db.exec('DELETE FROM deployments;');
-  db.exec('DELETE FROM deployment_environments;');
-  db.exec('DELETE FROM finalize_runs;');
-  db.exec('DELETE FROM release_digest_recipients;');
-  db.exec('DELETE FROM release_notification_settings;');
-  db.exec('DELETE FROM support_tickets;');
-  db.exec('DELETE FROM kanban_cards;');
-  db.exec('DELETE FROM kanban_columns;');
-  db.exec('DELETE FROM kanban_boards;');
+  // wipeTables refuses to run against a non-scratch (non-tmpdir) database —
+  // see server/test/destructive-db.ts and the 2026-07-01 prod wipe incident.
+  wipeTables(getDb(), [
+    'release_notification_outbox',
+    'deployment_release_items',
+    'deployment_approvals',
+    'deployment_steps',
+    'deployments',
+    'deployment_environments',
+    'finalize_runs',
+    'release_digest_recipients',
+    'release_notification_settings',
+    'support_tickets',
+    'kanban_cards',
+    'kanban_columns',
+    'kanban_boards',
+  ]);
 });
 
 const CONFIG = parseDeployConfig(`

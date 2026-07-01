@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { getDb } from '../db.js';
+import { wipeTables } from '../test/destructive-db.js';
 import {
   getEnvironmentConfig,
   listEnvironmentConfigs,
@@ -18,7 +19,7 @@ import {
 const P = 'proj-env-config-test';
 
 beforeEach(() => {
-  getDb().exec('DELETE FROM deployment_env_runtime_config;');
+  wipeTables(getDb(), ['deployment_env_runtime_config']);
 });
 
 describe('deployment env config CRUD', () => {

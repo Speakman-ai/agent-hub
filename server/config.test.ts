@@ -1,11 +1,16 @@
 /**
- * Guards the hard safety rail added after a data-loss incident in
- * ~/.agent-hub/data/agent-hub.db where six `designs` rows were deleted by
- * server/designs-store.test.ts' bulk-wipe beforeEach running against the
- * production DB. Root cause: `AGENT_HUB_DATA_DIR` was set in test/setup.ts
- * (after module load) rather than vitest.config.ts test.env (before module
- * load). config.ts now refuses to boot in test mode when the resolved data
- * dir equals the production default.
+ * Guards the hard safety rail in config.ts that refuses to load in test
+ * context against a real data dir.
+ *
+ * History: after the designs-wipe incident the rail was
+ * `TEST_MODE=1 && DATA_DIR === default`. On 2026-07-01 that form failed
+ * twice over — a vitest run that never loaded vitest.config.ts had no
+ * AGENT_HUB_TEST_MODE, and its inherited AGENT_HUB_DATA_DIR wasn't the
+ * *default* path — and the deploy tests wiped every kanban board in prod.
+ * config.ts now delegates to `assertSafeTestDataDir` (server/db-safety.ts),
+ * which detects test context from vitest's own worker env and rejects ANY
+ * dir outside os.tmpdir(). See server/db-safety.test.ts for the guard's own
+ * unit coverage; these tests pin the config.ts module-load wiring.
  *
  * These tests import config.ts fresh per case via vi.resetModules().
  */
@@ -30,15 +35,22 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('config.ts — TEST_MODE safety rail', () => {
-  it('throws when AGENT_HUB_TEST_MODE=1 and AGENT_HUB_DATA_DIR is unset', async () => {
+describe('config.ts — test-context safety rail (assertSafeTestDataDir wiring)', () => {
+  /** Strip every test-context marker so config.ts sees a prod-shaped env. */
+  function clearTestContextEnv(): void {
+    delete process.env.AGENT_HUB_TEST_MODE;
+    delete process.env.VITEST;
+    delete process.env.VITEST_POOL_ID;
+    delete process.env.VITEST_WORKER_ID;
+    delete process.env.NODE_ENV;
+  }
+
+  it('throws when AGENT_HUB_TEST_MODE=1 and AGENT_HUB_DATA_DIR is unset (resolves to prod default)', async () => {
     vi.resetModules();
     process.env.AGENT_HUB_TEST_MODE = '1';
     delete process.env.AGENT_HUB_DATA_DIR;
 
-    await expect(import('./config.js')).rejects.toThrow(
-      /TEST_MODE=1 but AGENT_HUB_DATA_DIR resolves to the production default/,
-    );
+    await expect(import('./config.js')).rejects.toThrow(/db-safety.*REFUSING to open database dir/);
   });
 
   it('throws when AGENT_HUB_TEST_MODE=1 and AGENT_HUB_DATA_DIR explicitly equals production default', async () => {
@@ -46,9 +58,19 @@ describe('config.ts — TEST_MODE safety rail', () => {
     process.env.AGENT_HUB_TEST_MODE = '1';
     process.env.AGENT_HUB_DATA_DIR = PRODUCTION_DEFAULT;
 
-    await expect(import('./config.js')).rejects.toThrow(
-      /TEST_MODE=1 but AGENT_HUB_DATA_DIR resolves to the production default/,
-    );
+    await expect(import('./config.js')).rejects.toThrow(/db-safety.*REFUSING to open database dir/);
+  });
+
+  it('throws for an inherited NON-default prod dir with only vitest worker env (the 2026-07-01 shape)', async () => {
+    // The incident: no AGENT_HUB_TEST_MODE (vitest.config.ts never loaded),
+    // AGENT_HUB_DATA_DIR explicitly inherited from the server's spawn env —
+    // not the default path. Only vitest's own env marks the process a test.
+    vi.resetModules();
+    delete process.env.AGENT_HUB_TEST_MODE;
+    process.env.AGENT_HUB_DATA_DIR = path.join(os.homedir(), 'not-the-default', 'data');
+    // (VITEST / NODE_ENV=test are genuinely present in this process.)
+
+    await expect(import('./config.js')).rejects.toThrow(/db-safety.*REFUSING to open database dir/);
   });
 
   it('loads cleanly when AGENT_HUB_TEST_MODE=1 and AGENT_HUB_DATA_DIR points at a tmp dir', async () => {
@@ -60,9 +82,9 @@ describe('config.ts — TEST_MODE safety rail', () => {
     expect(mod.default.dataDir).toBe(process.env.AGENT_HUB_DATA_DIR);
   });
 
-  it('does NOT throw in production (TEST_MODE unset) even when dataDir is the default', async () => {
+  it('does NOT throw in production (no test-context env) even when dataDir is the default', async () => {
     vi.resetModules();
-    delete process.env.AGENT_HUB_TEST_MODE;
+    clearTestContextEnv();
     delete process.env.AGENT_HUB_DATA_DIR;
 
     const mod = await import('./config.js');
