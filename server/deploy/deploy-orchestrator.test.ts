@@ -16,15 +16,20 @@ import {
   listDeploymentSteps,
   listDeploymentApprovals,
   createDeployment,
+  addDeploymentStep,
   ensureDeploymentEnvironment,
   ensureDeploymentReleaseItem,
   acquireEnvironmentLock,
   setDeploymentReleaseItemInclusion,
+  updateDeploymentStatus,
+  updateDeploymentStepStatus,
+  setDeploymentStepGithubRun,
 } from './deployment-store.js';
 import { parseDeployConfig } from './deploy-config.js';
-import { GITHUB_RUN_MARKER } from './github-workflow-step.js';
+import { compileGithubWorkflowRun, GITHUB_RUN_MARKER } from './github-workflow-step.js';
 import {
   approveDeployment,
+  recoverInFlightDeployments,
   triggerDeployment,
   EnvironmentBusyError,
   type DeploymentApprovalError,
@@ -256,6 +261,50 @@ function seedPushedFinalizeRun(input: {
   return id;
 }
 
+function seedInterruptedWorkflowDeployment(input: {
+  run: string;
+  githubWorkflow?: { workflow: string; ref: string; pollIntervalSeconds?: number };
+  githubRunId?: string | null;
+}): { deploymentId: string; stepId: string } {
+  ensureDeploymentEnvironment(PROJECT, 'dev');
+  const deployment = createDeployment({
+    projectId: PROJECT,
+    environment: 'dev',
+    ref: 'sha-recover',
+    status: 'running',
+    meta: {
+      agentHubDeploymentPlan: {
+        version: 1,
+        worktreePath: WORKTREE,
+        cleanupWorktreeOnTerminal: false,
+        environment: {
+          name: 'dev',
+          approval: false,
+          runsOn: 'ubuntu-24.04',
+          timeoutMinutes: 60,
+          steps: [
+            {
+              name: 'Release',
+              run: input.run,
+              ...(input.githubWorkflow ? { githubWorkflow: input.githubWorkflow } : {}),
+            },
+          ],
+        },
+      },
+    },
+  });
+  expect(acquireEnvironmentLock(PROJECT, 'dev', deployment.id)).toBe(true);
+  const step = addDeploymentStep({
+    deploymentId: deployment.id,
+    name: 'Release',
+    stepOrder: 1,
+  });
+  updateDeploymentStatus(deployment.id, 'running');
+  updateDeploymentStepStatus(step.id, 'running');
+  if (input.githubRunId) setDeploymentStepGithubRun(step.id, { runId: input.githubRunId });
+  return { deploymentId: deployment.id, stepId: step.id };
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let i = 0; i < 20; i++) {
     if (predicate()) return;
@@ -453,6 +502,70 @@ environments:
     expect(step.github_run_id).toBe('77');
     expect(step.github_run_url).toBe('https://github.com/o/r/actions/runs/77');
     expect(step.github_conclusion).toBe('failure');
+  });
+});
+
+describe('recoverInFlightDeployments', () => {
+  const marker = (payload: object): string => `${GITHUB_RUN_MARKER}${JSON.stringify(payload)}\n`;
+
+  it('resumes an interrupted github_workflow step from its persisted run id', async () => {
+    const { deploymentId } = seedInterruptedWorkflowDeployment({
+      run: compileGithubWorkflowRun({ workflow: 'release.yml', ref: 'main' }),
+      githubWorkflow: { workflow: 'release.yml', ref: 'main' },
+      githubRunId: '4242',
+    });
+    const fb = makeFakeBackend([
+      {
+        exitCode: 0,
+        stdout: marker({
+          runId: '4242',
+          url: 'https://github.com/o/r/actions/runs/4242',
+          status: 'completed',
+          conclusion: 'success',
+        }),
+      },
+    ]);
+
+    const recovered = recoverInFlightDeployments(makeDeps(fb.backend));
+    expect(recovered.map((deployment) => deployment.id)).toEqual([deploymentId]);
+    await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'success');
+
+    expect(fb.spawnArgs[0].run).toContain(`RUN_ID='4242'`);
+    expect(fb.spawnArgs[0].run).toContain('gh run watch "${RUN_ID}"');
+    expect(fb.spawnArgs[0].run).not.toContain('gh workflow run');
+    expect(getDeploymentEnvironment(PROJECT, 'dev')!.active_deployment_id).toBeNull();
+    expect(listDeploymentSteps(deploymentId)[0]).toMatchObject({
+      status: 'success',
+      github_run_id: '4242',
+      github_run_url: 'https://github.com/o/r/actions/runs/4242',
+      github_conclusion: 'success',
+    });
+  });
+
+  it('rediscovers legacy interrupted github_workflow steps without dispatching again', async () => {
+    const { deploymentId } = seedInterruptedWorkflowDeployment({
+      run: compileGithubWorkflowRun({ workflow: 'release-all.yml', ref: 'main' }),
+    });
+    const fb = makeFakeBackend([
+      {
+        exitCode: 0,
+        stdout: marker({
+          runId: '777',
+          url: 'https://github.com/o/r/actions/runs/777',
+          status: 'completed',
+          conclusion: 'success',
+        }),
+      },
+    ]);
+
+    recoverInFlightDeployments(makeDeps(fb.backend));
+    await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'success');
+
+    expect(fb.spawnArgs[0].run).toContain(`WORKFLOW='release-all.yml'`);
+    expect(fb.spawnArgs[0].run).toContain(`REF='main'`);
+    expect(fb.spawnArgs[0].run).toContain('gh run list --workflow "${WORKFLOW}"');
+    expect(fb.spawnArgs[0].run).not.toContain('gh workflow run');
+    expect(listDeploymentSteps(deploymentId)[0].github_run_id).toBe('777');
   });
 });
 

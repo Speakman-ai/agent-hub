@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   GITHUB_RUN_MARKER,
   compileGithubWorkflowRun,
+  compileGithubWorkflowResumeRun,
   parseGithubRunMarker,
   parseGithubWorkflowStepConfig,
 } from './github-workflow-step.js';
@@ -76,6 +77,7 @@ describe('compileGithubWorkflowRun', () => {
     expect(script).toContain('--event workflow_dispatch');
     expect(script).toContain('gh run watch "${RUN_ID}" --interval "${POLL}" --exit-status');
     expect(script).toContain(GITHUB_RUN_MARKER);
+    expect(script.indexOf(GITHUB_RUN_MARKER)).toBeLessThan(script.indexOf('gh run watch'));
     expect(script).toContain('exit "${WATCH_EXIT}"');
   });
 
@@ -120,6 +122,30 @@ describe('compileGithubWorkflowRun', () => {
   it('safely single-quotes a workflow name containing a quote', () => {
     const script = compileGithubWorkflowRun({ workflow: "weird'name.yml", ref: 'main' });
     expect(script).toContain(`WORKFLOW='weird'\\''name.yml'`);
+  });
+});
+
+describe('compileGithubWorkflowResumeRun', () => {
+  it('watches a persisted run id without dispatching a new workflow', () => {
+    const script = compileGithubWorkflowResumeRun({ runId: '4242', pollIntervalSeconds: 20 });
+    expect(script).toContain(`RUN_ID='4242'`);
+    expect(script).toContain('gh run watch "${RUN_ID}" --interval "${POLL}" --exit-status');
+    expect(script).toContain('POLL=20');
+    expect(script).toContain(GITHUB_RUN_MARKER);
+    expect(script).not.toContain('gh workflow run');
+  });
+
+  it('rediscovers a legacy interrupted workflow run without dispatching', () => {
+    const script = compileGithubWorkflowResumeRun({
+      workflow: 'release.yml',
+      ref: 'main',
+      createdAfter: '2026-07-01T00:00:00Z',
+    });
+    expect(script).toContain(`WORKFLOW='release.yml'`);
+    expect(script).toContain(`REF='main'`);
+    expect(script).toContain(`CREATED_AFTER='2026-07-01T00:00:00Z'`);
+    expect(script).toContain('gh run list --workflow "${WORKFLOW}" --branch "${REF}"');
+    expect(script).not.toContain('gh workflow run');
   });
 });
 

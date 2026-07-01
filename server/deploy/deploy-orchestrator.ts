@@ -55,6 +55,7 @@ import {
   ensureDeploymentEnvironment,
   getDeployment,
   getDeploymentEnvironment,
+  listRecoverableDeployments,
   listDeploymentSteps,
   recordDeploymentReleaseItems,
   releaseEnvironmentLock,
@@ -70,7 +71,11 @@ import {
   type DeployEnvironmentConfig,
   type DeployStep,
 } from './deploy-config.js';
-import { parseGithubRunMarker } from './github-workflow-step.js';
+import {
+  compileGithubWorkflowResumeRun,
+  parseGithubRunMarker,
+  type GithubWorkflowStepSpec,
+} from './github-workflow-step.js';
 import { collectReleaseRangeLinks, type ReleaseRangeLinks } from './release-range.js';
 import {
   countUnreadSupportTickets,
@@ -291,6 +296,12 @@ interface DeploymentPlanSnapshot {
   cleanupWorktreeOnTerminal?: boolean;
 }
 
+interface DeploymentPlanStepSnapshot {
+  name: string;
+  run: string;
+  githubWorkflow?: GithubWorkflowStepSpec;
+}
+
 interface ActiveDeploymentRun {
   cancelRequested: boolean;
   child?: SpawnedStep;
@@ -301,6 +312,36 @@ const activeDeploymentRuns = new Map<string, ActiveDeploymentRun>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseGithubWorkflowSnapshot(value: unknown): GithubWorkflowStepSpec | undefined {
+  if (!isRecord(value)) return undefined;
+  const { workflow, ref, inputs, pollIntervalSeconds } = value;
+  if (typeof workflow !== 'string' || typeof ref !== 'string') return undefined;
+
+  let parsedInputs: Record<string, string> | undefined;
+  if (inputs !== undefined) {
+    if (!isRecord(inputs)) return undefined;
+    parsedInputs = {};
+    for (const [key, inputValue] of Object.entries(inputs)) {
+      if (typeof inputValue !== 'string') return undefined;
+      parsedInputs[key] = inputValue;
+    }
+  }
+
+  if (
+    pollIntervalSeconds !== undefined &&
+    (typeof pollIntervalSeconds !== 'number' || !Number.isInteger(pollIntervalSeconds))
+  ) {
+    return undefined;
+  }
+
+  return {
+    workflow,
+    ref,
+    ...(parsedInputs ? { inputs: parsedInputs } : {}),
+    ...(typeof pollIntervalSeconds === 'number' ? { pollIntervalSeconds } : {}),
+  };
 }
 
 function snapshotDeploymentPlan(
@@ -317,7 +358,11 @@ function snapshotDeploymentPlan(
       approval: envConfig.approval,
       runsOn: envConfig.runsOn,
       timeoutMinutes: envConfig.timeoutMinutes,
-      steps: envConfig.steps.map((step) => ({ name: step.name, run: step.run })),
+      steps: envConfig.steps.map((step): DeploymentPlanStepSnapshot => {
+        const snap: DeploymentPlanStepSnapshot = { name: step.name, run: step.run };
+        if (step.githubWorkflow) snap.githubWorkflow = step.githubWorkflow;
+        return snap;
+      }),
     },
   };
 }
@@ -360,7 +405,13 @@ function parseDeploymentPlan(deployment: DeploymentRow): DeploymentPlanSnapshot 
     if (!isRecord(step) || typeof step.name !== 'string' || typeof step.run !== 'string') {
       return null;
     }
-    parsedSteps.push({ name: step.name, run: step.run });
+    parsedSteps.push({
+      name: step.name,
+      run: step.run,
+      ...(step.githubWorkflow !== undefined
+        ? { githubWorkflow: parseGithubWorkflowSnapshot(step.githubWorkflow) }
+        : {}),
+    });
   }
 
   return {
@@ -637,6 +688,57 @@ function deployComposeProjectName(deploymentId: string, environment: string): st
     .slice(0, 120);
 }
 
+function sqliteTimestampToIsoUtc(timestamp: string): string {
+  if (timestamp.includes('T')) return timestamp;
+  return `${timestamp.replace(' ', 'T')}Z`;
+}
+
+function readCompiledGithubWorkflowVar(run: string, name: 'WORKFLOW' | 'REF'): string | null {
+  const match = new RegExp(`(?:^|\\n)${name}='([^'\\n]*)'`).exec(run);
+  return match?.[1] ?? null;
+}
+
+function readCompiledGithubWorkflowPoll(run: string): number | undefined {
+  const match = /(?:^|\n)POLL=(\d+)/.exec(run);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isInteger(value) ? value : undefined;
+}
+
+function githubWorkflowSpecForStep(step: DeployStep): GithubWorkflowStepSpec | null {
+  if (step.githubWorkflow) return step.githubWorkflow;
+  const workflow = readCompiledGithubWorkflowVar(step.run, 'WORKFLOW');
+  const ref = readCompiledGithubWorkflowVar(step.run, 'REF');
+  if (!workflow || !ref || !step.run.includes('gh run watch')) return null;
+  return {
+    workflow,
+    ref,
+    ...(readCompiledGithubWorkflowPoll(step.run) !== undefined
+      ? { pollIntervalSeconds: readCompiledGithubWorkflowPoll(step.run) }
+      : {}),
+  };
+}
+
+function stepConfigForRecovery(
+  stepCfg: DeployStep,
+  stepRow: { github_run_id: string | null },
+  deployment: DeploymentRow,
+): DeployStep {
+  const workflow = githubWorkflowSpecForStep(stepCfg);
+  if (!workflow) return stepCfg;
+  return {
+    ...stepCfg,
+    run: compileGithubWorkflowResumeRun({
+      runId: stepRow.github_run_id,
+      workflow: workflow.workflow,
+      ref: workflow.ref,
+      pollIntervalSeconds: workflow.pollIntervalSeconds,
+      createdAfter: sqliteTimestampToIsoUtc(deployment.created_at),
+    }),
+    githubWorkflow: workflow,
+  };
+}
+
 interface StepRunOutcome {
   exitCode: number;
   /** Bounded trailing tail of combined stdout+stderr, for the failure message. */
@@ -660,6 +762,7 @@ function runStep(
   env: NodeJS.ProcessEnv,
   budgetMs: number,
   active?: ActiveDeploymentRun,
+  onOutputLine?: (line: string) => void,
 ): Promise<StepRunOutcome> {
   return new Promise<StepRunOutcome>((resolve) => {
     let child: SpawnedStep;
@@ -683,6 +786,7 @@ function runStep(
       for (const line of lines) {
         // Cap each retained line so a single giant (but newline-terminated) line
         // can't blow up memory either.
+        onOutputLine?.(line);
         tail.push(
           line.length > STEP_TAIL_LINE_MAX_BYTES ? line.slice(-STEP_TAIL_LINE_MAX_BYTES) : line,
         );
@@ -712,6 +816,7 @@ function runStep(
       settled = true;
       clearTimeout(timer);
       if (buffered) {
+        onOutputLine?.(buffered);
         tail.push(buffered);
         if (tail.length > STEP_TAIL_LINES) tail.shift();
       }
@@ -748,6 +853,7 @@ export async function runDeployment(
     envConfig: DeployEnvironmentConfig;
     sessionId?: string | null;
     cleanupWorktreeOnTerminal?: boolean;
+    recovering?: boolean;
   },
   deps: DeployOrchestratorDeps,
 ): Promise<DeploymentRow> {
@@ -888,6 +994,7 @@ export async function runDeployment(
   }
 
   const steps = listDeploymentSteps(deploymentId);
+  const deploymentAtRunStart = getDeployment(deploymentId) as DeploymentRow;
   const deadline = now() + envConfig.timeoutMinutes * 60_000;
   let failure: { error: string } | null = null;
   let failedAtOrder = -1;
@@ -908,8 +1015,24 @@ export async function runDeployment(
       if (currentDeploymentIsCancelled()) {
         return getDeployment(deploymentId) as DeploymentRow;
       }
+      if (stepRow.status === 'success') continue;
+      if (
+        stepRow.status === 'error' ||
+        stepRow.status === 'skipped' ||
+        stepRow.status === 'cancelled'
+      ) {
+        failure = {
+          error: stepRow.error ?? `step "${stepRow.name}" is already ${stepRow.status}`,
+        };
+        failedAtOrder = stepRow.step_order;
+        break;
+      }
       const stepCfg = envConfig.steps[stepRow.step_order - 1];
       if (!stepCfg) continue; // defensive: row/config drift
+      const runnableStep =
+        ctx.recovering && stepRow.status === 'running'
+          ? stepConfigForRecovery(stepCfg, stepRow, deploymentAtRunStart)
+          : stepCfg;
 
       const remaining = deadline - now();
       if (remaining <= 0) {
@@ -927,12 +1050,16 @@ export async function runDeployment(
 
       const outcome = await runStep(
         lease,
-        stepCfg,
+        runnableStep,
         stepRow.step_order,
         worktreePath,
         baseEnv,
         remaining,
         active,
+        (line) => {
+          const githubRun = parseGithubRunMarker([line]);
+          if (githubRun) setDeploymentStepGithubRun(stepRow.id, githubRun);
+        },
       );
 
       if (currentDeploymentIsCancelled()) {
@@ -1059,6 +1186,64 @@ export async function runDeployment(
   }
   emitDeploymentUpdate(deps, projectId, deploymentId);
   return getDeployment(deploymentId) as DeploymentRow;
+}
+
+function failRecoverableDeployment(
+  deployment: DeploymentRow,
+  deps: DeployOrchestratorDeps,
+  error: string,
+): void {
+  let erroredOne = false;
+  for (const step of listDeploymentSteps(deployment.id)) {
+    if (step.status === 'success' || step.status === 'error' || step.status === 'skipped') continue;
+    if (!erroredOne) {
+      updateDeploymentStepStatus(step.id, 'error', { error });
+      erroredOne = true;
+    } else {
+      updateDeploymentStepStatus(step.id, 'skipped');
+    }
+  }
+  updateDeploymentStatus(deployment.id, 'error', { error });
+  releaseEnvironmentLock(deployment.project_id, deployment.environment, deployment.id);
+  activeDeploymentRuns.delete(deployment.id);
+  emitDeploymentUpdate(deps, deployment.project_id, deployment.id);
+}
+
+export function recoverInFlightDeployments(deps: DeployOrchestratorDeps): DeploymentRow[] {
+  const recovered: DeploymentRow[] = [];
+  for (const deployment of listRecoverableDeployments()) {
+    if (activeDeploymentRuns.has(deployment.id)) continue;
+    const plan = parseDeploymentPlan(deployment);
+    if (!plan) {
+      failRecoverableDeployment(
+        deployment,
+        deps,
+        'deployment recovery failed: missing trigger-time plan snapshot',
+      );
+      continue;
+    }
+    recovered.push(deployment);
+    void runDeployment(
+      deployment.id,
+      {
+        projectId: deployment.project_id,
+        environment: deployment.environment,
+        ref: deployment.ref,
+        worktreePath: plan.worktreePath,
+        envConfig: plan.environment,
+        cleanupWorktreeOnTerminal: plan.cleanupWorktreeOnTerminal === true,
+        recovering: true,
+      },
+      deps,
+    ).catch((err) => {
+      const detail = err instanceof Error ? err.message : String(err);
+      failRecoverableDeployment(deployment, deps, `deployment recovery failed: ${detail}`);
+    });
+  }
+  if (recovered.length) {
+    console.info(`[deploy-orchestrator] recovered ${recovered.length} interrupted deployment(s)`);
+  }
+  return recovered;
 }
 
 /**

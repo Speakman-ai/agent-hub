@@ -138,6 +138,7 @@ import createFinalizeParityRoutes from './routes/finalize-parity.js';
 import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createDeploymentRoutes from './routes/deployments.js';
+import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { recordJobResourceSummary } from './finalize/metrics.js';
@@ -185,6 +186,7 @@ import {
   autoCommitAndPR,
   resolveSlashSkill,
   setTriggerAutoSessionShip,
+  resolveUserGithubToken,
 } from './auto-git.js';
 import {
   triggerSessionShip,
@@ -1267,6 +1269,14 @@ const { broadcast: _wsBroadcast } = createWebSocket(server, {
 });
 _broadcast = _wsBroadcast;
 setLogBroadcast(_wsBroadcast);
+
+recoverInFlightDeployments({
+  broadcast,
+  orgId: getActiveOrgId(),
+  resolveGithubToken: (userId: string) => resolveUserGithubToken(userId, config),
+  resolveProjectGithubRepo: (projectId: string) => findProject(projectId)?.githubRepo ?? null,
+  releaseDigestConfig: config,
+});
 
 attachDefaultPreviewProxyUpgrade(
   server,

@@ -86,6 +86,14 @@ export interface GithubRunResult {
   displayTitle: string | null;
 }
 
+export interface GithubWorkflowResumeSpec {
+  runId?: string | null;
+  workflow?: string | null;
+  ref?: string | null;
+  createdAfter?: string | null;
+  pollIntervalSeconds?: number;
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -245,6 +253,9 @@ export function compileGithubWorkflowRun(spec: GithubWorkflowStepSpec): string {
     `  echo "github_workflow step: could not resolve a workflow run for \${WORKFLOW} on \${REF} after dispatch" >&2`,
     `  exit 1`,
     `fi`,
+    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
+    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || printf '{"runId":"%s","status":"queued"}' "\${RUN_ID}")"`,
+    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
     `echo "Watching workflow run \${RUN_ID} ..."`,
     `set +e`,
     `gh run watch "\${RUN_ID}" --interval "\${POLL}" --exit-status`,
@@ -258,6 +269,62 @@ export function compileGithubWorkflowRun(spec: GithubWorkflowStepSpec): string {
     `fi`,
     `exit "\${WATCH_EXIT}"`,
   ].join('\n');
+}
+
+/**
+ * Compile a no-dispatch recovery script for a workflow step whose Hub poller was
+ * interrupted. If a run id was already persisted, watch that run directly. For
+ * legacy rows that predate early run-id persistence, rediscover the newest
+ * matching workflow_dispatch run after the deployment was created, then watch it.
+ */
+export function compileGithubWorkflowResumeRun(spec: GithubWorkflowResumeSpec): string {
+  const poll = spec.pollIntervalSeconds ?? GITHUB_WORKFLOW_POLL_DEFAULT_SECONDS;
+  const runId = spec.runId?.trim();
+  const workflow = spec.workflow?.trim();
+  const ref = spec.ref?.trim();
+  const createdAfter = spec.createdAfter?.trim();
+  const lines = [`set -euo pipefail`, `POLL=${poll}`];
+
+  if (runId) {
+    lines.push(`RUN_ID=${shSingleQuote(runId)}`);
+  } else {
+    if (!workflow || !ref) {
+      throw new Error('github_workflow recovery requires either runId or workflow/ref');
+    }
+    lines.push(
+      `WORKFLOW=${shSingleQuote(workflow)}`,
+      `REF=${shSingleQuote(ref)}`,
+      `CREATED_AFTER=${shSingleQuote(createdAfter ?? '')}`,
+      `export CREATED_AFTER`,
+      `echo "Recovering workflow run \${WORKFLOW} on \${REF} ..."`,
+      `RUN_ID="$(gh run list --workflow "\${WORKFLOW}" --branch "\${REF}" --event workflow_dispatch \\`,
+      `  --limit 100 --json databaseId,createdAt \\`,
+      `  --jq '[.[] | select(.createdAt >= env.CREATED_AFTER)] | sort_by(.createdAt) | last | .databaseId // empty' 2>/dev/null || true)"`,
+      `if [ -z "\${RUN_ID}" ]; then`,
+      `  echo "github_workflow recovery: could not find a workflow_dispatch run for \${WORKFLOW} on \${REF} after \${CREATED_AFTER}" >&2`,
+      `  exit 1`,
+      `fi`,
+    );
+  }
+
+  lines.push(
+    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
+    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || printf '{"runId":"%s","status":"in_progress"}' "\${RUN_ID}")"`,
+    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
+    `echo "Watching workflow run \${RUN_ID} ..."`,
+    `set +e`,
+    `gh run watch "\${RUN_ID}" --interval "\${POLL}" --exit-status`,
+    `WATCH_EXIT=$?`,
+    `set -e`,
+    `MARKER_JSON="$(gh run view "\${RUN_ID}" --json databaseId,url,status,conclusion,workflowName,displayTitle \\`,
+    `  --jq '{runId:(.databaseId|tostring),url:.url,status:.status,conclusion:.conclusion,workflowName:.workflowName,displayTitle:.displayTitle}' 2>/dev/null || echo '{}')"`,
+    `echo "${GITHUB_RUN_MARKER}\${MARKER_JSON}"`,
+    `if [ "\${WATCH_EXIT}" -ne 0 ]; then`,
+    `  echo "github_workflow recovery: run \${RUN_ID} did not succeed (exit \${WATCH_EXIT})" >&2`,
+    `fi`,
+    `exit "\${WATCH_EXIT}"`,
+  );
+  return lines.join('\n');
 }
 
 function asNullableString(value: unknown): string | null {

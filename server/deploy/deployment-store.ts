@@ -116,6 +116,21 @@ export function listDeploymentsForEnvironment(
   ) as DeploymentRow[];
 }
 
+export function listRecoverableDeployments(): DeploymentRow[] {
+  return getDb()
+    .prepare(
+      `SELECT d.*
+         FROM deployments d
+         JOIN deployment_environments e
+           ON e.project_id = d.project_id
+          AND e.name = d.environment
+          AND e.active_deployment_id = d.id
+        WHERE d.status IN ('pending', 'running')
+        ORDER BY d.created_at ASC, d.rowid ASC`,
+    )
+    .all() as DeploymentRow[];
+}
+
 /**
  * Transition a deployment to `status`. `started_at` is stamped the first time the
  * deployment enters 'running' (when its steps actually begin) — NOT when a gated
