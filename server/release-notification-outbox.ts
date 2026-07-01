@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { getStmts } from './db.js';
 import { sendEmailResult } from './email-sender.js';
 import { listDeploymentReleaseItemsWithContext } from './deploy/deployment-store.js';
+import { deploymentReleaseLabel } from './deploy/release-label.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from './release-digest.js';
 import { listReleaseDigestRecipients } from './release-notification-settings.js';
 import type {
@@ -86,7 +87,7 @@ function ticketSubject(item: DeploymentReleaseItemDetailRow): string {
 }
 
 function renderTicketReleaseBody(
-  deployment: Pick<DeploymentRow, 'environment' | 'ref' | 'completed_at'>,
+  deployment: Pick<DeploymentRow, 'environment' | 'ref' | 'meta' | 'completed_at'>,
   item: DeploymentReleaseItemDetailRow,
 ): string {
   const lines = [
@@ -94,18 +95,18 @@ function renderTicketReleaseBody(
     '',
     `Ticket: ${item.support_ticket_subject?.trim() || item.support_ticket_id || 'Support ticket'}`,
     `Released item: ${item.card_title}`,
-    `Deployment: ${deployment.environment} (${deployment.ref})`,
+    `Deployment: ${deployment.environment} (${deploymentReleaseLabel(deployment).label})`,
   ];
   if (deployment.completed_at) lines.push(`Completed at: ${deployment.completed_at}`);
   return lines.join('\n');
 }
 
 function renderReleaseDigestBody(
-  deployment: Pick<DeploymentRow, 'environment' | 'ref' | 'completed_at'>,
+  deployment: Pick<DeploymentRow, 'environment' | 'ref' | 'meta' | 'completed_at'>,
   items: DeploymentReleaseItemDetailRow[],
 ): string {
   const lines = [
-    `Release digest for ${deployment.environment} (${deployment.ref})`,
+    `Release digest for ${deployment.environment} (${deploymentReleaseLabel(deployment).label})`,
     '',
     ...items.map((item, index) => {
       const ticket = item.support_ticket_subject ? `, ticket: ${item.support_ticket_subject}` : '';
@@ -125,7 +126,7 @@ function releaseDigestIdempotencyKey(deploymentId: string, recipientEmail: strin
 async function renderReleaseDigestBodyForOutbox(
   deployment: Pick<
     DeploymentRow,
-    'id' | 'project_id' | 'environment' | 'ref' | 'status' | 'completed_at'
+    'id' | 'project_id' | 'environment' | 'ref' | 'meta' | 'status' | 'completed_at'
   >,
   items: DeploymentReleaseItemDetailRow[],
   options: EnqueueReleaseNotificationsOptions,
@@ -269,7 +270,7 @@ export function markReleaseNotificationOutboxError(
 export async function enqueueReleaseNotificationsForDeployment(
   deployment: Pick<
     DeploymentRow,
-    'id' | 'project_id' | 'environment' | 'ref' | 'status' | 'completed_at'
+    'id' | 'project_id' | 'environment' | 'ref' | 'meta' | 'status' | 'completed_at'
   >,
   options: EnqueueReleaseNotificationsOptions = {},
 ): Promise<ReleaseNotificationOutboxRow[]> {
@@ -315,7 +316,9 @@ export async function enqueueReleaseNotificationsForDeployment(
       };
     });
     const missingDigestRecipients = digestRecipients.filter((entry) => !entry.existing);
-    const subject = `Release digest for ${deployment.environment} ${deployment.ref}`;
+    const subject = `Release digest for ${deployment.environment} ${
+      deploymentReleaseLabel(deployment).label
+    }`;
     const bodyText =
       missingDigestRecipients.length > 0
         ? await renderReleaseDigestBodyForOutbox(deployment, items, options)

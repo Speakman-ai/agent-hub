@@ -487,6 +487,46 @@ describe('release notification outbox', () => {
     );
   });
 
+  it('labels release emails with the GitHub release version instead of the commit hash', async () => {
+    sendEmailMock.mockResolvedValue({ sent: true });
+    const ticket = createSupportTicket({
+      projectId: P,
+      subject: 'CSV export is broken',
+      body: 'Cannot export CSV.',
+      reporterEmail: 'Reporter@Example.COM',
+    });
+    const deployment = updateDeploymentStatus(
+      createDeployment({
+        projectId: P,
+        environment: 'production',
+        ref: 'refs/tags/v2.31.18',
+      }).id,
+      'success',
+    )!;
+    const cardId = insertReleaseCard({ cardId: 'card-versioned', supportTicketId: ticket.id });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+    addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
+    await enqueueReleaseNotificationsForDeployment(deployment);
+
+    await deliverReleaseNotificationOutboxBatch();
+
+    expect(sendEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'ops@example.com',
+        subject: 'Release digest for production v2.31.18',
+        text: expect.stringContaining('Release digest for production (v2.31.18)'),
+      }),
+    );
+    expect(sendEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'reporter@example.com',
+        text: expect.stringContaining('Deployment: production (v2.31.18)'),
+      }),
+    );
+    const digestText = sendEmailMock.mock.calls.map((call) => call[0].text).join('\n');
+    expect(digestText).not.toContain('refs/tags/');
+  });
+
   it('stores safe retryable errors when the shared email sender throws', async () => {
     sendEmailMock.mockRejectedValue(new Error('SMTP password super-secret-token leaked'));
     const deployment = successfulProductionDeployment();
