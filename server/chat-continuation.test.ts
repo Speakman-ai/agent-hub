@@ -215,6 +215,52 @@ describe('ReAct block parse', () => {
     expect(parsed).toMatchObject({ error: 'malformed' });
   });
 
+  it('parses a google calendar read action', () => {
+    const payload = JSON.stringify({
+      actions: [
+        {
+          tool: 'google',
+          surface: 'Calendar',
+          from: '2026-06-30T00:00:00Z',
+          to: '2026-07-01T00:00:00Z',
+          max: 10,
+        },
+      ],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions[0]).toMatchObject({
+      tool: 'google',
+      surface: 'calendar',
+      from: '2026-06-30T00:00:00Z',
+      to: '2026-07-01T00:00:00Z',
+      max: 10,
+    });
+  });
+
+  it('parses a google sheets read action', () => {
+    const payload = JSON.stringify({
+      actions: [{ tool: 'google', surface: 'sheets', spreadsheetId: 'sid', range: 'Sheet1!A1:B2' }],
+    });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    if ('error' in parsed) throw new Error(parsed.detail);
+    expect(parsed.actions[0]).toMatchObject({
+      tool: 'google',
+      surface: 'sheets',
+      spreadsheetId: 'sid',
+      range: 'Sheet1!A1:B2',
+    });
+  });
+
+  it('rejects a google action with an unknown surface', () => {
+    const payload = JSON.stringify({ actions: [{ tool: 'google', surface: 'drive' }] });
+    const parsed = parseReActBlock(`<agenthub:react>${payload}</agenthub:react>`);
+    expect(parsed).toMatchObject({ error: 'malformed' });
+    if ('error' in parsed) {
+      expect(parsed.detail).toMatch(/google action requires surface/);
+    }
+  });
+
   it('rejects web action with empty or whitespace-only query', () => {
     const empty = parseReActBlock(
       '<agenthub:react>{"actions":[{"tool":"web","query":""}]}</agenthub:react>',

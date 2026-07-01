@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { google, type sheets_v4 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
 import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveOAuthConnectionUserId } from '../github-connection-user.js';
+import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import { SHEETS_SCOPE, hasSheetsReadScope, hasSheetsWriteScope } from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
 
 /**
@@ -23,9 +24,6 @@ import { registerComponent, registerPath, z } from '../openapi/registry.js';
  * Neither scope is restricted, so this surface needs sensitive-scope consent
  * verification but NOT the annual CASA assessment.
  */
-
-const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
-const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
 
 const ErrorResponse = registerComponent(
   'GoogleSheetsErrorResponse',
@@ -245,16 +243,6 @@ function bad(res: Response, status: number, error: string, code?: string, extra 
   res.status(status).json({ error, ...(code && { code }), ...extra });
 }
 
-function hasSheetsReadScope(scopes: string[]): boolean {
-  // The full `spreadsheets` scope and the narrower readonly scope both read.
-  return scopes.includes(SHEETS_SCOPE) || scopes.includes(SHEETS_READONLY_SCOPE);
-}
-
-function hasSheetsWriteScope(scopes: string[]): boolean {
-  // Only the full `spreadsheets` scope can mutate; readonly cannot.
-  return scopes.includes(SHEETS_SCOPE);
-}
-
 /**
  * Resolve the caller, verify Google is configured + connected, and check the
  * surface scope. Returns the resolved userId or null (a response has already
@@ -268,7 +256,7 @@ function requireSheetsAccess(
   requiredScopes: string[],
   scopeCode: string,
 ): string | null {
-  const uid = resolveOAuthConnectionUserId(req);
+  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
   if (!uid) {
     bad(res, 401, 'Authentication required', 'authentication_required');
     return null;

@@ -3,7 +3,15 @@ import { randomBytes } from 'crypto';
 import { google, type gmail_v1 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
 import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveOAuthConnectionUserId } from '../github-connection-user.js';
+import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import {
+  GMAIL_READONLY_SCOPE,
+  GMAIL_SEND_SCOPE,
+  GMAIL_MODIFY_SCOPE,
+  hasGmailReadScope,
+  hasGmailModifyScope,
+  hasGmailSendScope,
+} from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
 
 /**
@@ -30,11 +38,6 @@ import { registerComponent, registerPath, z } from '../openapi/registry.js';
  * mailbox-mutation power the UI never uses. `gmail.send` is the only Gmail scope
  * here that is merely sensitive (not restricted).
  */
-
-const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
-const GMAIL_MODIFY_SCOPE = 'https://www.googleapis.com/auth/gmail.modify';
-const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
-const GMAIL_FULL_SCOPE = 'https://mail.google.com/';
 
 const ErrorResponse = registerComponent(
   'GoogleGmailErrorResponse',
@@ -285,28 +288,6 @@ function bad(res: Response, status: number, error: string, code?: string, extra 
   res.status(status).json({ error, ...(code && { code }), ...extra });
 }
 
-function hasGmailReadScope(scopes: string[]): boolean {
-  // readonly is the narrowest read scope; modify/full also grant reading.
-  return (
-    scopes.includes(GMAIL_READONLY_SCOPE) ||
-    scopes.includes(GMAIL_MODIFY_SCOPE) ||
-    scopes.includes(GMAIL_FULL_SCOPE)
-  );
-}
-
-function hasGmailModifyScope(scopes: string[]): boolean {
-  // Mutating labels needs modify (or the legacy full scope); readonly can't.
-  return scopes.includes(GMAIL_MODIFY_SCOPE) || scopes.includes(GMAIL_FULL_SCOPE);
-}
-
-function hasGmailSendScope(scopes: string[]): boolean {
-  return (
-    scopes.includes(GMAIL_SEND_SCOPE) ||
-    scopes.includes(GMAIL_MODIFY_SCOPE) ||
-    scopes.includes(GMAIL_FULL_SCOPE)
-  );
-}
-
 /**
  * Resolve the caller, verify Google is configured + connected, and check the
  * surface scope. Returns the resolved userId or null (a response has already
@@ -320,7 +301,7 @@ function requireGmailAccess(
   requiredScopes: string[],
   scopeCode: string,
 ): string | null {
-  const uid = resolveOAuthConnectionUserId(req);
+  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
   if (!uid) {
     bad(res, 401, 'Authentication required', 'authentication_required');
     return null;

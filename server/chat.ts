@@ -31,6 +31,7 @@ import { maybeFinalizeAutoReviewSession } from './native-pr/auto-review-lifecycl
 import { listEnabledMcpServersForUser } from './mcp-servers-store.js';
 import { buildMcpServersMap, writeMcpConfigFile } from './mcp-spawn-config.js';
 import { getActiveAccessToken } from './github-connections-store.js';
+import { runGoogleReadAction } from './google-react.js';
 import {
   resolveOAuthAppCredentials,
   applyGithubSpawnCredentials,
@@ -569,7 +570,7 @@ function persistLegacyWikiHybridGateIfNeeded(session: SessionRow, sessionId: str
   }
 }
 
-type ReActTool = 'wiki' | 'skill' | 'web' | 'browser' | 'preview';
+type ReActTool = 'wiki' | 'skill' | 'web' | 'browser' | 'preview' | 'google';
 
 interface ReActAction {
   tool: ReActTool;
@@ -588,6 +589,15 @@ interface ReActAction {
   route?: string;
   /** preview logs — tail line count. */
   tail?: number;
+  /** google — read-only inline context; see server/google-react.ts */
+  surface?: string;
+  from?: string;
+  to?: string;
+  max?: number;
+  threadId?: string;
+  spreadsheetId?: string;
+  range?: string;
+  calendarId?: string;
 }
 
 interface ParsedReAct {
@@ -1468,9 +1478,35 @@ export function parseReActBlock(raw: string): ParsedReAct | ParsedReActMalformed
       });
       continue;
     }
+    if (a.tool === 'google') {
+      const surface = typeof a.surface === 'string' ? a.surface.trim().toLowerCase() : '';
+      if (surface !== 'calendar' && surface !== 'gmail' && surface !== 'sheets') {
+        return {
+          error: 'malformed',
+          detail: 'google action requires surface as "calendar", "gmail", or "sheets"',
+        };
+      }
+      const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+      const num =
+        typeof a.max === 'number' && Number.isFinite(a.max) ? Math.floor(a.max) : undefined;
+      actions.push({
+        tool: 'google',
+        surface,
+        from: str(a.from),
+        to: str(a.to),
+        query: str(a.query),
+        max: num,
+        threadId: str(a.threadId),
+        spreadsheetId: str(a.spreadsheetId),
+        range: str(a.range),
+        calendarId: str(a.calendarId),
+      });
+      continue;
+    }
     return {
       error: 'malformed',
-      detail: 'Unsupported action.tool; expected "wiki", "skill", "web", "browser", or "preview"',
+      detail:
+        'Unsupported action.tool; expected "wiki", "skill", "web", "browser", "preview", or "google"',
     };
   }
   return { actions };
@@ -4502,6 +4538,65 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
                   hostDetail = 'empty_web_result';
                 }
                 hostDetail = hostDetail || (action.query ?? '').slice(0, 120) || undefined;
+                continue;
+              }
+
+              if (action.tool === 'google') {
+                const surface = action.surface || '';
+                const googleRes = await runGoogleReadAction(
+                  {
+                    surface: surface as 'calendar' | 'gmail' | 'sheets',
+                    from: action.from,
+                    to: action.to,
+                    q: action.query,
+                    max: action.max,
+                    threadId: action.threadId,
+                    spreadsheetId: action.spreadsheetId,
+                    range: action.range,
+                    calendarId: action.calendarId,
+                  },
+                  {
+                    ownerUserId: session!.owner_user_id ?? null,
+                    oauthConfig: config.googleOAuth ?? null,
+                  },
+                );
+                const hasGoogleMarkdown = !!googleRes.markdown.trim();
+                const hasGoogleError = !!googleRes.errorMarkdown?.trim();
+                if (hasGoogleMarkdown) {
+                  const injection = googleRes.markdown.trim();
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${injection}`
+                    : injection;
+                  reactObservations.push(`- google(${surface}) returned context.`);
+                }
+                if (hasGoogleError) {
+                  const err = googleRes.errorMarkdown!.trim();
+                  assistantContextToAppend = assistantContextToAppend
+                    ? `${assistantContextToAppend}\n\n${err}`
+                    : err;
+                  // A genuine tool/host failure (an unexpected googleapis throw) is
+                  // marked failed by the helper. Expected, user-recoverable states
+                  // (not linked, missing args) are NORMAL observations the assistant
+                  // relays — they must NOT mark the host step failed.
+                  reactObservations.push(
+                    googleRes.failed
+                      ? `- google(${surface}) errored.`
+                      : `- google(${surface}) reported a recoverable state (e.g. not linked / missing args).`,
+                  );
+                }
+                if (googleRes.failed) {
+                  // Only an unexpected error fails the step.
+                  hostExit = 1;
+                  hostDetail = hostDetail || `google_${surface || 'unknown'}_error`;
+                } else if (!hasGoogleMarkdown && !hasGoogleError) {
+                  // Nothing came back at all — empty, not an error.
+                  hostExit = 2;
+                  hostDetail = hostDetail || `google_${surface || 'unknown'}_empty`;
+                } else {
+                  // Context injected, or an expected recoverable observation injected:
+                  // the host step succeeded in producing an observation.
+                  hostDetail = hostDetail || `google_${surface || 'unknown'}`;
+                }
                 continue;
               }
 

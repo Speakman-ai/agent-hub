@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { google, type drive_v3 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
 import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveOAuthConnectionUserId } from '../github-connection-user.js';
+import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
 
 /**
@@ -167,7 +167,7 @@ function hasDriveFileScope(scopes: string[]): boolean {
  * been sent).
  */
 function requireDriveAccess(req: Request, res: Response, deps: RouteDeps): string | null {
-  const uid = resolveOAuthConnectionUserId(req);
+  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
   if (!uid) {
     bad(res, 401, 'Authentication required', 'authentication_required');
     return null;

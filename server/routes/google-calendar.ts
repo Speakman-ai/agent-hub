@@ -2,11 +2,9 @@ import { Router, Request, Response } from 'express';
 import { google, type calendar_v3 } from 'googleapis';
 import type { RouteDeps } from '../types.js';
 import { getActiveAccessToken, getGoogleConnectionStatus } from '../google-connections-store.js';
-import { resolveOAuthConnectionUserId } from '../github-connection-user.js';
+import { resolveGoogleConnectionUserId } from '../google-connection-user.js';
+import { CALENDAR_EVENTS_SCOPE, hasCalendarReadScope } from '../google-scopes.js';
 import { registerComponent, registerPath, z } from '../openapi/registry.js';
-
-const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
-const CALENDAR_FULL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const RFC3339_WITH_OFFSET_RE =
@@ -359,12 +357,8 @@ function calendarIdOrPrimary(calendarId: string | undefined): string {
   return calendarId?.trim() || 'primary';
 }
 
-function hasCalendarEventsScope(scopes: string[]): boolean {
-  return scopes.includes(CALENDAR_EVENTS_SCOPE) || scopes.includes(CALENDAR_FULL_SCOPE);
-}
-
 function requireCalendarAccess(req: Request, res: Response, deps: RouteDeps): string | null {
-  const uid = resolveOAuthConnectionUserId(req);
+  const uid = resolveGoogleConnectionUserId(req, deps.stmts);
   if (!uid) {
     bad(res, 401, 'Authentication required', 'authentication_required');
     return null;
@@ -378,7 +372,7 @@ function requireCalendarAccess(req: Request, res: Response, deps: RouteDeps): st
     bad(res, 401, 'Google account is not connected', 'google_not_connected');
     return null;
   }
-  if (!hasCalendarEventsScope(status.grantedScopes)) {
+  if (!hasCalendarReadScope(status.grantedScopes)) {
     bad(res, 403, 'Google Calendar access has not been granted', 'google_calendar_scope_required', {
       requiredScopes: [CALENDAR_EVENTS_SCOPE],
     });

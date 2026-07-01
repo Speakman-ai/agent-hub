@@ -154,6 +154,37 @@ describe('Google Calendar proxy routes', () => {
     expect(JSON.stringify(res.body)).not.toContain('fresh-access-token');
   });
 
+  it('break-glass call resolves the session OWNER from the X-Agent-Hub-Session-Id header', async () => {
+    googleMock.events.list.mockResolvedValue({ data: { items: [] } });
+
+    // No authUserId (break-glass global x-api-key). The route must attribute
+    // the call to the owner of the session referenced by the header.
+    const deps = {
+      config: {
+        googleOAuth: {
+          clientId: 'goog-client-id.apps.googleusercontent.com',
+          clientSecret: 'goog-secret',
+        },
+      },
+      stmts: {
+        getSession: { get: vi.fn(() => ({ owner_user_id: 'owner-xyz' })) },
+      },
+    } as unknown as RouteDeps;
+
+    const app = makeApp(deps);
+    const res = await request(app)
+      .get('/api/google/calendar/events')
+      .set('X-Agent-Hub-Session-Id', 'sess-1')
+      .query({ timeMin: '2026-06-30T00:00:00Z', timeMax: '2026-07-01T00:00:00Z' });
+
+    expect(res.status).toBe(200);
+    expect(connectionStoreMock.getGoogleConnectionStatus).toHaveBeenCalledWith('owner-xyz');
+    expect(connectionStoreMock.getActiveAccessToken).toHaveBeenCalledWith('owner-xyz', {
+      clientId: 'goog-client-id.apps.googleusercontent.com',
+      clientSecret: 'goog-secret',
+    });
+  });
+
   it('POST /api/google/calendar/events creates an event through googleapis', async () => {
     googleMock.events.insert.mockResolvedValue({
       data: {
