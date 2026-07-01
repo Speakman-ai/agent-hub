@@ -409,6 +409,15 @@ describe('buildEnrichedPrompt — first message gating', () => {
     expect(prompt).toMatch(/No buzzword vocabulary/i);
     expect(prompt).toMatch(/No bullet soup/i);
     expect(prompt).toMatch(/Internalize hidden CLI reminders/i);
+    // Rules added for forced triads, bloated comments, and temporal breadcrumbs.
+    expect(prompt).toMatch(/No forced triads/i);
+    expect(prompt).toMatch(/rule of three/i);
+    expect(prompt).toMatch(/No bloated comments/i);
+    expect(prompt).toMatch(/breadcrumbs in code or copy/i);
+    expect(prompt).toMatch(/legacy/i);
+    expect(prompt).toContain('`v0`/`v1`/`v2`');
+    // The warranted-exception escape hatch must survive.
+    expect(prompt).toMatch(/100%-warranted exception/i);
   });
 
   it('excludes writing-style anti-slop block on subsequent messages', () => {
