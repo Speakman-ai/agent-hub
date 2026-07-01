@@ -38,7 +38,7 @@
  * `deps.runnerBackend` with a fake lease whose `spawnStep` emits scripted
  * stdout/close events (see `deploy-orchestrator.test.ts`).
  */
-import { rmSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import type { AppConfig, BroadcastFn, DeploymentRow } from '../types.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runner-backend.js';
 import { resolveRunnerBackend } from '../finalize/runner-backend.js';
@@ -213,6 +213,16 @@ export interface DeployOrchestratorDeps {
     currentRef: string;
     projectId: string;
   }) => Promise<ReleaseRangeLinks>;
+  /**
+   * Materialize a fresh checkout when a persisted deployment plan points at an
+   * ephemeral checkout that no longer exists. Self-deploys restart the Hub
+   * while an external GitHub workflow keeps running, so recovery must be able to
+   * reattach without relying on the original /tmp checkout surviving.
+   */
+  prepareRecoveryCheckout?: (input: {
+    projectId: string;
+    ref: string;
+  }) => Promise<{ worktreePath: string; cleanupWorktreeOnTerminal?: boolean }>;
   /** Config and runner used to generate release digest recipient emails. */
   releaseDigestConfig?: AppConfig;
   releaseDigestRunner?: ReleaseDigestRunner;
@@ -857,13 +867,14 @@ export async function runDeployment(
   },
   deps: DeployOrchestratorDeps,
 ): Promise<DeploymentRow> {
-  const { projectId, environment, ref, worktreePath, envConfig } = ctx;
+  const { projectId, environment, ref, envConfig } = ctx;
+  let worktreePath = ctx.worktreePath;
   const now = deps.now ?? Date.now;
   const active: ActiveDeploymentRun = activeDeploymentRuns.get(deploymentId) ?? {
     cancelRequested: false,
   };
   activeDeploymentRuns.set(deploymentId, active);
-  const shouldCleanupWorktree = ctx.cleanupWorktreeOnTerminal === true;
+  let shouldCleanupWorktree = ctx.cleanupWorktreeOnTerminal === true;
   const cleanupIfOwned = (): void => {
     if (shouldCleanupWorktree) cleanupDeploymentWorktree(worktreePath, deploymentId);
   };
@@ -885,7 +896,7 @@ export async function runDeployment(
     // rest are skipped.
     let erroredOne = false;
     for (const s of listDeploymentSteps(deploymentId)) {
-      if (s.status !== 'pending') continue;
+      if (s.status === 'success' || s.status === 'error' || s.status === 'skipped') continue;
       if (!erroredOne) {
         updateDeploymentStepStatus(s.id, 'error', { error });
         erroredOne = true;
@@ -906,6 +917,18 @@ export async function runDeployment(
     // Still pending here — mark error + release the lock before any `running`
     // transition, so a bad runs-on never strands the env lock.
     return fail(`unsupported runs-on: ${envConfig.runsOn}`);
+  }
+
+  if (ctx.recovering === true && !existsSync(worktreePath) && deps.prepareRecoveryCheckout) {
+    try {
+      const checkout = await deps.prepareRecoveryCheckout({ projectId, ref });
+      worktreePath = checkout.worktreePath;
+      shouldCleanupWorktree = checkout.cleanupWorktreeOnTerminal ?? true;
+    } catch (err) {
+      return fail(
+        `failed to restore deployment checkout: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   updateDeploymentStatus(deploymentId, 'running');

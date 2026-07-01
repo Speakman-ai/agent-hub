@@ -41,6 +41,7 @@ import {
   listDeployments,
   listDeploymentsForEnvironment,
   listDeploymentSteps,
+  releaseEnvironmentLock,
   setDeploymentReleaseItemInclusion,
 } from '../deploy/deployment-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
@@ -143,6 +144,46 @@ function nullableDeploymentDto(
   row: DeploymentRow | null | undefined,
 ): Record<string, unknown> | null {
   return row ? deploymentDto(row) : null;
+}
+
+const TERMINAL_DEPLOYMENT_STATUSES = new Set(['success', 'error', 'cancelled']);
+const TERMINAL_STEP_STATUSES = new Set(['success', 'error', 'skipped', 'cancelled']);
+
+function isTerminalDeploymentStatus(status: unknown): boolean {
+  return TERMINAL_DEPLOYMENT_STATUSES.has(String(status || ''));
+}
+
+function deploymentActiveInConfig(deployment: DeploymentRow | null): DeploymentRow | null {
+  if (!deployment) return null;
+  return isTerminalDeploymentStatus(deployment.status) ? null : deployment;
+}
+
+function deploymentStepsDto(
+  deployment: DeploymentRow,
+  steps: DeploymentStepRow[],
+): DeploymentStepRow[] {
+  if (!isTerminalDeploymentStatus(deployment.status)) return steps;
+  let markedError = false;
+  return steps.map((step) => {
+    if (TERMINAL_STEP_STATUSES.has(String(step.status || ''))) return step;
+    if (deployment.status === 'success') return { ...step, status: 'success' };
+    if (deployment.status === 'cancelled') {
+      return {
+        ...step,
+        status: 'cancelled',
+        error: step.error ?? deployment.error ?? 'Deployment cancelled.',
+      };
+    }
+    if (!markedError) {
+      markedError = true;
+      return {
+        ...step,
+        status: 'error',
+        error: step.error ?? deployment.error ?? 'Deployment failed.',
+      };
+    }
+    return { ...step, status: 'skipped' };
+  });
 }
 
 function projectDeployYamlPath(project: Project): string {
@@ -318,7 +359,9 @@ function configEnvironmentDto(
   env: DeployEnvironmentConfig,
 ): Record<string, unknown> {
   const state = getDeploymentEnvironment(projectId, env.name);
-  const activeDeployment = configReferencedDeployment(projectId, state?.active_deployment_id);
+  const rawActiveDeploymentId = state?.active_deployment_id ?? null;
+  const referencedActiveDeployment = configReferencedDeployment(projectId, rawActiveDeploymentId);
+  const activeDeployment = deploymentActiveInConfig(referencedActiveDeployment);
   const currentDeployment = configReferencedDeployment(projectId, state?.current_deployment_id);
   const [lastDeployment] = listDeploymentsForEnvironment(projectId, env.name, { limit: 1 });
   const rollbackTarget = rollbackTargetForEnvironment(
@@ -335,7 +378,8 @@ function configEnvironmentDto(
     steps: env.steps,
     currentRef: state?.current_ref ?? null,
     currentDeploymentId: state?.current_deployment_id ?? null,
-    activeDeploymentId: state?.active_deployment_id ?? null,
+    activeDeploymentId:
+      activeDeployment?.id ?? (referencedActiveDeployment ? null : rawActiveDeploymentId),
     activeDeployment: nullableDeploymentDto(activeDeployment),
     currentDeployment: nullableDeploymentDto(currentDeployment),
     lastDeployment: nullableDeploymentDto(lastDeployment),
@@ -365,6 +409,11 @@ function rejectBusyEnvironment(projectId: string, environment: string, res: Resp
   const activeDeploymentId =
     getDeploymentEnvironment(projectId, environment)?.active_deployment_id ?? null;
   if (!activeDeploymentId) return false;
+  const activeDeployment = configReferencedDeployment(projectId, activeDeploymentId);
+  if (activeDeployment && isTerminalDeploymentStatus(activeDeployment.status)) {
+    releaseEnvironmentLock(projectId, environment, activeDeployment.id);
+    return false;
+  }
   res.status(409).json({
     error: `environment is busy: deployment ${activeDeploymentId} is in flight`,
     activeDeploymentId,
@@ -464,6 +513,14 @@ export default function createDeploymentRoutes(
     resolveProjectGithubRepo:
       opts.orchestratorDeps?.resolveProjectGithubRepo ??
       ((projectId: string) => deps.findProject(projectId)?.githubRepo ?? null),
+    prepareRecoveryCheckout:
+      opts.orchestratorDeps?.prepareRecoveryCheckout ??
+      (async ({ projectId, ref }) => {
+        const project = deps.findProject(projectId);
+        if (!project) throw new Error(`Project not found: ${projectId}`);
+        const checkout = await prepareCheckout({ project, ref });
+        return { worktreePath: checkout.worktreePath, cleanupWorktreeOnTerminal: true };
+      }),
     releaseDigestConfig: opts.orchestratorDeps?.releaseDigestConfig ?? deps.config,
     releaseDigestRunner: opts.orchestratorDeps?.releaseDigestRunner ?? opts.releaseDigestRunner,
   };
@@ -640,7 +697,7 @@ export default function createDeploymentRoutes(
       if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
       return res.json({
         deployment: deploymentDto(deployment),
-        steps: listDeploymentSteps(deployment.id),
+        steps: deploymentStepsDto(deployment, listDeploymentSteps(deployment.id)),
         approvals: listDeploymentApprovals(deployment.id),
         releaseItems: releaseItemsDto(deployment.id),
         releaseNotifications: releaseNotificationsDto(deployment.id),

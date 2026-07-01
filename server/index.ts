@@ -139,6 +139,7 @@ import createFinalizeQuarantineRoutes from './routes/finalize-quarantine.js';
 import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createDeploymentRoutes from './routes/deployments.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
+import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { recordJobResourceSummary } from './finalize/metrics.js';
@@ -1275,6 +1276,12 @@ recoverInFlightDeployments({
   orgId: getActiveOrgId(),
   resolveGithubToken: (userId: string) => resolveUserGithubToken(userId, config),
   resolveProjectGithubRepo: (projectId: string) => findProject(projectId)?.githubRepo ?? null,
+  prepareRecoveryCheckout: async ({ projectId, ref }) => {
+    const project = findProject(projectId);
+    if (!project) throw new Error(`Project not found: ${projectId}`);
+    const checkout = await prepareDeploymentCheckout({ project, ref });
+    return { worktreePath: checkout.worktreePath, cleanupWorktreeOnTerminal: true };
+  },
   releaseDigestConfig: config,
 });
 

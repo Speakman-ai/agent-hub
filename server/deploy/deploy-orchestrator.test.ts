@@ -352,6 +352,33 @@ describe('triggerDeployment — happy path', () => {
     ).toBe(true);
   });
 
+  it('does not restore missing checkouts during normal deployment execution', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
+    const prepareRecoveryCheckout = vi.fn(async () => ({
+      worktreePath: '/tmp/recovered-normal-deploy-worktree',
+      cleanupWorktreeOnTerminal: true,
+    }));
+    const missingWorktree = `/tmp/missing-normal-deploy-${randomUUID()}`;
+
+    await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'sha-normal',
+        worktreePath: missingWorktree,
+        config: CONFIG,
+      },
+      {
+        ...makeDeps(fb.backend),
+        prepareRecoveryCheckout,
+      },
+    );
+
+    expect(prepareRecoveryCheckout).not.toHaveBeenCalled();
+    expect(fb.acquireCalls[0].worktreePath).toBe(missingWorktree);
+    expect(fb.spawnArgs.every((arg) => arg.cwd === missingWorktree)).toBe(true);
+  });
+
   it('forces the unconstrained resource profile on the lease', async () => {
     const fb = makeFakeBackend([{ exitCode: 0 }, { exitCode: 0 }]);
     await triggerDeployment(
@@ -539,6 +566,66 @@ describe('recoverInFlightDeployments', () => {
       github_run_id: '4242',
       github_run_url: 'https://github.com/o/r/actions/runs/4242',
       github_conclusion: 'success',
+    });
+  });
+
+  it('restores a missing recovery checkout before reattaching to a GitHub workflow run', async () => {
+    const { deploymentId } = seedInterruptedWorkflowDeployment({
+      run: compileGithubWorkflowRun({ workflow: 'release.yml', ref: 'main' }),
+      githubWorkflow: { workflow: 'release.yml', ref: 'main' },
+      githubRunId: '5151',
+    });
+    const fb = makeFakeBackend([
+      {
+        exitCode: 0,
+        stdout: marker({
+          runId: '5151',
+          url: 'https://github.com/o/r/actions/runs/5151',
+          status: 'completed',
+          conclusion: 'success',
+        }),
+      },
+    ]);
+    const prepareRecoveryCheckout = vi.fn(async () => ({
+      worktreePath: '/tmp/recovered-deploy-worktree',
+      cleanupWorktreeOnTerminal: false,
+    }));
+
+    recoverInFlightDeployments({
+      ...makeDeps(fb.backend),
+      prepareRecoveryCheckout,
+    });
+    await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'success');
+
+    expect(prepareRecoveryCheckout).toHaveBeenCalledWith({
+      projectId: PROJECT,
+      ref: 'sha-recover',
+    });
+    expect(fb.spawnArgs[0]).toMatchObject({
+      cwd: '/tmp/recovered-deploy-worktree',
+    });
+    expect(fb.spawnArgs[0].run).toContain(`RUN_ID='5151'`);
+  });
+
+  it('marks a previously running step errored when recovery cannot start a runner', async () => {
+    const { deploymentId } = seedInterruptedWorkflowDeployment({
+      run: compileGithubWorkflowRun({ workflow: 'release.yml', ref: 'main' }),
+      githubWorkflow: { workflow: 'release.yml', ref: 'main' },
+      githubRunId: '6161',
+    });
+    const backend: RunnerBackend = {
+      kind: 'fake',
+      async acquire() {
+        throw new Error('checkout vanished');
+      },
+    };
+
+    recoverInFlightDeployments(makeDeps(backend));
+    await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'error');
+
+    expect(listDeploymentSteps(deploymentId)[0]).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('checkout vanished'),
     });
   });
 

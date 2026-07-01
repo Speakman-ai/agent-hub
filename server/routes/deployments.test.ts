@@ -12,6 +12,7 @@ import type { JobClaimSpec, RunnerBackend, RunnerLease } from '../finalize/runne
 import type { Project, RouteDeps } from '../types.js';
 import {
   acquireEnvironmentLock,
+  addDeploymentStep,
   createDeployment,
   ensureDeploymentEnvironment,
   ensureDeploymentReleaseItem,
@@ -20,6 +21,7 @@ import {
   listDeploymentSteps,
   setEnvironmentCurrentRef,
   setDeploymentReleaseItemInclusion,
+  updateDeploymentStepStatus,
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
 import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
@@ -623,6 +625,27 @@ environments:
     });
   });
 
+  it('does not surface terminal deployments as active environment runs', async () => {
+    ensureDeploymentEnvironment(PROJECT_ID, 'dev');
+    const terminal = createDeployment({
+      projectId: PROJECT_ID,
+      environment: 'dev',
+      ref: 'terminal-sha',
+      status: 'success',
+    });
+    expect(acquireEnvironmentLock(PROJECT_ID, 'dev', terminal.id)).toBe(true);
+
+    const { app } = makeApp();
+    const res = await request(app).get(`/api/projects/${PROJECT_ID}/deploy/config`).expect(200);
+
+    expect(res.body.environments[0]).toMatchObject({
+      name: 'dev',
+      activeDeploymentId: null,
+      activeDeployment: null,
+      lastDeployment: { id: terminal.id, status: 'success' },
+    });
+  });
+
   it('lists deployments and returns detail with steps approvals environment and history', async () => {
     const dep = createDeployment({ projectId: PROJECT_ID, environment: 'dev', ref: 'abc' });
     ensureDeploymentEnvironment(PROJECT_ID, 'dev');
@@ -682,6 +705,29 @@ environments:
       .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/release-items`)
       .expect(200);
     expect(items.body.releaseItems).toEqual(detail.body.releaseItems);
+  });
+
+  it('normalizes running steps on terminal deployment detail responses', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'dev', ref: 'abc' });
+    const step = addDeploymentStep({
+      deploymentId: dep.id,
+      name: 'trigger-release-all',
+      stepOrder: 1,
+    });
+    updateDeploymentStepStatus(step.id, 'running');
+    updateDeploymentStatus(dep.id, 'error', { error: 'poller was interrupted' });
+
+    const { app } = makeApp();
+    const detail = await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}`)
+      .expect(200);
+
+    expect(detail.body.deployment.status).toBe('error');
+    expect(detail.body.steps[0]).toMatchObject({
+      id: step.id,
+      status: 'error',
+      error: 'poller was interrupted',
+    });
   });
 
   it('returns safe release notification history and retries failed rows without duplicating them', async () => {
