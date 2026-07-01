@@ -9,6 +9,7 @@ import { colors } from '../theme/colors';
 import { relativeTime, relativeFuture } from '../utils/time';
 import { normalizeSettingsTab } from '../utils/settingsTabs';
 import humanCron from '@shared/utils/humanCron';
+import { localTimeZone } from '@shared/utils/calendarEvents';
 import { cronEngineChoices, defaultModelForCronEngine, effectiveCronEngine, inheritedCronEngineForHelper, modelsForCronEngine, } from '../utils/cronEngine';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
 import * as FileSystem from 'expo-file-system';
@@ -988,6 +989,7 @@ function CronSection() {
     const [modelConfig, setModelConfig] = useState<any>(null);
     const [form, setForm] = useState<any>({ name: '',
         schedule: '*/30 * * * *',
+        timezone: localTimeZone(),
         prompt: '',
         cwd: '',
         project_id: '',
@@ -1098,6 +1100,7 @@ function CronSection() {
             setForm({
                 name: '',
                 schedule: '*/30 * * * *',
+                timezone: localTimeZone(),
                 prompt: '',
                 cwd: defaultCwd,
                 project_id: projects[0]?.id || '',
@@ -1118,6 +1121,7 @@ function CronSection() {
         setEditForm({
             name: cronJob.name,
             schedule: cronJob.schedule,
+            timezone: cronJob.timezone || localTimeZone(),
             prompt: cronJob.prompt,
             cwd: cronJob.cwd || '',
             project_id: cronJob.project_id || '',
@@ -1209,6 +1213,9 @@ function CronSection() {
                 <View style={styles.row}>
                   <Text style={styles.cardName}>{cronJob.name}</Text>
                   <Text style={styles.mono}>{humanCron(cronJob.schedule)}</Text>
+                  {!!cronJob.timezone && (
+                    <Text style={styles.ownerBadge}>{cronJob.timezone}</Text>
+                  )}
                   <Text style={styles.ownerBadge}>{cronJob.shared ? 'Shared' : 'Private'}</Text>
                   {!!cronJob.owner_username && (
                     <Text style={styles.ownerBadge}>Owner: {cronJob.owner_username}</Text>

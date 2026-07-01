@@ -16,7 +16,12 @@ import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
 import { probeEngineAvailability } from '../engine-availability.js';
-import { normalizeCronEngine, normalizeCronModel, normalizeCronSkillPrincipal } from './crons.js';
+import {
+  normalizeCronEngine,
+  normalizeCronModel,
+  normalizeCronSkillPrincipal,
+  normalizeCronTimezone,
+} from './crons.js';
 import { resolveCronEngine } from '../cron-engine.js';
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
@@ -56,6 +61,8 @@ interface CronImportData {
   timeout_ms?: number | null;
   notify_on_run?: boolean | number;
   shared?: boolean | number;
+  /** Optional IANA timezone for wall-clock cron scheduling. Invalid values import as null. */
+  timezone?: string | null;
   /**
    * Optional CLI engine id (`claude-code`, `cursor-agent`, `gemini-cli`,
    * `codex-cli`). Validated against `ALL_SUPPORTED_ENGINES` by
@@ -1019,9 +1026,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           } catch {
             importedModel = null;
           }
+          let importedTimezone: string | null = null;
+          try {
+            importedTimezone = normalizeCronTimezone(c.timezone);
+          } catch {
+            importedTimezone = null;
+          }
           stmts.createCron.run(
             c.name,
             c.schedule,
+            importedTimezone,
             c.prompt,
             targetProject.cwd,
             c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,
@@ -1584,9 +1598,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
           } catch {
             importedModel = null;
           }
+          let importedTimezone: string | null = null;
+          try {
+            importedTimezone = normalizeCronTimezone(c.timezone);
+          } catch {
+            importedTimezone = null;
+          }
           stmts.createCron.run(
             c.name,
             c.schedule,
+            importedTimezone,
             c.prompt,
             c.cwd || config.defaultCwd,
             c.enabled !== undefined ? (c.enabled ? 1 : 0) : 1,

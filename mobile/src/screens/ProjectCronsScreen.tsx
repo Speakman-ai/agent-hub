@@ -5,10 +5,12 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime, relativeFuture } from '../utils/time';
 import humanCron from '@shared/utils/humanCron';
+import { localTimeZone } from '@shared/utils/calendarEvents';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 const EMPTY_FORM: Record<string, any> = {
     name: '',
     schedule: '*/30 * * * *',
+    timezone: localTimeZone(),
     prompt: '',
     enabled: true,
     shared: false,
@@ -50,6 +52,7 @@ export default function ProjectCronsScreen({ route, navigation }: any) {
         try {
             const created = await api.createCron({
                 ...form,
+                timezone: form.timezone || localTimeZone(),
                 project_id: projectId,
                 cwd: project?.cwd || '',
             });
@@ -149,6 +152,7 @@ export default function ProjectCronsScreen({ route, navigation }: any) {
                     <Switch value={!!cronJob.enabled} onValueChange={() => toggleCron(cronJob)} disabled={!cronJob.can_manage} trackColor={{ false: colors.gray700, true: colors.emerald800_50 }} thumbColor={cronJob.enabled ? colors.emerald400 : colors.gray500}/>
                   </View>
                   <Text style={styles.mono}>{humanCron(cronJob.schedule)}</Text>
+                  {!!cronJob.timezone && <Text style={styles.meta}>{cronJob.timezone}</Text>}
                   <View style={styles.badgeRow}>
                     <Text style={styles.badge}>{cronJob.shared ? 'Shared' : 'Private'}</Text>
                     {!!cronJob.owner_username && (
@@ -169,6 +173,7 @@ export default function ProjectCronsScreen({ route, navigation }: any) {
                     setEditForm({
                         name: cronJob.name,
                         schedule: cronJob.schedule,
+                        timezone: cronJob.timezone || localTimeZone(),
                         prompt: cronJob.prompt,
                         enabled: cronJob.enabled,
                         shared: !!cronJob.shared,

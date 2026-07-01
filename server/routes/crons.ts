@@ -81,6 +81,21 @@ export function normalizeCronSkillPrincipal(raw: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+export function normalizeCronTimezone(raw: unknown): string | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new Error('timezone must be a string');
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: trimmed });
+    return trimmed;
+  } catch {
+    throw new Error('timezone must be a valid IANA timezone');
+  }
+}
+
 /**
  * Throws when a non-null principal is paired with a missing/unknown project or
  * when the id is not an agent on that project.
@@ -227,6 +242,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const {
       name,
       schedule,
+      timezone,
       prompt,
       cwd,
       enabled,
@@ -242,6 +258,12 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const normalizedTimeout = timeout_ms !== undefined ? coerceTimeoutMs(timeout_ms) : null;
     const normalizedNotify = notify_on_run !== undefined ? coerceNotifyOnRun(notify_on_run) : 0;
     const normalizedShared = shared !== undefined ? coerceShared(shared) : 0;
+    let normalizedTimezone: string | null;
+    try {
+      normalizedTimezone = normalizeCronTimezone(timezone);
+    } catch (err) {
+      return res.status(400).json({ error: (err as Error).message });
+    }
 
     let normalizedEngine: string | null;
     try {
@@ -282,6 +304,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const result = stmts.createCron.run(
       name,
       schedule,
+      normalizedTimezone,
       prompt,
       cwd || config.defaultCwd,
       enabled !== undefined ? (enabled ? 1 : 0) : 1,
@@ -316,6 +339,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     const {
       name,
       schedule,
+      timezone,
       prompt,
       cwd,
       enabled,
@@ -344,6 +368,15 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     let nextShared: 0 | 1 = (existing.shared ? 1 : 0) as 0 | 1;
     if (Object.prototype.hasOwnProperty.call(req.body, 'shared') && shared !== undefined) {
       nextShared = coerceShared(shared);
+    }
+
+    let nextTimezone: string | null = existing.timezone ?? null;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'timezone')) {
+      try {
+        nextTimezone = normalizeCronTimezone(timezone);
+      } catch (err) {
+        return res.status(400).json({ error: (err as Error).message });
+      }
     }
 
     let nextEngine: string | null = existing.engine;
@@ -408,6 +441,7 @@ export default function createCronRoutes(deps: RouteDeps): Router {
     stmts.updateCron.run(
       name || existing.name,
       schedule || existing.schedule,
+      nextTimezone,
       prompt || existing.prompt,
       cwd || existing.cwd,
       enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,

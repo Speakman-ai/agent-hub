@@ -372,6 +372,18 @@ const config: AppConfig = {
   docsTimeoutMs: resolveInt(null, 'docsTimeoutMs', 10 * 60 * 1000),
   slackTimeoutMs: resolveInt(null, 'slackTimeoutMs', 5 * 60 * 1000),
   conferenceTimeoutMs: resolveInt(null, 'conferenceTimeoutMs', 10 * 60 * 1000),
+  schedulerTimezone: (() => {
+    const raw = resolve('AGENT_HUB_SCHEDULER_TIMEZONE', 'schedulerTimezone', 'UTC');
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (!value) return 'UTC';
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: value });
+      return value;
+    } catch {
+      console.warn(`[config] Invalid schedulerTimezone "${value}" — falling back to UTC`);
+      return 'UTC';
+    }
+  })(),
   // Compose preview health poll — how long `PreviewComposeRuntime` waits for
   // 2xx on the entry service before marking the group failed. Override via
   // `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS` or `previewComposeReadyTimeoutMs`

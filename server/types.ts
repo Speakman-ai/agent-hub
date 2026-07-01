@@ -421,6 +421,13 @@ export interface CronRow {
   id: number;
   name: string;
   schedule: string;
+  /**
+   * IANA timezone used to interpret the cron expression's wall-clock fields.
+   * New UI-created rows set this from the user's local timezone so "0 9 * * *"
+   * means 9am for that user even when the server host runs in UTC. Null keeps
+   * older rows on the server/default scheduler timezone.
+   */
+  timezone: string | null;
   prompt: string;
   cwd: string;
   enabled: number;
@@ -3204,6 +3211,12 @@ export interface AppConfig {
   docsTimeoutMs: number;
   slackTimeoutMs: number;
   conferenceTimeoutMs: number;
+  /**
+   * Fallback IANA timezone for scheduled user work when a row has no timezone.
+   * New cron rows created from clients persist their own local timezone.
+   * Env: `AGENT_HUB_SCHEDULER_TIMEZONE`; config.json: `schedulerTimezone`.
+   */
+  schedulerTimezone: string;
   /**
    * Server-wide default for compose preview health polling (ms). Overridden
    * per project via `prEnv.preview.compose.readyTimeoutMs`. Env:

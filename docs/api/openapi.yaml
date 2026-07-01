@@ -3234,6 +3234,9 @@ components:
           type: string
         schedule:
           type: string
+        timezone:
+          type: string
+          nullable: true
         prompt:
           type: string
         cwd:
@@ -3282,6 +3285,7 @@ components:
         - id
         - name
         - schedule
+        - timezone
         - prompt
         - cwd
         - enabled
@@ -3297,7 +3301,7 @@ components:
         - owner_user_id
         - shared
         - created_at
-      description: A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.
+      description: A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timezone` is an optional IANA timezone used to interpret the cron expression; null falls back to the server scheduler timezone. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent's engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.
     CronLog:
       type: object
       properties:
@@ -17741,6 +17745,9 @@ paths:
                   minLength: 1
                 schedule:
                   type: string
+                timezone:
+                  type: string
+                  nullable: true
                 prompt:
                   type: string
                   minLength: 1
@@ -17850,6 +17857,9 @@ paths:
                   type: string
                 schedule:
                   type: string
+                timezone:
+                  type: string
+                  nullable: true
                 prompt:
                   type: string
                 cwd:

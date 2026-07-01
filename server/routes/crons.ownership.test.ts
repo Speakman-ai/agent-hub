@@ -37,6 +37,7 @@ function makeCron(overrides: Partial<CronRow>): CronRow {
     id: 1,
     name: 'cron',
     schedule: '0 * * * *',
+    timezone: null,
     prompt: 'prompt',
     cwd: '/tmp',
     enabled: 1,
@@ -70,6 +71,7 @@ function makeApp(
         (
           name,
           schedule,
+          timezone,
           prompt,
           cwd,
           enabled,
@@ -87,6 +89,7 @@ function makeApp(
           Object.assign(row, {
             name,
             schedule,
+            timezone,
             prompt,
             cwd,
             enabled,

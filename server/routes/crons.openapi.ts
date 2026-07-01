@@ -110,6 +110,7 @@ export const CronComponent = registerComponent(
       id: z.number().int(),
       name: z.string(),
       schedule: z.string(),
+      timezone: z.string().nullable(),
       prompt: z.string(),
       cwd: z.string(),
       enabled: z.number().int(),
@@ -130,7 +131,7 @@ export const CronComponent = registerComponent(
     })
     .openapi({
       description:
-        'A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.',
+        'A cron job row. Booleans (`enabled`, `notify_on_run`, `shared`) are stored as 0/1 SQLite ints. `timezone` is an optional IANA timezone used to interpret the cron expression; null falls back to the server scheduler timezone. `timeout_ms`, `model`, `project_id`, `skill_principal_agent_id`, `engine`, `owner_user_id` are nullable to mean "use default" / legacy system-owned. `engine` falls back to the skill principal agent\'s engine, then to `claude-code`; `owner_user_id` controls the spawn HOME for scheduled runs. `shared=1` makes the cron visible to the org while execution still uses the owner.',
     }),
 );
 
@@ -218,6 +219,7 @@ export const CreateCronRequestSchema = z.object({
     .string({ error: 'name, schedule, and prompt are required' })
     .min(1, 'name, schedule, and prompt are required'),
   schedule: cronExpression,
+  timezone: z.string().nullable().optional(),
   prompt: z
     .string({ error: 'name, schedule, and prompt are required' })
     .min(1, 'name, schedule, and prompt are required'),
@@ -248,6 +250,7 @@ export const UpdateCronRequestSchema = z.object({
       message: 'schedule must be a valid cron expression',
     })
     .optional(),
+  timezone: z.string().nullable().optional(),
   prompt: z.string().optional(),
   cwd: z.string().optional(),
   enabled: z.boolean().optional(),

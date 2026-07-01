@@ -119,6 +119,17 @@ function isoOrNull(date: Date | null | undefined): string | null {
   return date.toISOString();
 }
 
+function cronTimezone(timezone?: string | null): string {
+  const candidate = timezone?.trim() || config.schedulerTimezone || 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    console.warn(`[Scheduler] Invalid timezone "${candidate}" — falling back to UTC`);
+    return 'UTC';
+  }
+}
+
 function persistNextRun(
   kind: 'heartbeat' | 'cron',
   id: string | number,
@@ -883,6 +894,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         defaultTickOptions({
           intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
           name: `heartbeat:${agent.id}`,
+          timezone: cronTimezone(),
         }),
       );
       scheduledTasks.set(`heartbeat:${agent.id}`, task);
@@ -924,6 +936,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         defaultTickOptions({
           intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
           name: `cron:${cronJob.id}`,
+          timezone: cronTimezone(cronJob.timezone),
         }),
       );
       scheduledTasks.set(`cron:${cronJob.id}`, task);
@@ -1098,6 +1111,7 @@ export function rescheduleCron(cronJob: CronRow): void {
       defaultTickOptions({
         intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
         name: `cron:${cronJob.id}`,
+        timezone: cronTimezone(cronJob.timezone),
       }),
     );
     scheduledTasks.set(key, task);
@@ -1153,6 +1167,7 @@ export function rescheduleHeartbeat(agent: EnrichedAgent): void {
       defaultTickOptions({
         intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
         name: `heartbeat:${agent.id}`,
+        timezone: cronTimezone(),
       }),
     );
     scheduledTasks.set(key, task);

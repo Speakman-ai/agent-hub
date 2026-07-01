@@ -128,6 +128,51 @@ describe('CronSection — engine picker', () => {
     expect(modelOptions!).not.toContain('claude-sonnet-4-5');
   });
 
+  it('includes the browser timezone when creating a cron', async () => {
+    (api.createCron as any).mockImplementation(async (payload: any) => ({
+      id: 43,
+      ...payload,
+      enabled: payload.enabled ? 1 : 0,
+      timeout_ms: null,
+      notify_on_run: payload.notify_on_run ? 1 : 0,
+      next_run_at: null,
+      last_run: null,
+      can_manage: true,
+    }));
+    const { getByPlaceholderText } = render(<CronSection projects={PROJECTS_FIXTURE} />);
+    const newBtn = await waitFor(() => {
+      const b = Array.from(document.querySelectorAll('button')).find(
+        (x: any) => (x as any).textContent?.trim() === '+ New Cron',
+      );
+      if (!b) throw new Error('+ New Cron button not mounted yet');
+      return b;
+    });
+    fireEvent.click(newBtn as any);
+
+    fireEvent.change(getByPlaceholderText('Name'), { target: { value: 'Morning report' } } as any);
+    fireEvent.change(getByPlaceholderText('Prompt'), {
+      target: { value: 'Summarize status.' },
+    } as any);
+    const createBtn = await waitFor(() => {
+      const b = Array.from(document.querySelectorAll('button')).find(
+        (x: any) => (x as any).textContent?.trim() === 'Create',
+      );
+      if (!b) throw new Error('Create button not mounted yet');
+      return b;
+    });
+    await act(async () => {
+      fireEvent.click(createBtn as any);
+    });
+
+    await waitFor(() => {
+      expect(api.createCron).toHaveBeenCalledTimes(1);
+    });
+    const [payload] = (api.createCron as any).mock.calls[0];
+    expect(payload.schedule).toBe('*/30 * * * *');
+    expect(payload.timezone).toBeTruthy();
+    expect(typeof payload.timezone).toBe('string');
+  });
+
   it('round-trips engine=codex-cli + a codex model through PUT /api/crons/:id', async () => {
     const existingCron = {
       id: 42,

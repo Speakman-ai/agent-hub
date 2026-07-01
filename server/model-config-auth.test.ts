@@ -31,6 +31,7 @@ function makeConfig(): AppConfig {
     docsTimeoutMs: 1000,
     slackTimeoutMs: 1000,
     conferenceTimeoutMs: 1000,
+    schedulerTimezone: 'UTC',
     publicUrl: null,
     defaultReviewer: null,
     personalOAuth: null,

@@ -155,6 +155,7 @@ function initDb(dataDir: string): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       schedule TEXT NOT NULL,
+      timezone TEXT,
       prompt TEXT NOT NULL,
       cwd TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -1276,6 +1277,12 @@ function initDb(dataDir: string): void {
     db.prepare('SELECT next_run_at FROM crons LIMIT 1').get();
   } catch {
     db.exec('ALTER TABLE crons ADD COLUMN next_run_at TEXT');
+  }
+
+  try {
+    db.prepare('SELECT timezone FROM crons LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE crons ADD COLUMN timezone TEXT');
   }
 
   try {
@@ -3875,10 +3882,10 @@ function initDb(dataDir: string): void {
     getCrons: db.prepare('SELECT * FROM crons ORDER BY id ASC'),
     getCron: db.prepare('SELECT * FROM crons WHERE id = ?'),
     createCron: db.prepare(
-      'INSERT INTO crons (name, schedule, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine, owner_user_id, shared) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO crons (name, schedule, timezone, prompt, cwd, enabled, project_id, timeout_ms, notify_on_run, model, skill_principal_agent_id, engine, owner_user_id, shared) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ),
     updateCron: db.prepare(
-      'UPDATE crons SET name = ?, schedule = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ?, shared = ? WHERE id = ?',
+      'UPDATE crons SET name = ?, schedule = ?, timezone = ?, prompt = ?, cwd = ?, enabled = ?, project_id = ?, timeout_ms = ?, notify_on_run = ?, model = ?, skill_principal_agent_id = ?, engine = ?, shared = ? WHERE id = ?',
     ),
     backfillCronOwners: db.prepare(
       'UPDATE crons SET owner_user_id = ? WHERE owner_user_id IS NULL',

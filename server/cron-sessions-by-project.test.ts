@@ -48,6 +48,7 @@ function makeCronSession(opts: { projectId: string | null; cronName: string; sch
   const cronResult = stmts.createCron.run(
     opts.cronName,
     opts.schedule,
+    null, // timezone
     'noop prompt', // prompt
     '/tmp', // cwd (NOT NULL)
     1, // enabled

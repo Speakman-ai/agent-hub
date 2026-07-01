@@ -8,6 +8,7 @@ import {
 import { relativeTime, relativeFuture, formatDateTime, formatTime } from '../utils/time';
 import { hasRole, isLocalMode } from '../utils/auth';
 import humanCron from '@shared/utils/humanCron';
+import { localTimeZone } from '@shared/utils/calendarEvents';
 import CronSchedulePicker from './CronSchedulePicker';
 import AgentAvatar from './AgentAvatar';
 import AccountSection from './AccountSection';
@@ -1790,6 +1791,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
   const [form, setForm] = useState({
     name: '',
     schedule: '*/30 * * * *',
+    timezone: localTimeZone(),
     prompt: '',
     cwd: defaultCwd,
     project_id: projectId || scopedProjects[0]?.id || '',
@@ -2027,6 +2029,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
     setForm({
       name: '',
       schedule: '*/30 * * * *',
+      timezone: localTimeZone(),
       prompt: '',
       cwd: defaultCwd,
       project_id: projectId || scopedProjects[0]?.id || '',
@@ -2044,6 +2047,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
     setEditForm({
       name: cronJob.name,
       schedule: cronJob.schedule,
+      timezone: cronJob.timezone || localTimeZone(),
       prompt: cronJob.prompt,
       cwd: cronJob.cwd || '',
       project_id: cronJob.project_id || '',
@@ -2444,6 +2448,9 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     <span className="text-xs text-gray-500" title={cronJob.schedule}>
                       {humanCron(cronJob.schedule)}
                     </span>
+                    {cronJob.timezone && (
+                      <span className="text-xs text-gray-600">{cronJob.timezone}</span>
+                    )}
                     <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
                       {cronJob.shared ? 'Shared' : 'Private'}
                     </span>
@@ -2478,6 +2485,7 @@ export function CronSection({ projects = [], onNavigate, showToast, projectId = 
                     ) : null}
                     {cronJob.engine ? <> · Engine: {cronJob.engine}</> : null}
                     {cronJob.model ? <> · Model: {cronJob.model}</> : null}
+                    {cronJob.timezone ? <> · Timezone: {cronJob.timezone}</> : null}
                     {cronJob.notify_on_run ? <> · 🔔 Notifies on run</> : null}
                     {cronJob.last_run && <> · Last: {relativeTime(cronJob.last_run)}</>}
                   </p>

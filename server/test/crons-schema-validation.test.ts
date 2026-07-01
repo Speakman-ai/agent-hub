@@ -60,12 +60,29 @@ describe('Schema validation — POST /api/crons (cron expression)', () => {
       .send({
         name: `good-cron-${Date.now()}`,
         schedule: '*/15 * * * *',
+        timezone: 'America/New_York',
         prompt: 'noop',
         cwd: '/tmp',
         enabled: false,
       })
       .expect(200);
     expect((res.body as CronRow).schedule).toBe('*/15 * * * *');
+    expect((res.body as CronRow).timezone).toBe('America/New_York');
+  });
+
+  it('rejects an invalid timezone with 400', async () => {
+    const res = await request
+      .post('/api/crons')
+      .send({
+        name: `bad-timezone-${Date.now()}`,
+        schedule: '0 9 * * *',
+        timezone: 'Eastern-ish',
+        prompt: 'noop',
+        cwd: '/tmp',
+        enabled: false,
+      })
+      .expect(400);
+    expect((res.body as { error: string }).error).toMatch(/valid IANA timezone/i);
   });
 
   it('rejects missing required fields with 400', async () => {
@@ -111,6 +128,21 @@ describe('Schema validation — PUT /api/crons/:id (cron expression)', () => {
     const cron = await createCron();
     const res = await request.put(`/api/crons/${cron.id}`).send({ schedule: '' }).expect(200);
     expect((res.body as CronRow).schedule).toBe('0 * * * *');
+  });
+
+  it('updates timezone in PUT and rejects invalid timezone values', async () => {
+    const cron = await createCron();
+    const updated = await request
+      .put(`/api/crons/${cron.id}`)
+      .send({ timezone: 'America/Los_Angeles' })
+      .expect(200);
+    expect((updated.body as CronRow).timezone).toBe('America/Los_Angeles');
+
+    const rejected = await request
+      .put(`/api/crons/${cron.id}`)
+      .send({ timezone: 'Pacific-ish' })
+      .expect(400);
+    expect((rejected.body as { error: string }).error).toMatch(/valid IANA timezone/i);
   });
 
   it('returns 404 for unknown cron id (without invoking schema)', async () => {

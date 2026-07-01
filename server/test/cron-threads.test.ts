@@ -78,6 +78,7 @@ describe('Thread source lookup', () => {
     const cronResult = stmts.createCron.run(
       'Source Test',
       '0 * * * *',
+      null,
       'test',
       '/tmp',
       0,
