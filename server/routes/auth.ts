@@ -347,6 +347,7 @@ registerPath({
                 email: z.string().nullable(),
                 needsEmailUpdate: z.boolean().optional(),
                 role: z.enum(['Owner', 'Admin', 'User']).nullable(),
+                mfaEnabled: z.boolean().optional(),
               })
               .nullable(),
             authConfigured: z.boolean(),
@@ -2513,12 +2514,16 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
     const authedReq = req as AuthenticatedRequest;
     const subject = authedReq.authUser || record?.username || null;
     const role: Role | null = authedReq.authRole ?? record?.role ?? null;
+    const mfaEnabled = authedReq.authUserId
+      ? (getUserMfaState(authedReq.authUserId)?.enabled ?? false)
+      : false;
     res.json({
       user: subject
         ? {
             ...(authedReq.authUserId ? { id: authedReq.authUserId } : {}),
             ...emailPayload(subject),
             role,
+            mfaEnabled,
           }
         : null,
       authConfigured: !!record,
@@ -3561,6 +3566,7 @@ export default function createAuthRoutes(options: AuthRoutesOptions = {}): Route
         ...emailPayload(m.username),
         role: m.role,
         createdAt: m.createdAt,
+        mfaEnabled: getUserMfaState(m.userId)?.enabled ?? false,
       })),
     });
   });

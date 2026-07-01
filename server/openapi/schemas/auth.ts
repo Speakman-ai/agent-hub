@@ -65,6 +65,7 @@ export const UserSummary = registerComponent(
     needsEmailUpdate: z.boolean().optional(),
     role: z.enum(['Owner', 'Admin', 'User']),
     createdAt: z.union([z.string(), z.number()]).optional().nullable(),
+    mfaEnabled: z.boolean().optional(),
   }),
 );
 

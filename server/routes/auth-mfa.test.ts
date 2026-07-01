@@ -413,3 +413,63 @@ describe('TOTP MFA enrollment and login challenge', () => {
     expect(getUserMfaState(outsideUser.id)?.resetAt).toBeNull();
   });
 });
+
+describe('GET /api/auth/me reports MFA enabled state', () => {
+  it('returns mfaEnabled:false before enrollment and true after', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+
+    const before = await supertest(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${ownerToken}`);
+    expect(before.status).toBe(200);
+    expect(before.body.user.mfaEnabled).toBe(false);
+
+    const { secret } = await enableMfaForToken(app, ownerToken);
+
+    // Enrollment bumps credential_version, invalidating the old token, so
+    // re-login through the MFA challenge to obtain a fresh one.
+    vi.setSystemTime(new Date(Date.now() + 31_000));
+    const freshToken = await loginWithMfa(app, {
+      email: 'owner@example.com',
+      password: 'a-strong-password',
+      code: generateTotpCode(secret),
+    });
+
+    const after = await supertest(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${freshToken}`);
+    expect(after.status).toBe(200);
+    // Regression: this was undefined before the fix, so the settings page
+    // rendered "Not enabled" even though login kept prompting for MFA.
+    expect(after.body.user.mfaEnabled).toBe(true);
+  });
+});
+
+describe('GET /api/auth/users reports per-member MFA state', () => {
+  it('includes mfaEnabled reflecting each member enrollment', async () => {
+    const app = buildGatedApp();
+    const ownerToken = await setupOwner(app);
+    const { secret } = await enableMfaForToken(app, ownerToken);
+
+    createUser({ username: 'plain@example.com', passwordHash: 'not-used' });
+    const plain = getUserByUsername('plain@example.com')!;
+    createMembership(plain.id, 'default', 'User');
+
+    vi.setSystemTime(new Date(Date.now() + 31_000));
+    const freshToken = await loginWithMfa(app, {
+      email: 'owner@example.com',
+      password: 'a-strong-password',
+      code: generateTotpCode(secret),
+    });
+
+    const list = await supertest(app)
+      .get('/api/auth/users')
+      .set('Authorization', `Bearer ${freshToken}`);
+    expect(list.status).toBe(200);
+    const owner = list.body.users.find((u: { email: string }) => u.email === 'owner@example.com');
+    const other = list.body.users.find((u: { email: string }) => u.email === 'plain@example.com');
+    expect(owner.mfaEnabled).toBe(true);
+    expect(other.mfaEnabled).toBe(false);
+  });
+});

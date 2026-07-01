@@ -358,6 +358,8 @@ components:
             - type: string
             - type: number
             - nullable: true
+        mfaEnabled:
+          type: boolean
       required:
         - email
         - role
@@ -10072,6 +10074,8 @@ paths:
                           - Admin
                           - User
                           - null
+                      mfaEnabled:
+                        type: boolean
                     required:
                       - email
                       - role
