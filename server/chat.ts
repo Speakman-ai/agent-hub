@@ -79,6 +79,7 @@ import {
   loadSkillByName,
   parseSkillBlock,
 } from './skill-invoke.js';
+import { detectSkillImprovementBlock, handleSkillImprovement } from './skill-improvement.js';
 import { routeSkillsFromMessage } from './skill-router.js';
 import {
   isDesignModeActive,
@@ -193,6 +194,7 @@ import type {
   BroadcastFn,
   ChatMessage,
   BrowserToolActivityEvent,
+  SkillInvocationRow,
 } from './types.js';
 import { enrichSessionForClient } from './session-checkpoint-rewind.js';
 import {
@@ -4312,6 +4314,31 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         const reactLoopEnabled = (session!.react_loop_enabled ?? 1) !== 0;
 
         try {
+          const rawSkillImprovementBlock = detectSkillImprovementBlock(rawFinalContent);
+          if (rawSkillImprovementBlock) {
+            let loadedSkillIds: string[] = [];
+            try {
+              const skillInvocations = (stmts as Stmts).listSkillInvocationsForSession.all(
+                sessionId,
+              ) as SkillInvocationRow[];
+              loadedSkillIds = skillInvocations
+                .filter((row) => row.status === 'loaded')
+                .map((row) => row.skill_id);
+            } catch (err) {
+              console.warn(
+                `[skill-improvement] failed to read loaded skill invocations for session ${sessionId}: ${(err as Error).message}`,
+              );
+            }
+            const result = handleSkillImprovement({
+              rawBlock: rawSkillImprovementBlock,
+              paths: { skillsDir: paths.skillsDir },
+              allowedSkills: agent.allowedSkills ?? null,
+              loadedSkillIds,
+            });
+            if (result.ok) console.log(`[skill-improvement] ${result.observation}`);
+            else console.warn(`[skill-improvement] ${result.observation}`);
+          }
+
           const actions: ReActAction[] = [];
           if (!reactLoopEnabled) {
             const rawSkillBlock = detectSkillInvokeBlock(rawFinalContent);

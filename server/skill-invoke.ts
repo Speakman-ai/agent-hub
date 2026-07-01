@@ -377,6 +377,16 @@ export function buildSkillInjection(loaded: LoadedSkillBody): string {
     '',
     loaded.skillMd.trim(),
     '',
+    '### Self-improvement',
+    'If this task teaches a durable correction or reusable rule for this skill, record it for trusted review before finishing by emitting this control block with a concise, non-secret entry:',
+    '<agenthub:skill-improvement>',
+    JSON.stringify({
+      name: skillName,
+      entry: 'Reusable learning that should change future uses of this skill.',
+    }),
+    '</agenthub:skill-improvement>',
+    'Only log fundamental skill behavior, not task-specific facts. The server stores this as pending review and does not change SKILL.md automatically.',
+    '',
     '### References',
   ];
 

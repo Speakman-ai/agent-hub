@@ -5,6 +5,7 @@ const TAGS = [
   'agenthub:task-state',
   'agenthub:triage',
   'agenthub:close-card',
+  'agenthub:skill-improvement',
 ];
 
 const STEP_MARKER_RE = /\[\[STEP:\s*(?:started|completed|failed)\s*:\s*[^\]\n]+?\s*\]\]/gi;

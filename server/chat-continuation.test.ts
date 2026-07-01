@@ -121,6 +121,18 @@ describe('stripAssistantControlBlocks', () => {
     expect(out).not.toContain('~~~');
   });
 
+  it('removes <agenthub:skill-improvement> blocks', () => {
+    const input = [
+      'Done.',
+      '<agenthub:skill-improvement>',
+      '{"name":"kanban","entry":"Use author/content for comments."}',
+      '</agenthub:skill-improvement>',
+    ].join('\n');
+    const out = stripAssistantControlBlocks(input);
+    expect(out).toBe('Done.');
+    expect(out).not.toContain('<agenthub:skill-improvement>');
+  });
+
   // [[STEP:*]] markers — the parser extracts these from finalized assistant
   // events, but partial deltas, crashed sessions (fallback to partialFallback),
   // and legacy persisted messages can still carry raw markers. The shared

@@ -287,6 +287,9 @@ describe('skill-invoke', () => {
     const out = buildSkillInjection(loaded!);
     expect(out).toContain('## Loaded Skill: wiki-search');
     expect(out).toContain('Skill body for wiki-search');
+    expect(out).toContain('### Self-improvement');
+    expect(out).toContain('<agenthub:skill-improvement>');
+    expect(out).toContain('"name":"wiki-search"');
     expect(out).toContain('### References');
     expect(out).toContain('### Available scripts');
   });
