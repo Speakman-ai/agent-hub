@@ -336,6 +336,26 @@ export default function DashboardScreen() {
           </View>) : null}
 
         {data ? (<>
+            <SectionHeader title="This week"/>
+            <View style={styles.card} testID="dashboard-calendar">
+              {calendarError ? (<Text style={styles.errorInline}>
+                  Failed to load Calendar: {calendarError}
+                </Text>) : calendarLoading ? (<Text style={styles.muted}>Loading Calendar...</Text>) : !calendarStatus?.connected ? (<DashboardCalendarEmpty title={calendarStatus?.serverConfigured === false ? 'Google is not configured' : 'Connect Google to show Calendar'} body={calendarStatus?.serverConfigured === false
+                    ? 'An Admin needs to add the Google OAuth app before Calendar can connect.'
+                    : 'Link your Google account in Account settings to show this week on the dashboard.'} action="Account settings" onPress={() => navigation.navigate('Settings', { tab: 'account' })}/>) : !hasCalendarScope(calendarStatus) ? (<DashboardCalendarEmpty title="Enable Calendar access" body={`Connected as ${calendarStatus?.email || 'Google account'}, but Calendar access has not been granted yet.`} action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : calendarEvents.length === 0 ? (<DashboardCalendarEmpty title="No events this week" body="Your primary Google Calendar has no events in the next seven days." action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : (calendarEvents.slice(0, 6).map((event: any, index: number) => (<TouchableOpacity key={event.id || `${event.summary}-${index}`} style={styles.activityRow} onPress={() => navigation.navigate('Calendar')}>
+                    <HubIcon name="CalendarDays" size={16} color={colors.blue400} style={styles.prIcon}/>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.activityTitle} numberOfLines={1}>
+                        {event.summary || '(no title)'}
+                      </Text>
+                      <Text style={styles.activityMeta} numberOfLines={1}>
+                        {eventTimeLabel(event)}
+                        {event.location ? ` · ${event.location}` : ''}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>)))}
+            </View>
+
             {(() => {
                 const allSessions = data.activeSessions || [];
                 const ownerOptions = buildOwnerOptions(allSessions, {
@@ -409,26 +429,6 @@ export default function DashboardScreen() {
                     </View>)}
                 </>);
             })()}
-
-            <SectionHeader title="This week"/>
-            <View style={styles.card} testID="dashboard-calendar">
-              {calendarError ? (<Text style={styles.errorInline}>
-                  Failed to load Calendar: {calendarError}
-                </Text>) : calendarLoading ? (<Text style={styles.muted}>Loading Calendar...</Text>) : !calendarStatus?.connected ? (<DashboardCalendarEmpty title={calendarStatus?.serverConfigured === false ? 'Google is not configured' : 'Connect Google to show Calendar'} body={calendarStatus?.serverConfigured === false
-                    ? 'An Admin needs to add the Google OAuth app before Calendar can connect.'
-                    : 'Link your Google account in Account settings to show this week on the dashboard.'} action="Account settings" onPress={() => navigation.navigate('Settings', { tab: 'account' })}/>) : !hasCalendarScope(calendarStatus) ? (<DashboardCalendarEmpty title="Enable Calendar access" body={`Connected as ${calendarStatus?.email || 'Google account'}, but Calendar access has not been granted yet.`} action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : calendarEvents.length === 0 ? (<DashboardCalendarEmpty title="No events this week" body="Your primary Google Calendar has no events in the next seven days." action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : (calendarEvents.slice(0, 6).map((event: any, index: number) => (<TouchableOpacity key={event.id || `${event.summary}-${index}`} style={styles.activityRow} onPress={() => navigation.navigate('Calendar')}>
-                    <HubIcon name="CalendarDays" size={16} color={colors.blue400} style={styles.prIcon}/>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={styles.activityTitle} numberOfLines={1}>
-                        {event.summary || '(no title)'}
-                      </Text>
-                      <Text style={styles.activityMeta} numberOfLines={1}>
-                        {eventTimeLabel(event)}
-                        {event.location ? ` · ${event.location}` : ''}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>)))}
-            </View>
 
             <SectionHeader title="Open PRs" subtitle={`${openPrs.length} open PR${openPrs.length === 1 ? '' : 's'}`}/>
             <View style={styles.card} testID="open-prs">

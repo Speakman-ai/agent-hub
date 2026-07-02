@@ -303,14 +303,14 @@ describe('DashboardView', () => {
     expect(screen.queryByTestId('dashboard-new-project-cta')).not.toBeInTheDocument();
   });
 
-  it('renders active sessions above open PRs above recent activity', async () => {
+  it('renders the calendar above active sessions above open PRs above recent activity', async () => {
     const { container } = render(<DashboardView orgId="org-1" />);
 
     await waitFor(() => {
       expect(screen.getByTestId('open-prs')).toBeInTheDocument();
     });
 
-    const order = ['active-sessions', 'open-prs', 'recent-activity'];
+    const order = ['dashboard-calendar', 'active-sessions', 'open-prs', 'recent-activity'];
     const positions = order.map((id: any) =>
       Array.prototype.indexOf.call(
         container.querySelectorAll('[data-testid]'),

@@ -221,12 +221,12 @@ export default function DashboardView({
 
         {data && (
           <>
+            <WeeklyCalendarPanel onNavigate={onNavigate} />
             <ActiveSessionsPanel
               sessions={data.activeSessions}
               onOpenSession={onOpenSession}
               currentUser={currentUser}
             />
-            <WeeklyCalendarPanel onNavigate={onNavigate} />
             <OpenPRsPanel
               prs={data.openPRs}
               onOpenPulls={onOpenPulls}
