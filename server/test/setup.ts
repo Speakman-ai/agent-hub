@@ -160,6 +160,15 @@ cp.spawnSync = makeGuard('spawnSync', cp.spawnSync);
 cp.execFile = makeGuard('execFile', cp.execFile);
 cp.execFileSync = makeGuard('execFileSync', cp.execFileSync);
 
+// ─── Hard guard: tests must never hit a live deployment over the network ─────
+// Sibling rail to the CLI-spawn guard above and the DB-safety rail in
+// server/db-safety.ts. Wraps global fetch so any call to a non-loopback host
+// throws with a loud pointer to mock it. Loopback (supertest, preview health
+// probes) passes through; a mocked globalThis.fetch bypasses the guard. See
+// CLAUDE.md "Testing — tests must never hit a live deployment".
+const { installTestNetworkGuard } = await import('./network-guard.js');
+installTestNetworkGuard();
+
 mkdirSync(TEST_DATA_DIR, { recursive: true });
 writeFileSync(path.join(TEST_DATA_DIR, 'projects.json'), '[]');
 

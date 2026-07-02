@@ -326,6 +326,21 @@ Server tests must never spawn the real `claude`, `cursor-agent`, `gemini`, or `c
 - Tests that need to assert on the spawn args themselves: mock `child_process` directly with `vi.mock('child_process', ...)` and inspect calls. See `server/heartbeat-run-claude-model.test.ts` for the pattern.
 - Tests that need a fake CLI process behavior (stream events, exit codes): use a `MockProc` that implements `stdout`/`stderr`/`on('close')` rather than spawning a real binary.
 
+### Tests MUST NOT hit a live deployment over the network
+
+Server tests must never make a real network call to a live deployment (prod, staging, or any remote host). This is a hard rule, the network sibling of the CLI-spawn and DB-safety rails.
+
+**Why:** A real request to a live URL can mutate prod data, trip rate limits, or page on-call, and it makes the suite flaky and network-dependent. A forgotten mock silently reaching `https://hub.example.com` in CI is exactly the failure this prevents.
+
+**How it's enforced:** `server/test/setup.ts` calls `installTestNetworkGuard()` (from `server/test/network-guard.ts`), which wraps the global `fetch` so any call to a **non-loopback** host throws `LiveDeploymentNetworkError` immediately with a pointer to this rule. Only loopback targets (`127.0.0.0/8`, `localhost`, `::1` — what supertest and the preview health probes use) pass through. The guard re-wraps the true original `fetch` on every per-file setup, so a leaked mock from a prior file can't defeat it.
+
+**How to mock instead:**
+- Replace the global: `globalThis.fetch = vi.fn().mockResolvedValue(new Response('{}'))` (or `vi.stubGlobal('fetch', fetchMock)`). See `server/wiki-embeddings.test.ts` and `server/routes/transcribe.test.ts`.
+- Or `vi.mock` the wrapper module that calls `fetch`, so the network layer never runs.
+- A mocked `fetch` bypasses the guard entirely — that's the intended safe path.
+
+**Escape hatch (do not use in committed tests):** `AGENT_HUB_ALLOW_TEST_NETWORK=1` disables the guard. Nothing in the repo sets it; it exists only for one-off local debugging.
+
 ### What to Test
 - **New utility functions**: Unit test inputs/outputs and edge cases
 - **New API endpoints**: Integration test with supertest (request → response)
