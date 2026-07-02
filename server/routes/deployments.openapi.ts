@@ -48,6 +48,27 @@ export const EnvironmentConfigUpdateRequestSchema = z.object({
   enabled: z.boolean(),
 });
 
+const DeployTriggerEventEnum = z.enum(['push', 'merge']);
+const DEPLOY_TRIGGER_BRANCH_PATTERN_MAX = 200;
+
+export const CreateDeployTriggerRequestSchema = z.object({
+  event: DeployTriggerEventEnum,
+  branchPattern: z.string().trim().min(1).max(DEPLOY_TRIGGER_BRANCH_PATTERN_MAX),
+  enabled: z.boolean().optional(),
+  meta: z.unknown().optional(),
+});
+
+export const UpdateDeployTriggerRequestSchema = z
+  .object({
+    event: DeployTriggerEventEnum.optional(),
+    branchPattern: z.string().trim().min(1).max(DEPLOY_TRIGGER_BRANCH_PATTERN_MAX).optional(),
+    enabled: z.boolean().optional(),
+    meta: z.unknown().optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: 'At least one field is required.',
+  });
+
 export const AdjustDeploymentReleaseItemRequestSchema = z.object({
   inclusionStatus: z.enum(['included', 'excluded']),
   reason: z.string().trim().min(1).max(2000),
@@ -274,6 +295,40 @@ const EnvironmentConfigDeleteResponseSchema = registerComponent(
   }),
 );
 
+const DeployTriggerSchema = registerComponent(
+  'DeployTrigger',
+  z.object({
+    id: z.string(),
+    projectId: z.string(),
+    environmentName: z.string(),
+    event: DeployTriggerEventEnum,
+    branchPattern: z.string(),
+    enabled: z.boolean(),
+    meta: z.unknown().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+);
+
+const DeployTriggerListResponseSchema = registerComponent(
+  'DeployTriggerListResponse',
+  z.object({
+    projectId: z.string(),
+    environmentName: z.string(),
+    triggers: z.array(DeployTriggerSchema),
+  }),
+);
+
+const DeployTriggerResponseSchema = registerComponent(
+  'DeployTriggerResponse',
+  z.object({ trigger: DeployTriggerSchema }),
+);
+
+const DeployTriggerDeleteResponseSchema = registerComponent(
+  'DeployTriggerDeleteResponse',
+  z.object({ removed: z.boolean() }),
+);
+
 const DeploySetupWizardResponseSchema = registerComponent(
   'DeploySetupWizardResponse',
   z.object({
@@ -360,6 +415,11 @@ const errorResponse = (description: string) => ({
 
 const projectParams = z.object({ projectId: z.string() });
 const environmentParams = z.object({ projectId: z.string(), environmentName: z.string() });
+const deployTriggerParams = z.object({
+  projectId: z.string(),
+  environmentName: z.string(),
+  triggerId: z.string(),
+});
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
 const deploymentReleaseItemParams = z.object({
   projectId: z.string(),
@@ -466,6 +526,86 @@ registerPath({
     400: errorResponse('Invalid deploy.yaml.'),
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/triggers',
+  tags: ['Deployments'],
+  summary: 'List deploy triggers for an environment',
+  description:
+    'Operator-editable git-event triggers keyed by (project, environment). Each trigger fires a deployment for its environment when a matching push/merge updates a branch matching its pattern. Triggers whose environment was removed from deploy.yaml are retained and listed (they never fire).',
+  request: { params: environmentParams },
+  responses: {
+    200: {
+      description: 'Deploy triggers for the environment.',
+      content: jsonContent(DeployTriggerListResponseSchema),
+    },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/triggers',
+  tags: ['Deployments'],
+  summary: 'Create a deploy trigger for an environment',
+  description:
+    'Admin+. Creates a git-event deploy trigger without a commit. The environment must be declared in deploy.yaml or already have a runtime config row; an unknown environment name is 404. A duplicate (event, branchPattern) on the same environment is 409.',
+  request: {
+    params: environmentParams,
+    body: { content: jsonContent(CreateDeployTriggerRequestSchema) },
+  },
+  responses: {
+    201: {
+      description: 'Created deploy trigger.',
+      content: jsonContent(DeployTriggerResponseSchema),
+    },
+    400: errorResponse('Invalid body or deploy.yaml.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or environment not found.'),
+    409: errorResponse('Duplicate trigger for this event and branch pattern.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/triggers/{triggerId}',
+  tags: ['Deployments'],
+  summary: 'Update a deploy trigger',
+  description:
+    'Admin+. Partial update: omitted fields keep their current value. A change that collides with another trigger (event, branchPattern) on the environment is 409.',
+  request: {
+    params: deployTriggerParams,
+    body: { content: jsonContent(UpdateDeployTriggerRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated deploy trigger.',
+      content: jsonContent(DeployTriggerResponseSchema),
+    },
+    400: errorResponse('Invalid body.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or trigger not found.'),
+    409: errorResponse('Duplicate trigger for this event and branch pattern.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/triggers/{triggerId}',
+  tags: ['Deployments'],
+  summary: 'Delete a deploy trigger',
+  description: 'Admin+. Removes the trigger row.',
+  request: { params: deployTriggerParams },
+  responses: {
+    200: {
+      description: 'Deletion result.',
+      content: jsonContent(DeployTriggerDeleteResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or trigger not found.'),
   },
 });
 

@@ -10,6 +10,7 @@ import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import type {
   Agent,
   DeploymentApprovalRow,
+  DeploymentEnvironmentTriggerRow,
   DeploymentReleaseItemDetailRow,
   DeploymentRow,
   DeploymentStepRow,
@@ -51,6 +52,13 @@ import {
   setEnvironmentEnabled,
   type ResolvedEnvironmentConfig,
 } from '../deploy/deployment-env-config-store.js';
+import {
+  createTrigger,
+  deleteTrigger,
+  DeployTriggerError,
+  listTriggersForEnvironment,
+  updateTrigger,
+} from '../deploy/deployment-trigger-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
@@ -67,10 +75,12 @@ import {
   AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
   CancelDeploymentRequestSchema,
+  CreateDeployTriggerRequestSchema,
   DeploymentListQuerySchema,
   EnvironmentConfigUpdateRequestSchema,
   RollbackDeploymentRequestSchema,
   TriggerDeploymentRequestSchema,
+  UpdateDeployTriggerRequestSchema,
 } from './deployments.openapi.js';
 
 type CheckoutResult = { worktreePath: string; resolvedRef: string };
@@ -598,6 +608,30 @@ function mapCancelError(err: unknown, res: Response): Response {
   return res.status(500).json({ error: message });
 }
 
+function triggerDto(row: DeploymentEnvironmentTriggerRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    environmentName: row.environment_name,
+    event: row.event,
+    branchPattern: row.branch_pattern,
+    enabled: row.enabled === 1,
+    meta: parseMeta(row.meta),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTriggerStoreError(err: unknown, res: Response): Response {
+  if (err instanceof DeployTriggerError) {
+    if (err.reason === 'duplicate') return res.status(409).json({ error: err.message });
+    if (err.reason === 'not_found') return res.status(404).json({ error: err.message });
+    return res.status(400).json({ error: err.message });
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return res.status(500).json({ error: message });
+}
+
 function mapReleaseItemError(err: unknown, res: Response): Response {
   if (err instanceof DeploymentReleaseItemError) {
     if (err.reason === 'not_found' || err.reason === 'cross_project') {
@@ -846,6 +880,104 @@ export default function createDeploymentRoutes(
         const message = err instanceof Error ? err.message : String(err);
         return res.status(500).json({ error: message });
       }
+    },
+  );
+
+  // ----- Per-environment deploy triggers (deploy-triggers epic decision) -----
+  // Operator-editable git-event triggers keyed by (project, environment): a
+  // matching push/merge enqueues a deployment for the mapped environment. The
+  // hook evaluation / enqueue path is a sibling card; this is the store + CRUD.
+
+  router.get(
+    '/api/projects/:projectId/deploy/environments/:environmentName/triggers',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const triggers = listTriggersForEnvironment(projectId, environmentName).map(triggerDto);
+      return res.json({ projectId, environmentName, triggers });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/deploy/environments/:environmentName/triggers',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = CreateDeployTriggerRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        // Guard against typos the same way the environment PATCH does: the env
+        // must be declared in deploy.yaml OR already have a runtime config row,
+        // so a trigger never strands against a non-existent environment name.
+        const trigger = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+          const declared = declaredEnvironmentNames(config);
+          const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
+          if (!declared.has(environmentName) && !hasConfigRow) {
+            throw new DeployConfigError(
+              'unknown_environment',
+              `Unknown environment: ${environmentName}`,
+            );
+          }
+          return createTrigger({
+            projectId,
+            environmentName,
+            event: parsed.data.event,
+            branchPattern: parsed.data.branchPattern,
+            enabled: parsed.data.enabled,
+            meta: parsed.data.meta,
+          });
+        });
+        return res.status(201).json({ trigger: triggerDto(trigger) });
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        return mapTriggerStoreError(err, res);
+      }
+    },
+  );
+
+  router.patch(
+    '/api/projects/:projectId/deploy/environments/:environmentName/triggers/:triggerId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const triggerId = req.params.triggerId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = UpdateDeployTriggerRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        const updated = updateTrigger(projectId, triggerId, parsed.data);
+        if (!updated) return res.status(404).json({ error: 'Deploy trigger not found' });
+        return res.json({ trigger: triggerDto(updated) });
+      } catch (err) {
+        return mapTriggerStoreError(err, res);
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/deploy/environments/:environmentName/triggers/:triggerId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const triggerId = req.params.triggerId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      if (!deleteTrigger(projectId, triggerId)) {
+        return res.status(404).json({ error: 'Deploy trigger not found' });
+      }
+      return res.json({ removed: true });
     },
   );
 

@@ -356,6 +356,31 @@ export interface DeploymentEnvironmentRuntimeConfigRow {
   updated_at: string;
 }
 
+/**
+ * Deployment Module — operator-editable per-environment DEPLOY TRIGGER (the
+ * triggers phase on top of the runtime-config layer). A trigger row fires a
+ * deployment for its environment when a matching git event (`push`/`merge`)
+ * updates a branch matching `branch_pattern`. Keyed by (project_id,
+ * environment_name); zero-or-more rows per environment. deploy.yaml stays the
+ * source of truth for which environments exist — a trigger whose environment was
+ * removed is retained and simply never fires.
+ */
+export interface DeploymentEnvironmentTriggerRow {
+  id: string;
+  project_id: string;
+  environment_name: string;
+  /** Git event that fires this trigger. */
+  event: 'push' | 'merge';
+  /** Glob matched against the updated branch name. */
+  branch_pattern: string;
+  /** Operator on/off switch. 1 = enabled (default), 0 = paused (retained). */
+  enabled: number;
+  /** Free-form JSON stash for forward-compat. */
+  meta: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Deployment Module — approver audit trail for gated environments. */
 export interface DeploymentApprovalRow {
   id: string;
@@ -1625,6 +1650,13 @@ export interface Stmts {
   getDeploymentEnvRuntimeConfig: Stmt;
   listDeploymentEnvRuntimeConfig: Stmt;
   deleteDeploymentEnvRuntimeConfig: Stmt;
+  insertDeploymentEnvTrigger: Stmt;
+  updateDeploymentEnvTrigger: Stmt;
+  getDeploymentEnvTrigger: Stmt;
+  listDeploymentEnvTriggersForProject: Stmt;
+  listDeploymentEnvTriggersForEnvironment: Stmt;
+  listEnabledDeploymentEnvTriggersForEvent: Stmt;
+  deleteDeploymentEnvTrigger: Stmt;
   acquireDeploymentEnvironmentLock: Stmt;
   releaseDeploymentEnvironmentLock: Stmt;
   setDeploymentEnvironmentCurrentRef: Stmt;

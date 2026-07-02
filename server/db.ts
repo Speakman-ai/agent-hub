@@ -13,6 +13,7 @@ import { FINALIZE_METRICS_SCHEMA } from './finalize/metrics-schema.js';
 import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
+import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
 import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
 import {
   SECURITY_AUDIT_SCHEMA,
@@ -2918,6 +2919,11 @@ function initDb(dataDir: string): void {
   // in-memory DB in isolation.
   db.exec(DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA);
 
+  // Multi-environment management (triggers phase): operator-editable per-env
+  // git-event deploy triggers. Co-located schema so its store test can migrate
+  // an in-memory DB in isolation.
+  db.exec(DEPLOYMENT_ENV_TRIGGER_SCHEMA);
+
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
   // "In Progress" and the column dropped (there is no in-UI column editor
@@ -3408,6 +3414,42 @@ function initDb(dataDir: string): void {
     ),
     deleteDeploymentEnvRuntimeConfig: db.prepare(
       'DELETE FROM deployment_env_runtime_config WHERE project_id = ? AND environment_name = ?',
+    ),
+    // Per-environment git-event deploy triggers (triggers phase). UNIQUE(project,
+    // env, event, pattern) rejects duplicate identical triggers. Update never
+    // touches created_at.
+    insertDeploymentEnvTrigger: db.prepare(
+      `INSERT INTO deployment_env_trigger
+        (id, project_id, environment_name, event, branch_pattern, enabled, meta)
+       VALUES (@id, @project_id, @environment_name, @event, @branch_pattern, @enabled, @meta)`,
+    ),
+    updateDeploymentEnvTrigger: db.prepare(
+      `UPDATE deployment_env_trigger
+       SET event = @event,
+           branch_pattern = @branch_pattern,
+           enabled = @enabled,
+           meta = @meta,
+           updated_at = datetime('now')
+       WHERE project_id = @project_id AND id = @id`,
+    ),
+    getDeploymentEnvTrigger: db.prepare(
+      'SELECT * FROM deployment_env_trigger WHERE project_id = ? AND id = ?',
+    ),
+    listDeploymentEnvTriggersForProject: db.prepare(
+      `SELECT * FROM deployment_env_trigger WHERE project_id = ?
+       ORDER BY environment_name ASC, event ASC, branch_pattern ASC`,
+    ),
+    listDeploymentEnvTriggersForEnvironment: db.prepare(
+      `SELECT * FROM deployment_env_trigger WHERE project_id = ? AND environment_name = ?
+       ORDER BY event ASC, branch_pattern ASC`,
+    ),
+    listEnabledDeploymentEnvTriggersForEvent: db.prepare(
+      `SELECT * FROM deployment_env_trigger
+       WHERE project_id = ? AND event = ? AND enabled = 1
+       ORDER BY environment_name ASC, branch_pattern ASC`,
+    ),
+    deleteDeploymentEnvTrigger: db.prepare(
+      'DELETE FROM deployment_env_trigger WHERE project_id = ? AND id = ?',
     ),
     // Concurrency lock acquire: only succeeds (changes=1) when no deploy is
     // in-flight for this env. A non-zero result means the lock is held → 409.

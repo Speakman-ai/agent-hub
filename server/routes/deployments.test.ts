@@ -31,6 +31,7 @@ import {
   setEnvironmentEnabled,
   upsertEnvironmentConfig,
 } from '../deploy/deployment-env-config-store.js';
+import { createTrigger, listTriggersForEnvironment } from '../deploy/deployment-trigger-store.js';
 import { DeployConfigError } from '../deploy/deploy-config-error.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import {
@@ -272,6 +273,7 @@ beforeEach(() => {
     'deployments',
     'deployment_environments',
     'deployment_env_runtime_config',
+    'deployment_env_trigger',
     'release_notification_settings',
     'kanban_cards',
     'kanban_columns',
@@ -1613,6 +1615,222 @@ environments:
     it('returns 404 for an unknown project', async () => {
       const { app } = makeApp();
       await request(app).delete('/api/projects/missing/deploy/environments/prod').expect(404);
+    });
+  });
+
+  describe('deploy triggers CRUD', () => {
+    const triggersUrl = (env: string) =>
+      `/api/projects/${PROJECT_ID}/deploy/environments/${env}/triggers`;
+
+    describe('GET .../triggers', () => {
+      it('lists triggers for an environment', async () => {
+        createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const { app } = makeApp();
+        const res = await request(app).get(triggersUrl('prod')).expect(200);
+        expect(res.body).toMatchObject({ projectId: PROJECT_ID, environmentName: 'prod' });
+        expect(res.body.triggers).toHaveLength(1);
+        expect(res.body.triggers[0]).toMatchObject({
+          event: 'push',
+          branchPattern: 'main',
+          enabled: true,
+        });
+      });
+
+      it('returns an empty list for an environment with no triggers', async () => {
+        const { app } = makeApp();
+        const res = await request(app).get(triggersUrl('dev')).expect(200);
+        expect(res.body.triggers).toEqual([]);
+      });
+
+      it('returns 404 for an unknown project', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .get('/api/projects/missing/deploy/environments/prod/triggers')
+          .expect(404);
+      });
+    });
+
+    describe('POST .../triggers', () => {
+      it('creates a trigger on a declared environment', async () => {
+        const { app } = makeApp();
+        const res = await request(app)
+          .post(triggersUrl('prod'))
+          .send({ event: 'push', branchPattern: 'main' })
+          .expect(201);
+        expect(res.body.trigger).toMatchObject({
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+          enabled: true,
+        });
+        expect(listTriggersForEnvironment(PROJECT_ID, 'prod')).toHaveLength(1);
+      });
+
+      it('allows creating a trigger on an orphaned (configured) environment', async () => {
+        upsertEnvironmentConfig({
+          projectId: PROJECT_ID,
+          environmentName: 'legacy',
+          enabled: true,
+        });
+        const { app } = makeApp();
+        await request(app)
+          .post(triggersUrl('legacy'))
+          .send({ event: 'merge', branchPattern: 'release/*' })
+          .expect(201);
+      });
+
+      it('returns 404 for an environment neither declared nor configured', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(triggersUrl('ghost'))
+          .send({ event: 'push', branchPattern: 'main' })
+          .expect(404);
+        expect(listTriggersForEnvironment(PROJECT_ID, 'ghost')).toHaveLength(0);
+      });
+
+      it('returns 409 on a duplicate (event, branchPattern)', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(triggersUrl('prod'))
+          .send({ event: 'push', branchPattern: 'main' })
+          .expect(201);
+        await request(app)
+          .post(triggersUrl('prod'))
+          .send({ event: 'push', branchPattern: 'main' })
+          .expect(409);
+      });
+
+      it('returns 400 for an invalid event or missing branchPattern', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(triggersUrl('prod'))
+          .send({ event: 'tag', branchPattern: 'main' })
+          .expect(400);
+        await request(app).post(triggersUrl('prod')).send({ event: 'push' }).expect(400);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .post(triggersUrl('prod'))
+          .send({ event: 'push', branchPattern: 'main' })
+          .expect(403);
+      });
+    });
+
+    describe('PATCH .../triggers/:triggerId', () => {
+      it('updates a trigger', async () => {
+        const row = createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const { app } = makeApp();
+        const res = await request(app)
+          .patch(`${triggersUrl('prod')}/${row.id}`)
+          .send({ enabled: false, branchPattern: 'release/*' })
+          .expect(200);
+        expect(res.body.trigger).toMatchObject({ enabled: false, branchPattern: 'release/*' });
+      });
+
+      it('returns 404 for a missing trigger', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${triggersUrl('prod')}/nope`)
+          .send({ enabled: false })
+          .expect(404);
+      });
+
+      it('returns 400 for an empty body', async () => {
+        const row = createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${triggersUrl('prod')}/${row.id}`)
+          .send({})
+          .expect(400);
+      });
+
+      it('returns 409 when an update collides with another trigger', async () => {
+        createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const b = createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'develop',
+        });
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${triggersUrl('prod')}/${b.id}`)
+          .send({ branchPattern: 'main' })
+          .expect(409);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const row = createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .patch(`${triggersUrl('prod')}/${row.id}`)
+          .send({ enabled: false })
+          .expect(403);
+      });
+    });
+
+    describe('DELETE .../triggers/:triggerId', () => {
+      it('removes a trigger', async () => {
+        const row = createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const { app } = makeApp();
+        const res = await request(app)
+          .delete(`${triggersUrl('prod')}/${row.id}`)
+          .expect(200);
+        expect(res.body).toEqual({ removed: true });
+        expect(listTriggersForEnvironment(PROJECT_ID, 'prod')).toHaveLength(0);
+      });
+
+      it('returns 404 for a missing trigger', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .delete(`${triggersUrl('prod')}/nope`)
+          .expect(404);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const row = createTrigger({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          event: 'push',
+          branchPattern: 'main',
+        });
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .delete(`${triggersUrl('prod')}/${row.id}`)
+          .expect(403);
+      });
     });
   });
 });
