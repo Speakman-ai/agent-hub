@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Pause, Play, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, Pause, Play, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
+import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -42,6 +43,11 @@ export default function EnvironmentsManagementSection({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
+
+  const toggleTriggers = useCallback((name: string) => {
+    setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
 
   const notify = useCallback(
     (message: string, type: string = 'info') => onNotify?.(message, type),
@@ -193,6 +199,30 @@ export default function EnvironmentsManagementSection({
               </Text>
 
               <View style={styles.actions}>
+                <TouchableOpacity
+                  onPress={() => toggleTriggers(env.name)}
+                  style={[
+                    styles.actionButton,
+                    expandedTriggers[env.name] ? styles.triggersButtonActive : styles.triggersButton,
+                  ]}
+                  accessibilityLabel={`Manage triggers for ${env.name}`}
+                  accessibilityState={{ expanded: !!expandedTriggers[env.name] }}
+                >
+                  {expandedTriggers[env.name] ? (
+                    <ChevronDown size={13} color={colors.amber400} />
+                  ) : (
+                    <ChevronRight size={13} color={colors.gray300} />
+                  )}
+                  <Zap size={13} color={expandedTriggers[env.name] ? colors.amber400 : colors.gray300} />
+                  <Text
+                    style={[
+                      styles.actionText,
+                      { color: expandedTriggers[env.name] ? colors.amber400 : colors.gray300 },
+                    ]}
+                  >
+                    Triggers
+                  </Text>
+                </TouchableOpacity>
                 {env.active ? (
                   <TouchableOpacity
                     onPress={() => setEnabled(env, !env.enabled)}
@@ -239,6 +269,13 @@ export default function EnvironmentsManagementSection({
                   </TouchableOpacity>
                 ) : null}
               </View>
+              {expandedTriggers[env.name] && projectId ? (
+                <EnvironmentTriggersPanel
+                  projectId={projectId}
+                  environmentName={env.name}
+                  onNotify={onNotify}
+                />
+              ) : null}
             </View>
           );
         })
@@ -310,6 +347,8 @@ const styles = StyleSheet.create({
   pauseButton: { borderColor: colors.amber400, backgroundColor: colors.amber900_40 },
   resumeButton: { borderColor: colors.emerald500, backgroundColor: colors.emerald900_40 },
   removeButton: { borderColor: colors.gray700 },
+  triggersButton: { borderColor: colors.gray700 },
+  triggersButtonActive: { borderColor: colors.amber400, backgroundColor: colors.amber900_40 },
   actionText: { fontSize: 12, fontWeight: '500' },
   disabled: { opacity: 0.5 },
 });

@@ -2,6 +2,21 @@ import { getApiBase, getAuthHeaders } from './connection';
 import { getToken as getJwt, clearToken } from './auth';
 import { normalizeSessionMessagesResponse } from './sessionMessagesResponse';
 import type { ApiErrorBody, AgentWire, MessageWire, ProjectWire, SessionWire } from '@shared/types';
+import type { DeployTriggerEvent } from './deployTriggers';
+
+interface CreateDeployTriggerBody {
+  event: DeployTriggerEvent;
+  branchPattern: string;
+  enabled?: boolean;
+  meta?: unknown;
+}
+
+interface UpdateDeployTriggerBody {
+  event?: DeployTriggerEvent;
+  branchPattern?: string;
+  enabled?: boolean;
+  meta?: unknown;
+}
 
 // Session-scoped flag we set right before a 401-triggered reload so that the
 // first request after reload (e.g. the bootstrap `getAuthStatus` probe in
@@ -491,6 +506,48 @@ export const api = {
     fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
       method: 'DELETE',
     }),
+  // Per-environment deploy triggers (deploy-triggers epic decision): git-event
+  // rules that enqueue a deployment when a matching push/merge updates a branch.
+  listDeployTriggers: (projectId: string, environmentName: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers`,
+    ),
+  createDeployTrigger: (
+    projectId: string,
+    environmentName: string,
+    body: CreateDeployTriggerBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  updateDeployTrigger: (
+    projectId: string,
+    environmentName: string,
+    triggerId: string,
+    body: UpdateDeployTriggerBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/triggers/${triggerId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteDeployTrigger: (projectId: string, environmentName: string, triggerId: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/triggers/${triggerId}`,
+      {
+        method: 'DELETE',
+      },
+    ),
   startDeployWizard: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
       method: 'POST',

@@ -260,6 +260,19 @@ export const api = {
     deleteDeployEnvironmentConfig: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
         method: 'DELETE',
     }),
+    // Per-environment deploy triggers (deploy-triggers epic decision).
+    listDeployTriggers: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers`),
+    createDeployTrigger: (projectId: any, environmentName: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }),
+    updateDeployTrigger: (projectId: any, environmentName: any, triggerId: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers/${triggerId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+    }),
+    deleteDeployTrigger: (projectId: any, environmentName: any, triggerId: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers/${triggerId}`, {
+        method: 'DELETE',
+    }),
     startDeployWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
         method: 'POST',
         body: JSON.stringify({}),

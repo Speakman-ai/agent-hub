@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
   Layers,
   Loader2,
   Pause,
@@ -8,8 +10,10 @@ import {
   RefreshCw,
   ShieldCheck,
   Trash2,
+  Zap,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -54,6 +58,11 @@ export default function EnvironmentsManagementSection({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
+
+  const toggleTriggers = useCallback((name: string) => {
+    setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
 
   const notify = useCallback(
     (message: string, type: string = 'info') => showToast?.(message, type),
@@ -197,6 +206,25 @@ export default function EnvironmentsManagementSection({
                     </div>
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleTriggers(env.name)}
+                      aria-expanded={!!expandedTriggers[env.name]}
+                      className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
+                        expandedTriggers[env.name]
+                          ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                          : 'border-gray-700 text-gray-300'
+                      }`}
+                      title="Manage deploy triggers"
+                    >
+                      {expandedTriggers[env.name] ? (
+                        <ChevronDown size={12} />
+                      ) : (
+                        <ChevronRight size={12} />
+                      )}
+                      <Zap size={12} />
+                      Triggers
+                    </button>
                     {env.active ? (
                       <button
                         type="button"
@@ -236,6 +264,13 @@ export default function EnvironmentsManagementSection({
                     ) : null}
                   </div>
                 </div>
+                {expandedTriggers[env.name] && projectId ? (
+                  <EnvironmentTriggersPanel
+                    projectId={projectId}
+                    environmentName={env.name}
+                    showToast={showToast}
+                  />
+                ) : null}
               </div>
             );
           })}
