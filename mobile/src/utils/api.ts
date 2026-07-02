@@ -252,6 +252,14 @@ export const api = {
     getWorkflowRunDetail: (projectId: any, workflowId: any, runId: any) => fetchJSON(`/projects/${projectId}/workflows/${workflowId}/runs/${runId}`),
     // Deployment Module — deploy.yaml environments + run actions.
     getDeployConfig: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/config`),
+    getDeployEnvironments: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/environments`),
+    setDeployEnvironmentEnabled: (projectId: any, environmentName: any, enabled: boolean) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+    }),
+    deleteDeployEnvironmentConfig: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
+        method: 'DELETE',
+    }),
     startDeployWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
         method: 'POST',
         body: JSON.stringify({}),

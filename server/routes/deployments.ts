@@ -45,7 +45,10 @@ import {
   setDeploymentReleaseItemInclusion,
 } from '../deploy/deployment-store.js';
 import {
+  deleteEnvironmentConfig,
+  getEnvironmentConfig,
   resolveEnvironmentConfigs,
+  setEnvironmentEnabled,
   type ResolvedEnvironmentConfig,
 } from '../deploy/deployment-env-config-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
@@ -65,6 +68,7 @@ import {
   ApproveDeploymentRequestSchema,
   CancelDeploymentRequestSchema,
   DeploymentListQuerySchema,
+  EnvironmentConfigUpdateRequestSchema,
   RollbackDeploymentRequestSchema,
   TriggerDeploymentRequestSchema,
 } from './deployments.openapi.js';
@@ -478,6 +482,52 @@ async function cleanupPreparedCheckout(checkout: CheckoutResult | null): Promise
   await rm(checkout.worktreePath, { recursive: true, force: true });
 }
 
+/**
+ * Load the project's deploy.yaml (via a hosted-git checkout when required) and
+ * run a synchronous callback against it, always cleaning up the checkout. A
+ * missing deploy.yaml is NOT an error here: it resolves to an empty declared set
+ * so operator config rows (including orphaned ones) are still surfaced and
+ * editable. A malformed deploy.yaml still throws. `fn` must be synchronous — the
+ * env runtime config store uses synchronous better-sqlite3 calls, so reads,
+ * writes, and DTO assembly happen against the same in-memory config snapshot
+ * without a second checkout.
+ */
+async function withDeployConfig<T>(
+  project: Project,
+  prepareCheckout: (args: { project: Project; ref: string }) => Promise<CheckoutResult>,
+  loadConfig: (deployYamlPath: string) => Promise<DeployConfig>,
+  fn: (config: DeployConfig) => T,
+): Promise<T> {
+  let checkout: CheckoutResult | null = null;
+  try {
+    let config: DeployConfig;
+    try {
+      if (projectUsesHostedGit(project)) {
+        checkout = await prepareCheckout({ project, ref: 'HEAD' });
+      }
+      config = await loadConfig(
+        checkout
+          ? path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml')
+          : projectDeployYamlPath(project),
+      );
+    } catch (err) {
+      if (err instanceof DeployConfigError && err.reason === 'not_found') {
+        config = { version: 1, environments: new Map() };
+      } else {
+        throw err;
+      }
+    }
+    return fn(config);
+  } finally {
+    await cleanupPreparedCheckout(checkout);
+  }
+}
+
+/** Names declared in the current deploy.yaml (trimmed, deduped). */
+function declaredEnvironmentNames(config: DeployConfig): Set<string> {
+  return new Set([...config.environments.values()].map((env) => env.name.trim()));
+}
+
 function rejectBusyEnvironment(projectId: string, environment: string, res: Response): boolean {
   const activeDeploymentId =
     getDeploymentEnvironment(projectId, environment)?.active_deployment_id ?? null;
@@ -710,38 +760,91 @@ export default function createDeploymentRoutes(
       const project = deps.findProject(projectId);
       if (!project) return res.status(404).json({ error: 'Project not found' });
 
-      let checkout: CheckoutResult | null = null;
       try {
-        let config: DeployConfig;
-        try {
-          if (projectUsesHostedGit(project)) {
-            checkout = await prepareCheckout({ project, ref: 'HEAD' });
-          }
-          config = await loadConfig(
-            checkout
-              ? path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml')
-              : projectDeployYamlPath(project),
-          );
-        } catch (err) {
-          // A missing deploy.yaml is not an error for this view: with no declared
-          // environments every operator config row resolves as inactive, and the
-          // management UI still needs to list (and clean up) those orphaned rows.
-          // A malformed deploy.yaml stays a hard error — its declared set can't be
-          // trusted to compute active/deployable.
-          if (err instanceof DeployConfigError && err.reason === 'not_found') {
-            config = { version: 1, environments: new Map() };
-          } else {
-            throw err;
-          }
-        }
-        return res.json(environmentsReadDto(project, config));
+        const dto = await withDeployConfig(project, prepareCheckout, loadConfig, (config) =>
+          environmentsReadDto(project, config),
+        );
+        return res.json(dto);
       } catch (err) {
         if (err instanceof DeployConfigError) return mapConfigError(err, res);
         if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
         const message = err instanceof Error ? err.message : String(err);
         return res.status(500).json({ error: message });
-      } finally {
-        await cleanupPreparedCheckout(checkout);
+      }
+    },
+  );
+
+  // Operator enable/disable for one environment's runtime config. deploy.yaml
+  // stays the source of truth for WHICH environments exist (environments-config
+  // epic decision); this only flips the no-commit-needed pause switch. Allowed on
+  // any environment that is either declared in deploy.yaml OR already has a config
+  // row (so an orphaned env can be re-enabled/paused before its config is removed);
+  // an unknown name is 404 so a typo never strands a junk config row.
+  router.patch(
+    '/api/projects/:projectId/deploy/environments/:environmentName',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = EnvironmentConfigUpdateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        const dto = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+          const declared = declaredEnvironmentNames(config);
+          const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
+          if (!declared.has(environmentName) && !hasConfigRow) {
+            throw new DeployConfigError(
+              'unknown_environment',
+              `Unknown environment: ${environmentName}`,
+            );
+          }
+          setEnvironmentEnabled(projectId, environmentName, parsed.data.enabled);
+          return environmentsReadDto(project, config);
+        });
+        return res.json(dto);
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  // Remove one environment's runtime config row. For a still-declared env this
+  // resets it to the default (enabled, no meta); for an orphaned env (removed from
+  // deploy.yaml) this is the cleanup path so stale rows do not linger forever.
+  router.delete(
+    '/api/projects/:projectId/deploy/environments/:environmentName',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      try {
+        const { removed, dto } = await withDeployConfig(
+          project,
+          prepareCheckout,
+          loadConfig,
+          (config) => {
+            const wasRemoved = deleteEnvironmentConfig(projectId, environmentName);
+            return { removed: wasRemoved, dto: environmentsReadDto(project, config) };
+          },
+        );
+        return res.json({ removed, ...dto });
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: message });
       }
     },
   );

@@ -27,6 +27,7 @@ import {
 } from '../deploy/deployment-store.js';
 import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
 import {
+  getEnvironmentConfig,
   setEnvironmentEnabled,
   upsertEnvironmentConfig,
 } from '../deploy/deployment-env-config-store.js';
@@ -1486,6 +1487,132 @@ environments:
     it('returns 404 for an unknown project', async () => {
       const { app } = makeApp();
       await request(app).get('/api/projects/missing/deploy/environments').expect(404);
+    });
+  });
+
+  describe('PATCH /deploy/environments/:environmentName', () => {
+    it('disables a declared environment and reflects it in the resolved list', async () => {
+      const { app } = makeApp();
+      const res = await request(app)
+        .patch(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+        .send({ enabled: false })
+        .expect(200);
+
+      const prod = res.body.environments.find((e: { name: string }) => e.name === 'prod');
+      expect(prod).toMatchObject({
+        name: 'prod',
+        active: true,
+        enabled: false,
+        deployable: false,
+        config: { enabled: false },
+      });
+      // The write persisted to the runtime config store.
+      expect(getEnvironmentConfig(PROJECT_ID, 'prod')?.enabled).toBe(0);
+    });
+
+    it('re-enables a paused environment, preserving other envs', async () => {
+      setEnvironmentEnabled(PROJECT_ID, 'prod', false);
+      const { app } = makeApp();
+      const res = await request(app)
+        .patch(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+        .send({ enabled: true })
+        .expect(200);
+
+      const prod = res.body.environments.find((e: { name: string }) => e.name === 'prod');
+      expect(prod).toMatchObject({ enabled: true, deployable: true });
+      const dev = res.body.environments.find((e: { name: string }) => e.name === 'dev');
+      expect(dev).toMatchObject({ enabled: true });
+    });
+
+    it('can pause an orphaned config row (env removed from deploy.yaml)', async () => {
+      upsertEnvironmentConfig({ projectId: PROJECT_ID, environmentName: 'legacy', enabled: true });
+      const { app } = makeApp();
+      const res = await request(app)
+        .patch(`/api/projects/${PROJECT_ID}/deploy/environments/legacy`)
+        .send({ enabled: false })
+        .expect(200);
+
+      const legacy = res.body.environments.find((e: { name: string }) => e.name === 'legacy');
+      expect(legacy).toMatchObject({ name: 'legacy', active: false, enabled: false });
+    });
+
+    it('returns 404 for an environment that is neither declared nor configured', async () => {
+      const { app } = makeApp();
+      await request(app)
+        .patch(`/api/projects/${PROJECT_ID}/deploy/environments/ghost`)
+        .send({ enabled: false })
+        .expect(404);
+      // No junk config row was created for the typo.
+      expect(getEnvironmentConfig(PROJECT_ID, 'ghost')).toBeNull();
+    });
+
+    it('returns 400 when enabled is missing or not a boolean', async () => {
+      const { app } = makeApp();
+      await request(app)
+        .patch(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+        .send({ enabled: 'nope' })
+        .expect(400);
+    });
+
+    it('returns 403 when the caller is not an Admin', async () => {
+      const { app } = makeApp({ role: 'User' });
+      await request(app)
+        .patch(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+        .send({ enabled: false })
+        .expect(403);
+    });
+
+    it('returns 404 for an unknown project', async () => {
+      const { app } = makeApp();
+      await request(app)
+        .patch('/api/projects/missing/deploy/environments/prod')
+        .send({ enabled: false })
+        .expect(404);
+    });
+  });
+
+  describe('DELETE /deploy/environments/:environmentName', () => {
+    it('removes an orphaned config row and drops it from the resolved list', async () => {
+      upsertEnvironmentConfig({ projectId: PROJECT_ID, environmentName: 'legacy', enabled: false });
+      const { app } = makeApp();
+      const res = await request(app)
+        .delete(`/api/projects/${PROJECT_ID}/deploy/environments/legacy`)
+        .expect(200);
+
+      expect(res.body.removed).toBe(true);
+      expect(res.body.environments.some((e: { name: string }) => e.name === 'legacy')).toBe(false);
+      expect(getEnvironmentConfig(PROJECT_ID, 'legacy')).toBeNull();
+    });
+
+    it('resets a declared environment to the enabled default', async () => {
+      setEnvironmentEnabled(PROJECT_ID, 'prod', false);
+      const { app } = makeApp();
+      const res = await request(app)
+        .delete(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+        .expect(200);
+
+      expect(res.body.removed).toBe(true);
+      const prod = res.body.environments.find((e: { name: string }) => e.name === 'prod');
+      // Still declared, so present; config row gone means default-enabled again.
+      expect(prod).toMatchObject({ name: 'prod', active: true, enabled: true, config: null });
+    });
+
+    it('is idempotent: removed=false when there is no config row', async () => {
+      const { app } = makeApp();
+      const res = await request(app)
+        .delete(`/api/projects/${PROJECT_ID}/deploy/environments/prod`)
+        .expect(200);
+      expect(res.body.removed).toBe(false);
+    });
+
+    it('returns 403 when the caller is not an Admin', async () => {
+      const { app } = makeApp({ role: 'User' });
+      await request(app).delete(`/api/projects/${PROJECT_ID}/deploy/environments/prod`).expect(403);
+    });
+
+    it('returns 404 for an unknown project', async () => {
+      const { app } = makeApp();
+      await request(app).delete('/api/projects/missing/deploy/environments/prod').expect(404);
     });
   });
 });

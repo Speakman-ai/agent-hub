@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  Layers,
   Play,
   RefreshCw,
   RotateCcw,
@@ -25,6 +26,7 @@ import {
   XCircle,
 } from 'lucide-react-native';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import EnvironmentsManagementSection from '../components/settings/EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from '../components/settings/ReleaseNotificationSettingsSection';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
@@ -138,6 +140,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [setupStarting, setSetupStarting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showManage, setShowManage] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -347,6 +350,14 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           </View>
           <View style={styles.headerActions}>
             <TouchableOpacity
+              onPress={() => setShowManage((prev) => !prev)}
+              style={[styles.iconButton, showManage && styles.iconButtonActive]}
+              accessibilityLabel="Manage environments"
+              accessibilityState={{ selected: showManage }}
+            >
+              <Layers size={16} color={showManage ? colors.blue300 : colors.gray300} />
+            </TouchableOpacity>
+            <TouchableOpacity
               onPress={() => setShowSettings((prev) => !prev)}
               style={[styles.iconButton, showSettings && styles.iconButtonActive]}
               accessibilityLabel="Release digest settings"
@@ -368,6 +379,17 @@ export default function DeploymentsScreen({ route, navigation }: any) {
             </TouchableOpacity>
           </View>
         </View>
+
+        {showManage ? (
+          <View style={styles.settingsPanel} testID="deployments-manage-panel">
+            <EnvironmentsManagementSection
+              projectId={projectId}
+              onNotify={(message, type) =>
+                Alert.alert(type === 'error' ? 'Environment error' : 'Environments', message)
+              }
+            />
+          </View>
+        ) : null}
 
         {showSettings ? (
           <View style={styles.settingsPanel} testID="deployments-settings-panel">

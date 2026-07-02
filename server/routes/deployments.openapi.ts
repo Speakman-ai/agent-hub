@@ -44,6 +44,10 @@ export const RollbackDeploymentRequestSchema = z.object({
   meta: z.unknown().optional(),
 });
 
+export const EnvironmentConfigUpdateRequestSchema = z.object({
+  enabled: z.boolean(),
+});
+
 export const AdjustDeploymentReleaseItemRequestSchema = z.object({
   inclusionStatus: z.enum(['included', 'excluded']),
   reason: z.string().trim().min(1).max(2000),
@@ -260,6 +264,16 @@ const EnvironmentsReadResponseSchema = registerComponent(
   }),
 );
 
+const EnvironmentConfigDeleteResponseSchema = registerComponent(
+  'EnvironmentConfigDeleteResponse',
+  z.object({
+    removed: z.boolean(),
+    projectId: z.string(),
+    configPath: z.string(),
+    environments: z.array(ResolvedEnvironmentSchema),
+  }),
+);
+
 const DeploySetupWizardResponseSchema = registerComponent(
   'DeploySetupWizardResponse',
   z.object({
@@ -345,6 +359,7 @@ const errorResponse = (description: string) => ({
 });
 
 const projectParams = z.object({ projectId: z.string() });
+const environmentParams = z.object({ projectId: z.string(), environmentName: z.string() });
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
 const deploymentReleaseItemParams = z.object({
   projectId: z.string(),
@@ -409,6 +424,47 @@ registerPath({
       content: jsonContent(EnvironmentsReadResponseSchema),
     },
     400: errorResponse('Invalid deploy.yaml.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}',
+  tags: ['Deployments'],
+  summary: 'Enable or disable an environment (operator runtime config)',
+  description:
+    'Admin+. Flips the per-environment operator pause switch without a commit. deploy.yaml stays the source of truth for which environments exist; a disabled environment is not deployable. Allowed on any environment declared in deploy.yaml or that already has a config row; an unknown environment name is 404.',
+  request: {
+    params: environmentParams,
+    body: { content: jsonContent(EnvironmentConfigUpdateRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated resolved environment list.',
+      content: jsonContent(EnvironmentsReadResponseSchema),
+    },
+    400: errorResponse('Invalid body or deploy.yaml.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or environment not found.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}',
+  tags: ['Deployments'],
+  summary: 'Remove an environment runtime config row',
+  description:
+    'Admin+. Deletes the per-environment operator config row. For a still-declared environment this resets it to the enabled default; for an orphaned environment (removed from deploy.yaml) this cleans up the stale row. Idempotent: `removed` is false when there was no row.',
+  request: { params: environmentParams },
+  responses: {
+    200: {
+      description: 'Removal result plus the refreshed resolved environment list.',
+      content: jsonContent(EnvironmentConfigDeleteResponseSchema),
+    },
+    400: errorResponse('Invalid deploy.yaml.'),
+    403: errorResponse('Admin role required.'),
     404: errorResponse('Project not found.'),
   },
 });

@@ -478,6 +478,19 @@ export const api = {
     }),
   // Deployment Module - deploy.yaml environments + run actions.
   getDeployConfig: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/config`),
+  // Resolved environment view (deploy.yaml declarations + operator runtime config,
+  // including orphaned rows) used by the environments management surface.
+  getDeployEnvironments: (projectId: any) =>
+    fetchJSON(`/projects/${projectId}/deploy/environments`),
+  setDeployEnvironmentEnabled: (projectId: any, environmentName: any, enabled: boolean) =>
+    fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+  deleteDeployEnvironmentConfig: (projectId: any, environmentName: any) =>
+    fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}`, {
+      method: 'DELETE',
+    }),
   startDeployWizard: (projectId: any) =>
     fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
       method: 'POST',

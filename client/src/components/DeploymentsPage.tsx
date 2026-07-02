@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  Layers,
   Loader2,
   Mail,
   Play,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { buildNavigationHash } from '../utils/navigation';
+import EnvironmentsManagementSection from './EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
@@ -203,6 +205,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [setupStarting, setSetupStarting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showManage, setShowManage] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -468,6 +471,21 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
+              onClick={() => setShowManage((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border disabled:opacity-60 ${
+                showManage
+                  ? 'border-sky-500/40 bg-sky-500/15 text-sky-100'
+                  : 'border-gray-700 text-gray-300 hover:bg-gray-800'
+              }`}
+              title="Manage environments"
+              aria-pressed={showManage}
+              aria-expanded={showManage}
+            >
+              <Layers size={13} />
+              Environments
+            </button>
+            <button
+              type="button"
               onClick={() => setShowSettings((prev) => !prev)}
               className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border disabled:opacity-60 ${
                 showSettings
@@ -493,6 +511,12 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
             </button>
           </div>
         </div>
+
+        {showManage && (
+          <div className="mb-4" data-testid="deployments-manage-panel">
+            <EnvironmentsManagementSection projectId={projectId} showToast={onNotify} />
+          </div>
+        )}
 
         {showSettings && (
           <div className="mb-4" data-testid="deployments-settings-panel">

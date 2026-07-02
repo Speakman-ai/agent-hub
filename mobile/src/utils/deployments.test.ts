@@ -17,6 +17,9 @@ import {
   releaseVersionDeployments,
   releaseVersionLabel,
   shortDeploymentRef,
+  environmentStatus,
+  hasRuntimeConfig,
+  sortEnvironmentsForDisplay,
 } from './deployments';
 
 function deployment(overrides = {}) {
@@ -209,5 +212,30 @@ describe('deployment state helpers', () => {
       'Release digest',
     );
     expect(releaseNotificationStatusLabel({ status: 'sending' })).toBe('sending');
+  });
+
+  it('derives environment management status from active/enabled', () => {
+    expect(environmentStatus({ active: true, enabled: true })).toBe('deployable');
+    expect(environmentStatus({ active: true, enabled: false })).toBe('paused');
+    expect(environmentStatus({ active: false, enabled: true })).toBe('orphaned');
+    expect(environmentStatus({ active: false, enabled: false })).toBe('orphaned');
+  });
+
+  it('detects a removable runtime config row', () => {
+    expect(hasRuntimeConfig({ config: { id: 'c1' } })).toBe(true);
+    expect(hasRuntimeConfig({ config: null })).toBe(false);
+  });
+
+  it('sorts declared environments ahead of orphaned rows, each alphabetical', () => {
+    const input = [
+      { name: 'zeta', active: true },
+      { name: 'legacy', active: false },
+      { name: 'alpha', active: true },
+    ];
+    expect(sortEnvironmentsForDisplay(input).map((e) => e.name)).toEqual([
+      'alpha',
+      'zeta',
+      'legacy',
+    ]);
   });
 });

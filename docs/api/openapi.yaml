@@ -4144,6 +4144,24 @@ components:
         - projectId
         - configPath
         - environments
+    EnvironmentConfigDeleteResponse:
+      type: object
+      properties:
+        removed:
+          type: boolean
+        projectId:
+          type: string
+        configPath:
+          type: string
+        environments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResolvedEnvironment"
+      required:
+        - removed
+        - projectId
+        - configPath
+        - environments
     DeploySetupWizardResponse:
       type: object
       properties:
@@ -18277,6 +18295,99 @@ paths:
                 $ref: "#/components/schemas/EnvironmentsReadResponse"
         "400":
           description: Invalid deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}:
+    patch:
+      tags:
+        - Deployments
+      summary: Enable or disable an environment (operator runtime config)
+      description: Admin+. Flips the per-environment operator pause switch without a commit. deploy.yaml stays the source of truth for which environments exist; a disabled environment is not deployable. Allowed on any environment declared in deploy.yaml or that already has a config row; an unknown environment name is 404.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required:
+                - enabled
+      responses:
+        "200":
+          description: Updated resolved environment list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvironmentsReadResponse"
+        "400":
+          description: Invalid body or deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    delete:
+      tags:
+        - Deployments
+      summary: Remove an environment runtime config row
+      description: "Admin+. Deletes the per-environment operator config row. For a still-declared environment this resets it to the enabled default; for an orphaned environment (removed from deploy.yaml) this cleans up the stale row. Idempotent: `removed` is false when there was no row."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      responses:
+        "200":
+          description: Removal result plus the refreshed resolved environment list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvironmentConfigDeleteResponse"
+        "400":
+          description: Invalid deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
           content:
             application/json:
               schema:

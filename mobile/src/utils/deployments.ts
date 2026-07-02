@@ -197,3 +197,37 @@ export function releaseNotificationRecipientLabel(notification: any): string {
 export function releaseNotificationStatusLabel(notification: any): string {
   return String(notification?.status || 'pending').replaceAll('_', ' ');
 }
+
+// Environments management helpers (parity with client/src/utils/environments.ts).
+
+export type EnvironmentStatus = 'deployable' | 'paused' | 'orphaned';
+
+/**
+ * Collapse the resolved (active, enabled) booleans into a single display status.
+ * `active` (declared in deploy.yaml) is checked first so a paused-and-removed env
+ * reads as orphaned (clean up the stale row), not paused.
+ */
+export function environmentStatus(env: { active: boolean; enabled: boolean }): EnvironmentStatus {
+  if (!env.active) return 'orphaned';
+  if (!env.enabled) return 'paused';
+  return 'deployable';
+}
+
+export function environmentStatusLabel(status: EnvironmentStatus): string {
+  return status;
+}
+
+/** Whether the env has a stored operator config row that can be removed/reset. */
+export function hasRuntimeConfig(env: { config: unknown }): boolean {
+  return env.config != null;
+}
+
+/** Declared environments first (actionable), then orphaned rows, each alphabetical. */
+export function sortEnvironmentsForDisplay<T extends { name: string; active: boolean }>(
+  environments: T[],
+): T[] {
+  return [...environments].sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
