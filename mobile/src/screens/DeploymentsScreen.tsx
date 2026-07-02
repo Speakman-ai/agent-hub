@@ -39,6 +39,7 @@ import {
   summarizeRecipientCounts,
 } from '../utils/deployRecipients';
 import {
+  applyReleaseNotificationEvent,
   deploymentEventFromSnapshot,
   deploymentStepLogText,
   isTerminalDeploymentStatus,
@@ -131,7 +132,7 @@ function loadDeployBranches(projectId: string): Promise<any> {
 }
 
 export default function DeploymentsScreen({ route, navigation }: any) {
-  const { projects, lastDeploymentEvent } = useApp();
+  const { projects, lastDeploymentEvent, lastReleaseNotificationEvent } = useApp();
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = route?.params?.project || projects?.find((p: any) => p.id === projectId);
   const [config, setConfig] = useState<any>(null);
@@ -284,6 +285,18 @@ export default function DeploymentsScreen({ route, navigation }: any) {
       logs: lastDeploymentEvent.logs || [],
     });
   }, [applySnapshot, lastDeploymentEvent, projectId]);
+
+  useEffect(() => {
+    if (!lastReleaseNotificationEvent) return;
+    setSelected((prev: any) =>
+      applyReleaseNotificationEvent(
+        prev,
+        lastReleaseNotificationEvent,
+        projectId,
+        selectedIdRef.current,
+      ),
+    );
+  }, [lastReleaseNotificationEvent, projectId]);
 
   const runAction = useCallback(
     async (key: string, fn: () => Promise<any>, message: string) => {

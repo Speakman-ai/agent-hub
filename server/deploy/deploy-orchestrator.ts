@@ -1198,6 +1198,7 @@ export async function runDeployment(
       await enqueueReleaseNotificationsForDeployment(successDeployment, {
         cfg: deps.releaseDigestConfig,
         releaseDigestRunner: deps.releaseDigestRunner,
+        broadcast: deps.broadcast,
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);

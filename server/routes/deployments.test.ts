@@ -769,7 +769,7 @@ environments:
       .prepare('UPDATE release_notification_outbox SET attempts = 5 WHERE id = ?')
       .run(failed.id);
 
-    const { app } = makeApp();
+    const { app, deps } = makeApp();
     const detail = await request(app)
       .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}`)
       .expect(200);
@@ -811,6 +811,18 @@ environments:
         )
         .get('retry-route-key'),
     ).toMatchObject({ count: 1 });
+    // Retrying flips the row back to pending and fans the change out over WS.
+    expect(deps.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'release_notification_update',
+        projectId: PROJECT_ID,
+        deploymentId: dep.id,
+      }),
+    );
+    const wsEvent = (deps.broadcast as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => call[0])
+      .find((event) => event?.type === 'release_notification_update');
+    expect(JSON.stringify(wsEvent)).not.toContain('ops@example.com');
   });
 
   it('requires Admin role to retry release notifications', async () => {

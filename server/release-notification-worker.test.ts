@@ -12,6 +12,15 @@ describe('release notification outbox worker', () => {
     expect(deliver).toHaveBeenCalledTimes(1);
   });
 
+  it('threads the broadcast fn into the delivery batch', async () => {
+    const broadcast = vi.fn();
+    const deliver = vi.fn(async () => [{ id: 'row-1' }] as ReleaseNotificationOutboxRow[]);
+
+    await runReleaseNotificationOutboxWorker({ deliver, broadcast });
+
+    expect(deliver).toHaveBeenCalledWith(undefined, { broadcast });
+  });
+
   it('logs delivery failures without throwing out of the scheduler tick', async () => {
     const warn = vi.fn();
     const deliver = vi.fn(async () => {

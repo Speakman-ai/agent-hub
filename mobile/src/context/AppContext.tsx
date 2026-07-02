@@ -107,6 +107,9 @@ export function AppProvider({ children }: any) {
     // Last deployment_update WS event. DeploymentsScreen consumes this to keep
     // environment status and step logs live without a project-wide refetch loop.
     const [lastDeploymentEvent, setLastDeploymentEvent] = useState<any>(null);
+    // Last release_notification_update WS event. DeploymentsScreen consumes this
+    // to keep notification delivery state (queued/sent/failed) live.
+    const [lastReleaseNotificationEvent, setLastReleaseNotificationEvent] = useState<any>(null);
     // Tracks the project currently being viewed in ThreadsScreen so we can
     // suppress unread-badge increments (counts are only incremented when the
     // user isn't already looking at that project's threads list).
@@ -800,6 +803,15 @@ export function AppProvider({ children }: any) {
                     steps: data.steps || [],
                     approvals: data.approvals || [],
                     logs: data.logs || [],
+                    bump: Date.now(),
+                });
+                break;
+            case 'release_notification_update':
+                setLastReleaseNotificationEvent({
+                    type: data.type,
+                    projectId: data.projectId,
+                    deploymentId: data.deploymentId,
+                    releaseNotifications: data.releaseNotifications || [],
                     bump: Date.now(),
                 });
                 break;
@@ -2028,6 +2040,7 @@ export function AppProvider({ children }: any) {
         lastFinalizeRunEvent,
         // Deployments
         lastDeploymentEvent,
+        lastReleaseNotificationEvent,
         // Threads
         unreadThreadCounts,
         lastThreadEvent,

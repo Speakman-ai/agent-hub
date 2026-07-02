@@ -2764,6 +2764,15 @@ export default function App({ initialView }: any = {}) {
           window.dispatchEvent(new CustomEvent('agenthub-deployment-ws', { detail: data }));
           break;
 
+        // Release notification delivery state (queued/sent/failed) for a
+        // deployment. Bridged to a window CustomEvent so the Deployments page
+        // updates the notification history live without a refetch.
+        case 'release_notification_update':
+          window.dispatchEvent(
+            new CustomEvent('agenthub-release-notification-ws', { detail: data }),
+          );
+          break;
+
         case 'wiki_update':
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
           break;

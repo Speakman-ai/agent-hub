@@ -30,6 +30,7 @@ import EnvironmentsManagementSection from './EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
+const RELEASE_NOTIFICATION_WS = 'agenthub-release-notification-ws';
 const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled']);
 const CUSTOM_REF_VALUE = '__custom__';
 
@@ -375,6 +376,23 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
     window.addEventListener(DEPLOYMENT_WS, onWs);
     return () => window.removeEventListener(DEPLOYMENT_WS, onWs);
   }, [applySnapshot, projectId]);
+
+  useEffect(() => {
+    const onWs = (event: Event) => {
+      const detail = (event as CustomEvent).detail || {};
+      if (detail.projectId !== projectId) return;
+      // Only patch the notification history of the currently-open deployment;
+      // the WS event carries the safe (PII-free) projection, matching the fetch.
+      if (!detail.deploymentId || detail.deploymentId !== selectedIdRef.current) return;
+      setSelected((prev: any) =>
+        prev && prev.deployment?.id === detail.deploymentId
+          ? { ...prev, releaseNotifications: detail.releaseNotifications || [] }
+          : prev,
+      );
+    };
+    window.addEventListener(RELEASE_NOTIFICATION_WS, onWs);
+    return () => window.removeEventListener(RELEASE_NOTIFICATION_WS, onWs);
+  }, [projectId]);
 
   const runAction = async (key: string, fn: () => Promise<any>, message: string) => {
     setActionKey(key);

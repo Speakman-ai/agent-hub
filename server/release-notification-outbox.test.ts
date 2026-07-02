@@ -566,6 +566,91 @@ describe('release notification outbox', () => {
   });
 });
 
+describe('release notification WS broadcasting', () => {
+  it('broadcasts a safe (PII-free) notification update after queuing', async () => {
+    const broadcast = vi.fn();
+    const ticket = createSupportTicket({
+      projectId: P,
+      subject: 'CSV export is broken',
+      body: 'Cannot export CSV.',
+      reporterEmail: 'Reporter@Example.COM',
+    });
+    const deployment = successfulProductionDeployment();
+    const cardId = insertReleaseCard({ cardId: 'card-ws-enqueue', supportTicketId: ticket.id });
+    ensureDeploymentReleaseItem({ deploymentId: deployment.id, cardId });
+
+    await enqueueReleaseNotificationsForDeployment(deployment, { broadcast });
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const event = broadcast.mock.calls[0][0];
+    expect(event).toMatchObject({
+      type: 'release_notification_update',
+      projectId: P,
+      deploymentId: deployment.id,
+    });
+    expect(event.releaseNotifications).toHaveLength(1);
+    // Safe projection: no recipient address on the WS payload.
+    expect(JSON.stringify(event)).not.toContain('reporter@example.com');
+    expect(event.releaseNotifications[0]).not.toHaveProperty('recipient_email');
+  });
+
+  it('does not broadcast when nothing was queued', async () => {
+    const broadcast = vi.fn();
+    const deployment = successfulProductionDeployment();
+
+    await enqueueReleaseNotificationsForDeployment(deployment, { broadcast });
+
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('broadcasts once per deployment after a delivery batch settles', async () => {
+    sendEmailMock.mockResolvedValue({ sent: true });
+    const broadcast = vi.fn();
+    const deployment = successfulProductionDeployment();
+    enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'ws-deliver-a',
+      recipientEmail: 'a@example.com',
+      subject: 'Digest',
+      bodyText: 'body',
+    });
+    enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'ws-deliver-b',
+      recipientEmail: 'b@example.com',
+      subject: 'Digest',
+      bodyText: 'body',
+    });
+
+    const delivered = await deliverReleaseNotificationOutboxBatch(undefined, { broadcast });
+
+    expect(delivered).toHaveLength(2);
+    // Two rows, one deployment → a single coalesced broadcast.
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0][0]).toMatchObject({
+      type: 'release_notification_update',
+      projectId: P,
+      deploymentId: deployment.id,
+    });
+    const event = broadcast.mock.calls[0][0];
+    expect(event.releaseNotifications.map((row: { status: string }) => row.status)).toEqual([
+      'sent',
+      'sent',
+    ]);
+    expect(JSON.stringify(event)).not.toContain('a@example.com');
+  });
+
+  it('does not broadcast when the delivery batch is empty', async () => {
+    const broadcast = vi.fn();
+    await deliverReleaseNotificationOutboxBatch(undefined, { broadcast });
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+});
+
 describe('release notification recipient audit projection', () => {
   it('exposes the recipient email but redacts raw errors and body text', () => {
     const deployment = successfulProductionDeployment();

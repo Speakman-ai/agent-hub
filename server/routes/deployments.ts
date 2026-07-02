@@ -79,6 +79,7 @@ import {
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
+  broadcastReleaseNotificationUpdate,
   listReleaseNotificationOutboxByDeployment,
   listReleaseNotificationRecipientsByDeployment,
   releaseNotificationHistoryItem,
@@ -1316,6 +1317,9 @@ export default function createDeploymentRoutes(
       if (!retried) {
         return res.status(409).json({ error: 'Release notification is no longer retryable' });
       }
+      // Re-queuing flips the row back to pending; fan out so other viewers
+      // see the state change without refetching. Best-effort by contract.
+      broadcastReleaseNotificationUpdate(deps.broadcast, projectId, deployment.id);
       return res.json({
         notification: releaseNotificationHistoryItem(retried),
         releaseNotifications: releaseNotificationsDto(deployment.id),

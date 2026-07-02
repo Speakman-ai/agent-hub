@@ -604,4 +604,70 @@ describe('DeploymentsPage', () => {
     expect(api.getDeploymentNotificationRecipients).toHaveBeenCalledWith('proj-1', 'dep-1');
     expect(screen.getByText('1 recipient (1 sent)')).toBeInTheDocument();
   });
+
+  it('live-updates notification history from a release_notification_update WS event', async () => {
+    (api.getDeployment as any).mockResolvedValue(
+      snapshot(
+        deployment(),
+        [step()],
+        [releaseItem()],
+        [releaseNotification({ id: 'note-1', subject: 'Release digest', status: 'error' })],
+      ),
+    );
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    expect(await screen.findByText('1 recorded')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub-release-notification-ws', {
+          detail: {
+            type: 'release_notification_update',
+            projectId: 'proj-1',
+            deploymentId: 'dep-1',
+            releaseNotifications: [
+              releaseNotification({ id: 'note-1', subject: 'Release digest', status: 'sent' }),
+              releaseNotification({ id: 'note-2', subject: 'Your fix shipped', status: 'sent' }),
+            ],
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText('2 recorded')).toBeInTheDocument();
+    expect(screen.getByText('Your fix shipped')).toBeInTheDocument();
+  });
+
+  it('ignores a release_notification_update for a different deployment', async () => {
+    (api.getDeployment as any).mockResolvedValue(
+      snapshot(
+        deployment(),
+        [step()],
+        [releaseItem()],
+        [releaseNotification({ id: 'note-1', subject: 'Release digest', status: 'error' })],
+      ),
+    );
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    expect(await screen.findByText('1 recorded')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub-release-notification-ws', {
+          detail: {
+            type: 'release_notification_update',
+            projectId: 'proj-1',
+            deploymentId: 'dep-other',
+            releaseNotifications: [
+              releaseNotification({ id: 'x1' }),
+              releaseNotification({ id: 'x2' }),
+            ],
+          },
+        }),
+      );
+    });
+
+    // Still the original single notification for the open deployment.
+    expect(screen.getByText('1 recorded')).toBeInTheDocument();
+  });
 });

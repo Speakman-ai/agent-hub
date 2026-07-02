@@ -8,6 +8,7 @@ import { listReleaseDigestRecipients } from './release-notification-settings.js'
 import { resolveNotificationRouting } from './deploy/deployment-notification-routing-store.js';
 import type {
   AppConfig,
+  BroadcastFn,
   DeploymentReleaseItemDetailRow,
   DeploymentRow,
   ReleaseNotificationOutboxRow,
@@ -75,6 +76,66 @@ export interface ReleaseNotificationRecipientItem {
 export interface EnqueueReleaseNotificationsOptions {
   cfg?: AppConfig;
   releaseDigestRunner?: ReleaseDigestRunner;
+  /**
+   * Best-effort WS fan-out. When provided, a `release_notification_update`
+   * event is broadcast after rows are queued so the Deployments UI shows the
+   * newly-pending notifications live (the deployment_update event carries only
+   * the row + steps, not the notification history).
+   */
+  broadcast?: BroadcastFn;
+}
+
+/** WS event that mirrors the safe (PII-free) notification history for a deployment. */
+export interface ReleaseNotificationUpdateEvent {
+  type: 'release_notification_update';
+  projectId: string;
+  deploymentId: string;
+  releaseNotifications: ReleaseNotificationHistoryItem[];
+}
+
+/**
+ * Build the safe `release_notification_update` payload for a deployment. Uses
+ * {@link releaseNotificationHistoryItem} (no recipient address, sanitized error)
+ * because WS events fan out to every connected client of the project — unlike
+ * the Admin-gated recipients endpoint, they must never carry reporter PII.
+ */
+export function releaseNotificationUpdateEvent(
+  projectId: string,
+  deploymentId: string,
+): ReleaseNotificationUpdateEvent {
+  return {
+    type: 'release_notification_update',
+    projectId,
+    deploymentId,
+    releaseNotifications: listReleaseNotificationOutboxByDeployment(deploymentId).map(
+      releaseNotificationHistoryItem,
+    ),
+  };
+}
+
+/**
+ * Broadcast a `release_notification_update` for a deployment. BEST-EFFORT by
+ * contract, mirroring the deploy orchestrator's `emitDeploymentUpdate`: live
+ * progress is a notification, never authoritative, so a WS/fanout failure must
+ * not reject the delivery/enqueue path. Swallows and logs any failure.
+ */
+export function broadcastReleaseNotificationUpdate(
+  broadcast: BroadcastFn | undefined,
+  projectId: string,
+  deploymentId: string,
+): void {
+  if (!broadcast) return;
+  try {
+    broadcast(
+      releaseNotificationUpdateEvent(projectId, deploymentId) as unknown as Record<string, unknown>,
+    );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[release-notification-outbox] release_notification_update broadcast failed ` +
+        `(best-effort) deployment=${deploymentId} project=${projectId}: ${detail}`,
+    );
+  }
 }
 
 function normalizeRecipientEmail(email: string): string {
@@ -404,6 +465,10 @@ export async function enqueueReleaseNotificationsForDeployment(
     }
   }
 
+  if (queued.length > 0) {
+    broadcastReleaseNotificationUpdate(options.broadcast, deployment.project_id, deployment.id);
+  }
+
   return queued;
 }
 
@@ -415,8 +480,18 @@ function claimReleaseNotificationOutboxForDelivery(
   return getStmts().getReleaseNotificationOutboxById.get(row.id) as ReleaseNotificationOutboxRow;
 }
 
+export interface DeliverReleaseNotificationOutboxOptions {
+  /**
+   * Best-effort WS fan-out. When provided, a single `release_notification_update`
+   * event is broadcast per affected deployment after the batch settles so the
+   * Deployments UI reflects sent/failed transitions without a manual refresh.
+   */
+  broadcast?: BroadcastFn;
+}
+
 export async function deliverReleaseNotificationOutboxBatch(
   limit = DEFAULT_DELIVERY_LIMIT,
+  options: DeliverReleaseNotificationOutboxOptions = {},
 ): Promise<ReleaseNotificationOutboxRow[]> {
   const deliveredOrFailed: ReleaseNotificationOutboxRow[] = [];
   for (const candidate of listRetryEligibleReleaseNotificationOutbox(limit)) {
@@ -449,6 +524,15 @@ export async function deliverReleaseNotificationOutboxBatch(
     deliveredOrFailed.push(
       getStmts().getReleaseNotificationOutboxById.get(claimed.id) as ReleaseNotificationOutboxRow,
     );
+  }
+  // One broadcast per affected deployment (rows for the same deployment share a
+  // history projection, so per-row events would be redundant fan-out).
+  if (options.broadcast && deliveredOrFailed.length > 0) {
+    const affected = new Map<string, string>();
+    for (const row of deliveredOrFailed) affected.set(row.deployment_id, row.project_id);
+    for (const [deploymentId, projectId] of affected) {
+      broadcastReleaseNotificationUpdate(options.broadcast, projectId, deploymentId);
+    }
   }
   return deliveredOrFailed;
 }

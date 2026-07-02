@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, expect, it } from 'vitest';
 import {
+  applyReleaseNotificationEvent,
   deploymentStepLogText,
   deploymentEventFromSnapshot,
   formatDeploymentLogEntry,
@@ -237,5 +238,47 @@ describe('deployment state helpers', () => {
       'zeta',
       'legacy',
     ]);
+  });
+});
+
+describe('applyReleaseNotificationEvent', () => {
+  const prev = {
+    deployment: { id: 'dep-1' },
+    releaseNotifications: [{ id: 'note-1', status: 'error' }],
+  };
+
+  it('patches notification history for the open deployment', () => {
+    const event = {
+      projectId: 'proj-1',
+      deploymentId: 'dep-1',
+      releaseNotifications: [
+        { id: 'note-1', status: 'sent' },
+        { id: 'note-2', status: 'sent' },
+      ],
+    };
+    const next = applyReleaseNotificationEvent(prev, event, 'proj-1', 'dep-1');
+    expect(next).not.toBe(prev);
+    expect(next.releaseNotifications).toHaveLength(2);
+    expect(next.deployment).toBe(prev.deployment);
+  });
+
+  it('ignores events for another project or deployment', () => {
+    const other = { projectId: 'proj-2', deploymentId: 'dep-1', releaseNotifications: [] };
+    expect(applyReleaseNotificationEvent(prev, other, 'proj-1', 'dep-1')).toBe(prev);
+    const otherDep = { projectId: 'proj-1', deploymentId: 'dep-9', releaseNotifications: [] };
+    expect(applyReleaseNotificationEvent(prev, otherDep, 'proj-1', 'dep-1')).toBe(prev);
+  });
+
+  it('ignores events when no deployment is open or the ids differ', () => {
+    const event = { projectId: 'proj-1', deploymentId: 'dep-1', releaseNotifications: [] };
+    expect(applyReleaseNotificationEvent(prev, event, 'proj-1', null)).toBe(prev);
+    expect(applyReleaseNotificationEvent(null, event, 'proj-1', 'dep-1')).toBe(null);
+  });
+
+  it('defaults a missing notification list to empty', () => {
+    const event = { projectId: 'proj-1', deploymentId: 'dep-1' };
+    expect(applyReleaseNotificationEvent(prev, event, 'proj-1', 'dep-1').releaseNotifications).toEqual(
+      [],
+    );
   });
 });

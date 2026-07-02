@@ -1066,11 +1066,11 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
     { name: 'runner-job-log-reaper' },
   );
 
-  void runReleaseNotificationOutboxWorker();
+  void runReleaseNotificationOutboxWorker({ broadcast });
   cron.schedule(
     RELEASE_NOTIFICATION_OUTBOX_WORKER_CRON,
     () => {
-      void runReleaseNotificationOutboxWorker();
+      void runReleaseNotificationOutboxWorker({ broadcast });
     },
     { name: 'release-notification-outbox-worker', noOverlap: true },
   );

@@ -92,6 +92,25 @@ export function deploymentEventFromSnapshot(snapshot: any, at = new Date().toISO
   };
 }
 
+/**
+ * Patch the open deployment's `selected` snapshot with a `release_notification_update`
+ * WS event. Returns `prev` unchanged unless the event targets the same project AND the
+ * currently-open deployment — so background notification churn for other deployments
+ * never disturbs the visible detail view. Pure so it can be unit-tested in isolation.
+ */
+export function applyReleaseNotificationEvent(
+  prev: any,
+  event: any,
+  activeProjectId: string,
+  activeDeploymentId: string | null,
+): any {
+  if (!event || event.projectId !== activeProjectId) return prev;
+  const deploymentId = event.deploymentId;
+  if (!deploymentId || deploymentId !== activeDeploymentId) return prev;
+  if (!prev || prev.deployment?.id !== deploymentId) return prev;
+  return { ...prev, releaseNotifications: event.releaseNotifications || [] };
+}
+
 function valueText(value: any): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;
