@@ -51,6 +51,7 @@ import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { recomputeSessionState } from '../session-state.js';
 import { epicsWithComputedState, recomputeEpicState } from '../epic-state.js';
+import { disableAutonomousForEmptyEpic } from '../kanban-epic-autonomous-empty.js';
 import { markSessionAutoShipOnComplete, markSessionFinalizeAutomation } from '../session-ship.js';
 import { assignedFinalizeAutomationLevel } from '../finalize/automation.js';
 import {
@@ -1074,6 +1075,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (nextEpicId) affectedEpicIds.add(nextEpicId);
     for (const affectedEpicId of affectedEpicIds) {
       recomputeEpicState(stmts, affectedEpicId);
+      disableAutonomousForEmptyEpic(deps, req.params.projectId as string, affectedEpicId);
     }
     if (parsed.assignedUserId !== undefined) {
       stmts.setKanbanCardAssignedUser.run(normalizedAssignedUser, req.params.cardId);
@@ -1455,6 +1457,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
     stmts.deleteKanbanCard.run(cardId);
     recomputeEpicState(stmts, card?.epic_id);
+    disableAutonomousForEmptyEpic(deps, req.params.projectId as string, card?.epic_id);
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json({ ok: true });
   });
@@ -2587,6 +2590,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (epicId) affectedEpicIds.add(epicId);
       for (const affectedEpicId of affectedEpicIds) {
         recomputeEpicState(stmts, affectedEpicId);
+        disableAutonomousForEmptyEpic(deps, req.params.projectId as string, affectedEpicId);
       }
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       const updated = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
