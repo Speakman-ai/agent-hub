@@ -14,7 +14,9 @@
  *   4. GATED environments (`approval: true`) park at `awaiting_approval` and do
  *      NOT run steps here — the approval gate + resume live in a later phase
  *      (epic decision `approval-auth`). The env lock stays held while parked so
- *      the environment remains serialized.
+ *      the environment remains serialized. Automated `schedule` triggers are the
+ *      exception: they bypass the gate and deploy immediately, since the operator
+ *      opted into unattended scheduled deploys (see {@link APPROVAL_BYPASS_TRIGGERS}).
  *   5. Otherwise run each step in declaration order as a single
  *      `bash -euo pipefail -c <run>` invocation via the lease's `spawnStep`,
  *      fail-fast on the first non-zero exit (remaining steps → `skipped`).
@@ -236,7 +238,7 @@ export interface TriggerDeploymentInput {
   worktreePath: string;
   /** Parsed deploy.yaml for the project. */
   config: DeployConfig;
-  /** Trigger source. Known v1 values: 'manual' | 'push' | 'rollback'. Default 'manual'. */
+  /** Trigger source. Known values: 'manual' | 'push' | 'rollback' | 'schedule'. Default 'manual'. */
   trigger?: string;
   /** User id that triggered the deploy; omit for system/push-driven runs. */
   triggeredBy?: string | null;
@@ -1271,10 +1273,20 @@ export function recoverInFlightDeployments(deps: DeployOrchestratorDeps): Deploy
 }
 
 /**
+ * Deploy triggers that bypass a gated environment's approval gate. An automated
+ * `schedule` run deploys immediately even when `approval: true` — configuring a
+ * schedule is the operator's opt-in to unattended deploys. Every other trigger
+ * (manual button, push, rollback) still parks a gated environment at
+ * `awaiting_approval` and requires an Admin/Owner to resume it.
+ */
+const APPROVAL_BYPASS_TRIGGERS = new Set(['schedule']);
+
+/**
  * Trigger a deploy of `environment` at `ref`. Resolves the environment, acquires
  * the per-environment lock, creates the deployment + step rows, then either
  * parks a gated environment at `awaiting_approval` (lock retained) or runs the
- * pipeline to a terminal state.
+ * pipeline to a terminal state. A gated environment triggered by `schedule`
+ * bypasses the gate and runs immediately ({@link APPROVAL_BYPASS_TRIGGERS}).
  *
  * Throws {@link EnvironmentBusyError} (→ 409) when the environment already has an
  * in-flight or awaiting-approval deployment, and the config parser's
@@ -1291,6 +1303,7 @@ export async function triggerDeployment(
   deps: DeployOrchestratorDeps,
 ): Promise<DeploymentRow> {
   const { projectId, environment, ref, worktreePath } = input;
+  const trigger = input.trigger ?? 'manual';
 
   // Throws DeployConfigError('unknown_environment') for an undeclared env.
   const envConfig = resolveDeployEnvironment(input.config, environment);
@@ -1307,7 +1320,7 @@ export async function triggerDeployment(
     projectId,
     environment,
     ref,
-    trigger: input.trigger ?? 'manual',
+    trigger,
     triggeredBy: input.triggeredBy ?? null,
     sourceDeploymentId: input.sourceDeploymentId ?? null,
     status: 'pending',
@@ -1337,7 +1350,9 @@ export async function triggerDeployment(
 
   // Gated environment: park awaiting approval. The lock stays held so the env
   // remains serialized; the approval gate + resume land in a later phase.
-  if (envConfig.approval) {
+  // Automated schedule triggers bypass the gate — the operator opted into
+  // unattended scheduled deploys — while manual/push/rollback triggers park.
+  if (envConfig.approval && !APPROVAL_BYPASS_TRIGGERS.has(trigger)) {
     updateDeploymentStatus(deployment.id, 'awaiting_approval');
     emitDeploymentUpdate(deps, projectId, deployment.id);
     return getDeployment(deployment.id) as DeploymentRow;

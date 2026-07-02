@@ -30,6 +30,7 @@ import { parseDeployConfig } from './deploy-config.js';
 import { compileGithubWorkflowRun, GITHUB_RUN_MARKER } from './github-workflow-step.js';
 import {
   approveDeployment,
+  cancelDeployment,
   recoverInFlightDeployments,
   triggerDeployment,
   EnvironmentBusyError,
@@ -1032,6 +1033,57 @@ describe('triggerDeployment — gated environment', () => {
     expect(fb.acquireCalls).toHaveLength(0);
     // Lock held by this deployment — env stays serialized.
     expect(getDeploymentEnvironment(PROJECT, 'prod')!.active_deployment_id).toBe(dep.id);
+  });
+
+  it('bypasses the approval gate for a schedule trigger and runs immediately', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'prod',
+        ref: 'sched-sha',
+        worktreePath: WORKTREE,
+        config: CONFIG,
+        trigger: 'schedule',
+        triggeredBy: 'system-owner',
+      },
+      makeDeps(fb.backend),
+    );
+
+    // Gated env (approval: true) but automated schedule runs the pipeline.
+    expect(dep.status).toBe('success');
+    expect(dep.started_at).toBeTruthy();
+    expect(dep.completed_at).toBeTruthy();
+    expect(fb.spawnArgs.map((s) => s.run)).toEqual(['./deploy-prod.sh']);
+    // No approval row is written for a bypassed schedule run.
+    expect(listDeploymentApprovals(dep.id)).toHaveLength(0);
+    // Lock released after the successful run and the ref recorded live.
+    const env = getDeploymentEnvironment(PROJECT, 'prod')!;
+    expect(env.current_ref).toBe('sched-sha');
+    expect(env.active_deployment_id).toBeNull();
+  });
+
+  it('still parks manual/push/rollback triggers at awaiting_approval', async () => {
+    for (const trigger of ['manual', 'push', 'rollback'] as const) {
+      const fb = makeFakeBackend([{ exitCode: 0 }]);
+      const dep = await triggerDeployment(
+        {
+          projectId: PROJECT,
+          environment: 'prod',
+          ref: `ref-${trigger}`,
+          worktreePath: WORKTREE,
+          config: CONFIG,
+          trigger,
+          triggeredBy: 'u1',
+        },
+        makeDeps(fb.backend),
+      );
+
+      expect(dep.status).toBe('awaiting_approval');
+      expect(fb.acquireCalls).toHaveLength(0);
+      // Release the lock parked by this trigger before the next iteration.
+      cancelDeployment({ deploymentId: dep.id }, makeDeps(fb.backend));
+    }
   });
 
   it('records Admin/Owner approval, then resumes and runs the parked deployment', async () => {
