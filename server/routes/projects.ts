@@ -218,6 +218,23 @@ function analyzeRunErrorMessage(input: {
   return `Project analysis failed while running ${input.engine} (${input.model})${where}: ${analyzeErrorDetail(input.detail)}`;
 }
 
+// The Claude Code CLI reports fatal conditions (expired login, model access
+// denied, quota) on stdout as a stream-json `result` event with
+// `is_error: true` and writes NOTHING to stderr, then exits non-zero. Reading
+// only stderr surfaces the useless "Process exited with code 1". Prefer, in
+// order: real stderr, the error text carried on the stream, then the bare code.
+export function resolveAnalyzeCloseErrorDetail(input: {
+  code: number | null;
+  stderr: string;
+  streamErrorText: string;
+}): string {
+  const stderr = input.stderr.trim();
+  if (stderr) return stderr;
+  const streamed = input.streamErrorText.trim();
+  if (streamed) return streamed;
+  return `Process exited with code ${input.code}`;
+}
+
 interface AnalysisResult {
   techStack?: {
     languages?: string[];
@@ -3070,6 +3087,10 @@ This workspace has no git repo and no PR automation — your job is planning, or
       const parser = createStreamParser('claude-code');
       let finalText = '';
       let stderr = '';
+      // Claude reports auth/model/quota failures on stdout (result event with
+      // isError) and leaves stderr empty. Capture that text so a non-zero exit
+      // surfaces the real cause instead of "Process exited with code 1".
+      let streamErrorText = '';
 
       const describeToolUse = (tool: string, input: Record<string, unknown> = {}): string => {
         switch (tool) {
@@ -3106,8 +3127,9 @@ This workspace has no git repo and no PR automation — your job is planning, or
           finalText += ev.text;
         } else if (ev.type === 'thinking') {
           broadcast({ type: 'analyze-progress', analyzeId, message: 'Thinking…' });
-        } else if (ev.type === 'result' && ev.text && !finalText) {
-          finalText = ev.text;
+        } else if (ev.type === 'result') {
+          if (ev.isError && ev.text) streamErrorText = ev.text;
+          if (ev.text && !finalText) finalText = ev.text;
         }
       };
 
@@ -3143,7 +3165,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
         console.log(
           `[analyze ${analyzeId}] exited code=${code}, finalText length=${finalText.length}`,
         );
-        if (code !== 0) {
+        if (code !== 0 || streamErrorText) {
           broadcast({
             type: 'analyze-error',
             analyzeId,
@@ -3151,7 +3173,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
               engine: resolved.engine,
               model: resolved.model,
               cwd: resolvedCwd,
-              detail: stderr || `Process exited with code ${code}`,
+              detail: resolveAnalyzeCloseErrorDetail({ code, stderr, streamErrorText }),
             }),
           });
           return;
