@@ -599,16 +599,30 @@ export function expandJobInstances(
 ): JobInstance[] {
   const instances: JobInstance[] = [];
   for (const [jobId, job] of Object.entries(config.jobs)) {
-    for (const matrixRow of job.matrixInclude) {
+    const total = job.matrixInclude.length;
+    for (let i = 0; i < job.matrixInclude.length; i++) {
+      const matrixRow = job.matrixInclude[i];
       const matrixKey = matrixKeyFromRow(matrixRow);
       const matrixEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(matrixRow)) {
         matrixEnv[`FINALIZE_MATRIX_${k.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`] = v;
       }
+      // 1-based position of this instance within its job's matrix, plus the
+      // matrix size. Lets a step print a human "shard N/M" label without
+      // hand-rolling off-by-one math on a runner-required 0-based index
+      // (e.g. `--shard-id=$FINALIZE_MATRIX_GROUP`, but "shard
+      // ${FINALIZE_MATRIX_ORDINAL}/${FINALIZE_MATRIX_TOTAL}" for humans).
+      // An explicit matrix key named `ordinal`/`total` wins over the computed
+      // value, so a project can still author its own numbering.
+      const ordinalEnv: Record<string, string> = {
+        FINALIZE_MATRIX_ORDINAL: String(i + 1),
+        FINALIZE_MATRIX_TOTAL: String(total),
+      };
       const env: Record<string, string> = {
         ...builtins,
         ...(config.env ?? {}),
         ...(job.env ?? {}),
+        ...ordinalEnv,
         ...matrixEnv,
         FINALIZE_JOB_KEY: jobId,
         FINALIZE_MATRIX_KEY: matrixKey,

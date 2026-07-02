@@ -50,6 +50,77 @@ jobs:
     expect(instances[1].matrixKey).toBe('B');
   });
 
+  it('injects a 1-based FINALIZE_MATRIX_ORDINAL/TOTAL per matrix instance', () => {
+    // Regression for "shards wrongly print zero indexed numbers": a project
+    // using a 0-based runner index (group 0..3) still needs a 1-based value
+    // to print a human "shard N/M" label without off-by-one shell math.
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  backend-tests:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - group: "0"
+        - group: "1"
+        - group: "2"
+        - group: "3"
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    const builtins = buildFinalizeBuiltinEnv({ branch: 'feat/x', headSha: 'abc123' });
+    const instances = expandJobInstances(parsed.config, builtins);
+    expect(instances).toHaveLength(4);
+    // The runner index stays faithful (0-based), while the display ordinal is
+    // 1-based and the total reflects the matrix size.
+    expect(instances.map((i) => i.env.FINALIZE_MATRIX_GROUP)).toEqual(['0', '1', '2', '3']);
+    expect(instances.map((i) => i.env.FINALIZE_MATRIX_ORDINAL)).toEqual(['1', '2', '3', '4']);
+    for (const inst of instances) {
+      expect(inst.env.FINALIZE_MATRIX_TOTAL).toBe('4');
+    }
+  });
+
+  it('ordinal/total are per-job, and an explicit matrix key overrides them', () => {
+    const parsed = parseCiConfig(`
+version: 2
+on: [finalize]
+jobs:
+  single:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo test
+  triple:
+    runs-on: ubuntu-24.04
+    matrix:
+      include:
+        - shard: "1"
+        - shard: "2"
+          ordinal: "custom"
+        - shard: "3"
+    steps:
+      - run: echo test
+`);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.config.version !== 2) return;
+    const builtins = buildFinalizeBuiltinEnv({ branch: 'feat/x', headSha: 'abc123' });
+    const instances = expandJobInstances(parsed.config, builtins);
+    const single = instances.filter((i) => i.jobId === 'single');
+    const triple = instances.filter((i) => i.jobId === 'triple');
+    // A job with no matrix.include is one implicit instance: ordinal 1 of 1.
+    expect(single).toHaveLength(1);
+    expect(single[0].env.FINALIZE_MATRIX_ORDINAL).toBe('1');
+    expect(single[0].env.FINALIZE_MATRIX_TOTAL).toBe('1');
+    // Totals are scoped to each job's own matrix, not the whole config.
+    expect(triple.map((i) => i.env.FINALIZE_MATRIX_TOTAL)).toEqual(['3', '3', '3']);
+    // A user-authored `ordinal` matrix key wins over the computed value.
+    expect(triple[1].env.FINALIZE_MATRIX_ORDINAL).toBe('custom');
+    expect(triple[0].env.FINALIZE_MATRIX_ORDINAL).toBe('1');
+    expect(triple[2].env.FINALIZE_MATRIX_ORDINAL).toBe('3');
+  });
+
   it('parses optional job paths globs', () => {
     const parsed = parseCiConfig(`
 version: 2

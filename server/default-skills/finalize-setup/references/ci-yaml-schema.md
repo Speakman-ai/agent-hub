@@ -220,6 +220,15 @@ builtins → step `env`. Each `matrix.include` key `foo` is injected as
 `FINALIZE_MATRIX_KEY` with the row label. An unresolved `${VAR}` is left
 out of the process environment, not passed through literally.
 
+Two computed matrix builtins are also injected per instance:
+`FINALIZE_MATRIX_ORDINAL` is the **1-based** position of the instance within
+its job's matrix (`1`, `2`, …) and `FINALIZE_MATRIX_TOTAL` is the matrix size.
+Use these for a human "shard N/M" label when your runner index is 0-based —
+`--shard-id=$FINALIZE_MATRIX_GROUP` (0-based) but
+`shard ${FINALIZE_MATRIX_ORDINAL}/${FINALIZE_MATRIX_TOTAL}` in the step name.
+A job with no `matrix` is one instance: ordinal `1` of total `1`. An explicit
+`matrix.include` key named `ordinal`/`total` overrides the computed value.
+
 ### Execution semantics
 
 - Independent jobs (no `needs`) start **concurrently** — no per-level
