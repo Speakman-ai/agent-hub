@@ -10,6 +10,7 @@ import { agentAcceptsAutonomousTickets } from '../agent-autonomy.js';
 import type {
   Agent,
   DeploymentApprovalRow,
+  DeploymentEnvironmentScheduleRow,
   DeploymentEnvironmentTriggerRow,
   DeploymentReleaseItemDetailRow,
   DeploymentRow,
@@ -60,6 +61,13 @@ import {
   listTriggersForEnvironment,
   updateTrigger,
 } from '../deploy/deployment-trigger-store.js';
+import {
+  createSchedule,
+  deleteSchedule,
+  DeployScheduleError,
+  listSchedulesForEnvironment,
+  updateSchedule,
+} from '../deploy/deployment-schedule-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
@@ -75,11 +83,13 @@ import {
   AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
   CancelDeploymentRequestSchema,
+  CreateDeployScheduleRequestSchema,
   CreateDeployTriggerRequestSchema,
   DeploymentListQuerySchema,
   EnvironmentConfigUpdateRequestSchema,
   RollbackDeploymentRequestSchema,
   TriggerDeploymentRequestSchema,
+  UpdateDeployScheduleRequestSchema,
   UpdateDeployTriggerRequestSchema,
 } from './deployments.openapi.js';
 
@@ -632,6 +642,32 @@ function mapTriggerStoreError(err: unknown, res: Response): Response {
   return res.status(500).json({ error: message });
 }
 
+function scheduleDto(row: DeploymentEnvironmentScheduleRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    environmentName: row.environment_name,
+    ref: row.ref,
+    cron: row.cron,
+    timezone: row.timezone,
+    ownerUserId: row.owner_user_id,
+    enabled: row.enabled === 1,
+    meta: parseMeta(row.meta),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapScheduleStoreError(err: unknown, res: Response): Response {
+  if (err instanceof DeployScheduleError) {
+    if (err.reason === 'duplicate') return res.status(409).json({ error: err.message });
+    if (err.reason === 'not_found') return res.status(404).json({ error: err.message });
+    return res.status(400).json({ error: err.message });
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return res.status(500).json({ error: message });
+}
+
 function mapReleaseItemError(err: unknown, res: Response): Response {
   if (err instanceof DeploymentReleaseItemError) {
     if (err.reason === 'not_found' || err.reason === 'cross_project') {
@@ -956,6 +992,102 @@ export default function createDeploymentRoutes(
       if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
       if (!deleteTrigger(projectId, triggerId)) {
         return res.status(404).json({ error: 'Deploy trigger not found' });
+      }
+      return res.json({ removed: true });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/deploy/environments/:environmentName/schedules',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const schedules = listSchedulesForEnvironment(projectId, environmentName).map(scheduleDto);
+      return res.json({ projectId, environmentName, schedules });
+    },
+  );
+
+  router.post(
+    '/api/projects/:projectId/deploy/environments/:environmentName/schedules',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = CreateDeployScheduleRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        // Guard against typos the same way the trigger POST does: the env must be
+        // declared in deploy.yaml OR already have a runtime config row, so a
+        // schedule never strands against a non-existent environment name.
+        const schedule = await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+          const declared = declaredEnvironmentNames(config);
+          const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
+          if (!declared.has(environmentName) && !hasConfigRow) {
+            throw new DeployConfigError(
+              'unknown_environment',
+              `Unknown environment: ${environmentName}`,
+            );
+          }
+          return createSchedule({
+            projectId,
+            environmentName,
+            ref: parsed.data.ref,
+            cron: parsed.data.cron,
+            timezone: parsed.data.timezone,
+            // The scheduled run spawns under the creator's identity (deploy-scheduling).
+            ownerUserId: actorUserId(req as AuthenticatedRequest),
+            enabled: parsed.data.enabled,
+            meta: parsed.data.meta,
+          });
+        });
+        return res.status(201).json({ schedule: scheduleDto(schedule) });
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        return mapScheduleStoreError(err, res);
+      }
+    },
+  );
+
+  router.patch(
+    '/api/projects/:projectId/deploy/environments/:environmentName/schedules/:scheduleId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const scheduleId = req.params.scheduleId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = UpdateDeployScheduleRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        const updated = updateSchedule(projectId, scheduleId, parsed.data);
+        if (!updated) return res.status(404).json({ error: 'Deploy schedule not found' });
+        return res.json({ schedule: scheduleDto(updated) });
+      } catch (err) {
+        return mapScheduleStoreError(err, res);
+      }
+    },
+  );
+
+  router.delete(
+    '/api/projects/:projectId/deploy/environments/:environmentName/schedules/:scheduleId',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const scheduleId = req.params.scheduleId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      if (!deleteSchedule(projectId, scheduleId)) {
+        return res.status(404).json({ error: 'Deploy schedule not found' });
       }
       return res.json({ removed: true });
     },

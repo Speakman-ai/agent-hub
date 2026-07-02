@@ -4224,6 +4224,73 @@ components:
           type: boolean
       required:
         - removed
+    DeploySchedule:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        environmentName:
+          type: string
+        ref:
+          type: string
+        cron:
+          type: string
+        timezone:
+          type: string
+          nullable: true
+        ownerUserId:
+          type: string
+          nullable: true
+        enabled:
+          type: boolean
+        meta:
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - projectId
+        - environmentName
+        - ref
+        - cron
+        - timezone
+        - ownerUserId
+        - enabled
+        - createdAt
+        - updatedAt
+    DeployScheduleListResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        environmentName:
+          type: string
+        schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploySchedule"
+      required:
+        - projectId
+        - environmentName
+        - schedules
+    DeployScheduleResponse:
+      type: object
+      properties:
+        schedule:
+          $ref: "#/components/schemas/DeploySchedule"
+      required:
+        - schedule
+    DeployScheduleDeleteResponse:
+      type: object
+      properties:
+        removed:
+          type: boolean
+      required:
+        - removed
     DeploySetupWizardResponse:
       type: object
       properties:
@@ -18667,6 +18734,223 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project or trigger not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}/schedules:
+    get:
+      tags:
+        - Deployments
+      summary: List deploy schedules for an environment
+      description: Operator-editable cron deploy schedules keyed by (project, environment). Each schedule fires a deployment for its environment when its node-cron expression ticks, running under the owner identity. Schedules whose environment was removed from deploy.yaml are retained and listed (they never fire).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      responses:
+        "200":
+          description: Deploy schedules for the environment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployScheduleListResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    post:
+      tags:
+        - Deployments
+      summary: Create a deploy schedule for an environment
+      description: Admin+. Creates a cron deploy schedule without a commit. The environment must be declared in deploy.yaml or already have a runtime config row; an unknown environment name is 404. A duplicate (ref, cron) on the same environment is 409. The schedule runs under the creating caller identity.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ref:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                cron:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                timezone:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                enabled:
+                  type: boolean
+                meta:
+                  nullable: true
+              required:
+                - ref
+                - cron
+      responses:
+        "201":
+          description: Created deploy schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployScheduleResponse"
+        "400":
+          description: Invalid body or deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or environment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Duplicate schedule for this ref and cron.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments/{environmentName}/schedules/{scheduleId}:
+    patch:
+      tags:
+        - Deployments
+      summary: Update a deploy schedule
+      description: "Admin+. Partial update: omitted fields keep their current value. The owner identity is fixed at create time and cannot be changed. A change that collides with another schedule (ref, cron) on the environment is 409."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: scheduleId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ref:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                cron:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                timezone:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                enabled:
+                  type: boolean
+                meta:
+                  nullable: true
+      responses:
+        "200":
+          description: Updated deploy schedule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployScheduleResponse"
+        "400":
+          description: Invalid body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or schedule not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "409":
+          description: Duplicate schedule for this ref and cron.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+    delete:
+      tags:
+        - Deployments
+      summary: Delete a deploy schedule
+      description: Admin+. Removes the schedule row.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: environmentName
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: scheduleId
+          in: path
+      responses:
+        "200":
+          description: Deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployScheduleDeleteResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project or schedule not found.
           content:
             application/json:
               schema:

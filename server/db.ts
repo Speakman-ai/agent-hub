@@ -14,6 +14,7 @@ import { FINALIZE_PARITY_SCHEMA } from './finalize/parity-store.js';
 import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
+import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-schema.js';
 import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
 import {
   SECURITY_AUDIT_SCHEMA,
@@ -2924,6 +2925,11 @@ function initDb(dataDir: string): void {
   // an in-memory DB in isolation.
   db.exec(DEPLOYMENT_ENV_TRIGGER_SCHEMA);
 
+  // Multi-environment management (scheduling phase): operator-editable per-env
+  // cron deploy schedules. Co-located schema so its store test can migrate an
+  // in-memory DB in isolation.
+  db.exec(DEPLOYMENT_ENV_SCHEDULE_SCHEMA);
+
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
   // "In Progress" and the column dropped (there is no in-UI column editor
@@ -3450,6 +3456,43 @@ function initDb(dataDir: string): void {
     ),
     deleteDeploymentEnvTrigger: db.prepare(
       'DELETE FROM deployment_env_trigger WHERE project_id = ? AND id = ?',
+    ),
+    // Per-environment cron deploy schedules (scheduling phase). UNIQUE(project,
+    // env, ref, cron) rejects duplicate identical schedules. owner_user_id is set
+    // once at create time and never touched by update. Update never touches
+    // created_at.
+    insertDeploymentEnvSchedule: db.prepare(
+      `INSERT INTO deployment_env_schedule
+        (id, project_id, environment_name, ref, cron, timezone, owner_user_id, enabled, meta)
+       VALUES (@id, @project_id, @environment_name, @ref, @cron, @timezone, @owner_user_id, @enabled, @meta)`,
+    ),
+    updateDeploymentEnvSchedule: db.prepare(
+      `UPDATE deployment_env_schedule
+       SET ref = @ref,
+           cron = @cron,
+           timezone = @timezone,
+           enabled = @enabled,
+           meta = @meta,
+           updated_at = datetime('now')
+       WHERE project_id = @project_id AND id = @id`,
+    ),
+    getDeploymentEnvSchedule: db.prepare(
+      'SELECT * FROM deployment_env_schedule WHERE project_id = ? AND id = ?',
+    ),
+    listDeploymentEnvSchedulesForProject: db.prepare(
+      `SELECT * FROM deployment_env_schedule WHERE project_id = ?
+       ORDER BY environment_name ASC, ref ASC, cron ASC`,
+    ),
+    listDeploymentEnvSchedulesForEnvironment: db.prepare(
+      `SELECT * FROM deployment_env_schedule WHERE project_id = ? AND environment_name = ?
+       ORDER BY ref ASC, cron ASC`,
+    ),
+    listEnabledDeploymentEnvSchedules: db.prepare(
+      `SELECT * FROM deployment_env_schedule WHERE enabled = 1
+       ORDER BY project_id ASC, environment_name ASC, ref ASC, cron ASC`,
+    ),
+    deleteDeploymentEnvSchedule: db.prepare(
+      'DELETE FROM deployment_env_schedule WHERE project_id = ? AND id = ?',
     ),
     // Concurrency lock acquire: only succeeds (changes=1) when no deploy is
     // in-flight for this env. A non-zero result means the lock is held → 409.

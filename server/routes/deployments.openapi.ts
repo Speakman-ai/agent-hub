@@ -1,3 +1,4 @@
+import cron from 'node-cron';
 import { z, registerComponent, registerPath } from '../openapi/registry.js';
 
 const DeploymentStatusEnum = z.enum([
@@ -62,6 +63,52 @@ export const UpdateDeployTriggerRequestSchema = z
   .object({
     event: DeployTriggerEventEnum.optional(),
     branchPattern: z.string().trim().min(1).max(DEPLOY_TRIGGER_BRANCH_PATTERN_MAX).optional(),
+    enabled: z.boolean().optional(),
+    meta: z.unknown().optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: 'At least one field is required.',
+  });
+
+const DEPLOY_SCHEDULE_REF_MAX = 255;
+const DEPLOY_SCHEDULE_CRON_MAX = 200;
+
+const cronExpression = z
+  .string()
+  .trim()
+  .min(1)
+  .max(DEPLOY_SCHEDULE_CRON_MAX)
+  .refine((s) => cron.validate(s), { message: 'cron must be a valid cron expression' });
+
+const ianaTimezone = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (s) => {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: s });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'timezone must be a valid IANA timezone' },
+  );
+
+export const CreateDeployScheduleRequestSchema = z.object({
+  ref: z.string().trim().min(1).max(DEPLOY_SCHEDULE_REF_MAX),
+  cron: cronExpression,
+  timezone: ianaTimezone.nullable().optional(),
+  enabled: z.boolean().optional(),
+  meta: z.unknown().optional(),
+});
+
+export const UpdateDeployScheduleRequestSchema = z
+  .object({
+    ref: z.string().trim().min(1).max(DEPLOY_SCHEDULE_REF_MAX).optional(),
+    cron: cronExpression.optional(),
+    timezone: ianaTimezone.nullable().optional(),
     enabled: z.boolean().optional(),
     meta: z.unknown().optional(),
   })
@@ -329,6 +376,42 @@ const DeployTriggerDeleteResponseSchema = registerComponent(
   z.object({ removed: z.boolean() }),
 );
 
+const DeployScheduleSchema = registerComponent(
+  'DeploySchedule',
+  z.object({
+    id: z.string(),
+    projectId: z.string(),
+    environmentName: z.string(),
+    ref: z.string(),
+    cron: z.string(),
+    timezone: z.string().nullable(),
+    ownerUserId: z.string().nullable(),
+    enabled: z.boolean(),
+    meta: z.unknown().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+);
+
+const DeployScheduleListResponseSchema = registerComponent(
+  'DeployScheduleListResponse',
+  z.object({
+    projectId: z.string(),
+    environmentName: z.string(),
+    schedules: z.array(DeployScheduleSchema),
+  }),
+);
+
+const DeployScheduleResponseSchema = registerComponent(
+  'DeployScheduleResponse',
+  z.object({ schedule: DeployScheduleSchema }),
+);
+
+const DeployScheduleDeleteResponseSchema = registerComponent(
+  'DeployScheduleDeleteResponse',
+  z.object({ removed: z.boolean() }),
+);
+
 const DeploySetupWizardResponseSchema = registerComponent(
   'DeploySetupWizardResponse',
   z.object({
@@ -419,6 +502,11 @@ const deployTriggerParams = z.object({
   projectId: z.string(),
   environmentName: z.string(),
   triggerId: z.string(),
+});
+const deployScheduleParams = z.object({
+  projectId: z.string(),
+  environmentName: z.string(),
+  scheduleId: z.string(),
 });
 const deploymentParams = z.object({ projectId: z.string(), deploymentId: z.string() });
 const deploymentReleaseItemParams = z.object({
@@ -606,6 +694,86 @@ registerPath({
     },
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project or trigger not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/schedules',
+  tags: ['Deployments'],
+  summary: 'List deploy schedules for an environment',
+  description:
+    'Operator-editable cron deploy schedules keyed by (project, environment). Each schedule fires a deployment for its environment when its node-cron expression ticks, running under the owner identity. Schedules whose environment was removed from deploy.yaml are retained and listed (they never fire).',
+  request: { params: environmentParams },
+  responses: {
+    200: {
+      description: 'Deploy schedules for the environment.',
+      content: jsonContent(DeployScheduleListResponseSchema),
+    },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/schedules',
+  tags: ['Deployments'],
+  summary: 'Create a deploy schedule for an environment',
+  description:
+    'Admin+. Creates a cron deploy schedule without a commit. The environment must be declared in deploy.yaml or already have a runtime config row; an unknown environment name is 404. A duplicate (ref, cron) on the same environment is 409. The schedule runs under the creating caller identity.',
+  request: {
+    params: environmentParams,
+    body: { content: jsonContent(CreateDeployScheduleRequestSchema) },
+  },
+  responses: {
+    201: {
+      description: 'Created deploy schedule.',
+      content: jsonContent(DeployScheduleResponseSchema),
+    },
+    400: errorResponse('Invalid body or deploy.yaml.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or environment not found.'),
+    409: errorResponse('Duplicate schedule for this ref and cron.'),
+  },
+});
+
+registerPath({
+  method: 'patch',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/schedules/{scheduleId}',
+  tags: ['Deployments'],
+  summary: 'Update a deploy schedule',
+  description:
+    'Admin+. Partial update: omitted fields keep their current value. The owner identity is fixed at create time and cannot be changed. A change that collides with another schedule (ref, cron) on the environment is 409.',
+  request: {
+    params: deployScheduleParams,
+    body: { content: jsonContent(UpdateDeployScheduleRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Updated deploy schedule.',
+      content: jsonContent(DeployScheduleResponseSchema),
+    },
+    400: errorResponse('Invalid body.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or schedule not found.'),
+    409: errorResponse('Duplicate schedule for this ref and cron.'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/schedules/{scheduleId}',
+  tags: ['Deployments'],
+  summary: 'Delete a deploy schedule',
+  description: 'Admin+. Removes the schedule row.',
+  request: { params: deployScheduleParams },
+  responses: {
+    200: {
+      description: 'Deletion result.',
+      content: jsonContent(DeployScheduleDeleteResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or schedule not found.'),
   },
 });
 

@@ -381,6 +381,35 @@ export interface DeploymentEnvironmentTriggerRow {
   updated_at: string;
 }
 
+/**
+ * Deployment Module — operator-editable per-environment DEPLOY SCHEDULE (the
+ * scheduling phase on top of the runtime-config layer). A schedule row fires a
+ * deployment for its environment when its node-cron expression ticks, running
+ * under the owner identity. Keyed by (project_id, environment_name);
+ * zero-or-more rows per environment. deploy.yaml stays the source of truth for
+ * which environments exist — a schedule whose environment was removed is
+ * retained and simply never fires.
+ */
+export interface DeploymentEnvironmentScheduleRow {
+  id: string;
+  project_id: string;
+  environment_name: string;
+  /** Git ref (branch / tag / sha) the schedule deploys. */
+  ref: string;
+  /** node-cron expression (validated at the write boundary). */
+  cron: string;
+  /** IANA timezone used to interpret the cron; null = server default. */
+  timezone: string | null;
+  /** Identity the scheduled run spawns under; null = system-owned / legacy. */
+  owner_user_id: string | null;
+  /** Operator on/off switch. 1 = enabled (default), 0 = paused (retained). */
+  enabled: number;
+  /** Free-form JSON stash for forward-compat. */
+  meta: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Deployment Module — approver audit trail for gated environments. */
 export interface DeploymentApprovalRow {
   id: string;
@@ -1657,6 +1686,13 @@ export interface Stmts {
   listDeploymentEnvTriggersForEnvironment: Stmt;
   listEnabledDeploymentEnvTriggersForEvent: Stmt;
   deleteDeploymentEnvTrigger: Stmt;
+  insertDeploymentEnvSchedule: Stmt;
+  updateDeploymentEnvSchedule: Stmt;
+  getDeploymentEnvSchedule: Stmt;
+  listDeploymentEnvSchedulesForProject: Stmt;
+  listDeploymentEnvSchedulesForEnvironment: Stmt;
+  listEnabledDeploymentEnvSchedules: Stmt;
+  deleteDeploymentEnvSchedule: Stmt;
   acquireDeploymentEnvironmentLock: Stmt;
   releaseDeploymentEnvironmentLock: Stmt;
   setDeploymentEnvironmentCurrentRef: Stmt;

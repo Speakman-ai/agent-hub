@@ -32,6 +32,10 @@ import {
   upsertEnvironmentConfig,
 } from '../deploy/deployment-env-config-store.js';
 import { createTrigger, listTriggersForEnvironment } from '../deploy/deployment-trigger-store.js';
+import {
+  createSchedule,
+  listSchedulesForEnvironment,
+} from '../deploy/deployment-schedule-store.js';
 import { DeployConfigError } from '../deploy/deploy-config-error.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import {
@@ -274,6 +278,7 @@ beforeEach(() => {
     'deployment_environments',
     'deployment_env_runtime_config',
     'deployment_env_trigger',
+    'deployment_env_schedule',
     'release_notification_settings',
     'kanban_cards',
     'kanban_columns',
@@ -1829,6 +1834,224 @@ environments:
         const { app } = makeApp({ role: 'User' });
         await request(app)
           .delete(`${triggersUrl('prod')}/${row.id}`)
+          .expect(403);
+      });
+    });
+  });
+
+  describe('deploy schedules CRUD', () => {
+    const CRON = '0 3 * * *';
+    const schedulesUrl = (env: string) =>
+      `/api/projects/${PROJECT_ID}/deploy/environments/${env}/schedules`;
+
+    describe('GET .../schedules', () => {
+      it('lists schedules for an environment', async () => {
+        createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const { app } = makeApp();
+        const res = await request(app).get(schedulesUrl('prod')).expect(200);
+        expect(res.body).toMatchObject({ projectId: PROJECT_ID, environmentName: 'prod' });
+        expect(res.body.schedules).toHaveLength(1);
+        expect(res.body.schedules[0]).toMatchObject({
+          ref: 'main',
+          cron: CRON,
+          enabled: true,
+        });
+      });
+
+      it('returns an empty list for an environment with no schedules', async () => {
+        const { app } = makeApp();
+        const res = await request(app).get(schedulesUrl('dev')).expect(200);
+        expect(res.body.schedules).toEqual([]);
+      });
+
+      it('returns 404 for an unknown project', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .get('/api/projects/missing/deploy/environments/prod/schedules')
+          .expect(404);
+      });
+    });
+
+    describe('POST .../schedules', () => {
+      it('creates a schedule on a declared environment and captures the caller as owner', async () => {
+        const { app } = makeApp();
+        const res = await request(app)
+          .post(schedulesUrl('prod'))
+          .send({ ref: 'main', cron: CRON, timezone: 'America/New_York' })
+          .expect(201);
+        expect(res.body.schedule).toMatchObject({
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+          timezone: 'America/New_York',
+          ownerUserId: 'user-1',
+          enabled: true,
+        });
+        expect(listSchedulesForEnvironment(PROJECT_ID, 'prod')).toHaveLength(1);
+      });
+
+      it('allows creating a schedule on an orphaned (configured) environment', async () => {
+        upsertEnvironmentConfig({
+          projectId: PROJECT_ID,
+          environmentName: 'legacy',
+          enabled: true,
+        });
+        const { app } = makeApp();
+        await request(app)
+          .post(schedulesUrl('legacy'))
+          .send({ ref: 'main', cron: CRON })
+          .expect(201);
+      });
+
+      it('returns 404 for an environment neither declared nor configured', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(schedulesUrl('ghost'))
+          .send({ ref: 'main', cron: CRON })
+          .expect(404);
+        expect(listSchedulesForEnvironment(PROJECT_ID, 'ghost')).toHaveLength(0);
+      });
+
+      it('returns 409 on a duplicate (ref, cron)', async () => {
+        const { app } = makeApp();
+        await request(app).post(schedulesUrl('prod')).send({ ref: 'main', cron: CRON }).expect(201);
+        await request(app).post(schedulesUrl('prod')).send({ ref: 'main', cron: CRON }).expect(409);
+      });
+
+      it('returns 400 for an invalid cron or missing ref', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(schedulesUrl('prod'))
+          .send({ ref: 'main', cron: 'not-a-cron' })
+          .expect(400);
+        await request(app).post(schedulesUrl('prod')).send({ cron: CRON }).expect(400);
+      });
+
+      it('returns 400 for an invalid timezone', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .post(schedulesUrl('prod'))
+          .send({ ref: 'main', cron: CRON, timezone: 'Mars/Phobos' })
+          .expect(400);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const { app } = makeApp({ role: 'User' });
+        await request(app).post(schedulesUrl('prod')).send({ ref: 'main', cron: CRON }).expect(403);
+      });
+    });
+
+    describe('PATCH .../schedules/:scheduleId', () => {
+      it('updates a schedule', async () => {
+        const row = createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const { app } = makeApp();
+        const res = await request(app)
+          .patch(`${schedulesUrl('prod')}/${row.id}`)
+          .send({ enabled: false, cron: '0 4 * * *' })
+          .expect(200);
+        expect(res.body.schedule).toMatchObject({ enabled: false, cron: '0 4 * * *' });
+      });
+
+      it('returns 404 for a missing schedule', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${schedulesUrl('prod')}/nope`)
+          .send({ enabled: false })
+          .expect(404);
+      });
+
+      it('returns 400 for an empty body', async () => {
+        const row = createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${schedulesUrl('prod')}/${row.id}`)
+          .send({})
+          .expect(400);
+      });
+
+      it('returns 409 when an update collides with another schedule', async () => {
+        createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const b = createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'develop',
+          cron: CRON,
+        });
+        const { app } = makeApp();
+        await request(app)
+          .patch(`${schedulesUrl('prod')}/${b.id}`)
+          .send({ ref: 'main' })
+          .expect(409);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const row = createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .patch(`${schedulesUrl('prod')}/${row.id}`)
+          .send({ enabled: false })
+          .expect(403);
+      });
+    });
+
+    describe('DELETE .../schedules/:scheduleId', () => {
+      it('removes a schedule', async () => {
+        const row = createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const { app } = makeApp();
+        const res = await request(app)
+          .delete(`${schedulesUrl('prod')}/${row.id}`)
+          .expect(200);
+        expect(res.body).toEqual({ removed: true });
+        expect(listSchedulesForEnvironment(PROJECT_ID, 'prod')).toHaveLength(0);
+      });
+
+      it('returns 404 for a missing schedule', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .delete(`${schedulesUrl('prod')}/nope`)
+          .expect(404);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const row = createSchedule({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ref: 'main',
+          cron: CRON,
+        });
+        const { app } = makeApp({ role: 'User' });
+        await request(app)
+          .delete(`${schedulesUrl('prod')}/${row.id}`)
           .expect(403);
       });
     });
