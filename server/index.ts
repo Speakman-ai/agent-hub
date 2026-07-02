@@ -143,6 +143,7 @@ import createDeploymentRoutes from './routes/deployments.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
 import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
+import { initDeploySchedules } from './deploy/deploy-schedule-ticker.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { recordJobResourceSummary } from './finalize/metrics.js';
@@ -1789,6 +1790,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     }
 
     restoreAutonomousCrons();
+
+    // Register node-cron tasks for every enabled operator-configured deploy
+    // schedule so cron-driven deployments fire without a restart. Same
+    // broadcast/config/findProject wiring the push/merge trigger hook uses.
+    try {
+      initDeploySchedules({ broadcast, config, findProject });
+    } catch (e) {
+      console.error('[deploy-schedule] init on boot', (e as Error).message);
+    }
 
     setOnCronSessionUpdate((info: Record<string, unknown>) => {
       broadcast(info);

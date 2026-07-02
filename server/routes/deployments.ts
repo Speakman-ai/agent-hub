@@ -68,6 +68,10 @@ import {
   listSchedulesForEnvironment,
   updateSchedule,
 } from '../deploy/deployment-schedule-store.js';
+import {
+  refreshScheduleRegistration,
+  unregisterSchedule,
+} from '../deploy/deploy-schedule-ticker.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
@@ -1047,6 +1051,9 @@ export default function createDeploymentRoutes(
             meta: parsed.data.meta,
           });
         });
+        // Arm the node-cron task immediately so a new schedule fires without a
+        // server restart (no-op until the boot ticker has been initialized).
+        refreshScheduleRegistration(projectId, schedule.id);
         return res.status(201).json({ schedule: scheduleDto(schedule) });
       } catch (err) {
         if (err instanceof DeployConfigError) return mapConfigError(err, res);
@@ -1072,6 +1079,9 @@ export default function createDeploymentRoutes(
       try {
         const updated = updateSchedule(projectId, scheduleId, parsed.data);
         if (!updated) return res.status(404).json({ error: 'Deploy schedule not found' });
+        // Re-sync the node-cron task: an edited cron/timezone re-arms, a flip to
+        // disabled stops it (retained pause), a flip back on re-registers it.
+        refreshScheduleRegistration(projectId, scheduleId);
         return res.json({ schedule: scheduleDto(updated) });
       } catch (err) {
         return mapScheduleStoreError(err, res);
@@ -1089,6 +1099,8 @@ export default function createDeploymentRoutes(
       if (!deleteSchedule(projectId, scheduleId)) {
         return res.status(404).json({ error: 'Deploy schedule not found' });
       }
+      // Stop the running node-cron task so a deleted schedule stops firing.
+      unregisterSchedule(scheduleId);
       return res.json({ removed: true });
     },
   );
