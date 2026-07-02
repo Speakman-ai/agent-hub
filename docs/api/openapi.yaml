@@ -4060,6 +4060,90 @@ components:
         - projectId
         - configPath
         - environments
+    EnvironmentRuntimeConfig:
+      type: object
+      properties:
+        id:
+          type: string
+        enabled:
+          type: boolean
+        meta:
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - enabled
+        - createdAt
+        - updatedAt
+    ResolvedEnvironment:
+      type: object
+      properties:
+        name:
+          type: string
+        active:
+          type: boolean
+        enabled:
+          type: boolean
+        deployable:
+          type: boolean
+        approval:
+          type: boolean
+          nullable: true
+        runsOn:
+          type: string
+          nullable: true
+        timeoutMinutes:
+          type: integer
+          nullable: true
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeployConfigStep"
+        currentRef:
+          type: string
+          nullable: true
+        currentDeploymentId:
+          type: string
+          nullable: true
+        lastDeployment:
+          allOf:
+            - $ref: "#/components/schemas/Deployment"
+            - nullable: true
+        config:
+          allOf:
+            - $ref: "#/components/schemas/EnvironmentRuntimeConfig"
+            - nullable: true
+      required:
+        - name
+        - active
+        - enabled
+        - deployable
+        - approval
+        - runsOn
+        - timeoutMinutes
+        - steps
+        - currentRef
+        - currentDeploymentId
+        - lastDeployment
+        - config
+    EnvironmentsReadResponse:
+      type: object
+      properties:
+        projectId:
+          type: string
+        configPath:
+          type: string
+        environments:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResolvedEnvironment"
+      required:
+        - projectId
+        - configPath
+        - environments
     DeploySetupWizardResponse:
       type: object
       properties:
@@ -18168,6 +18252,37 @@ paths:
                 $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project or deploy.yaml not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deploy/environments:
+    get:
+      tags:
+        - Deployments
+      summary: Read resolved deployment environments (deploy.yaml + operator config)
+      description: Merges deploy.yaml-declared environments with per-environment operator runtime config, tagging each active/enabled/deployable. Also surfaces orphaned config rows whose environment was removed from deploy.yaml (active:false, deployable:false) so they are never silently dropped. A missing deploy.yaml returns those config rows with no declared environments rather than a 404.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Resolved environment list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnvironmentsReadResponse"
+        "400":
+          description: Invalid deploy.yaml.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+        "404":
+          description: Project not found.
           content:
             application/json:
               schema:

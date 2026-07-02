@@ -44,6 +44,10 @@ import {
   releaseEnvironmentLock,
   setDeploymentReleaseItemInclusion,
 } from '../deploy/deployment-store.js';
+import {
+  resolveEnvironmentConfigs,
+  type ResolvedEnvironmentConfig,
+} from '../deploy/deployment-env-config-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
@@ -400,6 +404,75 @@ function deployConfigDto(
   };
 }
 
+function runtimeConfigDto(
+  row: ResolvedEnvironmentConfig['config'],
+): Record<string, unknown> | null {
+  if (!row) return null;
+  return {
+    id: row.id,
+    enabled: row.enabled === 1,
+    meta: parseMeta(row.meta),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Merge one resolved environment (deploy.yaml declaration + operator runtime
+ * config) into the read-API DTO. Declared pipeline metadata (approval, steps, …)
+ * is present only for `active` environments; an orphaned config row (env removed
+ * from deploy.yaml) reports `active:false`, `deployable:false`, and null pipeline
+ * fields while still carrying its stored `config` so the management UI can
+ * surface and re-enable or remove it. Rollback is out of scope, so no rollback
+ * target is exposed here.
+ */
+function resolvedEnvironmentDto(
+  projectId: string,
+  resolved: ResolvedEnvironmentConfig,
+  declared: DeployEnvironmentConfig | undefined,
+): Record<string, unknown> {
+  const state = getDeploymentEnvironment(projectId, resolved.environmentName);
+  const [lastDeployment] = listDeploymentsForEnvironment(projectId, resolved.environmentName, {
+    limit: 1,
+  });
+  return {
+    name: resolved.environmentName,
+    active: resolved.active,
+    enabled: resolved.enabled,
+    deployable: resolved.deployable,
+    approval: declared?.approval ?? null,
+    runsOn: declared?.runsOn ?? null,
+    timeoutMinutes: declared?.timeoutMinutes ?? null,
+    steps: declared?.steps ?? [],
+    currentRef: state?.current_ref ?? null,
+    currentDeploymentId: state?.current_deployment_id ?? null,
+    lastDeployment: nullableDeploymentDto(lastDeployment),
+    config: runtimeConfigDto(resolved.config),
+  };
+}
+
+/**
+ * The resolved multi-environment view: every deploy.yaml-declared environment
+ * plus every orphaned operator config row, each tagged active/enabled/deployable.
+ * Unlike {@link deployConfigDto} (which only iterates the deploy.yaml map), this
+ * surfaces config rows whose environment was removed from deploy.yaml so they are
+ * never silently dropped — the `environments-config` epic decision.
+ */
+function environmentsReadDto(
+  project: Project,
+  config: DeployConfig,
+): { projectId: string; configPath: string; environments: Record<string, unknown>[] } {
+  const declaredByName = new Map([...config.environments.values()].map((env) => [env.name, env]));
+  const resolved = resolveEnvironmentConfigs(project.id, declaredByName.keys());
+  return {
+    projectId: project.id,
+    configPath: '.agent-hub/deploy.yaml',
+    environments: resolved.map((entry) =>
+      resolvedEnvironmentDto(project.id, entry, declaredByName.get(entry.environmentName)),
+    ),
+  };
+}
+
 async function cleanupPreparedCheckout(checkout: CheckoutResult | null): Promise<void> {
   if (!checkout) return;
   await rm(checkout.worktreePath, { recursive: true, force: true });
@@ -629,6 +702,49 @@ export default function createDeploymentRoutes(
       await cleanupPreparedCheckout(checkout);
     }
   });
+
+  router.get(
+    '/api/projects/:projectId/deploy/environments',
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      let checkout: CheckoutResult | null = null;
+      try {
+        let config: DeployConfig;
+        try {
+          if (projectUsesHostedGit(project)) {
+            checkout = await prepareCheckout({ project, ref: 'HEAD' });
+          }
+          config = await loadConfig(
+            checkout
+              ? path.join(checkout.worktreePath, '.agent-hub', 'deploy.yaml')
+              : projectDeployYamlPath(project),
+          );
+        } catch (err) {
+          // A missing deploy.yaml is not an error for this view: with no declared
+          // environments every operator config row resolves as inactive, and the
+          // management UI still needs to list (and clean up) those orphaned rows.
+          // A malformed deploy.yaml stays a hard error — its declared set can't be
+          // trusted to compute active/deployable.
+          if (err instanceof DeployConfigError && err.reason === 'not_found') {
+            config = { version: 1, environments: new Map() };
+          } else {
+            throw err;
+          }
+        }
+        return res.json(environmentsReadDto(project, config));
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: message });
+      } finally {
+        await cleanupPreparedCheckout(checkout);
+      }
+    },
+  );
 
   router.get('/api/projects/:projectId/deployments', (req: Request, res: Response) => {
     const projectId = req.params.projectId as string;

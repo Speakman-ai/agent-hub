@@ -26,6 +26,11 @@ import {
   updateDeploymentStatus,
 } from '../deploy/deployment-store.js';
 import { loadDeployConfig, parseDeployConfig, type DeployConfig } from '../deploy/deploy-config.js';
+import {
+  setEnvironmentEnabled,
+  upsertEnvironmentConfig,
+} from '../deploy/deployment-env-config-store.js';
+import { DeployConfigError } from '../deploy/deploy-config-error.js';
 import { createSupportTicket, recordSupportTicketInvestigation } from '../support-tickets-store.js';
 import {
   addReleaseDigestRecipient,
@@ -265,6 +270,7 @@ beforeEach(() => {
     'release_notification_outbox',
     'deployments',
     'deployment_environments',
+    'deployment_env_runtime_config',
     'release_notification_settings',
     'kanban_cards',
     'kanban_columns',
@@ -1362,5 +1368,124 @@ environments:
       .post(`/api/projects/${PROJECT_ID}/deployments/${source.id}/rollback`)
       .send({})
       .expect(400);
+  });
+
+  describe('GET /deploy/environments', () => {
+    it('resolves declared environments as active/enabled/deployable with live state', async () => {
+      ensureDeploymentEnvironment(PROJECT_ID, 'dev');
+      const current = createDeployment({
+        projectId: PROJECT_ID,
+        environment: 'dev',
+        ref: 'current-sha',
+        status: 'success',
+      });
+      setEnvironmentCurrentRef(PROJECT_ID, 'dev', 'current-sha', current.id);
+
+      const { app } = makeApp();
+      const res = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/environments`)
+        .expect(200);
+
+      expect(res.body).toMatchObject({
+        projectId: PROJECT_ID,
+        configPath: '.agent-hub/deploy.yaml',
+      });
+      expect(res.body.environments).toHaveLength(2);
+      const dev = res.body.environments.find((e: { name: string }) => e.name === 'dev');
+      expect(dev).toMatchObject({
+        name: 'dev',
+        active: true,
+        enabled: true,
+        deployable: true,
+        approval: false,
+        runsOn: 'ubuntu-24.04',
+        timeoutMinutes: 60,
+        currentRef: 'current-sha',
+        currentDeploymentId: current.id,
+        lastDeployment: { id: current.id, ref: 'current-sha', status: 'success' },
+        config: null,
+      });
+      expect(dev.steps).toEqual([{ name: 'deploy', run: './deploy-dev.sh' }]);
+      // Rollback is out of scope: the resolved view must not carry a rollback target.
+      expect(dev).not.toHaveProperty('rollbackTarget');
+    });
+
+    it('marks a paused environment as not deployable and surfaces its config row', async () => {
+      const config = setEnvironmentEnabled(PROJECT_ID, 'prod', false);
+      const { app } = makeApp();
+      const res = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/environments`)
+        .expect(200);
+
+      const prod = res.body.environments.find((e: { name: string }) => e.name === 'prod');
+      expect(prod).toMatchObject({
+        name: 'prod',
+        active: true,
+        enabled: false,
+        deployable: false,
+        approval: true,
+        config: { id: config.id, enabled: false },
+      });
+    });
+
+    it('surfaces an orphaned config row (env removed from deploy.yaml) as inactive', async () => {
+      upsertEnvironmentConfig({
+        projectId: PROJECT_ID,
+        environmentName: 'legacy',
+        enabled: true,
+        meta: { note: 'kept for audit' },
+      });
+      const { app } = makeApp();
+      const res = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/environments`)
+        .expect(200);
+
+      const legacy = res.body.environments.find((e: { name: string }) => e.name === 'legacy');
+      expect(legacy).toMatchObject({
+        name: 'legacy',
+        active: false,
+        enabled: true,
+        deployable: false,
+        approval: null,
+        runsOn: null,
+        timeoutMinutes: null,
+        steps: [],
+        config: { enabled: true, meta: { note: 'kept for audit' } },
+      });
+    });
+
+    it('returns orphaned config rows with no declared envs when deploy.yaml is missing', async () => {
+      upsertEnvironmentConfig({ projectId: PROJECT_ID, environmentName: 'legacy', enabled: false });
+      const { app } = makeApp({
+        loadConfig: async () => {
+          throw new DeployConfigError('not_found', 'deploy.yaml not found');
+        },
+      });
+      const res = await request(app)
+        .get(`/api/projects/${PROJECT_ID}/deploy/environments`)
+        .expect(200);
+
+      expect(res.body.environments).toHaveLength(1);
+      expect(res.body.environments[0]).toMatchObject({
+        name: 'legacy',
+        active: false,
+        deployable: false,
+        enabled: false,
+      });
+    });
+
+    it('returns 400 when deploy.yaml is malformed', async () => {
+      const { app } = makeApp({
+        loadConfig: async () => {
+          throw new DeployConfigError('invalid_yaml', 'deploy.yaml is not valid YAML');
+        },
+      });
+      await request(app).get(`/api/projects/${PROJECT_ID}/deploy/environments`).expect(400);
+    });
+
+    it('returns 404 for an unknown project', async () => {
+      const { app } = makeApp();
+      await request(app).get('/api/projects/missing/deploy/environments').expect(404);
+    });
   });
 });

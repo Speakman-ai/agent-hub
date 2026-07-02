@@ -218,6 +218,48 @@ const DeployConfigResponseSchema = registerComponent(
   }),
 );
 
+const EnvironmentRuntimeConfigSchema = registerComponent(
+  'EnvironmentRuntimeConfig',
+  z.object({
+    id: z.string(),
+    enabled: z.boolean(),
+    meta: z.unknown().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+);
+
+const ResolvedEnvironmentSchema = registerComponent(
+  'ResolvedEnvironment',
+  z.object({
+    name: z.string(),
+    // Declared in the current deploy.yaml. Orphaned config rows report false.
+    active: z.boolean(),
+    // Operator enable/disable switch (a missing config row defaults to enabled).
+    enabled: z.boolean(),
+    // Deployable only when the environment is both active and enabled.
+    deployable: z.boolean(),
+    // Declared pipeline metadata; null/[] for inactive (orphaned) environments.
+    approval: z.boolean().nullable(),
+    runsOn: z.string().nullable(),
+    timeoutMinutes: z.number().int().nullable(),
+    steps: z.array(DeployConfigStepSchema),
+    currentRef: z.string().nullable(),
+    currentDeploymentId: z.string().nullable(),
+    lastDeployment: DeploymentSchema.nullable(),
+    config: EnvironmentRuntimeConfigSchema.nullable(),
+  }),
+);
+
+const EnvironmentsReadResponseSchema = registerComponent(
+  'EnvironmentsReadResponse',
+  z.object({
+    projectId: z.string(),
+    configPath: z.string(),
+    environments: z.array(ResolvedEnvironmentSchema),
+  }),
+);
+
 const DeploySetupWizardResponseSchema = registerComponent(
   'DeploySetupWizardResponse',
   z.object({
@@ -350,6 +392,24 @@ registerPath({
     },
     400: errorResponse('Invalid deploy.yaml.'),
     404: errorResponse('Project or deploy.yaml not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/environments',
+  tags: ['Deployments'],
+  summary: 'Read resolved deployment environments (deploy.yaml + operator config)',
+  description:
+    'Merges deploy.yaml-declared environments with per-environment operator runtime config, tagging each active/enabled/deployable. Also surfaces orphaned config rows whose environment was removed from deploy.yaml (active:false, deployable:false) so they are never silently dropped. A missing deploy.yaml returns those config rows with no declared environments rather than a 404.',
+  request: { params: projectParams },
+  responses: {
+    200: {
+      description: 'Resolved environment list.',
+      content: jsonContent(EnvironmentsReadResponseSchema),
+    },
+    400: errorResponse('Invalid deploy.yaml.'),
+    404: errorResponse('Project not found.'),
   },
 });
 
