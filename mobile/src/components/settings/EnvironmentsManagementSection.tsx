@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { ChevronDown, ChevronRight, Pause, Play, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
+import { CalendarClock, ChevronDown, ChevronRight, Pause, Play, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
+import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -44,9 +45,14 @@ export default function EnvironmentsManagementSection({
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
+  const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
+
+  const toggleSchedules = useCallback((name: string) => {
+    setExpandedSchedules((prev) => ({ ...prev, [name]: !prev[name] }));
   }, []);
 
   const notify = useCallback(
@@ -223,6 +229,30 @@ export default function EnvironmentsManagementSection({
                     Triggers
                   </Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => toggleSchedules(env.name)}
+                  style={[
+                    styles.actionButton,
+                    expandedSchedules[env.name] ? styles.schedulesButtonActive : styles.schedulesButton,
+                  ]}
+                  accessibilityLabel={`Manage schedules for ${env.name}`}
+                  accessibilityState={{ expanded: !!expandedSchedules[env.name] }}
+                >
+                  {expandedSchedules[env.name] ? (
+                    <ChevronDown size={13} color={colors.blue300} />
+                  ) : (
+                    <ChevronRight size={13} color={colors.gray300} />
+                  )}
+                  <CalendarClock size={13} color={expandedSchedules[env.name] ? colors.blue300 : colors.gray300} />
+                  <Text
+                    style={[
+                      styles.actionText,
+                      { color: expandedSchedules[env.name] ? colors.blue300 : colors.gray300 },
+                    ]}
+                  >
+                    Schedules
+                  </Text>
+                </TouchableOpacity>
                 {env.active ? (
                   <TouchableOpacity
                     onPress={() => setEnabled(env, !env.enabled)}
@@ -271,6 +301,13 @@ export default function EnvironmentsManagementSection({
               </View>
               {expandedTriggers[env.name] && projectId ? (
                 <EnvironmentTriggersPanel
+                  projectId={projectId}
+                  environmentName={env.name}
+                  onNotify={onNotify}
+                />
+              ) : null}
+              {expandedSchedules[env.name] && projectId ? (
+                <EnvironmentSchedulesPanel
                   projectId={projectId}
                   environmentName={env.name}
                   onNotify={onNotify}
@@ -349,6 +386,8 @@ const styles = StyleSheet.create({
   removeButton: { borderColor: colors.gray700 },
   triggersButton: { borderColor: colors.gray700 },
   triggersButtonActive: { borderColor: colors.amber400, backgroundColor: colors.amber900_40 },
+  schedulesButton: { borderColor: colors.gray700 },
+  schedulesButtonActive: { borderColor: colors.blue500, backgroundColor: colors.blue900_40 },
   actionText: { fontSize: 12, fontWeight: '500' },
   disabled: { opacity: 0.5 },
 });

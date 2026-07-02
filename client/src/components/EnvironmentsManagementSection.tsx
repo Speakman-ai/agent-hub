@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
+  CalendarClock,
   ChevronDown,
   ChevronRight,
   Layers,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
+import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -59,9 +61,14 @@ export default function EnvironmentsManagementSection({
   const [error, setError] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
+  const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
+
+  const toggleSchedules = useCallback((name: string) => {
+    setExpandedSchedules((prev) => ({ ...prev, [name]: !prev[name] }));
   }, []);
 
   const notify = useCallback(
@@ -225,6 +232,25 @@ export default function EnvironmentsManagementSection({
                       <Zap size={12} />
                       Triggers
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleSchedules(env.name)}
+                      aria-expanded={!!expandedSchedules[env.name]}
+                      className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
+                        expandedSchedules[env.name]
+                          ? 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+                          : 'border-gray-700 text-gray-300'
+                      }`}
+                      title="Manage deploy schedules"
+                    >
+                      {expandedSchedules[env.name] ? (
+                        <ChevronDown size={12} />
+                      ) : (
+                        <ChevronRight size={12} />
+                      )}
+                      <CalendarClock size={12} />
+                      Schedules
+                    </button>
                     {env.active ? (
                       <button
                         type="button"
@@ -266,6 +292,13 @@ export default function EnvironmentsManagementSection({
                 </div>
                 {expandedTriggers[env.name] && projectId ? (
                   <EnvironmentTriggersPanel
+                    projectId={projectId}
+                    environmentName={env.name}
+                    showToast={showToast}
+                  />
+                ) : null}
+                {expandedSchedules[env.name] && projectId ? (
+                  <EnvironmentSchedulesPanel
                     projectId={projectId}
                     environmentName={env.name}
                     showToast={showToast}

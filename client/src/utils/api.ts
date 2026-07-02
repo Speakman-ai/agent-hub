@@ -18,6 +18,22 @@ interface UpdateDeployTriggerBody {
   meta?: unknown;
 }
 
+interface CreateDeployScheduleBody {
+  ref: string;
+  cron: string;
+  timezone?: string | null;
+  enabled?: boolean;
+  meta?: unknown;
+}
+
+interface UpdateDeployScheduleBody {
+  ref?: string;
+  cron?: string;
+  timezone?: string | null;
+  enabled?: boolean;
+  meta?: unknown;
+}
+
 // Session-scoped flag we set right before a 401-triggered reload so that the
 // first request after reload (e.g. the bootstrap `getAuthStatus` probe in
 // AuthGate, or the user hitting Login) can't trigger a second reload before
@@ -544,6 +560,49 @@ export const api = {
       `/projects/${projectId}/deploy/environments/${encodeURIComponent(
         environmentName,
       )}/triggers/${triggerId}`,
+      {
+        method: 'DELETE',
+      },
+    ),
+  // Per-environment deploy schedules (deploy-scheduling epic decision): cron rules
+  // that enqueue a deployment of a ref under the owner's identity. Editable
+  // without touching deploy.yaml; a disabled schedule is a retained pause.
+  listDeploySchedules: (projectId: string, environmentName: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules`,
+    ),
+  createDeploySchedule: (
+    projectId: string,
+    environmentName: string,
+    body: CreateDeployScheduleBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules`,
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    ),
+  updateDeploySchedule: (
+    projectId: string,
+    environmentName: string,
+    scheduleId: string,
+    body: UpdateDeployScheduleBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/schedules/${scheduleId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteDeploySchedule: (projectId: string, environmentName: string, scheduleId: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/schedules/${scheduleId}`,
       {
         method: 'DELETE',
       },

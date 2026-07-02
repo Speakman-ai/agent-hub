@@ -273,6 +273,18 @@ export const api = {
     deleteDeployTrigger: (projectId: any, environmentName: any, triggerId: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/triggers/${triggerId}`, {
         method: 'DELETE',
     }),
+    listDeploySchedules: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules`),
+    createDeploySchedule: (projectId: any, environmentName: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }),
+    updateDeploySchedule: (projectId: any, environmentName: any, scheduleId: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules/${scheduleId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+    }),
+    deleteDeploySchedule: (projectId: any, environmentName: any, scheduleId: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules/${scheduleId}`, {
+        method: 'DELETE',
+    }),
     startDeployWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
         method: 'POST',
         body: JSON.stringify({}),
