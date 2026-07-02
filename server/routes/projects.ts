@@ -40,7 +40,7 @@ import { runPreviewTest } from '../preview/preview-test.js';
 import { getOrCreateBoard } from './board.js';
 import { createPage } from '../wiki.js';
 import { getEngineAuthStatus } from '../engine-auth-status.js';
-import { userHasEngineCreds } from '../per-user-cli-spawn.js';
+import { userHasEngineCreds, resolveUserCliCredOverride } from '../per-user-cli-spawn.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { isEligibleSecurityActor } from '../security-audit/actor-user.js';
 import {
@@ -3027,6 +3027,17 @@ This workspace has no git repo and no PR automation — your job is planning, or
       });
     }
 
+    // Thread the acting user's id + stored credentials into the spawn env so
+    // the CLI runs as them (per-user HOME pin + DB-stored OAuth token). Without
+    // this the analyzer inherits the host HOME with no token and Claude reports
+    // "Not logged in · Please run /login" for DB-credential users. Mirrors the
+    // heartbeat / chat spawn env resolution.
+    const analyzeSpawnEnv = buildSpawnEnv(config, {
+      userId: analyzeUserId,
+      userOverride: resolveUserCliCredOverride(analyzeUserId),
+      engine: resolved.engine,
+    });
+
     if (resolved.engine === 'claude-code') {
       const CLAUDE_BIN = getClaudeBin();
       const args = [
@@ -3049,7 +3060,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
       try {
         proc = spawn(CLAUDE_BIN, args, {
           cwd: resolvedCwd,
-          env: buildSpawnEnv(config, { engine: resolved.engine }),
+          env: analyzeSpawnEnv,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: true,
         });
@@ -3216,7 +3227,7 @@ This workspace has no git repo and no PR automation — your job is planning, or
           systemPrompt: ANALYZE_SYSTEM_PROMPT,
           cwd: resolvedCwd,
           timeoutMs: ANALYZE_TIMEOUT_MS,
-          env: buildSpawnEnv(config, { engine: resolved.engine }),
+          env: analyzeSpawnEnv,
         },
         config,
       )
