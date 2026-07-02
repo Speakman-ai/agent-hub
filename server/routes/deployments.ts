@@ -33,6 +33,7 @@ import {
   triggerDeployment,
   type DeployOrchestratorDeps,
 } from '../deploy/deploy-orchestrator.js';
+import { buildDeployOrchestratorDeps } from '../deploy/deploy-trigger-hook.js';
 import {
   getDeployment,
   getDeploymentEnvironment,
@@ -70,7 +71,6 @@ import {
   DeploymentCheckoutError,
   prepareDeploymentCheckout,
 } from '../deploy/deployment-checkout.js';
-import { resolveUserGithubToken } from '../auto-git.js';
 import {
   AdjustDeploymentReleaseItemRequestSchema,
   ApproveDeploymentRequestSchema,
@@ -650,37 +650,17 @@ export default function createDeploymentRoutes(
   const router = Router();
   const prepareCheckout = opts.prepareCheckout ?? prepareDeploymentCheckout;
   const loadConfig = opts.loadConfig ?? loadDeployConfig;
-  const orchestratorDeps: DeployOrchestratorDeps = {
+  // Shared with the push/merge trigger hook so the manual-deploy and
+  // trigger-driven paths never drift on GitHub-token / repo / recovery-checkout
+  // / release-digest wiring.
+  const orchestratorDeps: DeployOrchestratorDeps = buildDeployOrchestratorDeps({
     broadcast: deps.broadcast,
-    orgId: opts.orchestratorDeps?.orgId,
-    runnerBackend: opts.orchestratorDeps?.runnerBackend,
-    now: opts.orchestratorDeps?.now,
-    env: opts.orchestratorDeps?.env,
-    // Deploy steps run `gh` / `git push` as the user who triggered the deploy
-    // (no global `gh auth login` exists in the runner container). Resolve their
-    // per-user GitHub OAuth/PAT at run time, refreshing if stale.
-    resolveGithubToken:
-      opts.orchestratorDeps?.resolveGithubToken ??
-      ((userId: string) => resolveUserGithubToken(userId, deps.config)),
-    // Inject the project's configured GitHub repo as `GH_REPO` so deploy steps
-    // can run `gh ...` against GitHub even though the checkout's `origin` remote
-    // is the self-hosted Hub git forge (not a GitHub host). Without this, a step
-    // like `gh workflow run release-all.yml` fails resolving the repo from
-    // `origin`.
-    resolveProjectGithubRepo:
-      opts.orchestratorDeps?.resolveProjectGithubRepo ??
-      ((projectId: string) => deps.findProject(projectId)?.githubRepo ?? null),
-    prepareRecoveryCheckout:
-      opts.orchestratorDeps?.prepareRecoveryCheckout ??
-      (async ({ projectId, ref }) => {
-        const project = deps.findProject(projectId);
-        if (!project) throw new Error(`Project not found: ${projectId}`);
-        const checkout = await prepareCheckout({ project, ref });
-        return { worktreePath: checkout.worktreePath, cleanupWorktreeOnTerminal: true };
-      }),
-    releaseDigestConfig: opts.orchestratorDeps?.releaseDigestConfig ?? deps.config,
-    releaseDigestRunner: opts.orchestratorDeps?.releaseDigestRunner ?? opts.releaseDigestRunner,
-  };
+    config: deps.config,
+    findProject: deps.findProject,
+    prepareCheckout,
+    releaseDigestRunner: opts.releaseDigestRunner,
+    overrides: opts.orchestratorDeps,
+  });
 
   router.post(
     '/api/projects/:projectId/deploy/setup-wizard',

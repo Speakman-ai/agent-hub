@@ -142,6 +142,7 @@ import createFinalizeWizardRoutes from './routes/finalize-wizard.js';
 import createDeploymentRoutes from './routes/deployments.js';
 import { recoverInFlightDeployments } from './deploy/deploy-orchestrator.js';
 import { prepareDeploymentCheckout } from './deploy/deployment-checkout.js';
+import { maybeRunDeployTriggers } from './deploy/deploy-trigger-hook.js';
 import createReleaseNotificationSettingsRoutes from './routes/release-notification-settings.js';
 import createRunnerRoutes from './finalize/runner-routes.js';
 import { recordJobResourceSummary } from './finalize/metrics.js';
@@ -493,6 +494,11 @@ app.use(
       // Fire-and-forget — the module gates on `securityScan.onPush`, serializes
       // per project, and swallows failures so it never breaks the push path.
       void maybeRunPushSecurityScan(project, refs, { stmts: stmts!, broadcast });
+      // Operator-configured deploy triggers: a matching branch update enqueues a
+      // deployment for the mapped environment. Fire-and-forget — the module gates
+      // on a cheap indexed query, honors the per-env concurrency lock, and
+      // swallows failures so it never breaks the push path.
+      void maybeRunDeployTriggers(project, 'push', refs, { broadcast, config, findProject });
       // Review safety net for external pushes: any moved branch backing
       // an open PR gets the Reviewer agent when branch protection
       // requires review and the head isn't Finalize-validated.
@@ -589,6 +595,13 @@ const nativePr = createNativePrService({
     void maybeRunPushSecurityScan(project, [`refs/heads/${baseBranch}`], {
       stmts: stmts!,
       broadcast,
+    });
+    // A native merge is the `merge` deploy-trigger event: enqueue a deployment
+    // for any environment whose merge trigger matches the moved base branch.
+    void maybeRunDeployTriggers(project, 'merge', [`refs/heads/${baseBranch}`], {
+      broadcast,
+      config,
+      findProject,
     });
     await notifyMirrorPush(project, [`refs/heads/${baseBranch}`], { broadcast });
   },
