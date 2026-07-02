@@ -21,11 +21,34 @@ vi.mock('@react-native-async-storage/async-storage', () => {
     };
 });
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { loadAuthToken, getToken, getAuthRecord, setToken, clearToken, isAuthenticated, login, setup, getAuthStatus, logout, completeMfaLogin, forgotPassword, resetPassword, } from './auth';
+import { loadAuthToken, getToken, getAuthRecord, setToken, clearToken, isAuthenticated, login, setup, getAuthStatus, logout, completeMfaLogin, forgotPassword, resetPassword, getUserRole, hasRole, } from './auth';
 async function resetStore() {
     await AsyncStorage.clear();
     await clearToken(); // also resets the in-memory mirror
 }
+describe('mobile auth role helpers', () => {
+    beforeEach(async () => {
+        await resetStore();
+    });
+    it('reads the cached user role and gates by rank', async () => {
+        expect(getUserRole()).toBeNull();
+        expect(hasRole('Admin')).toBe(false);
+        await setToken({ token: 't', expiresAt: null, user: { username: 'admin', role: 'Admin' } });
+        expect(getUserRole()).toBe('Admin');
+        expect(hasRole('User')).toBe(true);
+        expect(hasRole('Admin')).toBe(true);
+        expect(hasRole('Owner')).toBe(false);
+    });
+    it('treats Owner as satisfying every lower role', async () => {
+        await setToken({ token: 't', expiresAt: null, user: { username: 'owner', role: 'Owner' } });
+        expect(hasRole('Admin')).toBe(true);
+        expect(hasRole('Owner')).toBe(true);
+    });
+    it('denies admin gate for a plain User', async () => {
+        await setToken({ token: 't', expiresAt: null, user: { username: 'u', role: 'User' } });
+        expect(hasRole('Admin')).toBe(false);
+    });
+});
 describe('mobile auth token helpers', () => {
     beforeEach(async () => {
         await resetStore();

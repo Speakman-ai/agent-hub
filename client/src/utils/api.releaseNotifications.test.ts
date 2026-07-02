@@ -29,4 +29,19 @@ describe('api release notification helpers', () => {
     expect(opts.method).toBe('POST');
     expect(JSON.parse(opts.body)).toEqual({});
   });
+
+  it('fetches deployment notification recipients from the Admin endpoint', async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(JSON.stringify({ recipients: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await api.getDeploymentNotificationRecipients('agent-hub', 'dep-1');
+
+    const [url, opts] = fetchSpy.mock.calls[0];
+    expect(url).toContain('/api/projects/agent-hub/deployments/dep-1/notification-recipients');
+    expect(opts?.method ?? 'GET').toBe('GET');
+  });
 });

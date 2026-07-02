@@ -2,6 +2,12 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeploymentsPage from './DeploymentsPage';
 import { api } from '../utils/api';
+import { hasRole } from '../utils/auth';
+
+(vi as any).mock('../utils/auth', async (importOriginal: any) => {
+  const actual = await importOriginal();
+  return { ...actual, hasRole: vi.fn(() => false) };
+});
 
 (vi as any).mock('../utils/api.js', () => ({
   api: {
@@ -10,6 +16,7 @@ import { api } from '../utils/api';
     getGitHostBranches: vi.fn(),
     listDeployments: vi.fn(),
     getDeployment: vi.fn(),
+    getDeploymentNotificationRecipients: vi.fn(),
     retryReleaseNotification: vi.fn(),
     adjustDeploymentReleaseItem: vi.fn(),
     startDeployWizard: vi.fn(),
@@ -153,6 +160,8 @@ function config(environments: any[] = [env()]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  (hasRole as any).mockReturnValue(false);
+  (api.getDeploymentNotificationRecipients as any).mockResolvedValue({ recipients: [] });
   (api.getDeployConfig as any).mockResolvedValue(config());
   (api.getProjectBranches as any).mockResolvedValue({
     defaultBranch: 'main',
@@ -553,5 +562,46 @@ describe('DeploymentsPage', () => {
     expect((await screen.findAllByText(/dev \/ sha-ws/)).length).toBeGreaterThan(0);
     expect(screen.getAllByText('running').length).toBeGreaterThan(0);
     expect(screen.getByText('1. build')).toBeInTheDocument();
+  });
+
+  it('hides the recipients audit affordance for non-admin callers', async () => {
+    (hasRole as any).mockReturnValue(false);
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    await screen.findByText('#1227 Fix export crash');
+    expect(screen.queryByTestId('show-recipients')).not.toBeInTheDocument();
+    expect(api.getDeploymentNotificationRecipients).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin load recipient emails on demand', async () => {
+    (hasRole as any).mockReturnValue(true);
+    (api.getDeploymentNotificationRecipients as any).mockResolvedValue({
+      recipients: [
+        {
+          id: 'rcpt-1',
+          deployment_id: 'dep-1',
+          release_item_id: null,
+          support_ticket_id: 'ticket-1',
+          notification_type: 'ticket_release',
+          recipient_type: 'reporter',
+          recipient_email: 'reporter@example.com',
+          subject: 'Your fix shipped',
+          status: 'sent',
+          attempts: 1,
+          sent_at: '2026-06-25 12:05:00',
+          next_attempt_at: null,
+          error_summary: null,
+        },
+      ],
+    });
+    render(<DeploymentsPage projectId="proj-1" onNotify={() => {}} />);
+
+    const showBtn = await screen.findByTestId('show-recipients');
+    expect(api.getDeploymentNotificationRecipients).not.toHaveBeenCalled();
+    fireEvent.click(showBtn);
+
+    expect(await screen.findByText('reporter@example.com')).toBeInTheDocument();
+    expect(api.getDeploymentNotificationRecipients).toHaveBeenCalledWith('proj-1', 'dep-1');
+    expect(screen.getByText('1 recipient (1 sent)')).toBeInTheDocument();
   });
 });

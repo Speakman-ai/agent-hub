@@ -50,6 +50,20 @@ export function getAuthRecord() {
 export function needsEmailUpdate() {
   return !!_cachedToken?.user?.needsEmailUpdate;
 }
+const ROLE_RANK: Record<string, number> = { Owner: 3, Admin: 2, User: 1 };
+/** Role embedded in the cached user record, or null. */
+export function getUserRole(): string | null {
+  return _cachedToken?.user?.role || null;
+}
+/**
+ * True iff the cached user's role is at least `minRole`. Purely a UX hint for
+ * hiding admin-only affordances — the server still enforces the real gate.
+ */
+export function hasRole(minRole: string): boolean {
+  const role = getUserRole();
+  if (!role) return false;
+  return (ROLE_RANK[role] ?? 0) >= (ROLE_RANK[minRole] ?? 0);
+}
 /** Persist a new token record. */
 export async function setToken({ token, expiresAt, user }: any) {
   const record = { token, expiresAt: expiresAt || null, user: user || null };

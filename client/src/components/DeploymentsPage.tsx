@@ -14,10 +14,17 @@ import {
   Settings,
   ShieldCheck,
   Terminal,
+  Users,
   Wrench,
   XCircle,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { hasRole } from '../utils/auth';
+import {
+  recipientStatusLabel,
+  recipientTypeLabel,
+  summarizeRecipientCounts,
+} from '../utils/deployRecipients';
 import { buildNavigationHash } from '../utils/navigation';
 import EnvironmentsManagementSection from './EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
@@ -206,11 +213,23 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
   const [setupStarting, setSetupStarting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showManage, setShowManage] = useState(false);
+  const [recipients, setRecipients] = useState<any[] | null>(null);
+  const [recipientsLoading, setRecipientsLoading] = useState(false);
+  const [recipientsError, setRecipientsError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+
+  const isAdmin = hasRole('Admin');
 
   useEffect(() => {
     selectedIdRef.current = selected?.deployment?.id ?? null;
   }, [selected]);
+
+  // Recipient emails are PII loaded on demand — clear the audit list whenever
+  // the operator switches to a different deployment.
+  useEffect(() => {
+    setRecipients(null);
+    setRecipientsError(null);
+  }, [selected?.deployment?.id]);
 
   const notify = useCallback(
     (message: string, type: string = 'info') => onNotify?.(message, type),
@@ -451,6 +470,20 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
       notify(e?.message || 'Failed to retry release notification', 'error');
     } finally {
       setActionKey(null);
+    }
+  };
+
+  const loadRecipients = async () => {
+    if (!selectedDeployment?.id) return;
+    setRecipientsLoading(true);
+    setRecipientsError(null);
+    try {
+      const res = await api.getDeploymentNotificationRecipients(projectId, selectedDeployment.id);
+      setRecipients(res?.recipients || []);
+    } catch (e: any) {
+      setRecipientsError(e?.message || 'Failed to load recipients');
+    } finally {
+      setRecipientsLoading(false);
     }
   };
 
@@ -1012,6 +1045,87 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                         })}
                       </div>
                     )}
+
+                    {isAdmin ? (
+                      <div className="mt-4 border-t border-gray-800 pt-3">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                              Recipients
+                            </span>
+                            <span className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300">
+                              Admin
+                            </span>
+                          </div>
+                          {recipients ? (
+                            <span className="text-[11px] text-gray-500">
+                              {summarizeRecipientCounts(recipients)}
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mb-2 text-[11px] leading-relaxed text-gray-500">
+                          Who these notifications were addressed to, including recipient email.
+                          Loaded on demand — Admin only.
+                        </p>
+
+                        {recipientsError ? (
+                          <div className="mb-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-300">
+                            {recipientsError}
+                          </div>
+                        ) : null}
+
+                        {recipients === null ? (
+                          <button
+                            type="button"
+                            onClick={loadRecipients}
+                            disabled={recipientsLoading}
+                            data-testid="show-recipients"
+                            className="inline-flex min-h-[30px] items-center gap-1.5 rounded-md border border-gray-700 px-2.5 text-xs text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {recipientsLoading ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Users size={12} />
+                            )}
+                            Show recipients
+                          </button>
+                        ) : recipients.length === 0 ? (
+                          <div className="rounded-md border border-dashed border-gray-800 p-3 text-center text-xs text-gray-500">
+                            No recipients recorded for this deployment.
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5" data-testid="recipients-list">
+                            {recipients.map((recipient: any) => (
+                              <div
+                                key={recipient.id}
+                                className="rounded-md border border-gray-800 bg-gray-950/70 p-2.5"
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-gray-200">
+                                    {recipient.recipient_email}
+                                  </span>
+                                  <StatusBadge status={recipient.status} />
+                                </div>
+                                <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-gray-500">
+                                  <span>{recipientTypeLabel(recipient)}</span>
+                                  <span>{recipient.attempts || 0} attempts</span>
+                                  {recipient.sent_at ? (
+                                    <span>sent {formatDate(recipient.sent_at)}</span>
+                                  ) : (
+                                    <span>{recipientStatusLabel(recipient)}</span>
+                                  )}
+                                </div>
+                                {recipient.error_summary ? (
+                                  <div className="mt-1.5 rounded border border-red-500/20 bg-red-500/10 px-2 py-1 text-[11px] text-red-200">
+                                    {recipient.error_summary}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </section>

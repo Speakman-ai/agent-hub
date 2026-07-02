@@ -22,6 +22,7 @@ import {
   Settings,
   ShieldCheck,
   Terminal,
+  Users,
   Wrench,
   XCircle,
 } from 'lucide-react-native';
@@ -31,6 +32,12 @@ import ReleaseNotificationSettingsSection from '../components/settings/ReleaseNo
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
 import { api } from '../utils/api';
+import { hasRole } from '../utils/auth';
+import {
+  recipientStatusLabel,
+  recipientTypeLabel,
+  summarizeRecipientCounts,
+} from '../utils/deployRecipients';
 import {
   deploymentEventFromSnapshot,
   deploymentStepLogText,
@@ -141,7 +148,12 @@ export default function DeploymentsScreen({ route, navigation }: any) {
   const [setupStarting, setSetupStarting] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showManage, setShowManage] = useState(false);
+  const [recipients, setRecipients] = useState<any[] | null>(null);
+  const [recipientsLoading, setRecipientsLoading] = useState(false);
+  const [recipientsError, setRecipientsError] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+
+  const isAdmin = hasRole('Admin');
 
   useEffect(() => {
     selectedIdRef.current = selected?.deployment?.id ?? null;
@@ -334,6 +346,26 @@ export default function DeploymentsScreen({ route, navigation }: any) {
     },
     [projectId, selectedDeployment?.id],
   );
+
+  // Recipient emails are PII loaded on demand — clear when switching deployment.
+  useEffect(() => {
+    setRecipients(null);
+    setRecipientsError(null);
+  }, [selectedDeployment?.id]);
+
+  const loadRecipients = useCallback(async () => {
+    if (!projectId || !selectedDeployment?.id) return;
+    setRecipientsLoading(true);
+    setRecipientsError(null);
+    try {
+      const res = await api.getDeploymentNotificationRecipients(projectId, selectedDeployment.id);
+      setRecipients(res?.recipients || []);
+    } catch (err: any) {
+      setRecipientsError(err?.message || 'Failed to load recipients');
+    } finally {
+      setRecipientsLoading(false);
+    }
+  }, [projectId, selectedDeployment?.id]);
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -823,6 +855,67 @@ export default function DeploymentsScreen({ route, navigation }: any) {
                   );
                 })
               )}
+
+              {isAdmin ? (
+                <View style={styles.recipientsSection}>
+                  <View style={styles.recipientsHeader}>
+                    <View style={styles.recipientsTitleRow}>
+                      <Text style={styles.recipientsTitle}>Recipients</Text>
+                      <View style={styles.recipientsAdminBadge}>
+                        <Text style={styles.recipientsAdminBadgeText}>ADMIN</Text>
+                      </View>
+                    </View>
+                    {recipients ? (
+                      <Text style={styles.releaseCount}>
+                        {summarizeRecipientCounts(recipients)}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text style={styles.recipientsHint}>
+                    Who these notifications were addressed to, including recipient email. Loaded on
+                    demand.
+                  </Text>
+                  {recipientsError ? (
+                    <Text style={styles.notificationErrorText}>{recipientsError}</Text>
+                  ) : null}
+                  {recipients === null ? (
+                    <TouchableOpacity
+                      onPress={loadRecipients}
+                      disabled={recipientsLoading}
+                      style={[styles.secondaryButton, recipientsLoading && styles.disabled]}
+                    >
+                      {recipientsLoading ? (
+                        <ActivityIndicator color={colors.gray300} size="small" />
+                      ) : (
+                        <Users size={13} color={colors.gray300} />
+                      )}
+                      <Text style={styles.secondaryButtonText}>Show recipients</Text>
+                    </TouchableOpacity>
+                  ) : recipients.length === 0 ? (
+                    <Text style={styles.emptyText}>No recipients recorded for this deployment.</Text>
+                  ) : (
+                    recipients.map((recipient: any) => (
+                      <View key={recipient.id} style={styles.releaseItemCard}>
+                        <View style={styles.releaseItemHeader}>
+                          <Text style={styles.recipientEmail} numberOfLines={1}>
+                            {recipient.recipient_email}
+                          </Text>
+                          <StatusBadge status={recipient.status} />
+                        </View>
+                        <Text style={styles.releaseReasonText}>
+                          {recipientTypeLabel(recipient)} · {recipient.attempts || 0} attempts
+                          {recipient.sent_at
+                            ? ` · sent ${formatDate(recipient.sent_at)}`
+                            : ` · ${recipientStatusLabel(recipient)}`}
+                        </Text>
+                        {recipient.error_summary ? (
+                          <Text style={styles.notificationErrorText}>{recipient.error_summary}</Text>
+                        ) : null}
+                      </View>
+                    ))
+                  )}
+                </View>
+              ) : null}
             </View>
           ) : null}
         </View>
@@ -1107,6 +1200,45 @@ const styles = StyleSheet.create({
   releaseTicketMutedText: { color: colors.gray500, fontSize: 12, lineHeight: 17 },
   releaseReasonText: { color: colors.gray500, fontSize: 11, lineHeight: 16 },
   notificationErrorText: { color: colors.red400, fontSize: 12, lineHeight: 17 },
+  recipientsSection: {
+    borderTopWidth: 1,
+    borderTopColor: colors.gray800,
+    paddingTop: 10,
+    marginTop: 4,
+    gap: 8,
+  },
+  recipientsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  recipientsTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  recipientsTitle: {
+    color: colors.gray500,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  recipientsAdminBadge: {
+    borderWidth: 1,
+    borderColor: colors.amber400,
+    backgroundColor: colors.amber900_40,
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  recipientsAdminBadgeText: {
+    color: colors.amber400,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  recipientsHint: { color: colors.gray500, fontSize: 11, lineHeight: 16 },
+  recipientEmail: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.gray200,
+    fontSize: 13,
+    fontWeight: '600',
+    fontFamily: 'monospace',
+  },
   eventRow: {
     flexDirection: 'row',
     alignItems: 'center',

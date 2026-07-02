@@ -306,6 +306,9 @@ export const api = {
         return fetchJSON(`/projects/${projectId}/deployments${qs ? `?${qs}` : ''}`);
     },
     getDeployment: (projectId: any, deploymentId: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}`),
+    // Admin-only: who a deployment's release notifications were (or will be) sent
+    // to, including recipient email (PII). Server gates with requireRole('Admin').
+    getDeploymentNotificationRecipients: (projectId: any, deploymentId: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/notification-recipients`),
     retryReleaseNotification: (projectId: any, deploymentId: any, notificationId: any) => fetchJSON(`/projects/${projectId}/deployments/${deploymentId}/release-notifications/${encodeURIComponent(notificationId)}/retry`, {
         method: 'POST',
         body: JSON.stringify({}),
