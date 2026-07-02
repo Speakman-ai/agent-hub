@@ -32,8 +32,10 @@ import {
   enqueueReleaseNotificationOutbox,
   enqueueReleaseNotificationsForDeployment,
   listReleaseNotificationOutboxByDeployment,
+  listReleaseNotificationRecipientsByDeployment,
   listRetryEligibleReleaseNotificationOutbox,
   markReleaseNotificationOutboxError,
+  releaseNotificationRecipientItem,
   retryReleaseNotificationOutbox,
 } from './release-notification-outbox.js';
 
@@ -561,6 +563,71 @@ describe('release notification outbox', () => {
     expect(first[0].last_error).not.toContain('super-secret-token');
     expect(immediateRetry).toEqual([]);
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('release notification recipient audit projection', () => {
+  it('exposes the recipient email but redacts raw errors and body text', () => {
+    const deployment = successfulProductionDeployment();
+    const row = enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      supportTicketId: 'ticket-9',
+      notificationType: 'ticket_release',
+      idempotencyKey: 'recipient-projection-key',
+      recipientEmail: 'Reporter@Example.com',
+      subject: 'Update on your support ticket',
+      bodyText: 'Secret fix summary that must not leak',
+    });
+    markReleaseNotificationOutboxError(
+      row.id,
+      'smtp host smtp.internal exploded: super-secret-token',
+    );
+
+    const [current] = listReleaseNotificationOutboxByDeployment(deployment.id);
+    const projected = releaseNotificationRecipientItem(current);
+
+    expect(projected).toMatchObject({
+      id: row.id,
+      notification_type: 'ticket_release',
+      recipient_type: 'reporter',
+      recipient_email: 'reporter@example.com',
+      support_ticket_id: 'ticket-9',
+      release_item_id: null,
+      status: 'error',
+      error_summary: 'Email delivery failed.',
+    });
+    const serialized = JSON.stringify(projected);
+    expect(serialized).not.toContain('super-secret-token');
+    expect(serialized).not.toContain('Secret fix summary');
+  });
+
+  it('lists all recipients for a deployment in insert order', () => {
+    const deployment = successfulProductionDeployment();
+    enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'recipient-list-1',
+      recipientEmail: 'first@example.com',
+      subject: 'Release digest',
+      bodyText: 'body',
+    });
+    enqueueReleaseNotificationOutbox({
+      projectId: P,
+      deploymentId: deployment.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'recipient-list-2',
+      recipientEmail: 'second@example.com',
+      subject: 'Release digest',
+      bodyText: 'body',
+    });
+
+    const recipients = listReleaseNotificationRecipientsByDeployment(deployment.id);
+    expect(recipients.map((r) => r.recipient_email)).toEqual([
+      'first@example.com',
+      'second@example.com',
+    ]);
   });
 });
 

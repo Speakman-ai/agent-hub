@@ -869,6 +869,93 @@ environments:
     ).toMatchObject({ count: 1 });
   });
 
+  it('exposes release notification recipients (with email) to Admin callers', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'prod', ref: 'abc' });
+    const reporter = enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      supportTicketId: 'ticket-1',
+      notificationType: 'ticket_release',
+      idempotencyKey: 'recipients-reporter-key',
+      recipientEmail: 'Reporter@Example.com',
+      subject: 'Update on your support ticket',
+      bodyText: 'Fix shipped',
+    });
+    const digest = enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'recipients-digest-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Release digest',
+      bodyText: 'Release body',
+    });
+    markReleaseNotificationOutboxError(digest.id, 'smtp host smtp.internal failed auth');
+
+    const { app } = makeApp({ role: 'Admin' });
+    const res = await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/notification-recipients`)
+      .expect(200);
+
+    expect(res.body.recipients).toEqual([
+      expect.objectContaining({
+        id: reporter.id,
+        notification_type: 'ticket_release',
+        recipient_type: 'reporter',
+        recipient_email: 'reporter@example.com',
+        support_ticket_id: 'ticket-1',
+        release_item_id: null,
+        status: 'pending',
+      }),
+      expect.objectContaining({
+        id: digest.id,
+        notification_type: 'release_digest',
+        recipient_type: 'release_digest',
+        recipient_email: 'ops@example.com',
+        status: 'error',
+        error_summary: 'Email delivery failed.',
+      }),
+    ]);
+    // Raw provider error and message body are never surfaced, even to Admin.
+    const serialized = JSON.stringify(res.body.recipients);
+    expect(serialized).not.toContain('smtp.internal');
+    expect(serialized).not.toContain('Release body');
+  });
+
+  it('returns an empty recipient list for a deployment with no notifications', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'prod', ref: 'abc' });
+    const { app } = makeApp({ role: 'Admin' });
+    const res = await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/notification-recipients`)
+      .expect(200);
+    expect(res.body).toEqual({ recipients: [] });
+  });
+
+  it('requires Admin role to read release notification recipients', async () => {
+    const dep = createDeployment({ projectId: PROJECT_ID, environment: 'prod', ref: 'abc' });
+    enqueueReleaseNotificationOutbox({
+      projectId: PROJECT_ID,
+      deploymentId: dep.id,
+      notificationType: 'release_digest',
+      idempotencyKey: 'recipients-auth-key',
+      recipientEmail: 'ops@example.com',
+      subject: 'Release digest',
+      bodyText: 'Release body',
+    });
+
+    const { app } = makeApp({ role: 'User' });
+    await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/${dep.id}/notification-recipients`)
+      .expect(403);
+  });
+
+  it('returns 404 reading recipients for an unknown deployment', async () => {
+    const { app } = makeApp({ role: 'Admin' });
+    await request(app)
+      .get(`/api/projects/${PROJECT_ID}/deployments/does-not-exist/notification-recipients`)
+      .expect(404);
+  });
+
   it('generates a release digest draft with the stored project prompt inside the fixed template', async () => {
     const dep = createDeployment({
       projectId: PROJECT_ID,

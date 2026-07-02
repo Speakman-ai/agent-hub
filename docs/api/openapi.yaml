@@ -3694,6 +3694,80 @@ components:
         - can_retry
         - created_at
         - updated_at
+    ReleaseNotificationRecipient:
+      type: object
+      properties:
+        id:
+          type: string
+        deployment_id:
+          type: string
+        release_item_id:
+          type: string
+          nullable: true
+        support_ticket_id:
+          type: string
+          nullable: true
+        notification_type:
+          type: string
+          enum:
+            - ticket_release
+            - release_digest
+        recipient_type:
+          type: string
+          enum:
+            - reporter
+            - release_digest
+        recipient_email:
+          type: string
+        subject:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - sending
+            - sent
+            - error
+        attempts:
+          type: integer
+        sent_at:
+          type: string
+          nullable: true
+        next_attempt_at:
+          type: string
+          nullable: true
+        error_summary:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        updated_at:
+          type: string
+      required:
+        - id
+        - deployment_id
+        - release_item_id
+        - support_ticket_id
+        - notification_type
+        - recipient_type
+        - recipient_email
+        - subject
+        - status
+        - attempts
+        - sent_at
+        - next_attempt_at
+        - error_summary
+        - created_at
+        - updated_at
+    DeploymentNotificationRecipientsResponse:
+      type: object
+      properties:
+        recipients:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReleaseNotificationRecipient"
+      required:
+        - recipients
     Deployment:
       type: object
       properties:
@@ -19283,6 +19357,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeploymentReleaseItemListResponse"
+        "404":
+          description: Project or deployment not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
+  /api/projects/{projectId}/deployments/{deploymentId}/notification-recipients:
+    get:
+      tags:
+        - Deployments
+      summary: List a deployment’s release notification recipients
+      description: Admin+. Returns the deployment’s release notification outbox rows projected with their actual `recipient_email` so operators can audit exactly who was (or will be) notified, along with status, attempts, sent time, and a sanitized error summary. Unlike the safe `releaseNotifications` history embedded in the deployment detail response, this endpoint exposes recipient addresses and therefore requires Admin.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: deploymentId
+          in: path
+      responses:
+        "200":
+          description: Release notification recipients with delivery status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentNotificationRecipientsResponse"
+        "403":
+          description: Admin role required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentErrorResponse"
         "404":
           description: Project or deployment not found.
           content:

@@ -54,6 +54,24 @@ export interface ReleaseNotificationHistoryItem {
   updated_at: string;
 }
 
+export interface ReleaseNotificationRecipientItem {
+  id: string;
+  deployment_id: string;
+  release_item_id: string | null;
+  support_ticket_id: string | null;
+  notification_type: ReleaseNotificationType;
+  recipient_type: 'reporter' | 'release_digest';
+  recipient_email: string;
+  subject: string;
+  status: ReleaseNotificationOutboxRow['status'];
+  attempts: number;
+  sent_at: string | null;
+  next_attempt_at: string | null;
+  error_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface EnqueueReleaseNotificationsOptions {
   cfg?: AppConfig;
   releaseDigestRunner?: ReleaseDigestRunner;
@@ -219,6 +237,47 @@ export function releaseNotificationHistoryItem(
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+/**
+ * Admin-only projection of an outbox row. Unlike {@link releaseNotificationHistoryItem}
+ * (the safe operator-facing history that hides addresses), this exposes the actual
+ * `recipient_email` so an Admin can audit exactly who a deployment notified. It still
+ * withholds the raw `last_error` and `body_text` — only the sanitized `error_summary`
+ * is surfaced, matching the redaction rules elsewhere in this module.
+ */
+export function releaseNotificationRecipientItem(
+  row: ReleaseNotificationOutboxRow,
+): ReleaseNotificationRecipientItem {
+  return {
+    id: row.id,
+    deployment_id: row.deployment_id,
+    release_item_id: row.release_item_id,
+    support_ticket_id: row.support_ticket_id,
+    notification_type: row.notification_type,
+    recipient_type: row.notification_type === 'ticket_release' ? 'reporter' : 'release_digest',
+    recipient_email: row.recipient_email,
+    subject: row.subject,
+    status: row.status,
+    attempts: row.attempts,
+    sent_at: row.sent_at,
+    next_attempt_at: row.next_attempt_at,
+    error_summary: safeReleaseNotificationErrorSummary(row.last_error),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+/**
+ * Admin-only recipient audit list for a deployment: every outbox row projected with
+ * its recipient address, ordered as the store returns them (chronological insert order).
+ */
+export function listReleaseNotificationRecipientsByDeployment(
+  deploymentId: string,
+): ReleaseNotificationRecipientItem[] {
+  return listReleaseNotificationOutboxByDeployment(deploymentId).map(
+    releaseNotificationRecipientItem,
+  );
 }
 
 export function listRetryEligibleReleaseNotificationOutbox(

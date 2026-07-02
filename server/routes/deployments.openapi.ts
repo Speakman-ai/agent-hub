@@ -156,6 +156,34 @@ const ReleaseNotificationHistoryItemSchema = registerComponent(
   }),
 );
 
+const ReleaseNotificationRecipientSchema = registerComponent(
+  'ReleaseNotificationRecipient',
+  z.object({
+    id: z.string(),
+    deployment_id: z.string(),
+    release_item_id: z.string().nullable(),
+    support_ticket_id: z.string().nullable(),
+    notification_type: ReleaseNotificationTypeEnum,
+    recipient_type: z.enum(['reporter', 'release_digest']),
+    recipient_email: z.string(),
+    subject: z.string(),
+    status: ReleaseNotificationStatusEnum,
+    attempts: z.number().int(),
+    sent_at: z.string().nullable(),
+    next_attempt_at: z.string().nullable(),
+    error_summary: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }),
+);
+
+export const DeploymentNotificationRecipientsResponseSchema = registerComponent(
+  'DeploymentNotificationRecipientsResponse',
+  z.object({
+    recipients: z.array(ReleaseNotificationRecipientSchema),
+  }),
+);
+
 export const DeploymentSchema = registerComponent(
   'Deployment',
   z.object({
@@ -927,6 +955,24 @@ registerPath({
       description: 'Release items with card and support-ticket review context.',
       content: jsonContent(DeploymentReleaseItemListResponseSchema),
     },
+    404: errorResponse('Project or deployment not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deployments/{deploymentId}/notification-recipients',
+  tags: ['Deployments'],
+  summary: 'List a deployment’s release notification recipients',
+  description:
+    'Admin+. Returns the deployment’s release notification outbox rows projected with their actual `recipient_email` so operators can audit exactly who was (or will be) notified, along with status, attempts, sent time, and a sanitized error summary. Unlike the safe `releaseNotifications` history embedded in the deployment detail response, this endpoint exposes recipient addresses and therefore requires Admin.',
+  request: { params: deploymentParams },
+  responses: {
+    200: {
+      description: 'Release notification recipients with delivery status.',
+      content: jsonContent(DeploymentNotificationRecipientsResponseSchema),
+    },
+    403: errorResponse('Admin role required.'),
     404: errorResponse('Project or deployment not found.'),
   },
 });

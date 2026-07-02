@@ -80,6 +80,7 @@ import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-ti
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
   listReleaseNotificationOutboxByDeployment,
+  listReleaseNotificationRecipientsByDeployment,
   releaseNotificationHistoryItem,
   retryReleaseNotificationOutbox,
 } from '../release-notification-outbox.js';
@@ -171,6 +172,10 @@ function releaseNotificationsDto(deploymentId: string): unknown[] {
   return listReleaseNotificationOutboxByDeployment(deploymentId).map(
     releaseNotificationHistoryItem,
   );
+}
+
+function releaseNotificationRecipientsDto(deploymentId: string): unknown[] {
+  return listReleaseNotificationRecipientsByDeployment(deploymentId);
 }
 
 function deploymentAllowsReleaseItemAdjustments(deployment: DeploymentRow): boolean {
@@ -1274,6 +1279,18 @@ export default function createDeploymentRoutes(
       const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
       if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
       return res.json({ releaseItems: releaseItemsDto(deployment.id) });
+    },
+  );
+
+  router.get(
+    '/api/projects/:projectId/deployments/:deploymentId/notification-recipients',
+    requireRole('Admin'),
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const deployment = deploymentForProject(projectId, req.params.deploymentId as string);
+      if (!deployment) return res.status(404).json({ error: 'Deployment not found' });
+      return res.json({ recipients: releaseNotificationRecipientsDto(deployment.id) });
     },
   );
 
