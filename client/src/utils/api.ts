@@ -34,6 +34,12 @@ interface UpdateDeployScheduleBody {
   meta?: unknown;
 }
 
+interface UpdateNotificationRoutingBody {
+  ticketReleaseEnabled?: boolean;
+  releaseDigestEnabled?: boolean;
+  meta?: unknown;
+}
+
 // Session-scoped flag we set right before a 401-triggered reload so that the
 // first request after reload (e.g. the bootstrap `getAuthStatus` probe in
 // AuthGate, or the user hitting Login) can't trigger a second reload before
@@ -605,6 +611,29 @@ export const api = {
       )}/schedules/${scheduleId}`,
       {
         method: 'DELETE',
+      },
+    ),
+  // Per-environment notification routing (notification-routing epic decision):
+  // which release notification types fire on a successful deployment. Editable
+  // without touching deploy.yaml; the resolved read reflects the env-name default.
+  getNotificationRouting: (projectId: string, environmentName: string) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/notification-routing`,
+    ),
+  updateNotificationRouting: (
+    projectId: string,
+    environmentName: string,
+    body: UpdateNotificationRoutingBody,
+  ) =>
+    fetchJSON(
+      `/projects/${projectId}/deploy/environments/${encodeURIComponent(
+        environmentName,
+      )}/notification-routing`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(body),
       },
     ),
   startDeployWizard: (projectId: any) =>

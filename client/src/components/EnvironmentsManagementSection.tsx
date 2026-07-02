@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Layers,
   Loader2,
+  Mail,
   Pause,
   Play,
   RefreshCw,
@@ -16,6 +17,7 @@ import {
 import { api } from '../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
+import EnvironmentNotificationRoutingPanel from './EnvironmentNotificationRoutingPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -62,6 +64,7 @@ export default function EnvironmentsManagementSection({
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
   const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
+  const [expandedRouting, setExpandedRouting] = useState<Record<string, boolean>>({});
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -69,6 +72,10 @@ export default function EnvironmentsManagementSection({
 
   const toggleSchedules = useCallback((name: string) => {
     setExpandedSchedules((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
+
+  const toggleRouting = useCallback((name: string) => {
+    setExpandedRouting((prev) => ({ ...prev, [name]: !prev[name] }));
   }, []);
 
   const notify = useCallback(
@@ -251,6 +258,25 @@ export default function EnvironmentsManagementSection({
                       <CalendarClock size={12} />
                       Schedules
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleRouting(env.name)}
+                      aria-expanded={!!expandedRouting[env.name]}
+                      className={`inline-flex min-h-[30px] items-center gap-1.5 rounded-md border px-2.5 text-xs hover:bg-gray-800 ${
+                        expandedRouting[env.name]
+                          ? 'border-violet-500/40 bg-violet-500/10 text-violet-200'
+                          : 'border-gray-700 text-gray-300'
+                      }`}
+                      title="Manage notification routing"
+                    >
+                      {expandedRouting[env.name] ? (
+                        <ChevronDown size={12} />
+                      ) : (
+                        <ChevronRight size={12} />
+                      )}
+                      <Mail size={12} />
+                      Notifications
+                    </button>
                     {env.active ? (
                       <button
                         type="button"
@@ -299,6 +325,13 @@ export default function EnvironmentsManagementSection({
                 ) : null}
                 {expandedSchedules[env.name] && projectId ? (
                   <EnvironmentSchedulesPanel
+                    projectId={projectId}
+                    environmentName={env.name}
+                    showToast={showToast}
+                  />
+                ) : null}
+                {expandedRouting[env.name] && projectId ? (
+                  <EnvironmentNotificationRoutingPanel
                     projectId={projectId}
                     environmentName={env.name}
                     showToast={showToast}

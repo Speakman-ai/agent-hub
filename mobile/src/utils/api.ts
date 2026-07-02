@@ -285,6 +285,11 @@ export const api = {
     deleteDeploySchedule: (projectId: any, environmentName: any, scheduleId: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/schedules/${scheduleId}`, {
         method: 'DELETE',
     }),
+    getNotificationRouting: (projectId: any, environmentName: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/notification-routing`),
+    updateNotificationRouting: (projectId: any, environmentName: any, body: any) => fetchJSON(`/projects/${projectId}/deploy/environments/${encodeURIComponent(environmentName)}/notification-routing`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+    }),
     startDeployWizard: (projectId: any) => fetchJSON(`/projects/${projectId}/deploy/setup-wizard`, {
         method: 'POST',
         body: JSON.stringify({}),

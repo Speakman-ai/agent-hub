@@ -5,6 +5,7 @@ import { listDeploymentReleaseItemsWithContext } from './deploy/deployment-store
 import { deploymentReleaseLabel } from './deploy/release-label.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from './release-digest.js';
 import { listReleaseDigestRecipients } from './release-notification-settings.js';
+import { resolveNotificationRouting } from './deploy/deployment-notification-routing-store.js';
 import type {
   AppConfig,
   DeploymentReleaseItemDetailRow,
@@ -74,11 +75,6 @@ export function nextReleaseNotificationAttemptAt(
   const attemptForBackoff = Math.max(1, Math.floor(attempts));
   const minutes = RETRY_BACKOFF_MINUTES_BY_ATTEMPT.get(attemptForBackoff) ?? 240;
   return sqliteDateTimeAfterMinutes(minutes, now);
-}
-
-function isProductionEnvironment(environment: string): boolean {
-  const normalized = environment.trim().toLowerCase();
-  return normalized === 'prod' || normalized === 'production';
 }
 
 function ticketSubject(item: DeploymentReleaseItemDetailRow): string {
@@ -274,36 +270,41 @@ export async function enqueueReleaseNotificationsForDeployment(
   >,
   options: EnqueueReleaseNotificationsOptions = {},
 ): Promise<ReleaseNotificationOutboxRow[]> {
-  if (deployment.status !== 'success' || !isProductionEnvironment(deployment.environment)) {
-    return [];
-  }
+  if (deployment.status !== 'success') return [];
+  // Per-(project, environment) routing decides which notification types fire.
+  // The default (no config row) is prod → reporter + digest, non-prod → nothing,
+  // so pre-routing behaviour is preserved until an operator opts an env in/out.
+  const routing = resolveNotificationRouting(deployment.project_id, deployment.environment);
+  if (!routing.ticketReleaseEnabled && !routing.releaseDigestEnabled) return [];
   const items = listDeploymentReleaseItemsWithContext(deployment.id).filter(
     (item) => item.inclusion_status === 'included',
   );
   if (!items.length) return [];
 
   const queued: ReleaseNotificationOutboxRow[] = [];
-  for (const item of items) {
-    const recipientEmail = item.support_ticket_reporter_email;
-    if (!item.support_ticket_id || !recipientEmail) continue;
-    queued.push(
-      enqueueReleaseNotificationOutbox({
-        projectId: deployment.project_id,
-        deploymentId: deployment.id,
-        releaseItemId: item.id,
-        supportTicketId: item.support_ticket_id,
-        notificationType: 'ticket_release',
-        idempotencyKey: `deployment:${deployment.id}:support-ticket:${item.support_ticket_id}:ticket_release`,
-        recipientEmail,
-        subject: ticketSubject(item),
-        bodyText: renderTicketReleaseBody(deployment, item),
-      }),
-    );
+  if (routing.ticketReleaseEnabled) {
+    for (const item of items) {
+      const recipientEmail = item.support_ticket_reporter_email;
+      if (!item.support_ticket_id || !recipientEmail) continue;
+      queued.push(
+        enqueueReleaseNotificationOutbox({
+          projectId: deployment.project_id,
+          deploymentId: deployment.id,
+          releaseItemId: item.id,
+          supportTicketId: item.support_ticket_id,
+          notificationType: 'ticket_release',
+          idempotencyKey: `deployment:${deployment.id}:support-ticket:${item.support_ticket_id}:ticket_release`,
+          recipientEmail,
+          subject: ticketSubject(item),
+          bodyText: renderTicketReleaseBody(deployment, item),
+        }),
+      );
+    }
   }
 
-  const recipients = listReleaseDigestRecipients(deployment.project_id).filter(
-    (recipient) => recipient.enabled,
-  );
+  const recipients = routing.releaseDigestEnabled
+    ? listReleaseDigestRecipients(deployment.project_id).filter((recipient) => recipient.enabled)
+    : [];
   if (recipients.length > 0) {
     const digestRecipients = recipients.map((recipient) => {
       const idempotencyKey = releaseDigestIdempotencyKey(deployment.id, recipient.email);

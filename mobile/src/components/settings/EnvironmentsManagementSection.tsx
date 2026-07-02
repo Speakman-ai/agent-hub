@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { CalendarClock, ChevronDown, ChevronRight, Pause, Play, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
+import { CalendarClock, ChevronDown, ChevronRight, Mail, Pause, Play, RefreshCw, ShieldCheck, Trash2, Zap } from 'lucide-react-native';
 import { colors } from '../../theme/colors';
 import { api } from '../../utils/api';
 import EnvironmentTriggersPanel from './EnvironmentTriggersPanel';
 import EnvironmentSchedulesPanel from './EnvironmentSchedulesPanel';
+import EnvironmentNotificationRoutingPanel from './EnvironmentNotificationRoutingPanel';
 import {
   environmentStatus,
   environmentStatusLabel,
@@ -46,6 +47,7 @@ export default function EnvironmentsManagementSection({
   const [actionKey, setActionKey] = useState<string | null>(null);
   const [expandedTriggers, setExpandedTriggers] = useState<Record<string, boolean>>({});
   const [expandedSchedules, setExpandedSchedules] = useState<Record<string, boolean>>({});
+  const [expandedRouting, setExpandedRouting] = useState<Record<string, boolean>>({});
 
   const toggleTriggers = useCallback((name: string) => {
     setExpandedTriggers((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -53,6 +55,10 @@ export default function EnvironmentsManagementSection({
 
   const toggleSchedules = useCallback((name: string) => {
     setExpandedSchedules((prev) => ({ ...prev, [name]: !prev[name] }));
+  }, []);
+
+  const toggleRouting = useCallback((name: string) => {
+    setExpandedRouting((prev) => ({ ...prev, [name]: !prev[name] }));
   }, []);
 
   const notify = useCallback(
@@ -253,6 +259,30 @@ export default function EnvironmentsManagementSection({
                     Schedules
                   </Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => toggleRouting(env.name)}
+                  style={[
+                    styles.actionButton,
+                    expandedRouting[env.name] ? styles.routingButtonActive : styles.routingButton,
+                  ]}
+                  accessibilityLabel={`Manage notification routing for ${env.name}`}
+                  accessibilityState={{ expanded: !!expandedRouting[env.name] }}
+                >
+                  {expandedRouting[env.name] ? (
+                    <ChevronDown size={13} color={colors.purple400} />
+                  ) : (
+                    <ChevronRight size={13} color={colors.gray300} />
+                  )}
+                  <Mail size={13} color={expandedRouting[env.name] ? colors.purple400 : colors.gray300} />
+                  <Text
+                    style={[
+                      styles.actionText,
+                      { color: expandedRouting[env.name] ? colors.purple400 : colors.gray300 },
+                    ]}
+                  >
+                    Notifications
+                  </Text>
+                </TouchableOpacity>
                 {env.active ? (
                   <TouchableOpacity
                     onPress={() => setEnabled(env, !env.enabled)}
@@ -308,6 +338,13 @@ export default function EnvironmentsManagementSection({
               ) : null}
               {expandedSchedules[env.name] && projectId ? (
                 <EnvironmentSchedulesPanel
+                  projectId={projectId}
+                  environmentName={env.name}
+                  onNotify={onNotify}
+                />
+              ) : null}
+              {expandedRouting[env.name] && projectId ? (
+                <EnvironmentNotificationRoutingPanel
                   projectId={projectId}
                   environmentName={env.name}
                   onNotify={onNotify}
@@ -388,6 +425,8 @@ const styles = StyleSheet.create({
   triggersButtonActive: { borderColor: colors.amber400, backgroundColor: colors.amber900_40 },
   schedulesButton: { borderColor: colors.gray700 },
   schedulesButtonActive: { borderColor: colors.blue500, backgroundColor: colors.blue900_40 },
+  routingButton: { borderColor: colors.gray700 },
+  routingButtonActive: { borderColor: colors.purple500, backgroundColor: colors.purple900_40 },
   actionText: { fontSize: 12, fontWeight: '500' },
   disabled: { opacity: 0.5 },
 });

@@ -72,6 +72,10 @@ import {
   refreshScheduleRegistration,
   unregisterSchedule,
 } from '../deploy/deploy-schedule-ticker.js';
+import {
+  resolveNotificationRouting,
+  upsertNotificationRouting,
+} from '../deploy/deployment-notification-routing-store.js';
 import { deriveSupportTicketReleaseState, getSupportTicket } from '../support-tickets-store.js';
 import { generateDeploymentReleaseDigest, type ReleaseDigestRunner } from '../release-digest.js';
 import {
@@ -91,6 +95,7 @@ import {
   CreateDeployTriggerRequestSchema,
   DeploymentListQuerySchema,
   EnvironmentConfigUpdateRequestSchema,
+  NotificationRoutingUpdateRequestSchema,
   RollbackDeploymentRequestSchema,
   TriggerDeploymentRequestSchema,
   UpdateDeployScheduleRequestSchema,
@@ -672,6 +677,19 @@ function mapScheduleStoreError(err: unknown, res: Response): Response {
   return res.status(500).json({ error: message });
 }
 
+function notificationRoutingDto(
+  routing: ReturnType<typeof resolveNotificationRouting>,
+): Record<string, unknown> {
+  return {
+    environmentName: routing.environmentName,
+    isProduction: routing.isProduction,
+    ticketReleaseEnabled: routing.ticketReleaseEnabled,
+    releaseDigestEnabled: routing.releaseDigestEnabled,
+    isDefault: routing.isDefault,
+    updatedAt: routing.config?.updated_at ?? null,
+  };
+}
+
 function mapReleaseItemError(err: unknown, res: Response): Response {
   if (err instanceof DeploymentReleaseItemError) {
     if (err.reason === 'not_found' || err.reason === 'cross_project') {
@@ -1102,6 +1120,69 @@ export default function createDeploymentRoutes(
       // Stop the running node-cron task so a deleted schedule stops firing.
       unregisterSchedule(scheduleId);
       return res.json({ removed: true });
+    },
+  );
+
+  // ----- Per-environment notification routing (notification-routing decision) -
+  // Operator-editable selection of which release notification types fire when a
+  // deployment to this environment succeeds. The resolved read reflects the
+  // env-name default (prod → reporter + digest, non-prod → nothing) until an
+  // operator saves an explicit override.
+
+  router.get(
+    '/api/projects/:projectId/deploy/environments/:environmentName/notification-routing',
+    (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      if (!deps.findProject(projectId)) return res.status(404).json({ error: 'Project not found' });
+      const routing = resolveNotificationRouting(projectId, environmentName);
+      return res.json({ projectId, routing: notificationRoutingDto(routing) });
+    },
+  );
+
+  router.put(
+    '/api/projects/:projectId/deploy/environments/:environmentName/notification-routing',
+    requireRole('Admin'),
+    async (req: Request, res: Response) => {
+      const projectId = req.params.projectId as string;
+      const environmentName = String(req.params.environmentName ?? '').trim();
+      const project = deps.findProject(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const parsed = NotificationRoutingUpdateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid body' });
+      }
+
+      try {
+        // Guard against typos the same way the trigger/schedule POSTs do: the env
+        // must be declared in deploy.yaml OR already have a runtime config row, so
+        // routing never strands against a non-existent environment name.
+        await withDeployConfig(project, prepareCheckout, loadConfig, (config) => {
+          const declared = declaredEnvironmentNames(config);
+          const hasConfigRow = getEnvironmentConfig(projectId, environmentName) != null;
+          if (!declared.has(environmentName) && !hasConfigRow) {
+            throw new DeployConfigError(
+              'unknown_environment',
+              `Unknown environment: ${environmentName}`,
+            );
+          }
+          return upsertNotificationRouting({
+            projectId,
+            environmentName,
+            ticketReleaseEnabled: parsed.data.ticketReleaseEnabled,
+            releaseDigestEnabled: parsed.data.releaseDigestEnabled,
+            meta: parsed.data.meta,
+          });
+        });
+        const routing = resolveNotificationRouting(projectId, environmentName);
+        return res.json({ projectId, routing: notificationRoutingDto(routing) });
+      } catch (err) {
+        if (err instanceof DeployConfigError) return mapConfigError(err, res);
+        if (err instanceof DeploymentCheckoutError) return mapTriggerError(err, res);
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(500).json({ error: message });
+      }
     },
   );
 

@@ -26,6 +26,7 @@ import {
 } from './deploy/deployment-store.js';
 import { createSupportTicket } from './support-tickets-store.js';
 import { addReleaseDigestRecipient } from './release-notification-settings.js';
+import { upsertNotificationRouting } from './deploy/deployment-notification-routing-store.js';
 import {
   deliverReleaseNotificationOutboxBatch,
   enqueueReleaseNotificationOutbox,
@@ -53,6 +54,7 @@ beforeEach(() => {
     'kanban_columns',
     'kanban_boards',
     'support_tickets',
+    'deployment_env_notification_routing',
   ]);
   sendEmailMock.mockReset();
   sendEmailMock.mockResolvedValue({ sent: false, reason: 'smtp_not_configured' });
@@ -559,5 +561,82 @@ describe('release notification outbox', () => {
     expect(first[0].last_error).not.toContain('super-secret-token');
     expect(immediateRetry).toEqual([]);
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('release notification per-environment routing', () => {
+  function successfulDeployment(environment: string) {
+    const deployment = createDeployment({ projectId: P, environment, ref: 'abc123' });
+    return updateDeploymentStatus(deployment.id, 'success')!;
+  }
+
+  function seedIncludedReleaseItem(deploymentId: string, cardId: string) {
+    const ticket = createSupportTicket({
+      projectId: P,
+      subject: 'CSV export is broken',
+      body: 'Cannot export CSV.',
+      reporterEmail: 'Reporter@Example.COM',
+    });
+    const card = insertReleaseCard({ cardId, supportTicketId: ticket.id });
+    ensureDeploymentReleaseItem({ deploymentId, cardId: card });
+    addReleaseDigestRecipient({ projectId: P, email: 'Ops@Example.COM' });
+  }
+
+  it('sends nothing for a non-prod deployment by default', async () => {
+    const deployment = successfulDeployment('staging');
+    seedIncludedReleaseItem(deployment.id, 'card-routing-staging-default');
+
+    const queued = await enqueueReleaseNotificationsForDeployment(deployment);
+
+    expect(queued).toEqual([]);
+    expect(listReleaseNotificationOutboxByDeployment(deployment.id)).toEqual([]);
+  });
+
+  it('sends reporter + digest for a non-prod env once routing is enabled', async () => {
+    const deployment = successfulDeployment('staging');
+    seedIncludedReleaseItem(deployment.id, 'card-routing-staging-enabled');
+    upsertNotificationRouting({
+      projectId: P,
+      environmentName: 'staging',
+      ticketReleaseEnabled: true,
+      releaseDigestEnabled: true,
+    });
+
+    const queued = await enqueueReleaseNotificationsForDeployment(deployment);
+
+    expect(queued.map((row) => row.notification_type).sort()).toEqual([
+      'release_digest',
+      'ticket_release',
+    ]);
+  });
+
+  it('sends nothing when an operator opts a prod env out of all notifications', async () => {
+    const deployment = successfulDeployment('production');
+    seedIncludedReleaseItem(deployment.id, 'card-routing-prod-off');
+    upsertNotificationRouting({
+      projectId: P,
+      environmentName: 'production',
+      ticketReleaseEnabled: false,
+      releaseDigestEnabled: false,
+    });
+
+    const queued = await enqueueReleaseNotificationsForDeployment(deployment);
+
+    expect(queued).toEqual([]);
+  });
+
+  it('sends only the reporter email when digest is routed off for prod', async () => {
+    const deployment = successfulDeployment('production');
+    seedIncludedReleaseItem(deployment.id, 'card-routing-prod-reporter-only');
+    upsertNotificationRouting({
+      projectId: P,
+      environmentName: 'production',
+      ticketReleaseEnabled: true,
+      releaseDigestEnabled: false,
+    });
+
+    const queued = await enqueueReleaseNotificationsForDeployment(deployment);
+
+    expect(queued.map((row) => row.notification_type)).toEqual(['ticket_release']);
   });
 });

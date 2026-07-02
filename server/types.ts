@@ -410,6 +410,29 @@ export interface DeploymentEnvironmentScheduleRow {
   updated_at: string;
 }
 
+/**
+ * Deployment Module — operator-editable per-environment NOTIFICATION ROUTING
+ * (the notification-routing phase on top of the runtime-config layer). At most
+ * one row per (project_id, environment_name); selects which release notification
+ * types fire when a deployment to that environment succeeds. A missing row means
+ * "default" (prod → both types on, non-prod → both off), resolved by name in the
+ * store rather than persisted, so pre-routing prod-only behaviour is unchanged
+ * until an operator opts a specific environment in or out.
+ */
+export interface DeploymentEnvironmentNotificationRoutingRow {
+  id: string;
+  project_id: string;
+  environment_name: string;
+  /** Fire the ticket_release (reporter) notification. 1 = on, 0 = off. */
+  ticket_release_enabled: number;
+  /** Fire the release_digest notification. 1 = on, 0 = off. */
+  release_digest_enabled: number;
+  /** Free-form JSON stash for forward-compat. */
+  meta: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Deployment Module — approver audit trail for gated environments. */
 export interface DeploymentApprovalRow {
   id: string;
@@ -1693,6 +1716,10 @@ export interface Stmts {
   listDeploymentEnvSchedulesForEnvironment: Stmt;
   listEnabledDeploymentEnvSchedules: Stmt;
   deleteDeploymentEnvSchedule: Stmt;
+  upsertDeploymentEnvNotificationRouting: Stmt;
+  getDeploymentEnvNotificationRouting: Stmt;
+  listDeploymentEnvNotificationRouting: Stmt;
+  deleteDeploymentEnvNotificationRouting: Stmt;
   acquireDeploymentEnvironmentLock: Stmt;
   releaseDeploymentEnvironmentLock: Stmt;
   setDeploymentEnvironmentCurrentRef: Stmt;

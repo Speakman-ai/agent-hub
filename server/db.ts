@@ -15,6 +15,7 @@ import { DEPLOYMENT_SCHEMA } from './deploy/deployment-schema.js';
 import { DEPLOYMENT_ENV_RUNTIME_CONFIG_SCHEMA } from './deploy/deployment-env-config-schema.js';
 import { DEPLOYMENT_ENV_TRIGGER_SCHEMA } from './deploy/deployment-trigger-schema.js';
 import { DEPLOYMENT_ENV_SCHEDULE_SCHEMA } from './deploy/deployment-schedule-schema.js';
+import { DEPLOYMENT_ENV_NOTIFICATION_ROUTING_SCHEMA } from './deploy/deployment-notification-routing-schema.js';
 import { RELEASE_NOTIFICATION_SETTINGS_SCHEMA } from './release-notification-settings.js';
 import {
   SECURITY_AUDIT_SCHEMA,
@@ -2930,6 +2931,12 @@ function initDb(dataDir: string): void {
   // in-memory DB in isolation.
   db.exec(DEPLOYMENT_ENV_SCHEDULE_SCHEMA);
 
+  // Multi-environment management (notification-routing phase): operator-editable
+  // per-env selection of which release notification types fire on a successful
+  // deployment. Co-located schema so its store test can migrate an in-memory DB
+  // in isolation.
+  db.exec(DEPLOYMENT_ENV_NOTIFICATION_ROUTING_SCHEMA);
+
   // Migration: retire the legacy default "Review" kanban column. New boards
   // no longer seed it; existing boards have their Review cards folded into
   // "In Progress" and the column dropped (there is no in-UI column editor
@@ -3493,6 +3500,29 @@ function initDb(dataDir: string): void {
     ),
     deleteDeploymentEnvSchedule: db.prepare(
       'DELETE FROM deployment_env_schedule WHERE project_id = ? AND id = ?',
+    ),
+    // Per-environment notification routing (notification-routing phase). At most
+    // one row per (project, env); upsert applies operator edits without
+    // clobbering created_at.
+    upsertDeploymentEnvNotificationRouting: db.prepare(
+      `INSERT INTO deployment_env_notification_routing
+        (id, project_id, environment_name, ticket_release_enabled, release_digest_enabled, meta)
+       VALUES (@id, @project_id, @environment_name, @ticket_release_enabled, @release_digest_enabled, @meta)
+       ON CONFLICT(project_id, environment_name) DO UPDATE SET
+         ticket_release_enabled = excluded.ticket_release_enabled,
+         release_digest_enabled = excluded.release_digest_enabled,
+         meta = excluded.meta,
+         updated_at = datetime('now')`,
+    ),
+    getDeploymentEnvNotificationRouting: db.prepare(
+      'SELECT * FROM deployment_env_notification_routing WHERE project_id = ? AND environment_name = ?',
+    ),
+    listDeploymentEnvNotificationRouting: db.prepare(
+      `SELECT * FROM deployment_env_notification_routing WHERE project_id = ?
+       ORDER BY environment_name ASC`,
+    ),
+    deleteDeploymentEnvNotificationRouting: db.prepare(
+      'DELETE FROM deployment_env_notification_routing WHERE project_id = ? AND environment_name = ?',
     ),
     // Concurrency lock acquire: only succeeds (changes=1) when no deploy is
     // in-flight for this env. A non-zero result means the lock is held → 409.

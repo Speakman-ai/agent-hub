@@ -33,6 +33,10 @@ import {
 } from '../deploy/deployment-env-config-store.js';
 import { createTrigger, listTriggersForEnvironment } from '../deploy/deployment-trigger-store.js';
 import {
+  getNotificationRouting,
+  upsertNotificationRouting,
+} from '../deploy/deployment-notification-routing-store.js';
+import {
   createSchedule,
   listSchedulesForEnvironment,
 } from '../deploy/deployment-schedule-store.js';
@@ -279,6 +283,7 @@ beforeEach(() => {
     'deployment_env_runtime_config',
     'deployment_env_trigger',
     'deployment_env_schedule',
+    'deployment_env_notification_routing',
     'release_notification_settings',
     'kanban_cards',
     'kanban_columns',
@@ -2053,6 +2058,132 @@ environments:
         await request(app)
           .delete(`${schedulesUrl('prod')}/${row.id}`)
           .expect(403);
+      });
+    });
+  });
+
+  describe('notification routing', () => {
+    const routingUrl = (env: string) =>
+      `/api/projects/${PROJECT_ID}/deploy/environments/${env}/notification-routing`;
+
+    describe('GET .../notification-routing', () => {
+      it('resolves the prod default (reporter + digest) when no override is saved', async () => {
+        const { app } = makeApp();
+        const res = await request(app).get(routingUrl('prod')).expect(200);
+        expect(res.body).toMatchObject({ projectId: PROJECT_ID });
+        expect(res.body.routing).toMatchObject({
+          environmentName: 'prod',
+          isProduction: true,
+          ticketReleaseEnabled: true,
+          releaseDigestEnabled: true,
+          isDefault: true,
+          updatedAt: null,
+        });
+      });
+
+      it('resolves the non-prod default (nothing) when no override is saved', async () => {
+        const { app } = makeApp();
+        const res = await request(app).get(routingUrl('dev')).expect(200);
+        expect(res.body.routing).toMatchObject({
+          isProduction: false,
+          ticketReleaseEnabled: false,
+          releaseDigestEnabled: false,
+          isDefault: true,
+        });
+      });
+
+      it('reflects a saved override', async () => {
+        upsertNotificationRouting({
+          projectId: PROJECT_ID,
+          environmentName: 'dev',
+          ticketReleaseEnabled: false,
+          releaseDigestEnabled: true,
+        });
+        const { app } = makeApp();
+        const res = await request(app).get(routingUrl('dev')).expect(200);
+        expect(res.body.routing).toMatchObject({
+          releaseDigestEnabled: true,
+          ticketReleaseEnabled: false,
+          isDefault: false,
+        });
+        expect(res.body.routing.updatedAt).toEqual(expect.any(String));
+      });
+
+      it('returns 404 for an unknown project', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .get('/api/projects/missing/deploy/environments/prod/notification-routing')
+          .expect(404);
+      });
+    });
+
+    describe('PUT .../notification-routing', () => {
+      it('saves an override on a declared environment', async () => {
+        const { app } = makeApp();
+        const res = await request(app)
+          .put(routingUrl('dev'))
+          .send({ ticketReleaseEnabled: true, releaseDigestEnabled: true })
+          .expect(200);
+        expect(res.body.routing).toMatchObject({
+          environmentName: 'dev',
+          ticketReleaseEnabled: true,
+          releaseDigestEnabled: true,
+          isDefault: false,
+        });
+        expect(getNotificationRouting(PROJECT_ID, 'dev')).toMatchObject({
+          ticket_release_enabled: 1,
+          release_digest_enabled: 1,
+        });
+      });
+
+      it('partial-updates: flipping one type preserves the other', async () => {
+        upsertNotificationRouting({
+          projectId: PROJECT_ID,
+          environmentName: 'prod',
+          ticketReleaseEnabled: true,
+          releaseDigestEnabled: true,
+        });
+        const { app } = makeApp();
+        const res = await request(app)
+          .put(routingUrl('prod'))
+          .send({ releaseDigestEnabled: false })
+          .expect(200);
+        expect(res.body.routing).toMatchObject({
+          ticketReleaseEnabled: true,
+          releaseDigestEnabled: false,
+        });
+      });
+
+      it('allows an override on an orphaned (configured) environment', async () => {
+        upsertEnvironmentConfig({
+          projectId: PROJECT_ID,
+          environmentName: 'legacy',
+          enabled: true,
+        });
+        const { app } = makeApp();
+        await request(app)
+          .put(routingUrl('legacy'))
+          .send({ ticketReleaseEnabled: true })
+          .expect(200);
+      });
+
+      it('returns 404 for an environment neither declared nor configured', async () => {
+        const { app } = makeApp();
+        await request(app)
+          .put(routingUrl('ghost'))
+          .send({ ticketReleaseEnabled: true })
+          .expect(404);
+        expect(getNotificationRouting(PROJECT_ID, 'ghost')).toBeNull();
+      });
+
+      it('returns 400 for an empty body', async () => {
+        const { app } = makeApp();
+        await request(app).put(routingUrl('prod')).send({}).expect(400);
+      });
+
+      it('returns 403 when the caller is not an Admin', async () => {
+        const { app } = makeApp({ role: 'User' });
+        await request(app).put(routingUrl('prod')).send({ ticketReleaseEnabled: true }).expect(403);
       });
     });
   });

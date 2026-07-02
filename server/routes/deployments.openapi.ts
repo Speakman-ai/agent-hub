@@ -116,6 +116,16 @@ export const UpdateDeployScheduleRequestSchema = z
     message: 'At least one field is required.',
   });
 
+export const NotificationRoutingUpdateRequestSchema = z
+  .object({
+    ticketReleaseEnabled: z.boolean().optional(),
+    releaseDigestEnabled: z.boolean().optional(),
+    meta: z.unknown().optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, {
+    message: 'At least one field is required.',
+  });
+
 export const AdjustDeploymentReleaseItemRequestSchema = z.object({
   inclusionStatus: z.enum(['included', 'excluded']),
   reason: z.string().trim().min(1).max(2000),
@@ -410,6 +420,26 @@ const DeployScheduleResponseSchema = registerComponent(
 const DeployScheduleDeleteResponseSchema = registerComponent(
   'DeployScheduleDeleteResponse',
   z.object({ removed: z.boolean() }),
+);
+
+const NotificationRoutingSchema = registerComponent(
+  'NotificationRouting',
+  z.object({
+    environmentName: z.string(),
+    isProduction: z.boolean(),
+    ticketReleaseEnabled: z.boolean(),
+    releaseDigestEnabled: z.boolean(),
+    isDefault: z.boolean(),
+    updatedAt: z.string().nullable(),
+  }),
+);
+
+const NotificationRoutingResponseSchema = registerComponent(
+  'NotificationRoutingResponse',
+  z.object({
+    projectId: z.string(),
+    routing: NotificationRoutingSchema,
+  }),
 );
 
 const DeploySetupWizardResponseSchema = registerComponent(
@@ -774,6 +804,45 @@ registerPath({
     },
     403: errorResponse('Admin role required.'),
     404: errorResponse('Project or schedule not found.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/notification-routing',
+  tags: ['Deployments'],
+  summary: 'Get notification routing for an environment',
+  description:
+    'Resolves which release notification types (ticket_release, release_digest) fire when a deployment to this environment succeeds. When no operator override is saved, the resolved default is prod → reporter + digest, non-prod → nothing (isDefault=true).',
+  request: { params: environmentParams },
+  responses: {
+    200: {
+      description: 'Resolved notification routing for the environment.',
+      content: jsonContent(NotificationRoutingResponseSchema),
+    },
+    404: errorResponse('Project not found.'),
+  },
+});
+
+registerPath({
+  method: 'put',
+  path: '/api/projects/{projectId}/deploy/environments/{environmentName}/notification-routing',
+  tags: ['Deployments'],
+  summary: 'Update notification routing for an environment',
+  description:
+    'Admin+. Saves which release notification types fire for this environment without a commit. Partial update: omitted fields keep their current value (a new row seeds from the env-name default). The environment must be declared in deploy.yaml or already have a runtime config row; an unknown environment name is 404.',
+  request: {
+    params: environmentParams,
+    body: { content: jsonContent(NotificationRoutingUpdateRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Resolved notification routing after the update.',
+      content: jsonContent(NotificationRoutingResponseSchema),
+    },
+    400: errorResponse('Invalid body or deploy.yaml.'),
+    403: errorResponse('Admin role required.'),
+    404: errorResponse('Project or environment not found.'),
   },
 });
 
