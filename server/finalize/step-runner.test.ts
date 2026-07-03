@@ -17,6 +17,7 @@ import {
   STEP_OUTPUT_TAIL_LINES,
   STEP_ACTIVE_SECONDS_PER_STEP,
   STEP_POST_EXIT_FLUSH_GRACE_MS,
+  STEP_KILL_SETTLE_GRACE_MS,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
   __test,
   defaultSpawnStep,
@@ -756,6 +757,52 @@ describe('runStepPhase — timeout (fake timers)', () => {
     expect(result.failedStep).toBeDefined();
     expect(result.failedStep!.name).toBe('sleeper');
     expect(fakes[0].killed[0]).toBe('SIGTERM');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
+  });
+
+  // Regression: the 4h stranded-shard bug. A REMOTE step whose runner-agent is
+  // dead never emits close/exit/error after kill() (kill only queues a `cancel`
+  // the dead agent can't read), so the step promise used to hang forever and the
+  // run sat `running` indefinitely. The hard-timeout backstop must force-settle
+  // the step as `timeout` even when NO terminal event ever arrives.
+  it('force-settles as timeout when the child never emits close/exit after kill (dead remote agent)', async () => {
+    const stmts = makeStmts();
+    const broadcast = vi.fn();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast,
+      spawnStep,
+      now: () => Date.now(),
+      spawnHardTimeoutMs: 100,
+    };
+    const config = makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]);
+
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config,
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    await Promise.resolve();
+    // Advance past the hard timeout (100ms), the 1s SIGKILL grace, and the
+    // force-settle grace — WITHOUT ever emitting close/exit/error, exactly as a
+    // dead remote runner would behave.
+    await vi.advanceTimersByTimeAsync(100 + 1_000 + STEP_KILL_SETTLE_GRACE_MS + 100);
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
+    expect(result.failedStep).toBeDefined();
+    expect(result.failedStep!.name).toBe('sleeper');
+    // Both signals were attempted (they no-op against a dead remote), and the
+    // run still terminated instead of hanging.
+    expect(fakes[0].killed).toContain('SIGTERM');
+    expect(fakes[0].killed).toContain('SIGKILL');
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
   });
 });

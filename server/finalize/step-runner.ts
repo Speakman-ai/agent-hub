@@ -146,6 +146,29 @@ export const STEP_SPAWN_HARD_TIMEOUT_MS = 60 * 60 * 1_000;
 export const STEP_POST_EXIT_FLUSH_GRACE_MS = 2_000;
 
 /**
+ * Grace window between the hard timeout firing (SIGTERM → SIGKILL) and our
+ * force-settling the step when no `'exit'`/`'close'`/`'error'` event follows.
+ *
+ * A LOCAL child always emits `'exit'` after SIGKILL, so this timer never trips
+ * for it — the `'close'`/`'exit'` handlers settle first. But a REMOTE step
+ * (`RemoteSpawnedStep`, backed by a runner-agent) settles only when the agent
+ * posts a step result. If that agent is dead (EC2 Spot reclaim, crash, dropped
+ * transport), `kill()` merely QUEUES a `cancel` directive the agent can never
+ * read, so NO terminal event ever arrives and the step promise hangs forever —
+ * the run sits `status='running'` with the step stuck `running` indefinitely
+ * (observed in the wild: a component shard stranded `running` for 4h20m while
+ * the run's active clock read ~1m41s). This backstop guarantees the hard
+ * timeout always resolves the step within `hardTimeoutMs + this grace`,
+ * regardless of backend. Must exceed the 1s SIGKILL grace so a local child
+ * gets a real chance to exit first. Override with
+ * `FINALIZE_STEP_KILL_SETTLE_GRACE_MS`.
+ */
+export const STEP_KILL_SETTLE_GRACE_MS = (() => {
+  const n = Number.parseInt(process.env.FINALIZE_STEP_KILL_SETTLE_GRACE_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 5_000;
+})();
+
+/**
  * How many trailing lines of mixed stdout/stderr we keep for the §7
  * fix-dispatch body. Mirrors the "Last output (40 lines)" wording in the
  * design doc. The full output is captured in the stored log blob — the
@@ -1000,6 +1023,23 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
           /* best-effort */
         }
       }, 1_000).unref?.();
+      // Force-settle backstop: `kill()` on a REMOTE step whose runner-agent is
+      // dead only queues a `cancel` the agent can't read, so no exit/close/error
+      // ever arrives and this promise would hang forever (the step row stays
+      // `running` indefinitely — the 4h stranded-shard bug). A LOCAL child always
+      // emits `exit` after SIGKILL, so the close/exit handlers settle first and
+      // this timer no-ops. `detachOpenOutput` destroys the pipes so a leaked FD
+      // can't hold us either. `timedOut` is already true, so this resolves as a
+      // `timeout` outcome.
+      setTimeout(() => {
+        if (settled) return;
+        emit(
+          'stderr',
+          '[finalize] step exceeded its hard timeout and never reported termination ' +
+            `(remote runner likely lost) — force-settling as timeout after ${STEP_KILL_SETTLE_GRACE_MS}ms.`,
+        );
+        settleFromCode(null, { detachOpenOutput: true });
+      }, STEP_KILL_SETTLE_GRACE_MS).unref?.();
     }, hardTimeoutMs);
     timer.unref?.();
 
