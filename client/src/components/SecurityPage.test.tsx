@@ -11,6 +11,8 @@ import { api } from '../utils/api';
     runSecurityScan: vi.fn(),
     fixSecurityFinding: vi.fn(),
     fixAllSecurityFindings: vi.fn(),
+    getProject: vi.fn(),
+    updateProject: vi.fn(),
   },
 }));
 
@@ -427,5 +429,131 @@ describe('SecurityPage', () => {
 
     expect(api.fixAllSecurityFindings).toHaveBeenCalledWith('proj-1', { minSeverity: 'critical' });
     expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('No fixable'), 'info');
+  });
+});
+
+describe('ScheduleControl (auto-scan schedule)', () => {
+  beforeEach(() => {
+    (api.getSecurityFindings as any).mockResolvedValue({ findings: [], openCounts: counts() });
+  });
+
+  it('renders the schedule select + on-push toggle for a Hub-hosted project', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { schedule: 'daily', onPush: false },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+
+    const select = (await screen.findByTestId('security-schedule-select')) as HTMLSelectElement;
+    expect(select.value).toBe('daily');
+    // Unset placeholder is absent once an explicit value is set.
+    expect(select.querySelector('option[value=""]')).toBeNull();
+    expect((screen.getByTestId('security-onpush-toggle') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('hides the control for a non-hosted (GitHub) project', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'github',
+      securityScan: {},
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    await waitFor(() => expect(api.getProject).toHaveBeenCalled());
+    expect(screen.queryByTestId('security-schedule')).toBeNull();
+  });
+
+  it('shows the "Default" placeholder when schedule is unset', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', gitHost: 'agenthub' });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const select = (await screen.findByTestId('security-schedule-select')) as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(select.querySelector('option[value=""]')).not.toBeNull();
+  });
+
+  it('PATCHes the full securityScan state when the cadence changes', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { schedule: 'weekly', onPush: true },
+    });
+    (api.updateProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { schedule: 'daily', onPush: true },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const select = (await screen.findByTestId('security-schedule-select')) as HTMLSelectElement;
+
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'daily' } });
+    });
+
+    // Full object (schedule + onPush), not just the changed key — so a
+    // wholesale-replace server can't drop the untouched onPush.
+    expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+      securityScan: { schedule: 'daily', onPush: true },
+    });
+  });
+
+  it('omits the placeholder schedule from the patch when it is unset', async () => {
+    (api.getProject as any).mockResolvedValue({ id: 'proj-1', gitHost: 'agenthub' });
+    (api.updateProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { onPush: true },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const toggle = (await screen.findByTestId('security-onpush-toggle')) as HTMLInputElement;
+
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    // schedule '' would be rejected by the server (off|daily|weekly only).
+    expect(api.updateProject).toHaveBeenCalledWith('proj-1', { securityScan: { onPush: true } });
+  });
+
+  it('PATCHes securityScan.onPush when the toggle flips', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { schedule: 'daily', onPush: false },
+    });
+    (api.updateProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { schedule: 'daily', onPush: true },
+    });
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={vi.fn()} />);
+    const toggle = (await screen.findByTestId('security-onpush-toggle')) as HTMLInputElement;
+
+    await act(async () => {
+      fireEvent.click(toggle);
+    });
+
+    expect(api.updateProject).toHaveBeenCalledWith('proj-1', {
+      securityScan: { schedule: 'daily', onPush: true },
+    });
+  });
+
+  it('reverts and notifies when the PATCH fails', async () => {
+    (api.getProject as any).mockResolvedValue({
+      id: 'proj-1',
+      gitHost: 'agenthub',
+      securityScan: { schedule: 'weekly', onPush: false },
+    });
+    (api.updateProject as any).mockRejectedValue(new Error('Forbidden'));
+    const onNotify = vi.fn();
+    render(<SecurityPage projectId="proj-1" refreshNonce={0} onNotify={onNotify} />);
+    const select = (await screen.findByTestId('security-schedule-select')) as HTMLSelectElement;
+
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'off' } });
+    });
+
+    expect(onNotify).toHaveBeenCalledWith(expect.stringContaining('Forbidden'), 'error');
+    // Reverted to the persisted value after the failure.
+    await waitFor(() => expect(select.value).toBe('weekly'));
   });
 });

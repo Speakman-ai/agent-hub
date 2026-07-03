@@ -8,8 +8,16 @@ import {
   RefreshCw,
   Wrench,
   ChevronDown,
+  CalendarClock,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import {
+  buildSecurityScanPatch,
+  nextScheduleConfig,
+  readSecurityScheduleConfig,
+  SECURITY_SCHEDULE_OPTIONS,
+  type SecurityScheduleConfig,
+} from '../utils/securitySchedule';
 
 function relativeTime(ms: any) {
   if (!ms) return '';
@@ -371,6 +379,107 @@ function FixAllMenu({ disabled, busy, onPick }: any) {
   );
 }
 
+// Automatic-scan schedule control: reads the project's persisted `securityScan`
+// config (cadence + on-push) and writes changes through PATCH /api/projects/:id.
+// Only meaningful for Hub-hosted (`agenthub`) projects — the scheduled scanner
+// only runs for those — so it renders nothing for GitHub-hosted projects.
+// Persisting requires Admin/Owner; a 403 (or any failure) surfaces as a toast
+// and the optimistic change reverts.
+function ScheduleControl({ projectId, onNotify }: any) {
+  const [config, setConfig] = useState<SecurityScheduleConfig | null>(null);
+  const [hosted, setHosted] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const project: any = await api.getProject(projectId);
+        if (cancelled) return;
+        setHosted(project?.gitHost === 'agenthub');
+        setConfig(readSecurityScheduleConfig(project));
+      } catch {
+        // Non-fatal: leave the control hidden if the project can't be read.
+        if (!cancelled) setConfig(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const persist = async (next: SecurityScheduleConfig) => {
+    if (saving) return;
+    const prev = config;
+    setConfig(next); // optimistic
+    setSaving(true);
+    try {
+      // Send the FULL intended state, not just the changed key — defensive
+      // against the route replacing `securityScan` wholesale (it merges today).
+      const updated: any = await api.updateProject(projectId, {
+        securityScan: buildSecurityScanPatch(next),
+      });
+      setConfig(readSecurityScheduleConfig(updated));
+    } catch (err: any) {
+      setConfig(prev); // revert on failure (e.g. 403 not an Admin)
+      onNotify?.(err?.message || 'Failed to update scan schedule', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!config || !hosted) return null;
+
+  const onScheduleChange = (value: string) => {
+    const next = nextScheduleConfig(config, value);
+    if (next) persist(next);
+  };
+  const onTogglePush = () => {
+    persist({ ...config, onPush: !config.onPush });
+  };
+
+  return (
+    <div className="flex items-center gap-2" data-testid="security-schedule">
+      <label className="flex items-center gap-1 text-[11px] text-gray-400">
+        <CalendarClock size={12} className="text-gray-500" />
+        Auto-scan
+        <select
+          value={config.schedule}
+          onChange={(e) => onScheduleChange(e.target.value)}
+          disabled={saving}
+          data-testid="security-schedule-select"
+          title="How often the dependency security scan runs automatically"
+          className="bg-gray-800 border border-gray-700 rounded text-[11px] text-gray-200 px-1.5 py-1 disabled:opacity-50"
+        >
+          {config.schedule === '' ? <option value="">Default</option> : null}
+          {SECURITY_SCHEDULE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label
+        className="flex items-center gap-1 text-[11px] text-gray-400 cursor-pointer"
+        title="Also run the scan on every push to the default branch"
+      >
+        <input
+          type="checkbox"
+          checked={config.onPush}
+          onChange={onTogglePush}
+          disabled={saving}
+          data-testid="security-onpush-toggle"
+          className="accent-emerald-500"
+        />
+        On push
+      </label>
+      {/* Own the separator so it disappears with the control on non-hosted
+          projects / during the initial load (no orphaned divider). */}
+      <span className="w-px h-4 bg-gray-700 mx-1" />
+    </div>
+  );
+}
+
 // Per-project Security view. Renders GET /security-audit/findings: a severity
 // ordered, severity-coloured list with package@version, advisory link, suggested
 // fix, status, and a Dismiss action on open findings. Re-fetches when
@@ -524,6 +633,7 @@ export default function SecurityPage({ projectId, refreshNonce, onOpenCounts, on
           </span>
         ) : null}
         <div className="flex items-center gap-1 ml-auto flex-wrap justify-end">
+          <ScheduleControl projectId={projectId} onNotify={onNotify} />
           <FixAllMenu
             disabled={!!scanMode}
             busy={scanMode === 'fixall'}

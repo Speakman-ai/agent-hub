@@ -6,6 +6,13 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { SidebarContext } from '../context/SidebarContext';
 import { sortFindings, countBySeverity } from '../utils/securityFindings';
+import {
+    buildSecurityScanPatch,
+    nextScheduleConfig,
+    readSecurityScheduleConfig,
+    SECURITY_SCHEDULE_OPTIONS,
+    type SecurityScheduleConfig,
+} from '../utils/securitySchedule';
 const SEVERITY_COLOR: Record<string, any> = {
     critical: colors.red500,
     high: colors.red400,
@@ -162,6 +169,48 @@ export default function SecurityScreen({ route }: any) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<any>(null);
     const activeStatus = STATUS_FILTERS.find((f: any) => f.key === statusFilter) || STATUS_FILTERS[0];
+    // Automatic-scan schedule (cadence + on-push). Only meaningful for Hub-hosted
+    // (`agenthub`) projects — the scheduled scanner only runs for those.
+    const hosted = project?.gitHost === 'agenthub';
+    const [scheduleConfig, setScheduleConfig] = useState<SecurityScheduleConfig>(() => readSecurityScheduleConfig(project));
+    const [scheduleSaving, setScheduleSaving] = useState(false);
+    // Re-sync when the project record's securityScan changes (context refresh).
+    // Skip while a save is in flight so a context re-render that recreates the
+    // nested object can't clobber the optimistic update mid-write.
+    useEffect(() => {
+        if (scheduleSaving)
+            return;
+        setScheduleConfig(readSecurityScheduleConfig(project));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [project?.securityScan]);
+    const persistSchedule = useCallback(async (next: SecurityScheduleConfig) => {
+        if (!projectId || scheduleSaving)
+            return;
+        const prev = scheduleConfig;
+        setScheduleConfig(next); // optimistic
+        setScheduleSaving(true);
+        try {
+            // Send the FULL intended state, not just the changed key — defensive
+            // against the route replacing securityScan wholesale (it merges today).
+            const updated: any = await api.updateProject(projectId, { securityScan: buildSecurityScanPatch(next) });
+            setScheduleConfig(readSecurityScheduleConfig(updated));
+        }
+        catch (err: any) {
+            setScheduleConfig(prev); // revert on failure (e.g. 403 not an Admin)
+            Alert.alert('Could not update schedule', err?.message || 'Failed to update scan schedule');
+        }
+        finally {
+            setScheduleSaving(false);
+        }
+    }, [projectId, scheduleSaving, scheduleConfig]);
+    const setSchedule = (value: string) => {
+        const next = nextScheduleConfig(scheduleConfig, value);
+        if (next)
+            persistSchedule(next);
+    };
+    const toggleOnPush = () => {
+        persistSchedule({ ...scheduleConfig, onPush: !scheduleConfig.onPush });
+    };
     const load = useCallback(async () => {
         if (!projectId)
             return;
@@ -296,6 +345,50 @@ export default function SecurityScreen({ route }: any) {
         </TouchableOpacity>
       </View>
 
+      {hosted ? (
+        <View style={styles.scheduleRow} testID="security-schedule">
+          <Text style={styles.scheduleLabel}>Auto-scan</Text>
+          {SECURITY_SCHEDULE_OPTIONS.map((opt) => (
+            <TouchableOpacity
+              key={opt.value}
+              testID={`security-schedule-${opt.value}`}
+              onPress={() => setSchedule(opt.value)}
+              disabled={scheduleSaving}
+              style={[
+                styles.scheduleButton,
+                scheduleConfig.schedule === opt.value && styles.scheduleButtonActive,
+                scheduleSaving && styles.actionDisabled,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.scheduleButtonText,
+                  scheduleConfig.schedule === opt.value && styles.scheduleButtonTextActive,
+                ]}
+              >
+                {opt.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            testID="security-onpush-toggle"
+            onPress={toggleOnPush}
+            disabled={scheduleSaving}
+            style={[
+              styles.scheduleButton,
+              scheduleConfig.onPush && styles.scheduleButtonActive,
+              scheduleSaving && styles.actionDisabled,
+            ]}
+          >
+            <Text
+              style={[styles.scheduleButtonText, scheduleConfig.onPush && styles.scheduleButtonTextActive]}
+            >
+              {scheduleConfig.onPush ? '☑' : '☐'} On push
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {fixMenuOpen ? (
         <View style={styles.fixMenuRow} testID="security-fixall-menu">
           {FIX_ALL_OPTIONS.map((opt: any) => (
@@ -388,6 +481,24 @@ const styles = StyleSheet.create({
         backgroundColor: 'rgba(16,185,129,0.08)',
     },
     fixMenuText: { fontSize: 12, color: colors.emerald400 || '#6ee7b7', fontWeight: '600' },
+    scheduleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        paddingHorizontal: 12,
+        paddingTop: 8,
+        gap: 6,
+    },
+    scheduleLabel: { fontSize: 12, color: colors.gray500, marginRight: 2 },
+    scheduleButton: {
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        backgroundColor: colors.gray800,
+    },
+    scheduleButtonActive: { backgroundColor: colors.gray700 },
+    scheduleButtonText: { fontSize: 12, color: colors.gray500 },
+    scheduleButtonTextActive: { color: colors.gray200, fontWeight: '600' },
     filterRow: {
         flexDirection: 'row',
         flexWrap: 'wrap',
