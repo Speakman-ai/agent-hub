@@ -1,3 +1,8 @@
+import { deploymentReleaseLabel } from '@shared/utils/deploymentReleaseLabel';
+
+// Re-exported so the screen and tests import the canonical helper from one place.
+export { deploymentReleaseLabel };
+
 export const DEPLOYMENT_TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled']);
 
 export function isTerminalDeploymentStatus(status: any) {
@@ -10,19 +15,14 @@ export function shortDeploymentRef(ref: any) {
   return s.length > 12 ? s.slice(0, 12) : s;
 }
 
-function releaseVersionRef(ref: any) {
-  const value = String(ref || '');
-  return value.startsWith('refs/tags/') ? value.slice('refs/tags/'.length) : value;
-}
-
 export function releaseVersionDeployments(deployments: any[] = []) {
   return deployments.filter((deployment) => deployment?.status === 'success');
 }
 
 export function releaseVersionLabel(deployment: any) {
-  const ref = releaseVersionRef(deployment?.ref) || deployment?.id || 'release';
+  const { label } = deploymentReleaseLabel(deployment);
   const environment = deployment?.environment || 'environment';
-  return `${ref} · ${environment}`;
+  return `${label} · ${environment}`;
 }
 
 export async function loadReleaseVersionDeployments(loadHistory: () => Promise<any>) {

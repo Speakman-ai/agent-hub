@@ -65,6 +65,14 @@ export interface GithubWorkflowStepSpec {
 /** Marker prefix the compiled script prints so the orchestrator can recover run info. */
 export const GITHUB_RUN_MARKER = '::agent-hub-github-run::';
 
+/**
+ * Marker prefix the compiled script prints on a SUCCESSFUL run so the orchestrator
+ * can record the release version the workflow published. A release workflow that
+ * bumps the version and tags a release produces a new GitHub release; capturing its
+ * tag lets the Deployments UI show `v2.31.18` instead of the deploy's commit SHA.
+ */
+export const GITHUB_RELEASE_VERSION_MARKER = '::agent-hub-release-version::';
+
 export const GITHUB_WORKFLOW_POLL_DEFAULT_SECONDS = 10;
 export const GITHUB_WORKFLOW_POLL_MIN_SECONDS = 5;
 export const GITHUB_WORKFLOW_POLL_MAX_SECONDS = 300;
@@ -215,7 +223,41 @@ function githubRunStateLines(): string[] {
   ];
 }
 
-function githubWorkflowWatchLines(context: string): string[] {
+// Emitted only on a SUCCESSFUL run that ACTUALLY PUBLISHED a new release. A
+// release workflow bumps the version and publishes a tagged GitHub release; we
+// want to capture the tag THIS run created — not the repo's newest pre-existing
+// release. So we diff the release tags against the pre-dispatch `PRE_RELEASE_TAGS`
+// snapshot (same technique as run-id resolution) and pick the newest tag that did
+// NOT exist before dispatch. If the run created no release (e.g. a dev rollout
+// workflow that publishes nothing), the diff is empty and NO marker is printed —
+// so a non-release step never stamps a stale/unrelated version onto the deploy.
+//
+// `gh run watch` has already returned (run completed) by the time these run, so a
+// just-published release is visible. Best-effort — a repo with no releases, or
+// `gh` without release read scope, simply prints no marker and the UI falls back
+// to the short commit hash. Concurrency caveat mirrors run-id resolution: same-env
+// deploys are serialized by the environment lock, so the snapshot isolates THIS
+// deploy's new release; two different-env deploys publishing the same new tag
+// within the window share the residual ambiguity "newest-not-in-snapshot" carries.
+//
+// Requires `PRE_RELEASE_TAGS` to be defined (a JSON array) — it is only spliced
+// into the dispatch path, which snapshots it before dispatch.
+function githubReleaseVersionMarkerLines(): string[] {
+  return [
+    `REL_TAG="$(gh release list --limit 100 --json tagName,createdAt \\`,
+    `  --jq "[.[] | select([.tagName] | inside(\${PRE_RELEASE_TAGS}) | not)] | sort_by(.createdAt) | last | .tagName // empty" 2>/dev/null || true)"`,
+    `if [ -n "\${REL_TAG}" ]; then echo "${GITHUB_RELEASE_VERSION_MARKER}\${REL_TAG}"; fi`,
+  ];
+}
+
+function githubWorkflowWatchLines(context: string, captureReleaseVersion: boolean): string[] {
+  // Only the dispatch path snapshots PRE_RELEASE_TAGS, so only it can safely
+  // diff for a newly-published release. The resume/recovery path has no
+  // pre-dispatch snapshot (the Hub restarted mid-run), so it never captures a
+  // version — better to show the short SHA than risk stamping a stale one.
+  const releaseMarker = captureReleaseVersion
+    ? githubReleaseVersionMarkerLines().map((line) => `  ${line}`)
+    : [];
   return [
     ...githubRunMarkerLines('queued'),
     `echo "Watching workflow run \${RUN_ID} ..."`,
@@ -234,9 +276,11 @@ function githubWorkflowWatchLines(context: string): string[] {
     `  done`,
     `fi`,
     `if [ "\${WATCH_EXIT}" -eq 0 ]; then`,
+    ...releaseMarker,
     `  exit 0`,
     `fi`,
     `if [ "\${RUN_STATUS}" = "completed" ] && [ "\${RUN_CONCLUSION}" = "success" ]; then`,
+    ...releaseMarker,
     `  exit 0`,
     `fi`,
     `echo "${context}: run \${RUN_ID} did not succeed (status \${RUN_STATUS:-unknown}, conclusion \${RUN_CONCLUSION:-unknown}, watch exit \${WATCH_EXIT})" >&2`,
@@ -282,6 +326,9 @@ export function compileGithubWorkflowRun(spec: GithubWorkflowStepSpec): string {
     // Snapshot pre-existing run ids (JSON array) so we can identify the new run.
     `PRE_RUN_IDS="$(gh run list --workflow "\${WORKFLOW}" --branch "\${REF}" --event workflow_dispatch \\`,
     `  --limit 100 --json databaseId --jq '[.[].databaseId]' 2>/dev/null || echo '[]')"`,
+    // Snapshot pre-existing release tags (JSON array) so a successful run can tell
+    // whether IT published a new release (vs. reporting a stale pre-existing one).
+    `PRE_RELEASE_TAGS="$(gh release list --limit 100 --json tagName --jq '[.[].tagName]' 2>/dev/null || echo '[]')"`,
     `echo "Dispatching workflow \${WORKFLOW} on \${REF} ..."`,
     `gh workflow run "\${WORKFLOW}" --ref "\${REF}"${inputFlags}`,
     `RUN_ID=""`,
@@ -297,7 +344,7 @@ export function compileGithubWorkflowRun(spec: GithubWorkflowStepSpec): string {
     `  echo "github_workflow step: could not resolve a workflow run for \${WORKFLOW} on \${REF} after dispatch" >&2`,
     `  exit 1`,
     `fi`,
-    ...githubWorkflowWatchLines('github_workflow step'),
+    ...githubWorkflowWatchLines('github_workflow step', true),
   ].join('\n');
 }
 
@@ -337,7 +384,9 @@ export function compileGithubWorkflowResumeRun(spec: GithubWorkflowResumeSpec): 
     );
   }
 
-  lines.push(...githubWorkflowWatchLines('github_workflow recovery'));
+  // Recovery has no pre-dispatch PRE_RELEASE_TAGS snapshot, so it does not
+  // capture a release version — the short SHA is safer than a stale guess.
+  lines.push(...githubWorkflowWatchLines('github_workflow recovery', false));
   return lines.join('\n');
 }
 
@@ -378,6 +427,22 @@ export function parseGithubRunMarker(tail: string[]): GithubRunResult | null {
       workflowName: asNullableString(parsed.workflowName),
       displayTitle: asNullableString(parsed.displayTitle),
     };
+  }
+  return null;
+}
+
+/**
+ * Recover the published release version from a step's output tail by scanning for
+ * the LAST {@link GITHUB_RELEASE_VERSION_MARKER} line. Returns null when no marker
+ * is present (a plain `run:` step, a failed workflow, or a repo with no releases).
+ */
+export function parseReleaseVersionMarker(tail: string[]): string | null {
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const line = tail[i];
+    const idx = line.indexOf(GITHUB_RELEASE_VERSION_MARKER);
+    if (idx === -1) continue;
+    const value = line.slice(idx + GITHUB_RELEASE_VERSION_MARKER.length).trim();
+    return value || null;
   }
   return null;
 }

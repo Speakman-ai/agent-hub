@@ -59,6 +59,7 @@ import {
   getDeploymentEnvironment,
   listRecoverableDeployments,
   listDeploymentSteps,
+  mergeDeploymentReleaseVersion,
   recordDeploymentReleaseItems,
   releaseEnvironmentLock,
   resolveDeploymentReleaseCandidates,
@@ -76,6 +77,7 @@ import {
 import {
   compileGithubWorkflowResumeRun,
   parseGithubRunMarker,
+  parseReleaseVersionMarker,
   type GithubWorkflowStepSpec,
 } from './github-workflow-step.js';
 import { collectReleaseRangeLinks, type ReleaseRangeLinks } from './release-range.js';
@@ -1097,6 +1099,13 @@ export async function runDeployment(
       const githubRun = parseGithubRunMarker(outcome.tail);
       if (githubRun) {
         setDeploymentStepGithubRun(stepRow.id, githubRun);
+      }
+
+      // A successful release workflow prints the published tag; record it on the
+      // deployment so the UI / emails show `v2.31.18` instead of the commit SHA.
+      const releaseVersion = parseReleaseVersionMarker(outcome.tail);
+      if (releaseVersion) {
+        mergeDeploymentReleaseVersion(deploymentId, releaseVersion);
       }
 
       if (outcome.timedOut) {

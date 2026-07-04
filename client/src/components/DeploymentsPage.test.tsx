@@ -4,6 +4,10 @@ import DeploymentsPage from './DeploymentsPage';
 import { api } from '../utils/api';
 import { hasRole } from '../utils/auth';
 
+// The pure label resolution is unit-tested in
+// shared/utils/deploymentReleaseLabel.test.ts (single source of truth); the
+// component tests below exercise that the picker/header render the version.
+
 (vi as any).mock('../utils/auth', async (importOriginal: any) => {
   const actual = await importOriginal();
   return { ...actual, hasRole: vi.fn(() => false) };

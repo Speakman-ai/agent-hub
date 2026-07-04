@@ -42,6 +42,7 @@ import {
   applyReleaseNotificationEvent,
   deploymentEventFromSnapshot,
   deploymentStepLogText,
+  deploymentReleaseLabel,
   isTerminalDeploymentStatus,
   isMissingDeployConfigError,
   loadReleaseVersionDeployments,
@@ -639,7 +640,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
 
               <Text style={styles.lastRun} numberOfLines={1}>
                 {last
-                  ? `${shortDeploymentRef(last.ref)} · ${relativeTime(last.updated_at)}`
+                  ? `${deploymentReleaseLabel(last).label} · ${relativeTime(last.updated_at)}`
                   : 'No runs'}
               </Text>
             </View>
@@ -695,7 +696,7 @@ export default function DeploymentsScreen({ route, navigation }: any) {
           </View>
           {selectedDeployment ? (
             <Text style={styles.selectedMeta} numberOfLines={1}>
-              {selectedDeployment.environment} / {shortDeploymentRef(selectedDeployment.ref)}
+              {selectedDeployment.environment} / {deploymentReleaseLabel(selectedDeployment).label}
             </Text>
           ) : null}
 

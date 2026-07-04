@@ -15,6 +15,7 @@ import {
   listDeploymentsForEnvironment,
   updateDeploymentStatus,
   setDeploymentRunnerJob,
+  mergeDeploymentReleaseVersion,
   addDeploymentStep,
   listDeploymentSteps,
   updateDeploymentStepStatus,
@@ -126,6 +127,42 @@ describe('createDeployment / getDeployment', () => {
 
   it('getDeployment returns null for an unknown id', () => {
     expect(getDeployment('nope')).toBeNull();
+  });
+});
+
+describe('mergeDeploymentReleaseVersion', () => {
+  it('records releaseVersion while preserving existing meta keys', () => {
+    const d = createDeployment({
+      projectId: P,
+      environment: 'prod',
+      ref: 'ea464fe6296bfdf78b07fb18d37e44f4b653dea40',
+      meta: { agentHubDeploymentPlan: { steps: [] } },
+    });
+    const updated = mergeDeploymentReleaseVersion(d.id, 'v2.31.18');
+    const meta = JSON.parse(updated!.meta as string);
+    expect(meta.releaseVersion).toBe('v2.31.18');
+    expect(meta.agentHubDeploymentPlan).toEqual({ steps: [] });
+  });
+
+  it('sets releaseVersion when meta was empty', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'sha' });
+    const updated = mergeDeploymentReleaseVersion(d.id, 'v1.0.0');
+    expect(JSON.parse(updated!.meta as string)).toEqual({ releaseVersion: 'v1.0.0' });
+  });
+
+  it('trims the value and is a no-op for blank input', () => {
+    const d = createDeployment({ projectId: P, environment: 'prod', ref: 'sha', meta: { a: 1 } });
+    expect(JSON.parse(mergeDeploymentReleaseVersion(d.id, '  v3.0.0 ')!.meta as string)).toEqual({
+      a: 1,
+      releaseVersion: 'v3.0.0',
+    });
+    // blank does not overwrite the recorded version
+    const after = mergeDeploymentReleaseVersion(d.id, '   ');
+    expect(JSON.parse(after!.meta as string).releaseVersion).toBe('v3.0.0');
+  });
+
+  it('returns null for an unknown deployment id', () => {
+    expect(mergeDeploymentReleaseVersion('nope', 'v1.0.0')).toBeNull();
   });
 });
 

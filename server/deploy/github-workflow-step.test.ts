@@ -5,9 +5,11 @@ import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   GITHUB_RUN_MARKER,
+  GITHUB_RELEASE_VERSION_MARKER,
   compileGithubWorkflowRun,
   compileGithubWorkflowResumeRun,
   parseGithubRunMarker,
+  parseReleaseVersionMarker,
   parseGithubWorkflowStepConfig,
 } from './github-workflow-step.js';
 import { DeployConfigError } from './deploy-config-error.js';
@@ -209,6 +211,89 @@ exit 2
     const script = compileGithubWorkflowRun({ workflow: "weird'name.yml", ref: 'main' });
     expect(script).toContain(`WORKFLOW='weird'\\''name.yml'`);
   });
+
+  it('captures a NEWLY-published release tag only, on success, after the run is watched', () => {
+    const script = compileGithubWorkflowRun({ workflow: 'release.yml', ref: 'main' });
+    // Snapshot pre-existing release tags BEFORE dispatch...
+    expect(script).toContain(`PRE_RELEASE_TAGS="$(gh release list --limit 100 --json tagName`);
+    expect(script.indexOf('PRE_RELEASE_TAGS=')).toBeLessThan(script.indexOf('gh workflow run'));
+    // ...then, on success, pick the newest release tag NOT in that snapshot.
+    expect(script).toContain('inside(${PRE_RELEASE_TAGS}) | not');
+    expect(script).toContain(GITHUB_RELEASE_VERSION_MARKER);
+    // Only emitted after the run is watched to completion, never before dispatch.
+    expect(script.indexOf(GITHUB_RELEASE_VERSION_MARKER)).toBeGreaterThan(
+      script.indexOf('gh run watch'),
+    );
+    // Gated behind a success exit — sits between the success guard and its `exit 0`.
+    expect(script).toMatch(/if \[ "\$\{WATCH_EXIT\}" -eq 0 \]; then[\s\S]*?REL_TAG=[\s\S]*?exit 0/);
+  });
+
+  it('emits the release marker only when the run publishes a NEW release', () => {
+    // The fake gh distinguishes the pre-dispatch snapshot (`--json tagName`) from
+    // the post-run resolution (`--json tagName,createdAt`, which the compiled
+    // script filters with `inside(PRE_RELEASE_TAGS) | not`). `newRel` is what that
+    // filter would resolve to: a tag for "published a new release", '' otherwise.
+    const runFixture = (watchExit: number, newRel: string) => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'github-workflow-rel-'));
+      try {
+        const fakeGh = path.join(dir, 'gh');
+        writeFileSync(
+          fakeGh,
+          `#!/usr/bin/env bash
+set -euo pipefail
+STATE_DIR="${dir}"
+if [ "$1 $2" = "workflow run" ]; then touch "$STATE_DIR/dispatched"; exit 0; fi
+if [ "$1 $2" = "run list" ]; then
+  if [ -f "$STATE_DIR/dispatched" ]; then printf '77\\n'; else printf '[]\\n'; fi
+  exit 0
+fi
+if [ "$1 $2" = "run watch" ]; then exit ${watchExit}; fi
+if [ "$1 $2" = "run view" ]; then
+  args="$*"
+  if [[ "$args" == *"--json status"* ]]; then printf 'completed\\n'; exit 0; fi
+  if [[ "$args" == *"--json conclusion"* ]]; then printf '${watchExit === 0 ? 'success' : 'failure'}\\n'; exit 0; fi
+  printf '{"runId":"77","status":"completed","conclusion":"${watchExit === 0 ? 'success' : 'failure'}"}\\n'
+  exit 0
+fi
+if [ "$1 $2" = "release list" ]; then
+  args="$*"
+  if [[ "$args" == *"createdAt"* ]]; then printf '${newRel}\\n'; else printf '["v9.9.8"]\\n'; fi
+  exit 0
+fi
+echo "unexpected gh call: $*" >&2
+exit 2
+`,
+        );
+        chmodSync(fakeGh, 0o755);
+        const script = compileGithubWorkflowRun({
+          workflow: 'release.yml',
+          ref: 'main',
+          pollIntervalSeconds: 0,
+        });
+        try {
+          return execFileSync('bash', ['-c', script], {
+            cwd: dir,
+            env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        } catch (err: any) {
+          // A failing workflow makes the step exit non-zero; keep its stdout.
+          return String(err.stdout ?? '');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    // Success AND a newly-published release → marker with that tag.
+    expect(runFixture(0, 'v9.9.9')).toContain(`${GITHUB_RELEASE_VERSION_MARKER}v9.9.9`);
+    // Success but NO new release (e.g. a dev rollout step) → no marker, so no
+    // stale pre-existing version is stamped onto the deployment.
+    expect(runFixture(0, '')).not.toContain(GITHUB_RELEASE_VERSION_MARKER);
+    // Failed run never reaches the success path → no marker.
+    expect(runFixture(1, 'v9.9.9')).not.toContain(GITHUB_RELEASE_VERSION_MARKER);
+  });
 });
 
 describe('compileGithubWorkflowResumeRun', () => {
@@ -232,6 +317,19 @@ describe('compileGithubWorkflowResumeRun', () => {
     expect(script).toContain(`CREATED_AFTER='2026-07-01T00:00:00Z'`);
     expect(script).toContain('gh run list --workflow "${WORKFLOW}" --branch "${REF}"');
     expect(script).not.toContain('gh workflow run');
+  });
+
+  it('never captures a release version (no pre-dispatch snapshot on recovery)', () => {
+    const byRunId = compileGithubWorkflowResumeRun({ runId: '4242' });
+    const byRediscovery = compileGithubWorkflowResumeRun({
+      workflow: 'release.yml',
+      ref: 'main',
+      createdAfter: '2026-07-01T00:00:00Z',
+    });
+    for (const script of [byRunId, byRediscovery]) {
+      expect(script).not.toContain(GITHUB_RELEASE_VERSION_MARKER);
+      expect(script).not.toContain('PRE_RELEASE_TAGS');
+    }
   });
 });
 
@@ -274,5 +372,27 @@ describe('parseGithubRunMarker', () => {
 
   it('returns null on malformed marker JSON', () => {
     expect(parseGithubRunMarker([`${GITHUB_RUN_MARKER}{not json`])).toBeNull();
+  });
+});
+
+describe('parseReleaseVersionMarker', () => {
+  it('parses the release tag from the marker line', () => {
+    expect(
+      parseReleaseVersionMarker(['noise', `${GITHUB_RELEASE_VERSION_MARKER}v2.31.18`, 'more']),
+    ).toBe('v2.31.18');
+  });
+
+  it('takes the LAST marker and trims surrounding whitespace', () => {
+    expect(
+      parseReleaseVersionMarker([
+        `${GITHUB_RELEASE_VERSION_MARKER}v1.0.0`,
+        `${GITHUB_RELEASE_VERSION_MARKER}  v1.0.1  `,
+      ]),
+    ).toBe('v1.0.1');
+  });
+
+  it('returns null when no marker is present or the value is empty', () => {
+    expect(parseReleaseVersionMarker(['build output'])).toBeNull();
+    expect(parseReleaseVersionMarker([`${GITHUB_RELEASE_VERSION_MARKER}   `])).toBeNull();
   });
 });

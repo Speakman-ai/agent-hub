@@ -28,6 +28,7 @@ import {
 import { buildNavigationHash } from '../utils/navigation';
 import EnvironmentsManagementSection from './EnvironmentsManagementSection';
 import ReleaseNotificationSettingsSection from './ReleaseNotificationSettingsSection';
+import { deploymentReleaseLabel } from '@shared/utils/deploymentReleaseLabel';
 
 const DEPLOYMENT_WS = 'agenthub-deployment-ws';
 const RELEASE_NOTIFICATION_WS = 'agenthub-release-notification-ws';
@@ -100,9 +101,8 @@ function releaseVersionDeployments(deployments: any[]): any[] {
 }
 
 function releaseVersionLabel(deployment: any): string {
-  const ref = String(deployment?.ref || deployment?.id || 'release');
-  const displayRef = ref.startsWith('refs/tags/') ? ref.slice('refs/tags/'.length) : ref;
-  return `${displayRef} / ${deployment?.environment || 'environment'} / ${formatDate(
+  const { label } = deploymentReleaseLabel(deployment);
+  return `${label} / ${deployment?.environment || 'environment'} / ${formatDate(
     deployment?.completed_at || deployment?.updated_at || deployment?.created_at,
   )}`;
 }
@@ -737,7 +737,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                         className="inline-flex min-h-[32px] items-center gap-1.5 rounded-md border border-gray-700 px-2.5 text-xs text-gray-300 hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
                         title={
                           env.rollbackTarget
-                            ? `Rollback to ${shortRef(env.rollbackTarget.ref)}`
+                            ? `Rollback to ${deploymentReleaseLabel(env.rollbackTarget).label}`
                             : 'No previous successful deployment'
                         }
                       >
@@ -780,7 +780,7 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
 
                       <span className="ml-auto text-xs text-gray-500">
                         {last
-                          ? `${shortRef(last.ref)} / ${formatDate(last.updated_at)}`
+                          ? `${deploymentReleaseLabel(last).label} / ${formatDate(last.updated_at)}`
                           : 'No runs'}
                       </span>
                     </div>
@@ -798,7 +798,8 @@ export default function DeploymentsPage({ projectId, onNotify, onOpenSession }: 
                     <>
                       <StatusBadge status={selectedDeployment.status} />
                       <span className="ml-auto text-xs text-gray-500">
-                        {selectedDeployment.environment} / {shortRef(selectedDeployment.ref)}
+                        {selectedDeployment.environment} /{' '}
+                        {deploymentReleaseLabel(selectedDeployment).label}
                       </span>
                     </>
                   )}

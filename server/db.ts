@@ -3368,6 +3368,9 @@ function initDb(dataDir: string): void {
     setDeploymentRunnerJob: db.prepare(
       "UPDATE deployments SET runner_job_id = ?, updated_at = datetime('now') WHERE id = ?",
     ),
+    setDeploymentMeta: db.prepare(
+      "UPDATE deployments SET meta = ?, updated_at = datetime('now') WHERE id = ?",
+    ),
     insertDeploymentStep: db.prepare(
       `INSERT INTO deployment_steps (id, deployment_id, name, step_order, status)
        VALUES (?, ?, ?, ?, ?)`,

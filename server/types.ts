@@ -1690,6 +1690,7 @@ export interface Stmts {
   listDeploymentsByEnvironment: Stmt;
   updateDeploymentStatus: Stmt;
   setDeploymentRunnerJob: Stmt;
+  setDeploymentMeta: Stmt;
   insertDeploymentStep: Stmt;
   getDeploymentStep: Stmt;
   listDeploymentSteps: Stmt;

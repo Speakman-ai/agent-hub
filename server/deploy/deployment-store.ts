@@ -153,6 +153,38 @@ export function setDeploymentRunnerJob(id: string, runnerJobId: string): Deploym
   return getDeployment(id);
 }
 
+/**
+ * Record the release version a deploy's workflow published, merged into the
+ * existing `meta` JSON (preserving the plan snapshot and any other keys). No-op
+ * when the value is blank or already recorded, so a resumed / re-run step never
+ * clobbers meta. `deploymentReleaseLabel` reads `meta.releaseVersion` first, so
+ * this is what turns a commit-SHA deploy into a version in the UI and emails.
+ */
+export function mergeDeploymentReleaseVersion(id: string, version: string): DeploymentRow | null {
+  const trimmed = version.trim();
+  const row = getDeployment(id);
+  if (!row || !trimmed) return row;
+
+  let meta: Record<string, unknown> = {};
+  if (row.meta) {
+    try {
+      const parsed = JSON.parse(row.meta);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        meta = parsed as Record<string, unknown>;
+      } else {
+        meta = { userMeta: parsed };
+      }
+    } catch {
+      meta = { userMeta: row.meta };
+    }
+  }
+  if (meta.releaseVersion === trimmed) return row;
+
+  meta.releaseVersion = trimmed;
+  getStmts().setDeploymentMeta.run(JSON.stringify(meta), id);
+  return getDeployment(id);
+}
+
 function uniqueStrings(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 }

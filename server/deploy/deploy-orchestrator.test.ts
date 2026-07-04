@@ -497,11 +497,38 @@ environments:
     expect(step.github_run_id).toBe('4242');
     expect(step.github_run_url).toBe('https://github.com/o/r/actions/runs/4242');
     expect(step.github_conclusion).toBe('success');
+    // No release-version marker in the output → no version stamped on the deploy.
+    expect(JSON.parse(dep.meta as string).releaseVersion).toBeUndefined();
 
     // The compiled dispatch+poll script ran (not a plain `run`), against the
     // explicit branch/tag ref from the step config.
     expect(fb.spawnArgs[0].run).toContain('gh run watch');
     expect(fb.spawnArgs[0].run).toContain(`REF='main'`);
+  });
+
+  it('records the published release version on the deployment meta from the run output', async () => {
+    const fb = makeFakeBackend([
+      {
+        exitCode: 0,
+        stdout:
+          marker({ runId: '4242', status: 'completed', conclusion: 'success' }) +
+          `::agent-hub-release-version::v2.31.18\n`,
+      },
+    ]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'dev',
+        ref: 'ea464fe6296bfdf78b07fb18d37e44f4b653dea4',
+        worktreePath: WORKTREE,
+        config: WF_CONFIG,
+      },
+      makeDeps(fb.backend),
+    );
+
+    expect(dep.status).toBe('success');
+    const meta = JSON.parse(dep.meta as string);
+    expect(meta.releaseVersion).toBe('v2.31.18');
   });
 
   it('fails the deploy AND records the run when the workflow concludes failure', async () => {

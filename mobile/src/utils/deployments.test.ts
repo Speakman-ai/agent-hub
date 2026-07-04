@@ -201,6 +201,20 @@ describe('deployment state helpers', () => {
     expect(releaseVersionLabel(success)).toBe('v1.8.0 · prod');
   });
 
+  // The pure deploymentReleaseLabel resolution is unit-tested in
+  // shared/utils/deploymentReleaseLabel.test.ts (single source of truth); here we
+  // only assert the mobile releaseVersionLabel wiring consumes it.
+  it('releaseVersionLabel shows a short hash for a SHA deploy without a version', () => {
+    expect(
+      releaseVersionLabel({
+        ref: 'f27b422fdeadbeef1234567890abcdef12345678',
+        environment: 'production',
+        status: 'success',
+        meta: null,
+      }),
+    ).toBe('f27b422fdead · production');
+  });
+
   it('degrades release version history failures to an empty picker', async () => {
     await expect(
       loadReleaseVersionDeployments(() => Promise.reject(new Error('history unavailable'))),
