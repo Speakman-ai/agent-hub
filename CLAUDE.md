@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### TypeScript
 - `npm run typecheck` (repo root) — runs `tsc --noEmit` across server, shared, client, mobile, electron, and e2e
-- Per-package: `cd server && npm run typecheck`, `cd shared && npm run typecheck`, `cd client && npm run typecheck`, `cd mobile && npm run typecheck`, `cd electron && npx tsc --noEmit`, `cd e2e && npx tsc --noEmit`
+- Per-package: `cd server && npm run typecheck`, `cd shared && npm run typecheck`, `cd client && npm run typecheck`, `cd mobile && npm run typecheck`, `npm run typecheck:electron`, `npm run typecheck:e2e` (electron/e2e have no `package.json`; their scripts run the root-resolved `tsc -p <dir>/tsconfig.json` — do **not** use bare `npx tsc`, which can trigger a registry install that hangs for the full pipeline timeout when the runner has restricted egress)
 - Requires each package's `node_modules` with devDependencies (use `npm run install:all` or `npm ci --include=dev` per package)
 - Server uses `tsx` for runtime (no build step); client/mobile use Vite/Metro bundlers
 
