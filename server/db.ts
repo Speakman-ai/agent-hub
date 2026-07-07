@@ -337,6 +337,19 @@ function initDb(dataDir: string): void {
       storage_key TEXT NOT NULL,
       storage_bucket TEXT,
       storage_region TEXT,
+      -- Discriminates how the capture's bytes are laid out in storage:
+      --   'monolithic' — legacy single gunzip-concat-regzip blob at storage_key
+      --                  (O(n²) append; the record-on-error tier).
+      --   'segmented'  — append-only per-segment S3 objects indexed by
+      --                  rum_segments; storage_key is unused for byte reads.
+      -- Legacy rows and every current storeReplay write are 'monolithic'. This
+      -- column is the read-side discriminator; the append-only segment backend
+      -- (server/replays/segment-store.ts) only writes rum_segments today and does
+      -- NOT create a session_replays row. The 'segmented' value is stamped later,
+      -- when the session-level metadata row is created + the playback API is
+      -- wired to it (follow-up cards in this epic). Until then it exists so the
+      -- monolithic read path stays explicit and the wiring is additive.
+      storage_layout TEXT NOT NULL DEFAULT 'monolithic',
       support_ticket_id TEXT,
       card_id TEXT,
       meta TEXT
@@ -345,6 +358,40 @@ function initDb(dataDir: string): void {
       ON session_replays(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_session_replays_ticket
       ON session_replays(support_ticket_id);
+
+    -- rum_segments: the append-only segment manifest for 'segmented' captures.
+    -- Each row indexes ONE gzipped S3 object holding a view-scoped slice of rrweb
+    -- events (~5s or ~60KB, flushed on view_change / page-exit). S3 is the byte
+    -- source of truth; this table is the pointer + metadata index playback lists
+    -- and orders by. Append is O(1): one PUT + one INSERT, never re-reading prior
+    -- segments. The UNIQUE (session_id, view_id, index_in_view) makes an
+    -- index-slot double-write fail instead of silently clobbering a segment.
+    -- has_full_snapshot marks index_in_view=0 (every view opens with a fresh full
+    -- snapshot). start_ts/end_ts are epoch-ms spans; byte_size is the gzipped
+    -- object size. storage_kind/bucket/region mirror session_replays so a read
+    -- resolves the ORIGINAL backend even after config changes.
+    CREATE TABLE IF NOT EXISTS rum_segments (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      view_id TEXT NOT NULL,
+      project_id TEXT,
+      index_in_view INTEGER NOT NULL,
+      has_full_snapshot INTEGER NOT NULL DEFAULT 0,
+      start_ts INTEGER NOT NULL DEFAULT 0,
+      end_ts INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      byte_size INTEGER NOT NULL DEFAULT 0,
+      storage_kind TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      storage_bucket TEXT,
+      storage_region TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_rum_segments_slot
+      ON rum_segments(session_id, view_id, index_in_view);
+    -- Playback manifest: chronological across views, sequential within a view.
+    CREATE INDEX IF NOT EXISTS idx_rum_segments_session
+      ON rum_segments(session_id, start_ts, index_in_view);
 
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
@@ -1128,6 +1175,18 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec('ALTER TABLE session_replays ADD COLUMN updated_at TEXT');
     db.exec('UPDATE session_replays SET updated_at = created_at WHERE updated_at IS NULL');
+  }
+
+  // session_replays.storage_layout — discriminates monolithic (legacy blob) vs
+  // segmented (rum_segments) byte layout so old captures stay readable. A string
+  // literal is a constant default, so ADD COLUMN can carry the NOT NULL DEFAULT
+  // directly; existing rows adopt 'monolithic'.
+  try {
+    db.prepare('SELECT storage_layout FROM session_replays LIMIT 1').get();
+  } catch {
+    db.exec(
+      "ALTER TABLE session_replays ADD COLUMN storage_layout TEXT NOT NULL DEFAULT 'monolithic'",
+    );
   }
 
   try {
@@ -3302,6 +3361,34 @@ function initDb(dataDir: string): void {
         ORDER BY created_at ASC
         LIMIT ?`,
     ),
+    // rum_segments — append-only segment manifest (server/replays/segment-store.ts).
+    // The INSERT is the O(1) append's row-claim: the UNIQUE (session_id, view_id,
+    // index_in_view) index makes a reused slot throw instead of clobbering a
+    // segment, so the claim happens BEFORE the object PUT (same pattern as
+    // insertSessionReplay).
+    insertRumSegment: db.prepare(
+      `INSERT INTO rum_segments
+         (id, session_id, view_id, project_id, index_in_view, has_full_snapshot,
+          start_ts, end_ts, event_count, byte_size,
+          storage_kind, storage_key, storage_bucket, storage_region)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getRumSegment: db.prepare('SELECT * FROM rum_segments WHERE id = ?'),
+    // Playback manifest for a whole session: chronological across views,
+    // sequential within a view (matches idx_rum_segments_session).
+    listRumSegmentsBySession: db.prepare(
+      `SELECT * FROM rum_segments
+        WHERE session_id = ?
+        ORDER BY start_ts ASC, index_in_view ASC, id ASC`,
+    ),
+    // Per-view manifest: strictly by append order within the view.
+    listRumSegmentsByView: db.prepare(
+      `SELECT * FROM rum_segments
+        WHERE session_id = ? AND view_id = ?
+        ORDER BY index_in_view ASC`,
+    ),
+    deleteRumSegment: db.prepare('DELETE FROM rum_segments WHERE id = ?'),
+    deleteRumSegmentsBySession: db.prepare('DELETE FROM rum_segments WHERE session_id = ?'),
     // Per-project RUM ingest clients (rum-clients-store.ts)
     insertRumClient: db.prepare(
       `INSERT INTO project_rum_clients (id, project_id, name, token_hash, prefix, created_by)

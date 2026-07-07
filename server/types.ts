@@ -246,12 +246,57 @@ export interface SessionReplayRow {
   storage_bucket: string | null;
   /** S3 region for `storage_bucket` (NULL = resolve from ambient/config). */
   storage_region: string | null;
+  /**
+   * How the capture's bytes are laid out: `monolithic` (legacy single blob at
+   * `storage_key`) or `segmented` (append-only per-segment objects indexed by
+   * `rum_segments`; `storage_key` is unused for byte reads). Legacy rows and
+   * every `storeReplay` write are `monolithic`. NULL only on rows created before
+   * the column existed (readers treat NULL as `monolithic`).
+   */
+  storage_layout: string | null;
   /** Support ticket that referenced this replay, when linked. */
   support_ticket_id: string | null;
   /** Kanban card that referenced this replay, when linked. */
   card_id: string | null;
   /** JSON-encoded ingest context (trigger, url, …); NULL when absent. */
   meta: string | null;
+}
+
+/**
+ * One append-only replay segment: a single gzipped S3 object holding a
+ * view-scoped slice of rrweb events for a `segmented` capture. S3 is the byte
+ * source of truth; this row is the pointer + metadata index playback lists and
+ * orders by. See `server/replays/segment-store.ts`.
+ */
+export interface RumSegmentRow {
+  id: string;
+  /** Client-minted session id this segment rolls up under. */
+  session_id: string;
+  /** Client-minted view id (per route/navigation); segments never span views. */
+  view_id: string;
+  /** Project attribution (NULL for anonymous ingest). */
+  project_id: string | null;
+  /** 0-based position within the view; index 0 opens with a full snapshot. */
+  index_in_view: number;
+  /** 1 when this segment carries an rrweb full snapshot (type 2), else 0. */
+  has_full_snapshot: number;
+  /** Earliest event timestamp in the segment, epoch ms (0 when empty). */
+  start_ts: number;
+  /** Latest event timestamp in the segment, epoch ms (0 when empty). */
+  end_ts: number;
+  /** Number of rrweb events in this segment. */
+  event_count: number;
+  /** Gzipped object size in bytes. */
+  byte_size: number;
+  /** Storage backend the object lives in: `s3` or `local`. */
+  storage_kind: string;
+  /** Opaque key within the storage backend. */
+  storage_key: string;
+  /** S3 bucket (NULL for local rows). */
+  storage_bucket: string | null;
+  /** S3 region for `storage_bucket` (NULL = resolve from ambient/config). */
+  storage_region: string | null;
+  created_at: string;
 }
 
 /**
@@ -1676,6 +1721,13 @@ export interface Stmts {
   deleteSessionReplay: Stmt;
   /** Select expired, UNLINKED replays (created_at < cutoff) for retention GC. */
   getExpiredUnlinkedSessionReplays: Stmt;
+  // rum_segments — append-only segment manifest (segment-store.ts)
+  insertRumSegment: Stmt;
+  getRumSegment: Stmt;
+  listRumSegmentsBySession: Stmt;
+  listRumSegmentsByView: Stmt;
+  deleteRumSegment: Stmt;
+  deleteRumSegmentsBySession: Stmt;
   // Per-project RUM ingest clients
   insertRumClient: Stmt;
   getRumClient: Stmt;
