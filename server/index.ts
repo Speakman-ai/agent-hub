@@ -84,6 +84,7 @@ import { cancelSessionChatRun } from './session-chat-cancel.js';
 import { trustProxyValueFromEnv } from './trust-proxy.js';
 import { uriDecodeGuard, uriErrorHandler } from './uri-error-handler.js';
 import { publicCorsErrorHandler } from './public-cors-error-handler.js';
+import { jsonBodyErrorHandler } from './json-body-error-handler.js';
 import createNoteRoutes from './routes/notes.js';
 import createToolErrorRoutes from './routes/tool-errors.js';
 import createWikiRoutes from './routes/wiki.js';
@@ -1690,6 +1691,13 @@ app.use(uriErrorHandler);
 // with NO CORS headers and the browser reports a misleading "CORS error"
 // instead of the honest 413 / 400. Stamp the headers on those errors.
 app.use(publicCorsErrorHandler);
+
+// Global fallback for body-parser failures on every other route: without it, a
+// malformed / oversized JSON body (canonically a plain-text body sent with
+// `Content-Type: application/json`) falls through to Express's default handler,
+// which dumps the full stack to stderr even though the client already gets a
+// 400. Answer with a concise JSON error and one warn line instead.
+app.use(jsonBodyErrorHandler);
 
 export { app, server };
 
