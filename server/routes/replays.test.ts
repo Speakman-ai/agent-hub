@@ -1577,3 +1577,137 @@ describe('GET /api/replays/config', () => {
     expect(res.headers['access-control-allow-origin']).toBe('*');
   });
 });
+
+describe('POST /api/replays/sessions/:sessionId/views/:viewId/segments/:index', () => {
+  let app: Express;
+  let serverDir: string;
+  let stmts: Stmts;
+
+  beforeEach(() => {
+    _resetRateLimit();
+    (verifyRumToken as unknown as Mock).mockReset();
+    (verifyRumToken as unknown as Mock).mockReturnValue(null);
+    ({ app, serverDir, stmts } = makeApp());
+  });
+
+  afterEach(() => {
+    try {
+      if (serverDir && existsSync(serverDir)) rmSync(serverDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
+  });
+
+  const segUrl = (s: string, v: string, i: number) =>
+    `/api/replays/sessions/${s}/views/${v}/segments/${i}`;
+
+  it('stores a view-opening segment (index 0) and returns its manifest summary', async () => {
+    const res = await supertest(app)
+      .post(segUrl('sess1', 'view1', 0))
+      .send({ events: [META, SNAPSHOT, INCREMENTAL], meta: { trigger: 'continuous' } })
+      .expect(201);
+
+    expect(typeof res.body.segmentId).toBe('string');
+    expect(res.body.sessionId).toBe('sess1');
+    expect(res.body.viewId).toBe('view1');
+    expect(res.body.indexInView).toBe(0);
+    expect(res.body.hasFullSnapshot).toBe(true);
+    expect(res.body.projectId).toBeNull();
+    expect(res.body.eventCount).toBe(3);
+    expect(res.body.byteSize).toBeGreaterThan(0);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+
+    // The manifest row landed and points at the stored object.
+    const rows = stmts.listRumSegmentsBySession.all('sess1') as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.view_id).toBe('view1');
+    expect(rows[0]!.has_full_snapshot).toBe(1);
+  });
+
+  it('accepts an incremental segment (index > 0) with no snapshot', async () => {
+    // Seed the view-opening segment first.
+    await supertest(app)
+      .post(segUrl('sess2', 'view1', 0))
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+
+    const res = await supertest(app)
+      .post(segUrl('sess2', 'view1', 1))
+      .send({ events: [INCREMENTAL] })
+      .expect(201);
+    expect(res.body.indexInView).toBe(1);
+    expect(res.body.hasFullSnapshot).toBe(false);
+
+    const rows = stmts.listRumSegmentsBySession.all('sess2') as any[];
+    expect(rows).toHaveLength(2);
+  });
+
+  it('rejects a view-opening segment (index 0) that carries no full snapshot (400)', async () => {
+    const res = await supertest(app)
+      .post(segUrl('sess3', 'view1', 0))
+      .send({ events: [META, INCREMENTAL] })
+      .expect(400);
+    expect(res.body.error).toMatch(/full snapshot/i);
+    expect(stmts.listRumSegmentsBySession.all('sess3')).toHaveLength(0);
+  });
+
+  it('accepts a gzip-compressed body (raw gzip-framed bytes)', async () => {
+    const body = gzipSync(Buffer.from(JSON.stringify({ events: [META, SNAPSHOT] }), 'utf-8'));
+    const res = await supertest(app)
+      .post(segUrl('sessgz', 'view1', 0))
+      .set('Content-Type', 'application/octet-stream')
+      .send(body)
+      .expect(201);
+    expect(res.body.eventCount).toBe(2);
+  });
+
+  it('rejects re-writing an already-stored (session, view, index) slot (409)', async () => {
+    await supertest(app)
+      .post(segUrl('sessdup', 'view1', 0))
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+    const res = await supertest(app)
+      .post(segUrl('sessdup', 'view1', 0))
+      .send({ events: [META, SNAPSHOT] })
+      .expect(409);
+    expect(res.body.error).toMatch(/already/i);
+    expect(stmts.listRumSegmentsBySession.all('sessdup')).toHaveLength(1);
+  });
+
+  it('validates path components (400 on bad index / ids)', async () => {
+    await supertest(app)
+      .post('/api/replays/sessions/ok/views/ok/segments/notanumber')
+      .send({ events: [SNAPSHOT] })
+      .expect(400);
+  });
+
+  it('attributes the segment to a project on a valid X-RUM-Token', async () => {
+    (verifyRumToken as unknown as Mock).mockReturnValue({ projectId: 'proj-x' });
+    const res = await supertest(app)
+      .post(segUrl('sesstok', 'view1', 0))
+      .set('X-RUM-Token', 'rum_valid')
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+    expect(res.body.projectId).toBe('proj-x');
+    const rows = stmts.listRumSegmentsBySession.all('sesstok') as any[];
+    expect(rows[0]!.project_id).toBe('proj-x');
+  });
+
+  it('rejects an invalid X-RUM-Token (401) and stores nothing', async () => {
+    (verifyRumToken as unknown as Mock).mockReturnValue(null);
+    const res = await supertest(app)
+      .post(segUrl('sessbad', 'view1', 0))
+      .set('X-RUM-Token', 'rum_bogus')
+      .send({ events: [META, SNAPSHOT] })
+      .expect(401);
+    expect(res.body.error).toMatch(/invalid rum token/i);
+    expect(stmts.listRumSegmentsBySession.all('sessbad')).toHaveLength(0);
+  });
+
+  it('answers the CORS preflight with 204 and an allow-origin header', async () => {
+    const res = await supertest(app)
+      .options(segUrl('s', 'v', 0))
+      .expect(204);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+});

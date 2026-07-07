@@ -50,6 +50,11 @@ import {
   DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
   MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
   MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
+  SegmentReplayFlusher,
+  submitReplaySegment,
+  segmentBatchEndpoint,
+  SEGMENT_MAX_DURATION_MS,
+  SEGMENT_MAX_RAW_BYTES,
 } from './sessionReplay';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
@@ -2177,5 +2182,389 @@ describe('continuous capture wiring (opted-out no-op)', () => {
     await disabling;
     expect(resolved).toBe(true);
     expect(mod.getContinuousFlusher()).toBeNull();
+  });
+});
+
+describe('segmentBatchEndpoint', () => {
+  it('builds the session/view/index append URL and encodes components', () => {
+    expect(segmentBatchEndpoint('s1', 'v1', 0, '/api/replays')).toBe(
+      '/api/replays/sessions/s1/views/v1/segments/0',
+    );
+    // index is floored to a non-negative integer.
+    expect(segmentBatchEndpoint('s', 'v', 3.9, '/api/replays')).toBe(
+      '/api/replays/sessions/s/views/v/segments/3',
+    );
+    expect(segmentBatchEndpoint('s', 'v', -5, '/api/replays')).toBe(
+      '/api/replays/sessions/s/views/v/segments/0',
+    );
+    // id components are URL-encoded.
+    expect(segmentBatchEndpoint('a/b', 'v 1', 0, '/api/replays')).toBe(
+      '/api/replays/sessions/a%2Fb/views/v%201/segments/0',
+    );
+  });
+});
+
+describe('submitReplaySegment', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the segment to the session/view/index endpoint and returns the parsed body', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ segmentId: 'seg1' }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const out = await submitReplaySegment(
+      { sessionId: 's1', viewId: 'v1', indexInView: 0, events: [snap(1)] },
+      { endpointBase: '/api/replays' },
+    );
+    expect(out.segmentId).toBe('seg1');
+    const [url, init] = (fetchMock as any).mock.calls[0];
+    expect(url).toBe('/api/replays/sessions/s1/views/v1/segments/0');
+    expect(init.method).toBe('POST');
+    expect(init.headers['X-RUM-Token']).toBeUndefined();
+  });
+
+  it('attaches X-RUM-Token when a token is supplied', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await submitReplaySegment(
+      { sessionId: 's1', viewId: 'v1', indexInView: 1, events: [incr(2)] },
+      { endpointBase: '/api/replays', rumToken: 'rum_seg' },
+    );
+    const [url, init] = (fetchMock as any).mock.calls[0];
+    expect(url).toBe('/api/replays/sessions/s1/views/v1/segments/1');
+    expect(init.headers['X-RUM-Token']).toBe('rum_seg');
+  });
+
+  it('throws on missing ids / empty events, and on a non-2xx response', async () => {
+    await expect(
+      submitReplaySegment({ viewId: 'v', indexInView: 0, events: [snap(1)] }),
+    ).rejects.toThrow(/sessionId/);
+    await expect(
+      submitReplaySegment({ sessionId: 's', indexInView: 0, events: [snap(1)] }),
+    ).rejects.toThrow(/viewId/);
+    await expect(
+      submitReplaySegment({ sessionId: 's', viewId: 'v', indexInView: 0, events: [] }),
+    ).rejects.toThrow(/No replay events/);
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response('nope', { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(
+      submitReplaySegment({ sessionId: 's', viewId: 'v', indexInView: 0, events: [snap(1)] }),
+    ).rejects.toThrow(/nope/);
+  });
+});
+
+describe('SegmentReplayFlusher', () => {
+  const smeta = (ts: any) => meta(ts);
+  const ssnap = (ts: any) => snap(ts);
+  const sincr = (ts: any) => incr(ts);
+
+  it('requires a sessionId and a viewId', () => {
+    expect(() => new SegmentReplayFlusher({ viewId: 'v' } as any)).toThrow(/sessionId/);
+    expect(() => new SegmentReplayFlusher({ sessionId: 's' } as any)).toThrow(/viewId/);
+  });
+
+  it('exposes the default Datadog segment constants', () => {
+    expect(SEGMENT_MAX_DURATION_MS).toBe(5_000);
+    expect(SEGMENT_MAX_RAW_BYTES).toBeGreaterThan(0);
+  });
+
+  it('rolls over on the ~5s duration bound', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(smeta(0));
+    f.addEvent(ssnap(0)); // view-opening segment now holds a snapshot
+    f.addEvent(sincr(100));
+    expect(submitSegment).not.toHaveBeenCalled(); // still within the window
+
+    t = 5_001; // cross the ~5s bound
+    f.addEvent(sincr(5_001));
+    await f.settle();
+
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    const [arg, opts] = submitSegment.mock.calls[0];
+    expect(arg.sessionId).toBe('s1');
+    expect(arg.viewId).toBe('v1');
+    expect(arg.indexInView).toBe(0);
+    expect(hasFullSnapshot(arg.events)).toBe(true);
+    expect(opts.endpointBase).toBe(REPLAY_INGEST_ENDPOINT);
+    // After a confirmed view-opening flush the next segment is index 1.
+    expect(f.indexInView).toBe(1);
+  });
+
+  it('rolls over on the ~60KB byte bound', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => 0, // freeze time so only the byte bound can fire
+      maxBytes: 200,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    // Pad an incremental past the tiny byte budget.
+    f.addEvent(ev(3, 1, { blob: 'x'.repeat(500) }));
+    await f.settle();
+
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    expect(submitSegment.mock.calls[0][0].indexInView).toBe(0);
+    expect(hasFullSnapshot(submitSegment.mock.calls[0][0].events)).toBe(true);
+  });
+
+  it('does not roll over a view-opening segment that has no snapshot yet', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    // Only incrementals; the ~5s bound is crossed but no snapshot is present.
+    f.addEvent(sincr(0));
+    t = 10_000;
+    f.addEvent(sincr(10_000));
+    await f.settle();
+    expect(submitSegment).not.toHaveBeenCalled();
+    // An explicit flush is likewise a no-op without a snapshot.
+    expect(await f.flush('manual')).toBeNull();
+    expect(submitSegment).not.toHaveBeenCalled();
+  });
+
+  it('flushes on view change: the new view opens at index 0 with a fresh snapshot', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let f!: SegmentReplayFlusher;
+    // requestSnapshot mimics rrweb emitting a fresh checkout into the flusher.
+    const requestSnapshot = vi.fn(() => f.addEvent(ssnap(1_000)));
+    f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => 0,
+      setIntervalFn: null,
+      requestSnapshot,
+    });
+
+    // View v1: snapshot + an incremental (well within the window).
+    f.addEvent(ssnap(0));
+    f.addEvent(sincr(10));
+
+    // Route change → new view v2.
+    await f.notifyViewChange('v2');
+
+    // The outgoing view v1 was flushed as its index-0 opening segment.
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    const first = submitSegment.mock.calls[0][0];
+    expect(first.viewId).toBe('v1');
+    expect(first.indexInView).toBe(0);
+    expect(hasFullSnapshot(first.events)).toBe(true);
+
+    // The flusher is now on view v2, index 0, and requested a fresh snapshot.
+    expect(f.viewId).toBe('v2');
+    expect(f.indexInView).toBe(0);
+    expect(requestSnapshot).toHaveBeenCalledWith('v2');
+
+    // Flushing v2 sends its own snapshot-carrying opening segment.
+    f.addEvent(sincr(1_010));
+    await f.flush('manual');
+    expect(submitSegment).toHaveBeenCalledTimes(2);
+    const second = submitSegment.mock.calls[1][0];
+    expect(second.viewId).toBe('v2');
+    expect(second.indexInView).toBe(0);
+    expect(hasFullSnapshot(second.events)).toBe(true);
+  });
+
+  it('appends incremental segments within a view without a snapshot after index 0', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000)); // rollover → index 0 flushed
+    await f.settle();
+    expect(f.indexInView).toBe(1);
+
+    // Next window: incrementals only → index 1 append, no snapshot.
+    f.addEvent(sincr(6_500));
+    t = 12_000;
+    f.addEvent(sincr(12_000));
+    await f.settle();
+
+    expect(submitSegment).toHaveBeenCalledTimes(2);
+    const second = submitSegment.mock.calls[1][0];
+    expect(second.indexInView).toBe(1);
+    expect(hasFullSnapshot(second.events)).toBe(false);
+    expect(second.meta).toBeNull(); // meta rides only the view-opening segment
+    expect(f.indexInView).toBe(2);
+  });
+
+  it('beacons the current segment on a terminal page-exit (unload tail)', () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      beacon,
+      endpointBase: '/api/replays',
+      rumToken: 'rum_tail',
+      now: () => 0,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    f.addEvent(sincr(10));
+
+    const queued = f.flushTail('pagehide');
+    expect(queued).toBe(true);
+    // Beacon transport (not the async submit) carried the tail.
+    expect(submitSegment).not.toHaveBeenCalled();
+    expect(beacon).toHaveBeenCalledTimes(1);
+    const [url, body, token] = beacon.mock.calls[0];
+    expect(url).toBe('/api/replays/sessions/s1/views/v1/segments/0');
+    expect(token).toBe('rum_tail');
+    const parsed = JSON.parse(body);
+    expect(hasFullSnapshot(parsed.events)).toBe(true);
+    // Terminal beacon advanced the index off the unconfirmed enqueue.
+    expect(f.indexInView).toBe(1);
+  });
+
+  it('takes the confirmed async path on a NON-terminal page-exit (no optimistic beacon)', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      beacon,
+      now: () => 0,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    f.addEvent(sincr(10));
+
+    const queued = f.flushTail('visibilitychange', { terminal: false });
+    expect(queued).toBe(false);
+    await f.settle();
+    // Drained via the confirmed transport, never beaconed.
+    await Promise.resolve();
+    expect(beacon).not.toHaveBeenCalled();
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    expect(submitSegment.mock.calls[0][0].indexInView).toBe(0);
+  });
+
+  it('does not terminally beacon a snapshot-less view-opening segment', () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    const beacon = vi.fn().mockReturnValue(true);
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      beacon,
+      now: () => 0,
+      setIntervalFn: null,
+    });
+    f.addEvent(sincr(10)); // no snapshot on the opening segment
+    const queued = f.flushTail('pagehide');
+    expect(queued).toBe(false);
+    expect(beacon).not.toHaveBeenCalled();
+  });
+
+  it('threads the RUM token into the async segment upload', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      rumToken: 'rum_tok',
+      now: () => 0,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    f.addEvent(sincr(10));
+    await f.flush('manual');
+    expect(submitSegment.mock.calls[0][1].rumToken).toBe('rum_tok');
+  });
+
+  it('re-queues an incremental segment whose upload failed (order preserved)', async () => {
+    const submitSegment = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true }) // index 0 succeeds
+      .mockRejectedValueOnce(new Error('network')) // index 1 fails
+      .mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle(); // index 0 flushed OK
+    expect(f.indexInView).toBe(1);
+
+    f.addEvent(sincr(6_100));
+    await f.flush('manual'); // index 1 fails → re-queued, index NOT advanced
+    expect(f.indexInView).toBe(1);
+
+    f.addEvent(sincr(6_200));
+    await f.flush('manual'); // retry index 1 with both events, in order
+    const retry = submitSegment.mock.calls[submitSegment.mock.calls.length - 1][0];
+    expect(retry.indexInView).toBe(1);
+    expect(retry.events.map((e: any) => e.timestamp)).toEqual([6_100, 6_200]);
+    expect(f.indexInView).toBe(2);
+  });
+
+  it('the idle timer flushes a segment that crossed the duration bound with no new events', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const state: Record<string, any> = { cb: null, ms: null, cleared: false };
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      idleCheckMs: 1_000,
+      setIntervalFn: (cb: any, ms: any) => {
+        state.cb = cb;
+        state.ms = ms;
+        return 7;
+      },
+      clearIntervalFn: () => {
+        state.cleared = true;
+      },
+    });
+    f.start();
+    expect(state.ms).toBe(1_000);
+    f.addEvent(ssnap(0));
+    f.addEvent(sincr(10));
+    // No further events; time passes past the ~5s bound and the idle tick fires.
+    t = 6_000;
+    await state.cb();
+    await f.settle();
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    f.stop();
+    expect(state.cleared).toBe(true);
   });
 });

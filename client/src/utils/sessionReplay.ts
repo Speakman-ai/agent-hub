@@ -1200,6 +1200,449 @@ export function defaultReplayBeacon(url: any, body: any, rumToken: any = null) {
   }
 }
 
+// ─── Segment capture (Datadog view-scoped segments) ───────────────
+//
+// The forward write path that replaces monolithic continuous append. Instead of
+// re-uploading a growing blob each flush (O(n²)), the recorder emits VIEW-SCOPED
+// segments: each flush writes ONE gzipped object (server `appendSegment`, O(1)),
+// indexed by the `rum_segments` manifest. Datadog segment constants govern
+// rollover — a new segment after ~5s OR ~60KB — plus a flush on view change (a
+// new view opens a FRESH full snapshot at index_in_view=0) and on page-exit.
+// Sub-minute cadence is now safe because the append is O(1): the monolithic
+// >=60s floor (`MIN_CONTINUOUS_FLUSH_INTERVAL_MS`) no longer applies here.
+
+/** Roll a new segment after ~5s of wall-clock in the current segment. */
+export const SEGMENT_MAX_DURATION_MS = 5_000;
+/**
+ * Roll a new segment once the current segment's RAW serialized byte size crosses
+ * this budget. Datadog's target is ~60KB COMPRESSED, but gzip-sizing every event
+ * synchronously in the emit hot path isn't feasible, so we bound the raw
+ * serialized size as a cheap synchronous proxy. rrweb JSON gzips ~10-20x (see
+ * `submitReplay`), so ~600KB raw approximates the ~60KB-compressed target.
+ * Injectable per-flusher so tests can force a rollover at a tiny threshold.
+ */
+export const SEGMENT_MAX_RAW_BYTES = 600 * 1024;
+/** Default cadence of the idle-rollover check timer (segments still flush on
+ *  the ~5s duration bound even when no new events arrive to drive `addEvent`). */
+export const SEGMENT_IDLE_CHECK_MS = 1_000;
+
+/**
+ * The per-segment append URL for a `(session, view, index_in_view)` slot. The
+ * server keys the object + manifest row on exactly these three components, so
+ * the path carries all three. Pure.
+ */
+export function segmentBatchEndpoint(
+  sessionId: any,
+  viewId: any,
+  indexInView: any,
+  base: any = REPLAY_INGEST_ENDPOINT,
+) {
+  const s = encodeURIComponent(String(sessionId));
+  const v = encodeURIComponent(String(viewId));
+  const i = Math.max(0, Math.floor(Number(indexInView) || 0));
+  return `${base}/sessions/${s}/views/${v}/segments/${i}`;
+}
+
+/**
+ * POST one view-scoped segment to the segment-ingest endpoint. The view-opening
+ * segment (index_in_view=0) MUST carry a full snapshot (the server rejects it
+ * otherwise); later segments in the view append incremental events. gzip-compressed
+ * when the platform supports it (same transport as `submitReplayBatch`), falling
+ * back to uncompressed JSON. `rumToken`, when present, rides as `X-RUM-Token` so
+ * the server attributes the segment to its project. Resolves with the parsed
+ * response on success; throws on a non-2xx.
+ */
+export async function submitReplaySegment(
+  { sessionId, viewId, indexInView, events, meta }: any = {},
+  {
+    endpointBase = REPLAY_INGEST_ENDPOINT,
+    timeoutMs = UPLOAD_TIMEOUT_MS,
+    rumToken = null,
+  }: any = {},
+) {
+  if (sessionId == null || String(sessionId) === '')
+    throw new Error('submitReplaySegment requires a sessionId');
+  if (viewId == null || String(viewId) === '')
+    throw new Error('submitReplaySegment requires a viewId');
+  if (!Array.isArray(events) || events.length === 0) {
+    throw new Error('No replay events to submit');
+  }
+  const url = segmentBatchEndpoint(sessionId, viewId, indexInView, endpointBase);
+  const signal =
+    timeoutMs && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(timeoutMs)
+      : undefined;
+  const json = JSON.stringify({ events, meta: meta || undefined });
+  const gzipped = await gzipString(json);
+  const headers: Record<string, string> = {
+    'Content-Type': gzipped ? 'application/octet-stream' : 'application/json',
+  };
+  if (rumToken) headers['X-RUM-Token'] = String(rumToken);
+  const res = await fetch(url, {
+    method: 'POST',
+    mode: 'cors',
+    headers,
+    body: gzipped || json,
+    signal,
+  });
+  if (!res.ok) {
+    let bodyText = '';
+    try {
+      bodyText = await res.text();
+    } catch {
+      // ignore
+    }
+    throw new Error(bodyText || `Replay segment ingest failed (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
+/**
+ * Streams a session to the segment-ingest endpoint as view-scoped segments with
+ * Datadog semantics.
+ *
+ * Fed every raw rrweb event (via the recorder's continuous sink) it accumulates a
+ * CURRENT segment and rolls it over — flushing one gzipped object — when the
+ * segment crosses ~5s OR ~60KB (`maxDurationMs` / `maxBytes`). On a VIEW CHANGE
+ * (`notifyViewChange`) it flushes the outgoing view's tail, resets to
+ * index_in_view=0 for the new view, and asks the recorder (via `requestSnapshot`)
+ * to emit a fresh full snapshot so the new view opens replayable. On PAGE-EXIT
+ * (`flushTail`) it beacons the current segment on an unload-surviving transport.
+ *
+ * Segment sequencing within a view mirrors the server's `appendSegment` contract:
+ * index_in_view=0 is the view-opening segment and MUST carry a full snapshot;
+ * later indices are incremental appends. The view-opening segment is treated like
+ * `ContinuousReplayFlusher`'s creating chunk — it holds the view's only snapshot
+ * anchor, so it is sent as a COPY and retained until confirmed (a killed unload
+ * flush can then still beacon it); incremental segments drain immediately.
+ *
+ * All side-effecting collaborators (the segment transport, the timer functions,
+ * the beacon, the clock, the snapshot request) are injected so the whole class is
+ * unit-testable without a DOM, rrweb, or network.
+ */
+export class SegmentReplayFlusher {
+  [key: string]: any;
+  constructor({
+    sessionId,
+    viewId,
+    submitSegment = submitReplaySegment,
+    now = () => Date.now(),
+    maxDurationMs = SEGMENT_MAX_DURATION_MS,
+    maxBytes = SEGMENT_MAX_RAW_BYTES,
+    setIntervalFn = typeof setInterval === 'function' ? setInterval : null,
+    clearIntervalFn = typeof clearInterval === 'function' ? clearInterval : null,
+    idleCheckMs = SEGMENT_IDLE_CHECK_MS,
+    beacon = defaultReplayBeacon,
+    endpointBase = REPLAY_INGEST_ENDPOINT,
+    meta = null,
+    rumToken = null,
+    requestSnapshot = null,
+  }: any = {}) {
+    if (sessionId == null || String(sessionId) === '') {
+      throw new Error('SegmentReplayFlusher requires a sessionId');
+    }
+    if (viewId == null || String(viewId) === '') {
+      throw new Error('SegmentReplayFlusher requires a viewId');
+    }
+    this.sessionId = String(sessionId);
+    this._viewId = String(viewId);
+    this._submitSegment = submitSegment;
+    this._now = now;
+    this.maxDurationMs = maxDurationMs > 0 ? maxDurationMs : SEGMENT_MAX_DURATION_MS;
+    this.maxBytes = maxBytes > 0 ? maxBytes : SEGMENT_MAX_RAW_BYTES;
+    this._setIntervalFn = setIntervalFn;
+    this._clearIntervalFn = clearIntervalFn;
+    this._idleCheckMs = Math.max(250, idleCheckMs | 0);
+    this._beacon = beacon;
+    this._endpointBase = endpointBase;
+    this._meta = meta;
+    this._rumToken = rumToken || null;
+    this._requestSnapshot = typeof requestSnapshot === 'function' ? requestSnapshot : null;
+
+    this._indexInView = 0;
+    this._pending = [];
+    this._segmentBytes = 0;
+    this._segmentStartTs = null;
+    this._flushing = null; // in-flight flush promise (overlap guard)
+    this.active = false;
+    this._timer = null;
+    this.lastResult = null;
+  }
+
+  /** The view id the current segment rolls up under. */
+  get viewId() {
+    return this._viewId;
+  }
+
+  /** The index_in_view the current (pending) segment will be flushed as. */
+  get indexInView() {
+    return this._indexInView;
+  }
+
+  /** Buffer one raw rrweb event into the current segment, rolling over when it
+   *  crosses the ~5s / ~60KB bound. */
+  addEvent(event: any) {
+    if (!event) return;
+    this._pending.push(event);
+    this._segmentBytes += utf8ByteLength(JSON.stringify(event));
+    if (this._segmentStartTs == null) {
+      this._segmentStartTs = typeof event.timestamp === 'number' ? event.timestamp : this._now();
+    }
+    void this._maybeRollover();
+  }
+
+  /** Recompute the byte + start-ts accounting from the current `_pending` (after
+   *  a partial drain, a re-queue, or a view switch). */
+  _recomputeAccounting() {
+    this._segmentBytes = 0;
+    this._segmentStartTs = null;
+    for (const e of this._pending) {
+      this._segmentBytes += utf8ByteLength(JSON.stringify(e));
+      if (this._segmentStartTs == null) {
+        this._segmentStartTs = typeof e.timestamp === 'number' ? e.timestamp : this._now();
+      }
+    }
+  }
+
+  /** True when the current segment has crossed its size/duration bound and is a
+   *  valid, flushable segment (a view-opening segment first needs its snapshot). */
+  _shouldRollover() {
+    if (this._pending.length === 0) return false;
+    // A view-opening segment can't roll over until it holds the snapshot that
+    // makes it a valid first chunk — wait rather than ship a rejectable segment.
+    if (this._indexInView === 0 && !hasFullSnapshot(this._pending)) return false;
+    if (this._segmentBytes >= this.maxBytes) return true;
+    const start = this._segmentStartTs == null ? this._now() : this._segmentStartTs;
+    return this._now() - start >= this.maxDurationMs;
+  }
+
+  async _maybeRollover() {
+    if (!this._shouldRollover()) return null;
+    return this.flush('rollover');
+  }
+
+  /** Start the idle-rollover timer so a segment still flushes on the duration
+   *  bound during a quiet stretch with no new events. Idempotent. */
+  start() {
+    if (this.active) return;
+    this.active = true;
+    if (typeof this._setIntervalFn === 'function') {
+      this._timer = this._setIntervalFn(() => {
+        void this._maybeRollover();
+      }, this._idleCheckMs);
+    }
+  }
+
+  /** Stop the idle-rollover timer. The pending segment is left intact. */
+  stop() {
+    if (this._timer != null && typeof this._clearIntervalFn === 'function') {
+      try {
+        this._clearIntervalFn(this._timer);
+      } catch {
+        // ignore
+      }
+    }
+    this._timer = null;
+    this.active = false;
+  }
+
+  /** Meta for a segment: only the view-opening segment (index 0) carries it,
+   *  tagging the capture as a segmented continuous stream. */
+  _segmentMeta(reason: any) {
+    if (this._indexInView !== 0) return null;
+    return {
+      ...(this._meta || {}),
+      trigger: 'continuous',
+      storage: 'segmented',
+      reason: reason ?? 'rollover',
+    };
+  }
+
+  /**
+   * Flush the current segment as one object. No-op (null) when nothing is
+   * pending, or when the view-opening segment carries no snapshot yet. Overlapping
+   * callers share the in-flight promise. Never throws.
+   */
+  async flush(reason?: any) {
+    if (this._flushing) return this._flushing;
+    if (this._pending.length === 0) return null;
+    if (this._indexInView === 0 && !hasFullSnapshot(this._pending)) return null;
+    const p = this._runFlush(reason);
+    this._flushing = p;
+    try {
+      return await p;
+    } finally {
+      this._flushing = null;
+    }
+  }
+
+  async _runFlush(reason: any) {
+    // The view-opening segment (index 0) holds the view's only snapshot anchor,
+    // so send a COPY and retain `_pending` until confirmed (see class doc);
+    // incremental segments drain immediately.
+    const creating = this._indexInView === 0;
+    const viewId = this._viewId;
+    const indexInView = this._indexInView;
+    const meta = this._segmentMeta(reason);
+    const batch = creating ? this._pending.slice() : this._pending;
+    if (!creating) {
+      this._pending = [];
+      this._recomputeAccounting();
+    }
+    try {
+      const result = await this._submitSegment(
+        { sessionId: this.sessionId, viewId, indexInView, events: batch, meta },
+        { endpointBase: this._endpointBase, rumToken: this._rumToken },
+      );
+      this.lastResult = result || null;
+      // A view change during the await already reset the index/pending for the
+      // new view — don't clobber it. Only advance when still on the same view.
+      if (this._viewId === viewId && this._indexInView === indexInView) {
+        this._indexInView = indexInView + 1;
+        if (creating) {
+          // Drop exactly the sent leading events; anything appended behind them
+          // while in flight stays queued as the next (incremental) segment.
+          this._pending = this._pending.slice(batch.length);
+          this._recomputeAccounting();
+        }
+      }
+      return this.lastResult;
+    } catch {
+      // incremental: re-queue ahead of newer events so order is preserved.
+      // creating: never drained → the snapshot stays in `_pending` for a retry
+      // or a terminal beacon.
+      if (!creating && this._viewId === viewId) {
+        this._pending = batch.concat(this._pending);
+        this._recomputeAccounting();
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Switch to a new view: flush the outgoing view's tail (confirmed async path),
+   * reset to index_in_view=0 for the new view, and ask the recorder to emit a
+   * fresh full snapshot so the new view's opening segment is replayable. A no-op
+   * when the id is empty or unchanged. Callers may fire-and-forget; the internal
+   * await sequences the switch after the outgoing flush.
+   */
+  async notifyViewChange(newViewId: any) {
+    const id = newViewId == null ? '' : String(newViewId);
+    if (!id || id === this._viewId) return null;
+    await this._drainAfterInflight('view_change');
+    this._viewId = id;
+    this._indexInView = 0;
+    this._pending = [];
+    this._segmentBytes = 0;
+    this._segmentStartTs = null;
+    if (this._requestSnapshot) {
+      try {
+        this._requestSnapshot(id);
+      } catch {
+        // ignore — a snapshot request failure must not break the view switch
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Tail flush for a lifecycle event. TERMINAL (document unloading): beacon the
+   * current segment on an unload-surviving transport, returning true when queued.
+   * NON-terminal (a backgrounded tab that can resume): take the confirmed async
+   * path and return false. Mirrors `ContinuousReplayFlusher.flushTail` — see that
+   * method for the terminality contract and the unload-budget prefix salvage.
+   */
+  flushTail(reason: any = 'pagehide', { terminal = reason === 'pagehide' }: any = {}) {
+    if (this._pending.length === 0) return false;
+    if (!terminal) {
+      void this._drainAfterInflight(reason);
+      return false;
+    }
+    // A snapshot-less view-opening segment can't be a valid first chunk — defer.
+    if (this._indexInView === 0 && !hasFullSnapshot(this._pending)) {
+      void this._drainAfterInflight(reason);
+      return false;
+    }
+
+    const viewId = this._viewId;
+    const indexInView = this._indexInView;
+    const batch = this._pending;
+    this._pending = [];
+    this._segmentBytes = 0;
+    this._segmentStartTs = null;
+    const meta = this._segmentMeta(reason);
+    const url = segmentBatchEndpoint(this.sessionId, viewId, indexInView, this._endpointBase);
+
+    const send = (events: any) => {
+      if (!Array.isArray(events) || events.length === 0) return false;
+      if (indexInView === 0 && !hasFullSnapshot(events)) return false;
+      const body = JSON.stringify({ events, meta: meta || undefined });
+      try {
+        return this._beacon(url, body, this._rumToken) === true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Try the whole segment; if the transport refuses it (over the unload
+    // budget), send the largest budget-sized leading prefix and drop the rest
+    // (accepted terminal tail loss). An uncreated prefix must still carry the
+    // snapshot to be a valid first chunk.
+    let sent = send(batch);
+    if (!sent) {
+      const prefix = takeKeepalivePrefix(batch, meta, KEEPALIVE_MAX_BYTES);
+      if (prefix.length < batch.length) sent = send(prefix);
+    }
+
+    if (sent) {
+      // Terminal: the tab won't return, so advancing off an unconfirmed enqueue
+      // is safe — no later flush can be stranded by a dropped beacon.
+      if (this._viewId === viewId && this._indexInView === indexInView) {
+        this._indexInView = indexInView + 1;
+      }
+      return true;
+    }
+    // Nothing sendable on the unload-safe transport → retain (survives a
+    // mislabeled/bfcache resume; lost only on a true discard of an oversized tail).
+    this._pending = batch.concat(this._pending);
+    this._recomputeAccounting();
+    return false;
+  }
+
+  /**
+   * Drain the current segment even when a rollover flush is already in flight.
+   * Awaits any in-flight flush (so `flush()`'s overlap guard clears) then flushes
+   * the remaining tail. Best-effort; never throws.
+   */
+  async _drainAfterInflight(reason: any) {
+    try {
+      const inflight = this._flushing;
+      if (inflight) {
+        try {
+          await inflight;
+        } catch {
+          // ignore — the in-flight flush swallows its own errors
+        }
+      }
+      await this.flush(reason);
+    } catch {
+      // ignore — tail flush is best-effort
+    }
+  }
+
+  /** Test/teardown helper: await any in-flight flush so assertions see the
+   *  settled transport calls. */
+  async settle() {
+    if (this._flushing) {
+      try {
+        await this._flushing;
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 /**
  * Rolling-buffer rrweb recorder. The rrweb `record` function and the upload
  * transport are injected so the recorder is testable without a DOM or network.

@@ -249,6 +249,83 @@ registerPath({
   },
 });
 
+const segmentIngestParams = {
+  params: z.object({
+    sessionId: z
+      .string()
+      .openapi({ description: 'Client-minted session id (RUM sessionization).' }),
+    viewId: z.string().openapi({ description: 'Client-minted view id (per route/navigation).' }),
+    index: z.string().openapi({
+      description: 'index_in_view — 0 is the view-opening segment (must carry a snapshot).',
+    }),
+  }),
+};
+
+const SegmentIngestSuccessResponse = z
+  .object({
+    segmentId: z.string().openapi({ description: 'Server-assigned segment id.' }),
+    sessionId: z.string(),
+    viewId: z.string(),
+    indexInView: z.number().openapi({ description: '0-based position within the view.' }),
+    hasFullSnapshot: z
+      .boolean()
+      .openapi({ description: 'True when this segment carries an rrweb full snapshot (type 2).' }),
+    projectId: z.string().nullable().openapi({
+      description: 'Project the segment is attributed to (from a verified X-RUM-Token), or null.',
+    }),
+    eventCount: z
+      .number()
+      .openapi({ description: 'Number of rrweb events stored in the segment.' }),
+    byteSize: z.number().openapi({ description: 'Compressed (gzip) object size in bytes.' }),
+    startTs: z
+      .number()
+      .openapi({ description: 'Earliest event timestamp in the segment (ms epoch).' }),
+    endTs: z.number().openapi({ description: 'Latest event timestamp in the segment (ms epoch).' }),
+  })
+  .openapi({ description: 'The persisted segment’s manifest row summary.' });
+
+registerPath({
+  method: 'options',
+  path: '/api/replays/sessions/{sessionId}/views/{viewId}/segments/{index}',
+  tags: ['Bug Reports'],
+  summary: 'CORS preflight for view-scoped segment ingest (returns 204)',
+  request: segmentIngestParams,
+  responses: { 204: { description: 'CORS preflight OK.' } },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/replays/sessions/{sessionId}/views/{viewId}/segments/{index}',
+  tags: ['Bug Reports'],
+  summary: 'Public view-scoped segment ingest (Datadog segment write path)',
+  description:
+    'Appends ONE view-scoped replay segment — a single gzipped object per `(sessionId, viewId, index_in_view)` slot, an O(1) append indexed by the `rum_segments` manifest. The view-opening segment (index 0) must carry a full snapshot (type 2); later indices append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤16 MB decompressed), capped at 10,000 events per segment. Auth is optional and mirrors the chunked path: with no `X-RUM-Token` the segment is anonymous and rate-limited per IP; with a valid per-project token it is attributed to that project and rate-limited per project instead. Re-writing an already-stored `(session, view, index)` slot is rejected 409.',
+  request: {
+    ...segmentIngestParams,
+    headers: z.object({
+      'x-rum-token': z.string().optional().openapi({
+        description: 'Optional per-project RUM ingest token. When present it must be valid.',
+      }),
+    }),
+    body: {
+      description:
+        'Either a raw JSON `ReplayBatchIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).',
+      content: replayIngestContent(ReplayBatchRequestSchema),
+    },
+  },
+  responses: {
+    201: { description: 'Segment stored.', content: jsonContent(SegmentIngestSuccessResponse) },
+    400: errorResponse(
+      'Bad session/view id or index, undecodable body, validation failure, or a view-opening segment (index 0) with no full snapshot.',
+    ),
+    401: errorResponse('An X-RUM-Token header was supplied but is invalid or revoked.'),
+    409: errorResponse('The `(session, view, index)` slot has already been written.'),
+    429: errorResponse('Per-IP (anonymous) or per-project (token) rate limit exceeded.'),
+    503: errorResponse('The segment storage backend could not be resolved.'),
+    500: errorResponse('Handler threw while persisting the segment.'),
+  },
+});
+
 const ReplayPolicyResponse = registerComponent(
   'ResolvedReplayPolicy',
   z

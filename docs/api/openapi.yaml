@@ -27684,6 +27684,166 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/sessions/{sessionId}/views/{viewId}/segments/{index}:
+    options:
+      tags:
+        - Bug Reports
+      summary: CORS preflight for view-scoped segment ingest (returns 204)
+      parameters:
+        - schema:
+            type: string
+            description: Client-minted session id (RUM sessionization).
+          required: true
+          description: Client-minted session id (RUM sessionization).
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Client-minted view id (per route/navigation).
+          required: true
+          description: Client-minted view id (per route/navigation).
+          name: viewId
+          in: path
+        - schema:
+            type: string
+            description: index_in_view — 0 is the view-opening segment (must carry a snapshot).
+          required: true
+          description: index_in_view — 0 is the view-opening segment (must carry a snapshot).
+          name: index
+          in: path
+      responses:
+        "204":
+          description: CORS preflight OK.
+    post:
+      tags:
+        - Bug Reports
+      summary: Public view-scoped segment ingest (Datadog segment write path)
+      description: "Appends ONE view-scoped replay segment — a single gzipped object per `(sessionId, viewId, index_in_view)` slot, an O(1) append indexed by the `rum_segments` manifest. The view-opening segment (index 0) must carry a full snapshot (type 2); later indices append incremental events. The body is `{ events, meta? }` as raw JSON or gzip-compressed (≤16 MB decompressed), capped at 10,000 events per segment. Auth is optional and mirrors the chunked path: with no `X-RUM-Token` the segment is anonymous and rate-limited per IP; with a valid per-project token it is attributed to that project and rate-limited per project instead. Re-writing an already-stored `(session, view, index)` slot is rejected 409."
+      parameters:
+        - schema:
+            type: string
+            description: Client-minted session id (RUM sessionization).
+          required: true
+          description: Client-minted session id (RUM sessionization).
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Client-minted view id (per route/navigation).
+          required: true
+          description: Client-minted view id (per route/navigation).
+          name: viewId
+          in: path
+        - schema:
+            type: string
+            description: index_in_view — 0 is the view-opening segment (must carry a snapshot).
+          required: true
+          description: index_in_view — 0 is the view-opening segment (must carry a snapshot).
+          name: index
+          in: path
+        - schema:
+            type: string
+            description: Optional per-project RUM ingest token. When present it must be valid.
+          required: false
+          description: Optional per-project RUM ingest token. When present it must be valid.
+          name: x-rum-token
+          in: header
+      requestBody:
+        description: Either a raw JSON `ReplayBatchIngestRequest` body, or its gzip-compressed bytes sent as `application/octet-stream` (a gzip-framed body the server inflates transparently).
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayBatchIngestRequest"
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: gzip-compressed request JSON (gzip-framed bytes).
+      responses:
+        "201":
+          description: Segment stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  segmentId:
+                    type: string
+                    description: Server-assigned segment id.
+                  sessionId:
+                    type: string
+                  viewId:
+                    type: string
+                  indexInView:
+                    type: number
+                    description: 0-based position within the view.
+                  hasFullSnapshot:
+                    type: boolean
+                    description: True when this segment carries an rrweb full snapshot (type 2).
+                  projectId:
+                    type: string
+                    nullable: true
+                    description: Project the segment is attributed to (from a verified X-RUM-Token), or null.
+                  eventCount:
+                    type: number
+                    description: Number of rrweb events stored in the segment.
+                  byteSize:
+                    type: number
+                    description: Compressed (gzip) object size in bytes.
+                  startTs:
+                    type: number
+                    description: Earliest event timestamp in the segment (ms epoch).
+                  endTs:
+                    type: number
+                    description: Latest event timestamp in the segment (ms epoch).
+                required:
+                  - segmentId
+                  - sessionId
+                  - viewId
+                  - indexInView
+                  - hasFullSnapshot
+                  - projectId
+                  - eventCount
+                  - byteSize
+                  - startTs
+                  - endTs
+                description: The persisted segment’s manifest row summary.
+        "400":
+          description: Bad session/view id or index, undecodable body, validation failure, or a view-opening segment (index 0) with no full snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "401":
+          description: An X-RUM-Token header was supplied but is invalid or revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "409":
+          description: The `(session, view, index)` slot has already been written.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "429":
+          description: Per-IP (anonymous) or per-project (token) rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "500":
+          description: Handler threw while persisting the segment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "503":
+          description: The segment storage backend could not be resolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
   /api/replays/config:
     options:
       tags:

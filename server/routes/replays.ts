@@ -22,6 +22,8 @@ import {
   listSessionSegments,
   buildSessionSegmentManifest,
   readSegment,
+  appendSegment,
+  SegmentNeedsSnapshotError,
 } from '../replays/segment-store.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
@@ -94,6 +96,12 @@ const MAX_EVENTS_PER_BATCH = 10_000;
 // A caller-supplied id becomes both the PK and (sanitised) the storage key, so
 // constrain it to the uuid-ish charset to keep the key 1:1 with the id.
 const REPLAY_ID_RE = /^[A-Za-z0-9._-]{8,200}$/;
+// Client-minted session / view ids that become path + storage-key components.
+// Same charset as a replay id, but the minimum length is relaxed to 1 so a short
+// client-generated view id (e.g. a small counter) is accepted.
+const SEGMENT_PART_RE = /^[A-Za-z0-9._-]{1,200}$/;
+// index_in_view path component: a small non-negative integer.
+const SEGMENT_INDEX_RE = /^\d{1,7}$/;
 
 // ─── Rate limit ──────────────────────────────────────────────────
 export const _rateBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -633,6 +641,161 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error('[Replays] Chunked append failed:', message);
+        return res.status(500).json({ error: message });
+      }
+    },
+  );
+
+  // ── Segment append (public, view-scoped) ─────────────────────────
+  // The forward write path for continuous capture: instead of re-uploading a
+  // growing monolithic blob, the recorder streams VIEW-SCOPED segments — one
+  // gzipped object per `(sessionId, viewId, index_in_view)` slot, an O(1) append
+  // (`appendSegment`) indexed by the `rum_segments` manifest. The view-opening
+  // segment (index_in_view=0) must carry a full snapshot; later indices append
+  // incrementally. Public + CORS *, mirroring the monolithic ingest paths, with
+  // the same optional `X-RUM-Token` attribution and the same events rate budget
+  // (a segment is just a smaller, view-scoped chunk).
+  router.options(
+    '/api/replays/sessions/:sessionId/views/:viewId/segments/:index',
+    applyCors,
+    (_req, res) => {
+      res.status(204).end();
+    },
+  );
+
+  // Cheap admission gate: validates the path components and charges the events
+  // rate budget BEFORE any body is read/inflated. Mirrors `eventsIngestGate` but
+  // keys on the segment's `(sessionId, viewId, index)` triple, and reuses the same
+  // per-IP / per-project events buckets so a client streaming segments is bounded
+  // by one budget regardless of which append shape it uses.
+  function segmentIngestGate(req: Request, res: Response, next: NextFunction): void {
+    if (!SEGMENT_PART_RE.test(String(req.params.sessionId))) {
+      res.status(400).json({ error: 'invalid session id' });
+      return;
+    }
+    if (!SEGMENT_PART_RE.test(String(req.params.viewId))) {
+      res.status(400).json({ error: 'invalid view id' });
+      return;
+    }
+    if (!SEGMENT_INDEX_RE.test(String(req.params.index))) {
+      res.status(400).json({ error: 'invalid segment index' });
+      return;
+    }
+    const ip = ipFromReq(req);
+    const rawToken = req.headers['x-rum-token'];
+    const presentedToken = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+    const hasToken = presentedToken != null && String(presentedToken).trim() !== '';
+
+    if (hasToken) {
+      const pre = bucketPeek(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+      if (!pre.ok) {
+        res.setHeader('Retry-After', Math.ceil(pre.retryAfterMs / 1000));
+        res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+        return;
+      }
+      const verified = verifyRumToken(String(presentedToken).trim());
+      if (verified) {
+        const rl = bucketCheck(
+          _projectEventsRateBuckets,
+          verified.projectId,
+          RUM_PROJECT_EVENTS_RATE_LIMIT_MAX,
+        );
+        if (!rl.ok) {
+          res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+          res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+          return;
+        }
+        res.locals.rumProjectId = verified.projectId;
+      } else {
+        const rl = bucketCheck(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+        if (!rl.ok) {
+          res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+          res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+          return;
+        }
+        res.status(401).json({ error: 'Invalid RUM token' });
+        return;
+      }
+    } else {
+      const rl = bucketCheck(_eventsRateBuckets, ip, EVENTS_RATE_LIMIT_MAX);
+      if (!rl.ok) {
+        res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
+        res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+        return;
+      }
+    }
+    next();
+  }
+
+  router.post(
+    '/api/replays/sessions/:sessionId/views/:viewId/segments/:index',
+    applyCors,
+    segmentIngestGate,
+    express.raw({ type: () => true, limit: MAX_BATCH_DECOMPRESSED_BYTES }),
+    async (req: Request, res: Response) => {
+      try {
+        const sessionId = String(req.params.sessionId);
+        const viewId = String(req.params.viewId);
+        const indexInView = Number(req.params.index);
+
+        const decoded = decodeReplayBatchBody(req.body as Buffer);
+        if (!decoded.ok) {
+          return res.status(decoded.status).json({ error: decoded.error });
+        }
+
+        // The view-opening segment (index 0) must carry a full snapshot; later
+        // segments append incrementally. `appendSegment` re-checks this too.
+        const parsed = validateEventBatch(decoded.value, indexInView === 0);
+        if (!parsed.ok) {
+          return res.status(400).json({ error: parsed.error });
+        }
+
+        // Resolved by the gate from a verified X-RUM-Token (null = anonymous).
+        const attributedProjectId = (res.locals.rumProjectId as string | undefined) ?? null;
+
+        let row: RumSegmentRow;
+        try {
+          row = await appendSegment(
+            { stmts, config },
+            {
+              sessionId,
+              viewId,
+              indexInView,
+              projectId: attributedProjectId,
+              events: parsed.value.events,
+              meta: parsed.value.meta ?? null,
+            },
+          );
+        } catch (err) {
+          if (err instanceof SegmentNeedsSnapshotError) {
+            return res.status(400).json({ error: err.message });
+          }
+          if (err instanceof ArtifactStoreUnavailableError) {
+            return res.status(503).json({ error: err.message });
+          }
+          // A reused (session, view, index) slot trips the UNIQUE manifest index.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/UNIQUE|constraint/i.test(msg)) {
+            return res.status(409).json({ error: 'segment slot already written' });
+          }
+          throw err;
+        }
+
+        return res.status(201).json({
+          segmentId: row.id,
+          sessionId: row.session_id,
+          viewId: row.view_id,
+          indexInView: row.index_in_view,
+          hasFullSnapshot: row.has_full_snapshot === 1,
+          projectId: row.project_id,
+          eventCount: row.event_count,
+          byteSize: row.byte_size,
+          startTs: row.start_ts,
+          endTs: row.end_ts,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[Replays] Segment append failed:', message);
         return res.status(500).json({ error: message });
       }
     },
