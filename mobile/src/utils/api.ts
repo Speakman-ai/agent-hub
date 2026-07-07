@@ -443,6 +443,13 @@ export const api = {
     putMyAuth: (provider: any, data: any) => fetchJSON(`/auth/me/${provider}-auth`, { method: 'PUT', body: JSON.stringify(data) }),
     getGithubAuthStatus: () => fetchJSON('/auth/github/status'),
     disconnectGithub: () => fetchJSON('/auth/github', { method: 'DELETE' }),
+    // Cross-project personal todos (spec TODO-MODEL). Scoped server-side to the
+    // authenticated user; every write broadcasts `user_todo_update` to the owner.
+    listTodos: (status?: 'open' | 'done') => fetchJSON(`/me/todos${status ? `?status=${status}` : ''}`),
+    createTodo: (data: any) => fetchJSON('/me/todos', { method: 'POST', body: JSON.stringify(data) }),
+    updateTodo: (id: any, data: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    deleteTodo: (id: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    reorderTodos: (orderedIds: any) => fetchJSON('/me/todos/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }),
     // Per-user Google connection (Settings -> Account). Never returns tokens.
     getGoogleStatus: () => fetchJSON('/auth/google/status'),
     // Returns { authorizeUrl }; the caller opens it in the system browser.

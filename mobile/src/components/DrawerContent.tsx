@@ -377,6 +377,17 @@ export default function DrawerContent({ navigation }: any) {
           <Text style={styles.dashboardText}>Dashboard</Text>
         </TouchableOpacity>
 
+        {/* Cross-project personal Todos — a per-USER capture list (spec
+            TODO-MODEL / NAV-PLACEMENT). Sits in the global tier alongside the
+            Dashboard and has NO Google dependency, so it is always shown. */}
+        <TouchableOpacity testID="drawer-global-todos" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('Todos');
+            navigation.closeDrawer();
+        }}>
+          <HubIcon name="ListTodo" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
+          <Text style={styles.dashboardText}>Todos</Text>
+        </TouchableOpacity>
+
         {/* Global Calendar — a per-USER Google surface, not project-scoped.
             Only shown when the user's Google account is connected
             (`/api/auth/google/status` connected=true). When not connected, the

@@ -8,10 +8,14 @@ export const HUB_ICON_NAMES = [
     'BookOpen',
     'Bot',
     'CalendarDays',
+    'Check',
+    'Circle',
+    'CircleCheck',
     'FileSpreadsheet',
     'HardDrive',
     'ChevronDown',
     'ChevronRight',
+    'ChevronUp',
     'Clock',
     'Cloud',
     'GitBranch',
@@ -22,7 +26,9 @@ export const HUB_ICON_NAMES = [
     'Mail',
     'List',
     'ListOrdered',
+    'ListTodo',
     'Palette',
+    'Pencil',
     'Play',
     'Plus',
     'ScanEye',
@@ -31,6 +37,8 @@ export const HUB_ICON_NAMES = [
     'Sparkles',
     'StickyNote',
     'Target',
+    'Trash2',
+    'X',
 ];
 const HUB_ICON_SET = new Set(HUB_ICON_NAMES);
 /** @param {string} name */

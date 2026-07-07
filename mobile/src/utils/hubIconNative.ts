@@ -16,10 +16,14 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   BookOpen: { family: 'feather', name: 'book-open' },
   Bot: { family: 'material', name: 'robot' },
   CalendarDays: { family: 'feather', name: 'calendar' },
+  Check: { family: 'feather', name: 'check' },
+  Circle: { family: 'feather', name: 'circle' },
+  CircleCheck: { family: 'feather', name: 'check-circle' },
   FileSpreadsheet: { family: 'material', name: 'file-table' },
   HardDrive: { family: 'feather', name: 'hard-drive' },
   ChevronDown: { family: 'feather', name: 'chevron-down' },
   ChevronRight: { family: 'feather', name: 'chevron-right' },
+  ChevronUp: { family: 'feather', name: 'chevron-up' },
   Clock: { family: 'feather', name: 'clock' },
   Cloud: { family: 'feather', name: 'cloud' },
   GitBranch: { family: 'feather', name: 'git-branch' },
@@ -30,7 +34,9 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Mail: { family: 'feather', name: 'mail' },
   List: { family: 'feather', name: 'list' },
   ListOrdered: { family: 'material', name: 'format-list-numbered' },
+  ListTodo: { family: 'material', name: 'format-list-checks' },
   Palette: { family: 'material', name: 'palette' },
+  Pencil: { family: 'feather', name: 'edit-2' },
   Play: { family: 'feather', name: 'play' },
   Plus: { family: 'feather', name: 'plus' },
   ScanEye: { family: 'feather', name: 'eye' },
@@ -39,6 +45,8 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Sparkles: { family: 'material', name: 'creation' },
   StickyNote: { family: 'feather', name: 'file-text' },
   Target: { family: 'feather', name: 'target' },
+  Trash2: { family: 'feather', name: 'trash-2' },
+  X: { family: 'feather', name: 'x' },
 };
 /**
  * Lucide renamed `BarChart3` → `ChartColumn` in v1.x; keep the web-facing

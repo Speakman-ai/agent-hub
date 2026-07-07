@@ -110,6 +110,12 @@ export function AppProvider({ children }: any) {
     // Last release_notification_update WS event. DeploymentsScreen consumes this
     // to keep notification delivery state (queued/sent/failed) live.
     const [lastReleaseNotificationEvent, setLastReleaseNotificationEvent] = useState<any>(null);
+    // Last `user_todo_update` WS event — drives live TodosScreen refetches
+    // without a poll. RN has no DOM event bus, so (mirroring the web
+    // window CustomEvent) we surface the last event through context state and
+    // bump a timestamp so an effect keyed on it re-runs. Shape:
+    //   { action: 'created'|'updated'|'deleted'|'reordered'|'promoted', bump }
+    const [lastUserTodoEvent, setLastUserTodoEvent] = useState<any>(null);
     // Tracks the project currently being viewed in ThreadsScreen so we can
     // suppress unread-badge increments (counts are only incremented when the
     // user isn't already looking at that project's threads list).
@@ -594,6 +600,12 @@ export function AppProvider({ children }: any) {
             case 'native_pr_update':
                 if (data.projectId)
                     refreshOpenPullCountRef.current?.(data.projectId);
+                break;
+            case 'user_todo_update':
+                // The server already filters this to the owner's connections, so
+                // any event we receive is ours. Surface it so TodosScreen can
+                // silently refetch (create/update/delete/reorder/promote).
+                setLastUserTodoEvent({ action: data.action ?? null, bump: Date.now() });
                 break;
             case 'dispatch_failure':
                 // Refresh kanban to show the failure comment on the card
@@ -2041,6 +2053,8 @@ export function AppProvider({ children }: any) {
         // Deployments
         lastDeploymentEvent,
         lastReleaseNotificationEvent,
+        // Cross-project personal todos (live refetch signal)
+        lastUserTodoEvent,
         // Threads
         unreadThreadCounts,
         lastThreadEvent,

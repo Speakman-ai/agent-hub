@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, BookOpen, Bot, CalendarDays, ChartColumn, ChevronDown, ChevronRight, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Mail, List, ListOrdered, Palette, Play, Plus, ScanEye, Settings, ShieldAlert, Sparkles, StickyNote, Target, } from 'lucide-react-native';
+import { Activity, BookOpen, Bot, CalendarDays, ChartColumn, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Mail, List, ListOrdered, ListTodo, Palette, Pencil, Play, Plus, ScanEye, Settings, ShieldAlert, Sparkles, StickyNote, Target, Trash2, X, } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { HUB_ICON_NAMES } from '../utils/hubIconNames';
 import { resolveLucideIconName } from '../utils/hubIconNative';
@@ -10,10 +10,14 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
     BookOpen,
     Bot,
     CalendarDays,
+    Check,
+    Circle,
+    CircleCheck,
     FileSpreadsheet,
     HardDrive,
     ChevronDown,
     ChevronRight,
+    ChevronUp,
     Clock,
     Cloud,
     GitBranch,
@@ -24,7 +28,9 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
     Mail,
     List,
     ListOrdered,
+    ListTodo,
     Palette,
+    Pencil,
     Play,
     Plus,
     ScanEye,
@@ -33,6 +39,8 @@ const HUB_LUCIDE_ICONS: Record<string, any> = {
     Sparkles,
     StickyNote,
     Target,
+    Trash2,
+    X,
 };
 for (const name of HUB_ICON_NAMES) {
     if (!HUB_LUCIDE_ICONS[name]) {
