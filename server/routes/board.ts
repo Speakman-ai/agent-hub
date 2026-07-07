@@ -47,7 +47,7 @@ import {
 import { sanitizeOrchestrationBudgetsPartial } from '../orchestration-budgets.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { maybeStartKanbanColumnWorkflowRuns } from '../workflow-triggers.js';
-import { setSessionOwner, resolveOwnerUserId } from '../session-ownership.js';
+import { setSessionOwner, resolveOwnerUserId, getSessionOwner } from '../session-ownership.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { recomputeSessionState } from '../session-state.js';
 import { epicsWithComputedState, recomputeEpicState } from '../epic-state.js';
@@ -356,19 +356,49 @@ function loadRequestAssignableUsers(req: Request): ReturnType<typeof loadAssigna
   return loadAssignableUsers((req as AuthenticatedRequest).authOrgId);
 }
 
+/**
+ * Resolve the user acting under this request, so a newly created card / epic
+ * can default its lead to "whoever created it":
+ *
+ *   1. A human (JWT or per-user `ahub_*` API key) → `resolveOwnerUserId(req)`.
+ *   2. An agent spawned on a user's behalf. On JWT-only deployments the spawn
+ *      key already resolves to the owner via (1); on deployments with a global
+ *      break-glass `AGENT_HUB_API_KEY` there is no `authUserId`, so fall back
+ *      to the owner of the linked / spawn session (the `X-Agent-Hub-Session-Id`
+ *      header every wrapper sends, or an explicit body `sessionId`).
+ */
+function resolveActingUserId(req: Request, sessionId: string | null | undefined): string | null {
+  const direct = resolveOwnerUserId(req as AuthenticatedRequest);
+  if (direct) return direct;
+  const resolvedSessionId = resolveCardSessionId(req, sessionId ?? undefined);
+  if (resolvedSessionId) {
+    const owner = getSessionOwner(resolvedSessionId);
+    if (owner) return owner;
+  }
+  return null;
+}
+
 function normalizeAssignedUserForCreate(
   req: Request,
   assignedUserId: string | null | undefined,
+  sessionId?: string | null,
 ): string | null | 'invalid' {
   const assignableUsers = loadRequestAssignableUsers(req);
-  if (assignedUserId !== undefined) {
+
+  // An explicit, non-empty lead choice always wins (and is validated against
+  // the org's assignable users).
+  if (assignedUserId != null && String(assignedUserId).trim() !== '') {
     return normalizeAssignedUserId(assignedUserId, assignableUsers);
   }
 
-  const callerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
-  if (!callerUserId) return null;
-  const normalizedCaller = normalizeAssignedUserId(callerUserId, assignableUsers);
-  return normalizedCaller === 'invalid' ? null : normalizedCaller;
+  // No lead was chosen (omitted, null, or empty string). Default the lead to
+  // the acting user so "anything created under my profile" gets me as lead —
+  // for cards I create in the UI (the modal sends an explicit null when no
+  // lead is picked) and for cards / epics an agent creates on my behalf.
+  const actingUserId = resolveActingUserId(req, sessionId);
+  if (!actingUserId) return null;
+  const normalizedActing = normalizeAssignedUserId(actingUserId, assignableUsers);
+  return normalizedActing === 'invalid' ? null : normalizedActing;
 }
 
 /**
@@ -827,12 +857,15 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
     }
 
-    const normalizedAssignedUser = normalizeAssignedUserForCreate(req, parsed.assignedUserId);
+    const normalizedAssignedUser = normalizeAssignedUserForCreate(
+      req,
+      parsed.assignedUserId,
+      sessionId,
+    );
     if (normalizedAssignedUser === 'invalid') {
       return res.status(400).json({ error: 'Invalid assignedUserId' });
     }
-    const shouldSetAssignedUser =
-      parsed.assignedUserId !== undefined || normalizedAssignedUser !== null;
+    const shouldSetAssignedUser = normalizedAssignedUser !== null;
 
     // Validate the epic/phase relationship BEFORE inserting, so a rejection
     // never leaves an orphan card on the board. Resolve the final (epic,
@@ -1598,7 +1631,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (normalizedAssignedUser === 'invalid') {
       return res.status(400).json({ error: 'Invalid assignedUserId' });
     }
-    const shouldSetAssignedUser = assignedUserId !== undefined || normalizedAssignedUser !== null;
+    const shouldSetAssignedUser = normalizedAssignedUser !== null;
     const epics = stmts.getKanbanEpics.all(board.id) as KanbanEpicRow[];
     const maxPos = epics.length > 0 ? Math.max(...epics.map((e) => e.position)) + 1 : 0;
     const id = uuidv4();
