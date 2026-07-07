@@ -110,23 +110,25 @@ Expected output:
 }
 ```
 
-### 6. Human merges → move **Review → Done**
+### 6. Merge closes the card — do NOT move it to Done yourself
 
-Agents **never merge their own PRs** — the human does. Once merged, move the
-card to Done:
-
-```bash
-PROJECT_ID=agent-hub scripts/kanban-move-card.sh "$CARD_ID" "Done"
-PROJECT_ID=agent-hub scripts/board.sh comment "$CARD_ID" '{
-  "author": "agent-hub-backend",
-  "content": "Merged in PR #441. Closing."
-}'
-```
-
-Expected output (final move):
+Agents **never merge their own PRs**, and they never write Done either:
+Done means merged, and the platform moves the card when the push/merge
+lands (finalize post-push detach / PR card-on-merge). A premature
+`kanban-move-card.sh "$CARD_ID" "Done"` from a Finalize-gated session that
+has not pushed yet is rejected:
 
 ```json
-{"id":"a3f8c1e9-…","column_id":"<done-uuid>","updated_at":"2026-04-19T06:20:13.000Z", …}
+{"error":"premature_done_move","message":"Done is written on merge for Finalize-gated sessions. …"}
+```
+
+Leave the card in In Progress and comment instead:
+
+```bash
+PROJECT_ID=agent-hub scripts/board.sh comment "$CARD_ID" '{
+  "author": "agent-hub-backend",
+  "content": "Implementation committed on the session branch; Finalize handles push/merge."
+}'
 ```
 
 ### 7. Or — discovered it was a duplicate mid-stream
@@ -149,8 +151,7 @@ explanatory comment. Requires step 2 (`session_id` patched onto the card).
 
 - [x] Resolve card id via `kanban-list.sh --column "To Do"`
 - [x] Patch `session_id` so the sidebar renames & close-card becomes available
-- [x] Move To Do → In Progress → Review → Done in order
-- [x] Add a `pr_url` on the **Review** move
+- [x] Move To Do → In Progress when starting; leave Done to the platform
 - [x] Comment at each inflection point (start, PR, merge)
 - [x] Or short-circuit with `<agenthub:close-card>` for dupes / already-done
 
@@ -158,7 +159,7 @@ explanatory comment. Requires step 2 (`session_id` patched onto the card).
 
 - **Column names are case-insensitive** (`"in progress"`, `"In Progress"`, or
   `"IN PROGRESS"` all resolve). But they must be one of
-  `To Do | In Progress | Review | Done` for the standard board.
+  `To Do | In Progress | Done` for the standard board.
 - **`board.sh update` is a full PUT.** Only the fields you pass are changed —
   missing fields are left alone.
 - **Don't hard-code column UUIDs.** Use `kanban-move-card.sh <id> "<name>"` or

@@ -1,7 +1,10 @@
 # Kanban — Cards, Columns, Comments, Epics
 
 Every project has a board. Default columns (by name; IDs are per-project):
-**To Do → In Progress → Review → Done**. Always use
+**To Do → In Progress → Done**. Move your card to In Progress when you
+start; do **not** move it to Done yourself — Done means merged, and the
+platform closes the card automatically when the push/merge lands (a
+premature Done move is rejected with `409 premature_done_move`). Always use
 `scripts/board.sh` / `scripts/epics.sh` — never inline curl — so auth and
 `PROJECT_ID` are handled uniformly.
 

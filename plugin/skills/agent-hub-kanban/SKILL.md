@@ -3,7 +3,7 @@ name: agent-hub-kanban
 description: >-
   Agent Hub kanban board operations — list, create, move, update, and comment
   on cards; manage epics and card blockers. Covers the project→board hierarchy,
-  the To Do → In Progress → Review → Done column contract, autonomous-assignment
+  the To Do → In Progress → Done column contract, autonomous-assignment
   rules, the Done-state contract, and card↔PR linkage. TRIGGER only on Agent
   Hub kanban signals: the words "kanban", "board", "card", "epic", "blocker";
   the column names "To Do", "In Progress", "Review", "Done" in an Agent Hub

@@ -13703,6 +13703,9 @@ paths:
                   minLength: 1
                 position:
                   type: integer
+                force:
+                  type: boolean
+                  description: "Operator escape hatch: bypass the premature-Done guard. Moves into a Done column are rejected with 409 while the linked session is Finalize-gated and has not pushed yet — Done is written on merge by the platform."
               required:
                 - columnId
       responses:
@@ -13720,6 +13723,12 @@ paths:
                 $ref: "#/components/schemas/BoardErrorResponse"
         "404":
           description: Card not found, or target column not on this card's board.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "409":
+          description: "Premature Done move rejected: the linked session is Finalize-gated and has not pushed yet. Done is written on merge; pass `force: true` to override."
           content:
             application/json:
               schema:

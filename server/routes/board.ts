@@ -22,6 +22,11 @@ import type {
   SupportTicketRow,
 } from '../types.js';
 import { findCycle, loadBoardBlockers, isSystemLockedColumnName } from '../kanban-blockers.js';
+import {
+  blocksPrematureDoneMove,
+  PREMATURE_DONE_ERROR,
+  PREMATURE_DONE_MESSAGE,
+} from '../kanban-premature-done.js';
 import { deriveCardPrefix } from '../kanban-short-id.js';
 import {
   type CardCursor,
@@ -1134,6 +1139,22 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       if (!targetColumn || targetColumn.board_id !== card.board_id) {
         return res.status(404).json({ error: "Column not found on this card's board" });
       }
+      // Done means merged for Finalize-gated sessions: reject the premature
+      // agent-driven Done move that otherwise bounces the card back to
+      // In Progress when Finalize starts seconds later (see
+      // kanban-premature-done.ts). Platform Done-writers bypass this route.
+      if (
+        blocksPrematureDoneMove({
+          stmts,
+          card,
+          targetColumnName: targetColumn.name,
+          force: parsedMove.force,
+        })
+      ) {
+        return res
+          .status(409)
+          .json({ error: PREMATURE_DONE_ERROR, message: PREMATURE_DONE_MESSAGE });
+      }
       const previousColumnId = card.column_id;
       stmts.moveKanbanCard.run(columnId, position ?? 0, req.params.cardId);
       recomputeEpicState(stmts, card.epic_id);
@@ -1400,7 +1421,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
           ``,
           `**This session is already linked to kanban card \`${req.params.cardId}\`.** Do **NOT** create a new card for this work — the card already exists and tracks your progress. The "Bias to Action — create a card" guidance in your system prompt does not apply here. Instead:`,
           `- **Comment** on this card to record findings, blockers, or PR links: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/comments\``,
-          `- **Move** this card as state changes (In Progress → Review → Done): \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\``,
+          `- **Move** this card to In Progress when you start: \`POST /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}/move\`. Do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
           `- **Update** title/description/labels in place: \`PUT /api/projects/${req.params.projectId}/board/cards/${req.params.cardId}\``,
           ``,
           `If the work splits into genuinely separate follow-ups, create child cards in To Do with this card's id as a blocker — but the card you were assigned to stays the canonical ticket for this task.`,

@@ -45,6 +45,11 @@ import { api } from '../utils/api';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { epicFormToUpdateBody } from '../utils/epics';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
+import {
+  isPrematureDoneMoveError,
+  PREMATURE_DONE_MOVE_EXPLANATION,
+  PREMATURE_DONE_MOVE_TITLE,
+} from '@shared/utils/prematureDoneMove';
 import { cardShortLabel, assigneeInitials, assigneeColorClass } from '../utils/kanbanCard';
 import { isHighPriority, toggleHighPriorityValue } from '../utils/kanbanPriority';
 import {
@@ -855,6 +860,9 @@ export default function KanbanBoard({
 
   const [pendingMove, setPendingMove] = useState<any>(null); // { card, targetColumn, position }
   const [pendingBulkMove, setPendingBulkMove] = useState<any>(null); // { cards, targetColumn }
+  // Premature-Done 409s from the move endpoint: the affected updates are kept
+  // so the confirm dialog can replay them with `force: true`.
+  const [pendingForceDone, setPendingForceDone] = useState<any>(null); // { updates }
 
   const [columnDialog, setColumnDialog] = useState<any>(null); // null | { mode: 'create' } | { mode: 'edit', column }
   const [columnBusy, setColumnBusy] = useState(false);
@@ -1487,15 +1495,51 @@ export default function KanbanBoard({
 
   const commitUpdates = async (updates: any) => {
     if (updates.length === 0) return;
+    const results = await Promise.allSettled(
+      updates.map((u: any) =>
+        api.moveCard(projectId, u.id, { columnId: u.columnId, position: u.position }),
+      ),
+    );
+    const failed = results.some((r) => r.status === 'rejected');
+    if (!failed) return;
+    // Premature-Done guard (server 409 premature_done_move): the card's
+    // linked session is Finalize-gated and hasn't pushed, so Done is written
+    // on merge. Don't leave the human at a silent snap-back — reconcile,
+    // then offer the `force: true` retry the server documents.
+    const prematureDone = updates.filter(
+      (_u: any, i: number) =>
+        results[i]!.status === 'rejected' &&
+        isPrematureDoneMoveError((results[i] as PromiseRejectedResult).reason),
+    );
+    // Non-premature failures keep the historical reconcile-only handling, but
+    // log them (same pattern as commitBulkMove) so a mixed-failure batch
+    // isn't fully silent about the moves the dialog below doesn't cover.
+    const otherFailure = results.find(
+      (r) => r.status === 'rejected' && !isPrematureDoneMoveError(r.reason),
+    );
+    if (otherFailure) {
+      console.error('Card move failed:', (otherFailure as PromiseRejectedResult).reason);
+    }
+    reconcileBoard();
+    if (prematureDone.length > 0) setPendingForceDone({ updates: prematureDone });
+  };
+
+  // Replay premature-Done rejected moves with the operator override.
+  const commitForceDone = async (updates: any) => {
     try {
       await Promise.all(
         updates.map((u: any) =>
-          api.moveCard(projectId, u.id, { columnId: u.columnId, position: u.position }),
+          api.moveCard(projectId, u.id, {
+            columnId: u.columnId,
+            position: u.position,
+            force: true,
+          }),
         ),
       );
     } catch {
-      reconcileBoard();
+      /* reconcile below surfaces the server's truth either way */
     }
+    reconcileBoard();
   };
 
   // Apply a resolved move (already past the blocker check): optimistic local
@@ -2317,6 +2361,63 @@ export default function KanbanBoard({
                 className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-medium transition-colors"
               >
                 Move anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm move — premature Done (server 409: Done is written on merge) */}
+      {pendingForceDone && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          data-testid="confirm-force-done-dialog"
+        >
+          <div className="absolute inset-0 bg-black/60" onClick={() => setPendingForceDone(null)} />
+          <div className="relative w-full max-w-md bg-gray-900 border border-amber-900/60 rounded-xl shadow-2xl p-5">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertTriangle size={20} className="text-amber-400 mt-0.5 flex-shrink-0" />
+              <div>
+                <h3 className="text-sm font-semibold text-white mb-1">
+                  {PREMATURE_DONE_MOVE_TITLE}
+                </h3>
+                <p className="text-xs text-gray-400 leading-relaxed">
+                  {PREMATURE_DONE_MOVE_EXPLANATION}
+                </p>
+              </div>
+            </div>
+            <ul className="mb-4 pl-8 space-y-1">
+              {pendingForceDone.updates.map((u: any) => {
+                const card = cards.find((c: any) => c.id === u.id);
+                return (
+                  <li
+                    key={u.id}
+                    className="text-xs text-amber-300 truncate"
+                    title={card?.title || u.id}
+                  >
+                    • {card?.title || u.id}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingForceDone(null)}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const { updates } = pendingForceDone;
+                  setPendingForceDone(null);
+                  await commitForceDone(updates);
+                }}
+                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-medium transition-colors"
+              >
+                Move to Done anyway
               </button>
             </div>
           </div>

@@ -8,6 +8,7 @@ import { colors } from '../theme/colors';
 import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, } from '../utils/epics';
 import { findAgentByName, hasActiveSession, buildAssigneeOptions, filterAgentsByProject, validModelsForAgent, engineEntriesWithModels, assignedSessionId, } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
+import { isPrematureDoneMoveError, PREMATURE_DONE_MOVE_EXPLANATION, PREMATURE_DONE_MOVE_TITLE, } from '@shared/utils/prematureDoneMove';
 import { cardMetaModel, priorityMeta, cardShareUrl, toggleLabelCsv } from '../utils/kanbanCard';
 import { getServerBaseUrl } from '../utils/config';
 import { buildCardActions } from '../utils/kanbanCardActions';
@@ -774,7 +775,30 @@ export default function KanbanScreen({ route, navigation }: any) {
             await api.moveKanbanCard(projectId, cardId, { columnId: targetColumnId });
             await loadBoard();
         }
-        catch {
+        catch (err) {
+            // Premature-Done guard (server 409 premature_done_move): Done is
+            // written on merge for Finalize-gated sessions. Offer the force
+            // override instead of a dead-end error (parity with the web
+            // client's confirm-force dialog).
+            if (isPrematureDoneMoveError(err)) {
+                Alert.alert(PREMATURE_DONE_MOVE_TITLE, PREMATURE_DONE_MOVE_EXPLANATION, [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: 'Move to Done anyway',
+                        style: 'destructive',
+                        onPress: async () => {
+                            try {
+                                await api.moveKanbanCard(projectId, cardId, { columnId: targetColumnId, force: true });
+                                await loadBoard();
+                            }
+                            catch {
+                                Alert.alert('Error', 'Failed to move card');
+                            }
+                        },
+                    },
+                ]);
+                return;
+            }
             Alert.alert('Error', 'Failed to move card');
         }
     };

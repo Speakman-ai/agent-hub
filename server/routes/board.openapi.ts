@@ -497,6 +497,15 @@ export const UpdateCardRequestSchema = z.preprocess(
 export const MoveCardRequestSchema = z.object({
   columnId: z.string({ error: 'columnId is required' }).min(1, 'columnId is required'),
   position: z.number().int().optional(),
+  force: z
+    .boolean()
+    .optional()
+    .openapi({
+      description:
+        'Operator escape hatch: bypass the premature-Done guard. Moves into a Done ' +
+        'column are rejected with 409 while the linked session is Finalize-gated ' +
+        'and has not pushed yet — Done is written on merge by the platform.',
+    }),
 });
 
 export const CreateCommentRequestSchema = z.object({
@@ -889,6 +898,10 @@ registerPath({
     200: { description: 'Updated card.', content: jsonContent(KanbanCardComponent) },
     400: errorResponse('Validation failed.'),
     404: errorResponse("Card not found, or target column not on this card's board."),
+    409: errorResponse(
+      'Premature Done move rejected: the linked session is Finalize-gated and has ' +
+        'not pushed yet. Done is written on merge; pass `force: true` to override.',
+    ),
   },
 });
 

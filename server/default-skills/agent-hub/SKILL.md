@@ -139,7 +139,9 @@ mid-stream drops) with the recovery step that usually unsticks them.
 1. **Create** a kanban card when picking up significant work (pass
    `session_id: $AGENT_HUB_SESSION_ID` to auto-link). See
    `agent-hub-kanban`.
-2. **Move** the card as state changes (In Progress → Review → Done).
+2. **Move** the card to In Progress when you start. Do **not** move it to
+   Done yourself — Done means merged; the platform closes the card when
+   your change lands.
 3. **Comment** on the card when opening a PR, hitting a blocker, or
    finishing a subtask.
 4. **Search the wiki** before asking; **update** existing pages rather
@@ -176,7 +178,7 @@ Concrete recipes live under **[examples/](examples/)**:
 | [delegate-to-subagent](examples/delegate-to-subagent.md) | Fan out parallel audits via `<delegate>` |
 | [post-heartbeat-summary](examples/post-heartbeat-summary.md) | End a heartbeat run with a structured thread summary |
 | [search-and-link-wiki-page](examples/search-and-link-wiki-page.md) | FTS-search the wiki and link the page in a card comment |
-| [move-card-through-workflow](examples/move-card-through-workflow.md) | Walk a card To Do → In Progress → Review → Done |
+| [move-card-through-workflow](examples/move-card-through-workflow.md) | Walk a card To Do → In Progress (merge writes Done) |
 
 ## Architecture quick reference
 

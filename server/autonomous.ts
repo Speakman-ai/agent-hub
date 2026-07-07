@@ -1407,7 +1407,7 @@ async function runAutonomousLoopInner(
         contextLines.push(
           `\n---\nYou have been assigned this task by the autonomous dispatch system. Review the description above and begin working on it.`,
           ``,
-          `**This session is linked to kanban card \`${card.id}\`.** Do **NOT** create a new card for this work. Comment, move, and update this card via the board API as you progress.`,
+          `**This session is linked to kanban card \`${card.id}\`.** Do **NOT** create a new card for this work. Comment and update this card via the board API as you progress, but do **not** move it to Done yourself — Done means merged, and the platform closes the card automatically when your change lands.`,
         );
       }
 
