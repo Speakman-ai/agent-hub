@@ -29,6 +29,7 @@ import {
   type ReplayEvent,
   type ReplayBlob,
 } from './replay-store.js';
+import { rollupSegmentIntoSession, extractSegmentRollupCounts } from './rum-session-store.js';
 
 const SEGMENT_CONTENT_TYPE = 'application/gzip';
 
@@ -206,6 +207,27 @@ export async function appendSegment(
     throw err;
   }
 
+  // Roll this now-durable segment into the session-grain metadata row the
+  // dashboard lists/filters (view/action/error/frustration counts, time spent).
+  // Runs AFTER the object PUT so a counted segment always has its bytes; a
+  // rollup failure must NOT fail an already-committed append (the row can be
+  // reconciled), so it is best-effort.
+  try {
+    rollupSegmentIntoSession(stmts, {
+      sessionId: input.sessionId,
+      projectId,
+      indexInView,
+      startTs: start,
+      endTs: end,
+      counts: extractSegmentRollupCounts(meta),
+    });
+  } catch (err) {
+    console.warn(
+      '[Replays] session rollup update failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   return stmts.getRumSegment.get(id) as RumSegmentRow;
 }
 
@@ -347,4 +369,7 @@ export async function deleteSessionSegments(
     }
   }
   deps.stmts.deleteRumSegmentsBySession.run(sessionId);
+  // Drop the session-grain rollup row alongside its segments so a deleted
+  // session leaves no orphan dashboard entry.
+  deps.stmts.deleteRumSession.run(sessionId);
 }

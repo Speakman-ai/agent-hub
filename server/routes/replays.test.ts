@@ -97,6 +97,21 @@ function makeReplayStmts(): Stmts {
       ON rum_segments(session_id, view_id, index_in_view);
     CREATE INDEX idx_rum_segments_session
       ON rum_segments(session_id, start_ts, index_in_view);
+    CREATE TABLE rum_sessions (
+      session_id TEXT PRIMARY KEY,
+      project_id TEXT,
+      started_at INTEGER,
+      ended_at INTEGER,
+      time_spent INTEGER NOT NULL DEFAULT 0,
+      view_count INTEGER NOT NULL DEFAULT 0,
+      action_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      frustration_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_rum_sessions_project
+      ON rum_sessions(project_id, started_at DESC);
   `);
   return {
     insertSessionReplay: db.prepare(
@@ -133,6 +148,27 @@ function makeReplayStmts(): Stmts {
     ),
     deleteRumSegment: db.prepare('DELETE FROM rum_segments WHERE id = ?'),
     deleteRumSegmentsBySession: db.prepare('DELETE FROM rum_segments WHERE session_id = ?'),
+    insertRumSession: db.prepare(
+      `INSERT INTO rum_sessions
+         (session_id, project_id, started_at, ended_at, time_spent,
+          view_count, action_count, error_count, frustration_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
+    updateRumSessionRollup: db.prepare(
+      `UPDATE rum_sessions
+          SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
+              view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+              updated_at = datetime('now')
+        WHERE session_id = ?`,
+    ),
+    listRumSessionsByProject: db.prepare(
+      `SELECT * FROM rum_sessions
+        WHERE project_id = ?
+        ORDER BY started_at DESC, session_id DESC
+        LIMIT ?`,
+    ),
+    deleteRumSession: db.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
     updateSessionReplayStats: db.prepare(
       `UPDATE session_replays
           SET duration_ms = ?, event_count = ?, size = ?, uncompressed_size = ?, meta = ?

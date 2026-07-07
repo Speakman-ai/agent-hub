@@ -17,6 +17,7 @@ import {
   type SegmentStoreDeps,
 } from './segment-store.js';
 import { storeReplay, readReplayEventsPage, type ReplayEvent } from './replay-store.js';
+import { getRumSession } from './rum-session-store.js';
 import { LocalArtifactStore, resetArtifactStoreCache } from '../artifacts/artifact-store.js';
 import type { AppConfig, Stmts } from '../types.js';
 
@@ -127,6 +128,22 @@ describe('segment-store (append-only backend)', () => {
         card_id TEXT,
         meta TEXT
       );
+
+      CREATE TABLE rum_sessions (
+        session_id TEXT PRIMARY KEY,
+        project_id TEXT,
+        started_at INTEGER,
+        ended_at INTEGER,
+        time_spent INTEGER NOT NULL DEFAULT 0,
+        view_count INTEGER NOT NULL DEFAULT 0,
+        action_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        frustration_count INTEGER NOT NULL DEFAULT 0,
+        first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_rum_sessions_project
+        ON rum_sessions(project_id, started_at DESC);
     `);
     return {
       insertRumSegment: db.prepare(
@@ -158,6 +175,28 @@ describe('segment-store (append-only backend)', () => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       getSessionReplay: db.prepare('SELECT * FROM session_replays WHERE id = ?'),
+      // rum_sessions — session-grain rollup row (rum-session-store.ts).
+      insertRumSession: db.prepare(
+        `INSERT INTO rum_sessions
+           (session_id, project_id, started_at, ended_at, time_spent,
+            view_count, action_count, error_count, frustration_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ),
+      getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
+      updateRumSessionRollup: db.prepare(
+        `UPDATE rum_sessions
+            SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
+                view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+                updated_at = datetime('now')
+          WHERE session_id = ?`,
+      ),
+      listRumSessionsByProject: db.prepare(
+        `SELECT * FROM rum_sessions
+          WHERE project_id = ?
+          ORDER BY started_at DESC, session_id DESC
+          LIMIT ?`,
+      ),
+      deleteRumSession: db.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
     } as unknown as Stmts;
   }
 
@@ -429,5 +468,60 @@ describe('segment-store (append-only backend)', () => {
 
     // And it does NOT appear in the segment manifest — different backend.
     expect(listSessionSegments(deps.stmts, 'legacy')).toHaveLength(0);
+  });
+
+  it('maintains the session-grain rollup row as segments ingest across views', async () => {
+    // View 1: an opening snapshot segment plus one incremental segment, each
+    // carrying client-sent action/error/frustration counts in meta.
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg(SNAPSHOT, { type: 3, timestamp: 1200 }),
+      meta: { actionCount: 2, errorCount: 1, frustrationCount: 0 },
+    });
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 1,
+      projectId: 'proj',
+      events: seg({ type: 3, timestamp: 1600 }),
+      meta: { actionCount: 1, errorCount: 0, frustrationCount: 2 },
+    });
+    // View 2: opens with its own snapshot (a second distinct view).
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-2',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg({ type: 2, timestamp: 3000 }, { type: 3, timestamp: 3400 }),
+      meta: { actionCount: 3, errorCount: 2, frustrationCount: 1 },
+    });
+
+    const row = getRumSession(deps.stmts, 'sess')!;
+    expect(row.project_id).toBe('proj');
+    expect(row.view_count).toBe(2); // two distinct views (two index-0 segments)
+    expect(row.action_count).toBe(6); // 2 + 1 + 3
+    expect(row.error_count).toBe(3); // 1 + 0 + 2
+    expect(row.frustration_count).toBe(3); // 0 + 2 + 1
+    // time_spent spans the first event (1000, the snapshot) to the last (3400).
+    expect(row.started_at).toBe(1000);
+    expect(row.ended_at).toBe(3400);
+    expect(row.time_spent).toBe(2400);
+  });
+
+  it('deletes the session-grain rollup row when its segments are deleted', async () => {
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg(SNAPSHOT, { type: 3, timestamp: 1200 }),
+    });
+    expect(getRumSession(deps.stmts, 'sess')).not.toBeNull();
+
+    await deleteSessionSegments(deps, 'sess');
+    expect(getRumSession(deps.stmts, 'sess')).toBeNull();
   });
 });

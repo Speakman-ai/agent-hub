@@ -393,6 +393,39 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_rum_segments_session
       ON rum_segments(session_id, start_ts, index_in_view);
 
+    -- rum_sessions: the session-grain metadata row the RUM dashboard lists and
+    -- filters on (Datadog "session" grain). One row per client-minted session id,
+    -- carrying rollup aggregates maintained incrementally as segments are ingested
+    -- (server/replays/rum-session-store.ts):
+    --   view_count        — distinct views (each view opens with an index_in_view=0
+    --                       segment, counted exactly once).
+    --   action_count      — sum of per-segment action counts (client-sent meta).
+    --   error_count       — sum of per-segment error counts.
+    --   frustration_count — sum of per-segment frustration counts (rage/dead/error
+    --                       click; detected client-side, sent as counts).
+    --   started_at/ended_at — earliest/latest event timestamp across the whole
+    --                       session, epoch ms; time_spent = ended_at - started_at.
+    -- project_id is first-non-null-wins so an anonymous first segment that later
+    -- attributes keeps its tenant. Per-user identity (usr_id/email/name) and the
+    -- enriched facet columns (device/browser/os/geo) are added by follow-up cards
+    -- in this epic; this row is their home. The (project_id, started_at) index
+    -- backs the tenant-scoped, time-ranged list query.
+    CREATE TABLE IF NOT EXISTS rum_sessions (
+      session_id TEXT PRIMARY KEY,
+      project_id TEXT,
+      started_at INTEGER,
+      ended_at INTEGER,
+      time_spent INTEGER NOT NULL DEFAULT 0,
+      view_count INTEGER NOT NULL DEFAULT 0,
+      action_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      frustration_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_project
+      ON rum_sessions(project_id, started_at DESC);
+
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
     -- POST /api/replays with an X-RUM-Token header; a valid token attributes
@@ -3389,6 +3422,29 @@ function initDb(dataDir: string): void {
     ),
     deleteRumSegment: db.prepare('DELETE FROM rum_segments WHERE id = ?'),
     deleteRumSegmentsBySession: db.prepare('DELETE FROM rum_segments WHERE session_id = ?'),
+    // rum_sessions — session-grain rollup row (rum-session-store.ts). Maintained
+    // incrementally as segments ingest; the dashboard lists/filters these rows.
+    insertRumSession: db.prepare(
+      `INSERT INTO rum_sessions
+         (session_id, project_id, started_at, ended_at, time_spent,
+          view_count, action_count, error_count, frustration_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
+    updateRumSessionRollup: db.prepare(
+      `UPDATE rum_sessions
+          SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
+              view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+              updated_at = datetime('now')
+        WHERE session_id = ?`,
+    ),
+    listRumSessionsByProject: db.prepare(
+      `SELECT * FROM rum_sessions
+        WHERE project_id = ?
+        ORDER BY started_at DESC, session_id DESC
+        LIMIT ?`,
+    ),
+    deleteRumSession: db.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
     // Per-project RUM ingest clients (rum-clients-store.ts)
     insertRumClient: db.prepare(
       `INSERT INTO project_rum_clients (id, project_id, name, token_hash, prefix, created_by)

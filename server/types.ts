@@ -300,6 +300,39 @@ export interface RumSegmentRow {
 }
 
 /**
+ * The session-grain rollup row the RUM dashboard lists and filters on (Datadog
+ * "session" grain). One row per client-minted session id, its aggregates
+ * maintained incrementally as segments ingest (see
+ * `server/replays/rum-session-store.ts`). Per-user identity and enriched facet
+ * columns (device/browser/os/geo) are added onto this row by follow-up cards in
+ * the RUM epic.
+ */
+export interface RumSessionRow {
+  /** Client-minted session id (the `rum_segments.session_id` these roll up). */
+  session_id: string;
+  /** Project attribution; first-non-null-wins across the session's segments. */
+  project_id: string | null;
+  /** Earliest event timestamp across the session, epoch ms (NULL until seen). */
+  started_at: number | null;
+  /** Latest event timestamp across the session, epoch ms (NULL until seen). */
+  ended_at: number | null;
+  /** Session duration, ms: `ended_at - started_at` (0 until both are known). */
+  time_spent: number;
+  /** Distinct views in the session (one per index_in_view=0 segment). */
+  view_count: number;
+  /** Rolled-up action count across the session's segments. */
+  action_count: number;
+  /** Rolled-up error count across the session's segments. */
+  error_count: number;
+  /** Rolled-up frustration-signal count (rage/dead/error click). */
+  frustration_count: number;
+  /** Wall-clock the row was first created, `datetime('now')` UTC string. */
+  first_seen_at: string;
+  /** Wall-clock of the most recent rollup update, `datetime('now')` UTC string. */
+  updated_at: string;
+}
+
+/**
  * A per-project RUM (real user monitoring) ingest client credential. The
  * `token_hash` (sha256 hex of a `rum_`-prefixed CSPRNG token) and indexed
  * `prefix` are stored; the plaintext token is returned only once at mint and is
@@ -1728,6 +1761,12 @@ export interface Stmts {
   listRumSegmentsByView: Stmt;
   deleteRumSegment: Stmt;
   deleteRumSegmentsBySession: Stmt;
+  // rum_sessions — session-grain rollup row (rum-session-store.ts)
+  insertRumSession: Stmt;
+  getRumSession: Stmt;
+  updateRumSessionRollup: Stmt;
+  listRumSessionsByProject: Stmt;
+  deleteRumSession: Stmt;
   // Per-project RUM ingest clients
   insertRumClient: Stmt;
   getRumClient: Stmt;
