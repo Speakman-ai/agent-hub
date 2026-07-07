@@ -70,6 +70,18 @@ export function shouldDeliverBroadcast(
     return stamp.role === 'Owner' || stamp.userId === owner;
   }
 
+  // 3b. Personal user-scoped events go only to their owner — NO admin
+  //    override. Todos are a private capture primitive (spec TODO-MODEL),
+  //    so even an org Owner must not receive another user's todo updates.
+  //    A missing ownerUserId falls back to legacy fan-out rather than
+  //    silently dropping the event.
+  if (data.type === 'user_todo_update') {
+    const owner =
+      typeof data.ownerUserId === 'string' && data.ownerUserId ? data.ownerUserId : null;
+    if (!owner) return true;
+    return stamp.userId === owner;
+  }
+
   // 4. Try to resolve the event to a project. Unresolvable events keep
   //    the legacy fan-out semantics; deny-on-unresolved would silently
   //    break new event types and any payload whose project model isn't

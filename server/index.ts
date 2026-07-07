@@ -160,6 +160,7 @@ import createReplayRoutes from './routes/replays.js';
 import createReplaysDashboardRoutes from './routes/replays-dashboard.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
+import createMeTodosRoutes from './routes/me-todos.js';
 import createGithubOAuthRoutes from './routes/github-oauth.js';
 import createGoogleOAuthRoutes from './routes/google-oauth.js';
 import createGoogleCalendarRoutes from './routes/google-calendar.js';
@@ -1255,6 +1256,7 @@ app.use(
   }),
 );
 app.use(createMcpServerRoutes());
+app.use(createMeTodosRoutes(routeDeps));
 // PR-env settings/provisioning routes and the `pr_env_config` DB row
 // were removed as part of the "Strip PR Environments" epic (88367984).
 // Worktree previews (per-session, host-side) are the supported preview

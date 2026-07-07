@@ -6122,6 +6122,75 @@ components:
       additionalProperties:
         nullable: true
       description: Well-known MCP catalog template.
+    MeTodosErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for personal-todo routes.
+    UserTodo:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        title:
+          type: string
+        notes:
+          type: string
+        status:
+          type: string
+          enum:
+            - open
+            - done
+        dueAt:
+          type: string
+          nullable: true
+        position:
+          type: number
+        sourceType:
+          type: string
+          enum:
+            - manual
+            - email
+            - calendar
+        sourceId:
+          type: string
+          nullable: true
+        sourceMeta:
+          type: object
+          nullable: true
+          additionalProperties:
+            nullable: true
+        linkedCardId:
+          type: string
+          nullable: true
+        linkedProjectId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - userId
+        - title
+        - notes
+        - status
+        - dueAt
+        - position
+        - sourceType
+        - sourceId
+        - sourceMeta
+        - linkedCardId
+        - linkedProjectId
+        - createdAt
+        - updatedAt
+      description: A single cross-project personal todo owned by one Hub user. Independent of any project board.
     MemoryErrorResponse:
       type: object
       properties:
@@ -23505,6 +23574,247 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/McpServersErrorResponse"
+  /api/me/todos:
+    get:
+      tags:
+        - Personal Todos
+      summary: List the calling user's personal todos
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - open
+              - done
+            description: Filter to only open or only done.
+          required: false
+          description: Filter to only open or only done.
+          name: status
+          in: query
+      responses:
+        "200":
+          description: The caller's todos in per-user order.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todos:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todos
+        "400":
+          description: Invalid status filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+    post:
+      tags:
+        - Personal Todos
+      summary: Create a personal todo
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                notes:
+                  type: string
+                dueAt:
+                  type: string
+                  nullable: true
+                sourceType:
+                  type: string
+                  enum:
+                    - manual
+                    - email
+                    - calendar
+                sourceId:
+                  type: string
+                  nullable: true
+                sourceMeta:
+                  type: object
+                  additionalProperties:
+                    nullable: true
+              required:
+                - title
+      responses:
+        "201":
+          description: Created todo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todo
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+  /api/me/todos/{id}:
+    put:
+      tags:
+        - Personal Todos
+      summary: Update a personal todo (partial)
+      parameters:
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                notes:
+                  type: string
+                status:
+                  type: string
+                  enum:
+                    - open
+                    - done
+                dueAt:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated todo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todo
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "404":
+          description: Todo not found (or not owned by caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+    delete:
+      tags:
+        - Personal Todos
+      summary: Delete a personal todo
+      parameters:
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "404":
+          description: Todo not found (or not owned by caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+  /api/me/todos/reorder:
+    post:
+      tags:
+        - Personal Todos
+      summary: Reassign the per-user order of the caller's todos
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderedIds:
+                  type: array
+                  items:
+                    type: string
+                  description: Ids in the desired order. Ids the caller does not own are ignored.
+              required:
+                - orderedIds
+      responses:
+        "200":
+          description: The reordered todo list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todos:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todos
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
   /api/memory/reconcile:
     post:
       tags:
