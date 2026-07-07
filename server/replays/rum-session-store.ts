@@ -45,6 +45,69 @@ function toCount(v: unknown): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+/** The standard Datadog `usr` fields promoted to first-class indexed columns;
+ *  every other key is a custom attribute. */
+const STANDARD_USER_KEYS = new Set(['id', 'name', 'email']);
+
+/** Per-segment user identity split from the segment `meta.usr` the client stamps
+ *  forward-only. Standard fields become indexed columns; the rest are custom
+ *  attributes persisted as JSON. */
+export interface SegmentUserIdentity {
+  id: string | null;
+  name: string | null;
+  email: string | null;
+  /** Non-standard `usr` keys, or null when the identity carried none. */
+  attributes: Record<string, unknown> | null;
+}
+
+/** Coerce a `usr` standard field (id can be a number in Datadog) to a trimmed,
+ *  non-empty string, else null. Objects/arrays are rejected. */
+function toIdentityString(v: unknown): string | null {
+  if (typeof v === 'string') {
+    const t = v.trim();
+    return t.length ? t : null;
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v === 'boolean') return String(v);
+  return null;
+}
+
+/**
+ * Split a segment's `meta.usr` into standard identity fields + custom attributes.
+ * Standard keys (`id`/`name`/`email`) map to indexed columns; every other
+ * non-null key becomes a custom attribute. Returns null when there is no usable
+ * identity (missing/empty `usr`, or only null values) so the rollup leaves any
+ * prior identity untouched (forward-only, last-non-null semantics). Pure — no IO.
+ */
+export function extractSegmentUser(
+  meta: Record<string, unknown> | null | undefined,
+): SegmentUserIdentity | null {
+  const usr = meta?.usr;
+  if (!usr || typeof usr !== 'object' || Array.isArray(usr)) return null;
+  const obj = usr as Record<string, unknown>;
+
+  const id = toIdentityString(obj.id);
+  const name = toIdentityString(obj.name);
+  const email = toIdentityString(obj.email);
+
+  const attributes: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (STANDARD_USER_KEYS.has(key) || value == null) continue;
+    attributes[key] = value;
+  }
+  const attrs = Object.keys(attributes).length ? attributes : null;
+
+  if (id == null && name == null && email == null && attrs == null) return null;
+  return { id, name, email, attributes: attrs };
+}
+
+/** Serialize custom user attributes to a JSON string for storage, or null when
+ *  there are none. Kept separate so callers can round-trip via `JSON.parse`. */
+function serializeUserAttributes(attributes: Record<string, unknown> | null): string | null {
+  if (!attributes || !Object.keys(attributes).length) return null;
+  return JSON.stringify(attributes);
+}
+
 /**
  * Pull the action/error/frustration counts out of a segment's `meta`. Accepts
  * either camelCase (`actionCount`) or snake_case (`action_count`) keys so the
@@ -92,6 +155,9 @@ export interface SegmentRollupInput {
   endTs: number;
   /** Per-segment counts (from `extractSegmentRollupCounts(meta)`). */
   counts: SegmentRollupCounts;
+  /** Per-segment user identity (from `extractSegmentUser(meta)`); null when the
+   *  segment carried no `usr`. Applied last-non-null per field. */
+  user?: SegmentUserIdentity | null;
 }
 
 /**
@@ -107,6 +173,7 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
   // A view is counted once, when its opening (index 0) segment arrives.
   const viewDelta = Math.max(0, Math.floor(input.indexInView)) === 0 ? 1 : 0;
 
+  const user = input.user ?? null;
   const existing = stmts.getRumSession.get(input.sessionId) as RumSessionRow | undefined;
 
   if (!existing) {
@@ -120,6 +187,10 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
       input.counts.action,
       input.counts.error,
       input.counts.frustration,
+      user?.id ?? null,
+      user?.email ?? null,
+      user?.name ?? null,
+      serializeUserAttributes(user?.attributes ?? null),
     );
     return stmts.getRumSession.get(input.sessionId) as RumSessionRow;
   }
@@ -128,6 +199,14 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
   const endedAt = foldMax(existing.ended_at, segEnd);
   // First-non-null-wins: keep an already-attributed tenant, else adopt this one.
   const projectId = existing.project_id ?? input.projectId ?? null;
+  // Last-non-null-wins per field: a segment that identifies mid-stream updates the
+  // stored identity, but a later anonymous segment (no `usr`) never wipes it. Each
+  // field folds independently so a partial identity doesn't clear the others.
+  const usrId = user?.id ?? existing.usr_id;
+  const usrEmail = user?.email ?? existing.usr_email;
+  const usrName = user?.name ?? existing.usr_name;
+  const usrAttributes =
+    user?.attributes != null ? serializeUserAttributes(user.attributes) : existing.usr_attributes;
 
   stmts.updateRumSessionRollup.run(
     projectId,
@@ -138,6 +217,10 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
     existing.action_count + input.counts.action,
     existing.error_count + input.counts.error,
     existing.frustration_count + input.counts.frustration,
+    usrId,
+    usrEmail,
+    usrName,
+    usrAttributes,
     input.sessionId,
   );
   return stmts.getRumSession.get(input.sessionId) as RumSessionRow;

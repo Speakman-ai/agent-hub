@@ -29,7 +29,11 @@ import {
   type ReplayEvent,
   type ReplayBlob,
 } from './replay-store.js';
-import { rollupSegmentIntoSession, extractSegmentRollupCounts } from './rum-session-store.js';
+import {
+  rollupSegmentIntoSession,
+  extractSegmentRollupCounts,
+  extractSegmentUser,
+} from './rum-session-store.js';
 
 const SEGMENT_CONTENT_TYPE = 'application/gzip';
 
@@ -220,6 +224,7 @@ export async function appendSegment(
       startTs: start,
       endTs: end,
       counts: extractSegmentRollupCounts(meta),
+      user: extractSegmentUser(meta),
     });
   } catch (err) {
     console.warn(

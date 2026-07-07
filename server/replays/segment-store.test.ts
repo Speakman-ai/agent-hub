@@ -139,11 +139,17 @@ describe('segment-store (append-only backend)', () => {
         action_count INTEGER NOT NULL DEFAULT 0,
         error_count INTEGER NOT NULL DEFAULT 0,
         frustration_count INTEGER NOT NULL DEFAULT 0,
+        usr_id TEXT,
+        usr_email TEXT,
+        usr_name TEXT,
+        usr_attributes TEXT,
         first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX idx_rum_sessions_project
         ON rum_sessions(project_id, started_at DESC);
+      CREATE INDEX idx_rum_sessions_usr_email
+        ON rum_sessions(project_id, usr_email);
     `);
     return {
       insertRumSegment: db.prepare(
@@ -179,14 +185,16 @@ describe('segment-store (append-only backend)', () => {
       insertRumSession: db.prepare(
         `INSERT INTO rum_sessions
            (session_id, project_id, started_at, ended_at, time_spent,
-            view_count, action_count, error_count, frustration_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            view_count, action_count, error_count, frustration_count,
+            usr_id, usr_email, usr_name, usr_attributes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
       updateRumSessionRollup: db.prepare(
         `UPDATE rum_sessions
             SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
                 view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+                usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
                 updated_at = datetime('now')
           WHERE session_id = ?`,
       ),
@@ -509,6 +517,46 @@ describe('segment-store (append-only backend)', () => {
     expect(row.started_at).toBe(1000);
     expect(row.ended_at).toBe(3400);
     expect(row.time_spent).toBe(2400);
+  });
+
+  it('rolls forward-only usr from segment meta onto the session row (last-seen wins)', async () => {
+    // First view identifies a user via meta.usr.
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg(SNAPSHOT, { type: 3, timestamp: 1200 }),
+      meta: { usr: { id: 'u1', email: 'ada@x.io', name: 'Ada', plan: 'pro' } },
+    });
+    let row = getRumSession(deps.stmts, 'sess')!;
+    expect(row.usr_id).toBe('u1');
+    expect(row.usr_email).toBe('ada@x.io');
+    expect(JSON.parse(row.usr_attributes!)).toEqual({ plan: 'pro' });
+
+    // An anonymous later segment (no usr) keeps the identity.
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 1,
+      projectId: 'proj',
+      events: seg({ type: 3, timestamp: 1600 }),
+    });
+    row = getRumSession(deps.stmts, 'sess')!;
+    expect(row.usr_email).toBe('ada@x.io');
+
+    // A re-identify in a later view wins.
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-2',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg({ type: 2, timestamp: 3000 }, { type: 3, timestamp: 3400 }),
+      meta: { usr: { id: 'u2', email: 'grace@x.io' } },
+    });
+    row = getRumSession(deps.stmts, 'sess')!;
+    expect(row.usr_id).toBe('u2');
+    expect(row.usr_email).toBe('grace@x.io');
   });
 
   it('deletes the session-grain rollup row when its segments are deleted', async () => {

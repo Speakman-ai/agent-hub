@@ -303,9 +303,10 @@ export interface RumSegmentRow {
  * The session-grain rollup row the RUM dashboard lists and filters on (Datadog
  * "session" grain). One row per client-minted session id, its aggregates
  * maintained incrementally as segments ingest (see
- * `server/replays/rum-session-store.ts`). Per-user identity and enriched facet
- * columns (device/browser/os/geo) are added onto this row by follow-up cards in
- * the RUM epic.
+ * `server/replays/rum-session-store.ts`). Per-user identity lives in the `usr_*`
+ * columns (last non-null value per field); the enriched facet columns
+ * (device/browser/os/geo) are added onto this row by follow-up cards in the RUM
+ * epic.
  */
 export interface RumSessionRow {
   /** Client-minted session id (the `rum_segments.session_id` these roll up). */
@@ -326,6 +327,14 @@ export interface RumSessionRow {
   error_count: number;
   /** Rolled-up frustration-signal count (rage/dead/error click). */
   frustration_count: number;
+  /** Last non-null `usr.id` seen across the session's segments (NULL = anonymous). */
+  usr_id: string | null;
+  /** Last non-null `usr.email` seen; backs the tenant-scoped username filter. */
+  usr_email: string | null;
+  /** Last non-null `usr.name` seen. */
+  usr_name: string | null;
+  /** Custom user attributes (non-standard `usr` keys) as a JSON string, or NULL. */
+  usr_attributes: string | null;
   /** Wall-clock the row was first created, `datetime('now')` UTC string. */
   first_seen_at: string;
   /** Wall-clock of the most recent rollup update, `datetime('now')` UTC string. */

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   extractSegmentRollupCounts,
+  extractSegmentUser,
   rollupSegmentIntoSession,
   getRumSession,
   listRumSessionsByProject,
@@ -22,24 +23,36 @@ function makeStmts(): Stmts {
       action_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       frustration_count INTEGER NOT NULL DEFAULT 0,
+      usr_id TEXT,
+      usr_email TEXT,
+      usr_name TEXT,
+      usr_attributes TEXT,
       first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX idx_rum_sessions_project
       ON rum_sessions(project_id, started_at DESC);
+    CREATE INDEX idx_rum_sessions_usr_email
+      ON rum_sessions(project_id, usr_email);
+    CREATE INDEX idx_rum_sessions_usr_id
+      ON rum_sessions(project_id, usr_id);
+    CREATE INDEX idx_rum_sessions_usr_name
+      ON rum_sessions(project_id, usr_name);
   `);
   return {
     insertRumSession: db.prepare(
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent,
-          view_count, action_count, error_count, frustration_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          view_count, action_count, error_count, frustration_count,
+          usr_id, usr_email, usr_name, usr_attributes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
     updateRumSessionRollup: db.prepare(
       `UPDATE rum_sessions
           SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
               view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+              usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
               updated_at = datetime('now')
         WHERE session_id = ?`,
     ),
@@ -204,5 +217,172 @@ describe('rollupSegmentIntoSession', () => {
     rollupSegmentIntoSession(stmts, input({ sessionId: 'b', projectId: 'proj', indexInView: 1 }));
     const list = listRumSessionsByProject(stmts, 'proj', 100);
     expect(list.map((r: RumSessionRow) => r.session_id).sort()).toEqual(['a', 'b']);
+  });
+});
+
+describe('extractSegmentUser', () => {
+  it('splits standard fields from custom attributes', () => {
+    expect(
+      extractSegmentUser({
+        usr: { id: 'u1', name: 'Ada', email: 'ada@x.io', plan: 'pro', seats: 5 },
+      }),
+    ).toEqual({
+      id: 'u1',
+      name: 'Ada',
+      email: 'ada@x.io',
+      attributes: { plan: 'pro', seats: 5 },
+    });
+  });
+
+  it('coerces a numeric id to string and trims strings', () => {
+    expect(extractSegmentUser({ usr: { id: 42, email: '  ada@x.io  ' } })).toEqual({
+      id: '42',
+      name: null,
+      email: 'ada@x.io',
+      attributes: null,
+    });
+  });
+
+  it('drops null/empty standard values and null custom attrs', () => {
+    expect(extractSegmentUser({ usr: { id: 'u1', name: '', email: null, plan: null } })).toEqual({
+      id: 'u1',
+      name: null,
+      email: null,
+      attributes: null,
+    });
+  });
+
+  it('returns null for missing / empty / non-object usr', () => {
+    expect(extractSegmentUser(null)).toBeNull();
+    expect(extractSegmentUser({})).toBeNull();
+    expect(extractSegmentUser({ usr: {} })).toBeNull();
+    expect(extractSegmentUser({ usr: { id: null, name: undefined } })).toBeNull();
+    expect(extractSegmentUser({ usr: 'nope' })).toBeNull();
+    expect(extractSegmentUser({ usr: ['a'] })).toBeNull();
+  });
+});
+
+describe('rollupSegmentIntoSession — user identity', () => {
+  let stmts: Stmts;
+  beforeEach(() => {
+    stmts = makeStmts();
+  });
+
+  it('persists identity on the first segment (indexed columns + JSON attributes)', () => {
+    const row = rollupSegmentIntoSession(
+      stmts,
+      input({ user: { id: 'u1', name: 'Ada', email: 'ada@x.io', attributes: { plan: 'pro' } } }),
+    );
+    expect(row.usr_id).toBe('u1');
+    expect(row.usr_name).toBe('Ada');
+    expect(row.usr_email).toBe('ada@x.io');
+    expect(JSON.parse(row.usr_attributes!)).toEqual({ plan: 'pro' });
+  });
+
+  it('is anonymous (all NULL) when no segment carries a usr', () => {
+    const row = rollupSegmentIntoSession(stmts, input({ user: null }));
+    expect(row.usr_id).toBeNull();
+    expect(row.usr_email).toBeNull();
+    expect(row.usr_name).toBeNull();
+    expect(row.usr_attributes).toBeNull();
+  });
+
+  it('mid-session identify: anonymous first segment, then a later usr shows up', () => {
+    rollupSegmentIntoSession(stmts, input({ indexInView: 0, user: null }));
+    let row = getRumSession(stmts, 'sess')!;
+    expect(row.usr_email).toBeNull();
+    row = rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 1,
+        user: { id: 'u1', name: null, email: 'ada@x.io', attributes: null },
+      }),
+    );
+    expect(row.usr_id).toBe('u1');
+    expect(row.usr_email).toBe('ada@x.io');
+  });
+
+  it('last-seen wins: a later non-null identity overwrites the earlier one', () => {
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 0,
+        user: { id: 'u1', name: 'Ada', email: 'ada@x.io', attributes: { plan: 'free' } },
+      }),
+    );
+    const row = rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 1,
+        user: { id: 'u2', name: 'Grace', email: 'grace@x.io', attributes: { plan: 'pro' } },
+      }),
+    );
+    expect(row.usr_id).toBe('u2');
+    expect(row.usr_name).toBe('Grace');
+    expect(row.usr_email).toBe('grace@x.io');
+    expect(JSON.parse(row.usr_attributes!)).toEqual({ plan: 'pro' });
+  });
+
+  it('keeps the last non-null value per field (a later anonymous segment never wipes it)', () => {
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 0,
+        user: { id: 'u1', name: 'Ada', email: 'ada@x.io', attributes: { plan: 'pro' } },
+      }),
+    );
+    const row = rollupSegmentIntoSession(stmts, input({ indexInView: 1, user: null }));
+    expect(row.usr_id).toBe('u1');
+    expect(row.usr_name).toBe('Ada');
+    expect(row.usr_email).toBe('ada@x.io');
+    expect(JSON.parse(row.usr_attributes!)).toEqual({ plan: 'pro' });
+  });
+
+  it('folds identity fields independently (a partial later identity does not clear the others)', () => {
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 0,
+        user: { id: 'u1', name: 'Ada', email: 'ada@x.io', attributes: null },
+      }),
+    );
+    // Later segment only re-declares email; id/name must survive.
+    const row = rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 1,
+        user: { id: null, name: null, email: 'new@x.io', attributes: null },
+      }),
+    );
+    expect(row.usr_id).toBe('u1');
+    expect(row.usr_name).toBe('Ada');
+    expect(row.usr_email).toBe('new@x.io');
+  });
+
+  it('scopes identity to its tenant — same user id in two projects stays isolated', () => {
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        sessionId: 'a',
+        projectId: 'proj-a',
+        user: { id: 'shared', name: null, email: 'a@x.io', attributes: null },
+      }),
+    );
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        sessionId: 'b',
+        projectId: 'proj-b',
+        user: { id: 'shared', name: null, email: 'b@x.io', attributes: null },
+      }),
+    );
+    const listA = listRumSessionsByProject(stmts, 'proj-a', 100);
+    const listB = listRumSessionsByProject(stmts, 'proj-b', 100);
+    expect(listA.map((r) => r.session_id)).toEqual(['a']);
+    expect(listB.map((r) => r.session_id)).toEqual(['b']);
+    expect(listA[0].usr_email).toBe('a@x.io');
+    expect(listB[0].usr_email).toBe('b@x.io');
+    // The shared identifier never leaks a row across the tenant boundary.
+    expect(listA.some((r) => r.usr_email === 'b@x.io')).toBe(false);
   });
 });

@@ -406,10 +406,15 @@ function initDb(dataDir: string): void {
     --   started_at/ended_at — earliest/latest event timestamp across the whole
     --                       session, epoch ms; time_spent = ended_at - started_at.
     -- project_id is first-non-null-wins so an anonymous first segment that later
-    -- attributes keeps its tenant. Per-user identity (usr_id/email/name) and the
-    -- enriched facet columns (device/browser/os/geo) are added by follow-up cards
-    -- in this epic; this row is their home. The (project_id, started_at) index
-    -- backs the tenant-scoped, time-ranged list query.
+    -- attributes keeps its tenant. Per-user identity is carried by
+    -- usr_id/usr_email/usr_name + usr_attributes (custom attributes, JSON): the
+    -- client stamps usr onto segment meta forward-only, and the rollup keeps the
+    -- LAST non-null value per field so a session that identifies mid-stream still
+    -- shows a user in the dashboard "User Email" column. Identity is tenant-scoped
+    -- PII. The enriched facet columns (device/browser/os/geo) arrive in later
+    -- cards; this row is their home. The (project_id, started_at) index backs the
+    -- tenant-scoped, time-ranged list query; the (project_id, usr_*) indexes back
+    -- the tenant-scoped "username" filter (keys on email/id/name).
     CREATE TABLE IF NOT EXISTS rum_sessions (
       session_id TEXT PRIMARY KEY,
       project_id TEXT,
@@ -420,11 +425,21 @@ function initDb(dataDir: string): void {
       action_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       frustration_count INTEGER NOT NULL DEFAULT 0,
+      usr_id TEXT,
+      usr_email TEXT,
+      usr_name TEXT,
+      usr_attributes TEXT,
       first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_rum_sessions_project
       ON rum_sessions(project_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_email
+      ON rum_sessions(project_id, usr_email);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_id
+      ON rum_sessions(project_id, usr_id);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_name
+      ON rum_sessions(project_id, usr_name);
 
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
@@ -1219,6 +1234,28 @@ function initDb(dataDir: string): void {
   } catch {
     db.exec(
       "ALTER TABLE session_replays ADD COLUMN storage_layout TEXT NOT NULL DEFAULT 'monolithic'",
+    );
+  }
+
+  // rum_sessions per-user identity columns. The client stamps `usr` onto segment
+  // meta forward-only; the rollup splits standard fields into indexed columns and
+  // keeps custom attributes as JSON, retaining the LAST non-null value per field.
+  // All nullable TEXT, so plain ADD COLUMN; existing rows read NULL (anonymous).
+  try {
+    db.prepare('SELECT usr_id FROM rum_sessions LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_id TEXT');
+    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_email TEXT');
+    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_name TEXT');
+    db.exec('ALTER TABLE rum_sessions ADD COLUMN usr_attributes TEXT');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_email ON rum_sessions(project_id, usr_email)',
+    );
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_id ON rum_sessions(project_id, usr_id)',
+    );
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_name ON rum_sessions(project_id, usr_name)',
     );
   }
 
@@ -3427,14 +3464,16 @@ function initDb(dataDir: string): void {
     insertRumSession: db.prepare(
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent,
-          view_count, action_count, error_count, frustration_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          view_count, action_count, error_count, frustration_count,
+          usr_id, usr_email, usr_name, usr_attributes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
     updateRumSessionRollup: db.prepare(
       `UPDATE rum_sessions
           SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
               view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+              usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
               updated_at = datetime('now')
         WHERE session_id = ?`,
     ),
