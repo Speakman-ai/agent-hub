@@ -6191,6 +6191,242 @@ components:
         - createdAt
         - updatedAt
       description: A single cross-project personal todo owned by one Hub user. Independent of any project board.
+    MeDashboardErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for personal dashboard routes.
+    DashboardWorkCard:
+      type: object
+      properties:
+        id:
+          type: string
+        shortId:
+          type: number
+          nullable: true
+        title:
+          type: string
+        priority:
+          type: string
+          enum:
+            - urgent
+            - high
+            - medium
+            - low
+        columnId:
+          type: string
+        columnName:
+          type: string
+        isDone:
+          type: boolean
+        projectId:
+          type: string
+        projectName:
+          type: string
+        boardId:
+          type: string
+        epicId:
+          type: string
+          nullable: true
+        prUrl:
+          type: string
+          nullable: true
+        reviewStatus:
+          type: string
+          nullable: true
+        sessionId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - id
+        - shortId
+        - title
+        - priority
+        - columnId
+        - columnName
+        - isDone
+        - projectId
+        - projectName
+        - boardId
+        - epicId
+        - prUrl
+        - reviewStatus
+        - sessionId
+        - createdAt
+        - updatedAt
+      description: A kanban card assigned to the calling user on a board they can view.
+    DashboardWork:
+      type: object
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardWorkCard"
+        counts:
+          type: object
+          properties:
+            total:
+              type: number
+            open:
+              type: number
+            byPriority:
+              type: object
+              properties:
+                urgent:
+                  type: number
+                high:
+                  type: number
+                medium:
+                  type: number
+                low:
+                  type: number
+              required:
+                - urgent
+                - high
+                - medium
+                - low
+          required:
+            - total
+            - open
+            - byPriority
+      required:
+        - cards
+        - counts
+      description: The caller's assigned cards across every visible board, plus open-work counts.
+    DashboardGoogle:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        connected:
+          type: boolean
+        email:
+          type: string
+          nullable: true
+        reconnectRequired:
+          type: boolean
+        calendar:
+          type: object
+          properties:
+            scopeGranted:
+              type: boolean
+            date:
+              type: string
+              nullable: true
+            timeZone:
+              type: string
+              nullable: true
+            events:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    nullable: true
+                  summary:
+                    type: string
+                    nullable: true
+                  location:
+                    type: string
+                    nullable: true
+                  allDay:
+                    type: boolean
+                  start:
+                    type: string
+                    nullable: true
+                  end:
+                    type: string
+                    nullable: true
+                  htmlLink:
+                    type: string
+                    nullable: true
+                  hangoutLink:
+                    type: string
+                    nullable: true
+                required:
+                  - id
+                  - summary
+                  - location
+                  - allDay
+                  - start
+                  - end
+                  - htmlLink
+                  - hangoutLink
+            error:
+              type: string
+              nullable: true
+          required:
+            - scopeGranted
+            - date
+            - timeZone
+            - events
+            - error
+        mail:
+          type: object
+          properties:
+            scopeGranted:
+              type: boolean
+            unread:
+              type: number
+              nullable: true
+            starred:
+              type: number
+              nullable: true
+            important:
+              type: number
+              nullable: true
+            error:
+              type: string
+              nullable: true
+          required:
+            - scopeGranted
+            - unread
+            - starred
+            - important
+            - error
+      required:
+        - configured
+        - connected
+        - email
+        - reconnectRequired
+        - calendar
+        - mail
+      description: "The caller's Google slice (today's calendar + flagged-mail counts). Soft-degrades: unconfigured / unlinked / missing-scope all render as false blocks."
+    MeDashboardResponse:
+      type: object
+      properties:
+        generatedAt:
+          type: string
+        work:
+          $ref: "#/components/schemas/DashboardWork"
+        todos:
+          type: object
+          properties:
+            open:
+              type: array
+              items:
+                $ref: "#/components/schemas/UserTodo"
+            openCount:
+              type: number
+          required:
+            - open
+            - openCount
+        google:
+          $ref: "#/components/schemas/DashboardGoogle"
+      required:
+        - generatedAt
+        - work
+        - todos
+        - google
+      description: Aggregated personal dashboard for the authenticated user.
     MemoryErrorResponse:
       type: object
       properties:
@@ -23931,6 +24167,66 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeTodosErrorResponse"
+  /api/me/dashboard:
+    get:
+      tags:
+        - Personal Todos
+      summary: Aggregate the calling user's cross-project dashboard
+      description: "Server-side per-uid fan-out across every board the caller can view: assigned cards, open todos, today's Google calendar, and flagged-mail counts. Cached per user; pass ?fresh=1 to bypass."
+      parameters:
+        - schema:
+            type: string
+            description: Set to 1/true to bypass the per-uid cache.
+          required: false
+          description: Set to 1/true to bypass the per-uid cache.
+          name: fresh
+          in: query
+        - schema:
+            type: string
+            description: "YYYY-MM-DD day for the calendar read (default: today, UTC)."
+          required: false
+          description: "YYYY-MM-DD day for the calendar read (default: today, UTC)."
+          name: date
+          in: query
+        - schema:
+            type: string
+            description: IANA time zone passed to Google for calendar display.
+          required: false
+          description: IANA time zone passed to Google for calendar display.
+          name: tz
+          in: query
+      responses:
+        "200":
+          description: The aggregated dashboard payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDashboardResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDashboardErrorResponse"
+  /api/me/work:
+    get:
+      tags:
+        - Personal Todos
+      summary: List the calling user's assigned cards across visible boards
+      description: "The 'My Work' slice: kanban cards whose assigned_user_id is the caller, from every project they can view (RBAC-filtered). Read-only, always fresh."
+      responses:
+        "200":
+          description: Assigned cards + open-work counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardWork"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeDashboardErrorResponse"
   /api/memory/reconcile:
     post:
       tags:
