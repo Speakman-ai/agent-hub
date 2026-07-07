@@ -129,6 +129,20 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 
+/**
+ * A session row joined with its parent cron's metadata, as returned by
+ * `stmts.getAllCronSessions`. The extra columns don't exist on `sessions`
+ * itself — the cron row is the authoritative source of `project_id` (cron
+ * sessions use the `_cron` pseudo agent) and `cron_shared` drives sidebar
+ * visibility.
+ */
+type CronSessionRow = SessionRow & {
+  cron_name: string | null;
+  cron_schedule: string | null;
+  project_id: string | null;
+  cron_shared: number | null;
+};
+
 function safeParse(s: string): Record<string, unknown> {
   try {
     return JSON.parse(s) as Record<string, unknown>;
@@ -549,9 +563,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
   });
 
   router.get('/api/sessions/cron', (req: Request, res: Response) => {
-    const all = stmts.getAllCronSessions.all() as SessionRow[];
-    // Cron sessions are owned by the org owner; non-owners see nothing.
-    const sessions = all.filter((s) => userOwnsSession(req as AuthenticatedRequest, s.id));
+    const all = stmts.getAllCronSessions.all() as CronSessionRow[];
+    // A shared cron (crons.shared = 1) is a project-wide scheduled task:
+    // list it for every org member, mirroring GET /api/crons. Non-shared
+    // cron sessions stay private to their owner. Keeping this in lock-step
+    // with `userCanReadSession` (which also treats shared crons as readable)
+    // means a shared cron shown in the sidebar can actually be opened —
+    // otherwise a listed row would 404 on the per-session read gate.
+    const sessions = all.filter(
+      (s) => Boolean(s.cron_shared) || userOwnsSession(req as AuthenticatedRequest, s.id),
+    );
     res.json(sessions.map((s) => enrichSessionForClient(s, stmts)));
   });
 

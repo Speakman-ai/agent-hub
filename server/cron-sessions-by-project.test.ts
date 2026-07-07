@@ -37,10 +37,16 @@ interface CronSessionRow {
   cron_name: string;
   cron_schedule: string;
   session_mode: string;
+  cron_shared: number;
 }
 
 /** Create a cron + its linked consult session via the real prepared statements. */
-function makeCronSession(opts: { projectId: string | null; cronName: string; schedule: string }): {
+function makeCronSession(opts: {
+  projectId: string | null;
+  cronName: string;
+  schedule: string;
+  shared?: 0 | 1;
+}): {
   sessionId: string;
   cronId: number;
 } {
@@ -59,7 +65,7 @@ function makeCronSession(opts: { projectId: string | null; cronName: string; sch
     null, // skill_principal_agent_id
     null, // engine
     null, // owner_user_id
-    0, // shared
+    opts.shared ?? 0, // shared
   );
   const cronId = Number(cronResult.lastInsertRowid);
   const sessionId = `cron-sess-${randomUUID()}`;
@@ -111,6 +117,29 @@ describe('getAllCronSessions — per-project grouping + consult mode', () => {
     // the sidebar can bucket it as Ungrouped rather than silently dropping it.
     expect(row!.project_id).toBeNull();
     expect(row!.session_mode).toBe('consult');
+  });
+
+  it('surfaces cron_shared so the sidebar route can apply shared visibility', () => {
+    // The scheduled-tasks sidebar (GET /api/sessions/cron) lists a shared
+    // cron for every org member, not just its owner. That filter reads
+    // `cron_shared` straight off this join — if the alias is dropped, the
+    // fix silently regresses to owner-only. Pin both states.
+    const shared = makeCronSession({
+      projectId: `proj-${randomUUID()}`,
+      cronName: 'Shared nightly',
+      schedule: '0 0 * * *',
+      shared: 1,
+    });
+    const priv = makeCronSession({
+      projectId: `proj-${randomUUID()}`,
+      cronName: 'Private nightly',
+      schedule: '0 1 * * *',
+      shared: 0,
+    });
+
+    const rows = getStmts().getAllCronSessions.all() as CronSessionRow[];
+    expect(rows.find((r) => r.id === shared.sessionId)!.cron_shared).toBe(1);
+    expect(rows.find((r) => r.id === priv.sessionId)!.cron_shared).toBe(0);
   });
 
   it('isolates each cron session under exactly its own project', () => {

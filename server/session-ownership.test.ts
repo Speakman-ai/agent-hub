@@ -18,6 +18,7 @@ import {
   userOwnsSession,
   userCanReadSession,
   isReviewerSession,
+  isSharedCronSession,
   resolveOwnerUserId,
   resolveAutonomousOwnerUserId,
 } from './session-ownership.js';
@@ -375,6 +376,98 @@ describe('reviewer sessions — shared / read-bypass', () => {
     expect(userOwnsSession({ authUserId: 'someone' }, id)).toBe(
       userOwnsSession({ authUserId: 'someone' }, nonReviewerId),
     );
+  });
+});
+
+describe('shared cron sessions — read bypass', () => {
+  // Create a cron (shared or private) and a session linked to it via the
+  // real prepared statements, mirroring how runCronJob wires them.
+  function seedCronSession(shared: 0 | 1, owner: string | null = null): string {
+    if (!stmts) throw new Error('stmts not initialized');
+    const cron = stmts.createCron.run(
+      `cron-${shared}-${uuidv4()}`, // name
+      '0 0 * * *', // schedule
+      null, // timezone
+      'noop', // prompt
+      '/tmp', // cwd
+      1, // enabled
+      `proj-${uuidv4()}`, // project_id
+      null, // timeout_ms
+      0, // notify_on_run
+      null, // model
+      null, // skill_principal_agent_id
+      null, // engine
+      owner, // owner_user_id
+      shared, // shared
+    );
+    const sessionId = seedSession('_cron', `Cron: ${shared}`);
+    stmts.updateSessionCronId.run(Number(cron.lastInsertRowid), sessionId);
+    if (owner) setSessionOwner(sessionId, owner);
+    return sessionId;
+  }
+
+  beforeEach(() => {
+    getDb().exec('DELETE FROM sessions');
+  });
+
+  it('isSharedCronSession is true for a shared cron session, false for a private one', () => {
+    expect(isSharedCronSession(seedCronSession(1))).toBe(true);
+    expect(isSharedCronSession(seedCronSession(0))).toBe(false);
+  });
+
+  it('isSharedCronSession is false for a non-cron session', () => {
+    expect(isSharedCronSession(seedSession('normal-agent'))).toBe(false);
+  });
+
+  it('isSharedCronSession is false for a missing session id (no throw)', () => {
+    expect(isSharedCronSession('does-not-exist')).toBe(false);
+  });
+
+  describe('under strict auth', () => {
+    let tmpDir: string;
+    let previousKey: string | null;
+
+    beforeEach(() => {
+      previousKey = config.apiKey;
+      config.apiKey = 'test-key';
+      tmpDir = mkdtempSync(path.join(tmpdir(), 'shared-cron-strict-'));
+      setAuthFilePathForTests(path.join(tmpDir, 'auth.json'));
+      saveAuthRecord({
+        username: 'owner',
+        passwordHash: 'scrypt$hash',
+        jwtSecret: 'a'.repeat(64),
+      });
+      reloadAuthRecord();
+    });
+
+    afterEach(() => {
+      config.apiKey = previousKey;
+      setAuthFilePathForTests(null);
+      reloadAuthRecord();
+    });
+
+    it('userCanReadSession lets an unrelated caller read a shared cron session', () => {
+      const id = seedCronSession(1, 'creator');
+      // Sanity: strict ownership would reject this caller.
+      expect(userOwnsSession({ authUserId: 'someone-else' }, id)).toBe(false);
+      // But the shared-cron bypass grants read access.
+      expect(userCanReadSession({ authUserId: 'someone-else' }, id)).toBe(true);
+      expect(userCanReadSession(undefined, id)).toBe(true);
+    });
+
+    it('userCanReadSession still gates a PRIVATE cron session to its owner', () => {
+      const id = seedCronSession(0, 'creator');
+      expect(userCanReadSession({ authUserId: 'someone-else' }, id)).toBe(false);
+      expect(userCanReadSession({ authUserId: 'creator' }, id)).toBe(true);
+    });
+
+    it('writes stay owner-only even for a shared cron session', () => {
+      // userOwnsSession is the mutation predicate — the shared bypass must
+      // NOT leak into it, so a non-owner can view but not mutate.
+      const id = seedCronSession(1, 'creator');
+      expect(userOwnsSession({ authUserId: 'someone-else' }, id)).toBe(false);
+      expect(userOwnsSession({ authUserId: 'creator' }, id)).toBe(true);
+    });
   });
 });
 

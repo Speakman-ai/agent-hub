@@ -220,8 +220,35 @@ export function isReviewerSession(sessionId: string): boolean {
 }
 
 /**
- * Read predicate. Permissive for shared session types (currently only
- * reviewer sessions). All other reads fall through to strict ownership.
+ * True when `sessionId` is a cron run whose parent cron is shared
+ * (`crons.shared = 1`). Shared crons are visible to every org member (see
+ * `canViewCron` in `routes/crons.ts` and the `/api/crons/:id/thread`
+ * surface), so their run sessions are read-only artifacts anyone in the
+ * org may inspect — the same treatment reviewer sessions get.
+ *
+ * Non-shared cron sessions return `false` here and fall through to strict
+ * ownership, keeping them private to the cron owner.
+ *
+ * Returns `false` defensively if the join can't resolve (missing row, DB
+ * not initialised in a test harness) so strict ownership applies.
+ */
+export function isSharedCronSession(sessionId: string): boolean {
+  try {
+    const row = getDb()
+      .prepare(
+        'SELECT c.shared AS shared FROM sessions s JOIN crons c ON s.cron_id = c.id WHERE s.id = ?',
+      )
+      .get(sessionId) as { shared: number | null } | undefined;
+    return Boolean(row?.shared);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read predicate. Permissive for shared session types — reviewer sessions
+ * and shared-cron run sessions. All other reads fall through to strict
+ * ownership.
  *
  * Use this for GET endpoints and list filters where the goal is "show
  * everything the caller is allowed to see." Writes (POST/PUT/PATCH/
@@ -230,6 +257,7 @@ export function isReviewerSession(sessionId: string): boolean {
  */
 export function userCanReadSession(req: OwnerResolvable | undefined, sessionId: string): boolean {
   if (isReviewerSession(sessionId)) return true;
+  if (isSharedCronSession(sessionId)) return true;
   return userOwnsSession(req, sessionId);
 }
 

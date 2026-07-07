@@ -4495,7 +4495,10 @@ function initDb(dataDir: string): void {
       // under their owning project in the sidebar. The sessions table has no
       // project_id column of its own (cron sessions use the `_cron` pseudo
       // agent), so the cron row is the authoritative source of the project.
-      `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule, c.project_id as project_id
+      // `c.shared as cron_shared` lets the sidebar list route apply the same
+      // shared-cron visibility as GET /api/crons — a shared cron is listed for
+      // every org member, not just its owner.
+      `SELECT s.*, c.name as cron_name, c.schedule as cron_schedule, c.project_id as project_id, c.shared as cron_shared
        FROM sessions s JOIN crons c ON s.cron_id = c.id
        ORDER BY s.updated_at DESC`,
     ),
