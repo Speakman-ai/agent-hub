@@ -1643,6 +1643,292 @@ export class SegmentReplayFlusher {
   }
 }
 
+// ─── Sessionization (Datadog session→view model) ──────────────────
+//
+// The producer that MINTS the client-side session.id / view.id the segment
+// ingest path keys on (`segmentBatchEndpoint` embeds both in the URL, so minting
+// them here is how the ids "flow on every segment ingest"). Mirrors Datadog
+// exactly: a session is a client-generated id, ended by 15 min of inactivity OR
+// 4h of continuous duration — new activity after either mints a FRESH session.id.
+// Views (view.id) are per-navigation and roll up under a session: each navigation
+// mints a fresh view.id, and a fresh session always opens with a fresh view. IDs
+// are minted client-side (not server-derived) so an offline→online session stays
+// deterministically the same session.
+//
+// Pure and clock-injected — no DOM, no rrweb, no network — so the rollover rules
+// are unit-testable in isolation. The recorder-wiring layer feeds it activity
+// (every rrweb event) and navigation (route change), then threads the returned
+// ids into a `SegmentReplayFlusher` (rebuilding it on a session change, calling
+// `notifyViewChange` on a view change).
+
+/** End a session after this long with no activity (Datadog parity: 15 min). */
+export const SESSION_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
+/** Hard cap on one session's continuous duration (Datadog parity: 4h). */
+export const SESSION_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Mint an id for a session or a view. Prefers `crypto.randomUUID()`; falls back
+ * to a timestamp+random id. The result matches the server's
+ * `^[A-Za-z0-9._-]{8,200}$` id charset (same scheme as {@link generateReplayId}).
+ */
+export function generateRumId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // fall through
+  }
+  return `rum-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Minted session/view context plus change flags. `sessionChanged` is true when a
+ * fresh session.id was minted (the wiring layer rebuilds the segment flusher);
+ * `viewChanged` is true when a fresh view.id was minted (a fresh session always
+ * changes the view too).
+ */
+export interface RumSessionContext {
+  sessionId: string;
+  viewId: string;
+  sessionChanged: boolean;
+  viewChanged: boolean;
+}
+
+/** Injected collaborators + rollover bounds for {@link RumSessionManager}. */
+export interface RumSessionManagerOptions {
+  /** Clock source (ms). Injected so rollover is testable without real time. */
+  now?: () => number;
+  /** Session/view id minter. Defaults to {@link generateRumId}. */
+  generateId?: () => string;
+  /** Inactivity timeout (ms) before a session ends. Defaults to 15 min. */
+  inactivityTimeoutMs?: number;
+  /** Hard cap (ms) on a session's continuous duration. Defaults to 4h. */
+  maxDurationMs?: number;
+}
+
+/**
+ * Client-side session/view id minter with Datadog rollover semantics. All timing
+ * comes from the injected `now` clock and all ids from the injected `generateId`,
+ * so inactivity/max-duration rollover and per-navigation view minting are
+ * deterministically testable without a DOM or real time.
+ *
+ * Fields are declared explicitly (no index-signature escape hatch) so a mistyped
+ * field name in the hand-rolled rollover logic fails to compile rather than
+ * silently creating a stray property.
+ */
+export class RumSessionManager {
+  /** Inactivity timeout (ms) after which a session ends. */
+  readonly inactivityTimeoutMs: number;
+  /** Hard cap (ms) on one session's continuous duration. */
+  readonly maxDurationMs: number;
+  private readonly _now: () => number;
+  private readonly _generateId: () => string;
+  private _sessionId: string | null = null;
+  private _viewId: string | null = null;
+  private _sessionStart = 0;
+  private _lastActivity = 0;
+
+  constructor({
+    now = () => Date.now(),
+    generateId = generateRumId,
+    inactivityTimeoutMs = SESSION_INACTIVITY_TIMEOUT_MS,
+    maxDurationMs = SESSION_MAX_DURATION_MS,
+  }: RumSessionManagerOptions = {}) {
+    this._now = typeof now === 'function' ? now : () => Date.now();
+    this._generateId = typeof generateId === 'function' ? generateId : generateRumId;
+    this.inactivityTimeoutMs =
+      inactivityTimeoutMs > 0 ? inactivityTimeoutMs : SESSION_INACTIVITY_TIMEOUT_MS;
+    this.maxDurationMs = maxDurationMs > 0 ? maxDurationMs : SESSION_MAX_DURATION_MS;
+  }
+
+  /** Current session.id, or null before the first activity/navigation. */
+  get sessionId(): string | null {
+    return this._sessionId;
+  }
+
+  /** Current view.id, or null before the first activity/navigation. */
+  get viewId(): string | null {
+    return this._viewId;
+  }
+
+  /**
+   * True when there is no session yet, or the current one has expired — 15-min
+   * inactivity (`now - lastActivity`) OR 4h continuous duration
+   * (`now - sessionStart`). Checked against the PREVIOUS activity, before the
+   * caller refreshes it.
+   */
+  _isExpired(now: number): boolean {
+    if (this._sessionId == null) return true;
+    if (now - this._lastActivity >= this.inactivityTimeoutMs) return true;
+    if (now - this._sessionStart >= this.maxDurationMs) return true;
+    return false;
+  }
+
+  /** Mint a fresh session.id + opening view.id, anchoring both clocks at `now`. */
+  _startSession(now: number): void {
+    this._sessionId = String(this._generateId());
+    this._viewId = String(this._generateId());
+    this._sessionStart = now;
+    this._lastActivity = now;
+  }
+
+  /**
+   * Read the current context WITHOUT registering activity or rolling over.
+   * Returns nulls before the first session is minted. Use for diagnostics; the
+   * ingest path should go through {@link notifyActivity}/{@link notifyViewChange}.
+   */
+  peek(): { sessionId: string | null; viewId: string | null } {
+    return { sessionId: this._sessionId, viewId: this._viewId };
+  }
+
+  /**
+   * Register activity (e.g. one rrweb event). Mints a fresh session (+ opening
+   * view) when none exists or the current one has expired; otherwise refreshes
+   * the inactivity clock and keeps the ids. Returns the resolved context and the
+   * change flags.
+   */
+  notifyActivity(): RumSessionContext {
+    const now = this._now();
+    if (this._isExpired(now)) {
+      this._startSession(now);
+      return {
+        sessionId: this._sessionId!,
+        viewId: this._viewId!,
+        sessionChanged: true,
+        viewChanged: true,
+      };
+    }
+    this._lastActivity = now;
+    return {
+      sessionId: this._sessionId!,
+      viewId: this._viewId!,
+      sessionChanged: false,
+      viewChanged: false,
+    };
+  }
+
+  /**
+   * Register a navigation. Navigation is activity, so an expired/absent session
+   * first rolls over to a fresh session — whose fresh opening view already covers
+   * the new route (no double view mint). Otherwise a new view.id is minted under
+   * the SAME session. Either way `viewChanged` is true.
+   */
+  notifyViewChange(): RumSessionContext {
+    const now = this._now();
+    if (this._isExpired(now)) {
+      this._startSession(now);
+      return {
+        sessionId: this._sessionId!,
+        viewId: this._viewId!,
+        sessionChanged: true,
+        viewChanged: true,
+      };
+    }
+    this._lastActivity = now;
+    this._viewId = String(this._generateId());
+    return {
+      sessionId: this._sessionId!,
+      viewId: this._viewId!,
+      sessionChanged: false,
+      viewChanged: true,
+    };
+  }
+
+  /** Reset to the unstarted state (test/teardown). */
+  reset(): void {
+    this._sessionId = null;
+    this._viewId = null;
+    this._sessionStart = 0;
+    this._lastActivity = 0;
+  }
+}
+
+/**
+ * Install a route-change detector that fires `onViewChange(url)` on every SPA
+ * navigation: `history.pushState` / `history.replaceState` (monkey-patched) and
+ * the `popstate` / `hashchange` events. Only fires when the URL actually changes,
+ * so a `replaceState` that rewrites state without moving the route is ignored.
+ * Returns an uninstall fn that restores the patched history methods and removes
+ * the listeners; a no-op (returning a noop uninstall) outside a browser.
+ * Best-effort — a handler throw never breaks navigation.
+ */
+export function installViewChangeDetector(onViewChange: any): () => void {
+  const noop = () => {};
+  if (typeof window === 'undefined' || !window.history || typeof window.location === 'undefined') {
+    return noop;
+  }
+  const cb = typeof onViewChange === 'function' ? onViewChange : noop;
+  const currentUrl = () => {
+    try {
+      return String(window.location.href);
+    } catch {
+      return '';
+    }
+  };
+  let lastUrl = currentUrl();
+  const fire = () => {
+    const url = currentUrl();
+    // Ignore navigations that don't move the route (e.g. a state-only
+    // replaceState) — Datadog opens a new view per real navigation, not per
+    // history write.
+    if (url === lastUrl) return;
+    lastUrl = url;
+    try {
+      cb(url);
+    } catch {
+      // best-effort — a view-change consumer must not break navigation
+    }
+  };
+
+  const history = window.history;
+  const origPush = history.pushState;
+  const origReplace = history.replaceState;
+  const wrap = (orig: any) =>
+    function (this: any, ...args: any[]) {
+      const ret = orig.apply(this, args);
+      fire();
+      return ret;
+    };
+  let patched = false;
+  try {
+    history.pushState = wrap(origPush);
+    history.replaceState = wrap(origReplace);
+    patched = true;
+  } catch {
+    // some environments freeze history — fall back to event listeners only
+  }
+
+  const onNav = () => fire();
+  window.addEventListener('popstate', onNav);
+  window.addEventListener('hashchange', onNav);
+
+  return () => {
+    if (patched) {
+      try {
+        history.pushState = origPush;
+      } catch {
+        // ignore
+      }
+      try {
+        history.replaceState = origReplace;
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      window.removeEventListener('popstate', onNav);
+    } catch {
+      // ignore
+    }
+    try {
+      window.removeEventListener('hashchange', onNav);
+    } catch {
+      // ignore
+    }
+  };
+}
+
 /**
  * Rolling-buffer rrweb recorder. The rrweb `record` function and the upload
  * transport are injected so the recorder is testable without a DOM or network.

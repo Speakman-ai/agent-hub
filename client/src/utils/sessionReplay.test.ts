@@ -55,6 +55,11 @@ import {
   segmentBatchEndpoint,
   SEGMENT_MAX_DURATION_MS,
   SEGMENT_MAX_RAW_BYTES,
+  RumSessionManager,
+  generateRumId,
+  installViewChangeDetector,
+  SESSION_INACTIVITY_TIMEOUT_MS,
+  SESSION_MAX_DURATION_MS,
 } from './sessionReplay';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
@@ -2566,5 +2571,281 @@ describe('SegmentReplayFlusher', () => {
     expect(submitSegment).toHaveBeenCalledTimes(1);
     f.stop();
     expect(state.cleared).toBe(true);
+  });
+});
+
+describe('generateRumId', () => {
+  it('matches the server id charset and is reasonably unique', () => {
+    const idRe = /^[A-Za-z0-9._-]{8,200}$/;
+    const ids = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const id = generateRumId();
+      expect(id).toMatch(idRe);
+      ids.add(id);
+    }
+    expect(ids.size).toBe(200);
+  });
+
+  it('falls back to a valid id when crypto.randomUUID is unavailable', () => {
+    // `crypto` is a getter-only global in jsdom — stub it to force the fallback.
+    vi.stubGlobal('crypto', undefined);
+    try {
+      const id = generateRumId();
+      expect(id).toMatch(/^[A-Za-z0-9._-]{8,200}$/);
+      expect(id.startsWith('rum-')).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('RumSessionManager', () => {
+  // Deterministic id minter — sequential so distinctness is observable.
+  const counterIds = () => {
+    let n = 0;
+    return () => `id-${++n}`;
+  };
+
+  it('mints a session.id and view.id on first activity', () => {
+    let t = 1_000;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    expect(m.sessionId).toBeNull();
+    expect(m.viewId).toBeNull();
+
+    const ctx = m.notifyActivity();
+    expect(ctx.sessionId).toBe('id-1');
+    expect(ctx.viewId).toBe('id-2');
+    expect(ctx.sessionChanged).toBe(true);
+    expect(ctx.viewChanged).toBe(true);
+    // The session and view differ.
+    expect(ctx.sessionId).not.toBe(ctx.viewId);
+    expect(m.sessionId).toBe('id-1');
+    expect(m.viewId).toBe('id-2');
+  });
+
+  it('keeps the same session while activity stays inside the inactivity window', () => {
+    let t = 0;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    const first = m.notifyActivity();
+
+    // Advance just under the timeout, repeatedly — the session must persist.
+    t += SESSION_INACTIVITY_TIMEOUT_MS - 1;
+    const again = m.notifyActivity();
+    expect(again.sessionChanged).toBe(false);
+    expect(again.viewChanged).toBe(false);
+    expect(again.sessionId).toBe(first.sessionId);
+    expect(again.viewId).toBe(first.viewId);
+
+    // Each activity refreshes the clock, so another sub-timeout gap still holds.
+    t += SESSION_INACTIVITY_TIMEOUT_MS - 1;
+    const third = m.notifyActivity();
+    expect(third.sessionChanged).toBe(false);
+    expect(third.sessionId).toBe(first.sessionId);
+  });
+
+  it('rolls over to a fresh session.id after 15-min inactivity', () => {
+    let t = 0;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    const first = m.notifyActivity();
+    expect(first.sessionId).toBe('id-1');
+
+    // Cross the inactivity timeout with no activity → next activity mints fresh.
+    t += SESSION_INACTIVITY_TIMEOUT_MS;
+    const rolled = m.notifyActivity();
+    expect(rolled.sessionChanged).toBe(true);
+    expect(rolled.viewChanged).toBe(true);
+    expect(rolled.sessionId).not.toBe(first.sessionId);
+    expect(rolled.sessionId).toBe('id-3');
+    expect(rolled.viewId).toBe('id-4');
+  });
+
+  it('rolls over to a fresh session.id after 4h continuous duration, even while active', () => {
+    let t = 0;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    const first = m.notifyActivity();
+
+    // Stay continuously active (refresh well inside the inactivity window) right
+    // up to the 4h cap — the max-duration bound must still end the session.
+    const step = SESSION_INACTIVITY_TIMEOUT_MS - 1;
+    let last = first;
+    while (t < SESSION_MAX_DURATION_MS) {
+      t += step;
+      last = m.notifyActivity();
+    }
+    // The step that crossed the 4h cap minted a fresh session.
+    expect(last.sessionChanged).toBe(true);
+    expect(last.sessionId).not.toBe(first.sessionId);
+  });
+
+  it('mints a new view.id on navigation under the same session', () => {
+    let t = 0;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    const first = m.notifyActivity();
+
+    t += 100;
+    const nav = m.notifyViewChange();
+    expect(nav.sessionChanged).toBe(false);
+    expect(nav.viewChanged).toBe(true);
+    expect(nav.sessionId).toBe(first.sessionId); // same session
+    expect(nav.viewId).not.toBe(first.viewId); // new view
+    expect(m.viewId).toBe(nav.viewId);
+
+    // A second navigation mints yet another view under the same session.
+    t += 100;
+    const nav2 = m.notifyViewChange();
+    expect(nav2.sessionId).toBe(first.sessionId);
+    expect(nav2.viewId).not.toBe(nav.viewId);
+  });
+
+  it('navigation after expiry rolls the session and does not double-mint the view', () => {
+    let t = 0;
+    const gen = counterIds();
+    const m = new RumSessionManager({ now: () => t, generateId: gen });
+    const first = m.notifyActivity(); // id-1 session, id-2 view
+
+    t += SESSION_INACTIVITY_TIMEOUT_MS; // expire
+    const nav = m.notifyViewChange();
+    expect(nav.sessionChanged).toBe(true);
+    expect(nav.viewChanged).toBe(true);
+    expect(nav.sessionId).not.toBe(first.sessionId);
+    // Fresh session's opening view (id-4), NOT an extra minted view — exactly two
+    // ids consumed by the rollover (session + opening view).
+    expect(nav.sessionId).toBe('id-3');
+    expect(nav.viewId).toBe('id-4');
+  });
+
+  it('peek() reports current ids without registering activity or rolling over', () => {
+    let t = 0;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    expect(m.peek()).toEqual({ sessionId: null, viewId: null });
+    m.notifyActivity();
+
+    // Advance past the timeout, but peek() must NOT roll the session.
+    t += SESSION_INACTIVITY_TIMEOUT_MS * 2;
+    const peeked = m.peek();
+    expect(peeked.sessionId).toBe('id-1');
+    expect(peeked.viewId).toBe('id-2');
+  });
+
+  it('reset() returns to the unstarted state', () => {
+    const m = new RumSessionManager({ generateId: counterIds() });
+    m.notifyActivity();
+    expect(m.sessionId).not.toBeNull();
+    m.reset();
+    expect(m.sessionId).toBeNull();
+    expect(m.viewId).toBeNull();
+  });
+
+  it('uses the Datadog default constants when none are injected', () => {
+    expect(SESSION_INACTIVITY_TIMEOUT_MS).toBe(15 * 60 * 1000);
+    expect(SESSION_MAX_DURATION_MS).toBe(4 * 60 * 60 * 1000);
+    const m = new RumSessionManager({});
+    expect(m.inactivityTimeoutMs).toBe(SESSION_INACTIVITY_TIMEOUT_MS);
+    expect(m.maxDurationMs).toBe(SESSION_MAX_DURATION_MS);
+  });
+});
+
+describe('installViewChangeDetector', () => {
+  const path = () => window.location.pathname + window.location.search + window.location.hash;
+
+  afterEach(() => {
+    // Return to a known route so cross-test URL state can't leak.
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('fires on pushState and replaceState when the URL changes', () => {
+    window.history.replaceState(null, '', '/start');
+    const seen: string[] = [];
+    const uninstall = installViewChangeDetector((url: string) => seen.push(url));
+    try {
+      window.history.pushState(null, '', '/a');
+      window.history.replaceState(null, '', '/b');
+      window.history.pushState(null, '', '/c?q=1');
+      expect(seen).toHaveLength(3);
+      expect(seen[0]).toMatch(/\/a$/);
+      expect(seen[1]).toMatch(/\/b$/);
+      expect(seen[2]).toMatch(/\/c\?q=1$/);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('fires exactly once on a popstate whose URL differs from the last-seen route', () => {
+    window.history.replaceState(null, '', '/base');
+    const seen: string[] = [];
+    const uninstall = installViewChangeDetector((url: string) => seen.push(url));
+    try {
+      // A popstate at the SAME url as install → deduped, no fire.
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      expect(seen).toHaveLength(0);
+
+      // Simulate a browser back/forward: the URL diverges out-of-band (the
+      // patched history methods are NOT involved), then exactly one popstate is
+      // dispatched. Setting location.hash updates href synchronously; whether
+      // jsdom's own hashchange fires sync or async, the URL-change dedup means
+      // exactly one callback lands — no dependence on event ordering.
+      window.location.hash = '#section';
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toContain('#section');
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('ignores a history write that does not change the URL', () => {
+    window.history.replaceState(null, '', '/same');
+    const seen: string[] = [];
+    const uninstall = installViewChangeDetector((url: string) => seen.push(url));
+    try {
+      // Same URL, different state object — must NOT count as a navigation.
+      window.history.replaceState({ x: 1 }, '', '/same');
+      expect(seen).toHaveLength(0);
+      window.history.pushState(null, '', '/next');
+      expect(seen).toHaveLength(1);
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('restores patched history methods and stops firing after uninstall', () => {
+    const beforePush = window.history.pushState;
+    const beforeReplace = window.history.replaceState;
+    const seen: string[] = [];
+    const uninstall = installViewChangeDetector((url: string) => seen.push(url));
+    expect(window.history.pushState).not.toBe(beforePush);
+    uninstall();
+    expect(window.history.pushState).toBe(beforePush);
+    expect(window.history.replaceState).toBe(beforeReplace);
+
+    // No more callbacks after uninstall.
+    window.history.pushState(null, '', '/after');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(seen).toHaveLength(0);
+  });
+
+  it('never lets a throwing consumer break navigation', () => {
+    const uninstall = installViewChangeDetector(() => {
+      throw new Error('boom');
+    });
+    try {
+      expect(() => window.history.pushState(null, '', '/throws')).not.toThrow();
+      expect(path()).toContain('/throws');
+    } finally {
+      uninstall();
+    }
+  });
+
+  it('returns a noop uninstall and does not throw when history is unavailable', () => {
+    const orig = window.history;
+    try {
+      Object.defineProperty(window, 'history', { value: undefined, configurable: true });
+      const uninstall = installViewChangeDetector(() => {});
+      expect(typeof uninstall).toBe('function');
+      expect(() => uninstall()).not.toThrow();
+    } finally {
+      Object.defineProperty(window, 'history', { value: orig, configurable: true });
+    }
   });
 });
