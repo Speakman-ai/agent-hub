@@ -40,6 +40,37 @@ interface UpdateNotificationRoutingBody {
   meta?: unknown;
 }
 
+/** Cross-project personal todo (spec TODO-MODEL). Mirrors `UserTodo` server-side. */
+export interface UserTodoWire {
+  id: string;
+  userId: string;
+  title: string;
+  notes: string;
+  status: 'open' | 'done';
+  dueAt: string | null;
+  position: number;
+  sourceType: 'manual' | 'email' | 'calendar';
+  sourceId: string | null;
+  sourceMeta: Record<string, unknown> | null;
+  linkedCardId: string | null;
+  linkedProjectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CreateTodoBody {
+  title: string;
+  notes?: string;
+  dueAt?: string | null;
+}
+
+interface UpdateTodoBody {
+  title?: string;
+  notes?: string;
+  status?: 'open' | 'done';
+  dueAt?: string | null;
+}
+
 // Session-scoped flag we set right before a 401-triggered reload so that the
 // first request after reload (e.g. the bootstrap `getAuthStatus` probe in
 // AuthGate, or the user hitting Login) can't trigger a second reload before
@@ -219,6 +250,29 @@ export const api = {
     return fetchJSON<{ authorizeUrl: string }>(`/auth/google/start${qs ? `?${qs}` : ''}`);
   },
   disconnectGoogle: () => fetchJSON('/auth/google/connect', { method: 'DELETE' }),
+  // Cross-project personal todos (spec TODO-MODEL). Scoped server-side to the
+  // authenticated user; every write broadcasts `user_todo_update` to the owner.
+  listTodos: (status?: 'open' | 'done') => {
+    const qs = status ? `?status=${status}` : '';
+    return fetchJSON<{ todos: UserTodoWire[] }>(`/me/todos${qs}`);
+  },
+  createTodo: (data: CreateTodoBody) =>
+    fetchJSON<{ todo: UserTodoWire }>('/me/todos', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateTodo: (id: string, data: UpdateTodoBody) =>
+    fetchJSON<{ todo: UserTodoWire }>(`/me/todos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteTodo: (id: string) =>
+    fetchJSON<{ ok: true }>(`/me/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  reorderTodos: (orderedIds: string[]) =>
+    fetchJSON<{ todos: UserTodoWire[] }>('/me/todos/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ orderedIds }),
+    }),
   listGoogleCalendarEvents: ({
     calendarId,
     timeMin,

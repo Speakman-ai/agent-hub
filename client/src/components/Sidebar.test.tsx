@@ -123,6 +123,26 @@ describe('Sidebar — global Gmail nav (per-user Google surface)', () => {
   });
 });
 
+describe('Sidebar — global Todos nav (per-user, no Google dependency)', () => {
+  it('always renders the Todos entry in the global Dashboard tier', () => {
+    // Unlike Calendar/Gmail, Todos has no Google gate — it shows regardless of
+    // connection status.
+    render(
+      <Sidebar
+        {...buildProps({ googleGmailNavVisible: false, googleCalendarNavVisible: false })}
+      />,
+    );
+    expect(screen.getByTestId('sidebar-global-todos')).toBeInTheDocument();
+  });
+
+  it('navigates to the global todos view when clicked', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+    fireEvent.click(screen.getByTestId('sidebar-global-todos'));
+    expect(onNavigate).toHaveBeenCalledWith('todos');
+  });
+});
+
 describe('Sidebar — no Sheets/Drive pages', () => {
   it('does not expose Sheets or Drive navigation in the Dashboard tier', () => {
     const onNavigate = vi.fn();

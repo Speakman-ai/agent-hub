@@ -9,6 +9,7 @@ import {
   ExternalLink,
   CalendarDays,
   Mail,
+  ListTodo,
   List,
   ListOrdered,
   Monitor,
@@ -481,6 +482,23 @@ export default function Sidebar({
           >
             <BarChart3 size={14} className="flex-shrink-0" />
             <span className="flex-1 truncate text-sm font-medium">Dashboard</span>
+          </button>
+
+          {/* Cross-project personal Todos — a per-USER capture list (spec
+              TODO-MODEL / NAV-PLACEMENT). Sits in the global Dashboard tier and
+              is ALWAYS shown: unlike Calendar/Gmail it has no Google dependency,
+              so it renders whether or not the user has linked Google. */}
+          <button
+            onClick={() => onNavigate('todos')}
+            data-testid="sidebar-global-todos"
+            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
+              currentView === 'todos'
+                ? 'bg-gray-800 text-white'
+                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            }`}
+          >
+            <ListTodo size={14} className="flex-shrink-0" />
+            <span className="flex-1 truncate text-sm font-medium">Todos</span>
           </button>
 
           {/* Global Calendar — a per-USER Google surface, not project-scoped.

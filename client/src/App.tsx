@@ -67,6 +67,7 @@ import ThreadView from './components/ThreadView';
 import CustomerSupportPage from './components/CustomerSupportPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
+import TodosPage from './components/TodosPage';
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
@@ -2775,6 +2776,15 @@ export default function App({ initialView }: any = {}) {
 
         case 'wiki_update':
           window.dispatchEvent(new CustomEvent('wiki_update', { detail: data }));
+          break;
+
+        // Cross-project personal todos (spec TODO-MODEL). The server filters this
+        // event to the owner, so any delivery means *our* todos changed (a
+        // create/update/delete/reorder, or a promote-to-ticket). Bridged to a
+        // window CustomEvent so <TodosPage /> refetches without subscribing to
+        // the WS connection directly.
+        case 'user_todo_update':
+          window.dispatchEvent(new CustomEvent('user_todo_update', { detail: data }));
           break;
 
         // GitHub mirror sync status (server/git-host/mirror.ts +
@@ -5682,6 +5692,8 @@ export default function App({ initialView }: any = {}) {
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
                 />
+              ) : currentView === 'todos' ? (
+                <TodosPage />
               ) : currentView === 'calendar' ? (
                 <CalendarAgendaPage
                   onOpenAccountSettings={() => setCurrentView('settings:account')}
