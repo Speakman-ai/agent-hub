@@ -19,18 +19,18 @@ describe('parseCredentialsDeclaration', () => {
   it('parses valid declaration', () => {
     const r = parseCredentialsDeclaration([
       {
-        name: 'LINEAR_API_KEY',
-        label: 'Linear API key',
+        name: 'EXAMPLE_API_KEY',
+        label: 'Example API key',
         description: 'from settings',
         required: true,
         type: 'secret',
-        docs_url: 'https://linear.app/settings/api',
+        docs_url: 'https://example.com/settings/api',
       },
-      { name: 'LINEAR_TEAM', type: 'string', required: false },
+      { name: 'EXAMPLE_TEAM', type: 'string', required: false },
     ]);
     expect(r.error).toBeNull();
     expect(r.credentials).toHaveLength(2);
-    expect(r.credentials[1]!.label).toBe('LINEAR_TEAM');
+    expect(r.credentials[1]!.label).toBe('EXAMPLE_TEAM');
     expect(r.credentials[1]!.type).toBe('string');
     expect(r.credentials[1]!.required).toBe(false);
   });

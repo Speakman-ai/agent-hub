@@ -11,7 +11,7 @@ import humanCron from '@shared/utils/humanCron';
 import { localTimeZone } from '@shared/utils/calendarEvents';
 import CronSchedulePicker from './CronSchedulePicker';
 import AgentAvatar from './AgentAvatar';
-import AccountSection from './AccountSection';
+import AccountSection, { OrganizationSection } from './AccountSection';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
 import AuthUpgradeBanner from './AuthUpgradeBanner';
@@ -114,6 +114,7 @@ import {
   Download,
   Package,
   ClipboardCheck,
+  Users,
 } from 'lucide-react';
 
 /** Grid of Lucide icon chips used as quick-pick agent avatars. */
@@ -7104,6 +7105,7 @@ export function ToolErrorsSection({ projects }: any) {
 const SETTINGS_TABS = [
   { id: 'general', iconName: 'Settings', text: 'General' },
   { id: 'account', iconName: 'UserCircle', text: 'Account' },
+  { id: 'organization', iconName: 'Users', text: 'Organization' },
   { id: 'orgs', iconName: 'Building2', text: 'Organizations' },
   // Host-wide Gemini API key (used for wiki embeddings; managed in
   // ~/.agent-hub/data/config.json). Per-user Claude/Cursor/Codex creds live
@@ -7123,6 +7125,7 @@ const SETTINGS_TABS = [
 const SETTINGS_ICONS = {
   Settings: SettingsIcon,
   UserCircle,
+  Users,
   Building2,
   Bot,
   Key,
@@ -7213,6 +7216,8 @@ export default function SettingsPage({
     return SETTINGS_TABS.filter((t: any) => {
       if (t.id === 'orgs' && !electronShell) return false;
       if (t.id === 'claude-auth' && !isAdminPlus) return false;
+      // Org administration (members, invites, SMTP) is Admin/Owner-only.
+      if (t.id === 'organization' && !isAdminPlus) return false;
       return true;
     });
   }, [electronShell, isAdminPlus]);
@@ -7221,6 +7226,10 @@ export default function SettingsPage({
   // link, send them to Account (which hosts their per-user CLI creds).
   useEffect(() => {
     if (tab === 'claude-auth' && !isAdminPlus) {
+      setTab('account');
+    }
+    // Non-Admin users deep-linking to the org-admin tab get sent to Account.
+    if (tab === 'organization' && !isAdminPlus) {
       setTab('account');
     }
   }, [tab, isAdminPlus]);
@@ -7331,6 +7340,7 @@ export default function SettingsPage({
             <SettingsErrorBoundary key={tab}>
               {tab === 'general' && <GeneralSection />}
               {tab === 'account' && <AccountSection />}
+              {tab === 'organization' && isAdminPlus && <OrganizationSection />}
               {tab === 'claude-auth' && isAdminPlus && <GeminiAuthSection />}
               {tab === 'global-skills' && (
                 <GlobalSkillsSection agents={agents} projects={projects} />

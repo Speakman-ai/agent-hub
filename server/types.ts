@@ -3301,16 +3301,12 @@ export interface GoogleOAuthConfig {
 /**
  * Voice-transcription providers selectable for `/api/transcribe`. `'xai'` (the
  * default) uses the xAI Grok speech-to-text endpoint (`/v1/stt`); `'openai'`
- * uses OpenAI Whisper; `'gemini'` uses the Gemini audio-understanding path.
+ * uses OpenAI Whisper.
  */
-export type TranscriptionProvider = 'xai' | 'openai' | 'gemini';
+export type TranscriptionProvider = 'xai' | 'openai';
 
 /** Allowed transcription providers, exported for runtime validation. */
-export const TRANSCRIPTION_PROVIDERS: readonly TranscriptionProvider[] = [
-  'xai',
-  'openai',
-  'gemini',
-];
+export const TRANSCRIPTION_PROVIDERS: readonly TranscriptionProvider[] = ['xai', 'openai'];
 
 export interface AppConfig {
   port: number;
@@ -3399,8 +3395,7 @@ export interface AppConfig {
    * Which provider `/api/transcribe` uses for chat-composer voice
    * transcription. `'xai'` (the default) calls the xAI Grok speech-to-text
    * endpoint with `xaiApiKey`; `'openai'` calls OpenAI Whisper with
-   * `openaiApiKey`; `'gemini'` calls the Gemini audio-understanding path with
-   * `geminiApiKey`. Selectable on the settings page (Account → Plugin API
+   * `openaiApiKey`. Selectable on the settings page (Account → Plugin API
    * keys). The chosen provider's key must be configured or `/api/transcribe`
    * returns 501 so clients fall back to on-device recognition. Configure via
    * `transcriptionProvider` in config.json, `PATCH /api/config`, or env

@@ -19,6 +19,7 @@ import AccountSection, {
   buildSmtpPatch,
   InvitesSection,
   inviteRoleOptionsFor,
+  OrganizationSection,
   PluginApiKeysSection,
   SmtpSettingsPanel,
   smtpConfiguredLabel,
@@ -364,14 +365,29 @@ describe('AccountSection — Grok personal credentials', () => {
   });
 });
 
-describe('AccountSection — Add user button visibility', () => {
+describe('OrganizationSection — Add user button visibility', () => {
   it('hides the Add user button for role=User', async () => {
     (hasRole as any).mockReturnValue(false);
     (getUserRole as any).mockReturnValue('User');
 
-    mockFetchSequence([jsonResponse({ user: { id: 'u-self', username: 'plain', role: 'User' } })]);
+    mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/me'),
+        response: () => jsonResponse({ user: { id: 'u-self', username: 'plain', role: 'User' } }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/users'),
+        response: () =>
+          jsonResponse({ users: [{ id: 'u-self', username: 'plain', role: 'User' }] }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/invites'),
+        response: () => jsonResponse({ invites: [] }),
+      },
+      { match: () => true, response: () => jsonResponse({}) },
+    ]);
 
-    render(<AccountSection />);
+    render(<OrganizationSection />);
     await waitFor(() => expect(screen.getByText('plain')).toBeInTheDocument());
 
     expect(screen.queryByRole('button', { name: /add user/i })).toBeNull();
@@ -381,14 +397,26 @@ describe('AccountSection — Add user button visibility', () => {
     (hasRole as any).mockReturnValue(true);
     (getUserRole as any).mockReturnValue('Owner');
 
-    mockFetchSequence([
-      jsonResponse({ user: { id: 'u-owner', username: 'root', role: 'Owner' } }),
-      jsonResponse({
-        users: [{ id: 'u-owner', username: 'root', role: 'Owner', createdAt: '2026-01-01' }],
-      }),
+    mockFetchByUrl([
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/me'),
+        response: () => jsonResponse({ user: { id: 'u-owner', username: 'root', role: 'Owner' } }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/users'),
+        response: () =>
+          jsonResponse({
+            users: [{ id: 'u-owner', username: 'root', role: 'Owner', createdAt: '2026-01-01' }],
+          }),
+      },
+      {
+        match: (u: any, m: any) => m === 'GET' && u.endsWith('/auth/invites'),
+        response: () => jsonResponse({ invites: [] }),
+      },
+      { match: () => true, response: () => jsonResponse({}) },
     ]);
 
-    render(<AccountSection />);
+    render(<OrganizationSection />);
 
     const addBtn = await screen.findByRole('button', { name: /add user/i });
     expect(addBtn!).toBeInTheDocument();
@@ -409,7 +437,7 @@ describe('AccountSection — Add user button visibility', () => {
   });
 });
 
-describe('AccountSection — member MFA reset', () => {
+describe('OrganizationSection — member MFA reset', () => {
   it('lets Admin+ clear MFA for a locked-out member', async () => {
     (hasRole as any).mockReturnValue(true);
     (getUserRole as any).mockReturnValue('Admin');
@@ -444,7 +472,7 @@ describe('AccountSection — member MFA reset', () => {
       },
     ]);
 
-    render(<AccountSection />);
+    render(<OrganizationSection />);
 
     expect(await screen.findByText('locked@example.com')).toBeInTheDocument();
     expect(screen.getByText('MFA on')).toBeInTheDocument();
@@ -463,7 +491,7 @@ describe('AccountSection — member MFA reset', () => {
   });
 });
 
-describe('AccountSection — member invites', () => {
+describe('OrganizationSection — member invites', () => {
   beforeEach(() => {
     Object.defineProperty(window.navigator, 'clipboard', {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -517,7 +545,7 @@ describe('AccountSection — member invites', () => {
       },
     ]);
 
-    render(<AccountSection />);
+    render(<OrganizationSection />);
 
     expect(await screen.findByText('Member invites')).toBeInTheDocument();
     expect(screen.getByText('new@example.com')).toBeInTheDocument();
@@ -580,7 +608,7 @@ describe('AccountSection — member invites', () => {
       },
     ]);
 
-    render(<AccountSection />);
+    render(<OrganizationSection />);
 
     const email = await screen.findByLabelText(/invite email/i);
     fireEvent.change(email, { target: { value: 'new@example.com' } });
@@ -644,7 +672,7 @@ describe('PluginApiKeysSection', () => {
     expect(xaiDescription!).toBeInTheDocument();
     expect(xaiDescription!).toHaveTextContent(/voice transcription/i);
     expect(screen.getByText('Gemini API key')).toBeInTheDocument();
-    expect(screen.getByText('Used for voice transcription and wiki RAG.')).toBeInTheDocument();
+    expect(screen.getByText('Used for wiki RAG (memory lookups).')).toBeInTheDocument();
     expect(screen.getByText('OpenAI API key')).toBeInTheDocument();
     expect(
       screen.getByText(
@@ -797,24 +825,24 @@ describe('TranscriptionProviderRow', () => {
         match: (u: any, m: any) => u.endsWith('/api/config') && m === 'GET',
         response: () =>
           jsonResponse({
-            transcriptionProvider: 'gemini',
+            transcriptionProvider: 'openai',
             openaiApiKeySet: true,
-            geminiApiKeySet: false,
+            xaiApiKeySet: false,
           }),
       },
     ]);
 
     render(<TranscriptionProviderRow />);
 
-    const geminiOption = await screen.findByRole('radio', { name: /Google Gemini/i });
-    expect(geminiOption!).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByRole('radio', { name: /OpenAI Whisper/i })).toHaveAttribute(
+    const openaiOption = await screen.findByRole('radio', { name: /OpenAI Whisper/i });
+    expect(openaiOption!).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /xAI Grok/i })).toHaveAttribute(
       'aria-checked',
       'false',
     );
-    // Selected provider's key is missing → warn; the other is set.
-    expect(screen.getByText('Gemini API key missing')).toBeInTheDocument();
+    // Selected provider's key is set; the other is missing.
     expect(screen.getByText('OpenAI API key set')).toBeInTheDocument();
+    expect(screen.getByText('xAI API key missing')).toBeInTheDocument();
   });
 
   it('persists a new provider choice through PATCH /api/config', async () => {
@@ -825,30 +853,30 @@ describe('TranscriptionProviderRow', () => {
           jsonResponse({
             transcriptionProvider: 'openai',
             openaiApiKeySet: true,
-            geminiApiKeySet: true,
+            xaiApiKeySet: true,
           }),
       },
       {
         match: (u: any, m: any) => u.endsWith('/api/config') && m === 'PATCH',
-        response: () => jsonResponse({ ok: true, updated: { transcriptionProvider: 'gemini' } }),
+        response: () => jsonResponse({ ok: true, updated: { transcriptionProvider: 'xai' } }),
       },
     ]);
 
     render(<TranscriptionProviderRow />);
 
-    const geminiOption = await screen.findByRole('radio', { name: /Google Gemini/i });
-    fireEvent.click(geminiOption as any);
+    const xaiOption = await screen.findByRole('radio', { name: /xAI Grok/i });
+    fireEvent.click(xaiOption as any);
 
     await waitFor(() =>
       expect(fetchMock!).toHaveBeenLastCalledWith(
         '/api/config',
         expect.objectContaining({
           method: 'PATCH',
-          body: JSON.stringify({ transcriptionProvider: 'gemini' }),
+          body: JSON.stringify({ transcriptionProvider: 'xai' }),
         }),
       ),
     );
-    await waitFor(() => expect(geminiOption!).toHaveAttribute('aria-checked', 'true'));
+    await waitFor(() => expect(xaiOption!).toHaveAttribute('aria-checked', 'true'));
   });
 
   it('reverts the selection when the save fails', async () => {
@@ -859,7 +887,7 @@ describe('TranscriptionProviderRow', () => {
           jsonResponse({
             transcriptionProvider: 'openai',
             openaiApiKeySet: true,
-            geminiApiKeySet: true,
+            xaiApiKeySet: true,
           }),
       },
       {
@@ -871,8 +899,8 @@ describe('TranscriptionProviderRow', () => {
     render(<TranscriptionProviderRow />);
 
     const openaiOption = await screen.findByRole('radio', { name: /OpenAI Whisper/i });
-    const geminiOption = screen.getByRole('radio', { name: /Google Gemini/i });
-    fireEvent.click(geminiOption as any);
+    const xaiOption = screen.getByRole('radio', { name: /xAI Grok/i });
+    fireEvent.click(xaiOption as any);
 
     await screen.findByRole('alert');
     // Optimistic update rolled back to the original provider.

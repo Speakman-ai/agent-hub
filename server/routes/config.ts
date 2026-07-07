@@ -477,16 +477,16 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       }
     }
     if (updates.transcriptionProvider !== undefined) {
-      // Only 'xai' | 'openai' | 'gemini' are valid. Reject anything else with
-      // 400 so a bad value can't silently land in config.json.
+      // Only 'xai' | 'openai' are valid. Reject anything else with 400 so a bad
+      // value can't silently land in config.json.
       const raw = updates.transcriptionProvider;
       const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-      if (normalized === 'xai' || normalized === 'openai' || normalized === 'gemini') {
+      if (normalized === 'xai' || normalized === 'openai') {
         updates.transcriptionProvider = normalized;
       } else {
         return res.status(400).json({
           error: 'Invalid transcriptionProvider',
-          accepted: ['xai', 'openai', 'gemini'],
+          accepted: ['xai', 'openai'],
         });
       }
     }

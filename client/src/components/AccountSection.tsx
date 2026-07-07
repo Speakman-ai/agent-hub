@@ -12,7 +12,6 @@ import {
   Send,
   ShieldOff,
   Sparkles,
-  SquareKanban,
   Trash2,
   Users,
   X,
@@ -23,13 +22,12 @@ import MySingleKeyAuthSection from './MySingleKeyAuthSection';
 import MyCursorAuthSection from './MyCursorAuthSection';
 import MyCodexAuthSection from './MyCodexAuthSection';
 import MyGrokAuthSection from './MyGrokAuthSection';
-import MySkillCredentialSection from './MySkillCredentialSection';
 import GoogleConnectionSection from './GoogleConnectionSection';
 import GoogleOAuthConfigSection from './GoogleOAuthConfigSection';
 import MfaSettingsPanel from './MfaSettingsPanel';
 import { api } from '../utils/api';
 import { getAuthHeaders, getApiBase } from '../utils/connection';
-import { hasRole, getUserRole, logout } from '../utils/auth';
+import { getUserRole, logout } from '../utils/auth';
 import { formatDate, parseDate } from '../utils/time';
 
 const ALL_ROLES = ['Owner', 'Admin', 'User'];
@@ -70,13 +68,8 @@ export function inviteRoleOptionsFor(callerRole: any) {
  */
 export default function AccountSection() {
   const [me, setMe] = useState<any>(null);
-  const [users, setUsers] = useState<any>(null);
-  const [invites, setInvites] = useState<any>(null);
-  const [inviteEmailStatus, setInviteEmailStatus] = useState({ smtpConfigured: false });
   const [error, setError] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [rowErrors, setRowErrors] = useState<Record<string, any>>({});
   const [loggingOut, setLoggingOut] = useState(false);
 
   const handleLogout = useCallback(async () => {
@@ -92,6 +85,189 @@ export default function AccountSection() {
       window.location.reload();
     }
   }, [loggingOut]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const meRes = await fetch(`${getApiBase()}/auth/me`, { headers: getAuthHeaders() });
+        if (!meRes.ok) throw new Error(`GET /auth/me → ${meRes.status}`);
+        const meBody = await meRes.json();
+        if (cancelled) return;
+        setMe(meBody.user || null);
+      } catch (err: any) {
+        if (!cancelled) setError(err.message || String(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-400">
+        <Loader2 size={14} className="animate-spin" />
+        Loading account…
+      </div>
+    );
+  }
+
+  const currentRole = me?.role || getUserRole();
+  const isAdminPlus = currentRole === 'Owner' || currentRole === 'Admin';
+
+  const handleMfaChanged = (enabled: boolean) => {
+    setMe((prev: any) => (prev ? { ...prev, mfaEnabled: enabled } : prev));
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-gray-800 rounded-xl p-4 space-y-6">
+        <div>
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <h4 className="text-sm font-medium text-gray-300">Your account</h4>
+            {me && (
+              <button
+                type="button"
+                onClick={handleLogout}
+                disabled={loggingOut}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-50"
+                aria-label="Log out"
+              >
+                {loggingOut ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+                Log out
+              </button>
+            )}
+          </div>
+          {me ? (
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-sm text-white">{displayEmail(me)}</span>
+              <RoleBadge role={currentRole} />
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">Not authenticated.</p>
+          )}
+          <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
+            Roles are hierarchical: <span className="text-emerald-300">Owner</span> {'>'}{' '}
+            <span className="text-indigo-300">Admin</span> {'>'}{' '}
+            <span className="text-gray-300">User</span>. Owner has full control and cannot be
+            demoted while they&apos;re the only one.
+          </p>
+        </div>
+
+        {me && (
+          <>
+            <div className="h-px bg-gray-700/50" />
+            <MfaSettingsPanel bare mfaEnabled={!!me.mfaEnabled} onMfaChanged={handleMfaChanged} />
+          </>
+        )}
+
+        {me && (
+          <>
+            <div className="h-px bg-gray-700/50" />
+            <ApiKeysSection bare />
+          </>
+        )}
+      </div>
+
+      {me && (
+        <div className="bg-gray-800 rounded-xl p-4 space-y-6">
+          <div>
+            <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+              <Sparkles size={14} /> AI credentials
+            </h4>
+            <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+              Personal API keys and sign-ins for each AI engine. When set, sessions you own spawn
+              with your credentials instead of the host-wide configuration.
+            </p>
+          </div>
+
+          <div className="h-px bg-gray-700/50" />
+          <MyClaudeAuthSection bare />
+
+          <div className="h-px bg-gray-700/50" />
+          <MyCursorAuthSection bare />
+
+          <div className="h-px bg-gray-700/50" />
+          <MyCodexAuthSection bare />
+
+          <div className="h-px bg-gray-700/50" />
+          <MyGrokAuthSection bare />
+
+          <div className="h-px bg-gray-700/50" />
+          <MySingleKeyAuthSection
+            bare
+            engineLabel="Gemini"
+            Icon={Sparkles}
+            placeholder="AIza..."
+            hostSettingHint="Settings → Gemini Auth"
+            getter={() => api.getMyGeminiAuth()}
+            setter={(body: any) => api.putMyGeminiAuth(body)}
+            description={
+              <>
+                Only used for RAG memory lookups (wiki embeddings) — not for spawning chat sessions.
+                Leave empty to fall back to the host key (managed in{' '}
+                <span className="text-gray-400">Settings → Global API Keys</span>).
+              </>
+            }
+          />
+        </div>
+      )}
+
+      {me && (
+        <div className="bg-gray-800 rounded-xl p-4 space-y-6">
+          <div>
+            <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+              <Mail size={14} /> Google
+            </h4>
+            <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+              Connect your personal Google account and, for admins, configure the server-wide Google
+              OAuth app that powers it.
+            </p>
+          </div>
+
+          <div className="h-px bg-gray-700/50" />
+          <GoogleConnectionSection bare />
+
+          {isAdminPlus && (
+            <>
+              <div className="h-px bg-gray-700/50" />
+              <GoogleOAuthConfigSection bare />
+            </>
+          )}
+        </div>
+      )}
+
+      {me && isAdminPlus && <PluginApiKeysSection />}
+
+      {error && (
+        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Organization tab — Admin+ view of org membership: the configured-users
+ * roster (create / change-role / remove / reset-MFA), pending member invites,
+ * and the host-wide SMTP delivery used to send invite + password-reset email.
+ * Split out of the Account tab so per-user credentials and org administration
+ * live on separate pages.
+ */
+export function OrganizationSection() {
+  const [me, setMe] = useState<any>(null);
+  const [users, setUsers] = useState<any>(null);
+  const [invites, setInvites] = useState<any>(null);
+  const [inviteEmailStatus, setInviteEmailStatus] = useState({ smtpConfigured: false });
+  const [error, setError] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [rowErrors, setRowErrors] = useState<Record<string, any>>({});
 
   const loadUsers = useCallback(async () => {
     const usersRes = await fetch(`${getApiBase()}/auth/users`, {
@@ -125,13 +301,8 @@ export default function AccountSection() {
         const meBody = await meRes.json();
         if (cancelled) return;
         setMe(meBody.user || null);
-
-        // Only Admin+ can fetch the users roster — the server enforces
-        // this; we skip the request otherwise to avoid noisy 403s.
-        if (hasRole('Admin') || meBody.user?.role === 'Owner' || meBody.user?.role === 'Admin') {
-          await loadUsers();
-          await loadInvites();
-        }
+        await loadUsers();
+        await loadInvites();
       } catch (err: any) {
         if (!cancelled) setError(err.message || String(err));
       } finally {
@@ -142,19 +313,6 @@ export default function AccountSection() {
       cancelled = true;
     };
   }, [loadInvites, loadUsers]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-gray-400">
-        <Loader2 size={14} className="animate-spin" />
-        Loading account…
-      </div>
-    );
-  }
-
-  const currentRole = me?.role || getUserRole();
-  const isOwner = currentRole === 'Owner';
-  const isAdminPlus = currentRole === 'Owner' || currentRole === 'Admin';
 
   const setRowError = (id: any, msg: any) =>
     setRowErrors((prev: any) => {
@@ -204,11 +362,6 @@ export default function AccountSection() {
     }
   };
 
-  const handleMfaChanged = (enabled: boolean) => {
-    setMe((prev: any) => (prev ? { ...prev, mfaEnabled: enabled } : prev));
-    void loadUsers();
-  };
-
   const handleResetMfa = async (user: any) => {
     if (!user.id) return;
     if (
@@ -232,91 +385,23 @@ export default function AccountSection() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-400">
+        <Loader2 size={14} className="animate-spin" />
+        Loading organization…
+      </div>
+    );
+  }
+
+  const currentRole = me?.role || getUserRole();
+  const isOwner = currentRole === 'Owner';
   const ownerCount = Array.isArray(users)
     ? users.filter((u: any) => u?.role === 'Owner').length
     : 0;
 
   return (
     <div className="space-y-6">
-      <div className="bg-gray-800 rounded-xl p-4">
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <h4 className="text-sm font-medium text-gray-300">Your account</h4>
-          {me && (
-            <button
-              type="button"
-              onClick={handleLogout}
-              disabled={loggingOut}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-gray-700 text-gray-300 hover:bg-gray-700 hover:text-white disabled:opacity-50"
-              aria-label="Log out"
-            >
-              {loggingOut ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
-              Log out
-            </button>
-          )}
-        </div>
-        {me ? (
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-sm text-white">{displayEmail(me)}</span>
-            <RoleBadge role={currentRole} />
-          </div>
-        ) : (
-          <p className="text-xs text-gray-500">Not authenticated.</p>
-        )}
-        <p className="text-[11px] text-gray-500 mt-3 leading-relaxed">
-          Roles are hierarchical: <span className="text-emerald-300">Owner</span> {'>'}{' '}
-          <span className="text-indigo-300">Admin</span> {'>'}{' '}
-          <span className="text-gray-300">User</span>. Owner has full control and cannot be demoted
-          while they&apos;re the only one.
-        </p>
-      </div>
-
-      {me && <MyClaudeAuthSection />}
-
-      {me && <MfaSettingsPanel mfaEnabled={!!me.mfaEnabled} onMfaChanged={handleMfaChanged} />}
-
-      {me && <MyCursorAuthSection />}
-
-      {me && (
-        <MySingleKeyAuthSection
-          engineLabel="Gemini"
-          Icon={Sparkles}
-          placeholder="AIza..."
-          hostSettingHint="Settings → Gemini Auth"
-          getter={() => api.getMyGeminiAuth()}
-          setter={(body: any) => api.putMyGeminiAuth(body)}
-        />
-      )}
-
-      {me && <MyCodexAuthSection />}
-
-      {me && <MyGrokAuthSection />}
-
-      {me && (
-        <MySkillCredentialSection
-          skillId="linear"
-          keyName="LINEAR_API_KEY"
-          label="Linear API key"
-          placeholder="lin_api_..."
-          Icon={SquareKanban}
-          docsUrl="https://linear.app/settings/api"
-          description={
-            <>
-              Personal API key from Linear (Settings → API → Personal API keys). When set, sessions
-              you own will have <code>LINEAR_API_KEY</code> injected so the Linear skill can query
-              your workspace.
-            </>
-          }
-        />
-      )}
-
-      {me && <GoogleConnectionSection />}
-
-      {me && isAdminPlus && <GoogleOAuthConfigSection />}
-
-      {me && isAdminPlus && <PluginApiKeysSection />}
-
-      {me && <ApiKeysSection />}
-
       {users !== null && (
         <div className="bg-gray-800 rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
@@ -355,7 +440,7 @@ export default function AccountSection() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        {isAdminPlus && u.id ? (
+                        {u.id ? (
                           <select
                             aria-label={`Role for ${displayEmail(u)}`}
                             value={u.role}
@@ -381,7 +466,7 @@ export default function AccountSection() {
                             <Trash2 size={12} />
                           </button>
                         )}
-                        {isAdminPlus && u.id && u.mfaEnabled && (
+                        {u.id && u.mfaEnabled && (
                           <button
                             type="button"
                             onClick={() => handleResetMfa(u)}
@@ -415,14 +500,24 @@ export default function AccountSection() {
         </div>
       )}
 
-      {me && isAdminPlus && (
-        <InvitesSection
-          callerRole={currentRole}
-          invites={invites}
-          emailDelivery={inviteEmailStatus}
-          onChanged={loadInvites}
-        />
-      )}
+      <InvitesSection
+        callerRole={currentRole}
+        invites={invites}
+        emailDelivery={inviteEmailStatus}
+        onChanged={loadInvites}
+      />
+
+      <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+        <div>
+          <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Mail size={14} /> Email delivery
+          </h4>
+          <p className="text-[11px] text-gray-500 mt-1 leading-relaxed">
+            Host SMTP used to send member invites and password-reset email.
+          </p>
+        </div>
+        <SmtpSettingsPanel />
+      </div>
 
       {error && (
         <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded p-2">
@@ -461,7 +556,7 @@ const PLUGIN_API_KEYS = [
     id: 'gemini',
     label: 'Gemini API key',
     placeholder: 'AIza...',
-    description: 'Used for voice transcription and wiki RAG.',
+    description: 'Used for wiki RAG (memory lookups).',
     loadConfigured: (body: any) => !!body?.apiKey?.configured,
     load: () => api.getGeminiAuth(),
     save: (value: any) => api.setGeminiApiKey(value),
@@ -620,14 +715,6 @@ const TRANSCRIPTION_PROVIDERS = [
     description: 'Works in every browser and for all recorded formats.',
     keyField: 'openaiApiKeySet',
     keyLabel: 'OpenAI API key',
-  },
-  {
-    id: 'gemini',
-    label: 'Google Gemini',
-    description:
-      'Uses the Gemini audio model. Requires OGG / MP3 / WAV / FLAC audio (Chrome records WebM, which Gemini cannot read).',
-    keyField: 'geminiApiKeySet',
-    keyLabel: 'Gemini API key',
   },
 ];
 
@@ -911,7 +998,6 @@ export function TranscriptionProviderRow() {
   const [keyStatus, setKeyStatus] = useState({
     xaiApiKeySet: false,
     openaiApiKeySet: false,
-    geminiApiKeySet: false,
   });
   const [saving, setSaving] = useState<any>(null);
   const [status, setStatus] = useState<any>(null);
@@ -928,7 +1014,6 @@ export function TranscriptionProviderRow() {
       setKeyStatus({
         xaiApiKeySet: !!cfg?.xaiApiKeySet || !!cfg?.xaiApiKey,
         openaiApiKeySet: !!cfg?.openaiApiKeySet || !!cfg?.openaiApiKey,
-        geminiApiKeySet: !!cfg?.geminiApiKeySet,
       });
     } catch (err: any) {
       setStatus({ type: 'error', msg: err.message || String(err) });
@@ -1043,8 +1128,6 @@ export function PluginApiKeysSection() {
           Host keys used by plugin features that call provider APIs directly.
         </p>
       </div>
-
-      <SmtpSettingsPanel />
 
       <TranscriptionProviderRow />
 
@@ -1444,11 +1527,15 @@ function formatRelative(iso: any) {
  * Per-user API keys panel — exported for direct testing without
  * mounting the whole AccountSection tree.
  */
-export function ApiKeysSection() {
+export function ApiKeysSection({ bare = false }: { bare?: boolean } = {}) {
   const [keys, setKeys] = useState<any>(null);
   const [error, setError] = useState<any>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [rowErrors, setRowErrors] = useState<Record<string, any>>({});
+
+  // When embedded in a shared card the outer chrome is dropped so this section
+  // reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
 
   const loadKeys = useCallback(async () => {
     try {
@@ -1507,7 +1594,7 @@ export function ApiKeysSection() {
   // which the parent already did, so we just render the section if the
   // parent decided to mount us at all).
   return (
-    <div className="bg-gray-800 rounded-xl p-4">
+    <div className={shellClass}>
       <div className="flex items-center justify-between mb-3">
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <Key size={14} /> API Keys

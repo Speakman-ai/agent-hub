@@ -6,9 +6,7 @@ import createTranscribeRoutes, {
   normalizeAudioContentType,
   extensionForAudioType,
   transcribeWithWhisper,
-  transcribeWithGemini,
   transcribeWithXai,
-  geminiMimeForAudioType,
   isXaiSupportedAudioType,
   resolveTranscriptionProvider,
 } from './transcribe.js';
@@ -205,17 +203,16 @@ describe('transcribeWithXai', () => {
   });
 });
 
-// ─── Provider resolution + Gemini helpers ─────────────────────────
+// ─── Provider resolution ──────────────────────────────────────────
 
 describe('resolveTranscriptionProvider', () => {
-  it('resolves the configured value (xai/gemini/openai stay themselves)', () => {
+  it('resolves the configured value (xai/openai stay themselves)', () => {
     expect(resolveTranscriptionProvider('xai')).toBe('xai');
-    expect(resolveTranscriptionProvider('gemini')).toBe('gemini');
     expect(resolveTranscriptionProvider('openai')).toBe('openai');
   });
 
   it('normalizes case/whitespace', () => {
-    expect(resolveTranscriptionProvider('  GEMINI  ')).toBe('gemini');
+    expect(resolveTranscriptionProvider('  OPENAI  ')).toBe('openai');
     expect(resolveTranscriptionProvider('  XAI  ')).toBe('xai');
   });
 
@@ -224,25 +221,7 @@ describe('resolveTranscriptionProvider', () => {
     expect(resolveTranscriptionProvider(null)).toBe('xai');
     expect(resolveTranscriptionProvider('')).toBe('xai');
     expect(resolveTranscriptionProvider('bogus')).toBe('xai');
-  });
-});
-
-describe('geminiMimeForAudioType', () => {
-  it('maps Gemini-supported types to their canonical MIME', () => {
-    expect(geminiMimeForAudioType('audio/ogg')).toBe('audio/ogg');
-    expect(geminiMimeForAudioType('audio/mpeg')).toBe('audio/mp3');
-    expect(geminiMimeForAudioType('audio/wav')).toBe('audio/wav');
-    expect(geminiMimeForAudioType('audio/flac')).toBe('audio/flac');
-    // aac / aiff are documented Gemini formats too.
-    expect(geminiMimeForAudioType('audio/aac')).toBe('audio/aac');
-    expect(geminiMimeForAudioType('audio/aiff')).toBe('audio/aiff');
-    expect(geminiMimeForAudioType('audio/x-aiff')).toBe('audio/aiff');
-  });
-
-  it('returns null for formats Gemini cannot read', () => {
-    expect(geminiMimeForAudioType('audio/webm')).toBeNull();
-    expect(geminiMimeForAudioType('audio/mp4')).toBeNull();
-    expect(geminiMimeForAudioType('audio/m4a')).toBeNull();
+    expect(resolveTranscriptionProvider('gemini')).toBe('xai');
   });
 });
 
@@ -266,86 +245,6 @@ describe('isXaiSupportedAudioType', () => {
     expect(isXaiSupportedAudioType('audio/webm')).toBe(false);
     expect(isXaiSupportedAudioType('audio/aiff')).toBe(false);
     expect(isXaiSupportedAudioType('audio/x-aiff')).toBe(false);
-  });
-});
-
-describe('transcribeWithGemini', () => {
-  it('POSTs inline base64 audio with x-goog-api-key and returns joined text', async () => {
-    const fetchImpl = vi.fn(async (url, init) => {
-      expect(String(url)).toContain(
-        'generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-      );
-      const headers = (init as RequestInit).headers as Record<string, string>;
-      expect(headers['x-goog-api-key']).toBe('AIza-test');
-      const body = JSON.parse((init as RequestInit).body as string);
-      const parts = body.contents[0].parts;
-      expect(parts[1].inlineData.mimeType).toBe('audio/ogg');
-      expect(parts[1].inlineData.data).toBe(Buffer.from('clip').toString('base64'));
-      return jsonResponse({
-        candidates: [{ content: { parts: [{ text: 'hello ' }, { text: 'gemini' }] } }],
-      });
-    }) as unknown as typeof fetch;
-
-    const out = await transcribeWithGemini({
-      apiKey: 'AIza-test',
-      audio: Buffer.from('clip'),
-      geminiMime: 'audio/ogg',
-      model: 'gemini-2.5-flash',
-      fetchImpl,
-    });
-
-    expect(out).toBe('hello gemini');
-  });
-
-  it('throws the upstream message on non-2xx', async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse({ error: { message: 'API key not valid' } }, { status: 400 }),
-    ) as unknown as typeof fetch;
-
-    await expect(
-      transcribeWithGemini({
-        apiKey: 'bad',
-        audio: Buffer.from('a'),
-        geminiMime: 'audio/ogg',
-        fetchImpl,
-      }),
-    ).rejects.toThrow(/API key not valid/);
-  });
-
-  it('throws when the audio is blocked by safety filters', async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse({ promptFeedback: { blockReason: 'SAFETY' } }),
-    ) as unknown as typeof fetch;
-
-    await expect(
-      transcribeWithGemini({
-        apiKey: 'k',
-        audio: Buffer.from('a'),
-        geminiMime: 'audio/ogg',
-        fetchImpl,
-      }),
-    ).rejects.toThrow(/blocked/i);
-  });
-
-  it('throws on an empty/whitespace transcript instead of returning "" as success', async () => {
-    // A candidate with empty parts (or whitespace-only text) must not be
-    // reported as a successful blank transcription — it hides upstream failures.
-    for (const candidates of [
-      [{ content: { parts: [] } }],
-      [{ content: { parts: [{ text: '   ' }] } }],
-      [{ content: {} }],
-      [],
-    ]) {
-      const fetchImpl = vi.fn(async () => jsonResponse({ candidates })) as unknown as typeof fetch;
-      await expect(
-        transcribeWithGemini({
-          apiKey: 'k',
-          audio: Buffer.from('a'),
-          geminiMime: 'audio/ogg',
-          fetchImpl,
-        }),
-      ).rejects.toThrow(/empty transcript/i);
-    }
   });
 });
 
@@ -404,83 +303,29 @@ describe('POST /api/transcribe', () => {
   });
 });
 
-describe('POST /api/transcribe — Gemini provider', () => {
+describe('POST /api/transcribe — provider override is ignored', () => {
   const original = globalThis.fetch;
   afterEach(() => {
     globalThis.fetch = original;
   });
 
-  it('routes to Gemini and returns provider:gemini for a supported format', async () => {
-    const fetchSpy = vi.fn(async (_url: unknown) =>
-      jsonResponse({ candidates: [{ content: { parts: [{ text: 'transcribed via gemini' }] } }] }),
-    );
-    globalThis.fetch = fetchSpy as unknown as typeof fetch;
-
-    const app = makeApp(null, { transcriptionProvider: 'gemini', geminiApiKey: 'AIza-x' });
-    const res = await supertest(app)
-      .post('/api/transcribe')
-      .set('content-type', 'audio/ogg')
-      .send(Buffer.from('clip'));
-
-    expect(res.status).toBe(200);
-    expect(res.body.provider).toBe('gemini');
-    expect(res.body.transcript).toBe('transcribed via gemini');
-    expect(String(fetchSpy.mock.calls[0][0])).toContain('generativelanguage.googleapis.com');
-  });
-
-  it('returns 501 (no network) when Gemini is selected but the Gemini key is unset', async () => {
-    const fetchSpy = vi.fn();
-    globalThis.fetch = fetchSpy as unknown as typeof fetch;
-
-    const app = makeApp('sk-openai-present', {
-      transcriptionProvider: 'gemini',
-      geminiApiKey: null,
-    });
-    const res = await supertest(app)
-      .post('/api/transcribe')
-      .set('content-type', 'audio/ogg')
-      .send(Buffer.from('clip'));
-
-    expect(res.status).toBe(501);
-    expect(res.body.provider).toBe('gemini');
-    expect(res.body.hint).toMatch(/Gemini/i);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it('returns 415 (no network) when Gemini gets a format it cannot read (webm)', async () => {
-    const fetchSpy = vi.fn();
-    globalThis.fetch = fetchSpy as unknown as typeof fetch;
-
-    const app = makeApp(null, { transcriptionProvider: 'gemini', geminiApiKey: 'AIza-x' });
-    const res = await supertest(app)
-      .post('/api/transcribe')
-      .set('content-type', 'audio/webm')
-      .send(Buffer.from('clip'));
-
-    expect(res.status).toBe(415);
-    expect(res.body.provider).toBe('gemini');
-    expect(res.body.hint).toMatch(/OpenAI|OGG/i);
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
   it('ignores X-Transcription-Provider — the host config setting is authoritative', async () => {
-    // Whisper-shaped response; if the header were honored this would hit Gemini.
     const fetchSpy = vi.fn(async (_url: unknown) => jsonResponse({ text: 'via openai' }));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-    // Config selects openai. A caller cannot force gemini via the header to
-    // consume the other configured key.
-    const app = makeApp('sk-openai', { transcriptionProvider: 'openai', geminiApiKey: 'AIza-x' });
+    // Config selects openai. A caller cannot force a different provider via the
+    // header to consume another configured key.
+    const app = makeApp('sk-openai', { transcriptionProvider: 'openai' });
     const res = await supertest(app)
       .post('/api/transcribe')
       .set('content-type', 'audio/ogg')
-      .set('x-transcription-provider', 'gemini')
+      .set('x-transcription-provider', 'xai')
       .send(Buffer.from('clip'));
 
     expect(res.status).toBe(200);
     expect(res.body.provider).toBe('openai-whisper');
     expect(String(fetchSpy.mock.calls[0][0])).toContain('api.openai.com');
-    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('generativelanguage');
+    expect(String(fetchSpy.mock.calls[0][0])).not.toContain('api.x.ai');
   });
 });
 

@@ -57,7 +57,7 @@ describe('resolveGitHubToken', () => {
   });
 
   it('ignores unrelated environment variables', () => {
-    const result = resolveGitHubToken({ LINEAR_API_KEY: 'lin_abc', NODE_ENV: 'test' });
+    const result = resolveGitHubToken({ UNRELATED_API_KEY: 'unrelated_abc', NODE_ENV: 'test' });
     expect(result.token).toBeUndefined();
     expect(result.source).toBeUndefined();
   });

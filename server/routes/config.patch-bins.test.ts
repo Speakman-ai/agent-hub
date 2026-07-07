@@ -159,31 +159,31 @@ describe('PATCH /api/config — engine bin paths', () => {
     // Defaults to 'xai'; the settings page surfaces it so the selector can
     // render the current choice.
     const initial = await request.get('/api/config').expect(200);
-    expect(['xai', 'openai', 'gemini']).toContain(initial.body.transcriptionProvider);
+    expect(['xai', 'openai']).toContain(initial.body.transcriptionProvider);
     expect(typeof initial.body.geminiApiKeySet).toBe('boolean');
     expect(typeof initial.body.xaiApiKeySet).toBe('boolean');
 
     const saved = await request
       .patch('/api/config')
-      .send({ transcriptionProvider: 'gemini' })
+      .send({ transcriptionProvider: 'openai' })
       .expect(200);
-    expect(saved.body.updated).toEqual({ transcriptionProvider: 'gemini' });
-    expect(readFileConfig().transcriptionProvider).toBe('gemini');
+    expect(saved.body.updated).toEqual({ transcriptionProvider: 'openai' });
+    expect(readFileConfig().transcriptionProvider).toBe('openai');
 
     const after = await request.get('/api/config').expect(200);
-    expect(after.body.transcriptionProvider).toBe('gemini');
+    expect(after.body.transcriptionProvider).toBe('openai');
 
     // Reset to the default so other tests aren't affected.
-    await request.patch('/api/config').send({ transcriptionProvider: 'openai' }).expect(200);
+    await request.patch('/api/config').send({ transcriptionProvider: 'xai' }).expect(200);
   });
 
   it('normalizes transcriptionProvider casing/whitespace', async () => {
     const res = await request
       .patch('/api/config')
-      .send({ transcriptionProvider: '  GEMINI  ' })
+      .send({ transcriptionProvider: '  OPENAI  ' })
       .expect(200);
-    expect(res.body.updated).toEqual({ transcriptionProvider: 'gemini' });
-    await request.patch('/api/config').send({ transcriptionProvider: 'openai' }).expect(200);
+    expect(res.body.updated).toEqual({ transcriptionProvider: 'openai' });
+    await request.patch('/api/config').send({ transcriptionProvider: 'xai' }).expect(200);
   });
 
   it('accepts xai as the transcriptionProvider', async () => {
@@ -202,7 +202,7 @@ describe('PATCH /api/config — engine bin paths', () => {
       .send({ transcriptionProvider: 'deepgram' })
       .expect(400);
     expect(res.body.error).toMatch(/Invalid transcriptionProvider/i);
-    expect(res.body.accepted).toEqual(['xai', 'openai', 'gemini']);
+    expect(res.body.accepted).toEqual(['xai', 'openai']);
   });
 
   it('still rejects updates with no allowlisted fields', async () => {

@@ -18,18 +18,13 @@
  *       actionable 415.
  *     - `openai` — OpenAI Whisper (`/v1/audio/transcriptions`) with
  *       `config.openaiApiKey`. Accepts every format the composer records.
- *     - `gemini` — Gemini audio-understanding (`generateContent`) with
- *       `config.geminiApiKey`. Only accepts the formats Gemini documents
- *       (ogg / mp3 / wav / flac); WebM / MP4 are rejected with 415.
  * • No persistence: the audio buffer is held in memory long enough to POST to
  *   the provider and then discarded. Only the transcript is returned. This
  *   sidesteps privacy / storage questions from the intake ticket.
  * • Graceful degradation: if the selected provider's API key is not configured
  *   the endpoint returns 501 so the client can fall back to on-device
  *   recognition (Web Speech API on web/Electron) without a hard error.
- * • Size limit: 25 MB (Whisper's documented max per request). Gemini inline
- *   requests are capped tighter (base64 inflation must stay under Gemini's
- *   20 MB request ceiling).
+ * • Size limit: 25 MB (Whisper's documented max per request).
  */
 
 import { Router, Request, Response } from 'express';
@@ -37,11 +32,6 @@ import express from 'express';
 import type { RouteDeps, TranscriptionProvider } from '../types.js';
 
 const MAX_AUDIO_SIZE = 25 * 1024 * 1024; // 25 MB — Whisper per-request limit
-
-// Gemini's documented per-request ceiling is 20 MB including the base64 blob
-// and prompt. base64 inflates raw bytes ~33%, so cap raw audio at 14 MB to stay
-// comfortably under the limit without an extra round-trip to the Files API.
-const GEMINI_MAX_INLINE_AUDIO = 14 * 1024 * 1024;
 
 // Content types the Whisper API accepts. We keep this narrow so callers can't
 // proxy arbitrary binaries through a public endpoint.
@@ -89,42 +79,6 @@ export function normalizeAudioContentType(ct: string | undefined): string | null
 
 export function extensionForAudioType(contentType: string): string {
   return MIME_TO_EXT[contentType] ?? 'bin';
-}
-
-// Audio content-types Gemini's audio-understanding endpoint accepts, mapped to
-// the exact MIME string Gemini expects. The keys mirror Gemini's documented
-// formats (wav / mp3 / aiff / aac / ogg / flac). WebM / MP4 / M4A are
-// intentionally absent — Gemini does not document support for them, so we 415
-// rather than ship a blob the API will reject.
-// See https://ai.google.dev/gemini-api/docs/audio.
-const GEMINI_MIME_FOR: Record<string, string> = {
-  'audio/ogg': 'audio/ogg',
-  'audio/mpeg': 'audio/mp3',
-  'audio/mp3': 'audio/mp3',
-  'audio/wav': 'audio/wav',
-  'audio/x-wav': 'audio/wav',
-  'audio/wave': 'audio/wav',
-  'audio/flac': 'audio/flac',
-  'audio/x-flac': 'audio/flac',
-  'audio/aac': 'audio/aac',
-  'audio/aiff': 'audio/aiff',
-  'audio/x-aiff': 'audio/aiff',
-};
-
-// Distinct Gemini-supported MIME strings, surfaced in the 415 `accepted`
-// response so the hint matches what the API actually accepts.
-const GEMINI_ACCEPTED_MIMES: readonly string[] = [
-  'audio/wav',
-  'audio/mp3',
-  'audio/aiff',
-  'audio/aac',
-  'audio/ogg',
-  'audio/flac',
-];
-
-/** Gemini-supported MIME string for a normalized content-type, or null. */
-export function geminiMimeForAudioType(contentType: string): string | null {
-  return GEMINI_MIME_FOR[contentType] ?? null;
 }
 
 // The content-types this route routes to xAI directly: the INTERSECTION of
@@ -188,88 +142,7 @@ export function resolveTranscriptionProvider(
     .trim()
     .toLowerCase();
   if (v === 'openai') return 'openai';
-  if (v === 'gemini') return 'gemini';
   return 'xai';
-}
-
-interface GeminiResponse {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  error?: { message?: string; status?: string; code?: number };
-  promptFeedback?: { blockReason?: string };
-}
-
-/**
- * Transcribes audio with the Gemini `generateContent` audio-understanding path
- * (request-response, not streaming STT). Audio is sent inline as base64.
- * Exported for test-level mocking. `fetchImpl` defaults to global `fetch`.
- */
-export async function transcribeWithGemini(opts: {
-  apiKey: string;
-  audio: Buffer;
-  geminiMime: string;
-  language?: string;
-  fetchImpl?: typeof fetch;
-  model?: string;
-}): Promise<string> {
-  const { apiKey, audio, geminiMime, language } = opts;
-  const fetchFn = opts.fetchImpl ?? fetch;
-  const model = opts.model || process.env.GEMINI_TRANSCRIBE_MODEL || 'gemini-2.5-flash';
-
-  const prompt =
-    'Transcribe this audio clip verbatim. Return only the spoken text with no ' +
-    'preamble, commentary, quotation marks, or speaker labels.' +
-    (language ? ` The audio is in language code "${language}".` : '');
-
-  const res = await fetchFn(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      model,
-    )}:generateContent`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: geminiMime, data: audio.toString('base64') } },
-            ],
-          },
-        ],
-      }),
-    },
-  );
-
-  const body = (await res.json().catch(() => ({}))) as GeminiResponse;
-
-  if (!res.ok) {
-    const msg = body?.error?.message || `Gemini request failed (HTTP ${res.status})`;
-    throw Object.assign(new Error(msg), { status: res.status });
-  }
-
-  if (body.promptFeedback?.blockReason) {
-    throw Object.assign(
-      new Error(`Gemini blocked the audio (${body.promptFeedback.blockReason})`),
-      { status: 422 },
-    );
-  }
-
-  const text = body.candidates?.[0]?.content?.parts
-    ?.map((p) => p?.text ?? '')
-    .join('')
-    .trim();
-
-  // An empty `parts` array (or parts with no `text`) yields '' here. Treat that
-  // as an upstream failure rather than a successful blank transcript, otherwise
-  // a quota / safety / model hiccup silently looks like "we heard nothing".
-  if (!text) {
-    throw Object.assign(new Error('Gemini returned an empty transcript'), { status: 502 });
-  }
-
-  return text;
 }
 
 export interface XaiSttResponse {
@@ -434,42 +307,6 @@ export default function createTranscribeRoutes(deps: RouteDeps): Router {
             provider,
             hint: `Set the ${label} API key in Account settings (or change the transcription provider) or use on-device transcription.`,
           });
-
-        if (provider === 'gemini') {
-          if (!config.geminiApiKey) return notConfigured('Gemini');
-
-          const geminiMime = geminiMimeForAudioType(contentType);
-          if (!geminiMime) {
-            // Gemini can't read this recording (e.g. WebM from Chrome). 415 so
-            // the client can surface an actionable message: switch provider or
-            // record in a Gemini-supported format.
-            return res.status(415).json({
-              error: `Gemini cannot transcribe ${contentType} audio`,
-              provider: 'gemini',
-              accepted: GEMINI_ACCEPTED_MIMES,
-              hint: 'Switch the transcription provider to OpenAI, or record in WAV / MP3 / AIFF / AAC / OGG / FLAC.',
-            });
-          }
-          if (buf.length > GEMINI_MAX_INLINE_AUDIO) {
-            return res.status(413).json({
-              error: `Audio too large for Gemini. Max size: ${
-                GEMINI_MAX_INLINE_AUDIO / 1024 / 1024
-              }MB`,
-              provider: 'gemini',
-            });
-          }
-
-          const model = process.env.GEMINI_TRANSCRIBE_MODEL || 'gemini-2.5-flash';
-          const transcript = await transcribeWithGemini({
-            apiKey: config.geminiApiKey,
-            audio: buf,
-            geminiMime,
-            language,
-            model,
-          });
-
-          return res.json({ transcript, provider: 'gemini', model });
-        }
 
         if (provider === 'xai') {
           // Use xAI only when its key is set AND it documents this container.

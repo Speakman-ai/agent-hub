@@ -20,7 +20,7 @@ const SkillCredentialSpecSchema = z
   .object({
     name: z.string().openapi({
       description: 'POSIX env var name the credential is injected as.',
-      example: 'LINEAR_API_KEY',
+      example: 'EXAMPLE_API_KEY',
     }),
     label: z.string().optional(),
     description: z.string().optional(),

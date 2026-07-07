@@ -83,11 +83,15 @@ export interface GoogleStatus {
   serverConfigured: boolean;
 }
 
-export default function GoogleConnectionSection() {
+export default function GoogleConnectionSection({ bare = false }: { bare?: boolean } = {}) {
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // When embedded in a shared Google card the outer chrome is dropped so this
+  // section reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
 
   const load = useCallback(async (opts: { silent?: boolean } = {}) => {
     const { silent = false } = opts;
@@ -146,7 +150,7 @@ export default function GoogleConnectionSection() {
 
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <div className="flex items-center gap-2 text-sm text-gray-400">
           <Loader2 size={14} className="animate-spin" />
           Loading Google connection…
@@ -160,7 +164,7 @@ export default function GoogleConnectionSection() {
   const grantedScopes: string[] = Array.isArray(status?.grantedScopes) ? status.grantedScopes : [];
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4">
+    <div className={shellClass}>
       <h4 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
         <Mail size={14} /> Google Account
       </h4>

@@ -12,9 +12,6 @@ vi.mock('./skill-credentials-store.js', () => ({
 vi.mock('./skill-credentials-resolve.js', () => ({
   readCredentialsSchemaForSkill: vi.fn(() => ({ error: null, credentials: [] })),
 }));
-vi.mock('./linear-skill-auth-resolve.js', () => ({
-  hasLinearApiKey: () => true,
-}));
 
 const { listEnabledSkills } = await import('./agent-skills-list.js');
 const { mergeSkillCredentialSpawnEnv } = await import('./skill-credentials-spawn.js');

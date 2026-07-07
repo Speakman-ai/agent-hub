@@ -37,7 +37,10 @@ import { StatusChip } from './MyClaudeAuthSection';
  * displayed in a copy-friendly card so the user can paste it into the
  * verification page they opened.
  */
-export default function MyCodexAuthSection() {
+export default function MyCodexAuthSection({ bare = false }: { bare?: boolean } = {}) {
+  // When embedded in a shared credentials card the outer chrome is dropped so
+  // this section reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
   // Device-login state ----------------------------------------------------
   const [browserAuth, setBrowserAuth] = useState<any>(null);
   const [browserLoading, setBrowserLoading] = useState(true);
@@ -249,7 +252,7 @@ export default function MyCodexAuthSection() {
 
   if (browserLoading && pasteLoading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4 flex items-center gap-2 text-sm text-gray-400">
+      <div className={`${shellClass} flex items-center gap-2 text-sm text-gray-400`}>
         <Loader2 size={14} className="animate-spin" />
         Loading your Codex credentials…
       </div>
@@ -258,7 +261,7 @@ export default function MyCodexAuthSection() {
 
   if (pasteUnauthenticated) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-2">
           <Terminal size={14} /> Personal Codex credentials
         </h4>
@@ -280,7 +283,7 @@ export default function MyCodexAuthSection() {
   const apiKeyHostFallback = !!pasteData?.hostConfigFallback?.apiKey;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-5" data-testid="my-codex-auth">
+    <div className={`${shellClass} space-y-5`} data-testid="my-codex-auth">
       <div>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <Terminal size={14} /> Personal Codex credentials

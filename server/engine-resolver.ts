@@ -85,8 +85,8 @@ export interface ResolvedOneShotEngine {
  * rough order of UI prominence in the engine picker.
  *
  * Gemini is deliberately EXCLUDED — it is reserved for RAG/embeddings
- * (wiki + code search) and transcription, which call the Gemini API key
- * directly and never go through this engine path. It is not offered as a
+ * (wiki + code search), which call the Gemini API key directly and never go
+ * through this engine path. It is not offered as a
  * selectable agent engine (the web/mobile pickers omit it) and must not be
  * auto-selected for userless background work. Google removed the Pro models
  * from the Gemini free tier on 2026-04-01, so a host free-tier key now 429s
@@ -109,8 +109,8 @@ export const DEFAULT_FALLBACK_CHAIN: readonly SupportedEngine[] = [
 /**
  * Engines this resolver must NEVER select, even when a caller passes one as
  * `preferred` (e.g. an agent/cron row with `engine: "gemini-cli"`). Gemini is
- * reserved for RAG/embeddings + transcription, which call the Gemini API key
- * directly and never spawn a one-shot agent CLI through this path. It is not a
+ * reserved for RAG/embeddings, which call the Gemini API key directly and never
+ * spawn a one-shot agent CLI through this path. It is not a
  * selectable agent engine (the web/mobile pickers omit it). Crucially, a host
  * that configures a Gemini key for RAG makes the gemini-cli availability probe
  * report `available: true` with no acting user — so without this guard a

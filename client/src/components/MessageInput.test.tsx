@@ -547,9 +547,9 @@ describe('MessageInput voice transcription', () => {
 
   it('surfaces the server hint on 415 (provider cannot read this format)', async () => {
     ft = installFetchStatus(415, {
-      error: 'Gemini cannot transcribe audio/webm audio',
-      provider: 'gemini',
-      hint: 'Switch the transcription provider to OpenAI, or record in OGG / MP3 / WAV / FLAC.',
+      error: 'xAI cannot transcribe audio/webm audio',
+      provider: 'xai',
+      hint: 'Record in WAV / MP3 / OGG / FLAC / AAC / MP4 / M4A, configure an OpenAI API key for automatic fallback, or switch the transcription provider.',
     });
     const onFileError = vi.fn();
     render(<MessageInput {...baseProps} onFileError={onFileError} />);

@@ -11,7 +11,10 @@ function normalizeCode(value: string) {
   return value.trim().replace(/\s+/g, '');
 }
 
-export default function MfaSettingsPanel({ mfaEnabled, onMfaChanged }: any) {
+export default function MfaSettingsPanel({ mfaEnabled, onMfaChanged, bare = false }: any) {
+  // When embedded in a shared card the outer chrome is dropped so this section
+  // reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
   const [enrollment, setEnrollment] = useState<any>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [code, setCode] = useState('');
@@ -115,7 +118,7 @@ export default function MfaSettingsPanel({ mfaEnabled, onMfaChanged }: any) {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+    <div className={`${shellClass} space-y-4`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">

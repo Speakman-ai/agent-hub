@@ -26,7 +26,7 @@ import { api } from '../utils/api';
  * Rendered inside `AccountSection.jsx` so the per-user view lives next to
  * the rest of the Account tab (API Keys, Log out, role).
  */
-export default function MyClaudeAuthSection() {
+export default function MyClaudeAuthSection({ bare = false }: { bare?: boolean } = {}) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -44,6 +44,10 @@ export default function MyClaudeAuthSection() {
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+
+  // When embedded in a shared credentials card the outer chrome is dropped so
+  // this section reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
 
   const load = useCallback(async () => {
     setError(null);
@@ -149,7 +153,7 @@ export default function MyClaudeAuthSection() {
 
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <div className="flex items-center gap-2 text-sm text-gray-400">
           <Loader2 size={14} className="animate-spin" />
           Loading your Claude credentials…
@@ -163,7 +167,7 @@ export default function MyClaudeAuthSection() {
     // useful to render. The host-wide ClaudeAuthSection (Settings → Claude
     // Auth) still applies.
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-2">
           <UserCircle2 size={14} /> Personal Claude credentials
         </h4>
@@ -206,7 +210,7 @@ export default function MyClaudeAuthSection() {
   const oauthExpired = !!data?.claudeCodeOAuthExpired;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-6">
+    <div className={`${shellClass} space-y-6`}>
       <div>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <UserCircle2 size={14} /> Personal Claude credentials

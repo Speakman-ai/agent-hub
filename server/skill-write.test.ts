@@ -88,13 +88,13 @@ describe('validateAndComposeSkill', () => {
     const res = validateAndComposeSkill({
       name: 'foo',
       description: 'x',
-      credentials: [{ name: 'LINEAR_API_KEY', type: 'secret', required: true }],
+      credentials: [{ name: 'EXAMPLE_API_KEY', type: 'secret', required: true }],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const parsed = matter(res.content);
     expect(parsed.data.credentials).toEqual([
-      expect.objectContaining({ name: 'LINEAR_API_KEY', type: 'secret', required: true }),
+      expect.objectContaining({ name: 'EXAMPLE_API_KEY', type: 'secret', required: true }),
     ]);
   });
 

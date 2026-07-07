@@ -56,7 +56,7 @@ export function parseCredentialsDeclaration(raw: unknown): ParsedCredentials {
     if (!ENV_NAME_RE.test(name)) {
       return {
         credentials: [],
-        error: `credentials[${i}] name "${name}" must look like a POSIX env var (e.g. LINEAR_API_KEY)`,
+        error: `credentials[${i}] name "${name}" must look like a POSIX env var (e.g. EXAMPLE_API_KEY)`,
       };
     }
     if (names.has(name)) {

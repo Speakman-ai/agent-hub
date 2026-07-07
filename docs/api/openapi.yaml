@@ -2867,11 +2867,10 @@ components:
           enum:
             - xai
             - openai
-            - gemini
-          description: Provider used by /api/transcribe for chat voice transcription. `xai` (default) uses the xAI Grok speech-to-text endpoint; `openai` uses Whisper; `gemini` uses the Gemini audio-understanding path. Selectable on the settings page.
+          description: Provider used by /api/transcribe for chat voice transcription. `xai` (default) uses the xAI Grok speech-to-text endpoint; `openai` uses Whisper. Selectable on the settings page.
         geminiApiKeySet:
           type: boolean
-          description: Whether the host Gemini API key is configured (used for Gemini transcription).
+          description: Whether the host Gemini API key is configured (used for wiki RAG memory lookups).
         xaiApiKeySet:
           type: boolean
           description: Whether the host xAI (Grok) API key is configured (used for the default xAI transcription provider).
@@ -8440,7 +8439,7 @@ components:
                   name:
                     type: string
                     description: POSIX env var name the credential is injected as.
-                    example: LINEAR_API_KEY
+                    example: EXAMPLE_API_KEY
                   label:
                     type: string
                   description:
@@ -8507,7 +8506,7 @@ components:
                   name:
                     type: string
                     description: POSIX env var name the credential is injected as.
-                    example: LINEAR_API_KEY
+                    example: EXAMPLE_API_KEY
                   label:
                     type: string
                   description:
@@ -8576,7 +8575,7 @@ components:
                   name:
                     type: string
                     description: POSIX env var name the credential is injected as.
-                    example: LINEAR_API_KEY
+                    example: EXAMPLE_API_KEY
                   label:
                     type: string
                   description:
@@ -8642,7 +8641,7 @@ components:
                   name:
                     type: string
                     description: POSIX env var name the credential is injected as.
-                    example: LINEAR_API_KEY
+                    example: EXAMPLE_API_KEY
                   label:
                     type: string
                   description:
@@ -8761,7 +8760,7 @@ components:
               name:
                 type: string
                 description: POSIX env var name the credential is injected as.
-                example: LINEAR_API_KEY
+                example: EXAMPLE_API_KEY
               label:
                 type: string
               description:
@@ -8839,7 +8838,7 @@ components:
               name:
                 type: string
                 description: POSIX env var name the credential is injected as.
-                example: LINEAR_API_KEY
+                example: EXAMPLE_API_KEY
               label:
                 type: string
               description:
@@ -17381,8 +17380,7 @@ paths:
                   enum:
                     - xai
                     - openai
-                    - gemini
-                  description: Voice-transcription provider for /api/transcribe. Must be `xai`, `openai`, or `gemini`; any other value returns 400.
+                  description: Voice-transcription provider for /api/transcribe. Must be `xai` or `openai`; any other value returns 400.
                 publicUrl:
                   type: string
                 codexDangerBypass:

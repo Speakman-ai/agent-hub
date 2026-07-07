@@ -203,7 +203,7 @@ const PLUGIN_API_KEYS = [
         id: 'gemini',
         label: 'Gemini API key',
         placeholder: 'AIza...',
-        description: 'Used for voice transcription and wiki RAG.',
+        description: 'Used for wiki RAG (memory lookups).',
         load: () => api.getGeminiAuth(),
         loadConfigured: (body: any) => !!body?.apiKey?.configured,
         save: (value: any) => api.setGeminiApiKey(value),

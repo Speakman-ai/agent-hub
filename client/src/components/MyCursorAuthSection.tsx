@@ -37,7 +37,10 @@ import { StatusChip } from './MyClaudeAuthSection';
  * headless CI or air-gapped hosts). The two state machines are
  * independent — refreshing one does not invalidate the other.
  */
-export default function MyCursorAuthSection() {
+export default function MyCursorAuthSection({ bare = false }: { bare?: boolean } = {}) {
+  // When embedded in a shared credentials card the outer chrome is dropped so
+  // this section reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
   // Browser-login state ---------------------------------------------------
   const [browserAuth, setBrowserAuth] = useState<any>(null);
   const [browserLoading, setBrowserLoading] = useState(true);
@@ -234,7 +237,7 @@ export default function MyCursorAuthSection() {
 
   if (browserLoading && pasteLoading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4 flex items-center gap-2 text-sm text-gray-400">
+      <div className={`${shellClass} flex items-center gap-2 text-sm text-gray-400`}>
         <Loader2 size={14} className="animate-spin" />
         Loading your Cursor credentials…
       </div>
@@ -243,7 +246,7 @@ export default function MyCursorAuthSection() {
 
   if (pasteUnauthenticated) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-2">
           <Terminal size={14} /> Personal Cursor credentials
         </h4>
@@ -265,7 +268,7 @@ export default function MyCursorAuthSection() {
   const apiKeyHostFallback = !!pasteData?.hostConfigFallback?.apiKey;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-5" data-testid="my-cursor-auth">
+    <div className={`${shellClass} space-y-5`} data-testid="my-cursor-auth">
       <div>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <Terminal size={14} /> Personal Cursor credentials

@@ -443,14 +443,14 @@ const config: AppConfig = {
   openaiApiKey: resolve('OPENAI_API_KEY', 'openaiApiKey', null),
   geminiApiKey: resolve('GEMINI_API_KEY', 'geminiApiKey', null),
   xaiApiKey: resolve('XAI_API_KEY', 'xaiApiKey', null),
-  // Which provider /api/transcribe uses. Recognized values are 'xai' (default),
-  // 'openai', and 'gemini'. Anything unknown falls back to the default so a typo
-  // never disables transcription silently.
-  transcriptionProvider: ((): 'xai' | 'openai' | 'gemini' => {
+  // Which provider /api/transcribe uses. Recognized values are 'xai' (default)
+  // and 'openai'. Anything unknown falls back to the default so a typo never
+  // disables transcription silently.
+  transcriptionProvider: ((): 'xai' | 'openai' => {
     const v = String(resolve('TRANSCRIPTION_PROVIDER', 'transcriptionProvider', 'xai'))
       .trim()
       .toLowerCase();
-    return v === 'openai' ? 'openai' : v === 'gemini' ? 'gemini' : 'xai';
+    return v === 'openai' ? 'openai' : 'xai';
   })(),
   // Optional Codex CLI profile name — when set, every `codex exec` spawn
   // gets `--profile <name>` appended so the CLI loads the matching profile

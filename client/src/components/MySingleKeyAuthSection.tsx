@@ -22,6 +22,7 @@ export default function MySingleKeyAuthSection({
   getter,
   setter,
   hostSettingHint,
+  bare = false,
 }: any) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -35,6 +36,10 @@ export default function MySingleKeyAuthSection({
 
   const inputClass =
     'w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-gray-600 font-mono';
+
+  // When embedded in a shared credentials card the outer chrome is dropped so
+  // this section reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
 
   const load = useCallback(async () => {
     setError(null);
@@ -92,7 +97,7 @@ export default function MySingleKeyAuthSection({
 
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <div className="flex items-center gap-2 text-sm text-gray-400">
           <Loader2 size={14} className="animate-spin" />
           Loading your {engineLabel} credentials…
@@ -104,7 +109,7 @@ export default function MySingleKeyAuthSection({
   if (unauthenticated) {
     // Legacy global apiKey auth has no per-user identity.
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-2">
           {Icon ? <Icon size={14} /> : <Key size={14} />} Personal {engineLabel} credentials
         </h4>
@@ -142,7 +147,7 @@ export default function MySingleKeyAuthSection({
   const apiKeyHostFallback = !!data?.hostConfigFallback?.apiKey;
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+    <div className={`${shellClass} space-y-4`}>
       <div>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           {Icon ? <Icon size={14} /> : <Key size={14} />} Personal {engineLabel} credentials

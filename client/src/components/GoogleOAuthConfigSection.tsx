@@ -16,7 +16,7 @@ import { getAuthHeaders, getApiBase } from '../utils/connection';
  *   PUT    /api/config/google-oauth   — { clientId, clientSecret }
  *   DELETE /api/config/google-oauth   — clear
  */
-export default function GoogleOAuthConfigSection() {
+export default function GoogleOAuthConfigSection({ bare = false }: { bare?: boolean } = {}) {
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
@@ -24,6 +24,10 @@ export default function GoogleOAuthConfigSection() {
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // When embedded in a shared Google card the outer chrome is dropped so this
+  // section reads as one row inside the parent card.
+  const shellClass = bare ? '' : 'bg-gray-800 rounded-xl p-4';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,7 +101,7 @@ export default function GoogleOAuthConfigSection() {
 
   if (loading) {
     return (
-      <div className="bg-gray-800 rounded-xl p-4">
+      <div className={shellClass}>
         <div className="flex items-center gap-2 text-sm text-gray-400">
           <Loader2 size={14} className="animate-spin" />
           Loading Google OAuth status…
@@ -119,7 +123,7 @@ export default function GoogleOAuthConfigSection() {
       : '/api/auth/google/callback');
 
   return (
-    <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+    <div className={`${shellClass} space-y-4`}>
       <div>
         <h4 className="text-sm font-medium text-gray-300 flex items-center gap-2">
           <KeyRound size={14} /> Google OAuth App
