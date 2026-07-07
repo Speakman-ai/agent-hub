@@ -1297,6 +1297,73 @@ export async function submitReplaySegment(
   return res.json();
 }
 
+// ─── User attribution (Datadog setUser, forward-only) ─────────────
+//
+// Customer-supplied identity for the current page. `setUser` / `setUserProperty`
+// / `clearUser` mirror the Datadog RUM SDK. Semantics are FORWARD-ONLY: the
+// active identity is read at segment-flush time and stamped onto that segment's
+// meta as `usr`, so only segments emitted AFTER a `setUser` carry it — already
+// emitted segments are never backfilled, and `clearUser` stops attribution on
+// every later segment. Standard keys (`id`, `name`, `email`) and any extra keys
+// travel together in the `usr` object; the server splits standard columns from
+// custom attributes when it rolls the session row up.
+//
+// Identity is customer-supplied PII scoped to the RUM token's tenant — the
+// recorder only carries it forward; masking/retention/deletion stay
+// server-authoritative.
+
+let _activeUser: Record<string, any> | null = null;
+
+/** Drop null/undefined values and coerce keys to strings; returns null when the
+ *  result carries no attributes so an empty identity reads as "no user". */
+function normalizeUserIdentity(user: any): Record<string, any> | null {
+  if (!user || typeof user !== 'object' || Array.isArray(user)) return null;
+  const next: Record<string, any> = {};
+  for (const [key, value] of Object.entries(user)) {
+    if (!key || value == null) continue;
+    next[key] = value;
+  }
+  return Object.keys(next).length ? next : null;
+}
+
+/**
+ * Set the identity attributed to this page's session, replacing any prior one.
+ * `id` is the required Datadog identifier; `name` / `email` are the other
+ * standard fields; any extra keys become custom attributes. Null/undefined
+ * values are dropped. Passing an empty (or non-object) identity clears
+ * attribution, same as {@link clearUser}. Forward-only: takes effect on the
+ * NEXT segment flushed, never on already-emitted segments.
+ */
+export function setUser(user: any): void {
+  _activeUser = normalizeUserIdentity(user);
+}
+
+/**
+ * Set or remove a single identity property (standard or custom) while keeping
+ * the rest of the active identity. A null/undefined `value` removes that key;
+ * removing the last key clears attribution. No-op when `key` is empty.
+ */
+export function setUserProperty(key: any, value: any): void {
+  const k = key == null ? '' : String(key);
+  if (!k) return;
+  const base: Record<string, any> = _activeUser ? { ..._activeUser } : {};
+  if (value == null) delete base[k];
+  else base[k] = value;
+  _activeUser = Object.keys(base).length ? base : null;
+}
+
+/** Stop attributing segments to a user. Forward-only: later segments carry no
+ *  `usr`; already-emitted segments are unaffected. */
+export function clearUser(): void {
+  _activeUser = null;
+}
+
+/** The identity that a segment flushed right now would carry, or null. Returns a
+ *  copy so callers can't mutate the live identity. Test/diagnostic accessor. */
+export function getActiveUser(): Record<string, any> | null {
+  return _activeUser ? { ..._activeUser } : null;
+}
+
 /**
  * Streams a session to the segment-ingest endpoint as view-scoped segments with
  * Datadog semantics.
@@ -1337,6 +1404,7 @@ export class SegmentReplayFlusher {
     meta = null,
     rumToken = null,
     requestSnapshot = null,
+    resolveUser = getActiveUser,
   }: any = {}) {
     if (sessionId == null || String(sessionId) === '') {
       throw new Error('SegmentReplayFlusher requires a sessionId');
@@ -1358,6 +1426,7 @@ export class SegmentReplayFlusher {
     this._meta = meta;
     this._rumToken = rumToken || null;
     this._requestSnapshot = typeof requestSnapshot === 'function' ? requestSnapshot : null;
+    this._resolveUser = typeof resolveUser === 'function' ? resolveUser : getActiveUser;
 
     this._indexInView = 0;
     this._pending = [];
@@ -1446,16 +1515,32 @@ export class SegmentReplayFlusher {
     this.active = false;
   }
 
-  /** Meta for a segment: only the view-opening segment (index 0) carries it,
-   *  tagging the capture as a segmented continuous stream. */
+  /** The identity to stamp on the segment being flushed, or null. Read at
+   *  flush time so attribution is FORWARD-ONLY — a `setUser` between two flushes
+   *  attaches to the later segment only, and `clearUser` drops it again. */
+  _activeUser() {
+    try {
+      const usr = this._resolveUser ? this._resolveUser() : null;
+      return usr && typeof usr === 'object' && Object.keys(usr).length ? usr : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Meta for a segment: the view-opening segment (index 0) tags the capture as
+   *  a segmented continuous stream; any segment carrying identity also stamps
+   *  `usr`. Returns null when an incremental segment has nothing to declare. */
   _segmentMeta(reason: any) {
-    if (this._indexInView !== 0) return null;
-    return {
+    const usr = this._activeUser();
+    if (this._indexInView !== 0) return usr ? { usr } : null;
+    const meta: Record<string, any> = {
       ...(this._meta || {}),
       trigger: 'continuous',
       storage: 'segmented',
       reason: reason ?? 'rollover',
     };
+    if (usr) meta.usr = usr;
+    return meta;
   }
 
   /**
@@ -2585,4 +2670,5 @@ export function _resetSessionReplayForTest() {
   _continuousFlusher = null;
   _tailFlushListenersWired = false;
   _rumToken = null;
+  _activeUser = null;
 }

@@ -60,6 +60,10 @@ import {
   installViewChangeDetector,
   SESSION_INACTIVITY_TIMEOUT_MS,
   SESSION_MAX_DURATION_MS,
+  setUser,
+  setUserProperty,
+  clearUser,
+  getActiveUser,
 } from './sessionReplay';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
@@ -2571,6 +2575,193 @@ describe('SegmentReplayFlusher', () => {
     expect(submitSegment).toHaveBeenCalledTimes(1);
     f.stop();
     expect(state.cleared).toBe(true);
+  });
+});
+
+describe('setUser / setUserProperty / clearUser', () => {
+  afterEach(() => clearUser());
+
+  it('starts with no active identity', () => {
+    expect(getActiveUser()).toBeNull();
+  });
+
+  it('setUser stores standard fields and custom attributes together', () => {
+    setUser({ id: 'u1', name: 'Ada', email: 'ada@example.com', plan: 'pro' });
+    expect(getActiveUser()).toEqual({
+      id: 'u1',
+      name: 'Ada',
+      email: 'ada@example.com',
+      plan: 'pro',
+    });
+  });
+
+  it('setUser drops null/undefined values and clears on an empty identity', () => {
+    setUser({ id: 'u1', name: null, email: undefined });
+    expect(getActiveUser()).toEqual({ id: 'u1' });
+    setUser({ id: null });
+    expect(getActiveUser()).toBeNull();
+    setUser('nope');
+    expect(getActiveUser()).toBeNull();
+  });
+
+  it('setUser replaces the prior identity wholesale', () => {
+    setUser({ id: 'u1', plan: 'pro' });
+    setUser({ id: 'u2' });
+    expect(getActiveUser()).toEqual({ id: 'u2' });
+  });
+
+  it('setUserProperty adds/updates a single key while keeping the rest', () => {
+    setUser({ id: 'u1' });
+    setUserProperty('plan', 'pro');
+    expect(getActiveUser()).toEqual({ id: 'u1', plan: 'pro' });
+    setUserProperty('plan', 'enterprise');
+    expect(getActiveUser()).toEqual({ id: 'u1', plan: 'enterprise' });
+  });
+
+  it('setUserProperty with a null value removes that key; removing the last clears', () => {
+    setUser({ id: 'u1', plan: 'pro' });
+    setUserProperty('plan', null);
+    expect(getActiveUser()).toEqual({ id: 'u1' });
+    setUserProperty('id', undefined);
+    expect(getActiveUser()).toBeNull();
+    setUserProperty('', 'x'); // empty key is a no-op
+    expect(getActiveUser()).toBeNull();
+  });
+
+  it('getActiveUser returns a copy that cannot mutate the live identity', () => {
+    setUser({ id: 'u1' });
+    const snapshot = getActiveUser()!;
+    snapshot.id = 'tampered';
+    expect(getActiveUser()).toEqual({ id: 'u1' });
+  });
+
+  it('clearUser drops attribution', () => {
+    setUser({ id: 'u1' });
+    clearUser();
+    expect(getActiveUser()).toBeNull();
+  });
+});
+
+describe('SegmentReplayFlusher — forward-only user attribution', () => {
+  const ssnap = (ts: any) => snap(ts);
+  const sincr = (ts: any) => incr(ts);
+  afterEach(() => clearUser());
+
+  it('stamps usr onto the view-opening segment alongside the segment meta', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    setUser({ id: 'u1', email: 'ada@example.com' });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000)); // rollover → index 0 flushed
+    await f.settle();
+
+    const meta0 = submitSegment.mock.calls[0][0].meta;
+    expect(meta0.storage).toBe('segmented');
+    expect(meta0.usr).toEqual({ id: 'u1', email: 'ada@example.com' });
+  });
+
+  it('stamps usr onto incremental (index > 0) segments too', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    setUser({ id: 'u1' });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000)); // index 0
+    await f.settle();
+    f.addEvent(sincr(6_500));
+    t = 12_000;
+    f.addEvent(sincr(12_000)); // index 1
+    await f.settle();
+
+    const meta1 = submitSegment.mock.calls[1][0].meta;
+    expect(submitSegment.mock.calls[1][0].indexInView).toBe(1);
+    expect(meta1).toEqual({ usr: { id: 'u1' } });
+  });
+
+  it('is forward-only: a segment emitted before setUser carries no usr; the next one does', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    // Index 0 flushes while anonymous.
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle();
+    expect(submitSegment.mock.calls[0][0].meta.usr).toBeUndefined();
+
+    // Identify mid-session; the NEXT segment picks it up (no backfill of index 0).
+    setUser({ id: 'u1' });
+    f.addEvent(sincr(6_500));
+    t = 12_000;
+    f.addEvent(sincr(12_000));
+    await f.settle();
+    expect(submitSegment.mock.calls[1][0].meta).toEqual({ usr: { id: 'u1' } });
+  });
+
+  it('clearUser stops attribution on later segments', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    setUser({ id: 'u1' });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000)); // index 0 with usr
+    await f.settle();
+    expect(submitSegment.mock.calls[0][0].meta.usr).toEqual({ id: 'u1' });
+
+    clearUser();
+    f.addEvent(sincr(6_500));
+    t = 12_000;
+    f.addEvent(sincr(12_000)); // index 1, now anonymous
+    await f.settle();
+    expect(submitSegment.mock.calls[1][0].meta).toBeNull();
+  });
+
+  it('reads identity from an injected resolveUser at flush time', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let current: any = null;
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      resolveUser: () => current,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    current = { id: 'injected' };
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle();
+    expect(submitSegment.mock.calls[0][0].meta.usr).toEqual({ id: 'injected' });
   });
 });
 
