@@ -7792,6 +7792,113 @@ components:
         - maskAllEnforced
         - flushIntervalMs
       description: Server-delivered per-project session-replay policy.
+    SessionSegmentManifest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        storageLayout:
+          type: string
+          enum:
+            - segmented
+        projectId:
+          type: string
+          nullable: true
+          description: Attribution shared by the session’s segments (null = anonymous).
+        segmentCount:
+          type: number
+        durationMs:
+          type: number
+          description: Span from the earliest segment start to the latest segment end (ms).
+        segments:
+          type: array
+          items:
+            type: object
+            properties:
+              segmentId:
+                type: string
+              viewId:
+                type: string
+                description: Client-minted view id; segments never span views.
+              indexInView:
+                type: number
+                description: 0-based position within the view.
+              hasFullSnapshot:
+                type: boolean
+                description: True when the segment carries an rrweb full snapshot (type 2).
+              startTs:
+                type: number
+                description: Earliest event timestamp in the segment (ms).
+              endTs:
+                type: number
+                description: Latest event timestamp in the segment (ms).
+              eventCount:
+                type: number
+              byteSize:
+                type: number
+                description: Gzipped object size in bytes.
+              eventsUrl:
+                type: string
+                description: Per-segment events endpoint the player fetches to concat.
+            required:
+              - segmentId
+              - viewId
+              - indexInView
+              - hasFullSnapshot
+              - startTs
+              - endTs
+              - eventCount
+              - byteSize
+              - eventsUrl
+            description: One playback-manifest segment pointer.
+          description: Segments in playback order (chronological, then index within a view).
+      required:
+        - sessionId
+        - storageLayout
+        - projectId
+        - segmentCount
+        - durationMs
+        - segments
+      description: Segmented-capture playback manifest for a session.
+    SegmentEvents:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        segmentId:
+          type: string
+        viewId:
+          type: string
+        indexInView:
+          type: number
+        hasFullSnapshot:
+          type: boolean
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: number
+              timestamp:
+                type: number
+              data:
+                nullable: true
+            required:
+              - type
+              - timestamp
+          description: The decoded rrweb events for this one segment.
+        eventCount:
+          type: number
+      required:
+        - sessionId
+        - segmentId
+        - viewId
+        - indexInView
+        - hasFullSnapshot
+        - events
+        - eventCount
+      description: One segment’s decoded rrweb events, for client-side concat.
     RumClientErrorResponse:
       type: object
       properties:
@@ -27483,7 +27590,7 @@ paths:
       tags:
         - Bug Reports
       summary: Paginated session-replay events (authenticated)
-      description: Returns one page of the gunzipped rrweb event array, sliced by `offset`/`limit` (defaults applied + capped server-side) so large captures never load in one request. The page carries `total`/`hasMore` for walking. Same per-replay authorization as the metadata endpoint — unauthorized access is masked as 404.
+      description: Returns one page of the gunzipped rrweb event array, sliced by `offset`/`limit` (defaults applied + capped server-side) so large captures never load in one request. The page carries `total`/`hasMore` for walking. Same per-replay authorization as the metadata endpoint — unauthorized access is masked as 404. This endpoint serves `monolithic` (single-blob) captures only; a `segmented` capture (per the `storage_layout` discriminator) has no monolithic blob to paginate and is rejected 409 — read it via the session segments playback API instead.
       parameters:
         - schema:
             type: string
@@ -27559,6 +27666,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "409":
+          description: The replay is `segmented`; read it via `GET /api/replays/sessions/{sessionId}/segments`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
         "500":
           description: Failed to read the stored blob.
           content:
@@ -27622,6 +27735,79 @@ paths:
                 $ref: "#/components/schemas/SessionReplayMetadata"
         "404":
           description: No replay with that id, or the caller is not authorized to read it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/sessions/{sessionId}/segments:
+    get:
+      tags:
+        - Bug Reports
+      summary: Segmented-capture playback manifest (authenticated)
+      description: Lists a session’s replay segments in playback order (chronological by segment start, then by index within a view) so the player can fetch and concatenate them. Each entry carries a per-segment `eventsUrl`. Authenticated and authorized per-session on the segments’ shared `project_id` (same rule as the monolithic replay read); a session with no segments, or one the caller cannot view, is masked as 404.
+      parameters:
+        - schema:
+            type: string
+            description: Client-minted RUM session id.
+          required: true
+          description: Client-minted RUM session id.
+          name: sessionId
+          in: path
+      responses:
+        "200":
+          description: The playback manifest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSegmentManifest"
+        "404":
+          description: No segments for that session id, or the caller is not authorized to read them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/sessions/{sessionId}/segments/{segmentId}/events:
+    get:
+      tags:
+        - Bug Reports
+      summary: One replay segment’s decoded events (authenticated)
+      description: Returns the decoded rrweb events for a single segment, which the player concatenates client-side. The segment must belong to the path `sessionId` and is authorized on its own `project_id`; not-found, wrong-session, and unauthorized all collapse to 404.
+      parameters:
+        - schema:
+            type: string
+            description: Client-minted RUM session id.
+          required: true
+          description: Client-minted RUM session id.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Segment id from the manifest.
+          required: true
+          description: Segment id from the manifest.
+          name: segmentId
+          in: path
+      responses:
+        "200":
+          description: The segment’s events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SegmentEvents"
+        "404":
+          description: No such segment, it does not belong to the session, or the caller is not authorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "500":
+          description: Failed to read the segment object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "503":
+          description: The segment’s storage backend could not be resolved.
           content:
             application/json:
               schema:

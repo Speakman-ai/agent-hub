@@ -14,12 +14,13 @@ import {
   deleteReplay,
   parseReplayIdFromRef,
   linkReplay,
+  ReplaySegmentedLayoutError,
   DEFAULT_EVENTS_PAGE,
   MAX_EVENTS_PAGE,
   type ReplayEvent,
 } from './replay-store.js';
 import { resetArtifactStoreCache } from '../artifacts/artifact-store.js';
-import type { AppConfig, Stmts } from '../types.js';
+import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
 
 const EVENTS: ReplayEvent[] = [
   { type: 4, timestamp: 1000, data: {} },
@@ -200,6 +201,32 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
     expect(page.total).toBe(3);
     expect(page.events).toHaveLength(3);
     expect(page.events[2]).toMatchObject({ type: 3, timestamp: 1500 });
+  });
+
+  it('reads a monolithic (or NULL-layout legacy) row from the blob', async () => {
+    // storeReplay defaults to the monolithic blob path; a legacy row created
+    // before the storage_layout column is NULL and takes the same path.
+    const row = await storeReplay(deps, { id: 'mono', events: EVENTS });
+    for (const layout of [null, 'monolithic'] as const) {
+      const page = await readReplayEventsPage(deps, { ...row, storage_layout: layout });
+      expect(page.total).toBe(3);
+    }
+  });
+
+  it('refuses to paginate a segmented row via the monolithic read path', async () => {
+    // A segmented capture's bytes live in rum_segments, not the row's blob, so
+    // the monolithic paginated read must reject rather than gunzip a placeholder.
+    const segmentedRow = {
+      id: 'seg',
+      storage_layout: 'segmented',
+      storage_kind: 'local',
+      storage_key: 'unused',
+      storage_bucket: null,
+      storage_region: null,
+    } as unknown as SessionReplayRow;
+    await expect(readReplayEventsPage(deps, segmentedRow)).rejects.toBeInstanceOf(
+      ReplaySegmentedLayoutError,
+    );
   });
 
   it('honors a caller-supplied id', async () => {

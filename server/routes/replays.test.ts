@@ -32,6 +32,7 @@ import {
   ReplayNeedsSnapshotError,
   ReplayAttributionMismatchError,
 } from '../replays/replay-store.js';
+import { appendSegment } from '../replays/segment-store.js';
 import {
   resetArtifactStoreCache,
   getArtifactStoreForLocation,
@@ -70,10 +71,32 @@ function makeReplayStmts(): Stmts {
       storage_key TEXT NOT NULL,
       storage_bucket TEXT,
       storage_region TEXT,
+      storage_layout TEXT NOT NULL DEFAULT 'monolithic',
       support_ticket_id TEXT,
       card_id TEXT,
       meta TEXT
     );
+    CREATE TABLE rum_segments (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      view_id TEXT NOT NULL,
+      project_id TEXT,
+      index_in_view INTEGER NOT NULL,
+      has_full_snapshot INTEGER NOT NULL DEFAULT 0,
+      start_ts INTEGER NOT NULL DEFAULT 0,
+      end_ts INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      byte_size INTEGER NOT NULL DEFAULT 0,
+      storage_kind TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      storage_bucket TEXT,
+      storage_region TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX idx_rum_segments_slot
+      ON rum_segments(session_id, view_id, index_in_view);
+    CREATE INDEX idx_rum_segments_session
+      ON rum_segments(session_id, start_ts, index_in_view);
   `);
   return {
     insertSessionReplay: db.prepare(
@@ -83,7 +106,33 @@ function makeReplayStmts(): Stmts {
           support_ticket_id, card_id, meta)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
+    // Test-only: seed a `segmented`-layout row to exercise the read discriminator.
+    _insertSegmentedReplay: db.prepare(
+      `INSERT INTO session_replays
+         (id, project_id, storage_kind, storage_key, storage_layout)
+       VALUES (?, ?, 'local', 'unused', 'segmented')`,
+    ),
     getSessionReplay: db.prepare('SELECT * FROM session_replays WHERE id = ?'),
+    insertRumSegment: db.prepare(
+      `INSERT INTO rum_segments
+         (id, session_id, view_id, project_id, index_in_view, has_full_snapshot,
+          start_ts, end_ts, event_count, byte_size,
+          storage_kind, storage_key, storage_bucket, storage_region)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getRumSegment: db.prepare('SELECT * FROM rum_segments WHERE id = ?'),
+    listRumSegmentsBySession: db.prepare(
+      `SELECT * FROM rum_segments
+        WHERE session_id = ?
+        ORDER BY start_ts ASC, index_in_view ASC, id ASC`,
+    ),
+    listRumSegmentsByView: db.prepare(
+      `SELECT * FROM rum_segments
+        WHERE session_id = ? AND view_id = ?
+        ORDER BY index_in_view ASC`,
+    ),
+    deleteRumSegment: db.prepare('DELETE FROM rum_segments WHERE id = ?'),
+    deleteRumSegmentsBySession: db.prepare('DELETE FROM rum_segments WHERE session_id = ?'),
     updateSessionReplayStats: db.prepare(
       `UPDATE session_replays
           SET duration_ms = ?, event_count = ?, size = ?, uncompressed_size = ?, meta = ?
@@ -466,10 +515,11 @@ describe('POST /api/replays durable-store failure cleanup', () => {
 describe('GET /api/replays/:id (metadata) + /events (paginated)', () => {
   let app: Express;
   let serverDir: string;
+  let stmts: Stmts;
 
   beforeEach(() => {
     _resetRateLimit();
-    ({ app, serverDir } = makeApp());
+    ({ app, serverDir, stmts } = makeApp());
   });
 
   afterEach(() => {
@@ -542,6 +592,157 @@ describe('GET /api/replays/:id (metadata) + /events (paginated)', () => {
     const id = await ingest([META, SNAPSHOT]);
     const res = await supertest(app).get(`/api/replays/${id}/events?limit=999999`).expect(200);
     expect(res.body.limit).toBe(5000);
+  });
+
+  it('409s the monolithic events read for a segmented row (storage_layout discriminator)', async () => {
+    // Seed a `segmented`-layout session_replays row: its bytes live in
+    // rum_segments, so the monolithic paginated read must steer to the segments
+    // API rather than gunzip the placeholder blob.
+    (
+      stmts as unknown as { _insertSegmentedReplay: { run: (...a: unknown[]) => void } }
+    )._insertSegmentedReplay.run('seg-row', null);
+    const res = await supertest(app).get('/api/replays/seg-row/events').expect(409);
+    expect(res.body.error).toMatch(/segment/i);
+  });
+});
+
+describe('GET /api/replays/sessions/:sessionId/segments (segmented playback)', () => {
+  let app: Express;
+  let serverDir: string;
+  let stmts: Stmts;
+  let config: AppConfig;
+
+  beforeEach(() => {
+    _resetRateLimit();
+    ({ app, serverDir, stmts, config } = makeApp());
+  });
+
+  afterEach(() => {
+    try {
+      if (serverDir && existsSync(serverDir)) rmSync(serverDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
+  });
+
+  /** Seed a two-view session: view-A opens (snapshot) + one incremental,
+   *  view-B opens (snapshot). Appended out of order to prove playback ordering. */
+  async function seedTwoViewSession(sessionId: string, projectId: string | null): Promise<void> {
+    const deps = { stmts, config };
+    await appendSegment(deps, {
+      sessionId,
+      viewId: 'view-B',
+      indexInView: 0,
+      projectId,
+      events: [{ ...SNAPSHOT, timestamp: 5000 }],
+    });
+    await appendSegment(deps, {
+      sessionId,
+      viewId: 'view-A',
+      indexInView: 1,
+      projectId,
+      events: [{ type: 3, timestamp: 1100, data: { source: 2 } }],
+    });
+    await appendSegment(deps, {
+      sessionId,
+      viewId: 'view-A',
+      indexInView: 0,
+      projectId,
+      events: [{ ...SNAPSHOT, timestamp: 1000 }],
+    });
+  }
+
+  it('404s a session with no segments', async () => {
+    await supertest(app).get('/api/replays/sessions/nope/segments').expect(404);
+  });
+
+  it('lists segments in playback order with per-view snapshot boundaries', async () => {
+    await seedTwoViewSession('sess-1', null);
+    const res = await supertest(app).get('/api/replays/sessions/sess-1/segments').expect(200);
+
+    expect(res.body.sessionId).toBe('sess-1');
+    expect(res.body.storageLayout).toBe('segmented');
+    expect(res.body.segmentCount).toBe(3);
+
+    // Ordered across views (view-A before view-B), sequential within a view.
+    expect(
+      res.body.segments.map((s: { viewId: string; indexInView: number }) => [
+        s.viewId,
+        s.indexInView,
+      ]),
+    ).toEqual([
+      ['view-A', 0],
+      ['view-A', 1],
+      ['view-B', 0],
+    ]);
+
+    // has_full_snapshot boundaries: only each view's opening segment.
+    expect(res.body.segments.map((s: { hasFullSnapshot: boolean }) => s.hasFullSnapshot)).toEqual([
+      true,
+      false,
+      true,
+    ]);
+
+    // Every entry advertises its per-segment events URL.
+    for (const s of res.body.segments) {
+      expect(s.eventsUrl).toBe(`/api/replays/sessions/sess-1/segments/${s.segmentId}/events`);
+    }
+  });
+
+  it('streams one segment’s decoded events for client-side concat', async () => {
+    await seedTwoViewSession('sess-2', null);
+    const manifest = await supertest(app).get('/api/replays/sessions/sess-2/segments').expect(200);
+    const opener = manifest.body.segments[0];
+
+    const res = await supertest(app).get(opener.eventsUrl).expect(200);
+    expect(res.body.sessionId).toBe('sess-2');
+    expect(res.body.segmentId).toBe(opener.segmentId);
+    expect(res.body.viewId).toBe('view-A');
+    expect(res.body.hasFullSnapshot).toBe(true);
+    expect(res.body.events).toHaveLength(1);
+    expect(res.body.events[0]).toMatchObject({ type: 2, timestamp: 1000 });
+  });
+
+  it('404s a segment id that belongs to a different session', async () => {
+    await seedTwoViewSession('sess-3', null);
+    const manifest = await supertest(app).get('/api/replays/sessions/sess-3/segments').expect(200);
+    const segId = manifest.body.segments[0].segmentId;
+    // Real segment id, wrong session in the path → 404 (no cross-session read).
+    await supertest(app).get(`/api/replays/sessions/other/segments/${segId}/events`).expect(404);
+  });
+
+  it('masks a project-attributed session as 404 for a caller who cannot view it', async () => {
+    // A non-privileged user who is not a member of the segments' project must not
+    // read the capture — masked as 404, same as the monolithic replay read.
+    const project = {
+      id: 'proj-x',
+      visibility: 'private',
+      memberUserIds: [],
+    } as unknown as Project;
+    const scoped = makeApp({
+      projects: [project],
+      stampAuth: { authUserId: 'outsider', authRole: 'User' },
+    });
+    try {
+      await appendSegment(
+        { stmts: scoped.stmts, config: scoped.config },
+        {
+          sessionId: 'sess-priv',
+          viewId: 'v',
+          indexInView: 0,
+          projectId: 'proj-x',
+          events: [{ ...SNAPSHOT, timestamp: 1000 }],
+        },
+      );
+      await supertest(scoped.app).get('/api/replays/sessions/sess-priv/segments').expect(404);
+    } finally {
+      try {
+        if (existsSync(scoped.serverDir))
+          rmSync(scoped.serverDir, { recursive: true, force: true });
+      } catch {
+        /* noop */
+      }
+    }
   });
 });
 

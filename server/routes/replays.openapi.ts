@@ -320,7 +320,7 @@ registerPath({
   tags: ['Bug Reports'],
   summary: 'Paginated session-replay events (authenticated)',
   description:
-    'Returns one page of the gunzipped rrweb event array, sliced by `offset`/`limit` (defaults applied + capped server-side) so large captures never load in one request. The page carries `total`/`hasMore` for walking. Same per-replay authorization as the metadata endpoint — unauthorized access is masked as 404.',
+    'Returns one page of the gunzipped rrweb event array, sliced by `offset`/`limit` (defaults applied + capped server-side) so large captures never load in one request. The page carries `total`/`hasMore` for walking. Same per-replay authorization as the metadata endpoint — unauthorized access is masked as 404. This endpoint serves `monolithic` (single-blob) captures only; a `segmented` capture (per the `storage_layout` discriminator) has no monolithic blob to paginate and is rejected 409 — read it via the session segments playback API instead.',
   request: {
     ...replayIdParam,
     query: z.object({
@@ -334,7 +334,126 @@ registerPath({
   responses: {
     200: { description: 'A page of events.', content: jsonContent(ReplayEventsPageResponse) },
     404: errorResponse('No replay with that id, or the caller is not authorized to read it.'),
+    409: errorResponse(
+      'The replay is `segmented`; read it via `GET /api/replays/sessions/{sessionId}/segments`.',
+    ),
     500: errorResponse('Failed to read the stored blob.'),
     503: errorResponse('The replay’s storage backend could not be resolved.'),
+  },
+});
+
+// ── Segmented-capture playback API ────────────────────────────────
+// A `segmented` capture stores its bytes as append-only per-segment objects
+// (rum_segments) keyed by the client-minted session id, not a session_replays
+// row. Playback lists the ordered manifest, then fetches each segment's events.
+
+const SegmentManifestEntrySchema = z
+  .object({
+    segmentId: z.string(),
+    viewId: z
+      .string()
+      .openapi({ description: 'Client-minted view id; segments never span views.' }),
+    indexInView: z.number().openapi({ description: '0-based position within the view.' }),
+    hasFullSnapshot: z
+      .boolean()
+      .openapi({ description: 'True when the segment carries an rrweb full snapshot (type 2).' }),
+    startTs: z.number().openapi({ description: 'Earliest event timestamp in the segment (ms).' }),
+    endTs: z.number().openapi({ description: 'Latest event timestamp in the segment (ms).' }),
+    eventCount: z.number(),
+    byteSize: z.number().openapi({ description: 'Gzipped object size in bytes.' }),
+    eventsUrl: z
+      .string()
+      .openapi({ description: 'Per-segment events endpoint the player fetches to concat.' }),
+  })
+  .openapi({ description: 'One playback-manifest segment pointer.' });
+
+const SessionSegmentManifestResponse = registerComponent(
+  'SessionSegmentManifest',
+  z
+    .object({
+      sessionId: z.string(),
+      storageLayout: z.literal('segmented'),
+      projectId: z.string().nullable().openapi({
+        description: 'Attribution shared by the session’s segments (null = anonymous).',
+      }),
+      segmentCount: z.number(),
+      durationMs: z.number().openapi({
+        description: 'Span from the earliest segment start to the latest segment end (ms).',
+      }),
+      segments: z.array(SegmentManifestEntrySchema).openapi({
+        description: 'Segments in playback order (chronological, then index within a view).',
+      }),
+    })
+    .openapi({ description: 'Segmented-capture playback manifest for a session.' }),
+);
+
+const SegmentEventsResponse = registerComponent(
+  'SegmentEvents',
+  z
+    .object({
+      sessionId: z.string(),
+      segmentId: z.string(),
+      viewId: z.string(),
+      indexInView: z.number(),
+      hasFullSnapshot: z.boolean(),
+      events: z
+        .array(
+          z.object({
+            type: z.number(),
+            timestamp: z.number(),
+            data: z.unknown().optional(),
+          }),
+        )
+        .openapi({ description: 'The decoded rrweb events for this one segment.' }),
+      eventCount: z.number(),
+    })
+    .openapi({ description: 'One segment’s decoded rrweb events, for client-side concat.' }),
+);
+
+const sessionIdParam = {
+  params: z.object({
+    sessionId: z.string().openapi({ description: 'Client-minted RUM session id.' }),
+  }),
+};
+
+registerPath({
+  method: 'get',
+  path: '/api/replays/sessions/{sessionId}/segments',
+  tags: ['Bug Reports'],
+  summary: 'Segmented-capture playback manifest (authenticated)',
+  description:
+    'Lists a session’s replay segments in playback order (chronological by segment start, then by index within a view) so the player can fetch and concatenate them. Each entry carries a per-segment `eventsUrl`. Authenticated and authorized per-session on the segments’ shared `project_id` (same rule as the monolithic replay read); a session with no segments, or one the caller cannot view, is masked as 404.',
+  request: sessionIdParam,
+  responses: {
+    200: {
+      description: 'The playback manifest.',
+      content: jsonContent(SessionSegmentManifestResponse),
+    },
+    404: errorResponse(
+      'No segments for that session id, or the caller is not authorized to read them.',
+    ),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/replays/sessions/{sessionId}/segments/{segmentId}/events',
+  tags: ['Bug Reports'],
+  summary: 'One replay segment’s decoded events (authenticated)',
+  description:
+    'Returns the decoded rrweb events for a single segment, which the player concatenates client-side. The segment must belong to the path `sessionId` and is authorized on its own `project_id`; not-found, wrong-session, and unauthorized all collapse to 404.',
+  request: {
+    params: z.object({
+      sessionId: z.string().openapi({ description: 'Client-minted RUM session id.' }),
+      segmentId: z.string().openapi({ description: 'Segment id from the manifest.' }),
+    }),
+  },
+  responses: {
+    200: { description: 'The segment’s events.', content: jsonContent(SegmentEventsResponse) },
+    404: errorResponse(
+      'No such segment, it does not belong to the session, or the caller is not authorized.',
+    ),
+    500: errorResponse('Failed to read the segment object.'),
+    503: errorResponse('The segment’s storage backend could not be resolved.'),
   },
 });

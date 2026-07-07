@@ -12,6 +12,7 @@ import {
   readSegment,
   readSessionEvents,
   deleteSessionSegments,
+  buildSessionSegmentManifest,
   SegmentNeedsSnapshotError,
   type SegmentStoreDeps,
 } from './segment-store.js';
@@ -350,6 +351,68 @@ describe('segment-store (append-only backend)', () => {
     await deleteSessionSegments(deps, 's');
     expect(existsSync(blobPath)).toBe(false);
     expect(listSessionSegments(deps.stmts, 's')).toHaveLength(0);
+  });
+
+  it('builds a session playback manifest ordered across views with per-view boundaries', async () => {
+    // view-A (t=1000..1100): index 0 snapshot + index 1 incremental.
+    // view-B (t=5000): index 0 snapshot only. Appended out of order to prove the
+    // manifest is playback-ordered (by start_ts, then index_in_view), not
+    // insertion-ordered.
+    await appendSegment(deps, {
+      sessionId: 's',
+      viewId: 'view-B',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg({ ...SNAPSHOT, timestamp: 5000 }, { type: 3, timestamp: 5200 }),
+    });
+    await appendSegment(deps, {
+      sessionId: 's',
+      viewId: 'view-A',
+      indexInView: 1,
+      projectId: 'proj',
+      events: seg({ type: 3, timestamp: 1100 }),
+    });
+    await appendSegment(deps, {
+      sessionId: 's',
+      viewId: 'view-A',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg({ ...SNAPSHOT, timestamp: 1000 }),
+    });
+
+    const manifest = buildSessionSegmentManifest('s', listSessionSegments(deps.stmts, 's'));
+    expect(manifest.sessionId).toBe('s');
+    expect(manifest.storageLayout).toBe('segmented');
+    expect(manifest.projectId).toBe('proj');
+    expect(manifest.segmentCount).toBe(3);
+    // Span from earliest start (1000) to latest end (5200).
+    expect(manifest.durationMs).toBe(4200);
+
+    // Playback order: view-A[0], view-A[1], view-B[0].
+    expect(manifest.segments.map((s) => [s.viewId, s.indexInView])).toEqual([
+      ['view-A', 0],
+      ['view-A', 1],
+      ['view-B', 0],
+    ]);
+
+    // has_full_snapshot boundaries: only each view's opening (index 0) segment.
+    expect(manifest.segments.map((s) => s.hasFullSnapshot)).toEqual([true, false, true]);
+
+    // Each entry carries a per-segment events URL keyed by session + segment id.
+    for (const s of manifest.segments) {
+      expect(s.eventsUrl).toBe(`/api/replays/sessions/s/segments/${s.segmentId}/events`);
+    }
+  });
+
+  it('returns a zeroed manifest for a session with no segments', () => {
+    const manifest = buildSessionSegmentManifest(
+      'missing',
+      listSessionSegments(deps.stmts, 'missing'),
+    );
+    expect(manifest.segmentCount).toBe(0);
+    expect(manifest.durationMs).toBe(0);
+    expect(manifest.projectId).toBeNull();
+    expect(manifest.segments).toEqual([]);
   });
 
   it('reads back a legacy monolithic row unchanged (storage_layout back-compat)', async () => {

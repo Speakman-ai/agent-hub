@@ -6,6 +6,7 @@ import { mkdirSync } from 'fs';
 import { writeFile, rm } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps, SessionReplayRow } from '../types.js';
+import type { RumSegmentRow } from '../types.js';
 import {
   storeReplay,
   readReplayEventsPage,
@@ -14,8 +15,14 @@ import {
   ReplayFinalizedError,
   ReplayNeedsSnapshotError,
   ReplayAttributionMismatchError,
+  ReplaySegmentedLayoutError,
   DEFAULT_EVENTS_PAGE,
 } from '../replays/replay-store.js';
+import {
+  listSessionSegments,
+  buildSessionSegmentManifest,
+  readSegment,
+} from '../replays/segment-store.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
@@ -698,6 +705,11 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
       const page = await readReplayEventsPage({ stmts, config }, row, offset, limit);
       return res.json({ replayId: row.id, ...page });
     } catch (err) {
+      if (err instanceof ReplaySegmentedLayoutError) {
+        // Segmented captures don't have a monolithic blob to paginate — steer the
+        // caller to the session segments API instead of returning a broken page.
+        return res.status(409).json({ error: err.message });
+      }
       if (err instanceof ArtifactStoreUnavailableError) {
         return res.status(503).json({ error: err.message });
       }
@@ -707,7 +719,88 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     }
   });
 
+  // ── Read: segmented-capture playback manifest ─────────────────────
+  // A `segmented` capture (server/replays/segment-store.ts) stores its bytes as
+  // append-only per-segment objects indexed by `rum_segments`, keyed by the
+  // client-minted session id (not a `session_replays` row). Playback lists the
+  // segments in order and the player fetches + concatenates each one's events.
+  //
+  // Authorization mirrors the monolithic read path via the shared per-replay
+  // rule (`canViewReplay`): segments carry a `project_id`, and every segment of a
+  // session shares one attribution (ingest rejects a cross-project append), so we
+  // authorize the session on that project. A session with no segments — or one
+  // the caller can't view — collapses to 404 so a leaked session id can't probe
+  // for existence or read another tenant's capture.
+  router.get('/api/replays/sessions/:sessionId/segments', (req: Request, res: Response) => {
+    const segments = loadAuthorizedSessionSegments(req, res);
+    if (!segments) return; // 404 already sent
+    return res.json(buildSessionSegmentManifest(String(req.params.sessionId), segments));
+  });
+
+  // ── Read: one segment's decoded events ────────────────────────────
+  // The player fetches each manifest segment here and concatenates the events
+  // client-side. The segment must belong to the path session id (keeps URLs
+  // coherent and blocks cross-session id-guessing), and is authorized on its own
+  // `project_id`. Not-found / wrong-session / unauthorized all collapse to 404.
+  router.get(
+    '/api/replays/sessions/:sessionId/segments/:segmentId/events',
+    async (req: Request, res: Response) => {
+      const row = stmts.getRumSegment.get(req.params.segmentId) as RumSegmentRow | undefined;
+      if (!row || row.session_id !== String(req.params.sessionId) || !canViewSegment(req, row)) {
+        res.status(404).json({ error: 'Segment not found' });
+        return;
+      }
+      try {
+        const blob = await readSegment({ stmts, config }, row);
+        return res.json({
+          sessionId: row.session_id,
+          segmentId: row.id,
+          viewId: row.view_id,
+          indexInView: row.index_in_view,
+          hasFullSnapshot: row.has_full_snapshot === 1,
+          events: blob.events,
+          eventCount: blob.events.length,
+        });
+      } catch (err) {
+        if (err instanceof ArtifactStoreUnavailableError) {
+          return res.status(503).json({ error: err.message });
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[Replays] Failed to read segment events:', message);
+        return res.status(500).json({ error: 'Failed to read segment events' });
+      }
+    },
+  );
+
   return router;
+
+  /**
+   * Load a session's ordered segment manifest only if the caller is authorized
+   * to read it; otherwise write a 404 and return null. Empty (no such session)
+   * and unauthorized collapse to the same 404 so a leaked session id can't probe
+   * for existence across projects. Authorizes on the segments' shared
+   * `project_id` via the same rule as the monolithic replay read.
+   */
+  function loadAuthorizedSessionSegments(req: Request, res: Response): RumSegmentRow[] | null {
+    const segments = listSessionSegments(stmts, String(req.params.sessionId));
+    if (segments.length === 0) {
+      res.status(404).json({ error: 'Replay not found' });
+      return null;
+    }
+    if (!canViewSegment(req, segments[0]!)) {
+      res.status(404).json({ error: 'Replay not found' });
+      return null;
+    }
+    return segments;
+  }
+
+  /** Per-segment authorization: identical rule to `canViewReplay`, keyed on the
+   *  segment's `project_id` (segments carry the same attribution as a replay). */
+  function canViewSegment(req: Request, row: Pick<RumSegmentRow, 'project_id'>): boolean {
+    const caller = resolveVisibilityCaller(req);
+    const project = row.project_id ? findProject(row.project_id) : null;
+    return canViewReplay(row, caller, project);
+  }
 }
 
 /**

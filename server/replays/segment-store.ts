@@ -223,6 +223,77 @@ export function listViewSegments(stmts: Stmts, sessionId: string, viewId: string
   return stmts.listRumSegmentsByView.all(sessionId, viewId) as RumSegmentRow[];
 }
 
+/** One playback-manifest entry: the pointer + metadata a player needs to decide
+ *  when/whether to fetch a segment, plus the URL to fetch its decoded events. */
+export interface SegmentManifestEntry {
+  segmentId: string;
+  viewId: string;
+  indexInView: number;
+  hasFullSnapshot: boolean;
+  startTs: number;
+  endTs: number;
+  eventCount: number;
+  byteSize: number;
+  /** Per-segment events endpoint the player fetches to concat this slice. */
+  eventsUrl: string;
+}
+
+/** The whole session's playback manifest: every segment in playback order plus
+ *  session-level rollups the player/dashboard reads without fetching bytes. */
+export interface SessionSegmentManifest {
+  sessionId: string;
+  storageLayout: 'segmented';
+  /** Attribution shared by the session's segments (NULL for anonymous ingest). */
+  projectId: string | null;
+  segmentCount: number;
+  /** Span between the earliest segment start and latest segment end, in ms. */
+  durationMs: number;
+  segments: SegmentManifestEntry[];
+}
+
+/**
+ * Build the session playback manifest from its ordered segment rows. Pure (no
+ * IO) so it can be unit-tested. Segments arrive in playback order (the
+ * `listRumSegmentsBySession` order: chronological by `start_ts`, then
+ * `index_in_view` within a view) and each carries a per-segment events URL the
+ * player concatenates. `durationMs` spans the earliest start to the latest end
+ * across all segments (floored at 0).
+ */
+export function buildSessionSegmentManifest(
+  sessionId: string,
+  segments: RumSegmentRow[],
+): SessionSegmentManifest {
+  let minStart = Infinity;
+  let maxEnd = -Infinity;
+  const entries: SegmentManifestEntry[] = segments.map((s) => {
+    if (s.start_ts < minStart) minStart = s.start_ts;
+    if (s.end_ts > maxEnd) maxEnd = s.end_ts;
+    return {
+      segmentId: s.id,
+      viewId: s.view_id,
+      indexInView: s.index_in_view,
+      hasFullSnapshot: s.has_full_snapshot === 1,
+      startTs: s.start_ts,
+      endTs: s.end_ts,
+      eventCount: s.event_count,
+      byteSize: s.byte_size,
+      eventsUrl: `/api/replays/sessions/${encodeURIComponent(sessionId)}/segments/${encodeURIComponent(
+        s.id,
+      )}/events`,
+    };
+  });
+  const durationMs =
+    minStart === Infinity || maxEnd === -Infinity ? 0 : Math.max(0, maxEnd - minStart);
+  return {
+    sessionId,
+    storageLayout: 'segmented',
+    projectId: segments[0]?.project_id ?? null,
+    segmentCount: segments.length,
+    durationMs,
+    segments: entries,
+  };
+}
+
 /**
  * Read + decode one segment's object. Resolves the segment's ORIGINAL backend
  * from its recorded storage_kind/bucket/region, so a storage reconfiguration

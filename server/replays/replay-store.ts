@@ -541,9 +541,30 @@ async function appendReplayEventsUnlocked(
 }
 
 /**
+ * Thrown by `readReplayEventsPage` for a `segmented` row. A segmented capture's
+ * bytes live in per-segment objects indexed by `rum_segments`, NOT in the row's
+ * `storage_key` blob, so the monolithic paginated read is the wrong door — the
+ * caller must use the session segments playback API instead. The route maps this
+ * to a 409. This is the storage_layout discriminator's hard edge: a monolithic
+ * (or NULL-layout legacy) row reads the blob; a segmented row is refused here
+ * rather than silently gunzipping a placeholder/absent blob.
+ */
+export class ReplaySegmentedLayoutError extends Error {
+  constructor() {
+    super('replay is segmented; read it via the session segments playback API');
+    this.name = 'ReplaySegmentedLayoutError';
+  }
+}
+
+/**
  * Read a stored replay's blob and return one paginated page of its events.
  * Resolves the blob's ORIGINAL backend from the row (not current config), so a
  * storage reconfiguration doesn't strand existing replays.
+ *
+ * Honors the `storage_layout` discriminator: `monolithic` (or a legacy NULL
+ * layout) reads the single gzipped blob at `storage_key` as before; `segmented`
+ * throws `ReplaySegmentedLayoutError` because those bytes live in `rum_segments`
+ * objects and must be read through the session segments API.
  */
 export async function readReplayEventsPage(
   deps: ReplayStoreDeps,
@@ -551,6 +572,9 @@ export async function readReplayEventsPage(
   offset?: number,
   limit?: number,
 ): Promise<EventsPage> {
+  if (row.storage_layout === 'segmented') {
+    throw new ReplaySegmentedLayoutError();
+  }
   const store = getArtifactStoreForLocation(row, deps.config);
   const buf = await store.getBuffer(row.storage_key);
   const { events } = await decodeReplayBlob(buf);
