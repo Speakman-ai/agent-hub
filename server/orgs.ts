@@ -8,6 +8,7 @@ import { USER_SKILL_CREDENTIALS_SCHEMA } from './skill-credentials-schema.js';
 import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
 import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
+import { USER_TODOS_SCHEMA } from './user-todos-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -170,6 +171,9 @@ export function initOrgsDb(): void {
   // off the hot identity row. See google-connections-store.ts.
   orgsDb.exec(GOOGLE_CONNECTIONS_SCHEMA);
   orgsDb.exec(AUTH_CREDENTIAL_AUDIT_SCHEMA);
+  // Cross-project personal todos, keyed by user_id. Global (non-project)
+  // capture primitive — see user-todos-store.ts / user-todos-schema.ts.
+  orgsDb.exec(USER_TODOS_SCHEMA);
   // Migration: widen the `user_engine_auth_audit.engine` CHECK to admit
   // 'grok'. `CREATE TABLE IF NOT EXISTS` can't alter an existing CHECK, so
   // DBs created before Grok per-user auth still carry the narrower
