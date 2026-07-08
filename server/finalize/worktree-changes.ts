@@ -2,6 +2,7 @@
  * Worktree change detection for Finalize / push affordances.
  */
 import { checkWorktreeChanges, type WorktreeChanges } from '../auto-git.js';
+import { hasPublishableChanges, type NetDiffProbe } from './net-diff.js';
 
 export type CommittableChangesResult =
   | { ok: true; changes: WorktreeChanges }
@@ -13,6 +14,7 @@ export function isCommittable(changes: WorktreeChanges): boolean {
 
 export async function getSessionCommittableChanges(
   worktreePath: string | null | undefined,
+  probe?: NetDiffProbe,
 ): Promise<CommittableChangesResult> {
   if (!worktreePath) {
     return {
@@ -22,7 +24,10 @@ export async function getSessionCommittableChanges(
     };
   }
   const changes = await checkWorktreeChanges(worktreePath);
-  if (!isCommittable(changes)) {
+  // Unpushed commits alone are not enough: a branch whose commits net to zero
+  // vs the base (already integrated / commit+revert) has nothing to ship, so
+  // Finalize must not treat it as committable ("empty diff" report).
+  if (!(await hasPublishableChanges(worktreePath, changes, probe))) {
     return {
       ok: false,
       error: 'no_committable_changes',

@@ -73,6 +73,7 @@ import { buildExtractSkillKickoffPrompt, buildExtractSkillSessionName } from '..
 import { buildActiveTasksSnapshot } from '../active-tasks.js';
 import { inferPrUrlFromSessionTitle } from '../session-title-pr.js';
 import { checkWorktreeChanges } from '../auto-git.js';
+import { hasPublishableChanges } from '../finalize/net-diff.js';
 import { cleanupOrphanCardForClosedSession } from '../card-orphan-cleanup.js';
 import {
   computeSessionChanges,
@@ -882,11 +883,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     try {
       const changes = await checkWorktreeChanges(session.worktree_path);
+      // `committable` gates the Finalize/Push buttons. Refine bare unpushed
+      // reachability with a net-diff probe so a branch that adds nothing to base
+      // (already integrated / net-zero commits) doesn't offer Finalize for an
+      // empty diff — keeping the button in lockstep with the Changes-pane count.
+      const committable = await hasPublishableChanges(session.worktree_path, changes);
       res.json({
         branch: changes.branch,
         hasUncommitted: changes.hasUncommitted,
         hasUnpushed: changes.hasUnpushed,
-        committable: changes.hasUncommitted || changes.hasUnpushed,
+        committable,
         headSha: changes.headSha || null,
       });
     } catch (err) {
