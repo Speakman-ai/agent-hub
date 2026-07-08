@@ -229,6 +229,20 @@ export const api = {
         body: JSON.stringify({ name }),
     }),
     // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──
+    // Segmented (continuous) session playback. The manifest lists every segment
+    // for a client-minted session in playback order (chronological across views,
+    // each view opening with a fresh full snapshot at index_in_view=0); the
+    // session-grouped player stitches them into one continuous timeline. Both
+    // reads are authenticated + per-session authorized server-side — a leaked /
+    // cross-tenant session or segment id collapses to 404. Returns the
+    // SessionSegmentManifest ({ sessionId, storageLayout, projectId, segmentCount,
+    // durationMs, segments: [{ segmentId, viewId, indexInView, hasFullSnapshot,
+    // startTs, endTs, eventCount, byteSize, eventsUrl }] }).
+    getSessionSegments: (sessionId: any) => fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/segments`),
+    // One segment's decoded rrweb events, the player concatenates client-side.
+    // Returns { sessionId, segmentId, viewId, indexInView, hasFullSnapshot,
+    // events, eventCount }.
+    getSessionSegmentEvents: (sessionId: any, segmentId: any) => fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/segments/${encodeURIComponent(segmentId)}/events`),
     // RUM Session Explorer (session-grain, Datadog-parity). Lists the
     // rum_sessions rollup with indexed facet filters; blank/undefined values are
     // omitted server-side. Returns { sessions, total, limit, offset, hasMore }.

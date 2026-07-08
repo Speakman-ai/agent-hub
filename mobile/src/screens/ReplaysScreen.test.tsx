@@ -27,6 +27,7 @@ vi.mock('../utils/api', () => ({
     listReplays: vi.fn(),
     linkReplayToTicket: vi.fn(),
     unlinkReplay: vi.fn(),
+    getSessionSegments: vi.fn(() => Promise.resolve({ sessionId: 's-1', segments: [] })),
   },
 }));
 vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.example.com' }));
@@ -157,6 +158,30 @@ describe('ReplayPlayerModal', () => {
     expect(html).toContain('ada@example.com');
     expect(html).toContain('Views');
     expect(html).toContain('Open in web app');
+  });
+
+  it('renders the view-chapter block for a segmented session (has a sessionId)', () => {
+    // Static markup does not run effects, so the manifest fetch never resolves —
+    // the block renders its header + the pre-fetch empty copy. This asserts the
+    // multi-view chapter surface is wired for session mode (a real fetch is
+    // exercised in the pure streamSessionSegments/computeSessionViews tests).
+    const html = renderToStaticMarkup(
+      <ReplayPlayerModal
+        target={{ mode: 'session', sessionId: 's-1', title: 'ada@example.com', meta: [] }}
+        projectId="p1"
+      />,
+    );
+    expect(html).toContain('No segments recorded for this session yet.');
+  });
+
+  it('omits the view-chapter block for a monolithic capture (no sessionId)', () => {
+    const html = renderToStaticMarkup(
+      <ReplayPlayerModal
+        target={{ mode: 'replay', title: 'checkout', meta: [{ label: 'Events', value: '88' }] }}
+        projectId="p1"
+      />,
+    );
+    expect(html).not.toContain('No segments recorded for this session yet.');
   });
 });
 

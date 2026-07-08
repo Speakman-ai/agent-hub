@@ -827,3 +827,27 @@ describe('api per-user project settings helpers — URL + method parity', () => 
         expect(JSON.parse(init.body)).toEqual({ defaultFinalizeAutomation: null });
     });
 });
+describe('api segmented session replay helpers — URL + method parity with web client', () => {
+    it('getSessionSegments(sessionId) → GET /replays/sessions/:id/segments', async () => {
+        await api.getSessionSegments('sess-1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/replays/sessions/sess-1/segments');
+        expect(init?.method ?? 'GET').toBe('GET');
+    });
+    it('getSessionSegments URL-encodes the session id', async () => {
+        await api.getSessionSegments('a/b');
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/replays/sessions/a%2Fb/segments');
+    });
+    it('getSessionSegmentEvents(sessionId, segmentId) → GET .../segments/:segId/events', async () => {
+        await api.getSessionSegmentEvents('sess-1', 'seg-9');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/replays/sessions/sess-1/segments/seg-9/events');
+        expect(init?.method ?? 'GET').toBe('GET');
+    });
+    it('getSessionSegmentEvents URL-encodes both ids', async () => {
+        await api.getSessionSegmentEvents('a/b', 'c/d');
+        const [url] = lastCall();
+        expect(url).toBe('https://example.test/api/replays/sessions/a%2Fb/segments/c%2Fd/events');
+    });
+});
