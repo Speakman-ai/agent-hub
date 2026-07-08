@@ -2592,6 +2592,240 @@ describe('SegmentReplayFlusher', () => {
     f.stop();
     expect(state.cleared).toBe(true);
   });
+
+  // rrweb-shaped click on a target node id, and a DOM mutation.
+  const sclick = (ts: any, id: any) => ev(3, ts, { source: 2, type: 2, id });
+  const smut = (ts: any) => ev(3, ts, { source: 0, adds: [] });
+
+  it('stamps action + frustration counts into the flushed segment meta', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    // Four clicks on the SAME element within 1s → one rage burst; no mutation
+    // follows so each also matures as a dead click.
+    f.addEvent(sclick(0, 42));
+    f.addEvent(sclick(100, 42));
+    f.addEvent(sclick(200, 42));
+    f.addEvent(sclick(300, 42));
+    // Advance well past the ~5s bound AND the dead-click maturity window.
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle();
+
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    const meta0 = submitSegment.mock.calls[0][0].meta;
+    expect(meta0.actionCount).toBe(4);
+    // 1 rage burst + 4 dead clicks.
+    expect(meta0.frustrationByType).toEqual({ rage: 1, dead: 4, error: 0 });
+    expect(meta0.frustrationCount).toBe(5);
+  });
+
+  it('classifies a click followed by a JS error as an error click via notifyError', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    f.addEvent(sclick(0, 7));
+    f.addEvent(smut(10)); // DOM changed → not a dead click
+    f.notifyError(50); // JS error right after → error click
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle();
+
+    const meta0 = submitSegment.mock.calls[0][0].meta;
+    expect(meta0.frustrationByType).toEqual({ rage: 0, dead: 0, error: 1 });
+    expect(meta0.actionCount).toBe(1);
+  });
+
+  it('omits count fields from a click-free segment (meta shape unchanged)', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    f.addEvent(sincr(100));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle();
+
+    const meta0 = submitSegment.mock.calls[0][0].meta;
+    expect(meta0).not.toHaveProperty('actionCount');
+    expect(meta0).not.toHaveProperty('frustrationCount');
+    expect(meta0).toMatchObject({ trigger: 'continuous', storage: 'segmented' });
+  });
+
+  it('force-finalizes a pending dead click into the tail on view change', async () => {
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      requestSnapshot: () => {},
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    // A click that has NOT yet matured (well within the dead-click window)...
+    f.addEvent(sclick(10, 9));
+    t = 100;
+    // ...view change closes the view: the pending click force-finalizes as dead
+    // and rides the outgoing view's tail segment meta.
+    await f.notifyViewChange('v2');
+    const lastCall = submitSegment.mock.calls[submitSegment.mock.calls.length - 1][0];
+    expect(lastCall.viewId).toBe('v1');
+    expect(lastCall.meta.frustrationByType).toEqual({ rage: 0, dead: 1, error: 0 });
+  });
+
+  it('re-sends the same frustration counts when a segment submit fails and retries', async () => {
+    // The counts are drained only AFTER a confirmed submit, so a failed segment
+    // that is retried must carry the same action/frustration counts, not zeros.
+    const submitSegment = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true }) // index 0 (creating) succeeds
+      .mockRejectedValueOnce(new Error('network')) // index 1 fails
+      .mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    // Opening segment flushes clean at index 0 (no clicks yet).
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle();
+    expect(f.indexInView).toBe(1);
+    const creatingCall = submitSegment.mock.calls[0][0];
+    expect(creatingCall.meta).not.toHaveProperty('frustrationCount');
+
+    // Now an incremental segment carrying a rage burst of 4 same-element clicks
+    // (> the threshold of 3; all matured well before flush time), whose FIRST
+    // submit fails.
+    for (let i = 0; i < 4; i++) f.addEvent(sclick(6_010 + i * 10, 42));
+    t = 12_000;
+    await f.flush('manual'); // index 1 fails → re-queued, counts NOT committed
+    expect(f.indexInView).toBe(1);
+    const failedCall = submitSegment.mock.calls[1][0];
+    expect(failedCall.meta.frustrationByType).toEqual({ rage: 1, dead: 4, error: 0 });
+
+    // Retry: the same counts must still be present (not zeroed by the failed drain).
+    await f.flush('manual');
+    const retryCall = submitSegment.mock.calls[submitSegment.mock.calls.length - 1][0];
+    expect(retryCall.indexInView).toBe(1);
+    expect(retryCall.meta.actionCount).toBe(4);
+    expect(retryCall.meta.frustrationByType).toEqual({ rage: 1, dead: 4, error: 0 });
+    expect(retryCall.meta.frustrationCount).toBe(5);
+    expect(f.indexInView).toBe(2);
+  });
+
+  it('does NOT force a sub-window click to dead on a resumable visibilitychange', async () => {
+    // pagehide/visibilitychange are resumable (bfcache/tab return), so a click
+    // whose DOM-mutation window has not yet elapsed must be left PENDING, not
+    // mis-flagged as a dead click — otherwise clicking then backgrounding the
+    // tab would systematically inflate dead_click.
+    const submitSegment = vi.fn().mockResolvedValue({ ok: true });
+    let t = 0;
+    const f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle(); // opening segment (index 0) flushed clean
+    submitSegment.mockClear();
+
+    // A click only 40ms before a NON-terminal visibilitychange tail flush.
+    f.addEvent(sclick(6_010, 42));
+    t = 6_050;
+    f.flushTail('visibilitychange', { terminal: false });
+    await f.settle();
+
+    // The click is counted as an action, but NOT force-finalized as dead — it is
+    // still pending, free to mature (or be cancelled by a mutation) on resume.
+    const meta = submitSegment.mock.calls[submitSegment.mock.calls.length - 1][0].meta;
+    expect(meta.actionCount).toBe(1);
+    expect(meta.frustrationByType).toEqual({ rage: 0, dead: 0, error: 0 });
+    expect(meta.frustrationCount).toBe(0);
+
+    // Later, past the dead-click window with still no mutation, it matures dead.
+    t = 6_010 + 5_000;
+    f.addEvent(sincr(t));
+    await f.flush('manual');
+    const laterMeta = submitSegment.mock.calls[submitSegment.mock.calls.length - 1][0].meta;
+    expect(laterMeta.frustrationByType).toEqual({ rage: 0, dead: 1, error: 0 });
+  });
+
+  it('does not drop a click that lands DURING an in-flight submit (peek/commit race)', async () => {
+    // The regression: matureAndPeek snapshots counts BEFORE await submitSegment,
+    // but events keep arriving on the emit callback while the promise is pending.
+    // Commit must subtract only the peeked snapshot, not zero live state, or the
+    // mid-flight click is silently dropped. A truly async submit is required —
+    // synchronous mocks never interleave the await.
+    let f!: SegmentReplayFlusher;
+    let injected = false;
+    const submitSegment = vi.fn().mockImplementation(async (payload: any) => {
+      // On the incremental (index 1) submit, simulate a fresh click landing on
+      // the rrweb emit callback WHILE this submit is in flight.
+      if (payload.indexInView === 1 && !injected) {
+        injected = true;
+        f.addEvent(sclick(12_010, 99));
+      }
+      return { ok: true };
+    });
+    let t = 0;
+    f = new SegmentReplayFlusher({
+      sessionId: 's1',
+      viewId: 'v1',
+      submitSegment,
+      now: () => t,
+      setIntervalFn: null,
+    });
+    f.addEvent(ssnap(0));
+    t = 6_000;
+    f.addEvent(sincr(6_000));
+    await f.settle(); // opening segment (index 0) flushed
+    expect(f.indexInView).toBe(1);
+
+    // Incremental segment carrying one dead click, matured by t=12000.
+    f.addEvent(sclick(6_010, 42));
+    t = 12_000;
+    await f.flush('manual'); // peeks {action:1,dead:1}; the 99 click lands mid-submit
+    expect(f.indexInView).toBe(2);
+
+    // The mid-flight click survived the commit (subtract-snapshot, not zero) and
+    // is carried into the NEXT segment once it matures.
+    t = 18_000;
+    await f.flush('manual');
+    const lastMeta = submitSegment.mock.calls[submitSegment.mock.calls.length - 1][0].meta;
+    expect(lastMeta.actionCount).toBe(1);
+    expect(lastMeta.frustrationByType).toEqual({ rage: 0, dead: 1, error: 0 });
+  });
 });
 
 describe('setUser / setUserProperty / clearUser', () => {

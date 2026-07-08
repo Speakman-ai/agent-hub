@@ -10,6 +10,26 @@
 // intake agent investigates the report.
 
 import { BUG_REPORT_ENDPOINT } from './bugReport';
+import { FrustrationDetector } from '../rum/frustration';
+
+/**
+ * Segment-flush reasons that GENUINELY TERMINATE the current view, so the
+ * frustration detector should force-finalize still-pending clicks (resolving a
+ * sub-window click as dead even though its DOM-mutation window hasn't fully
+ * elapsed) to salvage their signals into the outgoing tail segment.
+ *
+ * Deliberately EXCLUDES `pagehide` and `visibilitychange`: those are resumable
+ * (bfcache restore / tab switch-back — see the retain-on-resume note in
+ * `flushTail`), and force-finalizing there would systematically inflate
+ * `dead_click` — a user who clicks and immediately backgrounds the tab is
+ * common, and that click's real mutation simply hasn't landed yet. On those
+ * resumable reasons sub-window clicks are left PENDING to mature naturally.
+ * Only a real navigation (`view_change`), page `unload`, or a runtime
+ * `disabled` teardown is terminal enough to force.
+ */
+export function isTerminalViewReason(reason: any): boolean {
+  return reason === 'view_change' || reason === 'unload' || reason === 'disabled';
+}
 
 // rrweb EventType constants (kept local so the pure helpers below don't depend
 // on importing rrweb — they run in tests without a DOM). See rrweb's
@@ -1417,6 +1437,7 @@ export class SegmentReplayFlusher {
     rumToken = null,
     requestSnapshot = null,
     resolveUser = getActiveUser,
+    frustration = null,
   }: any = {}) {
     if (sessionId == null || String(sessionId) === '') {
       throw new Error('SegmentReplayFlusher requires a sessionId');
@@ -1439,6 +1460,10 @@ export class SegmentReplayFlusher {
     this._rumToken = rumToken || null;
     this._requestSnapshot = typeof requestSnapshot === 'function' ? requestSnapshot : null;
     this._resolveUser = typeof resolveUser === 'function' ? resolveUser : getActiveUser;
+    // Client-side frustration detector, fed every buffered event (clicks +
+    // mutations) plus JS errors via notifyError(). Its per-segment counts are
+    // stamped into the segment meta the server rolls up into frustration_count.
+    this._frustration = frustration || new FrustrationDetector({ now });
 
     this._indexInView = 0;
     this._pending = [];
@@ -1464,12 +1489,31 @@ export class SegmentReplayFlusher {
    *  crosses the ~5s / ~60KB bound. */
   addEvent(event: any) {
     if (!event) return;
+    // Feed the frustration detector before buffering: clicks and DOM mutations
+    // in the raw stream drive rage/dead-click detection. Best-effort — never let
+    // detection break the flush path.
+    try {
+      this._frustration?.recordEvent(event);
+    } catch {
+      // ignore — frustration detection is additive
+    }
     this._pending.push(event);
     this._segmentBytes += utf8ByteLength(JSON.stringify(event));
     if (this._segmentStartTs == null) {
       this._segmentStartTs = typeof event.timestamp === 'number' ? event.timestamp : this._now();
     }
     void this._maybeRollover();
+  }
+
+  /** Notify the frustration detector of a JS error so a click that immediately
+   *  preceded it is classified as an error click. `ts` defaults to now. */
+  notifyError(ts?: any) {
+    try {
+      const at = typeof ts === 'number' ? ts : this._now();
+      this._frustration?.recordError(at);
+    } catch {
+      // ignore — best-effort
+    }
   }
 
   /** Recompute the byte + start-ts accounting from the current `_pending` (after
@@ -1542,16 +1586,52 @@ export class SegmentReplayFlusher {
   /** Meta for a segment: the view-opening segment (index 0) tags the capture as
    *  a segmented continuous stream; any segment carrying identity also stamps
    *  `usr`. Returns null when an incremental segment has nothing to declare. */
-  _segmentMeta(reason: any) {
+  /**
+   * PEEK the per-segment frustration counts (non-destructive). The returned
+   * snapshot is COMMITTED (via `commitDrain(drain)`) ONLY after a confirmed
+   * submit in _runFlush / flushTail, so (a) a failed-and-retried segment
+   * re-sends the same counts, and (b) committing subtracts EXACTLY this snapshot
+   * — any click/burst that lands on the rrweb emit callback during the in-flight
+   * submit survives into the next segment instead of being wiped. Force-finalize
+   * still-pending clicks ONLY on a genuinely terminal reason (navigation /
+   * unload / disable); on a resumable pagehide/visibilitychange a sub-window
+   * click is left pending to mature naturally rather than being mis-flagged dead.
+   */
+  _peekFrustration(reason: any) {
+    if (!this._frustration) return null;
+    const force = isTerminalViewReason(reason);
+    return this._frustration.matureAndPeek(this._now(), { force });
+  }
+
+  /** Build the segment meta from an already-peeked frustration `drain` (see
+   *  {@link _peekFrustration}). The view-opening segment (index 0) tags the
+   *  capture as a segmented continuous stream; any segment carrying identity also
+   *  stamps `usr`. Returns null when an incremental segment has nothing to
+   *  declare. */
+  _segmentMeta(reason: any, drain: any = null) {
     const usr = this._activeUser();
-    if (this._indexInView !== 0) return usr ? { usr } : null;
-    const meta: Record<string, any> = {
-      ...(this._meta || {}),
-      trigger: 'continuous',
-      storage: 'segmented',
-      reason: reason ?? 'rollover',
-    };
-    if (usr) meta.usr = usr;
+    const hasCounts = !!drain && (drain.actionCount > 0 || drain.frustrationCount > 0);
+
+    let meta: Record<string, any>;
+    if (this._indexInView !== 0) {
+      // Incremental segment: only carry meta when there's identity or counts.
+      if (!usr && !hasCounts) return null;
+      meta = {};
+      if (usr) meta.usr = usr;
+    } else {
+      meta = {
+        ...(this._meta || {}),
+        trigger: 'continuous',
+        storage: 'segmented',
+        reason: reason ?? 'rollover',
+      };
+      if (usr) meta.usr = usr;
+    }
+    if (hasCounts && drain) {
+      meta.actionCount = drain.actionCount;
+      meta.frustrationCount = drain.frustrationCount;
+      meta.frustrationByType = drain.byType;
+    }
     return meta;
   }
 
@@ -1580,7 +1660,10 @@ export class SegmentReplayFlusher {
     const creating = this._indexInView === 0;
     const viewId = this._viewId;
     const indexInView = this._indexInView;
-    const meta = this._segmentMeta(reason);
+    // Peek the drain into a LOCAL so the commit below subtracts exactly this
+    // snapshot — not whatever the accumulators hold after the in-flight submit.
+    const drain = this._peekFrustration(reason);
+    const meta = this._segmentMeta(reason, drain);
     const batch = creating ? this._pending.slice() : this._pending;
     if (!creating) {
       this._pending = [];
@@ -1592,6 +1675,11 @@ export class SegmentReplayFlusher {
         { endpointBase: this._endpointBase, rumToken: this._rumToken },
       );
       this.lastResult = result || null;
+      // Submit confirmed → commit exactly the peeked drain. On the catch path
+      // below we deliberately DO NOT commit, so the retained counts are re-sent
+      // with the retried segment; subtracting only `drain` also preserves any
+      // clicks that landed during the await for the next segment.
+      this._frustration?.commitDrain(drain);
       // A view change during the await already reset the index/pending for the
       // new view — don't clobber it. Only advance when still on the same view.
       if (this._viewId === viewId && this._indexInView === indexInView) {
@@ -1627,6 +1715,19 @@ export class SegmentReplayFlusher {
     const id = newViewId == null ? '' : String(newViewId);
     if (!id || id === this._viewId) return null;
     await this._drainAfterInflight('view_change');
+    // The drain's flush force-finalized the outgoing view's pending clicks into
+    // its tail meta; clear any residue so the new view's counts start clean
+    // (frustration is view-scoped, matching the segment model).
+    //
+    // TRADEOFF: reset() is unconditional. If the outgoing tail flush's submit
+    // FAILED, its counts were peeked-but-not-committed and are discarded here —
+    // the outgoing view's frustration signals are lost. This is deliberate,
+    // best-effort loss: the events themselves are likewise dropped on a failed
+    // view-change flush (`_pending` is cleared below), and carrying the counts
+    // into the new view would mis-attribute them across the view boundary, which
+    // the view-scoped model forbids. Losing a failed tail's counts is the lesser
+    // evil versus cross-view contamination.
+    this._frustration?.reset();
     this._viewId = id;
     this._indexInView = 0;
     this._pending = [];
@@ -1667,7 +1768,8 @@ export class SegmentReplayFlusher {
     this._pending = [];
     this._segmentBytes = 0;
     this._segmentStartTs = null;
-    const meta = this._segmentMeta(reason);
+    const drain = this._peekFrustration(reason);
+    const meta = this._segmentMeta(reason, drain);
     const url = segmentBatchEndpoint(this.sessionId, viewId, indexInView, this._endpointBase);
 
     const send = (events: any) => {
@@ -1692,6 +1794,9 @@ export class SegmentReplayFlusher {
     }
 
     if (sent) {
+      // Terminal beacon queued → commit exactly the peeked drain (no retry can
+      // re-send it). A dropped-tail prefix is accepted loss, same as events.
+      this._frustration?.commitDrain(drain);
       // Terminal: the tab won't return, so advancing off an unconfirmed enqueue
       // is safe — no later flush can be stranded by a dropped beacon.
       if (this._viewId === viewId && this._indexInView === indexInView) {
@@ -1700,7 +1805,9 @@ export class SegmentReplayFlusher {
       return true;
     }
     // Nothing sendable on the unload-safe transport → retain (survives a
-    // mislabeled/bfcache resume; lost only on a true discard of an oversized tail).
+    // mislabeled/bfcache resume; lost only on a true discard of an oversized
+    // tail). Counts were only PEEKED, not committed, so they ride the retained
+    // events into the next flush.
     this._pending = batch.concat(this._pending);
     this._recomputeAccounting();
     return false;
@@ -2289,6 +2396,13 @@ export class SessionReplayRecorder {
   /** Record-on-error entry point: throttled flush triggered by an uncaught error. */
   async handleError(meta: any) {
     const now = this._now();
+    // TODO(rum-segment-tier): when the SegmentReplayFlusher is wired into the
+    // live recording path (it is not yet instantiated in prod), feed this error
+    // to the active segment flusher via `segmentFlusher.notifyError(now)` HERE —
+    // BEFORE the throttle return below — so every uncaught error is available
+    // for error-click classification even when the record-on-error FLUSH is
+    // throttled. Until then `FrustrationDetector.recordError` only runs in tests
+    // and `error_click` stays 0 in production. See card #1364.
     if (now - this._lastErrorFlushAt < this.errorThrottleMs) return null;
     this._lastErrorFlushAt = now;
     return this.flush({ ...(meta || {}), trigger: meta?.trigger || 'error' });
