@@ -453,7 +453,10 @@ export const CreateCardRequestSchema = z.preprocess(
     assignee: z.string().nullable().optional(),
     assignedUserId: z.string().nullable().optional(),
     labels: z.string().nullable().optional(),
-    sessionId: z.string().nullable().optional(),
+    sessionId: z.string().nullable().optional().openapi({
+      description:
+        'Session to link the card to. Defaults to the caller session (X-Agent-Hub-Session-Id header / spawn creds) when omitted. If that session already owns a card on this board, the create is deduplicated and the existing card is returned with an `X-Agent-Hub-Card-Deduplicated: session` response header. Pass `null` explicitly to opt out and force a new, unlinked card.',
+    }),
     githubIssueUrl: z.string().nullable().optional(),
     createdBy: z.string().nullable().optional(),
     epicId: z.string().nullable().optional(),
@@ -508,14 +511,21 @@ export const MoveCardRequestSchema = z.object({
     }),
 });
 
-export const CreateCommentRequestSchema = z.object({
-  author: z
-    .string({ error: 'author and content are required' })
-    .min(1, 'author and content are required'),
-  content: z
-    .string({ error: 'author and content are required' })
-    .min(1, 'author and content are required'),
-});
+export const CreateCommentRequestSchema = z.preprocess(
+  // Accept `body` as an alias for `content` — a common caller stumble, since
+  // most REST comment APIs name the field `body`. `content` still wins if both
+  // are present.
+  aliasPreprocess({ content: 'body' }),
+  z.object({
+    author: z
+      .string({ error: 'author and content are required' })
+      .min(1, 'author and content are required'),
+    content: z
+      .string({ error: 'author and content are required' })
+      .min(1, 'author and content are required')
+      .openapi({ description: 'Comment text. Alias: `body`.' }),
+  }),
+);
 
 export const AddBlockerRequestSchema = z.object({
   blockedByCardId: z

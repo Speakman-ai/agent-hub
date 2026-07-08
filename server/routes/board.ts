@@ -840,7 +840,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const titleLower = title.toLowerCase().trim();
     const duplicate = allBoardCards.find((c) => c.title.toLowerCase().trim() === titleLower);
     if (duplicate) {
-      // Return the existing card instead of creating a duplicate
+      // Return the existing card instead of creating a duplicate. Signal the
+      // dedup so callers can tell they got an existing card back rather than a
+      // freshly created one (the body is a bare card and looks identical).
+      res.setHeader('X-Agent-Hub-Card-Deduplicated', 'title');
       return res.json(serializeCardForRequest(req, stmts, board.id, duplicate));
     }
 
@@ -858,6 +861,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     if (sessionId && sessionId.trim()) {
       const linked = stmts.getKanbanCardBySession.get(sessionId) as KanbanCardRow | undefined;
       if (linked && linked.board_id === board.id) {
+        // Non-silent dedup: the caller asked for a new card but this session
+        // already owns one, so we hand back the existing card. The header lets
+        // a caller detect it and (if they really want a second card) retry with
+        // `sessionId: null`.
+        res.setHeader('X-Agent-Hub-Card-Deduplicated', 'session');
         return res.json(serializeCardForRequest(req, stmts, board.id, linked));
       }
     }

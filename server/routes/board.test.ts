@@ -1,6 +1,6 @@
 import type supertest from 'supertest';
 import { beforeAll, describe, it, expect } from 'vitest';
-import { getRequest, createProject, createCard } from '../test/helpers.js';
+import { getRequest, createProject, createCard, createSession } from '../test/helpers.js';
 
 let request: supertest.Agent;
 let projectId: string;
@@ -174,5 +174,99 @@ describe('GET /board (counts + optional first-page-per-column)', () => {
     const res = await request.get(`/api/projects/${projectId}/board?limit=20`).expect(200);
     const body = res.body as { cursors: Record<string, string | null> };
     expect(body.cursors[columnId]).toBeNull();
+  });
+});
+
+describe('POST /board/cards/:cardId/comments — body alias', () => {
+  let localProject: string;
+  let localColumn: string;
+  let cardId: string;
+
+  beforeAll(async () => {
+    const project = await createProject();
+    localProject = project.id as string;
+    const boardRes = await request.get(`/api/projects/${localProject}/board`).expect(200);
+    localColumn = (boardRes.body as { columns: Array<{ id: string }> }).columns[0].id;
+    const card = await createCard(localProject, { columnId: localColumn, title: 'Comment target' });
+    cardId = card.id as string;
+  });
+
+  it('accepts `body` as an alias for `content`', async () => {
+    const res = await request
+      .post(`/api/projects/${localProject}/board/cards/${cardId}/comments`)
+      .send({ author: 'tester', body: 'commented via body alias' })
+      .expect(200);
+    const comments = res.body as Array<{ content: string }>;
+    expect(comments.some((c) => c.content === 'commented via body alias')).toBe(true);
+  });
+
+  it('prefers `content` when both `content` and `body` are present', async () => {
+    const res = await request
+      .post(`/api/projects/${localProject}/board/cards/${cardId}/comments`)
+      .send({ author: 'tester', content: 'wins', body: 'loses' })
+      .expect(200);
+    const comments = res.body as Array<{ content: string }>;
+    expect(comments.some((c) => c.content === 'wins')).toBe(true);
+    expect(comments.some((c) => c.content === 'loses')).toBe(false);
+  });
+
+  it('still 400s when neither content nor body is provided', async () => {
+    await request
+      .post(`/api/projects/${localProject}/board/cards/${cardId}/comments`)
+      .send({ author: 'tester' })
+      .expect(400);
+  });
+});
+
+describe('POST /board/cards — dedup signalling header', () => {
+  let localProject: string;
+  let localColumn: string;
+
+  beforeAll(async () => {
+    const project = await createProject();
+    localProject = project.id as string;
+    const boardRes = await request.get(`/api/projects/${localProject}/board`).expect(200);
+    localColumn = (boardRes.body as { columns: Array<{ id: string }> }).columns[0].id;
+  });
+
+  it('sets X-Agent-Hub-Card-Deduplicated: title on title-dedup', async () => {
+    await request
+      .post(`/api/projects/${localProject}/board/cards`)
+      .send({ title: 'Same title card', columnId: localColumn })
+      .expect(200);
+    const res = await request
+      .post(`/api/projects/${localProject}/board/cards`)
+      .send({ title: 'same TITLE card', columnId: localColumn })
+      .expect(200);
+    expect(res.headers['x-agent-hub-card-deduplicated']).toBe('title');
+  });
+
+  it('sets X-Agent-Hub-Card-Deduplicated: session on session-dedup, and sessionId:null opts out', async () => {
+    const session = await createSession();
+    const sessionId = session.id as string;
+
+    const first = await request
+      .post(`/api/projects/${localProject}/board/cards`)
+      .send({ title: 'Session card one', columnId: localColumn, sessionId })
+      .expect(200);
+    expect(first.headers['x-agent-hub-card-deduplicated']).toBeUndefined();
+    const firstId = (first.body as { id: string }).id;
+
+    // A different-titled create from the same session is deduped back to the
+    // first card, and the header signals it.
+    const second = await request
+      .post(`/api/projects/${localProject}/board/cards`)
+      .send({ title: 'Session card two', columnId: localColumn, sessionId })
+      .expect(200);
+    expect(second.headers['x-agent-hub-card-deduplicated']).toBe('session');
+    expect((second.body as { id: string }).id).toBe(firstId);
+
+    // Escape hatch: sessionId:null forces a fresh, unlinked card.
+    const optOut = await request
+      .post(`/api/projects/${localProject}/board/cards`)
+      .send({ title: 'Session card three', columnId: localColumn, sessionId: null })
+      .expect(200);
+    expect(optOut.headers['x-agent-hub-card-deduplicated']).toBeUndefined();
+    expect((optOut.body as { id: string }).id).not.toBe(firstId);
   });
 });

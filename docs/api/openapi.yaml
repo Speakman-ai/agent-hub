@@ -13761,6 +13761,7 @@ paths:
                 sessionId:
                   type: string
                   nullable: true
+                  description: "Session to link the card to. Defaults to the caller session (X-Agent-Hub-Session-Id header / spawn creds) when omitted. If that session already owns a card on this board, the create is deduplicated and the existing card is returned with an `X-Agent-Hub-Card-Deduplicated: session` response header. Pass `null` explicitly to opt out and force a new, unlinked card."
                 githubIssueUrl:
                   type: string
                   nullable: true
@@ -14119,6 +14120,7 @@ paths:
                 content:
                   type: string
                   minLength: 1
+                  description: "Comment text. Alias: `body`."
               required:
                 - author
                 - content
