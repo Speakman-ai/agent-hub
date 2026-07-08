@@ -1,76 +1,229 @@
 # Agent Hub
 
-A full-stack command center for AI agent orchestration. Manage, monitor, and interact with AI agents (Claude Code, Cursor Agent) through real-time chat, automated tasks, project-scoped knowledge bases, and kanban-style task boards across web, mobile, and desktop clients.
+**Your entire SDLC runs in your VPC and never phones home.**
 
-## Features
+Agent Hub is a **self-hosted DevSecOps platform** that consolidates the tools a
+software team stitches together — issue tracking, code review, CI gating,
+session replay, preview environments, and deployments — behind one server you
+run on your own infrastructure. AI agents drive the work; **you own the data
+plane end to end**. No source, no telemetry, no session recordings, and no
+model traffic ever leave your network.
 
-- **Real-time Chat** — Stream responses from AI agents via WebSocket with persistent session history
-- **Multi-Engine Support** — Unified interface for Claude Code and Cursor Agent with per-agent model configuration
-- **Project Organization** — Group agents, tasks, and knowledge under projects with dedicated workspaces
-- **Kanban Boards** — Per-project task tracking with epics, labels, priorities, and autonomous dispatch
-- **Wiki Knowledge Base** — Full-text searchable documentation per project, injected into agent context
-- **Scheduled Tasks** — Cron jobs and heartbeat check-ins with configurable prompts
-- **GitHub Integration** — Webhook-driven PR lifecycle, automated reviews, and CI monitoring
-- **Finalize Code Changes** — Per-session rebase, in-hub review, and CI gating on isolated runners before push/merge
-- **Slack Bot** — Multi-agent Slack integration for team communication
-- **Cross-Platform** — Web (React), mobile (React Native/Expo), and desktop (Electron) clients
-- **Customer Support** — Per-project support ticket queue with severity ordering and convert-to-card workflow
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%3E%3D22.14-brightgreen.svg)
+![Self-hosted](https://img.shields.io/badge/deploy-self--hosted-6f42c1.svg)
+![Status](https://img.shields.io/badge/stage-open--core-orange.svg)
+
+> **Not an AI coding assistant.** Assistants live in someone else's cloud and
+> bill per seat to autocomplete inside your editor. Agent Hub is the platform
+> the assistant runs _inside_ — the git/CI/security/replay/deploy control
+> surface for an agentic team, deployed in **your** VPC.
+
+---
+
+## Why sovereignty
+
+Cloud-first developer tools are convenient right up to the moment your source
+tree, your customers' session recordings, and your model prompts become
+someone else's log line. For regulated teams (DORA, HIPAA, EU AI Act) and
+anyone who simply refuses to hand their SDLC to a third party, "self-hosted"
+is no longer a checkbox — it's the requirement.
+
+Agent Hub is **self-hosted by architecture, not by configuration flag**:
+
+- **Runs in your VPC.** One Node process, a local SQLite database, and the
+  agent CLIs you already license. Put it on a laptop, a home server, or an EC2
+  box behind your own ALB — it never needs egress to function.
+- **Never phones home.** No vendor analytics, no usage beacons, no
+  server-side prompt logging. The only outbound calls are the ones _you_
+  configure (your model provider, your GitHub, your Slack).
+- **BYO-inference.** You supply your own model keys (Claude, Cursor, Codex,
+  Gemini, Grok). The platform never proxies your prompts through a vendor and
+  never absorbs — or meters — your token spend.
+- **Your data stays yours.** Sessions, messages, wiki, boards, and replay
+  recordings live in a SQLite file on a disk you control. Back it up, encrypt
+  it, or `rm` it — no export request required.
+
+Frontier labs can absorb a thin chat-over-model wrapper. They structurally
+**cannot** copy a platform whose entire value proposition is that it lives on
+your side of the network boundary. That's the moat.
+
+---
+
+## One platform, not five subscriptions
+
+The ROI case is consolidation. Agent Hub bundles the SDLC control surface a
+team normally assembles from a half-dozen SaaS products — each with its own
+seat price, its own data-egress question, and its own integration tax:
+
+| Capability               | Agent Hub feature                                                                                                            | The point tool it displaces         |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **Issue tracking**       | Per-project kanban boards, epics, labels, priorities, autonomous dispatch                                                    | Jira / Linear / GitHub Projects     |
+| **Code review**          | GitHub PR lifecycle + automated agent reviews, webhook-driven                                                                | Reviewer seats / bots               |
+| **CI gating**            | **Finalize Code Changes** — rebase, in-hub review, and test gating on isolated DinD runners with GitHub-parity resource caps | CircleCI / GitHub Actions minutes   |
+| **Session replay**       | Continuous rrweb session-replay / RUM with frustration-signal detection                                                      | LogRocket / FullStory / Datadog RUM |
+| **Preview environments** | Per-PR preview deployments with wildcard TLS and URL routing                                                                 | Vercel / Netlify preview seats      |
+| **Deployments**          | Declarative `deploy.yaml` environments, PR-env provisioning wizard                                                           | Heroku / render / bespoke scripts   |
+| **Security**             | Per-commit secret scanning with an ignore list                                                                               | Standalone secret scanners          |
+| **Knowledge base**       | Per-project wiki with SQLite FTS5 search, injected into agent context                                                        | Confluence / Notion                 |
+| **Agent orchestration**  | Real-time multi-engine chat, heartbeats, crons, Slack                                                                        | Assorted assistant seats            |
+
+Platform bundling is worth more than the sum of the point tools — one bill,
+one data boundary, one auth model, one place to look.
+
+---
+
+## The AI closes the adoption gap
+
+Self-hosting's oldest objection is _"someone has to install and maintain it."_
+Agent Hub answers that with the same agents it orchestrates: **describe your
+stack and the agent stands the platform up for itself.**
+
+- **Guided setup skills** walk the agent (and you) through CI (`finalize-setup`),
+  deployments (`deploy-setup`), Docker Compose previews (`preview-setup`),
+  session replay (`rum-setup`), and cloud auth (AWS SSO, Google Workspace).
+- **Configuration is conversational.** Point an agent at a target repo and it
+  authors the `.agent-hub/ci.yaml`, `deploy.yaml`, and preview compose files —
+  no YAML archaeology.
+- **The platform runs its own SDLC.** Kanban dispatch, PR review, and Finalize
+  gating are how Agent Hub ships Agent Hub. What you see in the demo is the
+  product maintaining itself.
+
+Autonomous setup is the painless-adoption closer that erases the install/
+maintain tax — the reason a sovereign platform can be as easy to start as a
+hosted one.
+
+---
+
+## Screenshots & demo
+
+The [architecture](#architecture) and [data model](#database) diagrams below
+render inline on GitHub. A guided product walkthrough (annotated UI
+screenshots + a short demo GIF of the kanban → dispatch → Finalize loop) is
+tracked as a follow-up and will land under [`docs/media/`](docs/media/); see
+that directory's README for the shot list. Until then, the fastest way to see
+the product is to [run it locally](#quick-start-self-host-in-2-minutes) — the
+whole stack boots with `npm run dev`.
+
+---
 
 ## Architecture
 
+Agent Hub follows a **control-plane / data-plane split**. In the open-core
+build everything runs inside your boundary; the optional hosted control plane
+(licensing, updates, fleet dashboard) is the _only_ piece a vendor would ever
+host — and it is never in the path of your code, prompts, or recordings.
+
 ```mermaid
 graph TB
-    subgraph Clients
-        WEB["Web Client<br/>React + Vite<br/>:3050"]
-        MOB["Mobile App<br/>React Native + Expo"]
-        DESK["Desktop App<br/>Electron"]
+    subgraph VPC["Your VPC / your infrastructure — the data plane"]
+        subgraph Clients
+            WEB["Web Client<br/>React + Vite<br/>:3050"]
+            MOB["Mobile App<br/>React Native + Expo"]
+            DESK["Desktop App<br/>Electron"]
+        end
+
+        subgraph Server["Express Server :3051"]
+            REST[REST API]
+            WS[WebSocket]
+            PROMPT[Prompt Builder]
+            CRON[Cron Scheduler]
+            HB[Heartbeat System]
+            WH[Webhook Receiver]
+            FIN[Finalize CI Runners<br/>isolated DinD]
+        end
+
+        subgraph Storage
+            DB[(SQLite + WAL<br/>sessions · boards · wiki · replay)]
+            FS[Agent Workspaces]
+        end
+
+        subgraph Engines["Agent CLIs — your model keys (BYO-inference)"]
+            CLAUDE[Claude Code]
+            CURSOR[Cursor Agent]
+            CODEX[Codex]
+            GEMINI[Gemini]
+        end
+
+        WEB & MOB & DESK -->|HTTP + WS| Server
+        REST & WS --> DB
+        WS --> PROMPT --> CLAUDE & CURSOR & CODEX & GEMINI
+        PROMPT --> FS
+        CRON & HB --> CLAUDE
+        FIN --> DB
     end
 
-    subgraph Server["Express Server :3051"]
-        REST[REST API]
-        WS[WebSocket]
-        PROMPT[Prompt Builder]
-        CRON[Cron Scheduler]
-        HB[Heartbeat System]
-        WH[Webhook Receiver]
+    subgraph Yours["Services you configure (never a vendor)"]
+        GH[Your GitHub / GitLab]
+        SLACK[Your Slack]
+        MODELS[Your model provider]
     end
 
-    subgraph Storage
-        DB[(SQLite + WAL)]
-        FS[Agent Workspaces]
-    end
-
-    subgraph External
-        CLAUDE[Claude Code CLI]
-        CURSOR[Cursor Agent CLI]
-        GH[GitHub API]
-        SLACK[Slack API]
-    end
-
-    WEB & MOB & DESK -->|HTTP + WS| Server
-    REST & WS --> DB
-    WS --> PROMPT --> CLAUDE & CURSOR
-    PROMPT --> FS
-    CRON & HB --> CLAUDE
     WH -.->|HMAC verify| GH
-    GH -->|Webhooks| WH
-    SLACK --> CLAUDE
+    GH -.->|Webhooks| WH
+    CLAUDE -.-> MODELS
+    SLACK -.-> CLAUDE
+
+    subgraph Optional["Optional hosted control plane (open-core call option)"]
+        LIC[Licensing · updates · fleet dashboard]
+    end
+    Server -. license check only .-> LIC
 ```
 
-## Tech Stack
+Nothing crosses the VPC boundary unless you wire it there. The dashed edges are
+**your** integrations — remove them and the platform still runs, fully offline.
 
-| Layer | Technology |
-|-------|------------|
-| Server | Node.js, Express, ES Modules |
-| Database | SQLite ([better-sqlite3](https://github.com/WiseLibs/better-sqlite3)), WAL mode |
-| Real-time | [ws](https://github.com/websockets/ws) (WebSocket) |
-| Web Client | React 18, Vite, Tailwind CSS |
-| Mobile | React Native, Expo |
-| Desktop | Electron |
-| Scheduling | node-cron |
-| Slack | @slack/bolt |
-| Testing | Vitest, supertest |
-| Deployment | EC2, Nginx, PM2 |
+---
+
+## Editions — open-core
+
+Agent Hub is **open-core under [Apache-2.0](LICENSE)**. The core platform is
+free, real, and deploy-ready today — that's the primary artifact.
+
+|                                              | **Community (this repo)** | **Enterprise (call option)** |
+| -------------------------------------------- | ------------------------- | ---------------------------- |
+| License                                      | Apache-2.0                | Commercial add-on            |
+| Everything above                             | ✅                        | ✅                           |
+| SSO / SCIM, RBAC, audit log                  | —                         | ✅                           |
+| Per-session isolation (untrusted multi-user) | —                         | ✅                           |
+| Compliance packs & support SLA               | —                         | ✅                           |
+| Hosting                                      | You, in your VPC          | You, in your VPC             |
+| Inference                                    | BYO keys                  | BYO keys                     |
+
+> **No rate card yet.** The project is in the show-it-off / demand-discovery
+> stage. The enterprise layer exists as a _call option_ — exercised only when a
+> regulated buyer needs it — not as a paywall on the core. Flat pricing and
+> BYO-inference are the committed model; the numbers stay deferred until real
+> buyers are in the conversation.
+
+---
+
+## Quick Start (self-host in 2 minutes)
+
+```bash
+# Clone into your own infrastructure
+git clone https://github.com/Speakman-ai/agent-hub.git
+cd agent-hub
+
+# Pick the pinned Node version (uses .nvmrc)
+nvm use
+
+# Install all dependencies (root, server, client, mobile)
+npm run install:all
+
+# Start the full stack (client + server) — nothing leaves your box
+npm run dev
+```
+
+The web client opens at [http://localhost:3050](http://localhost:3050); the API
+server runs on port 3051. On first launch, complete the **`/api/auth/setup`**
+flow to create the first Owner account. **No required env vars, no external
+services** — SQLite is local and FTS5 is built into `better-sqlite3`.
+
+Bring at least one [engine CLI](#engine-clis) and your model key, and you have a
+working, network-isolated DevSecOps platform. For contributor conventions,
+testing requirements, and AI-agent development guidance, see
+[`CLAUDE.md`](CLAUDE.md).
 
 ## Prerequisites
 
@@ -91,16 +244,17 @@ graph TB
 
 ### Engine CLIs
 
-Agent Hub orchestrates third-party agent CLIs — it does **not** ship them.
-You need at least one of:
+Agent Hub orchestrates third-party agent CLIs — it does **not** ship them, and
+it **never** proxies your prompts. You bring the binary and the key; the model
+traffic goes straight from your box to your provider.
 
-| Engine        | Acquire                                                              | Auto-installer                          | Notes                                                       |
-| ------------- | -------------------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------------- |
-| Claude Code   | [claude.ai/code](https://claude.ai/code) — Anthropic Pro/Max or API  | _none_ — install per Anthropic's docs   | Paid third-party account required.                          |
-| Cursor Agent  | [cursor.com/install](https://cursor.com/install)                     | `bash scripts/ensure-cursor-agent.sh`   | Symlinks to `~/.local/bin/agent`, server's default.         |
-| Codex         | `@openai/codex` (npm)                                                | `bash scripts/ensure-codex.sh`          | Symlinks `codex` into `~/.local/bin`.                       |
-| Gemini CLI    | Google's official installer                                          | _none_                                  | Same plug-in story as the others — point `geminiBin` at it. |
-| Grok Build    | [x.ai/cli](https://x.ai/cli)                                         | `bash scripts/ensure-grok.sh`           | Symlinks to `~/.local/bin/grok`. Auth via `XAI_API_KEY`.    |
+| Engine       | Acquire                                                             | Auto-installer                        | Notes                                                       |
+| ------------ | ------------------------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| Claude Code  | [claude.ai/code](https://claude.ai/code) — Anthropic Pro/Max or API | _none_ — install per Anthropic's docs | Paid third-party account required.                          |
+| Cursor Agent | [cursor.com/install](https://cursor.com/install)                    | `bash scripts/ensure-cursor-agent.sh` | Symlinks to `~/.local/bin/agent`, server's default.         |
+| Codex        | `@openai/codex` (npm)                                               | `bash scripts/ensure-codex.sh`        | Symlinks `codex` into `~/.local/bin`.                       |
+| Gemini CLI   | Google's official installer                                         | _none_                                | Same plug-in story as the others — point `geminiBin` at it. |
+| Grok Build   | [x.ai/cli](https://x.ai/cli)                                        | `bash scripts/ensure-grok.sh`         | Symlinks to `~/.local/bin/grok`. Auth via `XAI_API_KEY`.    |
 
 Once a binary exists on disk, the Hub finds it three ways (in priority order):
 **env var** (`CLAUDE_BIN` / `CURSOR_BIN` / `GEMINI_BIN` / `CODEX_BIN` / `GROK_BIN`) →
@@ -137,43 +291,66 @@ default `grokBin` — no further configuration needed. Same Terraform +
 workflow auto-install story as above. Auth is the `XAI_API_KEY` env var
 (headless) or an interactive `grok login`.
 
-## Quick Start
+## Platform capabilities
 
-```bash
-# Clone the repository
-git clone https://github.com/Speakman-ai/agent-hub.git
-cd agent-hub
+Everything below runs on the server you host — no capability depends on a
+vendor endpoint.
 
-# Pick the right Node version (uses .nvmrc)
-nvm use
+- **Agent orchestration** — Stream responses from Claude Code, Cursor, Codex,
+  Gemini, and Grok over WebSocket with persistent session history and
+  per-agent model configuration.
+- **Kanban boards** — Per-project task tracking with epics, labels,
+  priorities, blockers, and **autonomous dispatch** (assign a card, an agent
+  picks it up).
+- **Wiki knowledge base** — Full-text searchable (SQLite FTS5) documentation
+  per project, injected into agent context so agents carry project knowledge.
+- **Code review & PR lifecycle** — Webhook-driven GitHub PR flow with automated
+  agent reviews and CI monitoring.
+- **Finalize Code Changes** — Per-session rebase, in-hub review, and test
+  gating on **isolated DinD runners** with GitHub-parity CPU/memory caps
+  before anything is pushed or merged.
+- **Preview & deploy environments** — Per-PR preview deployments (wildcard TLS,
+  URL routing) and declarative `deploy.yaml` environments.
+- **Session replay / RUM** — Continuous rrweb recording with frustration-signal
+  detection (rage / dead / error clicks) — a self-hosted alternative to
+  LogRocket / FullStory.
+- **Security** — Per-commit secret scanning with a configurable ignore list.
+- **Scheduled work** — Cron jobs and per-agent heartbeat check-ins with
+  configurable prompts.
+- **Slack integration** — Multi-agent Slack bot for team communication.
+- **Cross-platform clients** — Web (React), mobile (React Native / Expo), and
+  desktop (Electron), with 1:1 feature parity.
+- **Customer support queue** — Per-project support ticket intake with severity
+  ordering and convert-to-card workflow.
 
-# Install all dependencies (root, server, client, mobile)
-npm run install:all
+## Tech Stack
 
-# Start the full stack (client + server)
-npm run dev
-```
-
-The web client opens at [http://localhost:3050](http://localhost:3050) and the API server runs on port 3051.
-
-On first launch, visit the web client and complete the **`/api/auth/setup`**
-flow — it creates the first Owner account. No required env vars, no
-external services. SQLite is local, FTS5 is built into `better-sqlite3`.
-
-For contributor conventions, testing requirements, and AI-agent development
-guidance, see [`CLAUDE.md`](CLAUDE.md).
+| Layer          | Technology                                                                      |
+| -------------- | ------------------------------------------------------------------------------- |
+| Server         | Node.js, Express, ES Modules, TypeScript (strict)                               |
+| Database       | SQLite ([better-sqlite3](https://github.com/WiseLibs/better-sqlite3)), WAL mode |
+| Real-time      | [ws](https://github.com/websockets/ws) (WebSocket)                              |
+| Web Client     | React 18, Vite, Tailwind CSS                                                    |
+| Mobile         | React Native, Expo                                                              |
+| Desktop        | Electron                                                                        |
+| CI runners     | Docker-in-Docker (GitHub-parity resource caps)                                  |
+| Session replay | rrweb                                                                           |
+| Scheduling     | node-cron                                                                       |
+| Slack          | @slack/bolt                                                                     |
+| Testing        | Vitest, supertest, Playwright                                                   |
+| Deployment     | Self-hosted — Nginx, PM2 (EC2/Terraform reference module included)              |
 
 ## Deployment Modes
 
 Agent Hub is a **server-first product with an optional native desktop
 client** — think Plex or Home Assistant. Three legitimate ways to run it,
-all supported today:
+all supported today, all fully self-hosted:
 
-| Mode                                | What you run                                                            | When it's the right fit                                                |
-| ----------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **Self-hosted + browser**           | `npm run dev` (or PM2) on a Linux box → hit from any device on the LAN  | You already have a home server / VPS and want zero install on clients. |
-| **Self-hosted + Electron remote**   | Same server, plus the Electron app pointed at it via `connConfig.mode = 'remote'` | You want a native window / tray on your laptop without port-forward thinking. |
-| **All-in-one Electron (`local`)**   | Packaged Electron app — boots its own server in-process                 | Single-machine use; the easiest install once binaries exist.           |
+| Mode                              | What you run                                                                      | When it's the right fit                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **Self-hosted + browser**         | `npm run dev` (or PM2) on a Linux box → hit from any device on the LAN            | You already have a home server / VPS and want zero install on clients.        |
+| **Self-hosted + Electron remote** | Same server, plus the Electron app pointed at it via `connConfig.mode = 'remote'` | You want a native window / tray on your laptop without port-forward thinking. |
+| **All-in-one Electron (`local`)** | Packaged Electron app — boots its own server in-process                           | Single-machine use; the easiest install once binaries exist.                  |
 
 ### Mode 1: Self-hosted server + browser
 
@@ -285,20 +462,20 @@ Configuration resolves in priority order: **environment variables** >
 **`~/.agent-hub/data/config.json`** > **`server/config.json` (legacy)** >
 **built-in defaults**.
 
-| Environment Variable    | config.json Key | Default                  | Description                                          |
-| ----------------------- | --------------- | ------------------------ | ---------------------------------------------------- |
-| `AGENT_HUB_PORT`        | `port`          | `3051`                   | Server port                                          |
-| `AGENT_HUB_HOST`        | `host`          | `0.0.0.0`                | Server bind address (all interfaces by default; set to `127.0.0.1` to restrict to loopback) |
-| `AGENT_HUB_DATA_DIR`    | —               | `~/.agent-hub/data`      | SQLite + workspaces root                             |
-| `CLAUDE_BIN`            | `claudeBin`     | _smart probe_            | Path to Claude Code CLI                              |
-| `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`     | Path to Cursor Agent CLI                             |
-| `GEMINI_BIN`            | `geminiBin`     | _smart probe_            | Path to Gemini CLI                                   |
-| `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`     | Path to Codex CLI                                    |
-| `GROK_BIN`              | `grokBin`       | `~/.local/bin/grok`      | Path to Grok Build CLI                              |
-| `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                  | Fallback working directory                           |
-| `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                   | Break-glass API key (treated as Owner for all orgs)  |
-| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                   | Public URL for webhooks, OAuth callbacks, and spawn `AGENT_HUB_URL` fallback |
-| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist  |
+| Environment Variable    | config.json Key | Default                                       | Description                                                                                 |
+| ----------------------- | --------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `AGENT_HUB_PORT`        | `port`          | `3051`                                        | Server port                                                                                 |
+| `AGENT_HUB_HOST`        | `host`          | `0.0.0.0`                                     | Server bind address (all interfaces by default; set to `127.0.0.1` to restrict to loopback) |
+| `AGENT_HUB_DATA_DIR`    | —               | `~/.agent-hub/data`                           | SQLite + workspaces root                                                                    |
+| `CLAUDE_BIN`            | `claudeBin`     | _smart probe_                                 | Path to Claude Code CLI                                                                     |
+| `CURSOR_BIN`            | `cursorBin`     | `~/.local/bin/agent`                          | Path to Cursor Agent CLI                                                                    |
+| `GEMINI_BIN`            | `geminiBin`     | _smart probe_                                 | Path to Gemini CLI                                                                          |
+| `CODEX_BIN`             | `codexBin`      | `~/.local/bin/codex`                          | Path to Codex CLI                                                                           |
+| `GROK_BIN`              | `grokBin`       | `~/.local/bin/grok`                           | Path to Grok Build CLI                                                                      |
+| `AGENT_HUB_DEFAULT_CWD` | `defaultCwd`    | `$HOME`                                       | Fallback working directory                                                                  |
+| `AGENT_HUB_API_KEY`     | `apiKey`        | `null`                                        | Break-glass API key (treated as Owner for all orgs)                                         |
+| `AGENT_HUB_PUBLIC_URL`  | `publicUrl`     | `null`                                        | Public URL for webhooks, OAuth callbacks, and spawn `AGENT_HUB_URL` fallback                |
+| `ALLOWED_ORIGINS`       | —               | `http://localhost:3050,http://127.0.0.1:3050` | Comma-separated browser CORS allowlist                                                      |
 
 > **`ALLOWED_ORIGINS` gotcha:** the `ecosystem.config.cjs` default of
 > `https://hub.example.com` is a sample value — override it for any
@@ -317,17 +494,17 @@ Configuration resolves in priority order: **environment variables** >
 
 ## Available Scripts
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start client and server concurrently |
-| `npm run dev:client` | Start React client on port 3050 |
-| `npm run dev:server` | Start Express server on port 3051 |
-| `npm run build` | Build the client for production |
-| `npm run install:all` | Install deps for all packages |
-| `npm run mobile` | Start Expo dev server for mobile |
+| Command                | Description                            |
+| ---------------------- | -------------------------------------- |
+| `npm run dev`          | Start client and server concurrently   |
+| `npm run dev:client`   | Start React client on port 3050        |
+| `npm run dev:server`   | Start Express server on port 3051      |
+| `npm run build`        | Build the client for production        |
+| `npm run install:all`  | Install deps for all packages          |
+| `npm run mobile`       | Start Expo dev server for mobile       |
 | `npm run electron:dev` | Start Electron desktop app in dev mode |
-| `npm test` | Run server tests |
-| `npm run test:watch` | Run tests in watch mode |
+| `npm test`             | Run server tests                       |
+| `npm run test:watch`   | Run tests in watch mode                |
 
 ## Project Structure
 
@@ -350,6 +527,7 @@ agent-hub/
 │   ├── slack.ts            # Multi-agent Slack bot
 │   ├── stream-parser.ts    # CLI output stream parsing
 │   ├── worktree.ts         # Git worktree management
+│   ├── finalize/           # In-hub CI gating on isolated DinD runners
 │   └── project-paths.ts    # Workspace path resolution
 ├── mobile/                 # React Native + Expo mobile app (TypeScript)
 │   ├── index.ts            # Entry point with navigation
@@ -360,6 +538,7 @@ agent-hub/
 │   ├── main.ts             # Main process
 │   └── preload.cjs         # Preload script (CommonJS)
 ├── e2e/                    # Playwright E2E tests (TypeScript)
+├── ops/terraform/          # Self-host reference infra (EC2 + ALB + ECR)
 ├── CLAUDE.md               # Developer documentation (for AI agents)
 └── package.json            # Root scripts and Electron build config
 ```
@@ -373,6 +552,7 @@ agent-hub/
 ### Enriched Prompts
 
 Before every agent invocation, the server builds an enriched prompt by combining:
+
 1. Agent's base configuration and custom instructions
 2. Context files from the workspace (`AGENTS.md`, `SOUL.md`, `MEMORY.md`, etc.)
 3. Matching skills from the `skills/` directory
@@ -384,6 +564,7 @@ This gives agents persistent project knowledge without manually managing convers
 ### Real-time Communication
 
 All real-time features use WebSocket:
+
 1. REST endpoint performs a mutation
 2. On success, the server broadcasts an event to all connected clients
 3. Clients receive the event and refetch relevant data
@@ -394,36 +575,40 @@ Events use the format `{ type: 'feature_action', projectId, ...data }`.
 
 Each agent workspace can contain context files that are automatically injected into prompts:
 
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Agent role definitions and team structure |
-| `SOUL.md` | Personality, behavioral guidelines, coding standards |
-| `IDENTITY.md` | Identity and background context |
-| `USER.md` | User preferences and context |
-| `TOOLS.md` | Available tools and usage instructions |
-| `MEMORY.md` | Persistent memory across sessions |
+| File          | Purpose                                              |
+| ------------- | ---------------------------------------------------- |
+| `AGENTS.md`   | Agent role definitions and team structure            |
+| `SOUL.md`     | Personality, behavioral guidelines, coding standards |
+| `IDENTITY.md` | Identity and background context                      |
+| `USER.md`     | User preferences and context                         |
+| `TOOLS.md`    | Available tools and usage instructions               |
+| `MEMORY.md`   | Persistent memory across sessions                    |
 
 ## API Overview
 
 The server exposes a RESTful API at `http://localhost:3051/api`. Key resource groups:
 
-| Resource | Endpoints | Description |
-|----------|-----------|-------------|
-| Projects | `/api/projects` | CRUD for projects and their agents |
-| Sessions | `/api/sessions` | Chat session management |
-| Messages | `/api/sessions/:id/messages` | Message history |
-| Kanban | `/api/projects/:id/board` | Boards, columns, cards, epics, comments |
-| Wiki | `/api/projects/:id/wiki` | Knowledge base with full-text search |
-| Webhooks | `/api/webhooks` | GitHub webhook configuration |
-| Crons | `/api/crons` | Scheduled task management |
-| Heartbeats | `/api/agents/:id/heartbeat` | Agent health check scheduling |
-| Config | `/api/config` | Server configuration |
+| Resource   | Endpoints                    | Description                             |
+| ---------- | ---------------------------- | --------------------------------------- |
+| Projects   | `/api/projects`              | CRUD for projects and their agents      |
+| Sessions   | `/api/sessions`              | Chat session management                 |
+| Messages   | `/api/sessions/:id/messages` | Message history                         |
+| Kanban     | `/api/projects/:id/board`    | Boards, columns, cards, epics, comments |
+| Wiki       | `/api/projects/:id/wiki`     | Knowledge base with full-text search    |
+| Webhooks   | `/api/webhooks`              | GitHub webhook configuration            |
+| Crons      | `/api/crons`                 | Scheduled task management               |
+| Heartbeats | `/api/agents/:id/heartbeat`  | Agent health check scheduling           |
+| Config     | `/api/config`                | Server configuration                    |
 
-Authentication is optional. When `apiKey` is set in config, include `X-API-Key` header or `?apiKey=` query parameter.
+The full REST surface is documented from Zod schemas in
+[`docs/api/openapi.yaml`](docs/api/openapi.yaml). Authentication is optional;
+when `apiKey` is set in config, include the `X-API-Key` header or `?apiKey=`
+query parameter.
 
 ## Database
 
-Agent Hub uses **SQLite with WAL mode** for zero-ops persistence. Key tables:
+Agent Hub uses **SQLite with WAL mode** for zero-ops, fully local persistence —
+the single file _is_ your data plane. Key tables:
 
 ```mermaid
 erDiagram
@@ -439,11 +624,13 @@ erDiagram
     CRONS ||--o{ CRON_LOGS : produces
 ```
 
-The database file lives at `server/agent-hub.db` (or in `dataDir` if configured). Tables are auto-created on first server start.
+The database file lives at `server/agent-hub.db` (or in `dataDir` if
+configured). Tables are auto-created on first server start. Back it up,
+encrypt it, or delete it — it never leaves the host unless you move it.
 
 ## Deployment
 
-### Production (EC2 + Nginx + PM2)
+### Production (self-hosted: Nginx + PM2)
 
 The API is **TypeScript** (`server/index.ts`) and must be started with **tsx** (same as `npm run dev:server`). Do **not** point PM2 at `server/index.js` — that file does not exist.
 
@@ -465,7 +652,7 @@ pm2 restart agent-hub
 - **PM2** manages the Node.js process with auto-restart.
 - **Port 3051** is localhost-only; all external traffic routes through Nginx.
 
-**GitHub webhooks:** The **signing secret** configured on the GitHub side must **exactly match** the secret stored in Agent Hub’s webhook config for that repo. Mismatches produce `HMAC verification failed` in logs. The server verifies the raw request body (`express.json` `verify` hook); deploy current server code so HMAC uses the same bytes GitHub signed.
+**GitHub webhooks:** The **signing secret** configured on the GitHub side must **exactly match** the secret stored in Agent Hub's webhook config for that repo. Mismatches produce `HMAC verification failed` in logs. The server verifies the raw request body (`express.json` `verify` hook); deploy current server code so HMAC uses the same bytes GitHub signed.
 
 **`gh` CLI on the server:** For autonomous review features, install a recent [GitHub CLI](https://cli.github.com/). Older versions lack `gh pr view --json reviewThreads`; the server falls back to the GraphQL API when that field is missing.
 
@@ -479,9 +666,9 @@ pm2 monit            # CPU/memory dashboard
 
 ### Terraform Quickstart (EC2 + ALB + ECR Public)
 
-The `ops/terraform/` module provisions a complete Agent Hub host: VPC, EC2,
-dedicated ALB with TLS, IAM, and (by default) the per-PR preview environment
-stack. To bring up a new environment from scratch:
+The `ops/terraform/` module provisions a complete self-hosted Agent Hub host in
+**your** account: VPC, EC2, dedicated ALB with TLS, IAM, and (by default) the
+per-PR preview environment stack. To bring up a new environment from scratch:
 
 ```bash
 cd ops/terraform
@@ -526,19 +713,9 @@ testing. There is **no separate `AGENT_HUB_PR_ENV_ENABLED` env-var gate**;
 the Settings toggle (DB row, with file-block fallback) is the single source
 of truth.
 
-## Git Workflow
-
-All feature work uses **worktree-first development**:
-
-1. Branch from `main` with a descriptive name
-2. Work entirely on the feature branch
-3. Push and open a PR via `gh pr create`
-4. Wait for CI checks and code review
-5. Human merges to `main` — agents never self-merge
-
-Never commit directly to `main`. Never push to `main` for feature work.
-
 ## Contributing
+
+Agent Hub is open source under Apache-2.0 — contributions are welcome.
 
 1. Pull latest `main`: `git checkout main && git pull`
 2. Create a feature branch: `git checkout -b feature/your-feature`
@@ -547,6 +724,8 @@ Never commit directly to `main`. Never push to `main` for feature work.
 5. Run tests: `npm test`
 6. Push your branch and open a PR: `gh pr create`
 7. Wait for CI and review — humans merge to `main`
+
+Never commit directly to `main`. Never push to `main` for feature work.
 
 ### Code Conventions
 
@@ -561,19 +740,23 @@ Never commit directly to `main`. Never push to `main` for feature work.
 
 Common setup and runtime issues and their fixes:
 
-| Issue                                              | Solution                                                                                                                                                                                                                       |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `EBADENGINE` / Node version mismatch               | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use` in the repo root; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                                            |
-| `better-sqlite3` build fails                       | Ensure build tools are installed: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                                                    |
-| WebSocket connection refused                       | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                                                                       |
-| Browser API calls fail with CORS error             | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this — only browsers do.                                       |
-| CLI binary not found                               | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines** in the UI.                                                                     |
-| Electron app can't reach the remote server         | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connConfig.json`. Auth headers (`x-api-key` / JWT) are injected only for hosts matching the configured remote.                       |
-| `npm run install:all` fails                        | Try deleting `node_modules` in root, client, server, and mobile, then retry.                                                                                                                                                    |
-| Vitest missing devDependency                       | With `NODE_ENV=production`, npm omits devDependencies. Use `npm run install:all` or reinstall per package with `npm ci --include=dev`.                                                                                          |
+| Issue                                      | Solution                                                                                                                                                                                                   |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EBADENGINE` / Node version mismatch       | Repo pins `>=22.14.0 <23.0.0`. Run `nvm use` in the repo root; if you switched versions after install, `npm rebuild better-sqlite3`.                                                                       |
+| `better-sqlite3` build fails               | Ensure build tools are installed: `sudo apt install build-essential python3` (Linux) or `xcode-select --install` (macOS). Then `npm rebuild better-sqlite3`.                                               |
+| WebSocket connection refused               | Verify the server is running on port 3051 and no firewall is blocking it.                                                                                                                                  |
+| Browser API calls fail with CORS error     | Set `ALLOWED_ORIGINS=<your-origin>` (comma-separated for multiple). Default is `http://localhost:3050,http://127.0.0.1:3050`. Electron / mobile / curl don't need this — only browsers do.                 |
+| CLI binary not found                       | Update `claudeBin`/`cursorBin`/`geminiBin`/`codexBin` in `~/.agent-hub/data/config.json`, set the matching env var, or use **Settings → Engines** in the UI.                                               |
+| Electron app can't reach the remote server | Confirm `connConfig.mode = 'remote'` and `remoteUrl` is correct in `app.getPath('userData')/connConfig.json`. Auth headers (`x-api-key` / JWT) are injected only for hosts matching the configured remote. |
+| `npm run install:all` fails                | Try deleting `node_modules` in root, client, server, and mobile, then retry.                                                                                                                               |
+| Vitest missing devDependency               | With `NODE_ENV=production`, npm omits devDependencies. Use `npm run install:all` or reinstall per package with `npm ci --include=dev`.                                                                     |
 
 ## License
 
-Agent Hub is licensed under the [Apache License 2.0](LICENSE). See the
-[NOTICE](NOTICE) file for attribution and [docs/licensing.md](docs/licensing.md)
-for the source-header policy and third-party licensing notes.
+Agent Hub is licensed under the [Apache License 2.0](LICENSE) — see
+[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for attribution, and
+[`docs/licensing.md`](docs/licensing.md) for the source-header policy and
+third-party licensing notes. The open-source core is free to run, fork, and
+self-host. An optional commercial enterprise layer (SSO/SCIM, RBAC, audit,
+per-session isolation, support, compliance) is available separately under the
+[open-core model](#editions--open-core).
