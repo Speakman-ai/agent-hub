@@ -174,6 +174,41 @@ export function initOrgsDb(): void {
   // Cross-project personal todos, keyed by user_id. Global (non-project)
   // capture primitive — see user-todos-store.ts / user-todos-schema.ts.
   orgsDb.exec(USER_TODOS_SCHEMA);
+
+  // Additive migration for installs that created user_todos before the
+  // priority / do_date-window / polymorphic-link columns existed (spec
+  // TODO-MODEL). CREATE TABLE IF NOT EXISTS above won't add columns to an
+  // existing table, so ADD each one guarded by a probing SELECT. SQLite
+  // allows a CHECK constraint on an added column, and the priority default
+  // ('medium') satisfies its own CHECK for pre-existing rows. Idempotent:
+  // once a column exists the probe succeeds and the ALTER is skipped.
+  const userTodoColumns: Array<{ name: string; ddl: string }> = [
+    {
+      name: 'priority',
+      ddl: "TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('urgent','high','medium','low'))",
+    },
+    { name: 'do_date', ddl: 'TEXT' },
+    { name: 'do_start_at', ddl: 'TEXT' },
+    { name: 'do_end_at', ddl: 'TEXT' },
+    { name: 'linked_type', ddl: "TEXT CHECK(linked_type IN ('card','epic','session'))" },
+    { name: 'linked_id', ddl: 'TEXT' },
+  ];
+  for (const col of userTodoColumns) {
+    try {
+      orgsDb.prepare(`SELECT ${col.name} FROM user_todos LIMIT 1`).get();
+    } catch {
+      orgsDb.exec(`ALTER TABLE user_todos ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+  // Backfill the polymorphic link from the deprecated linked_card_id column:
+  // any row promoted to a card before the polymorphic link existed becomes
+  // {linked_type:'card', linked_id:<linked_card_id>}. Idempotent — the
+  // `linked_type IS NULL` guard means a second run touches nothing.
+  orgsDb.exec(
+    `UPDATE user_todos
+        SET linked_type = 'card', linked_id = linked_card_id
+      WHERE linked_card_id IS NOT NULL AND linked_type IS NULL`,
+  );
   // Migration: widen the `user_engine_auth_audit.engine` CHECK to admit
   // 'grok'. `CREATE TABLE IF NOT EXISTS` can't alter an existing CHECK, so
   // DBs created before Grok per-user auth still carry the narrower

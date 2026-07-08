@@ -21,6 +21,17 @@ import { parseSourceMeta, type TodoSourceType } from './source-provenance.js';
 export type TodoStatus = 'open' | 'done';
 export type { TodoSourceType };
 
+/**
+ * Todo priority — reuses the kanban-card priority enum so a promote maps 1:1
+ * (spec TODO-MODEL). Keep in sync with `KanbanCardRow.priority` in types.ts.
+ */
+export const TODO_PRIORITIES = ['urgent', 'high', 'medium', 'low'] as const;
+export type TodoPriority = (typeof TODO_PRIORITIES)[number];
+
+/** Polymorphic link target for a todo (spec TODO-TO-TICKET). */
+export const TODO_LINK_TYPES = ['card', 'epic', 'session'] as const;
+export type TodoLinkType = (typeof TODO_LINK_TYPES)[number];
+
 /** Public-facing todo shape. `sourceMeta` is parsed from the stored JSON blob. */
 export interface UserTodo {
   id: string;
@@ -28,13 +39,23 @@ export interface UserTodo {
   title: string;
   notes: string;
   status: TodoStatus;
+  priority: TodoPriority;
+  /** Day the user plans to WORK the task (scheduling "do" date, not a deadline). */
+  doDate: string | null;
+  doStartAt: string | null;
+  doEndAt: string | null;
+  /** Retained for back-compat only; no longer written. Use `doDate`. */
   dueAt: string | null;
   position: number;
   sourceType: TodoSourceType;
   sourceId: string | null;
   sourceMeta: Record<string, unknown> | null;
-  linkedCardId: string | null;
+  /** Polymorphic link (card | epic | session), or null when unlinked. */
+  linkedType: TodoLinkType | null;
+  linkedId: string | null;
   linkedProjectId: string | null;
+  /** Deprecated: superseded by linkedType/linkedId. Kept in sync for a card link. */
+  linkedCardId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -45,11 +66,17 @@ interface UserTodoRow {
   title: string;
   notes: string;
   status: TodoStatus;
+  priority: TodoPriority;
+  do_date: string | null;
+  do_start_at: string | null;
+  do_end_at: string | null;
   due_at: string | null;
   position: number;
   source_type: TodoSourceType;
   source_id: string | null;
   source_meta: string | null;
+  linked_type: TodoLinkType | null;
+  linked_id: string | null;
   linked_card_id: string | null;
   linked_project_id: string | null;
   created_at: string;
@@ -60,6 +87,11 @@ export interface CreateTodoInput {
   userId: string;
   title: string;
   notes?: string;
+  priority?: TodoPriority;
+  doDate?: string | null;
+  doStartAt?: string | null;
+  doEndAt?: string | null;
+  /** Deprecated: retained for back-compat. Prefer `doDate`. */
   dueAt?: string | null;
   sourceType?: TodoSourceType;
   sourceId?: string | null;
@@ -70,6 +102,11 @@ export interface UpdateTodoInput {
   title?: string;
   notes?: string;
   status?: TodoStatus;
+  priority?: TodoPriority;
+  doDate?: string | null;
+  doStartAt?: string | null;
+  doEndAt?: string | null;
+  /** Deprecated: retained for back-compat. Prefer `doDate`. */
   dueAt?: string | null;
 }
 
@@ -80,13 +117,19 @@ function rowToTodo(row: UserTodoRow): UserTodo {
     title: row.title,
     notes: row.notes,
     status: row.status,
+    priority: row.priority,
+    doDate: row.do_date,
+    doStartAt: row.do_start_at,
+    doEndAt: row.do_end_at,
     dueAt: row.due_at,
     position: row.position,
     sourceType: row.source_type,
     sourceId: row.source_id,
     sourceMeta: parseSourceMeta(row.source_meta),
-    linkedCardId: row.linked_card_id,
+    linkedType: row.linked_type,
+    linkedId: row.linked_id,
     linkedProjectId: row.linked_project_id,
+    linkedCardId: row.linked_card_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -113,14 +156,19 @@ export function createTodo(input: CreateTodoInput): UserTodo {
 
   db.prepare(
     `INSERT INTO user_todos
-       (id, user_id, title, notes, status, due_at, position,
+       (id, user_id, title, notes, status, priority,
+        do_date, do_start_at, do_end_at, due_at, position,
         source_type, source_id, source_meta, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.userId,
     title,
     input.notes ?? '',
+    input.priority ?? 'medium',
+    input.doDate ?? null,
+    input.doStartAt ?? null,
+    input.doEndAt ?? null,
     input.dueAt ?? null,
     nextPosition,
     input.sourceType ?? 'manual',
@@ -186,6 +234,22 @@ export function updateTodo(userId: string, id: string, patch: UpdateTodoInput): 
   if (patch.status !== undefined) {
     sets.push('status = ?');
     values.push(patch.status);
+  }
+  if (patch.priority !== undefined) {
+    sets.push('priority = ?');
+    values.push(patch.priority);
+  }
+  if (patch.doDate !== undefined) {
+    sets.push('do_date = ?');
+    values.push(patch.doDate);
+  }
+  if (patch.doStartAt !== undefined) {
+    sets.push('do_start_at = ?');
+    values.push(patch.doStartAt);
+  }
+  if (patch.doEndAt !== undefined) {
+    sets.push('do_end_at = ?');
+    values.push(patch.doEndAt);
   }
   if (patch.dueAt !== undefined) {
     sets.push('due_at = ?');
@@ -253,8 +317,10 @@ export function reorderTodos(userId: string, orderedIds: string[]): UserTodo[] {
 
 /**
  * Stamp a promoted todo with the kanban card it created (spec TODO-TO-TICKET).
- * The todo persists alongside its ticket; the two are joined by this link.
- * Returns the updated todo, or null if it isn't the user's.
+ * Writes the polymorphic link ({card, cardId, projectId}) and keeps the
+ * deprecated linked_card_id column in sync for back-compat readers. The todo
+ * persists alongside its ticket; the two are joined by this link. Returns the
+ * updated todo, or null if it isn't the user's.
  */
 export function linkTodoToCard(
   userId: string,
@@ -264,10 +330,58 @@ export function linkTodoToCard(
   const db = getOrgsDb();
   const result = db
     .prepare(
-      `UPDATE user_todos SET linked_card_id = ?, linked_project_id = ?, updated_at = ?
-       WHERE id = ? AND user_id = ?`,
+      `UPDATE user_todos
+          SET linked_type = 'card', linked_id = ?, linked_card_id = ?,
+              linked_project_id = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?`,
     )
-    .run(link.cardId, link.projectId, new Date().toISOString(), id, userId);
+    .run(link.cardId, link.cardId, link.projectId, new Date().toISOString(), id, userId);
+  if (result.changes === 0) return null;
+  return getTodo(userId, id);
+}
+
+/**
+ * Set the polymorphic link to any supported target (spec TODO-TO-TICKET LINK
+ * op). `projectId` scopes a project-bound target (card / epic) and is ignored
+ * for a session link. When the target is a card, linked_card_id is kept in
+ * sync for back-compat. Returns the updated todo, or null if it isn't the
+ * user's.
+ */
+export function setTodoLink(
+  userId: string,
+  id: string,
+  link: { type: TodoLinkType; id: string; projectId?: string | null },
+): UserTodo | null {
+  const db = getOrgsDb();
+  const projectId = link.type === 'session' ? null : (link.projectId ?? null);
+  const linkedCardId = link.type === 'card' ? link.id : null;
+  const result = db
+    .prepare(
+      `UPDATE user_todos
+          SET linked_type = ?, linked_id = ?, linked_card_id = ?,
+              linked_project_id = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?`,
+    )
+    .run(link.type, link.id, linkedCardId, projectId, new Date().toISOString(), id, userId);
+  if (result.changes === 0) return null;
+  return getTodo(userId, id);
+}
+
+/**
+ * Clear a todo's polymorphic link (and the deprecated linked_card_id /
+ * linked_project_id columns). Returns the updated todo, or null if it isn't
+ * the user's.
+ */
+export function clearTodoLink(userId: string, id: string): UserTodo | null {
+  const db = getOrgsDb();
+  const result = db
+    .prepare(
+      `UPDATE user_todos
+          SET linked_type = NULL, linked_id = NULL, linked_card_id = NULL,
+              linked_project_id = NULL, updated_at = ?
+        WHERE id = ? AND user_id = ?`,
+    )
+    .run(new Date().toISOString(), id, userId);
   if (result.changes === 0) return null;
   return getTodo(userId, id);
 }

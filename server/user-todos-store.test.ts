@@ -15,8 +15,17 @@ vi.mock('./config.js', () => ({
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('./orgs.js');
 const { createUser } = await import('./users-store.js');
-const { createTodo, getTodo, listTodos, updateTodo, deleteTodo, reorderTodos, linkTodoToCard } =
-  await import('./user-todos-store.js');
+const {
+  createTodo,
+  getTodo,
+  listTodos,
+  updateTodo,
+  deleteTodo,
+  reorderTodos,
+  linkTodoToCard,
+  setTodoLink,
+  clearTodoLink,
+} = await import('./user-todos-store.js');
 
 function freshDb() {
   TMP_DIR = mkdtempSync(path.join(tmpdir(), 'user-todos-store-test-'));
@@ -122,15 +131,134 @@ describe('user-todos-store — CRUD', () => {
     expect(getTodo(alice.id, todo.id)).toBeNull();
   });
 
-  it('linkTodoToCard stamps the promoted-card link', () => {
+  it('linkTodoToCard stamps the promoted-card link (polymorphic + back-compat)', () => {
     const user = createUser({ username: 'alice', passwordHash: 'x' });
     const todo = createTodo({ userId: user.id, title: 'promote me' });
     const linked = linkTodoToCard(user.id, todo.id, {
       cardId: 'card-1',
       projectId: 'proj-1',
     })!;
-    expect(linked.linkedCardId).toBe('card-1');
+    expect(linked.linkedType).toBe('card');
+    expect(linked.linkedId).toBe('card-1');
+    expect(linked.linkedCardId).toBe('card-1'); // kept in sync for back-compat
     expect(linked.linkedProjectId).toBe('proj-1');
+  });
+});
+
+describe('user-todos-store — priority, do-date window, polymorphic link', () => {
+  beforeEach(() => {
+    freshDb();
+  });
+
+  it('defaults priority to medium and leaves the do-window null', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({ userId: user.id, title: 'plain' });
+    expect(todo.priority).toBe('medium');
+    expect(todo.doDate).toBeNull();
+    expect(todo.doStartAt).toBeNull();
+    expect(todo.doEndAt).toBeNull();
+    expect(todo.linkedType).toBeNull();
+    expect(todo.linkedId).toBeNull();
+    expect(getTodo(user.id, todo.id)).toEqual(todo);
+  });
+
+  it('round-trips priority and the do-date time window on create', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({
+      userId: user.id,
+      title: 'ship it',
+      priority: 'urgent',
+      doDate: '2026-07-10',
+      doStartAt: '2026-07-10T13:00:00.000Z',
+      doEndAt: '2026-07-10T14:30:00.000Z',
+    });
+    const fetched = getTodo(user.id, todo.id)!;
+    expect(fetched.priority).toBe('urgent');
+    expect(fetched.doDate).toBe('2026-07-10');
+    expect(fetched.doStartAt).toBe('2026-07-10T13:00:00.000Z');
+    expect(fetched.doEndAt).toBe('2026-07-10T14:30:00.000Z');
+  });
+
+  it('updateTodo patches priority and the do-date window, and clears with null', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({
+      userId: user.id,
+      title: 't',
+      priority: 'low',
+      doDate: '2026-07-10',
+      doStartAt: '2026-07-10T13:00:00.000Z',
+    });
+
+    const bumped = updateTodo(user.id, todo.id, { priority: 'high', doDate: '2026-07-11' })!;
+    expect(bumped.priority).toBe('high');
+    expect(bumped.doDate).toBe('2026-07-11');
+    expect(bumped.doStartAt).toBe('2026-07-10T13:00:00.000Z'); // untouched
+
+    const cleared = updateTodo(user.id, todo.id, { doDate: null, doStartAt: null })!;
+    expect(cleared.doDate).toBeNull();
+    expect(cleared.doStartAt).toBeNull();
+    expect(cleared.priority).toBe('high'); // untouched
+  });
+
+  it('rejects an out-of-range priority at the DB CHECK boundary', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    // @ts-expect-error — deliberately bad priority to prove the CHECK constraint bites.
+    expect(() => createTodo({ userId: user.id, title: 'bad', priority: 'bogus' })).toThrow(
+      /CHECK constraint/,
+    );
+  });
+
+  it('setTodoLink links to an epic and to a session', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({ userId: user.id, title: 'link me' });
+
+    const toEpic = setTodoLink(user.id, todo.id, {
+      type: 'epic',
+      id: 'epic-7',
+      projectId: 'proj-3',
+    })!;
+    expect(toEpic.linkedType).toBe('epic');
+    expect(toEpic.linkedId).toBe('epic-7');
+    expect(toEpic.linkedProjectId).toBe('proj-3');
+    expect(toEpic.linkedCardId).toBeNull(); // only a card link populates the back-compat column
+
+    const toSession = setTodoLink(user.id, todo.id, { type: 'session', id: 'sess-1' })!;
+    expect(toSession.linkedType).toBe('session');
+    expect(toSession.linkedId).toBe('sess-1');
+    expect(toSession.linkedProjectId).toBeNull(); // session links are not project-scoped
+  });
+
+  it('setTodoLink to a card keeps the back-compat linked_card_id in sync', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({ userId: user.id, title: 'link me' });
+    const linked = setTodoLink(user.id, todo.id, {
+      type: 'card',
+      id: 'card-9',
+      projectId: 'proj-4',
+    })!;
+    expect(linked.linkedType).toBe('card');
+    expect(linked.linkedId).toBe('card-9');
+    expect(linked.linkedCardId).toBe('card-9');
+    expect(linked.linkedProjectId).toBe('proj-4');
+  });
+
+  it('clearTodoLink drops the polymorphic link and back-compat columns', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({ userId: user.id, title: 'link me' });
+    linkTodoToCard(user.id, todo.id, { cardId: 'card-1', projectId: 'proj-1' });
+
+    const cleared = clearTodoLink(user.id, todo.id)!;
+    expect(cleared.linkedType).toBeNull();
+    expect(cleared.linkedId).toBeNull();
+    expect(cleared.linkedCardId).toBeNull();
+    expect(cleared.linkedProjectId).toBeNull();
+  });
+
+  it('setTodoLink returns null for a todo the user does not own', () => {
+    const alice = createUser({ username: 'alice', passwordHash: 'x' });
+    const bob = createUser({ username: 'bob', passwordHash: 'x' });
+    const todo = createTodo({ userId: alice.id, title: 'x' });
+    expect(setTodoLink(bob.id, todo.id, { type: 'card', id: 'c', projectId: 'p' })).toBeNull();
   });
 });
 

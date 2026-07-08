@@ -18,6 +18,8 @@ const ErrorResponse = registerComponent(
 );
 
 const TodoStatus = z.enum(['open', 'done']);
+const TodoPriority = z.enum(['urgent', 'high', 'medium', 'low']);
+const TodoLinkType = z.enum(['card', 'epic', 'session']);
 const TodoSourceType = z.enum([...TODO_SOURCE_TYPES]);
 
 export const UserTodoComponent = registerComponent(
@@ -29,13 +31,25 @@ export const UserTodoComponent = registerComponent(
       title: z.string(),
       notes: z.string(),
       status: TodoStatus,
-      dueAt: z.string().nullable(),
+      priority: TodoPriority,
+      doDate: z.string().nullable().openapi({
+        description: 'Day the user plans to work the task (scheduling "do" date, not a deadline).',
+      }),
+      doStartAt: z.string().nullable(),
+      doEndAt: z.string().nullable(),
+      dueAt: z.string().nullable().openapi({
+        description: 'Deprecated: retained for back-compat. Prefer doDate.',
+      }),
       position: z.number(),
       sourceType: TodoSourceType,
       sourceId: z.string().nullable(),
       sourceMeta: z.record(z.string(), z.unknown()).nullable(),
-      linkedCardId: z.string().nullable(),
+      linkedType: TodoLinkType.nullable(),
+      linkedId: z.string().nullable(),
       linkedProjectId: z.string().nullable(),
+      linkedCardId: z.string().nullable().openapi({
+        description: 'Deprecated: superseded by linkedType/linkedId. Kept in sync for a card link.',
+      }),
       createdAt: z.string(),
       updatedAt: z.string(),
     })
