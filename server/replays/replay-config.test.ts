@@ -323,6 +323,33 @@ describe('normalizeReplayConfig — two-level sampling + quotas', () => {
   });
 });
 
+describe('normalizeReplayConfig — retention', () => {
+  it('accepts an extended-retention window in [1, 15] months (floored)', () => {
+    expect(normalizeReplayConfig({ extendedRetentionMonths: 15 })).toEqual({
+      ok: true,
+      value: { extendedRetentionMonths: 15 },
+    });
+    expect(normalizeReplayConfig({ extendedRetentionMonths: 6.8 })).toEqual({
+      ok: true,
+      value: { extendedRetentionMonths: 6 },
+    });
+  });
+
+  it('rejects an out-of-range or non-numeric extended-retention window', () => {
+    expect(normalizeReplayConfig({ extendedRetentionMonths: 0 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ extendedRetentionMonths: 16 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ extendedRetentionMonths: NaN }).ok).toBe(false);
+    expect(normalizeReplayConfig({ extendedRetentionMonths: 'year' }).ok).toBe(false);
+  });
+
+  it('keeps a config that sets only the extended-retention window (not cleared)', () => {
+    expect(normalizeReplayConfig({ extendedRetentionMonths: 12 })).toEqual({
+      ok: true,
+      value: { extendedRetentionMonths: 12 },
+    });
+  });
+});
+
 describe('resolveReplayPolicy — nested rates', () => {
   it('delivers both nested rates and their effective product', () => {
     const policy = resolveReplayPolicy({ sessionSampleRate: 0.5, sessionReplaySampleRate: 0.4 });

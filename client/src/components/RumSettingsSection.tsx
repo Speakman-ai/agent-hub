@@ -105,6 +105,13 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   const [savingReplayConfig, setSavingReplayConfig] = useState(false);
   const [replayConfigError, setReplayConfigError] = useState<any>(null);
 
+  // Per-tenant extended-retention window (months) applied when an operator flags
+  // an individual session in the replay player to keep it past the default
+  // window (up to 15). Persisted on the project's `replay` config.
+  const [extendedRetentionMonths, setExtendedRetentionMonths] = useState<number>(15);
+  const [savingRetention, setSavingRetention] = useState(false);
+  const [retentionError, setRetentionError] = useState<any>(null);
+
   // Ingest-client state
   const [clients, setClients] = useState<any[]>([]);
   const [loadingClients, setLoadingClients] = useState(false);
@@ -209,6 +216,11 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     setEnforceMaskAll(cfg.maskAllEnforced !== false);
     setReplayConfigError(null);
     setSavingReplayConfig(false);
+    setExtendedRetentionMonths(
+      typeof cfg.extendedRetentionMonths === 'number' ? cfg.extendedRetentionMonths : 15,
+    );
+    setRetentionError(null);
+    setSavingRetention(false);
   }, [project]);
 
   // Persist the per-project replay sample rate. The operator's choice is always
@@ -331,6 +343,38 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
       if (activePidRef.current === pid) setSavingReplayConfig(false);
     }
   }, [project, savingReplayConfig, continuous, enforceMaskAll, replaySampleRate, showToast]);
+
+  // Persist the per-tenant extended-retention window. The `replay` config is
+  // replaced wholesale on PATCH, so start from the project's persisted config and
+  // overlay only the extended-retention key — this never clobbers the sampling
+  // rates / quotas set elsewhere.
+  const handleChangeExtendedRetentionMonths = useCallback(
+    async (value: number) => {
+      if (!project) return;
+      const pid = project.id;
+      setExtendedRetentionMonths(value);
+      setSavingRetention(true);
+      setRetentionError(null);
+      const replay: Record<string, unknown> = {
+        ...((project as any)?.replay || {}),
+        extendedRetentionMonths: value,
+      };
+      try {
+        await api.updateProject(pid, { replay });
+        if (showToast) showToast('Retention settings saved for this project.', 'success', 2500);
+      } catch (err: any) {
+        if (activePidRef.current !== pid) return;
+        setRetentionError(err?.message || 'Failed to save retention settings');
+        const cfg = (project as any)?.replay || {};
+        setExtendedRetentionMonths(
+          typeof cfg.extendedRetentionMonths === 'number' ? cfg.extendedRetentionMonths : 15,
+        );
+      } finally {
+        if (activePidRef.current === pid) setSavingRetention(false);
+      }
+    },
+    [project, showToast],
+  );
 
   const handleToggleReplay = useCallback(async () => {
     if (replayToggling) return;
@@ -733,6 +777,58 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
           >
             <AlertCircle size={12} />
             {replayConfigError}
+          </p>
+        )}
+      </div>
+
+      {/* ── Per-project retention (two-tier) ────────────────────── */}
+      <div
+        className="bg-gray-800/50 border border-gray-700 rounded-xl p-4"
+        data-testid="rum-retention-config"
+      >
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-semibold text-gray-200 mb-1 flex items-center gap-2">
+            <ShieldCheck size={14} className="text-fuchsia-400" />
+            Retention (this project)
+          </h4>
+          <p className="text-xs text-gray-500 max-w-2xl">
+            Captures live for the platform&apos;s default window, then expire. Flag an individual
+            session in the replay player (the <strong className="text-gray-300">Keep</strong>{' '}
+            button) to move it to the <strong className="text-gray-300">extended tier</strong> —
+            kept for the window below (up to 15 months), with the clock starting when you flag it.
+          </p>
+        </div>
+
+        <div className="mt-4 flex items-center gap-4">
+          <label
+            htmlFor="rum-extended-retention-months"
+            className="text-xs font-semibold text-gray-300 flex-1"
+          >
+            Extended-retention window (flagged sessions)
+          </label>
+          <select
+            id="rum-extended-retention-months"
+            data-testid="rum-extended-retention-months"
+            value={String(extendedRetentionMonths)}
+            disabled={!project || savingRetention}
+            onChange={(e: any) => handleChangeExtendedRetentionMonths(Number(e.target.value))}
+            className="bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+          >
+            <option value="1">1 month</option>
+            <option value="3">3 months</option>
+            <option value="6">6 months</option>
+            <option value="12">12 months</option>
+            <option value="15">15 months (max)</option>
+          </select>
+        </div>
+
+        {retentionError && (
+          <p
+            className="mt-3 text-xs text-red-400 flex items-center gap-1"
+            data-testid="rum-retention-error"
+          >
+            <AlertCircle size={12} />
+            {retentionError}
           </p>
         )}
       </div>

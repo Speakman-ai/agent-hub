@@ -74,6 +74,8 @@ function makeReplayStmts(): Stmts {
       storage_layout TEXT NOT NULL DEFAULT 'monolithic',
       support_ticket_id TEXT,
       card_id TEXT,
+      retained_until TEXT,
+      retention_flagged_at TEXT,
       meta TEXT
     );
     CREATE TABLE rum_segments (
@@ -204,6 +206,16 @@ function makeReplayStmts(): Stmts {
           AND (project_id IS NULL OR project_id = ?)`,
     ),
     deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
+    flagSessionReplayRetention: db.prepare(
+      `UPDATE session_replays
+          SET retained_until = ?, retention_flagged_at = ?
+        WHERE id = ?`,
+    ),
+    clearSessionReplayRetention: db.prepare(
+      `UPDATE session_replays
+          SET retained_until = NULL, retention_flagged_at = NULL
+        WHERE id = ?`,
+    ),
   } as unknown as Stmts;
 }
 
@@ -736,6 +748,172 @@ describe('GET /api/replays/:id (metadata) + /events (paginated)', () => {
     )._insertSegmentedReplay.run('seg-row', null);
     const res = await supertest(app).get('/api/replays/seg-row/events').expect(409);
     expect(res.body.error).toMatch(/segment/i);
+  });
+});
+
+describe('POST /api/replays/:id/retention (extended-retention flag)', () => {
+  let app: Express;
+  let serverDir: string;
+  let stmts: Stmts;
+
+  // Tenant with a 6-month extension window so the flag route resolves a bounded
+  // (non-default) window we can assert on.
+  const TENANT = { id: 'tenant-x', replay: { extendedRetentionMonths: 6 } } as unknown as Project;
+
+  // The retention route reads a JSON body, so mount it behind the same global
+  // parser the production server uses (index.ts). The parser skips only the
+  // ingest paths, so `/api/replays/:id/retention` gets parsed.
+  function makeRetentionApp(projects: Project[], stampAuth?: AuthStamp) {
+    const REPLAY_INGEST_PATH = /^\/api\/replays(?:\/[A-Za-z0-9._-]+\/events)?\/?$/;
+    const base = makeApp({ projects, stampAuth });
+    const wrapped = express();
+    const globalJsonParser = express.json({ limit: '20mb' });
+    wrapped.use((req, res, next) => {
+      if (req.method === 'POST' && REPLAY_INGEST_PATH.test(req.path)) return next();
+      return globalJsonParser(req, res, next);
+    });
+    wrapped.use(base.app);
+    return { ...base, app: wrapped };
+  }
+
+  beforeEach(() => {
+    _resetRateLimit();
+    ({ app, serverDir, stmts } = makeRetentionApp([TENANT]));
+  });
+
+  afterEach(() => {
+    try {
+      if (serverDir && existsSync(serverDir)) rmSync(serverDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
+  });
+
+  /** Seed a project-attributed replay row directly (no bytes needed). */
+  function seedRow(id: string, projectId: string | null): void {
+    stmts.insertSessionReplay.run(
+      id,
+      projectId,
+      100,
+      3,
+      200,
+      400,
+      'local',
+      `k-${id}`,
+      null,
+      null,
+      null,
+      null,
+      null,
+    );
+  }
+
+  it('flags a capture for extended retention (clock starts now, window bounded)', async () => {
+    seedRow('r-flag', 'tenant-x');
+    const before = Date.now();
+    const res = await supertest(app)
+      .post('/api/replays/r-flag/retention')
+      .send({ extend: true })
+      .expect(200);
+
+    expect(res.body.id).toBe('r-flag');
+    expect(res.body.retainedUntil).toBeTruthy();
+    expect(res.body.retentionFlaggedAt).toBeTruthy();
+    // retained_until is in the future (a 6-month window from now).
+    const retainedMs = Date.parse(`${String(res.body.retainedUntil).replace(' ', 'T')}Z`);
+    expect(retainedMs).toBeGreaterThan(before);
+    // ~6 months out: comfortably more than 5 months, less than 7.
+    const fiveMonthsMs = 5 * 30 * 24 * 60 * 60 * 1000;
+    const sevenMonthsMs = 7 * 31 * 24 * 60 * 60 * 1000;
+    expect(retainedMs - before).toBeGreaterThan(fiveMonthsMs);
+    expect(retainedMs - before).toBeLessThan(sevenMonthsMs);
+
+    // Persisted on the row.
+    const row = stmts.getSessionReplay.get('r-flag') as { retained_until: string | null };
+    expect(row.retained_until).toBe(res.body.retainedUntil);
+  });
+
+  it('clears an extended-retention flag', async () => {
+    seedRow('r-clear', 'tenant-x');
+    await supertest(app).post('/api/replays/r-clear/retention').send({ extend: true }).expect(200);
+    const res = await supertest(app)
+      .post('/api/replays/r-clear/retention')
+      .send({ extend: false })
+      .expect(200);
+    expect(res.body.retainedUntil).toBeNull();
+    expect(res.body.retentionFlaggedAt).toBeNull();
+    const row = stmts.getSessionReplay.get('r-clear') as {
+      retained_until: string | null;
+      retention_flagged_at: string | null;
+    };
+    expect(row.retained_until).toBeNull();
+    expect(row.retention_flagged_at).toBeNull();
+  });
+
+  it('defaults to the 15-month ceiling when the tenant has no window configured', async () => {
+    // Anonymous (project-less) capture → no tenant window → default 15 months.
+    seedRow('r-default', null);
+    const before = Date.now();
+    const res = await supertest(app)
+      .post('/api/replays/r-default/retention')
+      .send({ extend: true })
+      .expect(200);
+    const retainedMs = Date.parse(`${String(res.body.retainedUntil).replace(' ', 'T')}Z`);
+    const fourteenMonthsMs = 14 * 30 * 24 * 60 * 60 * 1000;
+    expect(retainedMs - before).toBeGreaterThan(fourteenMonthsMs);
+  });
+
+  it('400s a body that is not { extend: boolean }', async () => {
+    seedRow('r-bad', 'tenant-x');
+    await supertest(app).post('/api/replays/r-bad/retention').send({ extend: 'yes' }).expect(400);
+    await supertest(app).post('/api/replays/r-bad/retention').send({}).expect(400);
+  });
+
+  it('404s an unknown replay id', async () => {
+    await supertest(app).post('/api/replays/nope/retention').send({ extend: true }).expect(404);
+  });
+
+  it('masks a project-attributed capture as 404 for a caller who cannot view it (no unauthorized write)', async () => {
+    // This is a STATE-CHANGING endpoint sharing the read authz rule
+    // (loadAuthorizedReplay). A non-member of the capture's private project must
+    // NOT be able to flag it — unauthorized and not-found both collapse to 404 —
+    // and the row must be left un-flagged.
+    const project = {
+      id: 'proj-private',
+      visibility: 'private',
+      memberUserIds: [],
+    } as unknown as Project;
+    const scoped = makeRetentionApp([project], { authUserId: 'outsider', authRole: 'User' });
+    try {
+      scoped.stmts.insertSessionReplay.run(
+        'r-private',
+        'proj-private',
+        100,
+        3,
+        200,
+        400,
+        'local',
+        'k-private',
+        null,
+        null,
+        null,
+        null,
+        null,
+      );
+      await supertest(scoped.app)
+        .post('/api/replays/r-private/retention')
+        .send({ extend: true })
+        .expect(404);
+      // The write was rejected before any mutation — still un-flagged.
+      const row = scoped.stmts.getSessionReplay.get('r-private') as {
+        retained_until: string | null;
+      };
+      expect(row.retained_until).toBeNull();
+    } finally {
+      if (scoped.serverDir && existsSync(scoped.serverDir)) {
+        rmSync(scoped.serverDir, { recursive: true, force: true });
+      }
+    }
   });
 });
 

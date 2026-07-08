@@ -1962,6 +1962,13 @@ export const api = {
   getReplayConfig: (projectId?: string) =>
     fetchJSON(`/replays/config${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
   getReplay: (replayId: any) => fetchJSON(`/replays/${replayId}`),
+  // Flag / unflag a capture for extended retention (up to 15 months; the clock
+  // starts now). Returns the updated metadata row (incl. retainedUntil).
+  setReplayRetention: (replayId: any, extend: boolean) =>
+    fetchJSON(`/replays/${replayId}/retention`, {
+      method: 'POST',
+      body: JSON.stringify({ extend }),
+    }),
   getReplayEvents: (replayId: any, offset: any = 0, limit: any) => {
     const params = new URLSearchParams();
     if (offset) params.set('offset', String(offset));

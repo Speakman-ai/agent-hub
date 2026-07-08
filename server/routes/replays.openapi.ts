@@ -68,6 +68,14 @@ const ReplayMetadataResponse = registerComponent(
       uncompressedSize: z.number().openapi({ description: 'Raw JSON length in bytes.' }),
       supportTicketId: z.string().nullable(),
       cardId: z.string().nullable(),
+      retainedUntil: z.string().nullable().openapi({
+        description:
+          'Extended-retention flag: absolute instant this capture is retained until (SQLite-UTC), or null when on the default window. When in the future the retention sweeper skips the row.',
+      }),
+      retentionFlaggedAt: z.string().nullable().openapi({
+        description:
+          'When the extended-retention flag was enabled (the 15-month clock starts here), or null.',
+      }),
       meta: z.record(z.string(), z.unknown()).nullable(),
       eventsUrl: z.string().openapi({ description: 'Paginated events endpoint for this replay.' }),
       defaultPageSize: z.number(),
@@ -400,6 +408,35 @@ registerPath({
   responses: {
     200: { description: 'Metadata.', content: jsonContent(ReplayMetadataResponse) },
     404: errorResponse('No replay with that id, or the caller is not authorized to read it.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/replays/{id}/retention',
+  tags: ['Bug Reports'],
+  summary: 'Flag / unflag a capture for extended retention (authenticated)',
+  description:
+    'Two-tier retention: keep an individual session past the default window (up to 15 months). `{ extend: true }` stamps an absolute `retainedUntil` = now + the tenant’s extension window (project `replay.extendedRetentionMonths`, clamped [1,15] months, default 15) — the clock starts at enable time, not capture — and the retention sweeper skips the row until that instant passes. `{ extend: false }` clears the flag so the row rejoins the default sweep. Same per-replay authorization as the metadata endpoint; unauthorized access is masked as 404. Returns the updated metadata row.',
+  request: {
+    ...replayIdParam,
+    body: {
+      description: 'Whether to extend (flag) or clear the capture’s extended retention.',
+      content: jsonContent(
+        z
+          .object({
+            extend: z
+              .boolean()
+              .openapi({ description: 'true to flag for extended retention; false to clear.' }),
+          })
+          .openapi({ description: 'Extended-retention flag toggle.' }),
+      ),
+    },
+  },
+  responses: {
+    200: { description: 'Updated metadata.', content: jsonContent(ReplayMetadataResponse) },
+    400: errorResponse('Body is not { extend: boolean }.'),
+    404: errorResponse('No replay with that id, or the caller is not authorized to manage it.'),
   },
 });
 

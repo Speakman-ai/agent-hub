@@ -79,6 +79,8 @@ function row(over: Partial<SessionReplayRow>): SessionReplayRow {
     storage_layout: 'monolithic',
     support_ticket_id: null,
     card_id: null,
+    retained_until: null,
+    retention_flagged_at: null,
     meta: null,
     ...over,
   };

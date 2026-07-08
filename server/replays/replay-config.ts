@@ -12,6 +12,11 @@
 // unit-testable in isolation and shared by the PATCH validator and the config
 // endpoint.
 
+import {
+  MAX_EXTENDED_RETENTION_MONTHS,
+  MIN_EXTENDED_RETENTION_MONTHS,
+} from './replay-retention.js';
+
 /** Raw per-project config as persisted on the project row (`project.replay`). */
 export interface ProjectReplayConfig {
   /**
@@ -78,6 +83,14 @@ export interface ProjectReplayConfig {
    * global default. A positive integer; floored on persist.
    */
   eventsIngestQuota?: number;
+  /**
+   * Per-tenant EXTENDED-retention window in whole MONTHS, applied when an
+   * operator flags an individual session to keep it past the base window. Datadog
+   * parity: bounded to [1, 15] ({@link MAX_EXTENDED_RETENTION_MONTHS}). Unset →
+   * the full 15-month default at flag time. The clock starts WHEN THE FLAG IS
+   * ENABLED, not at capture, so flagging persists an absolute `retained_until`.
+   */
+  extendedRetentionMonths?: number;
 }
 
 /** The resolved policy delivered to a recorder / the admin UI. */
@@ -292,6 +305,23 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     }
   }
 
+  if (obj.extendedRetentionMonths !== undefined) {
+    const n = obj.extendedRetentionMonths;
+    if (typeof n !== 'number' || !Number.isFinite(n)) {
+      return {
+        ok: false,
+        error: 'replay.extendedRetentionMonths must be a finite number of months',
+      };
+    }
+    if (n < MIN_EXTENDED_RETENTION_MONTHS || n > MAX_EXTENDED_RETENTION_MONTHS) {
+      return {
+        ok: false,
+        error: `replay.extendedRetentionMonths must be between ${MIN_EXTENDED_RETENTION_MONTHS} and ${MAX_EXTENDED_RETENTION_MONTHS} months`,
+      };
+    }
+    out.extendedRetentionMonths = Math.floor(n);
+  }
+
   // An empty object (no recognized config keys) clears the config rather than
   // persisting `{}`, so the project row stays lean. `maskAllEnforced` is not a
   // standalone config — without `continuous`/`sampleRate`/`flushIntervalMs` it is
@@ -303,7 +333,8 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     out.sessionSampleRate === undefined &&
     out.sessionReplaySampleRate === undefined &&
     out.ingestQuota === undefined &&
-    out.eventsIngestQuota === undefined
+    out.eventsIngestQuota === undefined &&
+    out.extendedRetentionMonths === undefined
   ) {
     return { ok: true, value: null };
   }

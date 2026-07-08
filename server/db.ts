@@ -367,6 +367,14 @@ function initDb(dataDir: string): void {
       storage_layout TEXT NOT NULL DEFAULT 'monolithic',
       support_ticket_id TEXT,
       card_id TEXT,
+      -- Extended-retention flag (two-tier retention). When retained_until is a
+      -- future SQLite-UTC instant the retention sweeper skips this row, keeping a
+      -- flagged session past the default window (up to 15 months). retained_until
+      -- is absolute because the 15-month clock starts when the flag is ENABLED
+      -- (retention_flagged_at), not at capture. Both NULL = not flagged.
+      -- See server/replays/replay-retention.ts + POST /api/replays/:id/retention.
+      retained_until TEXT,
+      retention_flagged_at TEXT,
       meta TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_session_replays_project
@@ -1272,6 +1280,16 @@ function initDb(dataDir: string): void {
     db.exec(
       "ALTER TABLE session_replays ADD COLUMN storage_layout TEXT NOT NULL DEFAULT 'monolithic'",
     );
+  }
+
+  // session_replays extended-retention flag columns. Both nullable TEXT (SQLite
+  // UTC instants), so plain ADD COLUMN; existing rows read NULL = not flagged and
+  // stay on the default retention window. Probe one column to detect the pair.
+  try {
+    db.prepare('SELECT retained_until FROM session_replays LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE session_replays ADD COLUMN retained_until TEXT');
+    db.exec('ALTER TABLE session_replays ADD COLUMN retention_flagged_at TEXT');
   }
 
   // rum_sessions per-user identity columns. The client stamps `usr` onto segment
@@ -3489,10 +3507,25 @@ function initDb(dataDir: string): void {
     getExpiredUnlinkedSessionReplays: db.prepare(
       `SELECT * FROM session_replays
         WHERE created_at < ?
+          AND (retained_until IS NULL OR retained_until <= ?)
           AND support_ticket_id IS NULL
           AND card_id IS NULL
         ORDER BY created_at ASC
         LIMIT ?`,
+    ),
+    // Flag / re-flag a replay for extended retention: stamp an absolute
+    // retained_until (enable-time + window) and the enable instant. The sweeper
+    // skips the row while retained_until is in the future.
+    flagSessionReplayRetention: db.prepare(
+      `UPDATE session_replays
+          SET retained_until = ?, retention_flagged_at = ?
+        WHERE id = ?`,
+    ),
+    // Clear an extended-retention flag: the row rejoins the default sweep.
+    clearSessionReplayRetention: db.prepare(
+      `UPDATE session_replays
+          SET retained_until = NULL, retention_flagged_at = NULL
+        WHERE id = ?`,
     ),
     // rum_segments — append-only segment manifest (server/replays/segment-store.ts).
     // The INSERT is the O(1) append's row-claim: the UNIQUE (session_id, view_id,

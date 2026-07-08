@@ -258,6 +258,17 @@ export interface SessionReplayRow {
   support_ticket_id: string | null;
   /** Kanban card that referenced this replay, when linked. */
   card_id: string | null;
+  /**
+   * Extended-retention flag: absolute SQLite-UTC instant this capture is
+   * retained until, or NULL when not flagged. When set and in the future, the
+   * retention sweeper skips the row (exempt from the default window). Absolute
+   * because the 15-month clock starts at flag-enable time, not capture. See
+   * server/replays/replay-retention.ts.
+   */
+  retained_until: string | null;
+  /** When the extended-retention flag was enabled (SQLite-UTC), or NULL. The
+   *  retained_until clock starts from this instant. */
+  retention_flagged_at: string | null;
   /** JSON-encoded ingest context (trigger, url, …); NULL when absent. */
   meta: string | null;
 }
@@ -1778,8 +1789,15 @@ export interface Stmts {
   updateSessionReplayStats: Stmt;
   updateSessionReplayStatsForAppend: Stmt;
   deleteSessionReplay: Stmt;
-  /** Select expired, UNLINKED replays (created_at < cutoff) for retention GC. */
+  /** Select expired, UNLINKED replays (created_at < cutoff) for retention GC.
+   *  Params: (cutoff, now, limit) — flagged rows with a future retained_until are
+   *  excluded. */
   getExpiredUnlinkedSessionReplays: Stmt;
+  /** Flag / re-flag a replay for extended retention. Params:
+   *  (retained_until, retention_flagged_at, id). */
+  flagSessionReplayRetention: Stmt;
+  /** Clear a replay's extended-retention flag. Params: (id). */
+  clearSessionReplayRetention: Stmt;
   // rum_segments — append-only segment manifest (segment-store.ts)
   insertRumSegment: Stmt;
   getRumSegment: Stmt;
@@ -3248,6 +3266,9 @@ export interface Project {
     sessionReplaySampleRate?: number;
     ingestQuota?: number;
     eventsIngestQuota?: number;
+    /** Per-tenant extended-retention window in whole months, applied when an
+     *  operator flags a session (see ProjectReplayConfig.extendedRetentionMonths). */
+    extendedRetentionMonths?: number;
   };
   /**
    * Branch protection for the hosted repo's default branch (Agent

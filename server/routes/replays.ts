@@ -31,6 +31,7 @@ import { canViewProject, type VisibilityCaller } from '../project-visibility.js'
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { verifyRumToken } from '../rum-clients-store.js';
 import { resolveReplayPolicy, resolveIngestQuota } from '../replays/replay-config.js';
+import { computeRetainedUntil, toSqliteUtc } from '../replays/replay-retention.js';
 
 /**
  * Public, rate-limited session-replay ingest endpoint, plus authenticated read
@@ -876,6 +877,53 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
     return res.json(toReplayView(row));
   });
 
+  // ── Flag / unflag a capture for extended retention ────────────────
+  // Two-tier retention: an operator keeps an individual session past the default
+  // window (up to 15 months). `{ extend: true }` stamps an absolute
+  // `retained_until` = now + the tenant's extension window (clamped [1,15]
+  // months, default 15 by computeRetainedUntil) — the clock starts NOW (enable
+  // time), not at capture — and the retention sweeper skips the row until that
+  // instant passes. `{ extend: false }` clears the flag so the row rejoins the
+  // default sweep.
+  //
+  // Authorization is DELIBERATELY the same per-replay VIEW rule as the metadata
+  // GET (`loadAuthorizedReplay` → `canViewReplay`): view == manage here, so any
+  // caller who can view a capture can pin it to extended retention. This is
+  // intentional and bounded: the ceiling (`extendedRetentionMonths`) is itself
+  // set with project-admin perms via `PATCH /api/projects/:id`, the flag is
+  // reversible (`{ extend: false }`), and per-session pinning is a triage action
+  // (mirroring how a viewer can already link a capture to a ticket/card, which
+  // also exempts it from the sweep). If per-session pinning ever needs to be
+  // Admin-only, gate it here rather than in the shared view rule.
+  router.post('/api/replays/:id/retention', (req: Request, res: Response) => {
+    const row = loadAuthorizedReplay(req, res);
+    if (!row) return; // 404 already sent (unauthorized + not-found both mask to 404)
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.extend !== 'boolean') {
+      return res.status(400).json({ error: 'Body must be { extend: boolean }' });
+    }
+
+    if (body.extend) {
+      // Pass the raw per-tenant window straight through — computeRetainedUntil
+      // owns the [1,15]-month clamp (and the unset → 15 default).
+      const nowMs = Date.now();
+      const retainedUntil = toSqliteUtc(
+        computeRetainedUntil(
+          nowMs,
+          (row.project_id ? findProject(row.project_id) : null)?.replay?.extendedRetentionMonths,
+        ),
+      );
+      const flaggedAt = toSqliteUtc(nowMs);
+      stmts.flagSessionReplayRetention.run(retainedUntil, flaggedAt, row.id);
+    } else {
+      stmts.clearSessionReplayRetention.run(row.id);
+    }
+
+    const updated = stmts.getSessionReplay.get(row.id) as SessionReplayRow | undefined;
+    return res.json(toReplayView(updated ?? row));
+  });
+
   // ── Read: paginated events ────────────────────────────────────────
   // Large captures must not load in one request — the blob is gunzipped once
   // server-side and sliced by `offset`/`limit` (defaults applied + capped in
@@ -1030,6 +1078,11 @@ interface ReplayView {
   uncompressedSize: number;
   supportTicketId: string | null;
   cardId: string | null;
+  /** Extended-retention flag: absolute instant this capture is retained until,
+   *  or null when on the default window. */
+  retainedUntil: string | null;
+  /** When the extended-retention flag was enabled, or null. */
+  retentionFlaggedAt: string | null;
   meta: Record<string, unknown> | null;
   eventsUrl: string;
   defaultPageSize: number;
@@ -1054,6 +1107,8 @@ function toReplayView(row: SessionReplayRow): ReplayView {
     uncompressedSize: row.uncompressed_size,
     supportTicketId: row.support_ticket_id,
     cardId: row.card_id,
+    retainedUntil: row.retained_until ?? null,
+    retentionFlaggedAt: row.retention_flagged_at ?? null,
     meta,
     eventsUrl: `/api/replays/${row.id}/events`,
     defaultPageSize: DEFAULT_EVENTS_PAGE,

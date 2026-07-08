@@ -52,6 +52,8 @@ describe('runReplayRetentionSweep', () => {
         storage_region TEXT,
         support_ticket_id TEXT,
         card_id TEXT,
+        retained_until TEXT,
+        retention_flagged_at TEXT,
         meta TEXT
       );
     `);
@@ -68,10 +70,16 @@ describe('runReplayRetentionSweep', () => {
       getExpiredUnlinkedSessionReplays: database.prepare(
         `SELECT * FROM session_replays
           WHERE created_at < ?
+            AND (retained_until IS NULL OR retained_until <= ?)
             AND support_ticket_id IS NULL
             AND card_id IS NULL
           ORDER BY created_at ASC
           LIMIT ?`,
+      ),
+      flagSessionReplayRetention: database.prepare(
+        `UPDATE session_replays
+            SET retained_until = ?, retention_flagged_at = ?
+          WHERE id = ?`,
       ),
     } as unknown as Stmts;
   }
@@ -233,6 +241,35 @@ describe('runReplayRetentionSweep', () => {
     expect(existsSync(blobPath(cardLinked))).toBe(true);
     expect(stmts.getSessionReplay.get('r-plain')).toBeUndefined();
     expect(existsSync(blobPath(unlinked))).toBe(false);
+  });
+
+  it('never expires a session flagged for extended retention (future retained_until)', async () => {
+    // An expired capture flagged today for 15 months: its retained_until is far
+    // in the future, so the default 30-day sweep must skip it.
+    const flagged = await seedReplay({ id: 'r-flagged', ageDays: 400 });
+    const retainedUntil = toSqliteUtc(Date.now() + 400 * MS_PER_DAY);
+    stmts.flagSessionReplayRetention.run(retainedUntil, toSqliteUtc(Date.now()), 'r-flagged');
+
+    const result = await runReplayRetentionSweep({ stmts, config });
+
+    expect(result.deleted).toBe(0);
+    // Row + blob both survive despite being well past the base window.
+    expect(stmts.getSessionReplay.get('r-flagged')).toBeTruthy();
+    expect(existsSync(blobPath(flagged))).toBe(true);
+  });
+
+  it('re-sweeps a flagged capture once its extended-retention window lapses', async () => {
+    // retained_until is in the PAST (the 15-month extension already elapsed):
+    // the row rejoins the normal sweep and is expired like any other.
+    const lapsed = await seedReplay({ id: 'r-lapsed', ageDays: 500 });
+    const retainedUntil = toSqliteUtc(Date.now() - MS_PER_DAY);
+    stmts.flagSessionReplayRetention.run(retainedUntil, toSqliteUtc(Date.now()), 'r-lapsed');
+
+    const result = await runReplayRetentionSweep({ stmts, config });
+
+    expect(result.deleted).toBe(1);
+    expect(stmts.getSessionReplay.get('r-lapsed')).toBeUndefined();
+    expect(existsSync(blobPath(lapsed))).toBe(false);
   });
 
   it('bounds deletions per sweep and drains the backlog over subsequent sweeps', async () => {

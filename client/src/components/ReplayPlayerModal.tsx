@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, AlertCircle, Film, Layers } from 'lucide-react';
+import { X, AlertCircle, Film, Layers, Star, Loader2 } from 'lucide-react';
 // rrweb-player UMD bundle + stylesheet, inlined into the sandboxed iframe as raw
 // text (Vite `?raw`). Import the UMD file by relative path — the package exports
 // map hides it, and a Vite alias + `?raw` gets mis-handled by optimizeDeps in dev.
@@ -72,6 +72,49 @@ export default function ReplayPlayerModal({
   // View chapter markers (session mode only) — one per view in playback order,
   // each carrying the ms offset a `goto` seeks to on the stitched timeline.
   const [views, setViews] = useState<any[]>([]);
+  // Extended-retention flag for a monolithic capture (has a session_replays row).
+  // `retainedUntil` is the absolute keep-until instant, or null when on the
+  // default window; `flagBusy` guards the toggle in flight.
+  const [retainedUntil, setRetainedUntil] = useState<string | null>(null);
+  const [flagBusy, setFlagBusy] = useState(false);
+
+  // Load the flag state for a monolithic capture (best-effort; the player still
+  // works if this fails). Segmented session playback has no session_replays row,
+  // so retention flagging is not offered there.
+  useEffect(() => {
+    if (!replayId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const meta = await api.getReplay(replayId);
+        if (!cancelled) setRetainedUntil(meta?.retainedUntil ?? null);
+      } catch {
+        /* metadata is best-effort */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [replayId]);
+
+  const toggleRetention = async () => {
+    if (!replayId || flagBusy) return;
+    const next = !retainedUntil;
+    setFlagBusy(true);
+    try {
+      const updated = await api.setReplayRetention(replayId, next);
+      // Prefer the server's echoed `retainedUntil`. The fallback (used only if
+      // the response omitted it) is a truthiness sentinel for the Kept/Keep
+      // label, so format it as SQLite-UTC (`YYYY-MM-DD HH:MM:SS`) to match what
+      // the server stores/returns rather than ISO-8601 with T/Z/millis.
+      const nowSqliteUtc = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      setRetainedUntil(updated?.retainedUntil ?? (next ? nowSqliteUtc : null));
+    } catch {
+      /* leave the prior state; the button re-enables for a retry */
+    } finally {
+      setFlagBusy(false);
+    }
+  };
 
   // Build the player document once, as an isolated-origin data: URL. Stable
   // across renders so the iframe isn't torn down and rebuilt mid-stream.
@@ -254,9 +297,38 @@ export default function ReplayPlayerModal({
           <Film size={15} className="text-blue-400 flex-shrink-0" />
           <span className="text-sm font-medium text-gray-200 truncate">{title}</span>
           <span className="text-[11px] text-gray-500 ml-2">{statusLabel}</span>
+          {replayId && (
+            <button
+              onClick={toggleRetention}
+              disabled={flagBusy}
+              className={`ml-auto flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-md transition-colors disabled:opacity-50 ${
+                retainedUntil
+                  ? 'text-amber-300 bg-amber-500/10 hover:bg-amber-500/20'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
+              }`}
+              title={
+                retainedUntil
+                  ? 'Kept for extended retention — click to remove'
+                  : 'Keep this session (extended retention, up to 15 months)'
+              }
+              role="switch"
+              aria-checked={Boolean(retainedUntil)}
+              aria-label="Toggle extended retention for this session"
+              data-testid="replay-retention-toggle"
+            >
+              {flagBusy ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Star size={12} className={retainedUntil ? 'fill-amber-300' : ''} />
+              )}
+              {retainedUntil ? 'Kept' : 'Keep'}
+            </button>
+          )}
           <button
             onClick={onClose}
-            className="ml-auto text-gray-500 hover:text-gray-200 transition-colors"
+            className={`text-gray-500 hover:text-gray-200 transition-colors ${
+              replayId ? '' : 'ml-auto'
+            }`}
             title="Close (Esc)"
             data-testid="replay-player-close"
           >

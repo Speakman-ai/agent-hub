@@ -13,6 +13,7 @@ import { api } from '../utils/api';
     getReplayEvents: vi.fn(),
     getSessionSegments: vi.fn(),
     getSessionSegmentEvents: vi.fn(),
+    setReplayRetention: vi.fn(),
   },
 }));
 
@@ -68,6 +69,7 @@ describe('ReplayPlayerModal', () => {
       .mockImplementation((_sid: string, segId: string) =>
         Promise.resolve({ events: [{ type: 2, timestamp: 1 }], segmentId: segId }),
       );
+    (api.setReplayRetention as any).mockReset();
   });
 
   it('loads the player from an isolated data: URL with the correct sandbox + CSP', () => {
@@ -195,6 +197,54 @@ describe('ReplayPlayerModal', () => {
       await waitFor(() => expect(api.getSessionSegments).toHaveBeenCalledWith('sess-2'));
       await waitFor(() => expect((api.getSessionSegmentEvents as any).mock.calls.length).toBe(1));
       expect(screen.queryByTestId('replay-view-chapters')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('extended-retention flag', () => {
+    it('reflects the loaded flag state (not kept when retainedUntil is null)', async () => {
+      (api.getReplay as any).mockResolvedValue({
+        defaultPageSize: 500,
+        eventCount: 0,
+        retainedUntil: null,
+      });
+      render(<ReplayPlayerModal replayId="abc123" onClose={() => {}} />);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'false'));
+      expect(btn).toHaveTextContent(/keep/i);
+    });
+
+    it('shows "Kept" when the capture is already flagged', async () => {
+      (api.getReplay as any).mockResolvedValue({
+        defaultPageSize: 500,
+        eventCount: 0,
+        retainedUntil: '2027-09-10 09:00:00',
+      });
+      render(<ReplayPlayerModal replayId="abc123" onClose={() => {}} />);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'true'));
+      expect(btn).toHaveTextContent(/kept/i);
+    });
+
+    it('flags the capture via setReplayRetention and reflects the new state', async () => {
+      (api.getReplay as any).mockResolvedValue({
+        defaultPageSize: 500,
+        eventCount: 0,
+        retainedUntil: null,
+      });
+      (api.setReplayRetention as any).mockResolvedValue({ retainedUntil: '2027-09-10 09:00:00' });
+      render(<ReplayPlayerModal replayId="abc123" onClose={() => {}} />);
+      const btn = await screen.findByTestId('replay-retention-toggle');
+      await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'false'));
+
+      fireEvent.click(btn as any);
+
+      await waitFor(() => expect(api.setReplayRetention).toHaveBeenCalledWith('abc123', true));
+      await waitFor(() => expect(btn).toHaveAttribute('aria-checked', 'true'));
+    });
+
+    it('is not offered for a segmented session (no session_replays row)', () => {
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      expect(screen.queryByTestId('replay-retention-toggle')).not.toBeInTheDocument();
     });
   });
 });

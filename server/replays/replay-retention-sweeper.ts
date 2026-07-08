@@ -32,6 +32,11 @@
  *     or kanban card (`support_ticket_id` / `card_id`) is an intentional triage
  *     artifact; expiring it would silently destroy investigation history, so
  *     those are excluded by the query and never swept.
+ *   - Sessions FLAGGED for extended retention (a future `retained_until`, set by
+ *     `POST /api/replays/:id/retention`) are exempt from the default expiry until
+ *     that instant passes. The 15-month clock starts when the flag is enabled,
+ *     not at capture (`replay-retention.ts`). Once `retained_until` lapses the
+ *     row rejoins the normal sweep.
  *   - Byte-then-row ordering (local backend): the blob is removed before the row
  *     so we never strand a row pointing at a missing blob, and an idempotent
  *     store.delete tolerates an already-gone object on retry.
@@ -41,7 +46,12 @@
  */
 
 import { getArtifactStoreForLocation } from '../artifacts/artifact-store.js';
+import { toSqliteUtc } from './replay-retention.js';
 import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
+
+// Re-exported from the pure retention module (`replay-retention.ts`) so existing
+// importers (and the sweeper test) keep resolving it from here.
+export { toSqliteUtc };
 
 /** Default cadence: sweep every 6 hours. Retention is a slow-moving TTL, not a
  *  realtime concern, so an infrequent sweep keeps overhead negligible. */
@@ -80,16 +90,6 @@ export interface RetentionSweepResult {
   deleted: number;
   /** Replays matched but whose deletion threw (left for the next sweep). */
   failed: number;
-}
-
-/**
- * Format an epoch-ms instant as the SQLite `datetime('now')` text format
- * (`YYYY-MM-DD HH:MM:SS`, UTC) so a string `<` comparison against the stored
- * `created_at` column is correct. SQLite stores these as UTC text with no
- * timezone suffix; ISO's `T`/`Z`/millis would not collate against that.
- */
-export function toSqliteUtc(epochMs: number): string {
-  return new Date(epochMs).toISOString().slice(0, 19).replace('T', ' ');
 }
 
 /**
@@ -134,9 +134,14 @@ export async function runReplayRetentionSweep(
     return { enabled: false, cutoff: null, deleted: 0, failed: 0 };
   }
 
-  const cutoff = toSqliteUtc(now() - days * MS_PER_DAY);
+  const nowMs = now();
+  const cutoff = toSqliteUtc(nowMs - days * MS_PER_DAY);
+  // A session flagged for extended retention carries a future `retained_until`;
+  // it stays exempt from the default sweep until that instant passes. Pass the
+  // current UTC instant so the query can filter those rows out.
   const rows = stmts.getExpiredUnlinkedSessionReplays.all(
     cutoff,
+    toSqliteUtc(nowMs),
     Math.max(1, Math.trunc(maxPerSweep)),
   ) as SessionReplayRow[];
 

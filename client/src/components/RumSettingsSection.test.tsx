@@ -468,6 +468,42 @@ describe('RumSettingsSection', () => {
     expect(toggle!).toHaveAttribute('aria-checked', 'false');
   });
 
+  // ── Per-project retention (extended tier) ───────────────────────────
+  it('initializes the retention form from project.replay (defaults to 15 months)', async () => {
+    render(<RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: {} }]} />);
+    const months = (await screen.findByTestId(
+      'rum-extended-retention-months',
+    )) as HTMLSelectElement;
+    expect(months.value).toBe('15');
+  });
+
+  it('reflects a persisted extended-retention window', async () => {
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { extendedRetentionMonths: 6 } }]}
+      />,
+    );
+    const months = (await screen.findByTestId(
+      'rum-extended-retention-months',
+    )) as HTMLSelectElement;
+    expect(months.value).toBe('6');
+  });
+
+  it('PATCHes the extended-retention window, preserving other replay config', async () => {
+    render(
+      <RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]} />,
+    );
+    const months = (await screen.findByTestId(
+      'rum-extended-retention-months',
+    )) as HTMLSelectElement;
+    fireEvent.change(months, { target: { value: '3' } });
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5, extendedRetentionMonths: 3 },
+      }),
+    );
+  });
+
   // ── Per-project server-delivered replay policy ──────────────────────
   it('initializes the sample-rate form from the project.replay', async () => {
     render(

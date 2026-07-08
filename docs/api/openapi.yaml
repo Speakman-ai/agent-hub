@@ -7973,6 +7973,14 @@ components:
         cardId:
           type: string
           nullable: true
+        retainedUntil:
+          type: string
+          nullable: true
+          description: "Extended-retention flag: absolute instant this capture is retained until (SQLite-UTC), or null when on the default window. When in the future the retention sweeper skips the row."
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+          description: When the extended-retention flag was enabled (the 15-month clock starts here), or null.
         meta:
           type: object
           nullable: true
@@ -7993,6 +8001,8 @@ components:
         - uncompressedSize
         - supportTicketId
         - cardId
+        - retainedUntil
+        - retentionFlaggedAt
         - meta
         - eventsUrl
         - defaultPageSize
@@ -28379,6 +28389,52 @@ paths:
                 $ref: "#/components/schemas/SessionReplayMetadata"
         "404":
           description: No replay with that id, or the caller is not authorized to read it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+  /api/replays/{id}/retention:
+    post:
+      tags:
+        - Bug Reports
+      summary: Flag / unflag a capture for extended retention (authenticated)
+      description: "Two-tier retention: keep an individual session past the default window (up to 15 months). `{ extend: true }` stamps an absolute `retainedUntil` = now + the tenant’s extension window (project `replay.extendedRetentionMonths`, clamped [1,15] months, default 15) — the clock starts at enable time, not capture — and the retention sweeper skips the row until that instant passes. `{ extend: false }` clears the flag so the row rejoins the default sweep. Same per-replay authorization as the metadata endpoint; unauthorized access is masked as 404. Returns the updated metadata row."
+      parameters:
+        - schema:
+            type: string
+            description: Replay id (uuid).
+          required: true
+          description: Replay id (uuid).
+          name: id
+          in: path
+      requestBody:
+        description: Whether to extend (flag) or clear the capture’s extended retention.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                extend:
+                  type: boolean
+                  description: true to flag for extended retention; false to clear.
+              required:
+                - extend
+              description: Extended-retention flag toggle.
+      responses:
+        "200":
+          description: Updated metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReplayMetadata"
+        "400":
+          description: "Body is not { extend: boolean }."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayIngestErrorResponse"
+        "404":
+          description: No replay with that id, or the caller is not authorized to manage it.
           content:
             application/json:
               schema:
