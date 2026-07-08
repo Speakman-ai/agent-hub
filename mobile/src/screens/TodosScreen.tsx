@@ -17,12 +17,18 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
 import {
-    moveTodoId,
+    moveTodoIdWithinPriorityBand,
+    isPriorityBandEdge,
     splitTodos,
+    sortOpenTodos,
     dueState,
     dueLabel,
-    dateInputToIso,
+    todoDoDate,
+    timeWindowLabel,
+    todoLinkLabel,
+    dateInputToTodoDatePatch,
     isoToDateInput,
+    type TodoPriority,
 } from '../utils/todos';
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
 
@@ -46,6 +52,70 @@ const DUE_BADGE_STYLE: Record<string, { bg: string; text: string; border: string
     upcoming: { bg: colors.gray800, text: colors.gray400, border: colors.gray700 },
 };
 
+// Priority chip colors — reuse the kanban-card / dashboard priority palette so a
+// promoted todo keeps the same visual weight (spec TODO-MODEL). Mirrors the web
+// `PRIORITY_BADGE_CLASS`.
+const PRIORITY_BADGE_STYLE: Record<TodoPriority, { bg: string; text: string; border: string }> = {
+    urgent: { bg: colors.red900_50, text: colors.red400, border: colors.red600 },
+    high: { bg: colors.amber900_40, text: colors.amber400, border: colors.amber400 },
+    medium: { bg: colors.gray800, text: colors.gray400, border: colors.gray700 },
+    low: { bg: colors.gray800, text: colors.gray500, border: colors.gray700 },
+};
+
+const PRIORITY_OPTIONS: TodoPriority[] = ['urgent', 'high', 'medium', 'low'];
+
+// Link badge color per polymorphic target type (spec TODO-TO-TICKET). Mirrors
+// the web `LINK_BADGE_CLASS`.
+const LINK_BADGE_STYLE: Record<string, { bg: string; text: string; border: string }> = {
+    Ticket: { bg: colors.purple900_40, text: colors.purple400, border: colors.purple500 },
+    Epic: { bg: colors.indigo900_40, text: colors.indigo300, border: colors.indigo500 },
+    Session: { bg: colors.teal900_30, text: colors.teal300, border: colors.teal500 },
+};
+
+/** Compact 4-way priority picker used in the add + edit forms. */
+function PrioritySelect({
+    value,
+    onChange,
+    testIDPrefix,
+}: {
+    value: TodoPriority;
+    onChange: (p: TodoPriority) => void;
+    testIDPrefix?: string;
+}) {
+    return (
+        <View style={styles.prioritySelect}>
+            {PRIORITY_OPTIONS.map((p) => {
+                const active = p === value;
+                const style = PRIORITY_BADGE_STYLE[p];
+                return (
+                    <TouchableOpacity
+                        key={p}
+                        onPress={() => onChange(p)}
+                        testID={testIDPrefix ? `${testIDPrefix}-${p}` : undefined}
+                        accessibilityLabel={`Priority ${p}`}
+                        accessibilityState={{ selected: active }}
+                        style={[
+                            styles.priorityOption,
+                            active
+                                ? { backgroundColor: style.bg, borderColor: style.border }
+                                : { backgroundColor: colors.gray900, borderColor: colors.gray800 },
+                        ]}
+                    >
+                        <Text
+                            style={[
+                                styles.priorityOptionText,
+                                { color: active ? style.text : colors.gray500 },
+                            ]}
+                        >
+                            {p}
+                        </Text>
+                    </TouchableOpacity>
+                );
+            })}
+        </View>
+    );
+}
+
 export default function TodosScreen() {
     const sidebar = useContext(SidebarContext);
     const { lastUserTodoEvent } = useApp();
@@ -55,6 +125,7 @@ export default function TodosScreen() {
     const [error, setError] = useState<string | null>(null);
     const [newTitle, setNewTitle] = useState('');
     const [newDue, setNewDue] = useState('');
+    const [newPriority, setNewPriority] = useState<TodoPriority>('medium');
     const [adding, setAdding] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [showDone, setShowDone] = useState(false);
@@ -97,25 +168,36 @@ export default function TodosScreen() {
         load({ silent: true });
     }, [lastUserTodoEvent, load]);
 
-    const { open, done } = useMemo(() => splitTodos(todos), [todos]);
+    // Open todos render most-urgent first (priority sort); position breaks ties
+    // so a manual reorder still decides order within a priority band. Done todos
+    // keep their incoming order in the collapsed section.
+    const { open, done } = useMemo(() => {
+        const split = splitTodos(todos);
+        return { open: sortOpenTodos(split.open), done: split.done };
+    }, [todos]);
 
     const addTodo = useCallback(async () => {
         const title = newTitle.trim();
         if (!title) return;
         setAdding(true);
         try {
-            const { todo } = await api.createTodo({ title, dueAt: dateInputToIso(newDue) });
+            const { todo } = await api.createTodo({
+                title,
+                ...dateInputToTodoDatePatch(newDue),
+                priority: newPriority,
+            });
             if (!mountedRef.current) return;
             setTodos((prev) => [...prev, todo]);
             setNewTitle('');
             setNewDue('');
+            setNewPriority('medium');
             setError(null);
         } catch (err: any) {
             if (mountedRef.current) setError(err?.message || String(err));
         } finally {
             if (mountedRef.current) setAdding(false);
         }
-    }, [newTitle, newDue]);
+    }, [newTitle, newDue, newPriority]);
 
     const patchTodo = useCallback(async (id: string, patch: any) => {
         try {
@@ -147,16 +229,18 @@ export default function TodosScreen() {
 
     const reorder = useCallback(
         async (id: string, dir: 'up' | 'down') => {
-            // Reorder acts within the open list only. Compute the new full order
-            // and apply it optimistically, reverting on failure.
-            const openIds = todos.filter((t) => t.status === 'open').map((t) => t.id);
-            const nextOpenIds = moveTodoId(openIds, id, dir);
-            if (nextOpenIds === openIds) return; // no-op (already at the end)
+            // Open todos are always sorted by priority first, so a cross-priority
+            // manual move cannot be represented by positions. Only persist moves
+            // inside the current priority band, where position is the tie-breaker.
+            const nextOpenIds = moveTodoIdWithinPriorityBand(open, id, dir);
+            if (!nextOpenIds) return;
 
             const prev = todos;
             const byId = new Map(todos.map((t) => [t.id, t]));
-            const reorderedOpen = nextOpenIds.map((tid) => byId.get(tid));
-            const doneTodos = todos.filter((t) => t.status === 'done');
+            // Re-densify positions in the new visual order so the priority-sort
+            // tie-break follows the manual move within the band.
+            const reorderedOpen = nextOpenIds.map((tid, i) => ({ ...byId.get(tid), position: i }));
+            const doneTodos = done;
             setTodos([...reorderedOpen, ...doneTodos]);
 
             try {
@@ -168,7 +252,7 @@ export default function TodosScreen() {
                 }
             }
         },
-        [todos],
+        [todos, open, done],
     );
 
     return (
@@ -221,6 +305,11 @@ export default function TodosScreen() {
                         returnKeyType="done"
                         onSubmitEditing={addTodo}
                     />
+                    <PrioritySelect
+                        value={newPriority}
+                        onChange={setNewPriority}
+                        testIDPrefix="todo-new-priority"
+                    />
                     <View style={styles.addRow}>
                         <TextInput
                             style={styles.dueInput}
@@ -265,12 +354,12 @@ export default function TodosScreen() {
                             {open.length === 0 ? (
                                 <Text style={styles.allCaughtUp}>All caught up. No open todos.</Text>
                             ) : (
-                                open.map((todo, index) => (
+                                open.map((todo) => (
                                     <TodoRow
                                         key={todo.id}
                                         todo={todo}
-                                        isFirst={index === 0}
-                                        isLast={index === open.length - 1}
+                                        isFirst={isPriorityBandEdge(open, todo, 'up')}
+                                        isLast={isPriorityBandEdge(open, todo, 'down')}
                                         editing={editingId === todo.id}
                                         onStartEdit={() => setEditingId(todo.id)}
                                         onCancelEdit={() => setEditingId(null)}
@@ -343,20 +432,25 @@ export function TodoRow({
     onMoveUp,
     onMoveDown,
 }: any) {
+    const doDate = todoDoDate(todo);
     const [title, setTitle] = useState(todo.title);
-    const [due, setDue] = useState(isoToDateInput(todo.dueAt));
+    const [due, setDue] = useState(isoToDateInput(doDate));
+    const [priority, setPriority] = useState<TodoPriority>(todo.priority ?? 'medium');
 
     // Reset the draft whenever we (re)enter edit mode for this todo.
     useEffect(() => {
         if (editing) {
             setTitle(todo.title);
-            setDue(isoToDateInput(todo.dueAt));
+            setDue(isoToDateInput(doDate));
+            setPriority(todo.priority ?? 'medium');
         }
-    }, [editing, todo.title, todo.dueAt]);
+    }, [editing, todo.title, doDate, todo.priority]);
 
     const done = todo.status === 'done';
-    const state = dueState(todo.dueAt);
-    const badge = dueLabel(todo.dueAt);
+    const state = dueState(doDate);
+    const badge = dueLabel(doDate);
+    const timeWindow = timeWindowLabel(todo.doStartAt, todo.doEndAt);
+    const linkLabel = todoLinkLabel(todo);
 
     if (editing) {
         return (
@@ -368,6 +462,11 @@ export function TodoRow({
                     accessibilityLabel="Edit todo title"
                     autoFocus
                 />
+                <PrioritySelect
+                    value={priority}
+                    onChange={setPriority}
+                    testIDPrefix="todo-edit-priority"
+                />
                 <View style={styles.editRow}>
                     <TextInput
                         style={styles.editDueInput}
@@ -375,7 +474,7 @@ export function TodoRow({
                         onChangeText={setDue}
                         placeholder="YYYY-MM-DD"
                         placeholderTextColor={colors.gray600}
-                        accessibilityLabel="Edit todo due date"
+                        accessibilityLabel="Edit todo do date"
                         autoCapitalize="none"
                         autoCorrect={false}
                     />
@@ -383,7 +482,11 @@ export function TodoRow({
                         style={[styles.iconButton, !title.trim() && styles.disabled]}
                         disabled={!title.trim()}
                         onPress={() =>
-                            onSave({ title: title.trim() || todo.title, dueAt: dateInputToIso(due) })
+                            onSave({
+                                title: title.trim() || todo.title,
+                                ...dateInputToTodoDatePatch(due),
+                                priority,
+                            })
                         }
                         accessibilityLabel="Save todo"
                     >
@@ -402,6 +505,9 @@ export function TodoRow({
     }
 
     const badgeStyle = DUE_BADGE_STYLE[state] || DUE_BADGE_STYLE.upcoming;
+    const priorityValue: TodoPriority = todo.priority ?? 'medium';
+    const priorityStyle = PRIORITY_BADGE_STYLE[priorityValue] || PRIORITY_BADGE_STYLE.medium;
+    const linkStyle = LINK_BADGE_STYLE[linkLabel] || LINK_BADGE_STYLE.Ticket;
     const originLabel = todoOriginLabel(todo);
     const originLink = todoOriginDeepLink(todo);
 
@@ -426,48 +532,76 @@ export function TodoRow({
                 >
                     {todo.title}
                 </Text>
-                {badge || todo.linkedCardId || originLabel ? (
-                    <View style={styles.badgeRow}>
-                        {badge ? (
-                            <View
-                                testID="todo-due-badge"
+                <View style={styles.badgeRow}>
+                    {/* Priority chip — always present, mirrors the web pane. */}
+                    <View
+                        testID="todo-priority"
+                        style={[
+                            styles.badge,
+                            done
+                                ? { backgroundColor: colors.gray800, borderColor: colors.gray700 }
+                                : { backgroundColor: priorityStyle.bg, borderColor: priorityStyle.border },
+                        ]}
+                    >
+                        <Text
+                            style={[
+                                styles.badgeText,
+                                styles.capitalize,
+                                { color: done ? colors.gray500 : priorityStyle.text },
+                            ]}
+                        >
+                            {priorityValue}
+                        </Text>
+                    </View>
+                    {badge ? (
+                        <View
+                            testID="todo-due-badge"
+                            style={[
+                                styles.badge,
+                                done
+                                    ? { backgroundColor: colors.gray800, borderColor: colors.gray700 }
+                                    : { backgroundColor: badgeStyle.bg, borderColor: badgeStyle.border },
+                            ]}
+                        >
+                            <Text
                                 style={[
-                                    styles.badge,
-                                    done
-                                        ? { backgroundColor: colors.gray800, borderColor: colors.gray700 }
-                                        : { backgroundColor: badgeStyle.bg, borderColor: badgeStyle.border },
+                                    styles.badgeText,
+                                    { color: done ? colors.gray500 : badgeStyle.text },
                                 ]}
                             >
-                                <Text
-                                    style={[
-                                        styles.badgeText,
-                                        { color: done ? colors.gray500 : badgeStyle.text },
-                                    ]}
-                                >
-                                    {badge}
-                                </Text>
-                            </View>
-                        ) : null}
-                        {originLabel ? (
-                            <TouchableOpacity
-                                testID="todo-origin"
-                                disabled={!originLink}
-                                onPress={() => originLink && Linking.openURL(originLink)}
-                                style={[styles.badge, styles.originBadge]}
-                                accessibilityLabel={originLabel}
-                            >
-                                <Text style={[styles.badgeText, { color: colors.blue300 }]}>
-                                    {originLabel}
-                                </Text>
-                            </TouchableOpacity>
-                        ) : null}
-                        {todo.linkedCardId ? (
-                            <View style={[styles.badge, styles.ticketBadge]}>
-                                <Text style={[styles.badgeText, { color: colors.purple400 }]}>Ticket</Text>
-                            </View>
-                        ) : null}
-                    </View>
-                ) : null}
+                                {badge}
+                                {timeWindow ? ` · ${timeWindow}` : ''}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {linkLabel ? (
+                        <View
+                            testID="todo-link-badge"
+                            style={[
+                                styles.badge,
+                                {
+                                    backgroundColor: linkStyle.bg,
+                                    borderColor: linkStyle.border,
+                                },
+                            ]}
+                        >
+                            <Text style={[styles.badgeText, { color: linkStyle.text }]}>{linkLabel}</Text>
+                        </View>
+                    ) : null}
+                    {originLabel ? (
+                        <TouchableOpacity
+                            testID="todo-origin"
+                            disabled={!originLink}
+                            onPress={() => originLink && Linking.openURL(originLink)}
+                            style={[styles.badge, styles.originBadge]}
+                            accessibilityLabel={originLabel}
+                        >
+                            <Text style={[styles.badgeText, { color: colors.blue300 }]}>
+                                {originLabel}
+                            </Text>
+                        </TouchableOpacity>
+                    ) : null}
+                </View>
             </View>
             {!done ? (
                 <View style={styles.rowActions}>
@@ -686,9 +820,24 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: '600',
     },
-    ticketBadge: {
-        backgroundColor: colors.purple900_40,
-        borderColor: colors.purple500,
+    capitalize: {
+        textTransform: 'capitalize',
+    },
+    prioritySelect: {
+        flexDirection: 'row',
+        gap: 6,
+    },
+    priorityOption: {
+        flex: 1,
+        borderWidth: 1,
+        borderRadius: 8,
+        paddingVertical: 7,
+        alignItems: 'center',
+    },
+    priorityOptionText: {
+        fontSize: 11,
+        fontWeight: '600',
+        textTransform: 'capitalize',
     },
     originBadge: {
         backgroundColor: colors.blue900_40,

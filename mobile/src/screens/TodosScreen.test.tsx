@@ -73,6 +73,50 @@ describe('TodosScreen — TodoRow mobile parity', () => {
         expect(html).toContain('todo-due-badge');
     });
 
+    it('always shows a priority chip, defaulting to medium', () => {
+        const html = renderRow({ id: 'p0', title: 'No priority', status: 'open', dueAt: null });
+        expect(html).toContain('todo-priority');
+        expect(html).toContain('medium');
+    });
+
+    it('renders the todo priority value on the chip', () => {
+        const html = renderRow({
+            id: 'p1',
+            title: 'Urgent thing',
+            status: 'open',
+            dueAt: null,
+            priority: 'urgent',
+        });
+        expect(html).toContain('todo-priority');
+        expect(html).toContain('urgent');
+    });
+
+    it('prefers doDate over the deprecated dueAt for the due badge', () => {
+        const html = renderRow({
+            id: 'dd',
+            title: 'Do date',
+            status: 'open',
+            doDate: '2099-01-15T00:00:00',
+            dueAt: null,
+        });
+        expect(html).toContain('todo-due-badge');
+    });
+
+    it('appends a time window to the due badge when a window is set', () => {
+        const html = renderRow({
+            id: 'tw',
+            title: 'Windowed',
+            status: 'open',
+            doDate: '2099-01-15T00:00:00',
+            dueAt: null,
+            doStartAt: '2099-01-15T14:00:00Z',
+            doEndAt: '2099-01-15T15:30:00Z',
+        });
+        expect(html).toContain('todo-due-badge');
+        // A start–end window renders an en dash between the two clock times.
+        expect(html).toContain('–');
+    });
+
     it('shows a Ticket badge when the todo is linked to a card', () => {
         const html = renderRow({
             id: '4',
@@ -81,7 +125,32 @@ describe('TodosScreen — TodoRow mobile parity', () => {
             dueAt: null,
             linkedCardId: 'card-abc',
         });
+        expect(html).toContain('todo-link-badge');
         expect(html).toContain('Ticket');
+    });
+
+    it('shows an Epic badge for a linkedType of epic', () => {
+        const html = renderRow({
+            id: 'ep',
+            title: 'Epic link',
+            status: 'open',
+            dueAt: null,
+            linkedType: 'epic',
+        });
+        expect(html).toContain('todo-link-badge');
+        expect(html).toContain('Epic');
+    });
+
+    it('shows a Session badge for a linkedType of session', () => {
+        const html = renderRow({
+            id: 'se',
+            title: 'Session link',
+            status: 'open',
+            dueAt: null,
+            linkedType: 'session',
+        });
+        expect(html).toContain('todo-link-badge');
+        expect(html).toContain('Session');
     });
 
     it('renders save/cancel controls in edit mode', () => {

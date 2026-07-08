@@ -15,7 +15,7 @@ import { useApp } from '../context/AppContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
-import { dueLabel, dueState } from '../utils/todos';
+import { dueLabel, dueState, todoDoDate } from '../utils/todos';
 import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils/dashboardPanes';
 
 /**
@@ -183,7 +183,8 @@ export function WorkCardRow({ card, onOpen }: { card: any; onOpen: () => void })
 }
 
 export function TodoRow({ todo }: { todo: any }) {
-    const state = dueState(todo.dueAt);
+    const doDate = todoDoDate(todo);
+    const state = dueState(doDate);
     const badge = DUE_BADGE_STYLE[state] || DUE_BADGE_STYLE.upcoming;
     return (
         <View style={styles.todoRow}>
@@ -191,12 +192,12 @@ export function TodoRow({ todo }: { todo: any }) {
             <Text style={styles.todoTitle} numberOfLines={1}>
                 {todo.title}
             </Text>
-            {todo.dueAt ? (
+            {doDate ? (
                 <View
                     style={[styles.dueBadge, { backgroundColor: badge.bg, borderColor: badge.border }]}
                 >
                     <Text style={[styles.dueBadgeText, { color: badge.text }]}>
-                        {dueLabel(todo.dueAt)}
+                        {dueLabel(doDate)}
                     </Text>
                 </View>
             ) : null}

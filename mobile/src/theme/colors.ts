@@ -50,6 +50,10 @@ export const colors = {
     // Amber
     amber400: '#FBBF24',
     amber900_40: 'rgba(120, 53, 15, 0.4)',
+    // Teal (todo Session link badge)
+    teal500: '#14B8A6',
+    teal300: '#5EEAD4',
+    teal900_30: 'rgba(19, 78, 74, 0.3)',
     // Rose
     rose400: '#FB7185',
     rose900_40: 'rgba(136, 19, 55, 0.4)',
