@@ -29,6 +29,8 @@ server/*-backup.json
 # Instance-specific config (legacy location — now lives in ~/.agent-hub/data/)
 server/config.json
 server/projects.json
+# Auto-saved per-instance agent registry — may hold engine/model config; never commit.
+server/agents.json
 
 # Agent workspace context (instance-specific)
 ahw/

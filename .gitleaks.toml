@@ -1,0 +1,31 @@
+# gitleaks configuration for the agent-hub repo.
+#
+# Run a working-tree scan:      gitleaks detect --no-git --source .
+# Run a full git-history scan:  gitleaks detect --log-opts="--all" --source .
+#
+# The allowlist below only covers *confirmed* false positives — test
+# fixtures and documentation example keys. Real credentials must never be
+# added here; rotate and scrub them instead. Files that once held real
+# secrets (server/remote-orgs.json, the removed legacy server/index.js) are
+# intentionally NOT allowlisted so a history scan keeps flagging them until
+# the history is scrubbed.
+
+title = "agent-hub"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Confirmed false positives: test fixtures and documentation example keys."
+paths = [
+  # Unit/integration test fixtures use throwaway/fake credentials by design.
+  '''.*\.test\.(ts|tsx|js|jsx)$''',
+  '''server/test/.*''',
+  # Generated OpenAPI spec + its Zod source use documentation example values.
+  '''docs/api/openapi\.yaml''',
+  '''server/routes/.*\.openapi\.ts''',
+]
+regexes = [
+  # The canonical AWS documentation example access key id (not a real key).
+  '''AKIAIOSFODNN7EXAMPLE''',
+]
