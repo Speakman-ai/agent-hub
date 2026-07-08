@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { X, AlertCircle, Film } from 'lucide-react';
+import { X, AlertCircle, Film, Layers } from 'lucide-react';
 // rrweb-player UMD bundle + stylesheet, inlined into the sandboxed iframe as raw
 // text (Vite `?raw`). Import the UMD file by relative path — the package exports
 // map hides it, and a Vite alias + `?raw` gets mis-handled by optimizeDeps in dev.
 import playerJs from '../../node_modules/rrweb-player/dist/rrweb-player.umd.min.cjs?raw';
 import playerCss from 'rrweb-player/dist/style.css?raw';
 import { api } from '../utils/api';
+import { formatReplayDuration } from '../utils/replayFormat';
 import {
   REPLAY_CHANNEL,
   buildReplayPlayerDataUrl,
+  computeSessionViews,
   streamReplayEvents,
+  streamSessionSegments,
 } from '../utils/replayPlayer';
 
 /**
@@ -34,13 +37,30 @@ import {
  * force, and {@link PLAYER_CSP} blocks all network egress as defense-in-depth.
  * See the isolation-model note in utils/replayPlayer.ts for the full rationale.
  *
+ * Two playback modes:
+ *  - `replayId` — a monolithic capture. Streams the paginated
+ *    `GET /replays/:id/events` pages (bug tickets, converted kanban cards).
+ *  - `sessionId` — a segmented (continuous) capture. Fetches the session
+ *    manifest and stitches every view's segments into ONE continuous rrweb
+ *    timeline (RUM Session Explorer). Each view opens with a fresh full
+ *    snapshot, so rrweb rebuilds the DOM at each view boundary; the chapter
+ *    markers below the player seek across those boundaries via `goto`.
+ *
  * Reachable from a bug support ticket (pass the replay id parsed from
- * `replay_ref`) and from a converted kanban card (resolve the id via
- * `GET /board/cards/:cardId/replay`).
+ * `replay_ref`), a converted kanban card (resolve the id via
+ * `GET /board/cards/:cardId/replay`), and the RUM Session Explorer (pass the
+ * client-minted `sessionId`).
  */
-export default function ReplayPlayerModal({ replayId, title = 'Session replay', onClose }: any) {
+export default function ReplayPlayerModal({
+  replayId,
+  sessionId,
+  title = 'Session replay',
+  onClose,
+}: any) {
   const iframeRef = useRef<any>(null);
   const startedRef = useRef(false);
+  // Session (segmented) mode when a sessionId is given and no replayId.
+  const sessionMode = Boolean(sessionId) && !replayId;
   // Holds the current effect's `startStreaming` so the iframe `onLoad` handler
   // can trigger it. `onLoad` fires only after the sandbox's inline bootstrap has
   // executed and registered its own `message` listener, so a chunk posted from
@@ -49,6 +69,9 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
   const [status, setStatus] = useState('connecting'); // connecting | streaming | playing | error
   const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [errorMsg, setErrorMsg] = useState<any>(null);
+  // View chapter markers (session mode only) — one per view in playback order,
+  // each carrying the ms offset a `goto` seeks to on the stitched timeline.
+  const [views, setViews] = useState<any[]>([]);
 
   // Build the player document once, as an isolated-origin data: URL. Stable
   // across renders so the iframe isn't torn down and rebuilt mid-stream.
@@ -64,7 +87,7 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
   }, [onClose]);
 
   useEffect(() => {
-    if (!replayId) return undefined;
+    if (!replayId && !sessionId) return undefined;
     const controller = new AbortController();
     let cancelled = false;
 
@@ -73,42 +96,77 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
       if (win) win.postMessage({ ch: REPLAY_CHANNEL, ...msg }, '*');
     };
 
+    // Segmented (continuous) session: fetch the manifest, then stitch every
+    // view's segments into one continuous timeline the player concatenates.
+    const streamSession = async () => {
+      let loaded = 0;
+      const { eventCount } = await streamSessionSegments({
+        getManifest: (id: string) => api.getSessionSegments(id),
+        getSegmentEvents: (id: string, segId: string) => api.getSessionSegmentEvents(id, segId),
+        sessionId,
+        signal: controller.signal,
+        onManifest: (manifest: any) => {
+          if (cancelled) return;
+          setViews(computeSessionViews(manifest));
+          const total = Array.isArray(manifest?.segments)
+            ? manifest.segments.reduce((n: number, s: any) => n + (s?.eventCount || 0), 0)
+            : 0;
+          if (total) setProgress((p: any) => ({ ...p, total }));
+        },
+        onChunk: (events: any) => {
+          if (cancelled) return;
+          postToIframe({ type: 'chunk', events });
+          loaded += events.length;
+          setProgress((p: any) => ({ loaded, total: p.total }));
+        },
+      });
+      if (cancelled) return;
+      setProgress((p: any) => ({ loaded: eventCount || p.loaded, total: eventCount || p.total }));
+      postToIframe({ type: 'end' });
+    };
+
+    // Monolithic capture: walk the paginated events endpoint.
+    const streamMonolithic = async () => {
+      // Metadata gives the server's preferred page size + a known total so the
+      // progress bar isn't a guess. Both are advisory — streaming derives the
+      // real total from the pages it walks.
+      let pageSize = 1000;
+      try {
+        const meta = await api.getReplay(replayId);
+        if (meta?.defaultPageSize) pageSize = meta.defaultPageSize;
+        if (typeof meta?.eventCount === 'number') {
+          setProgress((p: any) => ({ ...p, total: meta.eventCount }));
+        }
+      } catch {
+        /* metadata is best-effort; the events endpoint is the source of truth */
+      }
+
+      const total = await streamReplayEvents({
+        getEvents: (id: any, offset: any, limit: any) => api.getReplayEvents(id, offset, limit),
+        replayId,
+        pageSize,
+        signal: controller.signal,
+        onChunk: (events: any, page: any) => {
+          if (cancelled) return;
+          postToIframe({ type: 'chunk', events });
+          setProgress({
+            loaded: (page?.offset ?? 0) + events.length,
+            total: page?.total ?? 0,
+          });
+        },
+      });
+      if (cancelled) return;
+      setProgress((p: any) => ({ loaded: p.loaded, total: total || p.total }));
+      postToIframe({ type: 'end' });
+    };
+
     const startStreaming = async () => {
       if (startedRef.current) return;
       startedRef.current = true;
       setStatus('streaming');
       try {
-        // Metadata gives the server's preferred page size + a known total so the
-        // progress bar isn't a guess. Both are advisory — streaming derives the
-        // real total from the pages it walks.
-        let pageSize = 1000;
-        try {
-          const meta = await api.getReplay(replayId);
-          if (meta?.defaultPageSize) pageSize = meta.defaultPageSize;
-          if (typeof meta?.eventCount === 'number') {
-            setProgress((p: any) => ({ ...p, total: meta.eventCount }));
-          }
-        } catch {
-          /* metadata is best-effort; the events endpoint is the source of truth */
-        }
-
-        const total = await streamReplayEvents({
-          getEvents: (id: any, offset: any, limit: any) => api.getReplayEvents(id, offset, limit),
-          replayId,
-          pageSize,
-          signal: controller.signal,
-          onChunk: (events: any, page: any) => {
-            if (cancelled) return;
-            postToIframe({ type: 'chunk', events });
-            setProgress({
-              loaded: (page?.offset ?? 0) + events.length,
-              total: page?.total ?? 0,
-            });
-          },
-        });
-        if (cancelled) return;
-        setProgress((p: any) => ({ loaded: p.loaded, total: total || p.total }));
-        postToIframe({ type: 'end' });
+        if (sessionMode) await streamSession();
+        else await streamMonolithic();
       } catch (err: any) {
         if (cancelled) return;
         const message = err?.message || 'Failed to load replay';
@@ -155,12 +213,21 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
       window.removeEventListener('message', onMessage);
       startStreamingRef.current = null;
       startedRef.current = false;
+      setViews([]);
     };
-  }, [replayId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayId, sessionId]);
 
   // Race-free start: fires after the sandbox's inline bootstrap has run and is
   // listening, so streamed chunks can't be dropped.
   const handleIframeLoad = () => startStreamingRef.current?.();
+
+  // Seek the stitched timeline to a view's start. rrweb rebuilds the DOM from
+  // that view's full snapshot, so this crosses view boundaries cleanly.
+  const jumpToView = (offsetMs: number) => {
+    const win = iframeRef.current?.contentWindow;
+    if (win) win.postMessage({ ch: REPLAY_CHANNEL, type: 'goto', offsetMs }, '*');
+  };
 
   const statusLabel =
     status === 'connecting'
@@ -229,6 +296,34 @@ export default function ReplayPlayerModal({ replayId, title = 'Session replay', 
             data-testid="replay-player-iframe"
           />
         </div>
+
+        {/* View chapter markers (segmented sessions with >1 view). Each seeks the
+            stitched, continuous timeline to that view's full snapshot. */}
+        {sessionMode && views.length > 1 ? (
+          <div
+            className="flex items-center gap-1.5 px-3 py-2 border-t border-gray-800 bg-gray-900/60 overflow-x-auto"
+            data-testid="replay-view-chapters"
+          >
+            <Layers size={13} className="text-gray-500 flex-shrink-0" />
+            <span className="text-[11px] uppercase tracking-wide text-gray-600 flex-shrink-0 mr-1">
+              {views.length} views
+            </span>
+            {views.map((v: any) => (
+              <button
+                key={v.viewId}
+                type="button"
+                onClick={() => jumpToView(v.offsetMs)}
+                disabled={status !== 'playing'}
+                title={`View ${v.index + 1} · ${formatReplayDuration(v.offsetMs)}`}
+                className="flex-shrink-0 px-2 py-1 rounded border border-gray-700 text-[11px] text-gray-300 hover:bg-gray-800 hover:border-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                data-testid="replay-view-chapter"
+              >
+                View {v.index + 1}
+                <span className="text-gray-500 ml-1">{formatReplayDuration(v.offsetMs)}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );

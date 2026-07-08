@@ -8,8 +8,53 @@ import { api } from '../utils/api';
 // guards against. The API is mocked so streaming (triggered by onLoad /
 // readyState) terminates immediately and never reaches the network.
 (vi as any).mock('../utils/api.js', () => ({
-  api: { getReplay: vi.fn(), getReplayEvents: vi.fn() },
+  api: {
+    getReplay: vi.fn(),
+    getReplayEvents: vi.fn(),
+    getSessionSegments: vi.fn(),
+    getSessionSegmentEvents: vi.fn(),
+  },
 }));
+
+// A two-view segmented session manifest for the session-grouped player mode.
+function twoViewManifest() {
+  return {
+    sessionId: 'sess-1',
+    storageLayout: 'segmented',
+    projectId: 'p1',
+    segmentCount: 3,
+    durationMs: 20_000,
+    segments: [
+      {
+        segmentId: 'a0',
+        viewId: 'viewA',
+        indexInView: 0,
+        hasFullSnapshot: true,
+        startTs: 1000,
+        endTs: 6000,
+        eventCount: 1,
+      },
+      {
+        segmentId: 'a1',
+        viewId: 'viewA',
+        indexInView: 1,
+        hasFullSnapshot: false,
+        startTs: 6000,
+        endTs: 11000,
+        eventCount: 1,
+      },
+      {
+        segmentId: 'b0',
+        viewId: 'viewB',
+        indexInView: 0,
+        hasFullSnapshot: true,
+        startTs: 12000,
+        endTs: 21000,
+        eventCount: 1,
+      },
+    ],
+  };
+}
 
 describe('ReplayPlayerModal', () => {
   beforeEach(() => {
@@ -17,6 +62,12 @@ describe('ReplayPlayerModal', () => {
     (api.getReplayEvents as any)
       .mockReset()
       .mockResolvedValue({ events: [], total: 0, offset: 0, hasMore: false });
+    (api.getSessionSegments as any).mockReset().mockResolvedValue(twoViewManifest());
+    (api.getSessionSegmentEvents as any)
+      .mockReset()
+      .mockImplementation((_sid: string, segId: string) =>
+        Promise.resolve({ events: [{ type: 2, timestamp: 1 }], segmentId: segId }),
+      );
   });
 
   it('loads the player from an isolated data: URL with the correct sandbox + CSP', () => {
@@ -90,5 +141,60 @@ describe('ReplayPlayerModal', () => {
     render(<ReplayPlayerModal replayId="abc123" onClose={onClose} />);
     fireEvent.keyDown(window, { key: 'Escape' } as any);
     expect(onClose!).toHaveBeenCalledTimes(1);
+  });
+
+  describe('segmented session mode', () => {
+    it('stitches a session by fetching the manifest then every segment in order', async () => {
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+
+      await waitFor(() => expect(api.getSessionSegments).toHaveBeenCalledWith('sess-1'));
+      await waitFor(() => expect((api.getSessionSegmentEvents as any).mock.calls.length).toBe(3));
+      // Fetched in playback order across the view boundary (viewA a0,a1 → viewB b0).
+      const order = (api.getSessionSegmentEvents as any).mock.calls.map((c: any[]) => c[1]);
+      expect(order).toEqual(['a0', 'a1', 'b0']);
+      // Session mode never touches the monolithic events endpoint.
+      expect(api.getReplayEvents).not.toHaveBeenCalled();
+    });
+
+    it('renders one view-chapter marker per view for cross-boundary seeking', async () => {
+      render(<ReplayPlayerModal sessionId="sess-1" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+
+      await waitFor(() => expect(screen.getByTestId('replay-view-chapters')).toBeInTheDocument());
+      const chapters = screen.getAllByTestId('replay-view-chapter');
+      expect(chapters).toHaveLength(2);
+      expect(chapters[0]).toHaveTextContent('View 1');
+      expect(chapters[1]).toHaveTextContent('View 2');
+      // Clicking a chapter posts a goto without throwing (bootstrap applies it).
+      expect(() => fireEvent.click(chapters[1] as any)).not.toThrow();
+    });
+
+    it('does not show chapters for a single-view session', async () => {
+      (api.getSessionSegments as any).mockResolvedValue({
+        sessionId: 'sess-2',
+        storageLayout: 'segmented',
+        projectId: 'p1',
+        segmentCount: 1,
+        durationMs: 5000,
+        segments: [
+          {
+            segmentId: 'x0',
+            viewId: 'only',
+            indexInView: 0,
+            hasFullSnapshot: true,
+            startTs: 0,
+            endTs: 5000,
+            eventCount: 1,
+          },
+        ],
+      });
+      render(<ReplayPlayerModal sessionId="sess-2" onClose={() => {}} />);
+      fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+
+      await waitFor(() => expect(api.getSessionSegments).toHaveBeenCalledWith('sess-2'));
+      await waitFor(() => expect((api.getSessionSegmentEvents as any).mock.calls.length).toBe(1));
+      expect(screen.queryByTestId('replay-view-chapters')).not.toBeInTheDocument();
+    });
   });
 });

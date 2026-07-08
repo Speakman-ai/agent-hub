@@ -1975,6 +1975,27 @@ export const api = {
   getCardReplay: (projectId: any, cardId: any) =>
     fetchJSON(`/projects/${projectId}/board/cards/${cardId}/replay`),
 
+  // Segmented (continuous) session playback. The manifest lists every segment
+  // for a client-minted session in playback order (chronological across views,
+  // each view opening with a fresh full snapshot at index_in_view=0); the
+  // session-grouped player stitches them into one continuous timeline. Both
+  // reads are authenticated + per-session authorized server-side — a leaked /
+  // cross-tenant session or segment id collapses to 404. Returns the
+  // SessionSegmentManifest ({ sessionId, storageLayout, projectId, segmentCount,
+  // durationMs, segments: [{ segmentId, viewId, indexInView, hasFullSnapshot,
+  // startTs, endTs, eventCount, byteSize, eventsUrl }] }).
+  getSessionSegments: (sessionId: any) =>
+    fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/segments`),
+  // One segment's decoded rrweb events, the player concatenates client-side.
+  // Returns { sessionId, segmentId, viewId, indexInView, hasFullSnapshot,
+  // events, eventCount }.
+  getSessionSegmentEvents: (sessionId: any, segmentId: any) =>
+    fetchJSON(
+      `/replays/sessions/${encodeURIComponent(sessionId)}/segments/${encodeURIComponent(
+        segmentId,
+      )}/events`,
+    ),
+
   // Replays Explorer dashboard — paginated, filterable table of a project's
   // session replays, each row enriched with its linked support ticket. `filter`
   // is one of all | linked | unlinked | orphans (orphans = global unattributed

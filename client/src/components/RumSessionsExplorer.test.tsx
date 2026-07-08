@@ -4,7 +4,30 @@ import RumSessionsExplorer from './RumSessionsExplorer';
 import { api } from '../utils/api';
 
 (vi as any).mock('../utils/api.js', () => ({
-  api: { listRumSessions: vi.fn() },
+  api: {
+    listRumSessions: vi.fn(),
+    // The play button mounts ReplayPlayerModal, which streams the session's
+    // segments; stub the reads so the mounted modal doesn't hit the network.
+    getSessionSegments: vi.fn().mockResolvedValue({
+      sessionId: 's1',
+      storageLayout: 'segmented',
+      projectId: 'proj-1',
+      segmentCount: 1,
+      durationMs: 5000,
+      segments: [
+        {
+          segmentId: 'x0',
+          viewId: 'v',
+          indexInView: 0,
+          hasFullSnapshot: true,
+          startTs: 0,
+          endTs: 5000,
+          eventCount: 1,
+        },
+      ],
+    }),
+    getSessionSegmentEvents: vi.fn().mockResolvedValue({ events: [{ type: 2, timestamp: 1 }] }),
+  },
 }));
 
 function session(over: any = {}) {
@@ -131,5 +154,19 @@ describe('RumSessionsExplorer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply filters' }));
 
     await waitFor(() => expect(lastParams().errorCountMin).toBe(1));
+  });
+
+  it('opens the session-grouped player when the row play button is clicked', async () => {
+    (api.listRumSessions as any).mockResolvedValue(pageOf([session()]));
+    render(<RumSessionsExplorer projectId="proj-1" />);
+    await waitFor(() => expect(screen.getByTestId('rum-session-play')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('replay-player-iframe')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('rum-session-play'));
+
+    // The modal mounts and streams the session's segments (not a monolithic id).
+    await waitFor(() => expect(screen.getByTestId('replay-player-iframe')).toBeInTheDocument());
+    fireEvent.load(screen.getByTestId('replay-player-iframe') as any);
+    await waitFor(() => expect(api.getSessionSegments).toHaveBeenCalledWith('s1'));
   });
 });

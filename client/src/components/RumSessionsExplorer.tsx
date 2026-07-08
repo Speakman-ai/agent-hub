@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, AlertCircle, Search, X } from 'lucide-react';
+import { RefreshCw, AlertCircle, Search, X, Play } from 'lucide-react';
 import { api } from '../utils/api';
 import { formatReplayDuration } from '../utils/replayFormat';
+import ReplayPlayerModal from './ReplayPlayerModal';
 
 // RUM Session Explorer — the Datadog-parity, session-grain dashboard table. One
 // row per client-minted session (the rum_sessions rollup), filterable by the
@@ -106,6 +107,8 @@ export default function RumSessionsExplorer({ projectId }: any) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  // The session whose stitched multi-view replay is open in the player modal.
+  const [playingSession, setPlayingSession] = useState<any>(null);
   const reqSeq = useRef(0);
 
   const rangeMs = useMemo(() => TIME_RANGES.find((r) => r.id === rangeId)?.ms ?? null, [rangeId]);
@@ -299,6 +302,7 @@ export default function RumSessionsExplorer({ projectId }: any) {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-[11px] uppercase tracking-wide text-gray-500 border-b border-gray-800">
+                <th className="px-2 py-2 font-medium w-8" aria-label="Play" />
                 <th className="px-3 py-2 font-medium">User</th>
                 <th className="px-3 py-2 font-medium">Session start</th>
                 <th className="px-3 py-2 font-medium text-right">Duration</th>
@@ -315,6 +319,18 @@ export default function RumSessionsExplorer({ projectId }: any) {
             <tbody>
               {sessions.map((s: any) => (
                 <tr key={s.sessionId} className="border-b border-gray-800/60 hover:bg-gray-900/60">
+                  <td className="px-2 py-2">
+                    <button
+                      type="button"
+                      onClick={() => setPlayingSession(s)}
+                      title="Play session replay"
+                      aria-label="Play session replay"
+                      className="inline-flex items-center justify-center w-6 h-6 rounded text-gray-400 hover:text-indigo-300 hover:bg-gray-800"
+                      data-testid="rum-session-play"
+                    >
+                      <Play size={13} />
+                    </button>
+                  </td>
                   <td
                     className="px-3 py-2 text-gray-300 max-w-[200px] truncate"
                     title={s.usrEmail || s.usrName || s.usrId || s.sessionId}
@@ -378,6 +394,19 @@ export default function RumSessionsExplorer({ projectId }: any) {
           </div>
         </div>
       )}
+
+      {playingSession ? (
+        <ReplayPlayerModal
+          sessionId={playingSession.sessionId}
+          title={
+            playingSession.usrEmail ||
+            playingSession.usrName ||
+            playingSession.usrId ||
+            `Session ${playingSession.sessionId}`
+          }
+          onClose={() => setPlayingSession(null)}
+        />
+      ) : null}
     </>
   );
 }
