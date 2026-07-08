@@ -12,6 +12,7 @@ import { cardOriginLabel, cardOriginDeepLink } from '@shared/utils/captureCard';
 import { hasUnresolvedBlockers } from '../../utils/blockers';
 import { MarkdownContent } from '../MarkdownRenderer';
 import ReplayPlayerModal from '../ReplayPlayerModal';
+import LinkedTodosPanel from './LinkedTodosPanel';
 import type { KanbanCardDetailState } from '../../hooks/useKanbanCardDetail';
 
 import EpicLeadUserField from '../EpicLeadUserField';
@@ -290,6 +291,15 @@ export default function KanbanCardDetailModal({ detail, agents, assignableUsers 
                         );
                       })()}
                     </div>
+                  ) : null}
+                  {/* Linked-from todos — the caller's own personal todos that
+                      point at this card (reverse of the todo's link badge). */}
+                  {!isCreating ? (
+                    <LinkedTodosPanel
+                      targetType="card"
+                      entity={selectedCard}
+                      projectId={projectId}
+                    />
                   ) : null}
                   {/* Priority */}
                   <div>

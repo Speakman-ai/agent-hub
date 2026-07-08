@@ -35,6 +35,7 @@ import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
 import { specProgress } from '../utils/epicScopeStats';
 import type { AssignableUser } from '../utils/kanbanUserFilter';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
+import LinkedTodosPanel from './kanban/LinkedTodosPanel';
 import { useKanbanCardDetail } from '../hooks/useKanbanCardDetail';
 
 function SectionCard({ title, description, children, action }: any) {
@@ -974,6 +975,11 @@ export default function EpicView({
                 specSavingId={specSavingId}
                 onOpenCard={cardDetail.openDetail}
               />
+
+              {/* Reverse (bidirectional) display: the caller's own personal
+                  todos linked to this epic. Renders nothing when there are
+                  none, so it only surfaces when the viewer has linked a todo. */}
+              <LinkedTodosPanel targetType="epic" entity={epic} projectId={projectId} />
 
               {showSettings && (
                 <div className="grid gap-5 lg:grid-cols-2 max-w-6xl">

@@ -7,6 +7,7 @@ import { colors } from '../theme/colors';
 import { EPIC_COLORS, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, EPIC_STATE_LABELS, epicStateLabel, } from '../utils/epics';
 import { groupEpicsByState } from '../utils/epicBoard';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import LinkedTodosPanel from '../components/LinkedTodosPanel';
 export default function EpicsScreen({ route, navigation }: any) {
     const { projectId, project: routeProject } = route.params || {};
     const project = routeProject;
@@ -216,6 +217,9 @@ export default function EpicsScreen({ route, navigation }: any) {
             {editingEpic && (<TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
                 <Text style={styles.deleteBtnText}>Delete epic</Text>
               </TouchableOpacity>)}
+            {/* Reverse (bidirectional) display: the caller's own personal todos
+                linked to this epic. Renders nothing when there are none. */}
+            {editingEpic ? (<LinkedTodosPanel targetType="epic" entity={editingEpic} projectId={projectId} />) : null}
           </View>)}
 
         <View style={styles.stateFilterRow}>

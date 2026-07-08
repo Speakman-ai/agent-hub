@@ -17,6 +17,7 @@ import { shortDate } from '../utils/time';
 import { copyToClipboard } from '../utils/clipboard';
 import { KANBAN_PAGE_SIZE, appendCardPage, pagingEntry, seedPagingFromBoard, loadedCountsByColumn, canLoadMore, } from '../utils/kanbanPagination';
 import KanbanColumnsModal from '../components/KanbanColumnsModal';
+import LinkedTodosPanel from '../components/LinkedTodosPanel';
 const DEFAULT_COLUMNS = [
     { id: 'todo', name: 'To Do', color: '#3B82F6' },
     { id: 'in-progress', name: 'In Progress', color: '#F59E0B' },
@@ -1070,6 +1071,10 @@ export default function KanbanScreen({ route, navigation }: any) {
                 })()}
               </View>
             ) : null}
+
+            {/* Linked-from todos — the caller's own personal todos that point
+                at this card (reverse of the todo's link badge). */}
+            <LinkedTodosPanel targetType="card" entity={selectedCard} projectId={projectId} />
 
             {/* Priority */}
             <Text style={styles.fieldLabel}>Priority</Text>
