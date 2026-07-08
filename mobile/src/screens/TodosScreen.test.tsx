@@ -43,6 +43,7 @@ function renderRow(todo: any, over: any = {}) {
             onToggle={noop}
             onSave={noop}
             onDelete={noop}
+            onUnlink={noop}
             onMoveUp={noop}
             onMoveDown={noop}
         />,
@@ -151,6 +152,31 @@ describe('TodosScreen — TodoRow mobile parity', () => {
         });
         expect(html).toContain('todo-link-badge');
         expect(html).toContain('Session');
+    });
+
+    it('shows an unlink control on an open linked todo', () => {
+        const html = renderRow({
+            id: 'ul',
+            title: 'Unlinkable',
+            status: 'open',
+            dueAt: null,
+            linkedType: 'card',
+            linkedId: 'card-1',
+        });
+        expect(html).toContain('todo-unlink');
+    });
+
+    it('hides the unlink control on a done linked todo', () => {
+        const html = renderRow({
+            id: 'uld',
+            title: 'Done linked',
+            status: 'done',
+            dueAt: null,
+            linkedType: 'card',
+            linkedId: 'card-1',
+        });
+        expect(html).toContain('todo-link-badge');
+        expect(html).not.toContain('todo-unlink');
     });
 
     it('renders save/cancel controls in edit mode', () => {

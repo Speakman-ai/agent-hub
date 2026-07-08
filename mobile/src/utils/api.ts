@@ -491,6 +491,16 @@ export const api = {
     createTodo: (data: any) => fetchJSON('/me/todos', { method: 'POST', body: JSON.stringify(data) }),
     updateTodo: (id: any, data: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteTodo: (id: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    // Link a todo to an EXISTING card / epic / session (spec TODO-TO-TICKET);
+    // RBAC-gated server-side. Unlink clears it.
+    linkTodo: (id: any, data: { targetType: 'card' | 'epic' | 'session'; targetId: string; projectId?: string }) =>
+      fetchJSON(`/me/todos/${encodeURIComponent(id)}/link`, { method: 'POST', body: JSON.stringify(data) }),
+    unlinkTodo: (id: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}/link`, { method: 'DELETE' }),
+    getLinkedTodos: (target: { targetType: 'card' | 'epic' | 'session'; targetId: string; projectId?: string }) => {
+      const params = new URLSearchParams({ targetType: target.targetType, targetId: target.targetId });
+      if (target.projectId) params.set('projectId', target.projectId);
+      return fetchJSON(`/me/todos/linked?${params}`);
+    },
     reorderTodos: (orderedIds: any) => fetchJSON('/me/todos/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }),
     // Per-user cross-project aggregation for the Dashboard home (spec
     // AGGREGATION). One RBAC-filtered fan-out; cached server-side, `fresh` busts

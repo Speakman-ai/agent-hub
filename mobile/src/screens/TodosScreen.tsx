@@ -210,6 +210,17 @@ export default function TodosScreen() {
         }
     }, []);
 
+    const unlinkTodo = useCallback(async (id: string) => {
+        try {
+            const { todo } = await api.unlinkTodo(id);
+            if (!mountedRef.current) return;
+            setTodos((prev) => prev.map((t) => (t.id === id ? todo : t)));
+            setError(null);
+        } catch (err: any) {
+            if (mountedRef.current) setError(err?.message || String(err));
+        }
+    }, []);
+
     const removeTodo = useCallback(async (id: string) => {
         // Optimistic: drop it immediately, restore on failure.
         let removed: any;
@@ -369,6 +380,7 @@ export default function TodosScreen() {
                                             if (mountedRef.current) setEditingId(null);
                                         }}
                                         onDelete={() => removeTodo(todo.id)}
+                                        onUnlink={() => unlinkTodo(todo.id)}
                                         onMoveUp={() => reorder(todo.id, 'up')}
                                         onMoveDown={() => reorder(todo.id, 'down')}
                                     />
@@ -404,6 +416,7 @@ export default function TodosScreen() {
                                                 onToggle={() => patchTodo(todo.id, { status: 'open' })}
                                                 onSave={async () => {}}
                                                 onDelete={() => removeTodo(todo.id)}
+                                                onUnlink={() => unlinkTodo(todo.id)}
                                                 onMoveUp={() => {}}
                                                 onMoveDown={() => {}}
                                             />
@@ -429,6 +442,7 @@ export function TodoRow({
     onToggle,
     onSave,
     onDelete,
+    onUnlink,
     onMoveUp,
     onMoveDown,
 }: any) {
@@ -579,6 +593,7 @@ export function TodoRow({
                             testID="todo-link-badge"
                             style={[
                                 styles.badge,
+                                styles.linkBadge,
                                 {
                                     backgroundColor: linkStyle.bg,
                                     borderColor: linkStyle.border,
@@ -586,6 +601,16 @@ export function TodoRow({
                             ]}
                         >
                             <Text style={[styles.badgeText, { color: linkStyle.text }]}>{linkLabel}</Text>
+                            {!done ? (
+                                <TouchableOpacity
+                                    testID="todo-unlink"
+                                    onPress={onUnlink}
+                                    accessibilityLabel="Unlink todo"
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                >
+                                    <HubIcon name="X" size={11} color={linkStyle.text} />
+                                </TouchableOpacity>
+                            ) : null}
                         </View>
                     ) : null}
                     {originLabel ? (
@@ -819,6 +844,11 @@ const styles = StyleSheet.create({
     badgeText: {
         fontSize: 10,
         fontWeight: '600',
+    },
+    linkBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
     },
     capitalize: {
         textTransform: 'capitalize',

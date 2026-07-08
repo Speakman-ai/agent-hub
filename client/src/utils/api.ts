@@ -370,6 +370,30 @@ export const api = {
     }),
   deleteTodo: (id: string) =>
     fetchJSON<{ ok: true }>(`/me/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  // Link a todo to an EXISTING card / epic / session (spec TODO-TO-TICKET LINK
+  // op). RBAC-gated server-side (caller must be able to see the target).
+  linkTodo: (
+    id: string,
+    data: { targetType: TodoLinkType; targetId: string; projectId?: string },
+  ) =>
+    fetchJSON<{ todo: UserTodoWire }>(`/me/todos/${encodeURIComponent(id)}/link`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  unlinkTodo: (id: string) =>
+    fetchJSON<{ todo: UserTodoWire }>(`/me/todos/${encodeURIComponent(id)}/link`, {
+      method: 'DELETE',
+    }),
+  // Reverse side of the polymorphic link: the caller's own todos that point at
+  // a given target (bidirectional display).
+  getLinkedTodos: (target: { targetType: TodoLinkType; targetId: string; projectId?: string }) => {
+    const params = new URLSearchParams({
+      targetType: target.targetType,
+      targetId: target.targetId,
+    });
+    if (target.projectId) params.set('projectId', target.projectId);
+    return fetchJSON<{ todos: UserTodoWire[] }>(`/me/todos/linked?${params}`);
+  },
   reorderTodos: (orderedIds: string[]) =>
     fetchJSON<{ todos: UserTodoWire[] }>('/me/todos/reorder', {
       method: 'POST',

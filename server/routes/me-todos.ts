@@ -32,8 +32,16 @@ import type { AuthenticatedRequest } from '../auth.js';
 import { recomputeEpicState } from '../epic-state.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { userCanReadSession } from '../session-ownership.js';
 import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
-import type { KanbanCardRow, KanbanColumnRow, KanbanEpicRow, RouteDeps } from '../types.js';
+import type {
+  KanbanBoardRow,
+  KanbanCardRow,
+  KanbanColumnRow,
+  KanbanEpicRow,
+  RouteDeps,
+  SessionRow,
+} from '../types.js';
 import { getUserPreferencesRow } from '../user-preferences-store.js';
 import {
   clearTodoLink,
@@ -41,6 +49,7 @@ import {
   deleteTodo,
   getTodo,
   listTodos,
+  listTodosLinkedTo,
   reorderTodos,
   setTodoLink,
   updateTodo,
@@ -52,7 +61,11 @@ import {
   type TodoStatus,
 } from '../user-todos-store.js';
 import { getOrCreateBoard } from './board.js';
-import { PromoteTodoRequestSchema } from './me-todos.openapi.js';
+import {
+  LinkedTodosQuerySchema,
+  LinkTodoRequestSchema,
+  PromoteTodoRequestSchema,
+} from './me-todos.openapi.js';
 
 function bad(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
@@ -166,9 +179,72 @@ function parseLinkInput(
   return { ok: true, op: { kind: 'set', type, id: body.linkedId, projectId } };
 }
 
+/**
+ * Outcome of resolving + RBAC-checking a link target (spec TODO-TO-TICKET LINK
+ * op). On success `projectId` is the normalised project scope to store on the
+ * link (null for a session). On failure we return an HTTP status + message; a
+ * visibility denial is reported as 404 so it doesn't leak the target's
+ * existence, matching the promote path and the ownership convention.
+ */
+type LinkTargetResult =
+  | { ok: true; type: TodoLinkType; id: string; projectId: string | null }
+  | { ok: false; status: number; message: string };
+
 export default function createMeTodosRoutes(deps: RouteDeps): Router {
   const { broadcast, findProject, stmts } = deps;
   const router = Router();
+
+  /**
+   * Resolve a polymorphic link target and enforce that `req`'s caller may see
+   * it. Card / epic targets require a `projectId` the caller can view and must
+   * live on that project's board. A session target is gated by session
+   * ownership (`userCanReadSession`) and ignores `projectId`.
+   */
+  function resolveLinkTarget(
+    req: Request,
+    target: { type: TodoLinkType; id: string; projectId?: string },
+  ): LinkTargetResult {
+    const { type, id } = target;
+    if (type === 'session') {
+      if (!stmts) return { ok: false, status: 500, message: 'Session lookup unavailable' };
+      const session = stmts.getSession.get(id) as SessionRow | undefined;
+      if (!session || !userCanReadSession(req as AuthenticatedRequest, id)) {
+        return { ok: false, status: 404, message: 'Session not found' };
+      }
+      return { ok: true, type, id, projectId: null };
+    }
+
+    // card | epic — both are project-scoped and RBAC-gated by project visibility.
+    const projectId = target.projectId;
+    if (!projectId) {
+      return { ok: false, status: 400, message: 'projectId is required for a card or epic target' };
+    }
+    if (!stmts || !findProject) {
+      return { ok: false, status: 500, message: 'Kanban dependencies unavailable' };
+    }
+    const project = findProject(projectId);
+    if (!project || !canViewProject(project, resolveVisibilityCaller(req))) {
+      return { ok: false, status: 404, message: 'Project not found' };
+    }
+
+    const resolveBoardProject = (boardId: string): string | null => {
+      const board = stmts.getKanbanBoardById.get(boardId) as KanbanBoardRow | undefined;
+      return board ? board.project_id : null;
+    };
+
+    if (type === 'card') {
+      const card = stmts.getKanbanCard.get(id) as KanbanCardRow | undefined;
+      if (!card || resolveBoardProject(card.board_id) !== projectId) {
+        return { ok: false, status: 404, message: 'Card not found on this project' };
+      }
+    } else {
+      const epic = stmts.getKanbanEpic.get(id) as KanbanEpicRow | undefined;
+      if (!epic || resolveBoardProject(epic.board_id) !== projectId) {
+        return { ok: false, status: 404, message: 'Epic not found on this project' };
+      }
+    }
+    return { ok: true, type, id, projectId };
+  }
 
   /** Fan a per-user todo mutation out to the owner (broadcast filter enforces). */
   function emitUpdate(
@@ -589,6 +665,83 @@ export default function createMeTodosRoutes(deps: RouteDeps): Router {
       }
       bad(res, 400, err instanceof Error ? err.message : String(err));
     }
+  });
+
+  router.get('/api/me/todos/linked', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      bad(res, 401, 'Authentication required');
+      return;
+    }
+    const parsed = LinkedTodosQuerySchema.safeParse(req.query ?? {});
+    if (!parsed.success) {
+      bad(res, 400, parsed.error.issues[0]?.message ?? 'Invalid query');
+      return;
+    }
+    const { targetType, targetId, projectId } = parsed.data;
+    const target = resolveLinkTarget(req, { type: targetType, id: targetId, projectId });
+    if (!target.ok) {
+      bad(res, target.status, target.message);
+      return;
+    }
+    res.json({
+      todos: listTodosLinkedTo(areq.authUserId, {
+        type: target.type,
+        id: target.id,
+        projectId: target.projectId,
+      }),
+    });
+  });
+
+  router.post('/api/me/todos/:id/link', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      bad(res, 401, 'Authentication required');
+      return;
+    }
+    const id = String(req.params.id ?? '');
+    if (!getTodo(areq.authUserId, id)) {
+      bad(res, 404, 'Todo not found');
+      return;
+    }
+    const parsed = LinkTodoRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      bad(res, 400, parsed.error.issues[0]?.message ?? 'Invalid link request');
+      return;
+    }
+    const { targetType, targetId, projectId } = parsed.data;
+    const target = resolveLinkTarget(req, { type: targetType, id: targetId, projectId });
+    if (!target.ok) {
+      bad(res, target.status, target.message);
+      return;
+    }
+    const todo = setTodoLink(areq.authUserId, id, {
+      type: target.type,
+      id: target.id,
+      projectId: target.projectId,
+    });
+    if (!todo) {
+      bad(res, 404, 'Todo not found');
+      return;
+    }
+    emitUpdate(areq.authUserId, 'updated');
+    res.json({ todo });
+  });
+
+  router.delete('/api/me/todos/:id/link', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      bad(res, 401, 'Authentication required');
+      return;
+    }
+    const id = String(req.params.id ?? '');
+    const todo = clearTodoLink(areq.authUserId, id);
+    if (!todo) {
+      bad(res, 404, 'Todo not found');
+      return;
+    }
+    emitUpdate(areq.authUserId, 'updated');
+    res.json({ todo });
   });
 
   router.post('/api/me/todos/reorder', (req: Request, res: Response) => {

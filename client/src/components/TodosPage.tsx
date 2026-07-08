@@ -165,6 +165,17 @@ export default function TodosPage() {
     [],
   );
 
+  const unlinkTodo = useCallback(async (id: string) => {
+    try {
+      const { todo } = await api.unlinkTodo(id);
+      if (!mountedRef.current) return;
+      setTodos((prev) => prev.map((t) => (t.id === id ? todo : t)));
+      setError(null);
+    } catch (err: any) {
+      if (mountedRef.current) setError(err?.message || String(err));
+    }
+  }, []);
+
   const removeTodo = useCallback(async (id: string) => {
     // Optimistic: drop it immediately, restore on failure.
     let removed: UserTodoWire | undefined;
@@ -328,6 +339,7 @@ export default function TodosPage() {
                       if (mountedRef.current) setEditingId(null);
                     }}
                     onDelete={() => removeTodo(todo.id)}
+                    onUnlink={() => unlinkTodo(todo.id)}
                     onMoveUp={() => reorder(todo.id, 'up')}
                     onMoveDown={() => reorder(todo.id, 'down')}
                   />
@@ -363,6 +375,7 @@ export default function TodosPage() {
                         onToggle={() => patchTodo(todo.id, { status: 'open' })}
                         onSave={async () => {}}
                         onDelete={() => removeTodo(todo.id)}
+                        onUnlink={() => unlinkTodo(todo.id)}
                         onMoveUp={() => {}}
                         onMoveDown={() => {}}
                       />
@@ -392,6 +405,7 @@ interface TodoRowProps {
     priority: TodoPriority;
   }) => void | Promise<void>;
   onDelete: () => void;
+  onUnlink: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
 }
@@ -406,6 +420,7 @@ function TodoRow({
   onToggle,
   onSave,
   onDelete,
+  onUnlink,
   onMoveUp,
   onMoveDown,
 }: TodoRowProps) {
@@ -532,11 +547,22 @@ function TodoRow({
           {linkLabel && (
             <span
               data-testid="todo-link-badge"
-              className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium ${
+              className={`inline-flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded border text-[10px] font-medium ${
                 LINK_BADGE_CLASS[linkLabel] ?? LINK_BADGE_CLASS.Ticket
               }`}
             >
               {linkLabel}
+              {!done && (
+                <button
+                  type="button"
+                  onClick={onUnlink}
+                  aria-label="Unlink todo"
+                  data-testid="todo-unlink"
+                  className="inline-flex items-center rounded-sm hover:bg-white/10 -mr-0.5"
+                >
+                  <X size={10} />
+                </button>
+              )}
             </span>
           )}
           {originLabel &&

@@ -418,3 +418,29 @@ export function clearTodoLink(userId: string, id: string): UserTodo | null {
   if (result.changes === 0) return null;
   return getTodo(userId, id);
 }
+
+/**
+ * Reverse lookup for bidirectional display (spec TODO-TO-TICKET): the caller's
+ * own todos that link to a given target. Scoped to `userId` because todos are
+ * private — a card/epic only ever surfaces the *viewer's* from-todo, never
+ * another user's. `projectId` narrows a project-bound target (card / epic); it
+ * is ignored (and should be omitted) for a session link. Ordered per-user.
+ */
+export function listTodosLinkedTo(
+  userId: string,
+  target: { type: TodoLinkType; id: string; projectId?: string | null },
+): UserTodo[] {
+  const db = getOrgsDb();
+  const scopeProject = target.type !== 'session' && target.projectId != null;
+  const sql = scopeProject
+    ? `SELECT * FROM user_todos
+        WHERE user_id = ? AND linked_type = ? AND linked_id = ? AND linked_project_id = ?
+        ORDER BY position ASC, created_at ASC`
+    : `SELECT * FROM user_todos
+        WHERE user_id = ? AND linked_type = ? AND linked_id = ?
+        ORDER BY position ASC, created_at ASC`;
+  const rows = scopeProject
+    ? (db.prepare(sql).all(userId, target.type, target.id, target.projectId) as UserTodoRow[])
+    : (db.prepare(sql).all(userId, target.type, target.id) as UserTodoRow[]);
+  return rows.map(rowToTodo);
+}

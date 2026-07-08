@@ -24511,6 +24511,175 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeTodosErrorResponse"
+  /api/me/todos/linked:
+    get:
+      tags:
+        - Personal Todos
+      summary: The caller's todos linked to a given card / epic / session
+      description: "Reverse side of the polymorphic link: returns the calling user's own todos that point at the target entity (bidirectional display). Todos are private, so this never surfaces another user's from-todo."
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - card
+              - epic
+              - session
+            description: Target entity type.
+          required: true
+          description: Target entity type.
+          name: targetType
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: Target entity id.
+          required: true
+          description: Target entity id.
+          name: targetId
+          in: query
+        - schema:
+            type: string
+            minLength: 1
+            description: Project of a card / epic target. Ignored for a session.
+          required: false
+          description: Project of a card / epic target. Ignored for a session.
+          name: projectId
+          in: query
+      responses:
+        "200":
+          description: The caller's todos linked to the target.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todos:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todos
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "404":
+          description: Target not found or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+  /api/me/todos/{id}/link:
+    post:
+      tags:
+        - Personal Todos
+      summary: Link a personal todo to an existing card / epic / session
+      description: Associates the todo with an existing entity without creating anything. The caller must be able to see the target (project visibility for a card / epic, session ownership for a session), else 404.
+      parameters:
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetType:
+                  type: string
+                  enum:
+                    - card
+                    - epic
+                    - session
+                  description: "Existing entity to link to: a kanban card, an epic, or a session."
+                targetId:
+                  type: string
+                  minLength: 1
+                projectId:
+                  type: string
+                  minLength: 1
+                  description: Required for a card / epic target (scopes and RBAC-gates the project). Ignored for a session.
+              required:
+                - targetType
+                - targetId
+      responses:
+        "200":
+          description: Linked todo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todo
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "404":
+          description: Todo or target not found (or not visible to the caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+    delete:
+      tags:
+        - Personal Todos
+      summary: Clear a personal todo's link
+      parameters:
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Unlinked todo.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/UserTodo"
+                required:
+                  - todo
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "404":
+          description: Todo not found (or not owned by caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
   /api/me/todos/reorder:
     post:
       tags:

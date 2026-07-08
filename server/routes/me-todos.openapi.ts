@@ -119,6 +119,27 @@ export const PromoteTodoRequestSchema = z.object({
   }),
 });
 
+export const LinkTodoRequestSchema = z.object({
+  targetType: TodoLinkType.openapi({
+    description: 'Existing entity to link to: a kanban card, an epic, or a session.',
+  }),
+  targetId: z.string().min(1, 'targetId is required'),
+  projectId: z.string().min(1).optional().openapi({
+    description:
+      'Required for a card / epic target (scopes and RBAC-gates the project). Ignored for a session.',
+  }),
+});
+
+export const LinkedTodosQuerySchema = z.object({
+  targetType: TodoLinkType.openapi({ description: 'Target entity type.' }),
+  targetId: z.string().min(1).openapi({ description: 'Target entity id.' }),
+  projectId: z
+    .string()
+    .min(1)
+    .optional()
+    .openapi({ description: 'Project of a card / epic target. Ignored for a session.' }),
+});
+
 const idParams = z.object({ id: z.string().openapi({ description: 'Todo id.' }) });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -226,6 +247,63 @@ registerPath({
     401: errorResponse('Authentication required.'),
     404: errorResponse('Todo, project, column, or epic not found.'),
     409: errorResponse('Todo is already linked to a different or missing card.'),
+  },
+});
+
+registerPath({
+  method: 'get',
+  path: '/api/me/todos/linked',
+  tags: ['Personal Todos'],
+  summary: "The caller's todos linked to a given card / epic / session",
+  description:
+    "Reverse side of the polymorphic link: returns the calling user's own todos that point at the target entity (bidirectional display). Todos are private, so this never surfaces another user's from-todo.",
+  request: { query: LinkedTodosQuerySchema },
+  responses: {
+    200: {
+      description: "The caller's todos linked to the target.",
+      content: jsonContent(z.object({ todos: z.array(UserTodoComponent) })),
+    },
+    400: errorResponse('Validation failed.'),
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('Target not found or not visible to the caller.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/me/todos/{id}/link',
+  tags: ['Personal Todos'],
+  summary: 'Link a personal todo to an existing card / epic / session',
+  description:
+    'Associates the todo with an existing entity without creating anything. The caller must be able to see the target (project visibility for a card / epic, session ownership for a session), else 404.',
+  request: {
+    params: idParams,
+    body: { content: jsonContent(LinkTodoRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Linked todo.',
+      content: jsonContent(z.object({ todo: UserTodoComponent })),
+    },
+    400: errorResponse('Validation failed.'),
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('Todo or target not found (or not visible to the caller).'),
+  },
+});
+
+registerPath({
+  method: 'delete',
+  path: '/api/me/todos/{id}/link',
+  tags: ['Personal Todos'],
+  summary: "Clear a personal todo's link",
+  request: { params: idParams },
+  responses: {
+    200: {
+      description: 'Unlinked todo.',
+      content: jsonContent(z.object({ todo: UserTodoComponent })),
+    },
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('Todo not found (or not owned by caller).'),
   },
 });
 

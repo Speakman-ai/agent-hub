@@ -7,6 +7,7 @@ vi.mock('../utils/api', () => ({
     createTodo: vi.fn(),
     updateTodo: vi.fn(),
     deleteTodo: vi.fn(),
+    unlinkTodo: vi.fn(),
     reorderTodos: vi.fn(),
   },
 }));
@@ -265,6 +266,24 @@ describe('TodosPage — do-date time window & link badge', () => {
     render(<TodosPage />);
     await screen.findByText('Legacy link');
     expect(screen.getByTestId('todo-link-badge')).toHaveTextContent('Ticket');
+  });
+
+  it('unlinks a linked todo via the badge X and clears its link locally', async () => {
+    const linked = todo({
+      id: 'u',
+      title: 'Unlink me',
+      status: 'open',
+      linkedType: 'card',
+      linkedId: 'c1',
+    });
+    mockApi.listTodos.mockResolvedValue({ todos: [linked] });
+    mockApi.unlinkTodo.mockResolvedValue({ todo: { ...linked, linkedType: null, linkedId: null } });
+    render(<TodosPage />);
+    await screen.findByText('Unlink me');
+
+    fireEvent.click(screen.getByTestId('todo-unlink'));
+    await waitFor(() => expect(mockApi.unlinkTodo).toHaveBeenCalledWith('u'));
+    await waitFor(() => expect(screen.queryByTestId('todo-link-badge')).not.toBeInTheDocument());
   });
 });
 

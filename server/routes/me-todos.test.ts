@@ -686,6 +686,245 @@ describe('POST /api/me/todos/:id/promote', () => {
   });
 });
 
+describe('POST /api/me/todos/:id/link (link to an existing entity)', () => {
+  /** Insert a card on the shared PROJECT_ID board and return its id. */
+  function makeCard(id: string, title = 'Existing card'): string {
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    getStmts().createKanbanCard.run(
+      id,
+      board.columns[0].id,
+      board.board.id,
+      title,
+      null,
+      'medium',
+      null,
+      null,
+      null,
+      null,
+      userA,
+      null,
+      0,
+    );
+    return id;
+  }
+
+  /** Insert an epic on the shared PROJECT_ID board and return its id. */
+  function makeEpic(id: string, title = 'Existing epic'): string {
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    getStmts().createKanbanEpic.run(id, board.board.id, title, null, '#6366F1', 0, null);
+    return id;
+  }
+
+  async function newTodo(user: string, title = 'link me'): Promise<string> {
+    const res = await request(mount(user)).post('/api/me/todos').send({ title }).expect(201);
+    return res.body.todo.id;
+  }
+
+  it('links a todo to an existing card and broadcasts', async () => {
+    const cardId = makeCard('link-card-1');
+    const todoId = await newTodo(userA);
+    broadcast.mockClear();
+
+    const res = await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'card', targetId: cardId, projectId: PROJECT_ID })
+      .expect(200);
+
+    expect(res.body.todo).toMatchObject({
+      linkedType: 'card',
+      linkedId: cardId,
+      linkedCardId: cardId,
+      linkedProjectId: PROJECT_ID,
+    });
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'user_todo_update', ownerUserId: userA, action: 'updated' }),
+    );
+  });
+
+  it('links a todo to an existing epic', async () => {
+    const epicId = makeEpic('link-epic-1');
+    const todoId = await newTodo(userA);
+
+    const res = await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'epic', targetId: epicId, projectId: PROJECT_ID })
+      .expect(200);
+
+    expect(res.body.todo).toMatchObject({
+      linkedType: 'epic',
+      linkedId: epicId,
+      linkedProjectId: PROJECT_ID,
+      linkedCardId: null,
+    });
+  });
+
+  it('links a todo to a session (projectId ignored, stored null)', async () => {
+    const sessionId = 'link-session-1';
+    getStmts().createSession.run(sessionId, 'some-agent', 'A session', 'claude', 'sonnet', 0, 0, 1);
+    const todoId = await newTodo(userA);
+
+    const res = await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'session', targetId: sessionId, projectId: PROJECT_ID })
+      .expect(200);
+
+    expect(res.body.todo).toMatchObject({
+      linkedType: 'session',
+      linkedId: sessionId,
+      linkedProjectId: null,
+      linkedCardId: null,
+    });
+  });
+
+  it('rejects a card target with no projectId (400)', async () => {
+    const cardId = makeCard('link-card-noproj');
+    const todoId = await newTodo(userA);
+    await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'card', targetId: cardId })
+      .expect(400);
+  });
+
+  it('404s a card in a project the caller cannot see (RBAC deny)', async () => {
+    const todoId = await newTodo(userB);
+    await request(mount(userB))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'card', targetId: 'any-card', projectId: PRIVATE_PROJECT_ID })
+      .expect(404);
+    // Link stays clear — the denied write never lands.
+    expect(listTodos(userB)[0]).toMatchObject({ linkedType: null, linkedId: null });
+  });
+
+  it('404s a card that does not exist on the target project', async () => {
+    const todoId = await newTodo(userA);
+    await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'card', targetId: 'ghost-card', projectId: PROJECT_ID })
+      .expect(404);
+  });
+
+  it('404s a session that does not exist', async () => {
+    const todoId = await newTodo(userA);
+    await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'session', targetId: 'ghost-session' })
+      .expect(404);
+  });
+
+  it("404s when user B links user A's todo", async () => {
+    const cardId = makeCard('link-card-foreign');
+    const todoId = await newTodo(userA);
+    await request(mount(userB))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'card', targetId: cardId, projectId: PROJECT_ID })
+      .expect(404);
+  });
+
+  it('rejects an unknown targetType with 400', async () => {
+    const todoId = await newTodo(userA);
+    await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/link`)
+      .send({ targetType: 'label', targetId: 'x', projectId: PROJECT_ID })
+      .expect(400);
+  });
+
+  it('requires authentication (401)', async () => {
+    await request(mount(null))
+      .post('/api/me/todos/whatever/link')
+      .send({ targetType: 'session', targetId: 's' })
+      .expect(401);
+  });
+});
+
+describe('DELETE /api/me/todos/:id/link (unlink)', () => {
+  it('clears the link and broadcasts', async () => {
+    const created = await request(mount(userA)).post('/api/me/todos').send({ title: 'unlink me' });
+    const id = created.body.todo.id;
+    setTodoLink(userA, id, { type: 'session', id: 'sess-x' });
+    broadcast.mockClear();
+
+    const res = await request(mount(userA)).delete(`/api/me/todos/${id}/link`).expect(200);
+    expect(res.body.todo).toMatchObject({
+      linkedType: null,
+      linkedId: null,
+      linkedProjectId: null,
+      linkedCardId: null,
+    });
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'user_todo_update', ownerUserId: userA, action: 'updated' }),
+    );
+  });
+
+  it('is idempotent on an already-unlinked todo', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'never linked' });
+    await request(mount(userA)).delete(`/api/me/todos/${created.body.todo.id}/link`).expect(200);
+  });
+
+  it("404s when user B unlinks user A's todo", async () => {
+    const created = await request(mount(userA)).post('/api/me/todos').send({ title: 'A owns' });
+    await request(mount(userB)).delete(`/api/me/todos/${created.body.todo.id}/link`).expect(404);
+  });
+});
+
+describe('GET /api/me/todos/linked (reverse / bidirectional display)', () => {
+  function makeCard(id: string): string {
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    getStmts().createKanbanCard.run(
+      id,
+      board.columns[0].id,
+      board.board.id,
+      'Reverse card',
+      null,
+      'medium',
+      null,
+      null,
+      null,
+      null,
+      userA,
+      null,
+      0,
+    );
+    return id;
+  }
+
+  it("returns only the caller's todos linked to the target", async () => {
+    const cardId = makeCard('reverse-card-1');
+    const aTodo = (await request(mount(userA)).post('/api/me/todos').send({ title: 'A links' }))
+      .body.todo;
+    const bTodo = (await request(mount(userB)).post('/api/me/todos').send({ title: 'B links' }))
+      .body.todo;
+    setTodoLink(userA, aTodo.id, { type: 'card', id: cardId, projectId: PROJECT_ID });
+    setTodoLink(userB, bTodo.id, { type: 'card', id: cardId, projectId: PROJECT_ID });
+
+    const res = await request(mount(userA))
+      .get('/api/me/todos/linked')
+      .query({ targetType: 'card', targetId: cardId, projectId: PROJECT_ID })
+      .expect(200);
+
+    // User A only ever sees their own from-todo, never user B's.
+    expect(res.body.todos.map((t: { id: string }) => t.id)).toEqual([aTodo.id]);
+  });
+
+  it('404s when the caller cannot see the target project', async () => {
+    const todoId = (await request(mount(userB)).post('/api/me/todos').send({ title: 'x' })).body
+      .todo.id;
+    void todoId;
+    await request(mount(userB))
+      .get('/api/me/todos/linked')
+      .query({ targetType: 'card', targetId: 'any', projectId: PRIVATE_PROJECT_ID })
+      .expect(404);
+  });
+
+  it('rejects a missing targetId with 400', async () => {
+    await request(mount(userA))
+      .get('/api/me/todos/linked')
+      .query({ targetType: 'card', projectId: PROJECT_ID })
+      .expect(400);
+  });
+});
+
 describe('POST /api/me/todos/reorder', () => {
   it("reorders the caller's todos and ignores foreign ids", async () => {
     const t1 = (await request(mount(userA)).post('/api/me/todos').send({ title: 't1' })).body.todo;
