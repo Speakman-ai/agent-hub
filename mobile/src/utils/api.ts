@@ -450,6 +450,18 @@ export const api = {
     updateTodo: (id: any, data: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteTodo: (id: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     reorderTodos: (orderedIds: any) => fetchJSON('/me/todos/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }),
+    // Per-user cross-project aggregation for the Dashboard home (spec
+    // AGGREGATION). One RBAC-filtered fan-out; cached server-side, `fresh` busts
+    // the cache. `date`/`tz` bracket the caller's local day for the calendar pane.
+    getMeDashboard: (opts: { fresh?: boolean; date?: string; tz?: string } = {}) => {
+        const params = new URLSearchParams();
+        if (opts.fresh) params.set('fresh', '1');
+        if (opts.date) params.set('date', opts.date);
+        if (opts.tz) params.set('tz', opts.tz);
+        const qs = params.toString();
+        return fetchJSON(`/me/dashboard${qs ? `?${qs}` : ''}`);
+    },
+    getMyWork: () => fetchJSON('/me/work'),
     // Per-user Google connection (Settings -> Account). Never returns tokens.
     getGoogleStatus: () => fetchJSON('/auth/google/status'),
     // Returns { authorizeUrl }; the caller opens it in the system browser.

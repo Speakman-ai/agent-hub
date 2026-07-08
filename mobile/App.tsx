@@ -12,6 +12,7 @@ import SkillsScreen from './src/screens/SkillsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import KanbanScreen from './src/screens/KanbanScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
+import DashboardHomeScreen from './src/screens/DashboardHomeScreen';
 import TodosScreen from './src/screens/TodosScreen';
 import WikiScreen from './src/screens/WikiScreen';
 import NotesScreen from './src/screens/NotesScreen';
@@ -199,6 +200,7 @@ function AppContent() {
           <StatusBar style="light"/>
           <Stack.Navigator initialRouteName="Dashboard" screenOptions={{ headerShown: false, animation: 'none' }}>
             <Stack.Screen name="Chat" component={ChatScreen}/>
+            <Stack.Screen name="Home" component={DashboardHomeScreen}/>
             <Stack.Screen name="Dashboard" component={DashboardScreen}/>
             <Stack.Screen name="Todos" component={TodosScreen}/>
             <Stack.Screen name="Skills" component={SkillsScreen}/>

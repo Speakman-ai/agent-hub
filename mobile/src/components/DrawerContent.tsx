@@ -368,6 +368,18 @@ export default function DrawerContent({ navigation }: any) {
           <BugReportButton projectId={bugReportProjectId} agentId={activeAgentId || ''} sourceUrl={activeAgent?.name ? `agent:${activeAgent.name}` : ''} buttonStyle={styles.bugReportButton}/>
         </View>
 
+        {/* Personal Dashboard home — the User Module's global (non-project)
+            landing page (spec NAV-PLACEMENT). Four panes over one per-user
+            aggregation; My Work and Todos work without Google linked. Distinct
+            from the org-scoped Dashboard below. */}
+        <TouchableOpacity testID="drawer-global-home" style={styles.dashboardItem} onPress={() => {
+            navigation.navigate('Home');
+            navigation.closeDrawer();
+        }}>
+          <HubIcon name="LayoutGrid" size={14} color={colors.blue400} style={styles.dashboardIcon}/>
+          <Text style={styles.dashboardText}>Home</Text>
+        </TouchableOpacity>
+
         {/* Org-scoped Dashboard — sits above the project list. */}
         <TouchableOpacity style={styles.dashboardItem} onPress={() => {
             navigation.navigate('Dashboard');
