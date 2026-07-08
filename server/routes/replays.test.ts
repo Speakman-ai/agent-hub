@@ -28,6 +28,7 @@ import {
   readReplayEventsPage,
   linkReplay,
   ReplayEventCapError,
+  ReplayByteCapError,
   ReplayFinalizedError,
   ReplayNeedsSnapshotError,
   ReplayAttributionMismatchError,
@@ -1325,6 +1326,65 @@ describe('POST /api/replays/:id/events (chunked append)', () => {
     // The capped append left the stored row untouched.
     const after = stmts.getSessionReplay.get(ID) as { event_count: number };
     expect(after.event_count).toBe(2);
+  });
+
+  it('enforces the uncompressed-byte cap from row stats BEFORE the blob decode', async () => {
+    const row = await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
+    expect(row.uncompressed_size).toBeGreaterThan(0);
+    // Delete the stored blob. If the append fetched/decoded it before the cap
+    // check (the old, O(blob) order that froze prod on 200 MB captures), this
+    // would surface a storage error — getting ReplayByteCapError proves the
+    // reject cost no blob work at all.
+    rmSync(path.join(serverDir, 'artifacts', 'replays', `${ID}.json.gz`));
+    await expect(
+      appendReplayEvents(
+        { stmts, config },
+        { id: ID, events: [INCREMENTAL] },
+        { totalEventCap: MAX_TEST_CAP, totalUncompressedByteCap: row.uncompressed_size },
+      ),
+    ).rejects.toBeInstanceOf(ReplayByteCapError);
+  });
+
+  it('prechecks the event cap from row stats BEFORE the blob decode', async () => {
+    await storeReplay({ stmts, config }, { id: ID, events: [META, SNAPSHOT] });
+    // Same blob-deletion trick: an over-cap append must reject on the row's
+    // stamped event_count without paying the decode.
+    rmSync(path.join(serverDir, 'artifacts', 'replays', `${ID}.json.gz`));
+    await expect(
+      appendReplayEvents(
+        { stmts, config },
+        { id: ID, events: [INCREMENTAL, INCREMENTAL] },
+        { totalEventCap: 3 },
+      ),
+    ).rejects.toBeInstanceOf(ReplayEventCapError);
+  });
+
+  it('413s an append once the capture reaches the uncompressed-byte cap (rotation signal)', async () => {
+    await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+    const row = stmts.getSessionReplay.get(ID) as {
+      duration_ms: number;
+      event_count: number;
+      size: number;
+      meta: string | null;
+    };
+    // Stamp the row as if the capture had grown past the route's byte ceiling
+    // (10 MB default) — the next append must 413 without touching the blob.
+    stmts.updateSessionReplayStats.run(
+      row.duration_ms,
+      row.event_count,
+      row.size,
+      11 * 1024 * 1024,
+      row.meta,
+      ID,
+    );
+    const res = await supertest(app)
+      .post(`/api/replays/${ID}/events`)
+      .send({ events: [INCREMENTAL] })
+      .expect(413);
+    expect(res.body.error).toMatch(/uncompressed bytes/);
   });
 
   it('serializes concurrent appends to the same id without dropping a chunk', async () => {

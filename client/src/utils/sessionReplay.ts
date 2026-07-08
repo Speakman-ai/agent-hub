@@ -867,7 +867,12 @@ export async function submitReplayBatch(
     } catch {
       // ignore
     }
-    throw new Error(bodyText || `Replay batch ingest failed (HTTP ${res.status})`);
+    const err = new Error(bodyText || `Replay batch ingest failed (HTTP ${res.status})`);
+    // Carry the HTTP status so the flusher can distinguish a terminal
+    // capture-level rejection (413 cap / 409 finalized → rotate to a new id)
+    // from a transient failure (retry the same capture).
+    (err as any).status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -912,6 +917,8 @@ export class ContinuousReplayFlusher {
     endpointBase = REPLAY_INGEST_ENDPOINT,
     meta = null,
     rumToken = null,
+    newReplayId = generateReplayId,
+    requestSnapshot = null,
   }: any = {}) {
     if (replayId == null || String(replayId) === '') {
       throw new Error('ContinuousReplayFlusher requires a replayId');
@@ -931,6 +938,15 @@ export class ContinuousReplayFlusher {
     // and beacon) so a token-attributed stream is created and appended under its
     // project — null for the anonymous first-party recorder.
     this._rumToken = rumToken || null;
+    // Rotation collaborators. When the server terminally rejects the CAPTURE
+    // (413 byte/event cap, 409 finalized), retrying the same id is a permanent
+    // failure loop — the flusher instead mints a fresh id via `newReplayId` and
+    // asks the recorder for a new full snapshot via `requestSnapshot` so the
+    // next flush can open the new capture. Injected for testability;
+    // `requestSnapshot` is optional (rotation still swaps the id without it and
+    // waits for the recorder's next periodic checkout).
+    this._newReplayId = newReplayId;
+    this._requestSnapshot = requestSnapshot;
 
     this._pending = [];
     this._created = false; // true once the creating (first) chunk lands
@@ -1020,12 +1036,47 @@ export class ContinuousReplayFlusher {
         this._pending = this._pending.slice(batch.length);
       }
       return this.lastResult;
-    } catch {
+    } catch (err) {
+      // Terminal capture-level rejection: the server refuses this request shape
+      // for good — 413 (capture byte/event cap, or a creating batch over the
+      // body limit) or 409 (finalized/frozen). Retrying can never succeed —
+      // before the caps existed this exact retry loop re-shipped ever-growing
+      // batches into a capture whose per-append decode was freezing the server.
+      // Rotate instead: fresh id, dropped batch, new snapshot. Applies in BOTH
+      // phases — a creating chunk can 413 too (express body limit / id colliding
+      // with a capped row), and retaining its pending batch would retry a body
+      // that can only grow.
+      const status = (err as any)?.status;
+      if (status === 413 || status === 409) {
+        this._rotate();
+        return null;
+      }
       // creating: never drained → snapshot still in `_pending`, retained for a
       // retry or a terminal beacon. created: re-queue the drained batch ahead of
       // any newer events so order is preserved.
       if (!creating) this._pending = batch.concat(this._pending);
       return null;
+    }
+  }
+
+  /**
+   * Start a fresh capture under a new id. The rejected batch is DROPPED (its
+   * events predate the snapshot the new capture will open with, so they could
+   * never replay) and a new full snapshot is requested from the recorder — it
+   * arrives through the normal event sink, and `flush`'s existing "no creating
+   * chunk without a snapshot" guard holds the new capture back until it lands.
+   */
+  _rotate() {
+    this.replayId = String(this._newReplayId());
+    this._created = false;
+    this._pending = [];
+    this.lastResult = null;
+    if (typeof this._requestSnapshot === 'function') {
+      try {
+        this._requestSnapshot();
+      } catch {
+        // best-effort — the recorder's next periodic checkout also unblocks us
+      }
     }
   }
 
@@ -2899,6 +2950,11 @@ async function startRecorder() {
         // Attribute chunks to the project, matching the config path. Falls back to
         // the build-time env when init didn't capture one (e.g. a runtime toggle).
         rumToken: _rumToken ?? resolveReplayRumToken(),
+        // Rotation support: when the server caps the capture (413) or freezes it
+        // (409), the flusher swaps to a fresh id and needs a new full snapshot to
+        // open the new capture — delivered through the normal emit sink by rrweb's
+        // checkout. `forceFullSnapshot` no-ops safely until recording is active.
+        requestSnapshot: () => rec.forceFullSnapshot(),
       });
       rec._continuousSink = (e: any) => _continuousFlusher.addEvent(e);
     }

@@ -228,6 +228,28 @@ export class ReplayEventCapError extends Error {
 }
 
 /**
+ * Thrown by `appendReplayEvents` when a capture's stored uncompressed byte size
+ * has reached its cap. The route maps this to a 413, and the recorder client
+ * treats it as the signal to ROTATE — start a fresh capture under a new id with
+ * a new full snapshot. The cap exists because the monolithic append is
+ * O(existing-blob) on the main thread (JSON parse/stringify of the whole blob):
+ * unbounded captures grew to hundreds of MB and each ~60s flush froze the event
+ * loop for seconds (prod incident 2026-07-08). Checked against the row's stamped
+ * `uncompressed_size` BEFORE the blob is decoded, so an over-cap capture costs
+ * O(1) per rejected append, not a full decode.
+ */
+export class ReplayByteCapError extends Error {
+  readonly totalBytes: number;
+  readonly cap: number;
+  constructor(totalBytes: number, cap: number) {
+    super(`replay holds ${totalBytes} uncompressed bytes, reaching the ${cap} cap`);
+    this.name = 'ReplayByteCapError';
+    this.totalBytes = totalBytes;
+    this.cap = cap;
+  }
+}
+
+/**
  * Thrown by `appendReplayEvents` when `rejectIfFinalized` is set and the replay
  * (re-read inside the per-id lock) is already attributed to a project / ticket /
  * card. The route maps this to a 409 anti-tamper guard. Because the check runs
@@ -291,6 +313,14 @@ export interface AppendReplayInput {
 export interface AppendReplayOptions {
   /** Upper bound on the merged event count; exceeding throws ReplayEventCapError. */
   totalEventCap?: number;
+  /**
+   * Upper bound on the capture's UNCOMPRESSED byte size. An append targeting a
+   * row whose stamped `uncompressed_size` has reached this throws
+   * ReplayByteCapError before the blob is even decoded. This is the bound that
+   * actually protects the event loop — the event cap alone admitted 20k-event
+   * captures of 200+ MB whose per-append decode/encode froze the process.
+   */
+  totalUncompressedByteCap?: number;
   /** Reject (ReplayFinalizedError) when the under-lock row is triage-linked to a
    *  support ticket or card. A bare project attribution does NOT block the
    *  matching project's chunks — see `isReplayFinalized`. */
@@ -452,9 +482,22 @@ async function appendReplayEventsUnlocked(
     throw new ReplayAttributionMismatchError();
   }
 
+  // Cap prechecks against the row's stamped stats, BEFORE the blob is fetched
+  // and decoded. A capped capture whose client keeps flushing (it retries on
+  // failure) must cost O(1) per rejected append — the old order paid a full
+  // decode of a possibly-hundreds-of-MB blob just to refuse the merge.
+  const byteCap = options.totalUncompressedByteCap ?? Infinity;
+  if (existing.uncompressed_size >= byteCap) {
+    throw new ReplayByteCapError(existing.uncompressed_size, byteCap);
+  }
+  if (existing.event_count + input.events.length > totalEventCap) {
+    throw new ReplayEventCapError(existing.event_count + input.events.length, totalEventCap);
+  }
+
   const store = getArtifactStoreForLocation(existing, config);
   const prev = await decodeReplayBlob(await store.getBuffer(existing.storage_key));
   const mergedEvents = prev.events.concat(input.events);
+  // Backstop on the true merged length in case the stamped count drifted.
   if (mergedEvents.length > totalEventCap) {
     throw new ReplayEventCapError(mergedEvents.length, totalEventCap);
   }

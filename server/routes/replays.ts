@@ -12,6 +12,7 @@ import {
   readReplayEventsPage,
   appendReplayEvents,
   ReplayEventCapError,
+  ReplayByteCapError,
   ReplayFinalizedError,
   ReplayNeedsSnapshotError,
   ReplayAttributionMismatchError,
@@ -75,6 +76,16 @@ const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 // site's traffic, but still bounded so one project can't flood the store.
 export const RUM_PROJECT_RATE_LIMIT_MAX = 600;
 const MAX_EVENTS = 20_000;
+// Uncompressed-byte ceiling on one monolithic capture. The event cap alone is
+// no byte bound — prod grew 20k-event captures past 200 MB, and the per-append
+// whole-blob JSON parse/stringify froze the event loop for seconds per flush
+// (2026-07-08 incident). Once a capture reaches this, further appends 413 and
+// the recorder rotates to a fresh id, so per-append main-thread cost is bounded
+// by the cap. Env-overridable for tuning without a deploy.
+const MAX_UNCOMPRESSED_BYTES = (() => {
+  const raw = Number(process.env.REPLAY_MAX_UNCOMPRESSED_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 10 * 1024 * 1024; // 10 MB
+})();
 // rrweb EventType.FullSnapshot. A replay that never carries a full snapshot
 // cannot be reconstructed, so we refuse it rather than store a dead ref.
 const RRWEB_FULL_SNAPSHOT = 2;
@@ -620,6 +631,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
             },
             {
               totalEventCap: MAX_EVENTS,
+              totalUncompressedByteCap: MAX_UNCOMPRESSED_BYTES,
               rejectIfFinalized: true,
               requireSnapshotOnFirstChunk: true,
             },
@@ -635,6 +647,9 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
             return res.status(409).json({ error: err.message });
           }
           if (err instanceof ReplayEventCapError) {
+            return res.status(413).json({ error: err.message });
+          }
+          if (err instanceof ReplayByteCapError) {
             return res.status(413).json({ error: err.message });
           }
           if (err instanceof ArtifactStoreUnavailableError) {

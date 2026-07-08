@@ -1779,6 +1779,118 @@ describe('ContinuousReplayFlusher', () => {
     expect(f._pending.length).toBe(0);
   });
 
+  // ── Rotation on terminal capture rejection (413 cap / 409 finalized) ──
+  // The server bounds a monolithic capture (uncompressed-byte + event caps) so
+  // its per-append cost can't grow unbounded; when a capture is capped (413) or
+  // frozen by triage (409), retrying the same id can never succeed. The flusher
+  // must rotate — fresh id, dropped batch, new snapshot — instead of the old
+  // infinite retry loop that kept re-shipping into a dead capture.
+
+  const statusErr = (status: number) => {
+    const e = new Error(`HTTP ${status}`);
+    (e as any).status = status;
+    return e;
+  };
+
+  it('rotates to a fresh id on a 413 cap rejection mid-stream', async () => {
+    const submitBatch = vi
+      .fn()
+      .mockResolvedValueOnce({ created: true })
+      .mockRejectedValueOnce(statusErr(413))
+      .mockResolvedValueOnce({ created: true });
+    const requestSnapshot = vi.fn();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'old-id-1',
+      submitBatch,
+      newReplayId: () => 'new-id-1',
+      requestSnapshot,
+    });
+
+    // Establish the capture, then hit the cap on the next append.
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    f.addEvent(cincr(3));
+    expect(await f.flush('interval')).toBeNull(); // 413 → rotate
+
+    expect(f.replayId).toBe('new-id-1');
+    expect(f._created).toBe(false);
+    // The rejected batch predates the new capture's snapshot — dropped, not
+    // re-queued (the old re-queue is what grew batches forever).
+    expect(f._pending.length).toBe(0);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
+
+    // The requested snapshot arrives through the sink → the next flush CREATES
+    // the new capture: new id, snapshot aboard, creating meta re-attached.
+    f.addEvent(cmeta(4));
+    f.addEvent(csnap(5));
+    await f.flush('interval');
+    const [args] = submitBatch.mock.calls[2];
+    expect(args.id).toBe('new-id-1');
+    expect(hasFullSnapshot(args.events)).toBe(true);
+    expect(args.meta).toMatchObject({ trigger: 'continuous' });
+    expect(f._created).toBe(true);
+  });
+
+  it('rotates on a 409 (capture finalized/frozen server-side)', async () => {
+    const submitBatch = vi
+      .fn()
+      .mockResolvedValueOnce({ created: true })
+      .mockRejectedValueOnce(statusErr(409));
+    const f = new ContinuousReplayFlusher({
+      replayId: 'frozen-id',
+      submitBatch,
+      newReplayId: () => 'thawed-id',
+    });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    f.addEvent(cincr(3));
+    await f.flush('interval');
+    expect(f.replayId).toBe('thawed-id');
+    expect(f._created).toBe(false);
+  });
+
+  it('rotates when the CREATING chunk itself is terminally rejected (413)', async () => {
+    // A creating batch can 413 too (body over the express limit, or the id
+    // colliding with an already-capped row). Retaining it would retry a body
+    // that can only grow — rotation drops it and starts clean.
+    const submitBatch = vi.fn().mockRejectedValue(statusErr(413));
+    const requestSnapshot = vi.fn();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'fat-create',
+      submitBatch,
+      newReplayId: () => 'slim-create',
+      requestSnapshot,
+    });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    expect(f.replayId).toBe('slim-create');
+    expect(f._pending.length).toBe(0);
+    expect(requestSnapshot).toHaveBeenCalled();
+  });
+
+  it('does NOT rotate on a transient failure (5xx / network) — same id, batch re-queued', async () => {
+    const submitBatch = vi
+      .fn()
+      .mockResolvedValueOnce({ created: true })
+      .mockRejectedValueOnce(statusErr(503));
+    const f = new ContinuousReplayFlusher({
+      replayId: 'keep-id',
+      submitBatch,
+      newReplayId: () => 'never-used',
+    });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    f.addEvent(cincr(3));
+    await f.flush('interval'); // 503 → retry semantics unchanged
+    expect(f.replayId).toBe('keep-id');
+    expect(f._created).toBe(true);
+    expect(f._pending.length).toBe(1); // re-queued for the next interval
+  });
+
   it('clears only the confirmed creating events, keeping ones queued mid-flight', async () => {
     let resolveCreate: any;
     const create = new Promise((r) => {
