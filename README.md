@@ -574,4 +574,6 @@ Common setup and runtime issues and their fixes:
 
 ## License
 
-This project is private and proprietary.
+Agent Hub is licensed under the [Apache License 2.0](LICENSE). See the
+[NOTICE](NOTICE) file for attribution and [docs/licensing.md](docs/licensing.md)
+for the source-header policy and third-party licensing notes.
