@@ -27,6 +27,10 @@ function makeStmts(): Stmts {
       usr_email TEXT,
       usr_name TEXT,
       usr_attributes TEXT,
+      device_type TEXT,
+      browser TEXT,
+      os TEXT,
+      geo_country TEXT,
       first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -44,8 +48,9 @@ function makeStmts(): Stmts {
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent,
           view_count, action_count, error_count, frustration_count,
-          usr_id, usr_email, usr_name, usr_attributes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          usr_id, usr_email, usr_name, usr_attributes,
+          device_type, browser, os, geo_country)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
     updateRumSessionRollup: db.prepare(
@@ -53,6 +58,7 @@ function makeStmts(): Stmts {
           SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
               view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
               usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
+              device_type = ?, browser = ?, os = ?, geo_country = ?,
               updated_at = datetime('now')
         WHERE session_id = ?`,
     ),
@@ -384,5 +390,76 @@ describe('rollupSegmentIntoSession — user identity', () => {
     expect(listB[0].usr_email).toBe('b@x.io');
     // The shared identifier never leaks a row across the tenant boundary.
     expect(listA.some((r) => r.usr_email === 'b@x.io')).toBe(false);
+  });
+});
+
+describe('rollupSegmentIntoSession — request enrichment', () => {
+  let stmts: Stmts;
+  beforeEach(() => {
+    stmts = makeStmts();
+  });
+
+  it('writes device/browser/os/geo on the first segment', () => {
+    const row = rollupSegmentIntoSession(
+      stmts,
+      input({
+        enrichment: { deviceType: 'Mobile', browser: 'Safari', os: 'iOS', geoCountry: 'US' },
+      }),
+    );
+    expect(row.device_type).toBe('Mobile');
+    expect(row.browser).toBe('Safari');
+    expect(row.os).toBe('iOS');
+    expect(row.geo_country).toBe('US');
+  });
+
+  it('leaves facets NULL when the first segment carries no enrichment', () => {
+    const row = rollupSegmentIntoSession(stmts, input({ enrichment: null }));
+    expect(row.device_type).toBeNull();
+    expect(row.browser).toBeNull();
+    expect(row.os).toBeNull();
+    expect(row.geo_country).toBeNull();
+  });
+
+  it('is first-non-null-wins: a later segment never overwrites a derived facet', () => {
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 0,
+        enrichment: { deviceType: 'Desktop', browser: 'Chrome', os: 'Windows', geoCountry: 'US' },
+      }),
+    );
+    // A later segment (e.g. proxied IP, stripped UA) reports different/absent facets.
+    const row = rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 1,
+        enrichment: { deviceType: 'Mobile', browser: 'Safari', os: 'iOS', geoCountry: 'DE' },
+      }),
+    );
+    expect(row.device_type).toBe('Desktop');
+    expect(row.browser).toBe('Chrome');
+    expect(row.os).toBe('Windows');
+    expect(row.geo_country).toBe('US');
+  });
+
+  it('back-fills a facet a first anonymous segment left NULL', () => {
+    rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 0,
+        enrichment: { deviceType: null, browser: null, os: null, geoCountry: null },
+      }),
+    );
+    const row = rollupSegmentIntoSession(
+      stmts,
+      input({
+        indexInView: 1,
+        enrichment: { deviceType: 'Desktop', browser: 'Firefox', os: 'Linux', geoCountry: 'FR' },
+      }),
+    );
+    expect(row.device_type).toBe('Desktop');
+    expect(row.browser).toBe('Firefox');
+    expect(row.os).toBe('Linux');
+    expect(row.geo_country).toBe('FR');
   });
 });

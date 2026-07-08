@@ -134,6 +134,21 @@ function initDb(dataDir: string): void {
     /* table doesn't exist yet (fresh install) or column already present */
   }
 
+  // rum_sessions enriched request facets: device_type/browser/os parsed from the
+  // ingest User-Agent, geo_country resolved from the client IP (rum-enrichment.ts).
+  // Added BEFORE the schema exec below so the (project_id, device_type|…) indexes
+  // in that block can reference the columns on a legacy rum_sessions table where
+  // CREATE TABLE IF NOT EXISTS is a no-op. Per-column try/catch so a partial prior
+  // migration still completes. Fresh installs: the table doesn't exist yet, so the
+  // ALTERs throw + are caught, and the CREATE TABLE below carries the columns.
+  for (const col of ['device_type', 'browser', 'os', 'geo_country']) {
+    try {
+      db.exec(`ALTER TABLE rum_sessions ADD COLUMN ${col} TEXT`);
+    } catch (_e) {
+      /* table doesn't exist yet (fresh install) or column already present */
+    }
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -411,10 +426,13 @@ function initDb(dataDir: string): void {
     -- client stamps usr onto segment meta forward-only, and the rollup keeps the
     -- LAST non-null value per field so a session that identifies mid-stream still
     -- shows a user in the dashboard "User Email" column. Identity is tenant-scoped
-    -- PII. The enriched facet columns (device/browser/os/geo) arrive in later
-    -- cards; this row is their home. The (project_id, started_at) index backs the
-    -- tenant-scoped, time-ranged list query; the (project_id, usr_*) indexes back
-    -- the tenant-scoped "username" filter (keys on email/id/name).
+    -- PII. The enriched request facet columns device_type/browser/os (parsed from
+    -- the ingest User-Agent) and geo_country (resolved from the client IP) are
+    -- computed once per session (first-non-null-wins) at ingest by
+    -- server/replays/rum-enrichment.ts. The (project_id, started_at) index backs
+    -- the tenant-scoped, time-ranged list query; the (project_id, usr_*) and
+    -- (project_id, device_type|browser|os|geo_country) indexes back the
+    -- tenant-scoped username and facet filters.
     CREATE TABLE IF NOT EXISTS rum_sessions (
       session_id TEXT PRIMARY KEY,
       project_id TEXT,
@@ -429,6 +447,10 @@ function initDb(dataDir: string): void {
       usr_email TEXT,
       usr_name TEXT,
       usr_attributes TEXT,
+      device_type TEXT,
+      browser TEXT,
+      os TEXT,
+      geo_country TEXT,
       first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -440,6 +462,14 @@ function initDb(dataDir: string): void {
       ON rum_sessions(project_id, usr_id);
     CREATE INDEX IF NOT EXISTS idx_rum_sessions_usr_name
       ON rum_sessions(project_id, usr_name);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_device_type
+      ON rum_sessions(project_id, device_type);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_browser
+      ON rum_sessions(project_id, browser);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_os
+      ON rum_sessions(project_id, os);
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_geo_country
+      ON rum_sessions(project_id, geo_country);
 
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
@@ -3465,8 +3495,9 @@ function initDb(dataDir: string): void {
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent,
           view_count, action_count, error_count, frustration_count,
-          usr_id, usr_email, usr_name, usr_attributes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          usr_id, usr_email, usr_name, usr_attributes,
+          device_type, browser, os, geo_country)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
     updateRumSessionRollup: db.prepare(
@@ -3474,6 +3505,7 @@ function initDb(dataDir: string): void {
           SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
               view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
               usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
+              device_type = ?, browser = ?, os = ?, geo_country = ?,
               updated_at = datetime('now')
         WHERE session_id = ?`,
     ),

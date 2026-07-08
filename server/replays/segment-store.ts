@@ -34,6 +34,7 @@ import {
   extractSegmentRollupCounts,
   extractSegmentUser,
 } from './rum-session-store.js';
+import type { SessionEnrichment } from './rum-enrichment.js';
 
 const SEGMENT_CONTENT_TYPE = 'application/gzip';
 
@@ -111,6 +112,10 @@ export interface AppendSegmentInput {
   projectId?: string | null;
   events: ReplayEvent[];
   meta?: Record<string, unknown> | null;
+  /** Request-derived facets (device/browser/os/geo) computed by the ingest route
+   *  from the HTTP User-Agent + client IP (`computeEnrichment`). Rolled into the
+   *  session row first-non-null-wins; null/omitted leaves the row's facets as-is. */
+  enrichment?: SessionEnrichment | null;
 }
 
 /**
@@ -225,6 +230,7 @@ export async function appendSegment(
       endTs: end,
       counts: extractSegmentRollupCounts(meta),
       user: extractSegmentUser(meta),
+      enrichment: input.enrichment ?? null,
     });
   } catch (err) {
     console.warn(

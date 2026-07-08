@@ -335,6 +335,15 @@ export interface RumSessionRow {
   usr_name: string | null;
   /** Custom user attributes (non-standard `usr` keys) as a JSON string, or NULL. */
   usr_attributes: string | null;
+  /** Device class parsed from the ingest User-Agent (Desktop/Mobile/Tablet/Bot/
+   *  Other); first-non-null-wins across the session's segments. */
+  device_type: string | null;
+  /** Browser family parsed from the ingest User-Agent (Chrome/Safari/…). */
+  browser: string | null;
+  /** OS family parsed from the ingest User-Agent (Windows/macOS/iOS/…). */
+  os: string | null;
+  /** ISO 3166-1 alpha-2 country resolved from the ingest client IP, or NULL. */
+  geo_country: string | null;
   /** Wall-clock the row was first created, `datetime('now')` UTC string. */
   first_seen_at: string;
   /** Wall-clock of the most recent rollup update, `datetime('now')` UTC string. */

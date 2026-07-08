@@ -31,6 +31,7 @@
  * DB-level UPSERT / row lock instead.
  */
 import type { RumSessionRow, Stmts } from '../types.js';
+import type { SessionEnrichment } from './rum-enrichment.js';
 
 /** Per-segment rollup counts the client ships in the segment `meta`. */
 export interface SegmentRollupCounts {
@@ -158,6 +159,12 @@ export interface SegmentRollupInput {
   /** Per-segment user identity (from `extractSegmentUser(meta)`); null when the
    *  segment carried no `usr`. Applied last-non-null per field. */
   user?: SegmentUserIdentity | null;
+  /** Request-derived facets (device/browser/os/geo) from the ingest HTTP request
+   *  (`computeEnrichment`); null when nothing could be derived. Applied
+   *  first-non-null per field — a browser session's UA/IP is stable, so the first
+   *  segment's values stick and a later request (proxy, missing UA) never wipes
+   *  them. */
+  enrichment?: SessionEnrichment | null;
 }
 
 /**
@@ -174,6 +181,7 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
   const viewDelta = Math.max(0, Math.floor(input.indexInView)) === 0 ? 1 : 0;
 
   const user = input.user ?? null;
+  const enrichment = input.enrichment ?? null;
   const existing = stmts.getRumSession.get(input.sessionId) as RumSessionRow | undefined;
 
   if (!existing) {
@@ -191,6 +199,10 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
       user?.email ?? null,
       user?.name ?? null,
       serializeUserAttributes(user?.attributes ?? null),
+      enrichment?.deviceType ?? null,
+      enrichment?.browser ?? null,
+      enrichment?.os ?? null,
+      enrichment?.geoCountry ?? null,
     );
     return stmts.getRumSession.get(input.sessionId) as RumSessionRow;
   }
@@ -207,6 +219,13 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
   const usrName = user?.name ?? existing.usr_name;
   const usrAttributes =
     user?.attributes != null ? serializeUserAttributes(user.attributes) : existing.usr_attributes;
+  // First-non-null-wins per field: the first segment that carries a UA/IP fixes
+  // the session's device/browser/os/geo; a later segment with a missing UA or a
+  // proxied IP never overwrites an already-derived facet.
+  const deviceType = existing.device_type ?? enrichment?.deviceType ?? null;
+  const browser = existing.browser ?? enrichment?.browser ?? null;
+  const os = existing.os ?? enrichment?.os ?? null;
+  const geoCountry = existing.geo_country ?? enrichment?.geoCountry ?? null;
 
   stmts.updateRumSessionRollup.run(
     projectId,
@@ -221,6 +240,10 @@ export function rollupSegmentIntoSession(stmts: Stmts, input: SegmentRollupInput
     usrEmail,
     usrName,
     usrAttributes,
+    deviceType,
+    browser,
+    os,
+    geoCountry,
     input.sessionId,
   );
   return stmts.getRumSession.get(input.sessionId) as RumSessionRow;

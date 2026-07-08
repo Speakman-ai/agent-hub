@@ -143,6 +143,10 @@ describe('segment-store (append-only backend)', () => {
         usr_email TEXT,
         usr_name TEXT,
         usr_attributes TEXT,
+        device_type TEXT,
+        browser TEXT,
+        os TEXT,
+        geo_country TEXT,
         first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
@@ -186,8 +190,9 @@ describe('segment-store (append-only backend)', () => {
         `INSERT INTO rum_sessions
            (session_id, project_id, started_at, ended_at, time_spent,
             view_count, action_count, error_count, frustration_count,
-            usr_id, usr_email, usr_name, usr_attributes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            usr_id, usr_email, usr_name, usr_attributes,
+            device_type, browser, os, geo_country)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
       updateRumSessionRollup: db.prepare(
@@ -195,6 +200,7 @@ describe('segment-store (append-only backend)', () => {
             SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
                 view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
                 usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
+                device_type = ?, browser = ?, os = ?, geo_country = ?,
                 updated_at = datetime('now')
           WHERE session_id = ?`,
       ),
@@ -557,6 +563,35 @@ describe('segment-store (append-only backend)', () => {
     row = getRumSession(deps.stmts, 'sess')!;
     expect(row.usr_id).toBe('u2');
     expect(row.usr_email).toBe('grace@x.io');
+  });
+
+  it('rolls request enrichment (device/browser/os/geo) onto the session row, first-non-null-wins', async () => {
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 0,
+      projectId: 'proj',
+      events: seg(SNAPSHOT, { type: 3, timestamp: 1200 }),
+      enrichment: { deviceType: 'Desktop', browser: 'Chrome', os: 'macOS', geoCountry: 'US' },
+    });
+    let row = getRumSession(deps.stmts, 'sess')!;
+    expect(row.device_type).toBe('Desktop');
+    expect(row.browser).toBe('Chrome');
+    expect(row.os).toBe('macOS');
+    expect(row.geo_country).toBe('US');
+
+    // A later segment with different/absent enrichment never overwrites the first.
+    await appendSegment(deps, {
+      sessionId: 'sess',
+      viewId: 'view-1',
+      indexInView: 1,
+      projectId: 'proj',
+      events: seg({ type: 3, timestamp: 1600 }),
+      enrichment: { deviceType: 'Mobile', browser: 'Safari', os: 'iOS', geoCountry: 'DE' },
+    });
+    row = getRumSession(deps.stmts, 'sess')!;
+    expect(row.device_type).toBe('Desktop');
+    expect(row.geo_country).toBe('US');
   });
 
   it('deletes the session-grain rollup row when its segments are deleted', async () => {

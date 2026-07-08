@@ -107,6 +107,14 @@ function makeReplayStmts(): Stmts {
       action_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       frustration_count INTEGER NOT NULL DEFAULT 0,
+      usr_id TEXT,
+      usr_email TEXT,
+      usr_name TEXT,
+      usr_attributes TEXT,
+      device_type TEXT,
+      browser TEXT,
+      os TEXT,
+      geo_country TEXT,
       first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -151,14 +159,18 @@ function makeReplayStmts(): Stmts {
     insertRumSession: db.prepare(
       `INSERT INTO rum_sessions
          (session_id, project_id, started_at, ended_at, time_spent,
-          view_count, action_count, error_count, frustration_count)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          view_count, action_count, error_count, frustration_count,
+          usr_id, usr_email, usr_name, usr_attributes,
+          device_type, browser, os, geo_country)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     getRumSession: db.prepare('SELECT * FROM rum_sessions WHERE session_id = ?'),
     updateRumSessionRollup: db.prepare(
       `UPDATE rum_sessions
           SET project_id = ?, started_at = ?, ended_at = ?, time_spent = ?,
               view_count = ?, action_count = ?, error_count = ?, frustration_count = ?,
+              usr_id = ?, usr_email = ?, usr_name = ?, usr_attributes = ?,
+              device_type = ?, browser = ?, os = ?, geo_country = ?,
               updated_at = datetime('now')
         WHERE session_id = ?`,
     ),
@@ -1775,6 +1787,24 @@ describe('POST /api/replays/sessions/:sessionId/views/:viewId/segments/:index', 
     expect(rows).toHaveLength(1);
     expect(rows[0]!.view_id).toBe('view1');
     expect(rows[0]!.has_full_snapshot).toBe(1);
+  });
+
+  it('enriches the session row with device/browser/os parsed from the User-Agent', async () => {
+    await supertest(app)
+      .post(segUrl('sess-ua', 'view1', 0))
+      .set(
+        'User-Agent',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+      )
+      .send({ events: [META, SNAPSHOT] })
+      .expect(201);
+
+    const row = stmts.getRumSession.get('sess-ua') as any;
+    expect(row.device_type).toBe('Mobile');
+    expect(row.browser).toBe('Safari');
+    expect(row.os).toBe('iOS');
+    // No geo db is wired in tests / the loopback IP is private, so geo_country is null.
+    expect(row.geo_country).toBeNull();
   });
 
   it('accepts an incremental segment (index > 0) with no snapshot', async () => {

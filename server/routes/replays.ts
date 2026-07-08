@@ -25,6 +25,7 @@ import {
   appendSegment,
   SegmentNeedsSnapshotError,
 } from '../replays/segment-store.js';
+import { computeEnrichment } from '../replays/rum-enrichment.js';
 import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
@@ -765,6 +766,14 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         // Resolved by the gate from a verified X-RUM-Token (null = anonymous).
         const attributedProjectId = (res.locals.rumProjectId as string | undefined) ?? null;
 
+        // Derive the request facets (device/browser/os from the UA, geo_country
+        // from the client IP) so the session row indexes them. First-non-null-wins
+        // in the rollup, so only the first segment of a session actually sets them.
+        const enrichment = computeEnrichment({
+          userAgent: req.headers['user-agent'],
+          ip: ipFromReq(req),
+        });
+
         let row: RumSegmentRow;
         try {
           row = await appendSegment(
@@ -776,6 +785,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
               projectId: attributedProjectId,
               events: parsed.value.events,
               meta: parsed.value.meta ?? null,
+              enrichment,
             },
           );
         } catch (err) {
