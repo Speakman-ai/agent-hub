@@ -1,11 +1,12 @@
 import React from 'react';
-import { Activity, BookOpen, Bot, CalendarDays, ChartColumn, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Mail, MonitorPlay, List, ListOrdered, ListTodo, Palette, Pencil, Play, Plus, ScanEye, Settings, ShieldAlert, Sparkles, StickyNote, Target, Trash2, X, } from 'lucide-react-native';
+import { Activity, ArrowUpRight, BookOpen, Bot, CalendarDays, ChartColumn, Check, ChevronDown, ChevronRight, ChevronUp, Circle, CircleCheck, Clock, Cloud, FileSpreadsheet, GitBranch, GitPullRequest, HardDrive, KeyRound, LayoutGrid, LifeBuoy, Mail, MonitorPlay, List, ListOrdered, ListTodo, Palette, Pencil, Play, Plus, ScanEye, Settings, ShieldAlert, Sparkles, StickyNote, Target, Trash2, X, } from 'lucide-react-native';
 import { colors } from '../theme/colors';
 import { HUB_ICON_NAMES } from '../utils/hubIconNames';
 import { resolveLucideIconName } from '../utils/hubIconNative';
 /** Lucide SVG components for Expo web (same glyphs as the web client). */
 const HUB_LUCIDE_ICONS: Record<string, any> = {
     Activity,
+    ArrowUpRight,
     BarChart3: ChartColumn,
     BookOpen,
     Bot,

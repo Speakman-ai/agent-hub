@@ -31,6 +31,7 @@ import {
     type TodoPriority,
 } from '../utils/todos';
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
+import PromoteTodoModal from '../components/PromoteTodoModal';
 
 /**
  * Cross-project personal Todos screen (spec NAV-PLACEMENT) — the mobile 1:1
@@ -129,6 +130,7 @@ export default function TodosScreen() {
     const [adding, setAdding] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [showDone, setShowDone] = useState(false);
+    const [promoteTarget, setPromoteTarget] = useState<any>(null);
 
     const mountedRef = useRef(true);
     useEffect(() => {
@@ -381,6 +383,7 @@ export default function TodosScreen() {
                                         }}
                                         onDelete={() => removeTodo(todo.id)}
                                         onUnlink={() => unlinkTodo(todo.id)}
+                                        onPromote={() => setPromoteTarget(todo)}
                                         onMoveUp={() => reorder(todo.id, 'up')}
                                         onMoveDown={() => reorder(todo.id, 'down')}
                                     />
@@ -417,6 +420,7 @@ export default function TodosScreen() {
                                                 onSave={async () => {}}
                                                 onDelete={() => removeTodo(todo.id)}
                                                 onUnlink={() => unlinkTodo(todo.id)}
+                                                onPromote={() => {}}
                                                 onMoveUp={() => {}}
                                                 onMoveDown={() => {}}
                                             />
@@ -428,6 +432,16 @@ export default function TodosScreen() {
                     </>
                 )}
             </ScrollView>
+            {promoteTarget ? (
+                <PromoteTodoModal
+                    todo={promoteTarget}
+                    onClose={() => setPromoteTarget(null)}
+                    onPromoted={({ todo }) => {
+                        // Reflect the new link locally; the WS refetch reconciles.
+                        setTodos((prev) => prev.map((t) => (t.id === todo.id ? todo : t)));
+                    }}
+                />
+            ) : null}
         </SafeAreaView>
     );
 }
@@ -443,6 +457,7 @@ export function TodoRow({
     onSave,
     onDelete,
     onUnlink,
+    onPromote,
     onMoveUp,
     onMoveDown,
 }: any) {
@@ -630,6 +645,16 @@ export function TodoRow({
             </View>
             {!done ? (
                 <View style={styles.rowActions}>
+                    {!linkLabel ? (
+                        <TouchableOpacity
+                            testID="todo-promote"
+                            onPress={onPromote}
+                            style={styles.iconButton}
+                            accessibilityLabel="Promote to ticket"
+                        >
+                            <HubIcon name="ArrowUpRight" size={15} color={colors.gray500} />
+                        </TouchableOpacity>
+                    ) : null}
                     <TouchableOpacity
                         onPress={onMoveUp}
                         disabled={isFirst}

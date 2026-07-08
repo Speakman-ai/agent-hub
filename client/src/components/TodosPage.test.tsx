@@ -9,6 +9,9 @@ vi.mock('../utils/api', () => ({
     deleteTodo: vi.fn(),
     unlinkTodo: vi.fn(),
     reorderTodos: vi.fn(),
+    getProjects: vi.fn(),
+    getBoard: vi.fn(),
+    promoteTodo: vi.fn(),
   },
 }));
 
@@ -49,6 +52,8 @@ beforeEach(() => {
   idCounter = 0;
   for (const fn of Object.values(mockApi)) fn.mockReset();
   mockApi.listTodos.mockResolvedValue({ todos: [] });
+  mockApi.getProjects.mockResolvedValue([{ id: 'p1', name: 'Project One' }]);
+  mockApi.getBoard.mockResolvedValue({ columns: [{ id: 'c1', name: 'To Do' }], epics: [] });
 });
 
 afterEach(() => {
@@ -307,6 +312,44 @@ describe('TodosPage — capture origin', () => {
     const origin = screen.getByTestId('todo-origin');
     expect(origin).toHaveTextContent('From email');
     expect(origin).toHaveAttribute('href', 'https://mail.google.com/mail/u/0/#all/t1');
+  });
+});
+
+describe('TodosPage — promote', () => {
+  it('shows a promote control on an open, unlinked todo', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [todo({ id: 'a', title: 'Promotable', status: 'open' })],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Promotable');
+    expect(screen.getByTestId('todo-promote')).toBeInTheDocument();
+  });
+
+  it('hides the promote control on an already-linked todo', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({
+          id: 'l',
+          title: 'Already linked',
+          status: 'open',
+          linkedType: 'card',
+          linkedId: 'k1',
+        }),
+      ],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Already linked');
+    expect(screen.queryByTestId('todo-promote')).not.toBeInTheDocument();
+  });
+
+  it('opens the promote modal when the control is clicked', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [todo({ id: 'a', title: 'Promotable', status: 'open' })],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Promotable');
+    fireEvent.click(screen.getByTestId('todo-promote'));
+    expect(await screen.findByTestId('promote-todo-modal')).toBeInTheDocument();
   });
 });
 

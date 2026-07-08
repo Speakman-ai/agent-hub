@@ -133,6 +133,29 @@ export function buildCalendarTodoDraft(event: CalendarEventLike): CaptureTodoDra
   };
 }
 
+/**
+ * A capture deep link is only ever an `https:` URL on a Google host (Gmail /
+ * Calendar), built by `gmailThreadDeepLink` or taken from a Calendar event's
+ * `htmlLink`. But `source_meta` is persisted from a create request that accepts
+ * an arbitrary `sourceMeta`, so a stored deep link can be attacker-influenced.
+ * The origin displays hand this value straight to `<a href>` / `Linking.openURL`,
+ * so we harden it here: only surface an `https:` URL whose host is `google.com`
+ * or a subdomain of it. This rejects `javascript:`, `data:`, `file:`, arbitrary
+ * app schemes, and look-alike hosts (`google.com.evil.com`, `notgoogle.com`).
+ */
+const SAFE_CAPTURE_DEEP_LINK = /^https:\/\/([a-z0-9-]+\.)*google\.com([/?#]|$)/i;
+
+/**
+ * Validate a persisted provenance deep link before a client opens it. Returns
+ * the trimmed URL when it is a safe Google https link, else null. Shared by the
+ * todo and card origin displays so both clients reject the same unsafe payloads.
+ */
+export function safeCaptureDeepLink(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed && SAFE_CAPTURE_DEEP_LINK.test(trimmed) ? trimmed : null;
+}
+
 /** A persisted todo, narrowed to the provenance fields the origin display reads. */
 export interface TodoOriginLike {
   sourceType?: string | null;
@@ -151,8 +174,10 @@ export function todoOriginLabel(todo: TodoOriginLike): string | null {
   }
 }
 
-/** The reopen URL stored on a captured todo, or null when there isn't one. */
+/**
+ * The reopen URL stored on a captured todo, or null when there isn't one or the
+ * stored value isn't a safe Google https link (see `safeCaptureDeepLink`).
+ */
 export function todoOriginDeepLink(todo: TodoOriginLike): string | null {
-  const link = todo.sourceMeta?.deepLink;
-  return typeof link === 'string' && link.trim() ? link : null;
+  return safeCaptureDeepLink(todo.sourceMeta?.deepLink);
 }

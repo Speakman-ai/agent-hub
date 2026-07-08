@@ -128,4 +128,27 @@ describe('todo origin display helpers', () => {
     expect(todoOriginLabel({})).toBeNull();
     expect(todoOriginDeepLink({ sourceType: 'email', sourceMeta: { deepLink: '  ' } })).toBeNull();
   });
+
+  it('refuses unsafe / non-Google reopen links (defends against injected sourceMeta)', () => {
+    for (const deepLink of [
+      'javascript:alert(1)',
+      'data:text/html,x',
+      'file:///etc/passwd',
+      'http://mail.google.com/mail',
+      'https://evil.com/phish',
+      'https://google.com.evil.com/x',
+    ]) {
+      expect(
+        todoOriginDeepLink({ sourceType: 'email', sourceMeta: { deepLink } }),
+        `expected ${deepLink} to be rejected`,
+      ).toBeNull();
+    }
+    // A genuine Google https link still passes.
+    expect(
+      todoOriginDeepLink({
+        sourceType: 'calendar',
+        sourceMeta: { deepLink: 'https://calendar.google.com/event?eid=e1' },
+      }),
+    ).toBe('https://calendar.google.com/event?eid=e1');
+  });
 });

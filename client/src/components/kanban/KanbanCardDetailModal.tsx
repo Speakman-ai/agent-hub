@@ -8,6 +8,7 @@ import {
   Plus,
 } from 'lucide-react';
 import { api } from '../../utils/api';
+import { cardOriginLabel, cardOriginDeepLink } from '@shared/utils/captureCard';
 import { hasUnresolvedBlockers } from '../../utils/blockers';
 import { MarkdownContent } from '../MarkdownRenderer';
 import ReplayPlayerModal from '../ReplayPlayerModal';
@@ -257,6 +258,37 @@ export default function KanbanCardDetailModal({ detail, agents, assignableUsers 
                         <PlayCircle size={13} />
                         Watch replay
                       </button>
+                    </div>
+                  ) : null}
+                  {/* Origin — capture provenance (promoted from a todo, or
+                      captured from a Gmail message / Calendar event). */}
+                  {!isCreating && cardOriginLabel(selectedCard) ? (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
+                        Origin
+                      </label>
+                      {(() => {
+                        const label = cardOriginLabel(selectedCard);
+                        const link = cardOriginDeepLink(selectedCard);
+                        const cls =
+                          'inline-flex items-center gap-1 px-2 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-xs font-medium';
+                        return link ? (
+                          <a
+                            href={link}
+                            target="_blank"
+                            rel="noreferrer"
+                            data-testid="card-origin"
+                            className={`${cls} hover:bg-sky-900/50`}
+                          >
+                            {label}
+                            <ExternalLink size={11} />
+                          </a>
+                        ) : (
+                          <span data-testid="card-origin" className={cls}>
+                            {label}
+                          </span>
+                        );
+                      })()}
                     </div>
                   ) : null}
                   {/* Priority */}

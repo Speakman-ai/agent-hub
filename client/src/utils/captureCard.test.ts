@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildEmailCardDraft, buildCalendarCardDraft } from '@shared/utils/captureCard';
+import {
+  buildEmailCardDraft,
+  buildCalendarCardDraft,
+  cardOriginLabel,
+  cardOriginDeepLink,
+} from '@shared/utils/captureCard';
 
 // The direct capture mapping (spec CAPTURE-PROVENANCE): Gmail message / Calendar
 // event -> kanban-card create draft, with the provenance triple preserved so the
@@ -85,5 +90,80 @@ describe('buildCalendarCardDraft', () => {
     expect(draft.source.sourceType).toBe('calendar');
     expect(draft.source.sourceId).toBeNull();
     expect(draft.description).toBeUndefined();
+  });
+});
+
+describe('cardOriginLabel / cardOriginDeepLink — card provenance display', () => {
+  it('labels a card promoted from a todo', () => {
+    // A todo-promoted card stamps { todoId, userId } — no reopen deep link.
+    const card = { source_type: 'todo', source_meta: { todoId: 't1', userId: 'u1' } };
+    expect(cardOriginLabel(card)).toBe('From todo');
+    expect(cardOriginDeepLink(card)).toBeNull();
+  });
+
+  it('never makes a todo-origin card clickable, even with an injected Google deep link', () => {
+    // source_type gates the link: a todo (or manual) card has no reopen target,
+    // so a smuggled-but-valid Google URL must not turn the badge actionable.
+    expect(
+      cardOriginDeepLink({
+        source_type: 'todo',
+        source_meta: { deepLink: 'https://calendar.google.com/event?eid=evil' },
+      }),
+    ).toBeNull();
+    expect(
+      cardOriginDeepLink({
+        source_type: 'manual',
+        source_meta: { deepLink: 'https://mail.google.com/mail/u/0/#all/x' },
+      }),
+    ).toBeNull();
+  });
+
+  it('labels an email-captured card and surfaces its reopen link', () => {
+    const card = {
+      source_type: 'email',
+      source_meta: { kind: 'gmail', deepLink: 'https://mail.google.com/mail/u/0/#all/t1' },
+    };
+    expect(cardOriginLabel(card)).toBe('From email');
+    expect(cardOriginDeepLink(card)).toBe('https://mail.google.com/mail/u/0/#all/t1');
+  });
+
+  it('labels a calendar-captured card and surfaces its event link', () => {
+    const card = {
+      source_type: 'calendar',
+      source_meta: { deepLink: 'https://calendar.google.com/event?eid=e1' },
+    };
+    expect(cardOriginLabel(card)).toBe('From calendar');
+    expect(cardOriginDeepLink(card)).toBe('https://calendar.google.com/event?eid=e1');
+  });
+
+  it('returns null for a manual card with no capture origin', () => {
+    expect(cardOriginLabel({ source_type: 'manual' })).toBeNull();
+    expect(cardOriginLabel({})).toBeNull();
+    expect(cardOriginDeepLink({ source_type: 'todo', source_meta: null })).toBeNull();
+    // A non-string / blank deep link is ignored.
+    expect(
+      cardOriginDeepLink({ source_type: 'email', source_meta: { deepLink: '  ' } }),
+    ).toBeNull();
+  });
+
+  it('refuses unsafe / non-Google deep links from an injected provenance payload', () => {
+    const unsafe = [
+      'javascript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'file:///etc/passwd',
+      'app://open/thing',
+      'http://mail.google.com/mail', // non-https is rejected
+      'https://evil.com/phish',
+      'https://google.com.evil.com/phish', // look-alike host
+      'https://notgoogle.com/x',
+      42,
+      null,
+    ];
+    for (const deepLink of unsafe) {
+      expect(
+        cardOriginDeepLink({ source_type: 'email', source_meta: { deepLink } as any }),
+        `expected ${String(deepLink)} to be rejected`,
+      ).toBeNull();
+    }
   });
 });

@@ -384,6 +384,18 @@ export const api = {
     fetchJSON<{ todo: UserTodoWire }>(`/me/todos/${encodeURIComponent(id)}/link`, {
       method: 'DELETE',
     }),
+  // Promote a todo to a NEW project ticket (spec TODO-TO-TICKET PROMOTE op).
+  // Creates a real kanban card on the target board (To Do by default), carries
+  // over the todo's priority unless overridden, stamps the card's provenance
+  // back to the todo, and links the todo to the created card. Returns both.
+  promoteTodo: (
+    id: string,
+    data: { projectId: string; columnId?: string; epicId?: string; priority?: TodoPriority },
+  ) =>
+    fetchJSON<{ todo: UserTodoWire; card: any }>(`/me/todos/${encodeURIComponent(id)}/promote`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   // Reverse side of the polymorphic link: the caller's own todos that point at
   // a given target (bidirectional display).
   getLinkedTodos: (target: { targetType: TodoLinkType; targetId: string; projectId?: string }) => {

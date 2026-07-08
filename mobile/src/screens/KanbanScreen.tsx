@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useContext, useRef, useMemo } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, FlatList, Modal, StyleSheet, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, Switch, } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, ScrollView, FlatList, Modal, StyleSheet, Alert, KeyboardAvoidingView, Platform, ActivityIndicator, Switch, Linking, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
 import { SidebarContext } from '../context/SidebarContext';
@@ -10,6 +10,7 @@ import { findAgentByName, hasActiveSession, buildAssigneeOptions, filterAgentsBy
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { isPrematureDoneMoveError, PREMATURE_DONE_MOVE_EXPLANATION, PREMATURE_DONE_MOVE_TITLE, } from '@shared/utils/prematureDoneMove';
 import { cardMetaModel, priorityMeta, cardShareUrl, toggleLabelCsv } from '../utils/kanbanCard';
+import { cardOriginLabel, cardOriginDeepLink } from '@shared/utils/captureCard';
 import { getServerBaseUrl } from '../utils/config';
 import { buildCardActions } from '../utils/kanbanCardActions';
 import { shortDate } from '../utils/time';
@@ -1048,6 +1049,28 @@ export default function KanbanScreen({ route, navigation }: any) {
         </View>
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
           <ScrollView style={styles.detailScroll} contentContainerStyle={styles.detailContent}>
+            {/* Origin — capture provenance (promoted from a todo, or captured
+                from a Gmail message / Calendar event). */}
+            {cardOriginLabel(selectedCard) ? (
+              <View style={styles.originRow}>
+                {(() => {
+                  const label = cardOriginLabel(selectedCard);
+                  const link = cardOriginDeepLink(selectedCard);
+                  return (
+                    <TouchableOpacity
+                      testID="card-origin"
+                      disabled={!link}
+                      onPress={() => link && Linking.openURL(link)}
+                      style={styles.originBadge}
+                      accessibilityLabel={label || undefined}
+                    >
+                      <Text style={styles.originBadgeText}>{label}</Text>
+                    </TouchableOpacity>
+                  );
+                })()}
+              </View>
+            ) : null}
+
             {/* Priority */}
             <Text style={styles.fieldLabel}>Priority</Text>
             <View style={styles.priorityRow}>
@@ -1809,6 +1832,16 @@ const styles = StyleSheet.create({
     detailScroll: { flex: 1 },
     detailContent: { padding: 16, paddingBottom: 40 },
     fieldLabel: { fontSize: 12, fontWeight: '600', color: colors.gray400, marginBottom: 6, marginTop: 12 },
+    originRow: { flexDirection: 'row', marginTop: 4 },
+    originBadge: {
+        borderWidth: 1,
+        borderColor: colors.blue500,
+        backgroundColor: colors.blue900_40,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+    },
+    originBadgeText: { color: colors.blue300, fontSize: 11, fontWeight: '600' },
     fieldInput: {
         backgroundColor: colors.gray800, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10,
         color: colors.white, fontSize: 14, borderWidth: 1, borderColor: colors.gray700,

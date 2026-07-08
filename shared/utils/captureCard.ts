@@ -25,6 +25,7 @@ import type { CalendarEventLike } from './calendarEvents.js';
 import {
   buildCalendarTodoDraft,
   buildEmailTodoDraft,
+  safeCaptureDeepLink,
   type CaptureSourceType,
   type CaptureTodoDraft,
   type GmailCaptureInput,
@@ -93,4 +94,53 @@ export function buildEmailCardDraft(input: GmailCaptureInput): CaptureCardDraft 
  */
 export function buildCalendarCardDraft(event: CalendarEventLike): CaptureCardDraft {
   return toCardDraft(buildCalendarTodoDraft(event));
+}
+
+/**
+ * A persisted card narrowed to the provenance fields a card viewer reads. The
+ * board serializes provenance in snake_case (`source_type` / `source_meta`),
+ * which is what a card row carries; both are optional so a hand-built card
+ * without provenance is accepted.
+ */
+export interface CardOriginLike {
+  source_type?: string | null;
+  source_meta?: Record<string, unknown> | null;
+}
+
+/**
+ * Short human origin label for a captured or promoted card, or null for a
+ * manual card with no capture origin. `todo` means the card was promoted from a
+ * personal todo (spec TODO-TO-TICKET); `email` / `calendar` are the direct
+ * capture paths (spec CAPTURE-PROVENANCE).
+ */
+export function cardOriginLabel(card: CardOriginLike): string | null {
+  switch (card.source_type) {
+    case 'todo':
+      return 'From todo';
+    case 'email':
+      return 'From email';
+    case 'calendar':
+      return 'From calendar';
+    default:
+      return null;
+  }
+}
+
+/** The direct capture source types that legitimately carry a reopen deep link. */
+const DIRECT_CAPTURE_SOURCE_TYPES = new Set(['email', 'calendar']);
+
+/**
+ * The reopen URL stored on a directly-captured card (Gmail / Calendar), or null.
+ *
+ * A deep link is only ever meaningful for the direct capture paths (`email` /
+ * `calendar`). Todo-promoted (and manual) cards have no reopen target — they
+ * stamp `{ todoId, userId }` — so we gate on `source_type` FIRST: a
+ * todo/manual card returns null even if an injected `source_meta.deepLink`
+ * would otherwise pass validation. The remaining value is then run through
+ * `safeCaptureDeepLink`, so an unsafe/injected payload never reaches an
+ * `<a href>` / `Linking.openURL`.
+ */
+export function cardOriginDeepLink(card: CardOriginLike): string | null {
+  if (!card.source_type || !DIRECT_CAPTURE_SOURCE_TYPES.has(card.source_type)) return null;
+  return safeCaptureDeepLink(card.source_meta?.deepLink);
 }

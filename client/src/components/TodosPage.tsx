@@ -12,7 +12,9 @@ import {
   Check,
   RefreshCw,
   ExternalLink,
+  ArrowUpRight,
 } from 'lucide-react';
+import PromoteTodoModal from './PromoteTodoModal';
 import { api, type UserTodoWire, type TodoPriority } from '../utils/api';
 import {
   moveTodoId,
@@ -76,6 +78,7 @@ export default function TodosPage() {
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  const [promoteTarget, setPromoteTarget] = useState<UserTodoWire | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -340,6 +343,7 @@ export default function TodosPage() {
                     }}
                     onDelete={() => removeTodo(todo.id)}
                     onUnlink={() => unlinkTodo(todo.id)}
+                    onPromote={() => setPromoteTarget(todo)}
                     onMoveUp={() => reorder(todo.id, 'up')}
                     onMoveDown={() => reorder(todo.id, 'down')}
                   />
@@ -376,6 +380,7 @@ export default function TodosPage() {
                         onSave={async () => {}}
                         onDelete={() => removeTodo(todo.id)}
                         onUnlink={() => unlinkTodo(todo.id)}
+                        onPromote={() => {}}
                         onMoveUp={() => {}}
                         onMoveDown={() => {}}
                       />
@@ -387,6 +392,16 @@ export default function TodosPage() {
           </>
         )}
       </div>
+      {promoteTarget && (
+        <PromoteTodoModal
+          todo={promoteTarget}
+          onClose={() => setPromoteTarget(null)}
+          onPromoted={({ todo }) => {
+            // Reflect the new link locally right away; the WS refetch reconciles.
+            setTodos((prev) => prev.map((t) => (t.id === todo.id ? todo : t)));
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -406,6 +421,7 @@ interface TodoRowProps {
   }) => void | Promise<void>;
   onDelete: () => void;
   onUnlink: () => void;
+  onPromote: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
 }
@@ -421,6 +437,7 @@ function TodoRow({
   onSave,
   onDelete,
   onUnlink,
+  onPromote,
   onMoveUp,
   onMoveDown,
 }: TodoRowProps) {
@@ -589,6 +606,18 @@ function TodoRow({
       </div>
       {!done && (
         <div className="flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          {!linkLabel && (
+            <button
+              type="button"
+              onClick={onPromote}
+              aria-label="Promote to ticket"
+              data-testid="todo-promote"
+              title="Promote to ticket"
+              className="p-1 rounded-md text-gray-500 hover:text-violet-300 hover:bg-gray-800"
+            >
+              <ArrowUpRight size={15} />
+            </button>
+          )}
           <button
             type="button"
             onClick={onMoveUp}

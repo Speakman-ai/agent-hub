@@ -22,6 +22,9 @@ vi.mock('react-native', () => ({
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaView: 'SafeAreaView' }));
 vi.mock('../context/AppContext', () => ({ useApp: () => ({ lastUserTodoEvent: null }) }));
 vi.mock('../utils/api', () => ({ api: {} }));
+// PromoteTodoModal pulls in react-native-svg via HubIcon on native; stub it so
+// the TodoRow tree serializes without the native modal.
+vi.mock('../components/PromoteTodoModal', () => ({ default: () => null }));
 // Surface the icon name so assertions can find which glyph rendered.
 vi.mock('../components/HubIcon', () => ({
     default: ({ name }: any) => <span data-name={name} />,
@@ -183,5 +186,28 @@ describe('TodosScreen — TodoRow mobile parity', () => {
         const html = renderRow({ id: '5', title: 'Editing', status: 'open', dueAt: null }, { editing: true });
         expect(html).toContain('data-name="Check"');
         expect(html).toContain('data-name="X"');
+    });
+
+    it('shows a promote control on an open, unlinked todo', () => {
+        const html = renderRow({ id: 'pr', title: 'Promotable', status: 'open', dueAt: null });
+        expect(html).toContain('todo-promote');
+        expect(html).toContain('data-name="ArrowUpRight"');
+    });
+
+    it('hides the promote control on an already-linked todo', () => {
+        const html = renderRow({
+            id: 'prl',
+            title: 'Linked',
+            status: 'open',
+            dueAt: null,
+            linkedType: 'card',
+            linkedId: 'card-1',
+        });
+        expect(html).not.toContain('todo-promote');
+    });
+
+    it('hides the promote control on a done todo', () => {
+        const html = renderRow({ id: 'prd', title: 'Done', status: 'done', dueAt: null });
+        expect(html).not.toContain('todo-promote');
     });
 });

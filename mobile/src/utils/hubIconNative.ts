@@ -12,6 +12,7 @@
 /** @type {Record<string, NativeIconRef>} */
 export const HUB_NATIVE_ICONS: Record<string, any> = {
   Activity: { family: 'feather', name: 'activity' },
+  ArrowUpRight: { family: 'feather', name: 'arrow-up-right' },
   BarChart3: { family: 'feather', name: 'bar-chart-2' },
   BookOpen: { family: 'feather', name: 'book-open' },
   Bot: { family: 'material', name: 'robot' },

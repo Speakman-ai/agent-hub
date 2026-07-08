@@ -4,6 +4,7 @@
  */
 export const HUB_ICON_NAMES = [
     'Activity',
+    'ArrowUpRight',
     'BarChart3',
     'BookOpen',
     'Bot',

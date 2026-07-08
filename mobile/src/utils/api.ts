@@ -510,6 +510,11 @@ export const api = {
     linkTodo: (id: any, data: { targetType: 'card' | 'epic' | 'session'; targetId: string; projectId?: string }) =>
       fetchJSON(`/me/todos/${encodeURIComponent(id)}/link`, { method: 'POST', body: JSON.stringify(data) }),
     unlinkTodo: (id: any) => fetchJSON(`/me/todos/${encodeURIComponent(id)}/link`, { method: 'DELETE' }),
+    // Promote a todo to a NEW project ticket (spec TODO-TO-TICKET PROMOTE op).
+    // Creates a real card on the target board (To Do by default), carries the
+    // todo's priority unless overridden, and links the todo to the created card.
+    promoteTodo: (id: any, data: { projectId: string; columnId?: string; epicId?: string; priority?: string }) =>
+      fetchJSON(`/me/todos/${encodeURIComponent(id)}/promote`, { method: 'POST', body: JSON.stringify(data) }),
     getLinkedTodos: (target: { targetType: 'card' | 'epic' | 'session'; targetId: string; projectId?: string }) => {
       const params = new URLSearchParams({ targetType: target.targetType, targetId: target.targetId });
       if (target.projectId) params.set('projectId', target.projectId);
