@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, MessagesSquare, Plus, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, LayoutGrid, List, MessagesSquare, Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../utils/api';
 import {
   defaultAutonomousModel,
@@ -23,6 +23,12 @@ import EpicAutonomousPanel, {
 } from './EpicAutonomousPanel';
 import EpicCreateDialog from './epic-scope/EpicCreateDialog';
 import EpicManageListView from './epic-scope/EpicManageListView';
+import EpicBoardView from './epic-scope/EpicBoardView';
+import {
+  readEpicListViewMode,
+  writeEpicListViewMode,
+  type EpicListViewMode,
+} from '../utils/epicListViewMode';
 import EpicLeadUserField from './EpicLeadUserField';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
@@ -87,6 +93,12 @@ export default function EpicView({
   );
   const [deletingEpicId, setDeletingEpicId] = useState<string | null>(null);
   const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
+  const [viewMode, setViewMode] = useState<EpicListViewMode>(() => readEpicListViewMode());
+
+  const changeViewMode = useCallback((mode: EpicListViewMode) => {
+    setViewMode(mode);
+    writeEpicListViewMode(mode);
+  }, []);
 
   const [addingTicketPhaseId, setAddingTicketPhaseId] = useState<string | null>(null);
   const [creatingPhase, setCreatingPhase] = useState(false);
@@ -246,6 +258,14 @@ export default function EpicView({
 
   const filteredEpics = useMemo(
     () => applyEpicListFilters(epics, listFilters, cards),
+    [epics, listFilters, cards],
+  );
+
+  // The board groups epics by lifecycle state across its own columns, so the
+  // state dropdown is redundant there — force `state: 'all'` so every column
+  // has something to show regardless of the list view's default filter.
+  const boardEpics = useMemo(
+    () => applyEpicListFilters(epics, { ...listFilters, state: 'all' }, cards),
     [epics, listFilters, cards],
   );
 
@@ -736,6 +756,42 @@ export default function EpicView({
                     <MessagesSquare size={13} />
                     Create & scope
                   </button>
+
+                  <div
+                    className="ml-auto inline-flex items-center gap-0.5 rounded-lg border border-white/[0.08] bg-white/[0.04] p-0.5"
+                    role="group"
+                    aria-label="Epics view"
+                    data-testid="epic-view-toggle"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => changeViewMode('list')}
+                      aria-pressed={viewMode === 'list'}
+                      data-testid="epic-view-toggle-list"
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                        viewMode === 'list'
+                          ? 'bg-white/[0.10] text-gray-100'
+                          : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      <List size={13} />
+                      List
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => changeViewMode('board')}
+                      aria-pressed={viewMode === 'board'}
+                      data-testid="epic-view-toggle-board"
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                        viewMode === 'board'
+                          ? 'bg-white/[0.10] text-gray-100'
+                          : 'text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      <LayoutGrid size={13} />
+                      Board
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -770,22 +826,24 @@ export default function EpicView({
                     <option value="with-tickets">With tickets</option>
                     <option value="empty">Empty</option>
                   </select>
-                  <select
-                    value={listFilters.state}
-                    onChange={(event) =>
-                      setListFilters((prev) => ({
-                        ...prev,
-                        state: event.target.value as EpicListFilters['state'],
-                      }))
-                    }
-                    data-testid="epic-list-filter-state"
-                    className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
-                  >
-                    <option value="all">All states</option>
-                    <option value="not_started">{EPIC_STATE_LABELS.not_started}</option>
-                    <option value="in_progress">{EPIC_STATE_LABELS.in_progress}</option>
-                    <option value="done">{EPIC_STATE_LABELS.done}</option>
-                  </select>
+                  {viewMode === 'list' ? (
+                    <select
+                      value={listFilters.state}
+                      onChange={(event) =>
+                        setListFilters((prev) => ({
+                          ...prev,
+                          state: event.target.value as EpicListFilters['state'],
+                        }))
+                      }
+                      data-testid="epic-list-filter-state"
+                      className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+                    >
+                      <option value="all">All states</option>
+                      <option value="not_started">{EPIC_STATE_LABELS.not_started}</option>
+                      <option value="in_progress">{EPIC_STATE_LABELS.in_progress}</option>
+                      <option value="done">{EPIC_STATE_LABELS.done}</option>
+                    </select>
+                  ) : null}
                 </div>
 
                 {availableEpicLabels.length > 0 ? (
@@ -837,19 +895,35 @@ export default function EpicView({
                 />
               </div>
 
-              <EpicManageListView
-                epics={filteredEpics}
-                phases={phases}
-                cards={cards}
-                columns={columns}
-                assignableUsers={assignableUsers}
-                onOpenEpic={onOpenEpic}
-                onDeleteEpic={handleDeleteEpicFromList}
-                deleteBusyEpicId={deletingEpicId}
-                emptyMessage={
-                  epics.length === 0 ? 'No epics yet.' : 'No epics match these filters.'
-                }
-              />
+              {viewMode === 'board' ? (
+                <EpicBoardView
+                  epics={boardEpics}
+                  phases={phases}
+                  cards={cards}
+                  columns={columns}
+                  assignableUsers={assignableUsers}
+                  onOpenEpic={onOpenEpic}
+                  onDeleteEpic={handleDeleteEpicFromList}
+                  deleteBusyEpicId={deletingEpicId}
+                  emptyMessage={
+                    epics.length === 0 ? 'No epics yet.' : 'No epics match these filters.'
+                  }
+                />
+              ) : (
+                <EpicManageListView
+                  epics={filteredEpics}
+                  phases={phases}
+                  cards={cards}
+                  columns={columns}
+                  assignableUsers={assignableUsers}
+                  onOpenEpic={onOpenEpic}
+                  onDeleteEpic={handleDeleteEpicFromList}
+                  deleteBusyEpicId={deletingEpicId}
+                  emptyMessage={
+                    epics.length === 0 ? 'No epics yet.' : 'No epics match these filters.'
+                  }
+                />
+              )}
 
               <EpicCreateDialog
                 open={createDialogOpen}

@@ -49,6 +49,7 @@ const board = {
 
 describe('EpicView', () => {
   beforeEach(() => {
+    localStorage.clear();
     (api.getBoard as any).mockResolvedValue(board);
   });
 
@@ -307,6 +308,50 @@ describe('EpicView', () => {
     await waitFor(() => expect(screen.getByText('Active Platform')).toBeInTheDocument());
     expect(screen.queryByText('Completed Platform')).toBeNull();
     expect(screen.getByTestId('epic-list-filter-state')).toHaveValue('in_progress');
+  });
+
+  it('toggles between list and board views, grouping epics by state on the board', async () => {
+    localStorage.clear();
+    (api.getBoard as any).mockResolvedValue({
+      ...board,
+      epics: [
+        { id: 'e1', name: 'Platform', color: '#6366F1', description: '', state: 'in_progress' },
+        { id: 'e2', name: 'Archived', color: '#6366F1', description: '', state: 'done' },
+        { id: 'e3', name: 'Queued', color: '#6366F1', description: '', state: 'not_started' },
+      ],
+    });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId={null}
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    // Default list view shows the card grid, not the board.
+    await waitFor(() => expect(screen.getByTestId('epic-manage-list' as any)).toBeInTheDocument());
+    expect(screen.queryByTestId('epic-board' as any)).toBeNull();
+
+    fireEvent.click(screen.getByTestId('epic-view-toggle-board' as any));
+
+    // Board view appears; state filter dropdown is hidden; all three states show
+    // even though the list default filter is in_progress.
+    await waitFor(() => expect(screen.getByTestId('epic-board' as any)).toBeInTheDocument());
+    expect(screen.queryByTestId('epic-list-filter-state' as any)).toBeNull();
+    const inProgress = screen.getByTestId('epic-board-column-in_progress' as any);
+    const done = screen.getByTestId('epic-board-column-done' as any);
+    const notStarted = screen.getByTestId('epic-board-column-not_started' as any);
+    expect(within(inProgress).getByText('Platform')).toBeInTheDocument();
+    expect(within(done).getByText('Archived')).toBeInTheDocument();
+    expect(within(notStarted).getByText('Queued')).toBeInTheDocument();
+
+    // Preference persists.
+    expect(localStorage.getItem('epicListViewMode')).toBe('board');
   });
 
   it('deletes an epic from the list view', async () => {
