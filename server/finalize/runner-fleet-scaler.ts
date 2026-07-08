@@ -32,6 +32,7 @@
  */
 import { ECSClient, UpdateServiceCommand, DescribeServicesCommand } from '@aws-sdk/client-ecs';
 import { runnerQueueDepth, runnerInflightCount, reapExpiredRunnerLeases } from './runner-queue.js';
+import type { ReapedRunnerJob } from './runner-queue.js';
 import { clearHubTaskProtection, loadHubTaskProtectionConfig } from './hub-task-protection.js';
 import { getJobChannel } from './runner-job-channel.js';
 import { spotReclaimDetail } from './spot-interruption.js';
@@ -238,6 +239,10 @@ export function __resetFleetScalerStateForTests(): void {
   lastSetDesired = -1;
   scalerState = { emptySinceMs: 0, lastReapAtMs: 0 };
   reconciling = false;
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
 }
 
 function ecs(cfg: FleetScalerConfig): ECSClient {
@@ -255,6 +260,73 @@ async function currentDesired(cfg: FleetScalerConfig): Promise<number> {
 }
 
 /**
+ * Reap expired runner-job leases and settle their in-flight steps.
+ *
+ * This is the liveness backstop for the remote runner backend: a runner-agent
+ * that dies (crash, OOM kill, Spot reclaim, dropped transport) stops
+ * heartbeating, its lease expires (~5 min), and this reap marks the queue row
+ * `lost` AND fails the in-process job channel so the awaiting step promise
+ * settles as an infra failure the job-runner can retry on a fresh agent —
+ * instead of hanging until the per-step hard timeout (up to 60 min).
+ *
+ * Deliberately independent of the ECS fleet-scaler config: deployments running
+ * a static/manual runner fleet (no FINALIZE_FLEET_ECS_* env) still need dead
+ * runners reaped. `startFleetScaler` runs this on its tick whether or not
+ * scaling is configured (card d8a76929 — a dead-runner zombie step previously
+ * hung for the full hard timeout on non-ECS fleets because nothing ever
+ * called the reaper).
+ */
+export function reapDeadRunnerJobs(now: number = Date.now()): ReapedRunnerJob[] {
+  // Reap dead leases first so the depth signal is honest: a job whose agent
+  // crashed mid-run stops heartbeating, its lease expires, and we mark it
+  // `lost` (terminal). Live jobs heartbeat on every poll, so they're untouched.
+  // Without this, a stranded job would pin the fleet above zero forever.
+  const reaped = reapExpiredRunnerLeases(now);
+  if (reaped.length) {
+    const reclaims = reaped.filter((r) => r.spotReclaimed).length;
+    console.log(
+      `[fleet-scaler] reaped ${reaped.length} expired lease(s)` +
+        (reclaims ? ` (${reclaims} after a spot interruption notice)` : ''),
+    );
+    // Reaping marks the queue row `lost`, but the orchestrator is still awaiting
+    // the in-process channel's in-flight step (the dead agent will never report
+    // it). Fail those channels so the step surfaces as infra_error and the
+    // job-runner can retry the instance on a fresh agent instead of hanging.
+    //
+    // For a job whose agent reported an EC2 Spot interruption notice (IMDS)
+    // before its lease expired, we KNOW the loss is capacity reclamation, not a
+    // crash — fail it with the spot_reclaimed marker so step-runner picks the
+    // generous reclaim retry cap. For the rest, the message states only what we
+    // OBSERVED — a missing heartbeat — and does NOT guess "Spot reclaim" (the
+    // lease can expire from an agent crash, an OOM kill, a deploy/scale-in, OR
+    // the Hub being briefly unreachable). A whole batch reaped in one tick
+    // points at the Hub side, not N independent agent deaths.
+    const genericDetail =
+      reaped.length > 1
+        ? `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
+          `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`
+        : `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`;
+    // Clear Hub task protection on each reaped agent's task. The lease expired,
+    // so either the task is already gone (clear is a harmless no-op) or it's a
+    // stuck-but-alive worker — in which case it would otherwise stay protected
+    // for the full Hub lease (up to 120 min), blocking scale-in / deploy from
+    // reclaiming it. Fire-and-forget; clearHubTaskProtection is bounded + no-op
+    // off-ECS / for a null ARN.
+    const protectionCfg = loadHubTaskProtectionConfig();
+    for (const job of reaped) {
+      const detail = job.spotReclaimed
+        ? spotReclaimDetail(
+            'runner agent lost after an EC2 Spot interruption notice — instance reclaimed',
+          )
+        : genericDetail;
+      getJobChannel(job.id)?.fail(new Error(detail));
+      void clearHubTaskProtection(job.ecsTaskArn, protectionCfg);
+    }
+  }
+  return reaped;
+}
+
+/**
  * Bring the agent fleet size in line with the current queue depth. Safe to call
  * frequently (deduped against the last value it set; scale-down gated).
  */
@@ -263,52 +335,7 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
   if (!cfg || reconciling) return;
   reconciling = true;
   try {
-    // Reap dead leases first so the depth signal is honest: a job whose agent
-    // crashed mid-run stops heartbeating, its lease expires, and we mark it
-    // `lost` (terminal). Live jobs heartbeat on every poll, so they're untouched.
-    // Without this, a stranded job would pin the fleet above zero forever.
-    const reaped = reapExpiredRunnerLeases(now);
-    if (reaped.length) {
-      const reclaims = reaped.filter((r) => r.spotReclaimed).length;
-      console.log(
-        `[fleet-scaler] reaped ${reaped.length} expired lease(s)` +
-          (reclaims ? ` (${reclaims} after a spot interruption notice)` : ''),
-      );
-      // Reaping marks the queue row `lost`, but the orchestrator is still awaiting
-      // the in-process channel's in-flight step (the dead agent will never report
-      // it). Fail those channels so the step surfaces as infra_error and the
-      // job-runner can retry the instance on a fresh agent instead of hanging.
-      //
-      // For a job whose agent reported an EC2 Spot interruption notice (IMDS)
-      // before its lease expired, we KNOW the loss is capacity reclamation, not a
-      // crash — fail it with the spot_reclaimed marker so step-runner picks the
-      // generous reclaim retry cap. For the rest, the message states only what we
-      // OBSERVED — a missing heartbeat — and does NOT guess "Spot reclaim" (the
-      // lease can expire from an agent crash, an OOM kill, a deploy/scale-in, OR
-      // the Hub being briefly unreachable). A whole batch reaped in one tick
-      // points at the Hub side, not N independent agent deaths.
-      const genericDetail =
-        reaped.length > 1
-          ? `runner agent lost — lease expired with no heartbeat; ${reaped.length} jobs reaped in one tick, ` +
-            `so the Hub was likely briefly unreachable or restarting (not a per-agent crash)`
-          : `runner agent lost — lease expired with no heartbeat (agent crashed, was killed, or lost contact with the Hub)`;
-      // Clear Hub task protection on each reaped agent's task. The lease expired,
-      // so either the task is already gone (clear is a harmless no-op) or it's a
-      // stuck-but-alive worker — in which case it would otherwise stay protected
-      // for the full Hub lease (up to 120 min), blocking scale-in / deploy from
-      // reclaiming it. Fire-and-forget; clearHubTaskProtection is bounded + no-op
-      // off-ECS / for a null ARN.
-      const protectionCfg = loadHubTaskProtectionConfig();
-      for (const job of reaped) {
-        const detail = job.spotReclaimed
-          ? spotReclaimDetail(
-              'runner agent lost after an EC2 Spot interruption notice — instance reclaimed',
-            )
-          : genericDetail;
-        getJobChannel(job.id)?.fail(new Error(detail));
-        void clearHubTaskProtection(job.ecsTaskArn, protectionCfg);
-      }
-    }
+    const reaped = reapDeadRunnerJobs(now);
     const depth = runnerQueueDepth(); // queued + claimed + running, across all orgs
     // claimed+running only — the floor a dynamic shrink must never cross. Cheap
     // extra COUNT, so only taken when dynamic scale-down is actually enabled.
@@ -351,9 +378,32 @@ export async function reconcileFleetCapacity(now: number = Date.now()): Promise<
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
-/** Start the periodic reconcile loop (idempotent). No-op if the fleet isn't configured. */
+/**
+ * Start the periodic reconcile loop (idempotent).
+ *
+ * With FINALIZE_FLEET_ECS_* configured this runs the full reap + autoscale
+ * tick. WITHOUT fleet config it still starts a reap-only tick: lease reaping
+ * is the liveness backstop that settles in-flight remote steps when a
+ * runner-agent dies, and it must run for static/manual runner fleets too —
+ * previously nothing called the reaper off-ECS, so a dead runner's step hung
+ * until the per-step hard timeout (card d8a76929).
+ */
 export function startFleetScaler(intervalMs = 30_000): void {
-  if (timer || !readConfig()) return;
+  if (timer) return;
+  if (!readConfig()) {
+    const reapTick = (): void => {
+      try {
+        reapDeadRunnerJobs();
+      } catch (err) {
+        console.error(`[fleet-scaler] lease reap failed: ${(err as Error).message}`);
+      }
+    };
+    reapTick();
+    timer = setInterval(reapTick, intervalMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    console.log('[fleet-scaler] started (lease reaping only — no ECS fleet configured)');
+    return;
+  }
   void reconcileFleetCapacity();
   timer = setInterval(() => void reconcileFleetCapacity(), intervalMs);
   if (typeof timer.unref === 'function') timer.unref();

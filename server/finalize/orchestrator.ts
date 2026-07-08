@@ -84,6 +84,7 @@ import type { CardLifecycle } from './card-lifecycle.js';
 import {
   broadcastActiveSeconds,
   FINALIZE_BUDGET_HARD_CEILING_SECONDS,
+  FINALIZE_TERMINAL_STATUSES,
   getRunFamilyActiveSeconds,
   isBudgetExhausted as budgetIsExhausted,
   postTimeoutDispatchMessage,
@@ -915,7 +916,13 @@ export async function runFinalize(
             log,
           );
         }
-        return outcomeFromFailed(deps, runId, rebaseOutcome.failureReason, rebaseOutcome.detail);
+        return outcomeFromFailed(
+          deps,
+          runId,
+          rebaseOutcome.failureReason,
+          rebaseOutcome.detail,
+          log,
+        );
       }
       if (rebaseOutcome.rebaseKind === 'skipped') {
         trace('rebase', { round: loopCount, result: 'skipped' });
@@ -1141,6 +1148,7 @@ export async function runFinalize(
             runId,
             lastReviewerOutcome.failureReason,
             lastReviewerOutcome.detail,
+            log,
           );
         }
         trace('reviewer', {
@@ -1334,7 +1342,7 @@ export async function runFinalize(
             log,
             { class: 'pipeline_step', timeoutMinutes: parsedCi.timeoutMinutes },
           );
-          return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`);
+          return outcomeFromFailed(deps, runId, 'timeout', `step phase timed out`, log);
         }
         if (lastStepOutcome.status === 'infra_error') {
           // Honor the step result's machine reason so a runner lost to an EC2
@@ -2272,6 +2280,7 @@ function outcomeFromFailed(
   runId: string,
   failureReason: string,
   detail?: string,
+  log: (msg: string) => void = () => {},
 ): OrchestratorOutcome {
   const status: FinalizeRunStatus =
     failureReason === 'timeout'
@@ -2282,15 +2291,42 @@ function outcomeFromFailed(
         ? 'infra_error'
         : 'failed';
   mirrorTerminalFailureOnCard(deps, runId, status, failureReason, detail);
-  const row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+  let row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+  // Defensive terminal write. The v1 sub-phases write the row's terminal
+  // status themselves (their `terminate()` calls `failFinalizeRun`), but the
+  // v2 job path defers the run-level write to the orchestrator
+  // (job-runner passes `deferRunTerminal: true` — see
+  // RunStepsSequenceOptions.deferRunTerminal). Before this guard, a v2
+  // `timeout` outcome reached here with NOBODY having written the row:
+  // broadcasts fired once, but the durable row stayed `status='running'`
+  // forever, parking the run (and its session) permanently (run 0e803638,
+  // 2026-07-08). If the row is still non-terminal, this call is the single
+  // owner of the terminal write; if the sub-phase already wrote it, we skip
+  // — preserving the no-double-`ended_at` contract documented below.
+  if (row && !FINALIZE_TERMINAL_STATUSES.includes(row.status)) {
+    try {
+      deps.stmts.failFinalizeRun.run(status, failureReason, runId);
+      row = deps.stmts.getFinalizeRun.get(runId) as FinalizeRunRow | undefined;
+      log(
+        `[finalize-orchestrator] outcomeFromFailed wrote terminal status=${status} ` +
+          `reason=${failureReason} for run=${runId} (sub-phase deferred the run-level write)`,
+      );
+    } catch (err) {
+      log(
+        `[finalize-orchestrator] outcomeFromFailed terminal write failed for run=${runId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
   // Reconcile step rows even though the sub-phase wrote the terminal status:
   // backfill the failed-step summary and sweep any step rows the sub-phase left
   // non-terminal (a v2 matrix shard fails the run while siblings still run).
   reconcileFinalizeRunTerminalSteps(deps, runId, row?.session_id ?? null);
   // Mirror what `terminate()` emits so subscribers see the same shape on
   // every terminal path, regardless of which phase produced the failure.
-  // The sub-phase already wrote the row's terminal status (status,
-  // failure_reason, ended_at); we do not re-write here.
+  // The sub-phase normally wrote the row's terminal status (status,
+  // failure_reason, ended_at); the guard above covers the deferred v2 path.
   deps.broadcast({
     type: 'finalize_run_phase_changed',
     run_id: runId,

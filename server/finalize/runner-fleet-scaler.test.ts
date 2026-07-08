@@ -3,11 +3,14 @@ import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  __resetFleetScalerStateForTests,
   desiredAgents,
   desiredAgentsDynamic,
   planFleetChange,
   REAP_SCALE_DOWN_GRACE_MS,
+  reapDeadRunnerJobs,
   SCALE_DOWN_COOLDOWN_MS,
+  startFleetScaler,
   type ScalerHysteresis,
 } from './runner-fleet-scaler.js';
 import { getOrgsDb, initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
@@ -15,10 +18,12 @@ import {
   claimRunnerJob,
   enqueueRunnerJob,
   markRunnerJobRunning,
+  probeRunnerJobLoss,
   reapExpiredRunnerLeases,
   runnerInflightCount,
   runnerQueueDepth,
 } from './runner-queue.js';
+import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
 
 describe('desiredAgents', () => {
   it('scales to zero (min) when the queue is empty', () => {
@@ -563,5 +568,93 @@ describe('reap → scaler integration (real queue)', () => {
       dynamicScaleDown: true,
     });
     expect(plan.target).toBeNull(); // target=max(6,2)=6 == current → hold
+  });
+});
+
+// Regression (card d8a76929): lease reaping is the liveness backstop that
+// settles a Finalize step whose remote runner-agent died — without it the
+// step's promise hangs until the per-step hard timeout (up to 60 min).
+// Historically the reap only ran inside the ECS fleet-scaler tick, so a
+// static/manual runner fleet (no FINALIZE_FLEET_ECS_* env) had NO reaping at
+// all. reapDeadRunnerJobs is now standalone and startFleetScaler runs it even
+// when no ECS fleet is configured.
+describe('reapDeadRunnerJobs (liveness backstop, card d8a76929)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(os.tmpdir(), 'fleet-reaper-'));
+    setOrgsDbPathForTests(path.join(dir, 'orgs.db'));
+    initOrgsDb();
+  });
+  afterEach(() => {
+    __resetFleetScalerStateForTests();
+    setOrgsDbPathForTests(null);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('fails the in-process job channel when a lease expires, settling the awaiting step', async () => {
+    enqueueRunnerJob({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId: 'electron',
+      matrixKey: '',
+      image: 'img:latest',
+      specJson: '{}',
+      now: 1_000,
+    });
+    const claimed = claimRunnerJob({ agentId: 'agent-0', leaseMs: 10_000, now: 2_000 });
+    expect(claimed).not.toBeNull();
+    const channel = createJobChannel(claimed!.id);
+    let failure: Error | null = null;
+    channel.ready.catch((err: Error) => {
+      failure = err;
+    });
+
+    const reaped = reapDeadRunnerJobs(2_000 + 10_000 + 1); // past the lease
+    expect(reaped).toHaveLength(1);
+    expect(reaped[0].id).toBe(claimed!.id);
+    // The channel was failed, so anything awaiting the agent unblocks with a
+    // retryable runner-loss error instead of hanging.
+    await Promise.resolve();
+    expect(failure).not.toBeNull();
+    expect(failure!.message).toMatch(/runner agent lost — lease expired with no heartbeat/);
+    removeJobChannel(claimed!.id);
+  });
+
+  it('startFleetScaler reaps expired leases even with no ECS fleet configured', () => {
+    const savedCluster = process.env.FINALIZE_FLEET_ECS_CLUSTER;
+    const savedService = process.env.FINALIZE_FLEET_ECS_SERVICE;
+    delete process.env.FINALIZE_FLEET_ECS_CLUSTER;
+    delete process.env.FINALIZE_FLEET_ECS_SERVICE;
+    try {
+      enqueueRunnerJob({
+        orgId: 'orgA',
+        projectId: 'p1',
+        runId: 'r1',
+        jobId: 'electron',
+        matrixKey: '',
+        image: 'img:latest',
+        specJson: '{}',
+        now: Date.now() - 400_000,
+      });
+      const claimed = claimRunnerJob({
+        agentId: 'agent-0',
+        leaseMs: 10_000,
+        now: Date.now() - 400_000, // lease long expired vs the real clock
+      });
+      expect(claimed).not.toBeNull();
+
+      // No FINALIZE_FLEET_ECS_* config: previously this returned without
+      // starting anything, leaving dead leases unreaped forever.
+      startFleetScaler(3_600_000);
+
+      const probe = probeRunnerJobLoss(claimed!.id, Date.now());
+      expect(probe).not.toBeNull();
+      expect(probe!.state).toBe('lost');
+      expect(probe!.lost).toBe(true);
+    } finally {
+      if (savedCluster !== undefined) process.env.FINALIZE_FLEET_ECS_CLUSTER = savedCluster;
+      if (savedService !== undefined) process.env.FINALIZE_FLEET_ECS_SERVICE = savedService;
+    }
   });
 });

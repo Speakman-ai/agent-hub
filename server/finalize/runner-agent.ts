@@ -105,6 +105,65 @@ export const STEP_DEADLINE_EXIT_CODE = 124;
 export const DEFAULT_STEP_DEADLINE_MS = 60 * 60 * 1_000;
 
 /**
+ * Per-attempt timeout for the two CRITICAL posts (step-result, finish). A hung
+ * fetch is indistinguishable from a lost message — without a bound the agent
+ * would sit in `await fetch` forever while its heartbeat keeps the lease
+ * fresh, which is exactly the zombie this delivery path exists to prevent.
+ */
+export const CRITICAL_POST_TIMEOUT_MS = 15_000;
+
+/** Max attempts for critical-message delivery (step-result / finish). */
+export const CRITICAL_DELIVERY_ATTEMPTS = 5;
+
+/** Base backoff between critical-delivery attempts (doubles per retry). */
+export const CRITICAL_DELIVERY_BASE_DELAY_MS = 1_000;
+
+/**
+ * Deliver a critical agent→Hub message with bounded exponential-backoff
+ * retries. The step-result and finish posts are the ONLY messages the Hub's
+ * in-flight step promises settle on; a single unretried fetch (the historical
+ * behavior) turned any transient blip — one dropped response, one LB 502, one
+ * hung socket — into a run stuck `running` for the full Hub-side hard timeout
+ * while the agent's heartbeat kept the lease alive (card d8a76929, run
+ * 0e803638: electron tests passed in 895ms, step row sat `running` 44 min).
+ *
+ * Throws after the final attempt: the caller aborts the job, its heartbeat
+ * stops, the lease expires, and the Hub's lease reaper settles the step as a
+ * retryable infra failure — converting a silent zombie into a bounded one.
+ */
+export async function deliverCritical(
+  what: string,
+  attempt: () => Promise<void>,
+  opts?: { attempts?: number; baseDelayMs?: number },
+): Promise<void> {
+  const attempts = Math.max(1, opts?.attempts ?? CRITICAL_DELIVERY_ATTEMPTS);
+  const baseDelayMs = opts?.baseDelayMs ?? CRITICAL_DELIVERY_BASE_DELAY_MS;
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await attempt();
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) {
+        const delayMs = baseDelayMs * 2 ** i;
+        console.error(
+          `[runner-agent] ${what} delivery failed (attempt ${i + 1}/${attempts}): ${
+            err instanceof Error ? err.message : String(err)
+          } — retrying in ${delayMs}ms`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw new Error(
+    `${what} delivery failed after ${attempts} attempts: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`,
+  );
+}
+
+/**
  * Run a single claimed job to completion. Returns the per-step exit codes.
  * Pure control flow over the injected transport/docker — the unit of test.
  */
@@ -139,6 +198,11 @@ export async function runAgentJob(args: {
    * true once a 2-minute reclaim notice is observed.
    */
   checkSpot?: () => Promise<boolean>;
+  /**
+   * Retry knobs for critical-message delivery (step-result / finish posts).
+   * Injectable so tests exercise the retry loop without real backoff waits.
+   */
+  delivery?: { attempts?: number; baseDelayMs?: number };
 }): Promise<{ stepExits: Array<{ stepIndex: number; exitCode: number | null }> }> {
   const { jobId, spec, transport, docker } = args;
   const protection = args.protection ?? noopTaskProtection();
@@ -284,13 +348,37 @@ export async function runAgentJob(args: {
           exitCode = STEP_DEADLINE_EXIT_CODE;
         }
         stepExits.push({ stepIndex: d.stepIndex, exitCode });
-        await transport.postStepResult(jobId, d.stepIndex, exitCode);
+        // Critical delivery: retried with backoff, throws when exhausted. The
+        // throw aborts the job loop (heartbeats stop → lease expires → the
+        // Hub's lease reaper settles the step) instead of silently continuing
+        // with the Hub still awaiting a result that will never arrive.
+        await deliverCritical(
+          `step-result (job=${jobId} step=${d.stepIndex})`,
+          () => transport.postStepResult(jobId, d.stepIndex, exitCode),
+          args.delivery,
+        );
       }
     } finally {
       await docker.stopContainer(containerName);
       const summary = sampler.stop();
       if (summary) logJobResourceSummary(jobId, spec, summary);
-      await transport.postFinish(jobId, 0, summary);
+      // Finish is the Hub's straggler-settling signal (channel.onFinish exits
+      // any step still pending), so it gets the same retried delivery. But we
+      // are in a finally: throwing here would mask the original step error, so
+      // an exhausted retry only logs — the stopped heartbeat + lease reaper is
+      // the backstop that surfaces the loss Hub-side either way.
+      try {
+        await deliverCritical(
+          `finish (job=${jobId})`,
+          () => transport.postFinish(jobId, 0, summary),
+          args.delivery,
+        );
+      } catch (err) {
+        console.error(
+          `[runner-agent] ${err instanceof Error ? err.message : String(err)} — ` +
+            'job teardown continues; the Hub lease reaper will settle any pending steps',
+        );
+      }
     }
   } finally {
     // Cleanup-safe: if the container never started (inner finally skipped),
@@ -507,18 +595,31 @@ export function httpTransport(hubUrl: string, token: string): AgentTransport {
       });
     },
     async postStepResult(jobId, stepIndex, exitCode) {
-      await fetch(`${base}/api/runners/jobs/${jobId}/step-result`, {
+      // The step result is THE message the Hub's step promise settles on — a
+      // silent loss here leaves the run's step row `running` until a Hub-side
+      // timeout backstop fires (observed: 44 min on run 0e803638). Unlike the
+      // other best-effort posts, this one must fail LOUDLY: bounded per-attempt
+      // timeout (a hung fetch is a loss too) and a thrown error on non-2xx so
+      // the caller's delivery-retry loop can re-send it.
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/step-result`, {
         method: 'POST',
         headers: auth,
         body: JSON.stringify({ stepIndex, exitCode }),
+        signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
       });
+      if (!res.ok) throw new Error(`step-result post failed: ${res.status}`);
     },
     async postFinish(jobId, exitCode, resourceSummary) {
-      await fetch(`${base}/api/runners/jobs/${jobId}/finish`, {
+      // Finish settles any straggler steps Hub-side (channel.onFinish), so it
+      // is the second chance for a lost step result — same loud-failure
+      // contract as postStepResult.
+      const res = await fetch(`${base}/api/runners/jobs/${jobId}/finish`, {
         method: 'POST',
         headers: auth,
         body: JSON.stringify({ exitCode, resourceSummary: resourceSummary ?? null }),
+        signal: AbortSignal.timeout(CRITICAL_POST_TIMEOUT_MS),
       });
+      if (!res.ok) throw new Error(`finish post failed: ${res.status}`);
     },
     async heartbeat(jobId, spotInterruption) {
       await fetch(`${base}/api/runners/jobs/${jobId}/heartbeat`, {

@@ -965,6 +965,85 @@ describe('runFinalize — step phase status mapping', () => {
     }
   });
 
+  // Regression (card 3214afda, observed on run 0e803638 2026-07-08): the v2
+  // job path defers the run-level terminal write to the orchestrator
+  // (job-runner passes `deferRunTerminal: true` so a failing shard never
+  // stamps the row while sibling shards run). A v2 `timeout` outcome must
+  // therefore cause the ORCHESTRATOR itself to stamp the finalize_runs row
+  // terminal. Before the fix, `outcomeFromFailed` assumed the sub-phase had
+  // already written it (true only for v1), so nobody wrote it: broadcasts
+  // fired once but the durable row stayed status='running' forever and the
+  // run sat parked with a failed step and nothing in flight.
+  it('writes the run-terminal row itself when a v2 job phase times out (deferred terminal write)', async () => {
+    const ciV2 = {
+      ok: true as const,
+      config: {
+        version: 2 as const,
+        on: ['finalize'] as ['finalize'],
+        timeoutMinutes: 45,
+        jobs: {},
+      },
+    };
+    const { deps, stmts } = makeDeps({
+      loadCiConfigFromFile: vi.fn().mockResolvedValue(ciV2) as never,
+      runJobPhase: vi.fn().mockResolvedValue({
+        status: 'timeout',
+        stepResults: [],
+        activeSecondsBilled: 5,
+        failedStep: {
+          index: 17,
+          name: 'test / suite=electron / Tests (electron)',
+          run: 'npm run test:electron',
+          exitCode: -1,
+          outputTail: [],
+        },
+      }) as never,
+    });
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('timed_out');
+      expect(result.failureReason).toBe('timeout');
+    }
+    // The orchestrator (not the sub-phase) owns the terminal write on the
+    // deferred v2 path — the durable row must not be left 'running'.
+    expect(stmts.failCalls).toContainEqual(
+      expect.objectContaining({ status: 'timed_out', reason: 'timeout' }),
+    );
+    const row = [...stmts.rows.values()][0];
+    expect(row.status).toBe('timed_out');
+    expect(row.failure_reason).toBe('timeout');
+    expect(row.ended_at).not.toBeNull();
+  });
+
+  // Companion invariant: when the sub-phase DID write the terminal row (the
+  // v1 step-runner's own `terminate()` path), `outcomeFromFailed` must skip
+  // its defensive write — no double `failFinalizeRun` / `ended_at` update.
+  it('does not double-write the terminal row when the v1 step phase already wrote it', async () => {
+    const { deps, stmts } = makeDeps();
+    deps.runStepPhase = vi.fn().mockImplementation(async () => {
+      // Simulate the real v1 step-runner: it stamps the run row terminal
+      // itself before returning the timeout-shaped outcome.
+      const row = [...stmts.rows.values()][0];
+      row.status = 'timed_out';
+      row.failure_reason = 'timeout';
+      row.ended_at = 1_700_000_000_123;
+      return {
+        status: 'timeout',
+        stepResults: [],
+        activeSecondsBilled: 5,
+      };
+    }) as never;
+    const result = await runFinalize(deps, baseOpts());
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.status).toBe('timed_out');
+    }
+    // The sub-phase owned the write; the orchestrator must not re-write.
+    expect(stmts.failCalls).toHaveLength(0);
+    expect([...stmts.rows.values()][0].ended_at).toBe(1_700_000_000_123);
+  });
+
   // Regression: a CI step that ran past the per-run `timeout_minutes`
   // wall-clock cap (step execution bills only a flat tick to active time, so
   // the §13 active-time budget is nowhere near exhausted) was surfaced to the

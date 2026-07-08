@@ -494,6 +494,140 @@ describe('runAgentJob', () => {
       expect(results).toEqual([{ stepIndex: 0, exitCode: 0 }]);
     });
   });
+
+  // Regression (card d8a76929, run 0e803638): the step-result post used to be
+  // a single unretried fetch with no res.ok check. One dropped response / LB
+  // 5xx / hung socket silently lost the result while the background heartbeat
+  // kept the lease fresh — the Hub's step row sat `running` for 44 min with
+  // the tests long green. Critical messages now retry with backoff and fail
+  // LOUDLY when exhausted so the lease-reaper backstop can take over.
+  describe('critical delivery (step-result / finish)', () => {
+    it('retries a transiently failing step-result post until it delivers', async () => {
+      const { transport, docker, results } = fakes(
+        [{ type: 'run_step', stepIndex: 0, run: 'echo a', env: {} }, { type: 'finish' }],
+        () => 0,
+      );
+      const original = transport.postStepResult;
+      let attempts = 0;
+      transport.postStepResult = async (j, s, e) => {
+        attempts += 1;
+        if (attempts < 3) throw new Error('step-result post failed: 502');
+        return original(j, s, e);
+      };
+
+      const { stepExits } = await runAgentJob({
+        jobId: 'j',
+        spec: wire(),
+        workspaceDir: '/ws',
+        transport,
+        docker,
+        logFlushMs: 5,
+        delivery: { attempts: 5, baseDelayMs: 1 },
+      });
+
+      expect(attempts).toBe(3);
+      expect(stepExits).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+      expect(results).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+    });
+
+    it('aborts the job loudly when step-result delivery exhausts its retries (teardown + finish still attempted)', async () => {
+      const { transport, docker, events } = fakes(
+        [{ type: 'run_step', stepIndex: 0, run: 'echo a', env: {} }, { type: 'finish' }],
+        () => 0,
+      );
+      transport.postStepResult = async () => {
+        throw new Error('step-result post failed: 500');
+      };
+
+      await expect(
+        runAgentJob({
+          jobId: 'j',
+          spec: wire(),
+          workspaceDir: '/ws',
+          transport,
+          docker,
+          logFlushMs: 5,
+          delivery: { attempts: 3, baseDelayMs: 1 },
+        }),
+      ).rejects.toThrow(/step-result .* delivery failed after 3 attempts/);
+
+      // The failure aborts the poll loop but never skips teardown: the
+      // container stops and finish is still posted — finish settles any
+      // straggler steps Hub-side (channel.onFinish), so it is the immediate
+      // second chance for the lost result before the lease reaper kicks in.
+      expect(events).toContain('stop:c1');
+      expect(events).toContain('finish');
+    });
+
+    it('does not fail a green job when only the finish post is undeliverable', async () => {
+      const { transport, docker, results } = fakes(
+        [{ type: 'run_step', stepIndex: 0, run: 'echo a', env: {} }, { type: 'finish' }],
+        () => 0,
+      );
+      let finishAttempts = 0;
+      transport.postFinish = async () => {
+        finishAttempts += 1;
+        throw new Error('finish post failed: 503');
+      };
+
+      // Finish delivery is retried but must NOT throw from the teardown
+      // finally (it would mask a real step error); the stopped heartbeat +
+      // Hub lease reaper surface the loss instead.
+      const { stepExits } = await runAgentJob({
+        jobId: 'j',
+        spec: wire(),
+        workspaceDir: '/ws',
+        transport,
+        docker,
+        logFlushMs: 5,
+        delivery: { attempts: 2, baseDelayMs: 1 },
+      });
+
+      expect(finishAttempts).toBe(2);
+      expect(stepExits).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+      expect(results).toEqual([{ stepIndex: 0, exitCode: 0 }]);
+    });
+  });
+});
+
+describe('httpTransport.postStepResult / postFinish (critical posts fail loudly)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('throws on a non-2xx step-result response instead of losing the result silently', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 502 }) as Response),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+    await expect(transport.postStepResult('job-1', 0, 0)).rejects.toThrow(
+      'step-result post failed: 502',
+    );
+  });
+
+  it('bounds the step-result post with a per-attempt abort signal (a hung fetch is a loss too)', async () => {
+    const seen: Array<RequestInit> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        seen.push(init);
+        return { ok: true, status: 200 } as Response;
+      }),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+    await transport.postStepResult('job-1', 0, 0);
+    expect(seen[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('throws on a non-2xx finish response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500 }) as Response),
+    );
+    const transport = httpTransport('http://hub.test', 'tok');
+    await expect(transport.postFinish('job-1', 0, null)).rejects.toThrow('finish post failed: 500');
+  });
 });
 
 describe('httpTransport.heartbeat', () => {
