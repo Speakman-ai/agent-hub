@@ -715,7 +715,11 @@ of truth.
 
 ## Contributing
 
-Agent Hub is open source under Apache-2.0 — contributions are welcome.
+Agent Hub is open source under Apache-2.0 — contributions are welcome. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full setup, conventions, and pre-PR
+checklist, and our [Code of Conduct](CODE_OF_CONDUCT.md) for community
+expectations. Found a security issue? Follow the [Security Policy](SECURITY.md)
+instead of opening a public issue. The quick version:
 
 1. Pull latest `main`: `git checkout main && git pull`
 2. Create a feature branch: `git checkout -b feature/your-feature`

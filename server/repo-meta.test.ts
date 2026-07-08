@@ -261,3 +261,61 @@ describe('server/Dockerfile — Playwright Chromium install hardening', () => {
     expect(dockerfile).not.toMatch(/libnss3 libatk1\.0-0 libatk-bridge2\.0-0/);
   });
 });
+
+describe('community-health files', () => {
+  const read = (rel: string) => readFileSync(path.join(repoRoot, rel), 'utf8');
+
+  it('ships the core community-health files at the repo root', () => {
+    for (const f of ['CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SECURITY.md']) {
+      expect(readFileSync(path.join(repoRoot, f), 'utf8').length).toBeGreaterThan(0);
+    }
+  });
+
+  it('ships GitHub issue templates (bug + feature) and a PR template', () => {
+    for (const f of [
+      '.github/ISSUE_TEMPLATE/bug_report.yml',
+      '.github/ISSUE_TEMPLATE/feature_request.yml',
+      '.github/ISSUE_TEMPLATE/config.yml',
+      '.github/pull_request_template.md',
+    ]) {
+      expect(readFileSync(path.join(repoRoot, f), 'utf8').length).toBeGreaterThan(0);
+    }
+  });
+
+  it('SECURITY.md documents a private reporting channel and supported versions', () => {
+    const sec = read('SECURITY.md');
+    expect(sec).toMatch(/privately reporting a security vulnerability|Report a vulnerability/i);
+    expect(sec).toMatch(/Supported Versions/i);
+  });
+
+  it('SECURITY.md states the trusted-team shell threat model honestly', () => {
+    const sec = read('SECURITY.md');
+    // The core honesty requirement: agents run a shell as the server OS user.
+    expect(sec).toMatch(/shell/i);
+    expect(sec).toMatch(/server OS user/i);
+    expect(sec).toMatch(/trusted team/i);
+    // And that this is deliberately not a public multi-tenant product.
+    expect(sec).toMatch(/multi-tenant/i);
+  });
+
+  it('CONTRIBUTING.md points at the CoC, Security Policy, and the test rule', () => {
+    const c = read('CONTRIBUTING.md');
+    expect(c).toMatch(/CODE_OF_CONDUCT\.md/);
+    expect(c).toMatch(/SECURITY\.md/);
+    expect(c).toMatch(/at least one test/i);
+  });
+
+  it('issue templates do not use GitHub Actions expression syntax (it never interpolates there)', () => {
+    // `${{ ... }}` is only evaluated in workflow files. In an issue-form YAML
+    // or its config.yml it renders literally, producing dead links. Guard so a
+    // future edit that reintroduces `${{ github.repository }}` fails loudly.
+    for (const f of [
+      '.github/ISSUE_TEMPLATE/bug_report.yml',
+      '.github/ISSUE_TEMPLATE/feature_request.yml',
+      '.github/ISSUE_TEMPLATE/config.yml',
+      '.github/pull_request_template.md',
+    ]) {
+      expect(read(f)).not.toMatch(/\$\{\{/);
+    }
+  });
+});

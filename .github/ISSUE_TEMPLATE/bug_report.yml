@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible problem in Agent Hub
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search existing issues
+        first to avoid duplicates.
+
+        **Do not report security vulnerabilities here.** Follow the
+        [Security Policy](https://github.com/Speakman-ai/agent-hub/security/policy)
+        instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I do X, Y happens. I expected Z.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps so we can reproduce the problem.
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. See error
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      description: Which part of Agent Hub is affected?
+      multiple: true
+      options:
+        - Server / API
+        - Web client
+        - Mobile (React Native / Expo)
+        - Electron desktop
+        - CLI / scripts
+        - Docs
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The `version` from package.json, a release tag, or a commit SHA.
+      placeholder: v2.31.25 or a2b3c4d
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, browser (if relevant), how you run Agent Hub.
+      placeholder: |
+        - OS: Ubuntu 24.04
+        - Node: 22.14.0
+        - Browser: Chrome 126
+        - Run mode: npm run dev / PM2 / Docker
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server logs, browser console output, or stack traces. This is
+        automatically formatted as code, so no backticks needed.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go through the Security Policy).
+          required: true

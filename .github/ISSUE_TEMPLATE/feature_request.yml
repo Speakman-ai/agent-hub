@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest an enhancement or new capability for Agent Hub
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Please search existing issues and discussions
+        first. For larger changes, this issue is a good place to agree on
+        direction before anyone writes code.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What are you trying to do, and what gets in the way today?
+      placeholder: I'm always frustrated when ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Describe the behavior, not just
+        the implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you have thought about.
+    validations:
+      required: false
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      description: Which part of Agent Hub would this touch?
+      multiple: true
+      options:
+        - Server / API
+        - Web client
+        - Mobile (React Native / Expo)
+        - Electron desktop
+        - CLI / scripts
+        - Docs
+        - Other / not sure
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
