@@ -2195,6 +2195,7 @@ export interface Stmts {
   getKanbanSpecItem: Stmt;
   getKanbanSpecItemBySpikeCard: Stmt;
   countOpenKanbanSpecItemsByEpic: Stmt;
+  countOpenKanbanSpecItemsByPhase: Stmt;
   createKanbanSpecItem: Stmt;
   updateKanbanSpecItem: Stmt;
   setKanbanSpecItemSpikeCard: Stmt;

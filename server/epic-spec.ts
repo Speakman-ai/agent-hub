@@ -71,6 +71,19 @@ export function countOpenSpecItems(stmts: Stmts, epicId: string): number {
   return row?.n ?? 0;
 }
 
+/**
+ * Open-spec count scoped to a single phase: the phase's own open spec items plus
+ * epic-wide (unphased) ones. Used by the autonomous phase loop so a phase's
+ * build cards dispatch once THAT phase's decisions are locked, without waiting
+ * on open specs sitting in a sibling phase that has nothing to do with it.
+ */
+export function countOpenSpecItemsForPhase(stmts: Stmts, epicId: string, phaseId: string): number {
+  const row = stmts.countOpenKanbanSpecItemsByPhase.get(epicId, phaseId) as
+    | { n: number }
+    | undefined;
+  return row?.n ?? 0;
+}
+
 /** Derive a short spec tag from a spike card title (unique within `existingTags`). */
 export function deriveSpecTagFromSpikeTitle(title: string, existingTags: Set<string>): string {
   const stripped = title.replace(/^spike:\s*/i, '').trim();

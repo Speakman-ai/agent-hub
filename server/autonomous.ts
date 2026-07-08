@@ -10,6 +10,7 @@ import {
   buildSpikeSessionContext,
   buildSpikeSessionContextFallback,
   countOpenSpecItems,
+  countOpenSpecItemsForPhase,
   ensureSpecItemForSpikeCard,
   formatEpicSpecDecisionsForContext,
   getSpecItemForSpikeCard,
@@ -715,10 +716,16 @@ async function runAutonomousLoopInner(
   const boardData = getOrCreateBoard(d.stmts, projectId);
   if (!boardData?.board) return;
 
-  const openSpecCount = countOpenSpecItems(d.stmts, epic.id);
+  // Scope the open-spec dispatch gate to the unit being dispatched. For a phase
+  // run, only the phase's own (and epic-wide unphased) decisions may hold back
+  // its build cards — an open spec in a sibling phase must not strand this phase,
+  // which would otherwise leave the whole epic unable to run autonomously.
+  const openSpecCount = phase
+    ? countOpenSpecItemsForPhase(d.stmts, epic.id, phase.id)
+    : countOpenSpecItems(d.stmts, epic.id);
   if (openSpecCount > 0) {
     console.log(
-      `[Autonomous] ${openSpecCount} open spec decision(s) on epic "${epic.name}" — dispatching spike tickets only until decisions are locked`,
+      `[Autonomous] ${openSpecCount} open spec decision(s) on ${phase ? `phase "${phase.name}"` : `epic "${epic.name}"`} — dispatching spike tickets only until decisions are locked`,
     );
   }
 

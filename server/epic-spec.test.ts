@@ -5,9 +5,10 @@ import {
   normalizeSpecItemStatus,
   buildSpikeSessionContext,
   buildSpikeSessionContextFallback,
+  countOpenSpecItemsForPhase,
   deriveSpecTagFromSpikeTitle,
 } from './epic-spec.js';
-import type { KanbanCardRow, KanbanEpicSpecItemRow } from './types.js';
+import type { KanbanCardRow, KanbanEpicSpecItemRow, Stmts } from './types.js';
 
 const baseSpec = (over: Partial<KanbanEpicSpecItemRow>): KanbanEpicSpecItemRow => ({
   id: 'spec-1',
@@ -33,6 +34,27 @@ describe('epic-spec', () => {
     expect(isSpikeCard({})).toBe(false);
     expect(isSpikeCard({ title: 'Spike: pick delivery model' })).toBe(true);
     expect(isSpikeCard({ title: 'Implement spike detector' })).toBe(false);
+  });
+
+  it('countOpenSpecItemsForPhase queries by epic + phase and returns the count', () => {
+    let calledWith: unknown[] = [];
+    const stmts = {
+      countOpenKanbanSpecItemsByPhase: {
+        get: (...args: unknown[]) => {
+          calledWith = args;
+          return { n: 2 };
+        },
+      },
+    } as unknown as Stmts;
+    expect(countOpenSpecItemsForPhase(stmts, 'epic-1', 'phase-9')).toBe(2);
+    expect(calledWith).toEqual(['epic-1', 'phase-9']);
+  });
+
+  it('countOpenSpecItemsForPhase defaults to 0 when the row is undefined', () => {
+    const stmts = {
+      countOpenKanbanSpecItemsByPhase: { get: () => undefined },
+    } as unknown as Stmts;
+    expect(countOpenSpecItemsForPhase(stmts, 'epic-1', 'phase-9')).toBe(0);
   });
 
   it('normalizeSpecItemStatus falls back to open', () => {

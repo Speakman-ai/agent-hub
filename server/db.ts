@@ -5035,6 +5035,12 @@ function initDb(dataDir: string): void {
     countOpenKanbanSpecItemsByEpic: db.prepare(
       "SELECT COUNT(*) AS n FROM kanban_epic_spec_items WHERE epic_id = ? AND status = 'open'",
     ),
+    // Phase-scoped open-spec gate: a phase's build cards wait only on specs that
+    // could affect that phase — its own (phase_id = ?) plus epic-wide, unphased
+    // decisions (phase_id IS NULL). Sibling phases' open specs must NOT block it.
+    countOpenKanbanSpecItemsByPhase: db.prepare(
+      "SELECT COUNT(*) AS n FROM kanban_epic_spec_items WHERE epic_id = ? AND status = 'open' AND (phase_id = ? OR phase_id IS NULL)",
+    ),
     createKanbanSpecItem: db.prepare(
       `INSERT INTO kanban_epic_spec_items (id, epic_id, board_id, phase_id, tag, title, decision, status, position)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -85,6 +85,7 @@ interface MockStmts {
   getEligibleAutonomousSpikeCards?: { all: Mock };
   getEligibleAutonomousSpikeCardsByPhase?: { all: Mock };
   countOpenKanbanSpecItemsByEpic?: { get: Mock };
+  countOpenKanbanSpecItemsByPhase?: { get: Mock };
   getKanbanSpecItemsByEpic?: { all: Mock };
   getKanbanSpecItemBySpikeCard?: { get: Mock };
   updateSessionMode?: { run: Mock };
@@ -128,6 +129,7 @@ function makeStmts(overrides: Partial<MockStmts> = {}): MockStmts {
     getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
     getEligibleAutonomousCardsByPhase: { all: vi.fn(() => []) },
     countOpenKanbanSpecItemsByEpic: { get: vi.fn(() => ({ n: 0 })) },
+    countOpenKanbanSpecItemsByPhase: { get: vi.fn(() => ({ n: 0 })) },
     getKanbanSpecItemsByEpic: { all: vi.fn(() => []) },
     getKanbanSpecItemBySpikeCard: { get: vi.fn(() => undefined) },
     updateSessionMode: { run: vi.fn() },
@@ -800,6 +802,59 @@ describe('runAutonomousLoop — dispatch', () => {
     expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
     expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('phase1-todo');
     expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'phase1-todo');
+  });
+
+  it('dispatches a phase build card when only a SIBLING phase has an open spec', async () => {
+    // Regression: the open-spec dispatch gate counted open spec items epic-wide
+    // (`countOpenKanbanSpecItemsByEpic`) even when dispatching a single phase.
+    // An open spec sitting in a sibling phase then blocked THIS phase's build
+    // cards forever — scoping stranded the whole epic instead of letting each
+    // phase proceed once its own decisions were locked. The gate must be
+    // phase-scoped (own + epic-wide unphased specs only).
+    const buildCard = makeCard({ id: 'phase1-build', phase_id: 'phase-1', column_id: 'col-todo' });
+    const phase = {
+      id: 'phase-1',
+      epic_id: 'epic-1',
+      board_id: 'board-1',
+      name: 'Phase 1',
+      autonomous_running: 1,
+      autonomous: 1,
+      autonomous_max_concurrent: 1,
+      autonomous_model: null,
+      autonomous_send_it: 0,
+      autonomous_interval: 60,
+      description: null,
+      autonomous_enabled_by: 'operator-user',
+    };
+    const stmts = makeStmts({
+      getKanbanEpic: { get: vi.fn(() => ACTIVE_EPIC) },
+      getKanbanPhase: { get: vi.fn(() => phase) },
+      getEligibleAutonomousCardsByPhase: { all: vi.fn(() => [buildCard]) },
+      getEligibleAutonomousSpikeCardsByPhase: { all: vi.fn(() => []) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByPhase: { all: vi.fn(() => [buildCard]) },
+      // Epic-wide: a sibling phase still has 1 open spec — the OLD gate would
+      // consult this and dispatch spikes only, blocking phase-1's build card.
+      countOpenKanbanSpecItemsByEpic: { get: vi.fn(() => ({ n: 1 })) },
+      // Phase-scoped: phase-1's own decisions are all locked → 0 open.
+      countOpenKanbanSpecItemsByPhase: { get: vi.fn(() => ({ n: 0 })) },
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(makeProject());
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+
+    const ownership = await import('./session-ownership.js');
+    (ownership.resolveAutonomousOwnerUserId as Mock).mockReturnValue('operator-user');
+
+    initAutonomous(deps as never);
+    await runAutonomousLoopForPhase('proj-1', 'phase-1');
+
+    // The phase-scoped gate is clear, so the build card dispatches instead of
+    // being held back by the sibling phase's open spec.
+    expect(stmts.countOpenKanbanSpecItemsByPhase!.get).toHaveBeenCalledWith('epic-1', 'phase-1');
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.markCardDispatchedByAutonomous.run).toHaveBeenCalledWith('phase1-build');
+    expect(stmts.moveKanbanCard.run).toHaveBeenCalledWith('col-progress', 0, 'phase1-build');
   });
 
   // ─── Phase auto-advance: when a phase finishes, start the next armed phase ──
