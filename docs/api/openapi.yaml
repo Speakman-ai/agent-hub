@@ -8245,6 +8245,127 @@ components:
       required:
         - revoked
       description: RUM client revoked.
+    RumSessionsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    RumSessionListItem:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          description: Client-minted session id.
+        projectId:
+          type: string
+          nullable: true
+        startedAt:
+          type: integer
+          nullable: true
+          description: Earliest event timestamp across the session, epoch ms.
+        endedAt:
+          type: integer
+          nullable: true
+          description: Latest event timestamp across the session, epoch ms.
+        timeSpent:
+          type: integer
+          minimum: 0
+          description: Session duration, ms (endedAt - startedAt).
+        viewCount:
+          type: integer
+          minimum: 0
+        actionCount:
+          type: integer
+          minimum: 0
+        errorCount:
+          type: integer
+          minimum: 0
+        frustrationCount:
+          type: integer
+          minimum: 0
+          description: Rolled-up rage/dead/error-click count.
+        usrId:
+          type: string
+          nullable: true
+        usrEmail:
+          type: string
+          nullable: true
+        usrName:
+          type: string
+          nullable: true
+        usrAttributes:
+          type: object
+          nullable: true
+          additionalProperties:
+            nullable: true
+          description: Custom (non-standard) user attributes; null when none.
+        deviceType:
+          type: string
+          nullable: true
+        browser:
+          type: string
+          nullable: true
+        os:
+          type: string
+          nullable: true
+        geoCountry:
+          type: string
+          nullable: true
+          description: ISO 3166-1 alpha-2 country from the ingest client IP.
+        firstSeenAt:
+          type: string
+        updatedAt:
+          type: string
+      required:
+        - sessionId
+        - projectId
+        - startedAt
+        - endedAt
+        - timeSpent
+        - viewCount
+        - actionCount
+        - errorCount
+        - frustrationCount
+        - usrId
+        - usrEmail
+        - usrName
+        - usrAttributes
+        - deviceType
+        - browser
+        - os
+        - geoCountry
+        - firstSeenAt
+        - updatedAt
+      description: A session-grain rollup row for the RUM Session Explorer.
+    RumSessionListResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RumSessionListItem"
+        total:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 0
+          exclusiveMinimum: true
+        offset:
+          type: integer
+          minimum: 0
+        hasMore:
+          type: boolean
+      required:
+        - sessions
+        - total
+        - limit
+        - offset
+        - hasMore
+      description: A page of RUM sessions for the Explorer table.
     RumWizardErrorResponse:
       type: object
       properties:
@@ -28441,6 +28562,157 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RumClientErrorResponse"
+  /api/projects/{projectId}/rum/sessions:
+    get:
+      tags:
+        - Replays
+      summary: List RUM sessions for the Session Explorer dashboard
+      description: Paginated, filterable table of a project’s RUM sessions (the `rum_sessions` session-grain rollup). All facets are optional and AND together; each maps to an indexed column. Text facets are exact-match; count/duration facets are range bounds; the started-at window is inclusive.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Exact user email facet.
+          required: false
+          description: Exact user email facet.
+          name: usrEmail
+          in: query
+        - schema:
+            type: string
+            description: Exact user name facet.
+          required: false
+          description: Exact user name facet.
+          name: usrName
+          in: query
+        - schema:
+            type: string
+            description: Exact user id facet.
+          required: false
+          description: Exact user id facet.
+          name: usrId
+          in: query
+        - schema:
+            type: string
+            description: Exact device class facet.
+          required: false
+          description: Exact device class facet.
+          name: deviceType
+          in: query
+        - schema:
+            type: string
+            description: Exact browser family facet.
+          required: false
+          description: Exact browser family facet.
+          name: browser
+          in: query
+        - schema:
+            type: string
+            description: Exact OS family facet.
+          required: false
+          description: Exact OS family facet.
+          name: os
+          in: query
+        - schema:
+            type: string
+            description: Exact country (alpha-2) facet.
+          required: false
+          description: Exact country (alpha-2) facet.
+          name: geoCountry
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            description: Minimum session duration, ms (time_spent >=).
+          required: false
+          description: Minimum session duration, ms (time_spent >=).
+          name: durationMinMs
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+            description: Maximum session duration, ms (time_spent <=).
+          required: false
+          description: Maximum session duration, ms (time_spent <=).
+          name: durationMaxMs
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: viewCountMin
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: actionCountMin
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: errorCountMin
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: frustrationCountMin
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            description: Inclusive started-at lower bound, epoch ms.
+          required: false
+          description: Inclusive started-at lower bound, epoch ms.
+          name: from
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            description: Inclusive started-at upper bound, epoch ms.
+          required: false
+          description: Inclusive started-at upper bound, epoch ms.
+          name: to
+          in: query
+        - schema:
+            type: integer
+            minimum: 0
+            exclusiveMinimum: true
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: A page of RUM sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumSessionListResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RumSessionsErrorResponse"
   /api/projects/{projectId}/rum/setup-draft:
     get:
       tags:

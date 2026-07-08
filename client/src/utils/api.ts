@@ -1989,6 +1989,21 @@ export const api = {
     const qs = params.toString();
     return fetchJSON(`/projects/${projectId}/replays${qs ? `?${qs}` : ''}`);
   },
+  // RUM Session Explorer (session-grain, Datadog-parity). Lists the
+  // rum_sessions rollup with indexed facet filters (user/device/browser/os/geo),
+  // count/duration range bounds, and an inclusive started-at time window. Every
+  // filter is optional; blank/undefined values are omitted so the server treats
+  // them as no-ops. Returns { sessions, total, limit, offset, hasMore }.
+  listRumSessions: (projectId: any, filters: any = {}) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value == null) continue;
+      if (typeof value === 'string' && value.trim() === '') continue;
+      params.set(key, String(value));
+    }
+    const qs = params.toString();
+    return fetchJSON(`/projects/${projectId}/rum/sessions${qs ? `?${qs}` : ''}`);
+  },
   // Attach a replay to one of the project's support tickets (the inverse of the
   // ticket-first flow). Claims an orphan into the project via the first-write
   // guard. 409s if the replay belongs to another project. Returns

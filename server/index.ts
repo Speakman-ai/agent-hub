@@ -158,6 +158,7 @@ import createPrResolveRoutes from './routes/pr-resolve.js';
 import createBugReportRoutes from './routes/bug-reports.js';
 import createReplayRoutes from './routes/replays.js';
 import createReplaysDashboardRoutes from './routes/replays-dashboard.js';
+import createRumSessionsRoutes from './routes/rum-sessions.js';
 import createAuthRoutes from './routes/auth.js';
 import createMcpServerRoutes from './routes/mcp-servers.js';
 import createMeTodosRoutes from './routes/me-todos.js';
@@ -1240,6 +1241,7 @@ app.use(createPrResolveRoutes(routeDeps));
 app.use(createBugReportRoutes(routeDeps));
 app.use(createReplayRoutes(routeDeps));
 app.use(createReplaysDashboardRoutes(routeDeps));
+app.use(createRumSessionsRoutes(routeDeps));
 app.use(
   createAuthRoutes({
     // When a user's last org membership is dropped and the user row is
