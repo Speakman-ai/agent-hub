@@ -267,6 +267,11 @@ let _serverMaskAllEnforced = false;
 // recorder additionally streams the WHOLE session as appended chunks (see
 // `ContinuousReplayFlusher`), on top of the always-on record-on-error path.
 let _serverContinuous = false;
+// Whether the server policy runs the continuous tier as view-scoped SEGMENTS
+// (append-only per-segment objects with client-minted session/view ids) rather
+// than the monolithic append blob. Only meaningful when `_serverContinuous` is
+// on. Default OFF — the segmented tier is an explicit per-project opt-in.
+let _serverSegmented = false;
 // Server-delivered continuous-flush cadence (ms), or null when unset (the
 // flusher then uses DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS). Floored at
 // MIN_CONTINUOUS_FLUSH_INTERVAL_MS — the monolithic-append storage cannot
@@ -356,10 +361,20 @@ export function applyServerReplayConfig(policy: any) {
   // explicitly opted the project out.
   _serverMaskAllEnforced = policy != null && policy.maskAllEnforced === true;
   _serverContinuous = policy != null && policy.continuous === true;
+  // Segmented is only meaningful with continuous on (the recorder wires the
+  // segment flusher inside the continuous branch), matching the server's resolved
+  // policy where `segmented` is already gated on `continuous`.
+  _serverSegmented = _serverContinuous && policy != null && policy.segmented === true;
   const interval = policy == null ? null : policy.flushIntervalMs;
+  // Clamp with the floor matching the delivered tier: the segmented cadence keeps
+  // its sub-minute value (mapped to the segment duration bound), the monolithic
+  // cadence is floored at 60s. Re-clamping with the monolithic floor would corrupt
+  // a valid segmented sub-minute cadence back up to 60s.
   _serverFlushIntervalMs =
     typeof interval === 'number' && Number.isFinite(interval)
-      ? clampContinuousFlushInterval(interval)
+      ? _serverSegmented
+        ? clampSegmentFlushInterval(interval)
+        : clampContinuousFlushInterval(interval)
       : null;
   return _serverSampleRate;
 }
@@ -380,11 +395,31 @@ export function isServerContinuousEnabled() {
 }
 
 /**
+ * True when the server policy runs the continuous tier as view-scoped segments
+ * (client-minted session/view ids streamed to the segment-ingest endpoint) rather
+ * than the monolithic append blob. Always implies {@link isServerContinuousEnabled}.
+ */
+export function isServerSegmentedEnabled() {
+  return _serverSegmented;
+}
+
+/**
  * The continuous-flush cadence currently in effect (server-delivered when set,
  * else the built-in 5-min default), already floored at the sub-minute minimum.
  */
 export function getContinuousFlushIntervalMs() {
   return clampContinuousFlushInterval(_serverFlushIntervalMs);
+}
+
+/**
+ * The per-segment duration bound (`maxDurationMs`) for the segmented tier: the
+ * server-delivered segmented cadence when set (a project can dial a sub-minute
+ * segment cadence), else the ~5s Datadog default. This is what makes a
+ * project-configured segmented `flushIntervalMs` actually govern segment rollover
+ * rather than the field being inert.
+ */
+export function getSegmentMaxDurationMs() {
+  return clampSegmentFlushInterval(_serverFlushIntervalMs);
 }
 
 /**
@@ -1275,8 +1310,33 @@ export function defaultReplayBeacon(url: any, body: any, rumToken: any = null) {
 // Sub-minute cadence is now safe because the append is O(1): the monolithic
 // >=60s floor (`MIN_CONTINUOUS_FLUSH_INTERVAL_MS`) no longer applies here.
 
-/** Roll a new segment after ~5s of wall-clock in the current segment. */
+/** Roll a new segment after ~5s of wall-clock in the current segment. Also the
+ *  default segment duration bound when the server delivers no segmented cadence. */
 export const SEGMENT_MAX_DURATION_MS = 5_000;
+/**
+ * Floor on the server-delivered SEGMENTED cadence (mirrors the server's
+ * `MIN_SEGMENTED_FLUSH_INTERVAL_MS`). A segment append is O(1), so sub-minute
+ * cadence is safe — the monolithic {@link MIN_CONTINUOUS_FLUSH_INTERVAL_MS} floor
+ * does not apply — but a value below 1s is raised to avoid a pathological
+ * flush-per-millisecond.
+ */
+export const MIN_SEGMENTED_FLUSH_INTERVAL_MS = 1_000;
+
+/**
+ * Clamp a server-delivered segment cadence into the segment-rollover
+ * (`maxDurationMs`) range. Unset/non-finite → the ~5s Datadog default; below the
+ * 1s floor → 1s; above the 1h ceiling → 1h. Pure — mirrors the server's
+ * segmented `clampFlushIntervalMs` so the recorder honours the same bound the
+ * policy delivered instead of re-flooring a valid sub-minute value to 60s.
+ */
+export function clampSegmentFlushInterval(value: any) {
+  if (value == null) return SEGMENT_MAX_DURATION_MS;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return SEGMENT_MAX_DURATION_MS;
+  if (n < MIN_SEGMENTED_FLUSH_INTERVAL_MS) return MIN_SEGMENTED_FLUSH_INTERVAL_MS;
+  if (n > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) return MAX_CONTINUOUS_FLUSH_INTERVAL_MS;
+  return n;
+}
 /**
  * Roll a new segment once the current segment's RAW serialized byte size crosses
  * this budget. Datadog's target is ~60KB COMPRESSED, but gzip-sizing every event
@@ -2165,6 +2225,245 @@ export function installViewChangeDetector(onViewChange: any): () => void {
   };
 }
 
+/** The recorder collaborator the controller drives — just the snapshot hook it
+ *  calls when a new view/session must open on a fresh full snapshot. */
+export interface SegmentControllerRecorder {
+  forceFullSnapshot?: () => boolean | void;
+}
+
+/** Constructor options accepted by {@link SegmentReplayFlusher} that the
+ *  controller's flusher factory forwards. */
+export interface SegmentFlusherOptions {
+  sessionId: string;
+  viewId: string;
+  endpointBase?: string;
+  rumToken?: string | null;
+  requestSnapshot?: (viewId?: string) => void;
+  maxDurationMs?: number;
+}
+
+/** The per-view segment flusher surface the controller manages. Typed as a
+ *  structural interface (not the concrete class) so the wiring is checked and a
+ *  test double can stand in — {@link SegmentReplayFlusher} satisfies it. */
+export interface SegmentFlusherLike {
+  readonly sessionId: string;
+  readonly viewId: string;
+  readonly indexInView: number;
+  readonly maxDurationMs: number;
+  start(): void;
+  stop(): void;
+  addEvent(event: any): void;
+  notifyViewChange(newViewId: string): Promise<unknown>;
+  notifyError?(ts?: number): void;
+  flushTail(reason?: string, opts?: { terminal?: boolean }): boolean;
+  _drainAfterInflight(reason: string): Promise<void>;
+}
+
+/** Injected collaborators + tuning for {@link SegmentedContinuousController}. */
+export interface SegmentedControllerOptions {
+  recorder?: SegmentControllerRecorder | null;
+  sessionManager?: RumSessionManager | null;
+  rumToken?: string | null;
+  endpointBase?: string;
+  maxDurationMs?: number | null;
+  createFlusher?: ((opts: SegmentFlusherOptions) => SegmentFlusherLike) | null;
+}
+
+/**
+ * Drives the SEGMENTED continuous tier end-to-end: a {@link RumSessionManager}
+ * mints the client-side session/view ids, and a {@link SegmentReplayFlusher}
+ * streams view-scoped segments to the (session, view, index) ingest endpoint.
+ *
+ * The recorder feeds every raw rrweb event to {@link handleEvent}, which runs it
+ * through the manager's `notifyActivity` (so 15-min inactivity / 4h max-duration
+ * rollover mints a fresh session.id and REBUILDS the flusher) before buffering it.
+ * A route change calls {@link handleViewChange}, which runs the manager's
+ * `notifyViewChange` — minting a fresh view.id (or a fresh session when expired)
+ * — and asks the flusher to roll to `index_in_view=0` for the new view. Either
+ * rollover threads `requestSnapshot` back to the recorder so the new view/session
+ * opens with a fresh full snapshot.
+ *
+ * Exposes the same lifecycle surface the module singleton drives on the monolithic
+ * `ContinuousReplayFlusher` (`start` / `stop` / `flushTail` / `_drainAfterInflight`),
+ * so the tail-flush listeners and runtime-disable teardown treat both tiers
+ * uniformly. All collaborators are injected so the wiring is unit-testable without
+ * a DOM, rrweb, or network.
+ */
+export class SegmentedContinuousController {
+  private readonly _recorder: SegmentControllerRecorder | null;
+  private readonly _manager: RumSessionManager;
+  private readonly _rumToken: string | null;
+  private readonly _endpointBase: string;
+  private readonly _maxDurationMs: number | null;
+  private readonly _createFlusher: (opts: SegmentFlusherOptions) => SegmentFlusherLike;
+  private _flusher: SegmentFlusherLike | null;
+  private _started: boolean;
+
+  constructor({
+    recorder = null,
+    sessionManager = null,
+    rumToken = null,
+    endpointBase = REPLAY_INGEST_ENDPOINT,
+    // Per-segment duration bound (server-delivered segmented cadence). Null → the
+    // flusher's built-in SEGMENT_MAX_DURATION_MS (~5s) default.
+    maxDurationMs = null,
+    // Factory for the per-session/view flusher. Injectable so tests can supply a
+    // stubbed transport / clock without a real network or timers.
+    createFlusher = null,
+  }: SegmentedControllerOptions = {}) {
+    this._recorder = recorder;
+    this._manager = sessionManager || new RumSessionManager();
+    this._rumToken = rumToken || null;
+    this._endpointBase = endpointBase;
+    this._maxDurationMs =
+      typeof maxDurationMs === 'number' && Number.isFinite(maxDurationMs) && maxDurationMs > 0
+        ? maxDurationMs
+        : null;
+    this._createFlusher =
+      typeof createFlusher === 'function'
+        ? createFlusher
+        : // `SegmentReplayFlusher`'s `[key: string]: any` index signature hides its
+          // constructor-assigned members (sessionId/maxDurationMs) from structural
+          // matching, so bridge to the typed surface at this single seam.
+          (opts: SegmentFlusherOptions) =>
+            new SegmentReplayFlusher(opts) as unknown as SegmentFlusherLike;
+    this._flusher = null;
+    this._started = false;
+  }
+
+  /** The current per-view segment flusher (or null before {@link init}). */
+  get flusher(): SegmentFlusherLike | null {
+    return this._flusher;
+  }
+
+  /** The session/view id minter driving this controller. */
+  get sessionManager(): RumSessionManager {
+    return this._manager;
+  }
+
+  /** Ask the recorder for a fresh full snapshot so a new view/session opens
+   *  replayable (index_in_view=0). Best-effort — never throws into the caller. */
+  private _requestSnapshot(): void {
+    try {
+      this._recorder?.forceFullSnapshot?.();
+    } catch {
+      // ignore — a snapshot request failure must not break the stream
+    }
+  }
+
+  private _buildFlusher(sessionId: string, viewId: string): SegmentFlusherLike {
+    return this._createFlusher({
+      sessionId,
+      viewId,
+      endpointBase: this._endpointBase,
+      rumToken: this._rumToken,
+      requestSnapshot: () => this._requestSnapshot(),
+      // Only pass a cadence when the server delivered one; otherwise let the
+      // flusher use its own SEGMENT_MAX_DURATION_MS default.
+      ...(this._maxDurationMs != null ? { maxDurationMs: this._maxDurationMs } : {}),
+    });
+  }
+
+  /**
+   * Mint the opening session + view and build the first flusher. Call BEFORE
+   * `record()` starts so the synchronous Meta + FullSnapshot rrweb emits at start
+   * lands as the view-opening segment (index_in_view=0). Idempotent.
+   */
+  init(): SegmentFlusherLike {
+    if (this._flusher) return this._flusher;
+    const ctx = this._manager.notifyActivity();
+    this._flusher = this._buildFlusher(ctx.sessionId, ctx.viewId);
+    return this._flusher;
+  }
+
+  /** Start the flusher's idle-rollover timer. Builds the opening flusher if the
+   *  controller wasn't `init()`ed first. */
+  start(): void {
+    const flusher = this._flusher ?? this.init();
+    flusher.start();
+    this._started = true;
+  }
+
+  /**
+   * Feed one raw rrweb event. Runs it through the manager's activity clock first:
+   * on a session rollover (inactivity / max-duration) the flusher is rebuilt for
+   * the fresh session before the event is buffered, so the new session opens on a
+   * fresh snapshot + this event.
+   */
+  handleEvent(event: any): void {
+    const flusher = this._flusher ?? this.init();
+    const ctx = this._manager.notifyActivity();
+    if (ctx.sessionChanged) {
+      this._rebuild(ctx.sessionId, ctx.viewId, 'session_change');
+    }
+    // Re-read after a possible rebuild so the event lands in the fresh flusher.
+    (this._flusher ?? flusher).addEvent(event);
+  }
+
+  /**
+   * Register a route change. Mints a fresh view.id under the same session (or a
+   * fresh session when the current one has expired). A same-session view change
+   * rolls the existing flusher to `index_in_view=0` (flushing the outgoing view's
+   * tail); a session rollover rebuilds the flusher. Returns the outgoing-view
+   * flush promise for a same-session change (so callers/tests can await it), else
+   * null.
+   */
+  handleViewChange(): Promise<unknown> | null {
+    const flusher = this._flusher ?? this.init();
+    const ctx = this._manager.notifyViewChange();
+    if (ctx.sessionChanged) {
+      this._rebuild(ctx.sessionId, ctx.viewId, 'session_change');
+      return null;
+    }
+    return flusher.notifyViewChange(ctx.viewId);
+  }
+
+  /** Replace the current flusher for a fresh session, draining the old one's tail
+   *  to its own (session, view) without blocking. Requests a fresh snapshot so the
+   *  new session's opening view is replayable. */
+  private _rebuild(sessionId: string, viewId: string, reason: string): void {
+    const old = this._flusher;
+    const next = this._buildFlusher(sessionId, viewId);
+    // Assign BEFORE requesting the snapshot: forceFullSnapshot emits
+    // synchronously back through the recorder's continuous sink into this
+    // controller's handleEvent, which must buffer that snapshot into `next`.
+    this._flusher = next;
+    if (this._started) next.start();
+    this._requestSnapshot();
+    if (old) {
+      old.stop();
+      void old._drainAfterInflight(reason);
+    }
+  }
+
+  /** Forward a JS error to the active flusher's frustration detector (error-click
+   *  classification). Best-effort. */
+  notifyError(ts?: number): void {
+    try {
+      this._flusher?.notifyError?.(ts);
+    } catch {
+      // ignore — best-effort
+    }
+  }
+
+  /** Tail-flush the current segment on a lifecycle event (delegates to the active
+   *  flusher). Returns false when there is no flusher yet. */
+  flushTail(reason: string = 'pagehide', opts: { terminal?: boolean } = {}): boolean {
+    return this._flusher ? this._flusher.flushTail(reason, opts) : false;
+  }
+
+  /** Drain the current flusher to completion (runtime-disable teardown path). */
+  async _drainAfterInflight(reason: string): Promise<void> {
+    if (this._flusher) await this._flusher._drainAfterInflight(reason);
+  }
+
+  /** Stop the active flusher's timer. The pending segment is left intact. */
+  stop(): void {
+    this._started = false;
+    if (this._flusher) this._flusher.stop();
+  }
+}
+
 /**
  * Rolling-buffer rrweb recorder. The rrweb `record` function and the upload
  * transport are injected so the recorder is testable without a DOM or network.
@@ -2428,13 +2727,20 @@ export class SessionReplayRecorder {
   /** Record-on-error entry point: throttled flush triggered by an uncaught error. */
   async handleError(meta: any) {
     const now = this._now();
-    // TODO(rum-segment-tier): when the SegmentReplayFlusher is wired into the
-    // live recording path (it is not yet instantiated in prod), feed this error
-    // to the active segment flusher via `segmentFlusher.notifyError(now)` HERE —
-    // BEFORE the throttle return below — so every uncaught error is available
-    // for error-click classification even when the record-on-error FLUSH is
-    // throttled. Until then `FrustrationDetector.recordError` only runs in tests
-    // and `error_click` stays 0 in production. See card #1364.
+    // Feed the error to the live continuous flusher (segmented tier only —
+    // `notifyError` is a no-op/absent on the monolithic ContinuousReplayFlusher)
+    // BEFORE the throttle return, so every uncaught error reaches the segment
+    // flusher's FrustrationDetector for error-click classification even when the
+    // record-on-error FLUSH itself is throttled. Best-effort; a detector failure
+    // must never break the error path. (Completes card #1364's error-click wire-up
+    // now that the SegmentReplayFlusher is live in prod.)
+    if (_continuousFlusher && typeof _continuousFlusher.notifyError === 'function') {
+      try {
+        _continuousFlusher.notifyError(now);
+      } catch {
+        // ignore — frustration detection is additive
+      }
+    }
     if (now - this._lastErrorFlushAt < this.errorThrottleMs) return null;
     this._lastErrorFlushAt = now;
     return this.flush({ ...(meta || {}), trigger: meta?.trigger || 'error' });
@@ -2461,6 +2767,9 @@ let _errorListenersWired = false;
 // The active continuous-capture flusher, or null when the continuous tier is off
 // (the default) or recording hasn't started.
 let _continuousFlusher: any = null;
+// Uninstall fn for the route-change detector, installed only for the segmented
+// tier (the monolithic tier streams one session-wide blob with no view model).
+let _viewChangeUninstall: (() => void) | null = null;
 let _tailFlushListenersWired = false;
 // Effective per-project RUM ingest token for this page, resolved once at init
 // (`initSessionReplay` opts.rumToken, else `VITE_REPLAY_RUM_TOKEN`). Threaded
@@ -2472,9 +2781,16 @@ export function getRecorder() {
   return _recorder;
 }
 
-/** The active continuous flusher, or null. Test/diagnostic accessor. */
+/** The active continuous flusher, or null. Test/diagnostic accessor. In the
+ *  segmented tier this is the {@link SegmentedContinuousController}. */
 export function getContinuousFlusher() {
   return _continuousFlusher;
+}
+
+/** The active segmented-tier controller, or null when the segmented tier is off
+ *  (monolithic or continuous disabled). Test/diagnostic accessor. */
+export function getSegmentController() {
+  return _continuousFlusher instanceof SegmentedContinuousController ? _continuousFlusher : null;
 }
 
 /**
@@ -2551,17 +2867,41 @@ async function startRecorder() {
   rec.recordOptions = buildRecordPrivacyOptions(resolveMaskingMode());
   // Wire the continuous flusher BEFORE record() so the Meta + FullSnapshot that
   // rrweb emits synchronously at record() start is captured as the creating
-  // chunk — without it the first batch would lack a snapshot and be rejected.
-  // Off by default; only when the project opts into the continuous tier.
+  // chunk / view-opening segment — without it the first batch would lack a
+  // snapshot and be rejected. Off by default; only when the project opts into the
+  // continuous tier. The SEGMENTED tier drives a session/view-minting controller;
+  // otherwise the monolithic ContinuousReplayFlusher streams one session-wide blob.
   if (_serverContinuous && !_continuousFlusher) {
-    _continuousFlusher = new ContinuousReplayFlusher({
-      replayId: generateReplayId(),
-      flushIntervalMs: getContinuousFlushIntervalMs(),
-      // Attribute chunks to the project, matching the config path. Falls back to
-      // the build-time env when init didn't capture one (e.g. a runtime toggle).
-      rumToken: _rumToken ?? resolveReplayRumToken(),
-    });
-    rec._continuousSink = (e: any) => _continuousFlusher.addEvent(e);
+    if (_serverSegmented) {
+      const controller = new SegmentedContinuousController({
+        recorder: rec,
+        // Attribute segments to the project, matching the config path. Falls back
+        // to the build-time env when init didn't capture one (runtime toggle).
+        rumToken: _rumToken ?? resolveReplayRumToken(),
+        // Honour the server-delivered segmented cadence as the per-segment
+        // duration bound. This is what makes an Admin-configured segmented
+        // `flushIntervalMs` actually govern rollover. `getSegmentMaxDurationMs()`
+        // is ALWAYS finite (unset resolves to SEGMENT_MAX_DURATION_MS, ~5s), so in
+        // prod the controller-level default governs and the flusher's own built-in
+        // `SEGMENT_MAX_DURATION_MS` fallback is never reached — the controller's
+        // null-branch exists only for a caller that omits `maxDurationMs` (tests).
+        maxDurationMs: getSegmentMaxDurationMs(),
+      });
+      // Mint the opening session + view and build the first flusher BEFORE
+      // record() so the synchronous opening snapshot lands as index_in_view=0.
+      controller.init();
+      _continuousFlusher = controller;
+      rec._continuousSink = (e: any) => controller.handleEvent(e);
+    } else {
+      _continuousFlusher = new ContinuousReplayFlusher({
+        replayId: generateReplayId(),
+        flushIntervalMs: getContinuousFlushIntervalMs(),
+        // Attribute chunks to the project, matching the config path. Falls back to
+        // the build-time env when init didn't capture one (e.g. a runtime toggle).
+        rumToken: _rumToken ?? resolveReplayRumToken(),
+      });
+      rec._continuousSink = (e: any) => _continuousFlusher.addEvent(e);
+    }
   }
   try {
     const mod = await import('rrweb');
@@ -2580,6 +2920,21 @@ async function startRecorder() {
   if (_continuousFlusher) {
     _continuousFlusher.start();
     ensureTailFlushListeners();
+    // The segmented tier keys segments on client-minted view ids, so it needs a
+    // route-change detector to mint a fresh view (and roll to index_in_view=0) on
+    // every SPA navigation. The monolithic tier has no view model, so it does not.
+    if (_serverSegmented && _continuousFlusher instanceof SegmentedContinuousController) {
+      const controller = _continuousFlusher;
+      // Idempotent install: startRecorder() re-enters on a masking-mode restart
+      // with `_continuousFlusher` preserved (so the continuous stream survives),
+      // which would otherwise stack a second detector and leak the first — every
+      // navigation then firing handleViewChange() twice. Uninstall any existing
+      // detector before wiring a fresh one.
+      _viewChangeUninstall?.();
+      _viewChangeUninstall = installViewChangeDetector(() => {
+        controller.handleViewChange();
+      });
+    }
   }
   return rec;
 }
@@ -2618,6 +2973,15 @@ export async function setSessionReplayEnabled(enabled: any) {
       const flusher = _continuousFlusher;
       _continuousFlusher = null;
       _recorder._continuousSink = null;
+      // Stop minting new views for a torn-down stream (segmented tier only).
+      if (_viewChangeUninstall) {
+        try {
+          _viewChangeUninstall();
+        } catch {
+          // ignore
+        }
+        _viewChangeUninstall = null;
+      }
       flusher.stop();
       try {
         await flusher._drainAfterInflight('disabled');
@@ -2821,6 +3185,14 @@ export function _resetSessionReplayForTest() {
       // ignore
     }
   }
+  if (_viewChangeUninstall) {
+    try {
+      _viewChangeUninstall();
+    } catch {
+      // ignore
+    }
+    _viewChangeUninstall = null;
+  }
   _recorder = null;
   _initialized = false;
   _errorListenersWired = false;
@@ -2828,6 +3200,7 @@ export function _resetSessionReplayForTest() {
   _serverSampleRate = null;
   _serverMaskAllEnforced = false;
   _serverContinuous = false;
+  _serverSegmented = false;
   _serverFlushIntervalMs = null;
   _continuousFlusher = null;
   _tailFlushListenersWired = false;

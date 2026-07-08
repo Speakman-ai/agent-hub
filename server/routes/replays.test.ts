@@ -1799,6 +1799,7 @@ describe('GET /api/replays/config', () => {
     expect(res.body).toEqual({
       sampleRate: null,
       continuous: false,
+      segmented: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -1816,6 +1817,7 @@ describe('GET /api/replays/config', () => {
     expect(res.body).toEqual({
       sampleRate: 0.25,
       continuous: true,
+      segmented: false,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -1830,6 +1832,7 @@ describe('GET /api/replays/config', () => {
     expect(res.body).toEqual({
       sampleRate: 0,
       continuous: true,
+      segmented: false,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -1844,6 +1847,7 @@ describe('GET /api/replays/config', () => {
     expect(res.body).toEqual({
       sampleRate: null,
       continuous: false,
+      segmented: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -1858,6 +1862,7 @@ describe('GET /api/replays/config', () => {
     expect(res.body).toEqual({
       sampleRate: null,
       continuous: false,
+      segmented: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -1880,6 +1885,7 @@ describe('GET /api/replays/config', () => {
     expect(res.body).toEqual({
       sampleRate: 0.25,
       continuous: true,
+      segmented: false,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -1898,6 +1904,21 @@ describe('GET /api/replays/config', () => {
     const { app } = makeApp({ projects: [project] });
     const res = await supertest(app).get('/api/replays/config?projectId=proj-cadence').expect(200);
     expect(res.body.flushIntervalMs).toBe(120_000);
+  });
+
+  it('delivers segmented:true and a sub-minute cadence for a segmented project', async () => {
+    const project = {
+      id: 'proj-segmented',
+      name: 'Segmented',
+      replay: { sampleRate: 1, continuous: true, segmented: true, flushIntervalMs: 5_000 },
+    } as unknown as Project;
+    const { app } = makeApp({ projects: [project] });
+    const res = await supertest(app)
+      .get('/api/replays/config?projectId=proj-segmented')
+      .expect(200);
+    expect(res.body.segmented).toBe(true);
+    // The segmented path lifts the monolithic 60s floor (O(1) append).
+    expect(res.body.flushIntervalMs).toBe(5_000);
   });
 
   it('delivers the two-level nested sample rates and their effective product', async () => {

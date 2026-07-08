@@ -345,13 +345,17 @@ const ReplayPolicyResponse = registerComponent(
       continuous: z.boolean().openapi({
         description: 'Whether the continuous-capture tier is enabled for the project.',
       }),
+      segmented: z.boolean().openapi({
+        description:
+          'Whether the continuous tier streams view-scoped segments (append-only S3 objects + a SQLite manifest) instead of the monolithic blob. Only ever true when `continuous` is on. The recorder wires a segment flusher driven by a client-minted session/view manager when true. Because a segment append is O(1), the segmented path is not subject to the monolithic sub-minute flush-interval floor.',
+      }),
       maskAllEnforced: z.boolean().openapi({
         description:
           'When true the recorder must mask all text + inputs and the UI must not offer a relaxed masking mode. A strong default whenever continuous capture is on — true unless an Admin has explicitly opted the project out (project `replay.maskAllEnforced === false`).',
       }),
       flushIntervalMs: z.number().openapi({
         description:
-          'Cadence (ms) the continuous recorder flushes appended chunks at. Always present; defaults to 5 min and is clamped to a >=60s floor (no sub-minute cadence on the monolithic-append MVP storage).',
+          'Cadence (ms) the continuous recorder flushes at. Always present. Monolithic tier: the whole-blob flush interval, defaulting to 5 min and clamped to a >=60s floor (no sub-minute cadence on the O(n^2) monolithic append). Segmented tier: the per-segment duration bound the recorder rolls segments over on, defaulting to ~5s and floored only at 1s (append is O(1)). Capped at 1 hour either way.',
       }),
       sessionSampleRate: z.number().nullable().openapi({
         description:

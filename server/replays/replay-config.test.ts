@@ -10,6 +10,8 @@ import {
   DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
   MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
   MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
+  MIN_SEGMENTED_FLUSH_INTERVAL_MS,
+  DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS,
 } from './replay-config.js';
 
 describe('clampReplaySampleRate', () => {
@@ -51,6 +53,20 @@ describe('clampFlushIntervalMs', () => {
 
   it('passes through an in-range cadence', () => {
     expect(clampFlushIntervalMs(2 * 60 * 1000)).toBe(2 * 60 * 1000);
+  });
+
+  it('uses the segmented floor + default when { segmented: true }', () => {
+    // Unset segmented → the ~5s segment default, NOT the 5-min monolithic default.
+    expect(clampFlushIntervalMs(undefined, { segmented: true })).toBe(
+      DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS,
+    );
+    // A sub-minute value is kept (append is O(1)), only floored below 1s.
+    expect(clampFlushIntervalMs(5_000, { segmented: true })).toBe(5_000);
+    expect(clampFlushIntervalMs(10, { segmented: true })).toBe(MIN_SEGMENTED_FLUSH_INTERVAL_MS);
+    // The 1-hour ceiling still applies.
+    expect(clampFlushIntervalMs(10 * 60 * 60 * 1000, { segmented: true })).toBe(
+      MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
+    );
   });
 });
 
@@ -153,6 +169,66 @@ describe('normalizeReplayConfig', () => {
     // A lone maskAllEnforced (no rate/continuous) clears the config entirely.
     expect(normalizeReplayConfig({ maskAllEnforced: false })).toEqual({ ok: true, value: null });
   });
+
+  it('rejects a non-boolean segmented', () => {
+    expect(normalizeReplayConfig({ continuous: true, sampleRate: 1, segmented: 'yes' }).ok).toBe(
+      false,
+    );
+  });
+
+  it('persists segmented:true only with continuous on', () => {
+    expect(normalizeReplayConfig({ continuous: true, sampleRate: 0.5, segmented: true })).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5, continuous: true, segmented: true },
+    });
+  });
+
+  it('drops segmented when continuous is off (meaningless without it)', () => {
+    expect(normalizeReplayConfig({ sampleRate: 0.5, segmented: true })).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5 },
+    });
+    // A lone segmented (no rate/continuous) clears the config entirely.
+    expect(normalizeReplayConfig({ segmented: true })).toEqual({ ok: true, value: null });
+  });
+
+  it('drops a redundant segmented:false', () => {
+    expect(normalizeReplayConfig({ continuous: true, sampleRate: 0.5, segmented: false })).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5, continuous: true },
+    });
+  });
+
+  it('accepts a sub-minute flushIntervalMs on the segmented path (O(1) append lifts the floor)', () => {
+    expect(
+      normalizeReplayConfig({
+        continuous: true,
+        sampleRate: 1,
+        segmented: true,
+        flushIntervalMs: 5_000,
+      }),
+    ).toEqual({
+      ok: true,
+      value: { sampleRate: 1, continuous: true, segmented: true, flushIntervalMs: 5_000 },
+    });
+  });
+
+  it('still rejects a sub-minute flushIntervalMs on the monolithic path', () => {
+    const res = normalizeReplayConfig({ continuous: true, sampleRate: 1, flushIntervalMs: 5_000 });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/sub-minute cadence on monolithic storage/);
+  });
+
+  it('rejects a flushIntervalMs below the segmented floor (1s)', () => {
+    expect(
+      normalizeReplayConfig({
+        continuous: true,
+        sampleRate: 1,
+        segmented: true,
+        flushIntervalMs: MIN_SEGMENTED_FLUSH_INTERVAL_MS - 1,
+      }).ok,
+    ).toBe(false);
+  });
 });
 
 describe('resolveReplayPolicy', () => {
@@ -168,6 +244,7 @@ describe('resolveReplayPolicy', () => {
     expect(resolveReplayPolicy({ sampleRate: 0.4 })).toEqual({
       sampleRate: 0.4,
       continuous: false,
+      segmented: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
@@ -183,12 +260,51 @@ describe('resolveReplayPolicy', () => {
     expect(resolveReplayPolicy({ continuous: true })).toEqual({
       sampleRate: 0,
       continuous: true,
+      segmented: false,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,
       sessionReplaySampleRate: null,
       effectiveReplaySampleRate: null,
     });
+  });
+
+  it('resolves segmented only with continuous on', () => {
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: true, segmented: true }).segmented,
+    ).toBe(true);
+    // Segmented without continuous is meaningless — never resolves true.
+    expect(resolveReplayPolicy({ sampleRate: 1, segmented: true }).segmented).toBe(false);
+    expect(resolveReplayPolicy({ sampleRate: 1, continuous: true }).segmented).toBe(false);
+    expect(DEFAULT_REPLAY_POLICY.segmented).toBe(false);
+  });
+
+  it('lifts the sub-minute flush floor when segmented resolves on', () => {
+    // Same raw 5s cadence: floored to 60s on monolithic, kept at 5s on segmented.
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: true, flushIntervalMs: 5_000 })
+        .flushIntervalMs,
+    ).toBe(MIN_CONTINUOUS_FLUSH_INTERVAL_MS);
+    expect(
+      resolveReplayPolicy({
+        sampleRate: 1,
+        continuous: true,
+        segmented: true,
+        flushIntervalMs: 5_000,
+      }).flushIntervalMs,
+    ).toBe(5_000);
+  });
+
+  it('defaults the segmented cadence to the ~5s segment default (not 5 min) when unset', () => {
+    // A segmented project with no explicit flushIntervalMs must resolve to the
+    // segment duration default, not the monolithic 5-min whole-blob default.
+    expect(
+      resolveReplayPolicy({ sampleRate: 1, continuous: true, segmented: true }).flushIntervalMs,
+    ).toBe(DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS);
+    // Monolithic unset still defaults to 5 min.
+    expect(resolveReplayPolicy({ sampleRate: 1, continuous: true }).flushIntervalMs).toBe(
+      DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    );
   });
 
   it('enforces mask-all by default when continuous is on', () => {
@@ -202,6 +318,7 @@ describe('resolveReplayPolicy', () => {
     ).toEqual({
       sampleRate: 1,
       continuous: true,
+      segmented: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
       sessionSampleRate: null,

@@ -33,6 +33,17 @@ export interface ProjectReplayConfig {
    */
   continuous?: boolean;
   /**
+   * Whether the continuous tier streams as view-scoped SEGMENTS (append-only
+   * per-segment S3 objects + a SQLite manifest) instead of the monolithic
+   * gunzip-concat-regzip blob. Only meaningful with {@link continuous} on (the
+   * recorder wires the segment flusher inside the continuous branch); a
+   * `segmented` set without `continuous` is dropped on persist. Because a segment
+   * append is O(1), the segmented path is NOT subject to the monolithic
+   * sub-minute flush-interval floor — see {@link clampFlushIntervalMs}. Default
+   * off (monolithic).
+   */
+  segmented?: boolean;
+  /**
    * Whether mask-all is enforced while continuous capture is on. mask-all is a
    * STRONG DEFAULT (enforced when continuous is on) that an Admin may explicitly
    * override by persisting `false` — recording un-masked whole sessions is then
@@ -105,6 +116,15 @@ export interface ResolvedReplayPolicy {
   /** Whether continuous capture is enabled for the project. */
   continuous: boolean;
   /**
+   * Whether the continuous tier streams view-scoped segments (append-only S3
+   * objects + a SQLite manifest) rather than the monolithic blob. Only ever true
+   * when {@link continuous} is on. The recorder wires a `SegmentReplayFlusher`
+   * driven by a client-minted session/view manager when this is true; otherwise
+   * it wires the monolithic `ContinuousReplayFlusher`. See
+   * {@link ProjectReplayConfig.segmented}.
+   */
+  segmented: boolean;
+  /**
    * When true the recorder MUST mask all text + inputs and the UI must not
    * offer a relaxed masking mode. mask-all is a STRONG DEFAULT whenever
    * continuous capture is on — it is enforced unless an Admin has explicitly
@@ -113,11 +133,17 @@ export interface ResolvedReplayPolicy {
    */
   maskAllEnforced: boolean;
   /**
-   * Cadence (ms) the continuous recorder flushes chunks at. Always present so
-   * the client never has to guess; defaults to
-   * {@link DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS} and is clamped to the
-   * [{@link MIN_CONTINUOUS_FLUSH_INTERVAL_MS}, {@link MAX_CONTINUOUS_FLUSH_INTERVAL_MS}]
-   * range (the floor bars sub-minute cadence per the MVP storage decision).
+   * Cadence (ms) the continuous recorder flushes at. Always present so the client
+   * never has to guess. The meaning depends on {@link segmented}:
+   *   - **monolithic** — the whole-blob flush interval; defaults to
+   *     {@link DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS} (5 min), floored at
+   *     {@link MIN_CONTINUOUS_FLUSH_INTERVAL_MS} (no sub-minute cadence on the
+   *     O(n^2) monolithic append).
+   *   - **segmented** — the per-segment duration bound the recorder rolls
+   *     segments over on (fed into the flusher's `maxDurationMs`); defaults to
+   *     {@link DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS} (~5s) and floored only at
+   *     {@link MIN_SEGMENTED_FLUSH_INTERVAL_MS} (1s) since append is O(1).
+   * Capped at {@link MAX_CONTINUOUS_FLUSH_INTERVAL_MS} either way.
    */
   flushIntervalMs: number;
   /**
@@ -154,11 +180,30 @@ export const DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 export const MIN_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 1000;
 /** Ceiling on the cadence so a tab's tail loss window stays bounded (1 hour). */
 export const MAX_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * Floor on the flush cadence for the SEGMENTED path. A segment append is one PUT
+ * (O(1)), so sub-minute cadence is safe here — the monolithic
+ * {@link MIN_CONTINUOUS_FLUSH_INTERVAL_MS} floor (which exists because the
+ * monolithic append is O(n^2)) does NOT apply. Still floored at 1s so a
+ * misconfigured value can't ask for a pathological flush-per-millisecond.
+ */
+export const MIN_SEGMENTED_FLUSH_INTERVAL_MS = 1_000;
+/**
+ * Default segment-rollover cadence (~5s, Datadog parity) delivered for the
+ * segmented path when a project sets no explicit `flushIntervalMs`. Unlike the
+ * monolithic tier (whole-blob flush every 5 min), a segment's natural cadence is
+ * the per-segment duration bound the recorder rolls over on, so an unset segmented
+ * cadence resolves to this — NOT the 5-min monolithic default (which would make
+ * segments span minutes and defeat the O(1)-append point). Mirrors the client's
+ * `SEGMENT_MAX_DURATION_MS`.
+ */
+export const DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS = 5_000;
 
 /** The policy returned when a project has no replay config (or no project). */
 export const DEFAULT_REPLAY_POLICY: ResolvedReplayPolicy = Object.freeze({
   sampleRate: null,
   continuous: false,
+  segmented: false,
   maskAllEnforced: false,
   flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
   sessionSampleRate: null,
@@ -209,11 +254,18 @@ export function clampReplaySampleRate(value: number): number {
  * is raised to it (the MVP storage cannot support faster), and anything above
  * the ceiling is capped.
  */
-export function clampFlushIntervalMs(value: number | undefined | null): number {
+export function clampFlushIntervalMs(
+  value: number | undefined | null,
+  { segmented = false }: { segmented?: boolean } = {},
+): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS;
+    // Unset: the segmented tier defaults to the ~5s segment cadence, the
+    // monolithic tier to the 5-min whole-blob flush.
+    return segmented ? DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS : DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS;
   }
-  if (value < MIN_CONTINUOUS_FLUSH_INTERVAL_MS) return MIN_CONTINUOUS_FLUSH_INTERVAL_MS;
+  // The segmented path lifts the monolithic sub-minute floor (append is O(1)).
+  const floor = segmented ? MIN_SEGMENTED_FLUSH_INTERVAL_MS : MIN_CONTINUOUS_FLUSH_INTERVAL_MS;
+  if (value < floor) return floor;
   if (value > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) return MAX_CONTINUOUS_FLUSH_INTERVAL_MS;
   return value;
 }
@@ -243,6 +295,11 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
   const obj = raw as Record<string, unknown>;
   const out: ProjectReplayConfig = {};
 
+  // Read the segmented intent up front: PATCH replaces the whole `replay` config
+  // (it is not merged), so `segmented` and `flushIntervalMs` always arrive
+  // together and the interval validation below can lift the floor accordingly.
+  const segmentedRequested = obj.segmented === true;
+
   if (obj.sampleRate !== undefined) {
     const n = obj.sampleRate;
     if (typeof n !== 'number' || !Number.isFinite(n)) {
@@ -268,18 +325,31 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     out.maskAllEnforced = obj.maskAllEnforced;
   }
 
+  if (obj.segmented !== undefined) {
+    if (typeof obj.segmented !== 'boolean') {
+      return { ok: false, error: 'replay.segmented must be a boolean' };
+    }
+    out.segmented = obj.segmented;
+  }
+
   if (obj.flushIntervalMs !== undefined) {
     const n = obj.flushIntervalMs;
     if (typeof n !== 'number' || !Number.isFinite(n)) {
       return { ok: false, error: 'replay.flushIntervalMs must be a finite number (ms)' };
     }
-    if (n < MIN_CONTINUOUS_FLUSH_INTERVAL_MS || n > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) {
+    // The segmented path (O(1) append) lifts the monolithic sub-minute floor.
+    const floor = segmentedRequested
+      ? MIN_SEGMENTED_FLUSH_INTERVAL_MS
+      : MIN_CONTINUOUS_FLUSH_INTERVAL_MS;
+    if (n < floor || n > MAX_CONTINUOUS_FLUSH_INTERVAL_MS) {
       return {
         ok: false,
-        error: `replay.flushIntervalMs must be between ${MIN_CONTINUOUS_FLUSH_INTERVAL_MS} and ${MAX_CONTINUOUS_FLUSH_INTERVAL_MS} ms (no sub-minute cadence on monolithic storage)`,
+        error: segmentedRequested
+          ? `replay.flushIntervalMs must be between ${floor} and ${MAX_CONTINUOUS_FLUSH_INTERVAL_MS} ms`
+          : `replay.flushIntervalMs must be between ${floor} and ${MAX_CONTINUOUS_FLUSH_INTERVAL_MS} ms (no sub-minute cadence on monolithic storage)`,
       };
     }
-    out.flushIntervalMs = clampFlushIntervalMs(n);
+    out.flushIntervalMs = clampFlushIntervalMs(n, { segmented: segmentedRequested });
   }
 
   for (const key of ['sessionSampleRate', 'sessionReplaySampleRate'] as const) {
@@ -351,6 +421,13 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
   if (out.maskAllEnforced !== false || out.continuous !== true) {
     delete out.maskAllEnforced;
   }
+  // `segmented` is only meaningful with continuous on (the recorder wires the
+  // segment flusher inside the continuous branch). Keep it only as the non-default
+  // `true` + continuous-on combo; an explicit `false`, or a `true` without
+  // continuous, is dropped so the stored config stays lean.
+  if (out.segmented !== true || out.continuous !== true) {
+    delete out.segmented;
+  }
   return { ok: true, value: out };
 }
 
@@ -365,6 +442,11 @@ export function resolveReplayPolicy(
 ): ResolvedReplayPolicy {
   if (!cfg || typeof cfg !== 'object') return DEFAULT_REPLAY_POLICY;
   const continuous = cfg.continuous === true;
+  // Segmented is only meaningful with continuous on — the recorder wires the
+  // segment flusher inside the continuous branch. (Defense in depth: persist
+  // already strips a lone `segmented`, but a config from any other source
+  // resolves safely here too.)
+  const segmented = continuous && cfg.segmented === true;
   let sampleRate =
     typeof cfg.sampleRate === 'number' && Number.isFinite(cfg.sampleRate)
       ? clampReplaySampleRate(cfg.sampleRate)
@@ -394,11 +476,13 @@ export function resolveReplayPolicy(
   return {
     sampleRate,
     continuous,
+    segmented,
     // Strong default: enforced whenever continuous capture is on, UNLESS an
     // Admin has explicitly opted the project out (`maskAllEnforced === false`).
     // With continuous off, mask-all is never enforced (per-browser choice wins).
     maskAllEnforced: continuous && cfg.maskAllEnforced !== false,
-    flushIntervalMs: clampFlushIntervalMs(cfg.flushIntervalMs),
+    // The segmented path lifts the sub-minute floor (O(1) append).
+    flushIntervalMs: clampFlushIntervalMs(cfg.flushIntervalMs, { segmented }),
     sessionSampleRate,
     sessionReplaySampleRate,
     effectiveReplaySampleRate,

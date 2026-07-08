@@ -65,7 +65,13 @@ import {
   setUserProperty,
   clearUser,
   getActiveUser,
+  isServerSegmentedEnabled,
+  SegmentedContinuousController,
+  clampSegmentFlushInterval,
+  getSegmentMaxDurationMs,
+  MIN_SEGMENTED_FLUSH_INTERVAL_MS,
 } from './sessionReplay';
+import type { SegmentFlusherLike } from './sessionReplay';
 
 // startRecorder() lazy-imports rrweb; stub it so the masking-mode restart path
 // is deterministic and never spins up a real recorder in jsdom. record() returns
@@ -3311,5 +3317,276 @@ describe('installViewChangeDetector', () => {
     } finally {
       Object.defineProperty(window, 'history', { value: orig, configurable: true });
     }
+  });
+});
+
+describe('applyServerReplayConfig — segmented tier', () => {
+  beforeEach(() => _resetSessionReplayForTest());
+  afterEach(() => _resetSessionReplayForTest());
+
+  it('reports segmented only when the policy sets continuous + segmented', () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, segmented: true });
+    expect(isServerSegmentedEnabled()).toBe(true);
+    // segmented without continuous is meaningless — never on.
+    applyServerReplayConfig({ sampleRate: 1, continuous: false, segmented: true });
+    expect(isServerSegmentedEnabled()).toBe(false);
+    // continuous without segmented is the monolithic tier.
+    applyServerReplayConfig({ sampleRate: 1, continuous: true });
+    expect(isServerSegmentedEnabled()).toBe(false);
+    applyServerReplayConfig(null);
+    expect(isServerSegmentedEnabled()).toBe(false);
+  });
+
+  it('keeps a server-delivered sub-minute cadence as the segment duration bound (not floored to 60s)', () => {
+    // A segmented project's sub-minute flushIntervalMs must NOT be re-floored to
+    // the monolithic 60s minimum on the client — it maps to the segment duration.
+    applyServerReplayConfig({
+      sampleRate: 1,
+      continuous: true,
+      segmented: true,
+      flushIntervalMs: 8_000,
+    });
+    expect(getSegmentMaxDurationMs()).toBe(8_000);
+  });
+
+  it('defaults the segment duration bound to ~5s when the segmented cadence is unset', () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, segmented: true });
+    // The server delivers a flushIntervalMs (defaulting to the ~5s segmented
+    // default), so an unset segmented cadence resolves to SEGMENT_MAX_DURATION_MS.
+    expect(getSegmentMaxDurationMs()).toBe(SEGMENT_MAX_DURATION_MS);
+    // With no config at all it also falls back to the 5s default.
+    applyServerReplayConfig(null);
+    expect(getSegmentMaxDurationMs()).toBe(SEGMENT_MAX_DURATION_MS);
+  });
+});
+
+describe('clampSegmentFlushInterval', () => {
+  it('defaults unset / non-finite to the ~5s segment duration', () => {
+    expect(clampSegmentFlushInterval(null)).toBe(SEGMENT_MAX_DURATION_MS);
+    expect(clampSegmentFlushInterval(undefined)).toBe(SEGMENT_MAX_DURATION_MS);
+    expect(clampSegmentFlushInterval(NaN)).toBe(SEGMENT_MAX_DURATION_MS);
+  });
+
+  it('raises a below-floor value to the 1s segmented floor (not the 60s monolithic floor)', () => {
+    expect(clampSegmentFlushInterval(10)).toBe(MIN_SEGMENTED_FLUSH_INTERVAL_MS);
+    // A 5s cadence is valid on the segmented path (would be floored to 60s on monolithic).
+    expect(clampSegmentFlushInterval(5_000)).toBe(5_000);
+  });
+
+  it('caps an excessive cadence to the ceiling', () => {
+    expect(clampSegmentFlushInterval(10 * 60 * 60 * 1000)).toBe(MAX_CONTINUOUS_FLUSH_INTERVAL_MS);
+  });
+});
+
+describe('SegmentedContinuousController', () => {
+  it('mints session/view ids, flushes the outgoing view on navigation, and rolls the session over', async () => {
+    let clock = 1000;
+    let idn = 0;
+    const manager = new RumSessionManager({
+      now: () => clock,
+      generateId: () => `id${idn++}`,
+    });
+
+    const submitted: any[] = [];
+    const submitSegment = vi.fn(async (payload: any) => {
+      submitted.push(payload);
+      return { segmentId: `seg${submitted.length}` };
+    });
+
+    // Fake recorder whose forceFullSnapshot re-enters the controller sink with a
+    // Meta + FullSnapshot, exactly as rrweb's checkout does in production.
+    let controller: any;
+    const recorder = {
+      forceFullSnapshot: vi.fn(() => {
+        controller.handleEvent(meta(clock));
+        controller.handleEvent(snap(clock));
+      }),
+    };
+
+    controller = new SegmentedContinuousController({
+      recorder,
+      sessionManager: manager,
+      endpointBase: '/api/replays',
+      createFlusher: (opts: any) =>
+        new SegmentReplayFlusher({
+          ...opts,
+          submitSegment,
+          now: () => clock,
+          // No real timers — the test drives rollovers explicitly.
+          setIntervalFn: null,
+          clearIntervalFn: null,
+        }) as unknown as SegmentFlusherLike,
+    });
+
+    // init mints the opening session (id0) + view (id1) and builds the flusher.
+    controller.init();
+    controller.start();
+    const flusher0 = controller.flusher;
+    expect(flusher0.sessionId).toBe('id0');
+    expect(flusher0.viewId).toBe('id1');
+    expect(flusher0.indexInView).toBe(0);
+
+    // Opening view: the snapshot + one interaction (as rrweb emits at start).
+    controller.handleEvent(meta(clock));
+    controller.handleEvent(snap(clock));
+    controller.handleEvent(incr(clock));
+
+    // Navigate: mints a fresh view (id2) under the SAME session, flushing the
+    // outgoing view's opening segment to (id0, id1, 0).
+    await controller.handleViewChange();
+    expect(submitSegment).toHaveBeenCalledTimes(1);
+    expect(submitted[0].sessionId).toBe('id0');
+    expect(submitted[0].viewId).toBe('id1');
+    expect(submitted[0].indexInView).toBe(0);
+    expect(hasFullSnapshot(submitted[0].events)).toBe(true);
+    // Same flusher, now on the new view; requestSnapshot re-opened index 0.
+    expect(controller.flusher).toBe(flusher0);
+    expect(controller.flusher.viewId).toBe('id2');
+    expect(controller.flusher.indexInView).toBe(0);
+    expect(recorder.forceFullSnapshot).toHaveBeenCalled();
+
+    // Session rollover: advance past the inactivity timeout, then feed an event.
+    // The manager expires the session and mints a FRESH session + view, and the
+    // controller REBUILDS the flusher for the new session.
+    clock += SESSION_INACTIVITY_TIMEOUT_MS + 1;
+    controller.handleEvent(incr(clock));
+    expect(controller.flusher).not.toBe(flusher0);
+    expect(controller.flusher.sessionId).toBe('id3');
+    expect(controller.flusher.sessionId).not.toBe('id0');
+    expect(controller.flusher.viewId).toBe('id4');
+    controller.stop();
+  });
+
+  it('rebuilds for a fresh session when navigation happens after expiry', async () => {
+    let clock = 5000;
+    let idn = 0;
+    const manager = new RumSessionManager({ now: () => clock, generateId: () => `v${idn++}` });
+    const submitSegment = vi.fn(async () => ({ segmentId: 'x' }));
+    let controller: any;
+    const recorder = { forceFullSnapshot: vi.fn(() => controller.handleEvent(snap(clock))) };
+    controller = new SegmentedContinuousController({
+      recorder,
+      sessionManager: manager,
+      endpointBase: '/api/replays',
+      createFlusher: (opts: any) =>
+        new SegmentReplayFlusher({
+          ...opts,
+          submitSegment,
+          now: () => clock,
+          setIntervalFn: null,
+        }) as unknown as SegmentFlusherLike,
+    });
+    controller.init();
+    const first = controller.flusher;
+    expect(first.sessionId).toBe('v0');
+
+    // Navigate AFTER the session has expired → a fresh session, not just a view.
+    clock += SESSION_MAX_DURATION_MS + 1;
+    const ret = controller.handleViewChange();
+    // Session-change branch rebuilds rather than rolling the view, so it returns null.
+    expect(ret).toBeNull();
+    expect(controller.flusher).not.toBe(first);
+    expect(controller.flusher.sessionId).toBe('v2');
+    expect(controller.flusher.sessionId).not.toBe('v0');
+    controller.stop();
+  });
+});
+
+describe('segmented continuous wiring (startRecorder)', () => {
+  beforeEach(() => _resetSessionReplayForTest());
+  afterEach(() => _resetSessionReplayForTest());
+
+  it('wires a SegmentedContinuousController with minted ids when the project opts into the segmented tier', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, segmented: true });
+    await setSessionReplayEnabled(true);
+    const mod = await import('./sessionReplay');
+    const controller = mod.getSegmentController()!;
+    expect(controller).not.toBeNull();
+    expect(controller).toBeInstanceOf(SegmentedContinuousController);
+    // The monolithic accessor returns the same controller (uniform tail-flush path).
+    expect(mod.getContinuousFlusher()).toBe(controller);
+    const flusher = controller.flusher!;
+    expect(flusher).not.toBeNull();
+    expect(typeof flusher.sessionId).toBe('string');
+    expect(flusher.sessionId.length).toBeGreaterThan(0);
+    expect(typeof flusher.viewId).toBe('string');
+    expect(flusher.viewId.length).toBeGreaterThan(0);
+    expect(flusher.indexInView).toBe(0);
+    // The segmented cadence maps to the flusher's segment duration bound.
+    expect(flusher.maxDurationMs).toBe(getSegmentMaxDurationMs());
+
+    // A navigation drives the controller's view-change path.
+    const spy = vi.spyOn(controller, 'handleViewChange').mockImplementation(() => null);
+    window.history.pushState({}, '', `/seg-nav-${Date.now()}`);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+
+    // Disabling tears down the controller and uninstalls the view-change detector.
+    await setSessionReplayEnabled(false);
+    expect(mod.getSegmentController()).toBeNull();
+    expect(mod.getContinuousFlusher()).toBeNull();
+  });
+
+  it('threads a project-configured segmented cadence into the segment duration bound', async () => {
+    applyServerReplayConfig({
+      sampleRate: 1,
+      continuous: true,
+      segmented: true,
+      flushIntervalMs: 12_000,
+    });
+    await setSessionReplayEnabled(true);
+    const mod = await import('./sessionReplay');
+    const flusher = mod.getSegmentController()!.flusher!;
+    // The Admin-configured 12s cadence governs segment rollover — not the
+    // hardcoded 5s default (this is the behavior the server floor-lift enables).
+    expect(flusher.maxDurationMs).toBe(12_000);
+    await setSessionReplayEnabled(false);
+  });
+
+  it('feeds uncaught errors to the live segment flusher (error-click classification)', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, segmented: true });
+    await setSessionReplayEnabled(true);
+    const mod = await import('./sessionReplay');
+    const controller = mod.getSegmentController()!;
+    const spy = vi.spyOn(controller, 'notifyError');
+    // A throttled record-on-error flush still forwards the error to the flusher.
+    await mod.getRecorder().handleError({ trigger: 'window.error' });
+    expect(spy).toHaveBeenCalledTimes(1);
+    await setSessionReplayEnabled(false);
+  });
+
+  it('keeps a SINGLE view-change detector across a masking-mode restart (no leaked duplicate)', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true, segmented: true });
+    await setSessionReplayEnabled(true);
+    const mod = await import('./sessionReplay');
+    const controller = mod.getSegmentController()!;
+    expect(controller).not.toBeNull();
+
+    // A masking-mode change restarts the recorder WITHOUT tearing down the
+    // continuous stream (the flusher/controller is preserved), so startRecorder
+    // re-enters with a truthy _continuousFlusher and re-runs the detector wiring.
+    await mod.setReplayMaskingMode(false);
+    // Same controller instance survives the restart.
+    expect(mod.getSegmentController()).toBe(controller);
+
+    // Exactly ONE active detector must remain: a single SPA navigation fires
+    // handleViewChange once, not twice (a leaked first detector would double it).
+    const spy = vi.spyOn(controller, 'handleViewChange').mockImplementation(() => null);
+    window.history.pushState({}, '', `/mask-restart-nav-${Date.now()}`);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+
+    await setSessionReplayEnabled(false);
+  });
+
+  it('wires the MONOLITHIC flusher (not the controller) when segmented is off', async () => {
+    applyServerReplayConfig({ sampleRate: 1, continuous: true });
+    await setSessionReplayEnabled(true);
+    const mod = await import('./sessionReplay');
+    expect(mod.getSegmentController()).toBeNull();
+    const flusher = mod.getContinuousFlusher();
+    expect(flusher).not.toBeNull();
+    expect(flusher).toBeInstanceOf(ContinuousReplayFlusher);
+    await setSessionReplayEnabled(false);
   });
 });
