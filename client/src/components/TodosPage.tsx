@@ -13,8 +13,10 @@ import {
   RefreshCw,
   ExternalLink,
   ArrowUpRight,
+  Link2,
 } from 'lucide-react';
 import PromoteTodoModal from './PromoteTodoModal';
+import LinkTodoModal from './LinkTodoModal';
 import { api, type UserTodoWire, type TodoPriority } from '../utils/api';
 import {
   moveTodoId,
@@ -79,6 +81,7 @@ export default function TodosPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
   const [promoteTarget, setPromoteTarget] = useState<UserTodoWire | null>(null);
+  const [linkTarget, setLinkTarget] = useState<UserTodoWire | null>(null);
 
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -344,6 +347,7 @@ export default function TodosPage() {
                     onDelete={() => removeTodo(todo.id)}
                     onUnlink={() => unlinkTodo(todo.id)}
                     onPromote={() => setPromoteTarget(todo)}
+                    onLink={() => setLinkTarget(todo)}
                     onMoveUp={() => reorder(todo.id, 'up')}
                     onMoveDown={() => reorder(todo.id, 'down')}
                   />
@@ -381,6 +385,7 @@ export default function TodosPage() {
                         onDelete={() => removeTodo(todo.id)}
                         onUnlink={() => unlinkTodo(todo.id)}
                         onPromote={() => {}}
+                        onLink={() => {}}
                         onMoveUp={() => {}}
                         onMoveDown={() => {}}
                       />
@@ -397,6 +402,16 @@ export default function TodosPage() {
           todo={promoteTarget}
           onClose={() => setPromoteTarget(null)}
           onPromoted={({ todo }) => {
+            // Reflect the new link locally right away; the WS refetch reconciles.
+            setTodos((prev) => prev.map((t) => (t.id === todo.id ? todo : t)));
+          }}
+        />
+      )}
+      {linkTarget && (
+        <LinkTodoModal
+          todo={linkTarget}
+          onClose={() => setLinkTarget(null)}
+          onLinked={({ todo }) => {
             // Reflect the new link locally right away; the WS refetch reconciles.
             setTodos((prev) => prev.map((t) => (t.id === todo.id ? todo : t)));
           }}
@@ -422,6 +437,7 @@ interface TodoRowProps {
   onDelete: () => void;
   onUnlink: () => void;
   onPromote: () => void;
+  onLink: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
 }
@@ -438,6 +454,7 @@ function TodoRow({
   onDelete,
   onUnlink,
   onPromote,
+  onLink,
   onMoveUp,
   onMoveDown,
 }: TodoRowProps) {
@@ -607,16 +624,28 @@ function TodoRow({
       {!done && (
         <div className="flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           {!linkLabel && (
-            <button
-              type="button"
-              onClick={onPromote}
-              aria-label="Promote to ticket"
-              data-testid="todo-promote"
-              title="Promote to ticket"
-              className="p-1 rounded-md text-gray-500 hover:text-violet-300 hover:bg-gray-800"
-            >
-              <ArrowUpRight size={15} />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onLink}
+                aria-label="Link to existing"
+                data-testid="todo-link"
+                title="Link to existing card, epic, or session"
+                className="p-1 rounded-md text-gray-500 hover:text-violet-300 hover:bg-gray-800"
+              >
+                <Link2 size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={onPromote}
+                aria-label="Promote to ticket"
+                data-testid="todo-promote"
+                title="Promote to ticket"
+                className="p-1 rounded-md text-gray-500 hover:text-violet-300 hover:bg-gray-800"
+              >
+                <ArrowUpRight size={15} />
+              </button>
+            </>
           )}
           <button
             type="button"

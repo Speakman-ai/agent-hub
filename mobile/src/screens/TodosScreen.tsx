@@ -32,6 +32,7 @@ import {
 } from '../utils/todos';
 import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
 import PromoteTodoModal from '../components/PromoteTodoModal';
+import LinkTodoModal from '../components/LinkTodoModal';
 
 /**
  * Cross-project personal Todos screen (spec NAV-PLACEMENT) — the mobile 1:1
@@ -131,6 +132,7 @@ export default function TodosScreen() {
     const [editingId, setEditingId] = useState<string | null>(null);
     const [showDone, setShowDone] = useState(false);
     const [promoteTarget, setPromoteTarget] = useState<any>(null);
+    const [linkTarget, setLinkTarget] = useState<any>(null);
 
     const mountedRef = useRef(true);
     useEffect(() => {
@@ -384,6 +386,7 @@ export default function TodosScreen() {
                                         onDelete={() => removeTodo(todo.id)}
                                         onUnlink={() => unlinkTodo(todo.id)}
                                         onPromote={() => setPromoteTarget(todo)}
+                                        onLink={() => setLinkTarget(todo)}
                                         onMoveUp={() => reorder(todo.id, 'up')}
                                         onMoveDown={() => reorder(todo.id, 'down')}
                                     />
@@ -421,6 +424,7 @@ export default function TodosScreen() {
                                                 onDelete={() => removeTodo(todo.id)}
                                                 onUnlink={() => unlinkTodo(todo.id)}
                                                 onPromote={() => {}}
+                                                onLink={() => {}}
                                                 onMoveUp={() => {}}
                                                 onMoveDown={() => {}}
                                             />
@@ -442,6 +446,16 @@ export default function TodosScreen() {
                     }}
                 />
             ) : null}
+            {linkTarget ? (
+                <LinkTodoModal
+                    todo={linkTarget}
+                    onClose={() => setLinkTarget(null)}
+                    onLinked={({ todo }) => {
+                        // Reflect the new link locally; the WS refetch reconciles.
+                        setTodos((prev) => prev.map((t) => (t.id === todo.id ? todo : t)));
+                    }}
+                />
+            ) : null}
         </SafeAreaView>
     );
 }
@@ -458,6 +472,7 @@ export function TodoRow({
     onDelete,
     onUnlink,
     onPromote,
+    onLink,
     onMoveUp,
     onMoveDown,
 }: any) {
@@ -646,14 +661,24 @@ export function TodoRow({
             {!done ? (
                 <View style={styles.rowActions}>
                     {!linkLabel ? (
-                        <TouchableOpacity
-                            testID="todo-promote"
-                            onPress={onPromote}
-                            style={styles.iconButton}
-                            accessibilityLabel="Promote to ticket"
-                        >
-                            <HubIcon name="ArrowUpRight" size={15} color={colors.gray500} />
-                        </TouchableOpacity>
+                        <>
+                            <TouchableOpacity
+                                testID="todo-link"
+                                onPress={onLink}
+                                style={styles.iconButton}
+                                accessibilityLabel="Link to existing"
+                            >
+                                <HubIcon name="Link2" size={15} color={colors.gray500} />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                testID="todo-promote"
+                                onPress={onPromote}
+                                style={styles.iconButton}
+                                accessibilityLabel="Promote to ticket"
+                            >
+                                <HubIcon name="ArrowUpRight" size={15} color={colors.gray500} />
+                            </TouchableOpacity>
+                        </>
                     ) : null}
                     <TouchableOpacity
                         onPress={onMoveUp}
