@@ -24208,6 +24208,23 @@ paths:
                   minLength: 1
                 notes:
                   type: string
+                priority:
+                  type: string
+                  enum:
+                    - urgent
+                    - high
+                    - medium
+                    - low
+                doDate:
+                  type: string
+                  nullable: true
+                  description: Day the user plans to work the task (scheduling "do" date, not a deadline).
+                doStartAt:
+                  type: string
+                  nullable: true
+                doEndAt:
+                  type: string
+                  nullable: true
                 dueAt:
                   type: string
                   nullable: true
@@ -24224,6 +24241,23 @@ paths:
                   type: object
                   additionalProperties:
                     nullable: true
+                linkedType:
+                  type: string
+                  nullable: true
+                  enum:
+                    - card
+                    - epic
+                    - session
+                    - null
+                  description: Polymorphic link target type. Co-dependent with linkedId; an explicit null clears the link.
+                linkedId:
+                  type: string
+                  nullable: true
+                  description: Linked entity id. Required when linkedType is set.
+                linkedProjectId:
+                  type: string
+                  nullable: true
+                  description: Scopes a project-bound link target (card / epic). Ignored for a session link.
               required:
                 - title
       responses:
@@ -24279,9 +24313,42 @@ paths:
                   enum:
                     - open
                     - done
+                priority:
+                  type: string
+                  enum:
+                    - urgent
+                    - high
+                    - medium
+                    - low
+                doDate:
+                  type: string
+                  nullable: true
+                doStartAt:
+                  type: string
+                  nullable: true
+                doEndAt:
+                  type: string
+                  nullable: true
                 dueAt:
                   type: string
                   nullable: true
+                linkedType:
+                  type: string
+                  nullable: true
+                  enum:
+                    - card
+                    - epic
+                    - session
+                    - null
+                  description: Polymorphic link target type. Co-dependent with linkedId; an explicit null clears the link.
+                linkedId:
+                  type: string
+                  nullable: true
+                  description: Linked entity id. Required when linkedType is set.
+                linkedProjectId:
+                  type: string
+                  nullable: true
+                  description: Scopes a project-bound link target (card / epic). Ignored for a session link.
       responses:
         "200":
           description: Updated todo.

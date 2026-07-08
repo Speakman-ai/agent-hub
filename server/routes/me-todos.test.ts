@@ -88,6 +88,85 @@ describe('POST /api/me/todos', () => {
       .expect(400);
   });
 
+  it('creates with priority and a do-date window', async () => {
+    const res = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({
+        title: 'scheduled task',
+        priority: 'high',
+        doDate: '2026-07-10',
+        doStartAt: '2026-07-10T09:00:00.000Z',
+        doEndAt: '2026-07-10T10:30:00.000Z',
+      })
+      .expect(201);
+
+    expect(res.body.todo).toMatchObject({
+      priority: 'high',
+      doDate: '2026-07-10',
+      doStartAt: '2026-07-10T09:00:00.000Z',
+      doEndAt: '2026-07-10T10:30:00.000Z',
+    });
+  });
+
+  it('defaults priority to medium when omitted', async () => {
+    const res = await request(mount(userA)).post('/api/me/todos').send({ title: 'x' }).expect(201);
+    expect(res.body.todo.priority).toBe('medium');
+  });
+
+  it('rejects an invalid priority enum with 400', async () => {
+    await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'x', priority: 'critical' })
+      .expect(400);
+  });
+
+  it('rejects a non-ISO doDate with 400', async () => {
+    await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'x', doDate: 'not-a-date' })
+      .expect(400);
+  });
+
+  it('creates already linked to a card', async () => {
+    const res = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({
+        title: 'linked',
+        linkedType: 'card',
+        linkedId: 'card-123',
+        linkedProjectId: 'proj-1',
+      })
+      .expect(201);
+
+    expect(res.body.todo).toMatchObject({
+      linkedType: 'card',
+      linkedId: 'card-123',
+      linkedProjectId: 'proj-1',
+      linkedCardId: 'card-123', // back-compat column kept in sync
+    });
+  });
+
+  it('rejects linkedType without linkedId with 400', async () => {
+    await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'x', linkedType: 'card' })
+      .expect(400);
+  });
+
+  it('rejects linkedId without linkedType with 400', async () => {
+    await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'x', linkedId: 'card-1' })
+      .expect(400);
+  });
+
+  it('rejects an unknown linkedType with 400', async () => {
+    await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'x', linkedType: 'pullrequest', linkedId: 'pr-1' })
+      .expect(400);
+  });
+
   it('401s when unauthenticated', async () => {
     await request(mount(null)).post('/api/me/todos').send({ title: 'x' }).expect(401);
   });
@@ -159,6 +238,65 @@ describe('PUT /api/me/todos/:id', () => {
     const id = created.body.todo.id;
     await request(mount(userA)).put(`/api/me/todos/${id}`).send({ title: '  ' }).expect(400);
     await request(mount(userA)).put(`/api/me/todos/${id}`).send({ status: 'x' }).expect(400);
+  });
+
+  it('updates priority and the do-date window', async () => {
+    const created = await request(mount(userA)).post('/api/me/todos').send({ title: 'orig' });
+    const id = created.body.todo.id;
+
+    const res = await request(mount(userA))
+      .put(`/api/me/todos/${id}`)
+      .send({ priority: 'urgent', doDate: '2026-08-01' })
+      .expect(200);
+    expect(res.body.todo).toMatchObject({ priority: 'urgent', doDate: '2026-08-01' });
+
+    // A null clears the scheduling date back out.
+    const cleared = await request(mount(userA))
+      .put(`/api/me/todos/${id}`)
+      .send({ doDate: null })
+      .expect(200);
+    expect(cleared.body.todo.doDate).toBeNull();
+  });
+
+  it('rejects an invalid priority and a non-ISO doDate with 400', async () => {
+    const created = await request(mount(userA)).post('/api/me/todos').send({ title: 'orig' });
+    const id = created.body.todo.id;
+    await request(mount(userA)).put(`/api/me/todos/${id}`).send({ priority: 'meh' }).expect(400);
+    await request(mount(userA)).put(`/api/me/todos/${id}`).send({ doDate: 'xyz' }).expect(400);
+  });
+
+  it('sets and then clears the polymorphic link', async () => {
+    const created = await request(mount(userA)).post('/api/me/todos').send({ title: 'orig' });
+    const id = created.body.todo.id;
+
+    const linked = await request(mount(userA))
+      .put(`/api/me/todos/${id}`)
+      .send({ linkedType: 'epic', linkedId: 'epic-9', linkedProjectId: 'proj-2' })
+      .expect(200);
+    expect(linked.body.todo).toMatchObject({
+      linkedType: 'epic',
+      linkedId: 'epic-9',
+      linkedProjectId: 'proj-2',
+    });
+
+    const cleared = await request(mount(userA))
+      .put(`/api/me/todos/${id}`)
+      .send({ linkedType: null })
+      .expect(200);
+    expect(cleared.body.todo).toMatchObject({
+      linkedType: null,
+      linkedId: null,
+      linkedProjectId: null,
+    });
+  });
+
+  it('rejects linkedType without linkedId on update with 400', async () => {
+    const created = await request(mount(userA)).post('/api/me/todos').send({ title: 'orig' });
+    const id = created.body.todo.id;
+    await request(mount(userA))
+      .put(`/api/me/todos/${id}`)
+      .send({ linkedType: 'session' })
+      .expect(400);
   });
 });
 

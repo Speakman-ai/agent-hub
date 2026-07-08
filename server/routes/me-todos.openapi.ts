@@ -59,20 +59,48 @@ export const UserTodoComponent = registerComponent(
     }),
 );
 
+const doDateField = z.string().nullable().optional();
+const linkedTypeField = TodoLinkType.nullable().optional().openapi({
+  description:
+    'Polymorphic link target type. Co-dependent with linkedId; an explicit null clears the link.',
+});
+const linkedIdField = z.string().nullable().optional().openapi({
+  description: 'Linked entity id. Required when linkedType is set.',
+});
+const linkedProjectIdField = z.string().nullable().optional().openapi({
+  description: 'Scopes a project-bound link target (card / epic). Ignored for a session link.',
+});
+
 export const CreateTodoRequestSchema = z.object({
   title: z.string().min(1, 'title is required'),
   notes: z.string().optional(),
+  priority: TodoPriority.optional(),
+  doDate: doDateField.openapi({
+    description: 'Day the user plans to work the task (scheduling "do" date, not a deadline).',
+  }),
+  doStartAt: doDateField,
+  doEndAt: doDateField,
   dueAt: z.string().nullable().optional(),
   sourceType: TodoSourceType.optional(),
   sourceId: z.string().nullable().optional(),
   sourceMeta: z.record(z.string(), z.unknown()).optional(),
+  linkedType: linkedTypeField,
+  linkedId: linkedIdField,
+  linkedProjectId: linkedProjectIdField,
 });
 
 export const UpdateTodoRequestSchema = z.object({
   title: z.string().min(1).optional(),
   notes: z.string().optional(),
   status: TodoStatus.optional(),
+  priority: TodoPriority.optional(),
+  doDate: doDateField,
+  doStartAt: doDateField,
+  doEndAt: doDateField,
   dueAt: z.string().nullable().optional(),
+  linkedType: linkedTypeField,
+  linkedId: linkedIdField,
+  linkedProjectId: linkedProjectIdField,
 });
 
 export const ReorderTodosRequestSchema = z.object({

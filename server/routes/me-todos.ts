@@ -10,9 +10,17 @@
  * Endpoints:
  *   GET    /api/me/todos            list (optional ?status=open|done)
  *   POST   /api/me/todos            create (append at end of the user's list)
- *   PUT    /api/me/todos/:id        update (partial: title/notes/status/dueAt)
+ *   PUT    /api/me/todos/:id        update (partial: title/notes/status/priority/
+ *                                   doDate/doStartAt/doEndAt/dueAt, plus the
+ *                                   polymorphic link)
  *   DELETE /api/me/todos/:id        delete
  *   POST   /api/me/todos/reorder    reassign per-user positions from an id order
+ *
+ * Create and update accept the scheduling fields (`priority`, `doDate` and its
+ * optional `doStartAt`/`doEndAt` window) and the polymorphic link
+ * (`linkedType` + `linkedId` + optional `linkedProjectId`). `linkedType` and
+ * `linkedId` are co-dependent (spec TODO-TO-TICKET): one without the other is a
+ * 400; an explicit `linkedType: null` on update clears the link.
  *
  * Every write broadcasts a `user_todo_update` WebSocket event carrying
  * `ownerUserId`; the broadcast filter delivers it only to that owner.
@@ -22,12 +30,16 @@ import { Router, Request, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
 import type { RouteDeps } from '../types.js';
 import {
+  clearTodoLink,
   createTodo,
   deleteTodo,
   getTodo,
   listTodos,
   reorderTodos,
+  setTodoLink,
   updateTodo,
+  type TodoLinkType,
+  type TodoPriority,
   type TodoSourceType,
   type TodoStatus,
 } from '../user-todos-store.js';
@@ -40,6 +52,14 @@ function parseStatus(v: unknown): TodoStatus | null {
   return v === 'open' || v === 'done' ? v : null;
 }
 
+function parsePriority(v: unknown): TodoPriority | null {
+  return v === 'urgent' || v === 'high' || v === 'medium' || v === 'low' ? v : null;
+}
+
+function parseLinkType(v: unknown): TodoLinkType | null {
+  return v === 'card' || v === 'epic' || v === 'session' ? v : null;
+}
+
 function parseSourceType(v: unknown): TodoSourceType | null {
   return v === 'manual' || v === 'email' || v === 'calendar' ? v : null;
 }
@@ -50,6 +70,62 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+/**
+ * A scheduling date/time field (do_date / do_start_at / do_end_at). `undefined`
+ * means the caller omitted it; `null` clears it; a string must parse as a date
+ * (ISO date or datetime). Anything else is a validation error.
+ */
+type DateFieldResult = { ok: true; value: string | null | undefined } | { ok: false };
+
+function parseDateField(v: unknown): DateFieldResult {
+  if (v === undefined) return { ok: true, value: undefined };
+  if (v === null) return { ok: true, value: null };
+  if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Date.parse(v))) {
+    return { ok: true, value: v };
+  }
+  return { ok: false };
+}
+
+/**
+ * The polymorphic-link intent parsed off a create/update body (spec
+ * TODO-TO-TICKET). `linkedType` and `linkedId` are co-dependent: a type with no
+ * id (or an id with no type) is rejected. An explicit `linkedType: null` clears
+ * the link; omitting both leaves it untouched.
+ */
+type LinkOp =
+  | { kind: 'none' }
+  | { kind: 'clear' }
+  | { kind: 'set'; type: TodoLinkType; id: string; projectId: string | null };
+
+function parseLinkInput(
+  body: Record<string, unknown>,
+): { ok: true; op: LinkOp } | { ok: false; message: string } {
+  const hasType = body.linkedType !== undefined;
+  const hasId = body.linkedId !== undefined && body.linkedId !== null;
+
+  if (!hasType) {
+    if (hasId) return { ok: false, message: 'linkedId requires linkedType' };
+    return { ok: true, op: { kind: 'none' } };
+  }
+  if (body.linkedType === null) {
+    return { ok: true, op: { kind: 'clear' } };
+  }
+  const type = parseLinkType(body.linkedType);
+  if (!type) {
+    return { ok: false, message: 'linkedType must be "card", "epic", or "session"' };
+  }
+  if (typeof body.linkedId !== 'string' || body.linkedId.trim() === '') {
+    return { ok: false, message: 'linkedId is required when linkedType is set' };
+  }
+  const projectId =
+    body.linkedProjectId === null
+      ? null
+      : typeof body.linkedProjectId === 'string'
+        ? body.linkedProjectId
+        : null;
+  return { ok: true, op: { kind: 'set', type, id: body.linkedId, projectId } };
 }
 
 export default function createMeTodosRoutes(deps: RouteDeps): Router {
@@ -101,6 +177,32 @@ export default function createMeTodosRoutes(deps: RouteDeps): Router {
     const dueAt =
       body.dueAt === null ? null : typeof body.dueAt === 'string' ? body.dueAt : undefined;
 
+    let priority: TodoPriority | undefined;
+    if (body.priority !== undefined) {
+      const parsed = parsePriority(body.priority);
+      if (!parsed) {
+        bad(res, 400, 'priority must be "urgent", "high", "medium", or "low"');
+        return;
+      }
+      priority = parsed;
+    }
+
+    const doDate = parseDateField(body.doDate);
+    if (!doDate.ok) {
+      bad(res, 400, 'doDate must be an ISO date string or null');
+      return;
+    }
+    const doStartAt = parseDateField(body.doStartAt);
+    if (!doStartAt.ok) {
+      bad(res, 400, 'doStartAt must be an ISO date string or null');
+      return;
+    }
+    const doEndAt = parseDateField(body.doEndAt);
+    if (!doEndAt.ok) {
+      bad(res, 400, 'doEndAt must be an ISO date string or null');
+      return;
+    }
+
     let sourceType: TodoSourceType | undefined;
     if (body.sourceType !== undefined) {
       const parsed = parseSourceType(body.sourceType);
@@ -114,16 +216,35 @@ export default function createMeTodosRoutes(deps: RouteDeps): Router {
       body.sourceId === null ? null : typeof body.sourceId === 'string' ? body.sourceId : undefined;
     const sourceMeta = isPlainObject(body.sourceMeta) ? body.sourceMeta : undefined;
 
+    const link = parseLinkInput(body);
+    if (!link.ok) {
+      bad(res, 400, link.message);
+      return;
+    }
+
     try {
-      const todo = createTodo({
+      let todo = createTodo({
         userId: areq.authUserId,
         title,
         notes,
+        priority,
+        doDate: doDate.value,
+        doStartAt: doStartAt.value,
+        doEndAt: doEndAt.value,
         dueAt,
         sourceType,
         sourceId,
         sourceMeta,
       });
+      // A brand-new todo has no link to clear, so only a `set` matters here.
+      if (link.op.kind === 'set') {
+        todo =
+          setTodoLink(areq.authUserId, todo.id, {
+            type: link.op.type,
+            id: link.op.id,
+            projectId: link.op.projectId,
+          }) ?? todo;
+      }
       emitUpdate(areq.authUserId, 'created');
       res.status(201).json({ todo });
     } catch (err) {
@@ -175,12 +296,60 @@ export default function createMeTodosRoutes(deps: RouteDeps): Router {
       }
       patch.dueAt = body.dueAt;
     }
+    if (body.priority !== undefined) {
+      const priority = parsePriority(body.priority);
+      if (!priority) {
+        bad(res, 400, 'priority must be "urgent", "high", "medium", or "low"');
+        return;
+      }
+      patch.priority = priority;
+    }
+    if (body.doDate !== undefined) {
+      const doDate = parseDateField(body.doDate);
+      if (!doDate.ok) {
+        bad(res, 400, 'doDate must be an ISO date string or null');
+        return;
+      }
+      patch.doDate = doDate.value;
+    }
+    if (body.doStartAt !== undefined) {
+      const doStartAt = parseDateField(body.doStartAt);
+      if (!doStartAt.ok) {
+        bad(res, 400, 'doStartAt must be an ISO date string or null');
+        return;
+      }
+      patch.doStartAt = doStartAt.value;
+    }
+    if (body.doEndAt !== undefined) {
+      const doEndAt = parseDateField(body.doEndAt);
+      if (!doEndAt.ok) {
+        bad(res, 400, 'doEndAt must be an ISO date string or null');
+        return;
+      }
+      patch.doEndAt = doEndAt.value;
+    }
+
+    const link = parseLinkInput(body);
+    if (!link.ok) {
+      bad(res, 400, link.message);
+      return;
+    }
 
     try {
-      const updated = updateTodo(areq.authUserId, id, patch);
+      let updated = updateTodo(areq.authUserId, id, patch);
       if (!updated) {
         bad(res, 404, 'Todo not found');
         return;
+      }
+      if (link.op.kind === 'set') {
+        updated =
+          setTodoLink(areq.authUserId, id, {
+            type: link.op.type,
+            id: link.op.id,
+            projectId: link.op.projectId,
+          }) ?? updated;
+      } else if (link.op.kind === 'clear') {
+        updated = clearTodoLink(areq.authUserId, id) ?? updated;
       }
       emitUpdate(areq.authUserId, 'updated');
       res.json({ todo: updated });
