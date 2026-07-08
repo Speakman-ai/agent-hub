@@ -8,10 +8,13 @@ import {
   Mail,
   RefreshCw,
   Send,
+  Ticket,
   X,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
+import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import CaptureToTicketModal from './CaptureToTicketModal';
 import {
   GMAIL_SURFACE_SCOPES,
   hasGmailReadScope,
@@ -189,6 +192,7 @@ function ThreadModal({
   capturing,
   captured,
   onCapture,
+  onTicket,
   onClose,
 }: {
   loading: boolean;
@@ -198,6 +202,7 @@ function ThreadModal({
   capturing: boolean;
   captured: boolean;
   onCapture: () => void;
+  onTicket: () => void;
   onClose: () => void;
 }) {
   return (
@@ -222,6 +227,16 @@ function ThreadModal({
               <ListPlus size={13} />
             )}
             {captured ? 'Added' : 'Add to todos'}
+          </button>
+          <button
+            type="button"
+            onClick={onTicket}
+            disabled={loading}
+            title="Create ticket"
+            className="inline-flex flex-shrink-0 items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+          >
+            <Ticket size={13} />
+            Ticket
           </button>
           <button
             type="button"
@@ -292,6 +307,9 @@ export default function GmailPage({
   const [threadError, setThreadError] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [captured, setCaptured] = useState(false);
+  // Direct-to-ticket capture: seeds the project/column picker (spec
+  // CAPTURE-PROVENANCE); null when the picker is closed.
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -374,6 +392,22 @@ export default function GmailPage({
     } finally {
       setCapturing(false);
     }
+  };
+
+  const captureThreadToTicket = () => {
+    if (!openThread) return;
+    // Same selected-thread resolution as the todo capture (richer first message
+    // headers, falling back to the thread id / modal subject).
+    const first = threadMessages.find((m) => m.subject || m.from || m.snippet) || threadMessages[0];
+    setTicketDraft(
+      buildEmailCardDraft({
+        threadId: openThread.id,
+        messageId: first?.id ?? null,
+        subject: first?.subject ?? openThread.subject,
+        from: first?.from ?? null,
+        snippet: first?.snippet ?? null,
+      }),
+    );
   };
 
   const sendMessage = async (form: ComposeFormState) => {
@@ -533,8 +567,12 @@ export default function GmailPage({
           capturing={capturing}
           captured={captured}
           onCapture={captureThread}
+          onTicket={captureThreadToTicket}
           onClose={() => setOpenThread(null)}
         />
+      )}
+      {ticketDraft && (
+        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
       )}
     </div>
   );

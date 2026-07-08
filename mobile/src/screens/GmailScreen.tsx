@@ -22,6 +22,8 @@ import {
   hasGmailSendScope,
 } from '../utils/googleSurface';
 import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
+import { buildEmailCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import CaptureToTicketModal from '../components/CaptureToTicketModal';
 
 export { GMAIL_SURFACE_SCOPES };
 
@@ -247,6 +249,7 @@ function ThreadModal({
   capturing,
   captured,
   onCapture,
+  onTicket,
   onClose,
 }: any) {
   return (
@@ -266,6 +269,14 @@ function ThreadModal({
               <Text style={styles.captureButtonText}>
                 {capturing ? 'Adding…' : captured ? '✓ Added' : '+ Todo'}
               </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onTicket}
+              disabled={loading}
+              style={styles.captureButton}
+              accessibilityLabel="Create ticket"
+            >
+              <Text style={styles.captureButtonText}>+ Ticket</Text>
             </TouchableOpacity>
           </View>
           <ScrollView>
@@ -317,6 +328,7 @@ export default function GmailScreen({ navigation }: any) {
   const [threadError, setThreadError] = useState<any>(null);
   const [capturing, setCapturing] = useState(false);
   const [captured, setCaptured] = useState(false);
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -394,6 +406,21 @@ export default function GmailScreen({ navigation }: any) {
     }
   };
 
+  const captureThreadToTicket = () => {
+    if (!openThread) return;
+    const first =
+      threadMessages.find((m: any) => m.subject || m.from || m.snippet) || threadMessages[0];
+    setTicketDraft(
+      buildEmailCardDraft({
+        threadId: openThread.id,
+        messageId: first?.id ?? null,
+        subject: first?.subject ?? openThread.subject,
+        from: first?.from ?? null,
+        snippet: first?.snippet ?? null,
+      }),
+    );
+  };
+
   const send = async (form: any) => {
     setSending(true);
     setComposeError(null);
@@ -445,8 +472,12 @@ export default function GmailScreen({ navigation }: any) {
           capturing={capturing}
           captured={captured}
           onCapture={captureThread}
+          onTicket={captureThreadToTicket}
           onClose={() => setOpenThread(null)}
         />
+      ) : null}
+      {ticketDraft ? (
+        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
       ) : null}
     </SafeAreaView>
   );

@@ -9,10 +9,13 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Ticket,
   X,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
+import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import CaptureToTicketModal from './CaptureToTicketModal';
 import {
   CALENDAR_EVENTS_SCOPE,
   hasCalendarScope,
@@ -314,6 +317,9 @@ export default function CalendarAgendaPage({
   // a transient "Added" confirmation on the button).
   const [capturingId, setCapturingId] = useState<string | null>(null);
   const [capturedId, setCapturedId] = useState<string | null>(null);
+  // The direct-to-ticket capture path opens a project/column picker seeded with
+  // this draft (spec CAPTURE-PROVENANCE); null when the picker is closed.
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const range = useMemo(() => defaultCalendarRange(), []);
 
   const load = useCallback(async () => {
@@ -545,6 +551,15 @@ export default function CalendarAgendaPage({
                       })()}
                       <button
                         type="button"
+                        onClick={() => setTicketDraft(buildCalendarCardDraft(event))}
+                        title="Create ticket"
+                        className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                      >
+                        <Ticket size={12} />
+                        Ticket
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => setModalEvent(event)}
                         className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
                       >
@@ -572,6 +587,9 @@ export default function CalendarAgendaPage({
           onCancel={() => setModalEvent(undefined)}
           onSubmit={saveEvent}
         />
+      )}
+      {ticketDraft && (
+        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
       )}
     </div>
   );

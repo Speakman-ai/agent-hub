@@ -24,6 +24,8 @@ import {
   localTimeZone,
 } from '@shared/utils/calendarEvents';
 import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
+import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import CaptureToTicketModal from '../components/CaptureToTicketModal';
 
 export { defaultCalendarRange };
 
@@ -143,6 +145,7 @@ export function CalendarAgendaContent({
   onCreate,
   onEdit,
   onCapture,
+  onTicket,
   capturingId,
   capturedId,
 }: any) {
@@ -216,16 +219,25 @@ export function CalendarAgendaContent({
                 {item.description ? (
                   <Text style={styles.eventDescription}>{item.description}</Text>
                 ) : null}
-                <TouchableOpacity
-                  onPress={() => onCapture(item)}
-                  disabled={capturingId === key}
-                  style={styles.captureButton}
-                  accessibilityLabel="Add to todos"
-                >
-                  <Text style={styles.captureButtonText}>
-                    {capturingId === key ? 'Adding…' : isCaptured ? '✓ Added to todos' : '+ Add to todos'}
-                  </Text>
-                </TouchableOpacity>
+                <View style={styles.captureRow}>
+                  <TouchableOpacity
+                    onPress={() => onCapture(item)}
+                    disabled={capturingId === key}
+                    style={styles.captureButton}
+                    accessibilityLabel="Add to todos"
+                  >
+                    <Text style={styles.captureButtonText}>
+                      {capturingId === key ? 'Adding…' : isCaptured ? '✓ Added to todos' : '+ Add to todos'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => onTicket(item)}
+                    style={styles.captureButton}
+                    accessibilityLabel="Create ticket"
+                  >
+                    <Text style={styles.captureButtonText}>+ Ticket</Text>
+                  </TouchableOpacity>
+                </View>
               </TouchableOpacity>
             );
           }}
@@ -300,6 +312,7 @@ export default function CalendarScreen({ navigation }: any) {
   const [saving, setSaving] = useState(false);
   const [capturingId, setCapturingId] = useState<string | null>(null);
   const [capturedId, setCapturedId] = useState<string | null>(null);
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const range = useMemo(() => defaultCalendarRange(), []);
 
   const load = useCallback(async () => {
@@ -388,11 +401,15 @@ export default function CalendarScreen({ navigation }: any) {
         onCreate={() => setModalEvent(null)}
         onEdit={(event: any) => setModalEvent(event)}
         onCapture={capture}
+        onTicket={(event: any) => setTicketDraft(buildCalendarCardDraft(event))}
         capturingId={capturingId}
         capturedId={capturedId}
       />
       {modalEvent !== undefined ? (
         <EventModal event={modalEvent} saving={saving} error={modalError} onClose={() => setModalEvent(undefined)} onSave={save} />
+      ) : null}
+      {ticketDraft ? (
+        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
       ) : null}
     </SafeAreaView>
   );
@@ -425,8 +442,8 @@ const styles = StyleSheet.create({
   eventTitle: { color: colors.white, fontSize: 16, fontWeight: '700' },
   eventMeta: { color: colors.gray400, fontSize: 12, marginTop: 4 },
   eventDescription: { color: colors.gray300, fontSize: 13, marginTop: 8, lineHeight: 18 },
+  captureRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
   captureButton: {
-    marginTop: 10,
     alignSelf: 'flex-start',
     borderWidth: 1,
     borderColor: colors.gray700,
