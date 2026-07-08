@@ -1,13 +1,29 @@
 /**
- * replay-retention-sweeper.ts — periodic TTL garbage collection for session
- * replays.
+ * replay-retention-sweeper.ts — periodic TTL garbage collection for the session
+ * replay INDEX ROWS.
  *
- * Session replays (record-on-error today, continuous/Datadog-parity later) are
- * gzipped blobs in the artifact store plus a `session_replays` index row. Until
- * now NOTHING expired them: every captured replay accumulated forever, so a
- * busy deployment grows storage without bound. This sweeper enforces a
- * retention window (`config.replayRetentionDays`), the same way Datadog Session
- * Replay defaults to a 30-day TTL.
+ * Session replays are gzipped blobs in the artifact store plus a `session_replays`
+ * index row. Until retention existed NOTHING expired them, so a busy deployment
+ * grew storage without bound. This sweeper enforces a retention window
+ * (`config.replayRetentionDays`), the same way Datadog Session Replay defaults to
+ * a 30-day TTL.
+ *
+ * Byte ownership (who deletes the blob) is split by backend, matching the
+ * multi-tenant retention decision (S3-native lifecycle for bytes, app sweeper for
+ * the index):
+ *   - **S3 backend** — the sweeper delegates blob expiry to the S3-native
+ *     lifecycle rules (`replay-lifecycle.ts`) keyed on the storage prefix ONLY
+ *     when provisioning is CONFIRMED (`isLifecycleProvisioned()`), because an O(n)
+ *     list+delete sweep on the event loop does not scale and can't tier cold
+ *     objects. In that case it removes just the index row, reconciling SQLite
+ *     against the bytes lifecycle reaps. If provisioning is NOT confirmed (e.g. a
+ *     missing `s3:PutLifecycleConfiguration` permission — provisioning is
+ *     best-effort), the sweeper falls back to deleting the object itself before
+ *     the row, so dropping the only pointer can never strand un-indexed,
+ *     never-expiring S3 orphans (the exact failure this feature exists to avoid).
+ *   - **Local backend** — there is no lifecycle mechanism for on-disk files, so
+ *     the sweeper still deletes the local blob to reclaim disk (single-host /
+ *     dev installs). This is the orphan/reclamation path for that backend.
  *
  * Policy:
  *   - Retention is OFF unless `replayRetentionDays > 0`. With it unset (the
@@ -16,17 +32,15 @@
  *     or kanban card (`support_ticket_id` / `card_id`) is an intentional triage
  *     artifact; expiring it would silently destroy investigation history, so
  *     those are excluded by the query and never swept.
- *   - Deletion is blob-first via `deleteReplay`, which removes the artifact-store
- *     object and then the index row, so we never strand a row pointing at a
- *     missing blob (and an idempotent store.delete tolerates an already-gone
- *     object on retry).
+ *   - Byte-then-row ordering (local backend): the blob is removed before the row
+ *     so we never strand a row pointing at a missing blob, and an idempotent
+ *     store.delete tolerates an already-gone object on retry.
  *   - Work is bounded per sweep (`maxPerSweep`) so a large backlog drains over
- *     several ticks instead of blocking the event loop on thousands of blob
- *     deletes at once. Oldest-first ordering means the longest-lived captures go
- *     first.
+ *     several ticks instead of blocking the event loop. Oldest-first ordering
+ *     means the longest-lived captures go first.
  */
 
-import { deleteReplay } from './replay-store.js';
+import { getArtifactStoreForLocation } from '../artifacts/artifact-store.js';
 import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
 
 /** Default cadence: sweep every 6 hours. Retention is a slow-moving TTL, not a
@@ -46,6 +60,15 @@ export interface ReplayRetentionDeps {
   now?: () => number;
   /** Optional structured logger. Defaults to console.error. */
   log?: (msg: string) => void;
+  /**
+   * Whether the S3-native RUM lifecycle policy is CONFIRMED provisioned. Only when
+   * this returns true does the sweeper trust the bucket lifecycle to expire S3
+   * bytes and drop just the index row; otherwise it deletes the object itself so a
+   * provisioning gap (best-effort, may fail on a missing IAM permission) can't
+   * orphan un-indexed bytes. Read fresh each sweep (provisioning completes
+   * asynchronously after boot). Defaults to "not provisioned" (safe fallback).
+   */
+  isLifecycleProvisioned?: () => boolean;
 }
 
 export interface RetentionSweepResult {
@@ -67,6 +90,29 @@ export interface RetentionSweepResult {
  */
 export function toSqliteUtc(epochMs: number): string {
   return new Date(epochMs).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * Expire one replay's INDEX ROW, reclaiming its bytes only when the app must own
+ * them. For a local-backed row the blob is deleted first (no lifecycle for on-disk
+ * files), then the row. For an S3-backed row the object is left for the bucket
+ * lifecycle rules to expire ONLY when `lifecycleProvisioned` is true; otherwise
+ * (provisioning failed / unconfirmed) the object is deleted here first, so
+ * dropping the row can never strand an un-indexed, never-expiring S3 orphan.
+ * Bytes-before-row ordering keeps a failed delete from orphaning the row.
+ */
+export async function expireReplayRow(
+  deps: { stmts: Stmts; config: AppConfig },
+  row: SessionReplayRow,
+  lifecycleProvisioned: boolean = false,
+): Promise<void> {
+  const store = getArtifactStoreForLocation(row, deps.config);
+  // Local: always reclaim the file. S3: reclaim only when we CAN'T trust the
+  // bucket lifecycle to do it (unconfirmed provisioning) — the safe fallback.
+  if (store.kind === 'local' || !lifecycleProvisioned) {
+    await store.delete(row.storage_key);
+  }
+  deps.stmts.deleteSessionReplay.run(row.id);
 }
 
 /**
@@ -94,11 +140,13 @@ export async function runReplayRetentionSweep(
     Math.max(1, Math.trunc(maxPerSweep)),
   ) as SessionReplayRow[];
 
+  const lifecycleProvisioned = deps.isLifecycleProvisioned?.() ?? false;
+
   let deleted = 0;
   let failed = 0;
   for (const row of rows) {
     try {
-      await deleteReplay({ stmts, config }, row);
+      await expireReplayRow({ stmts, config }, row, lifecycleProvisioned);
       deleted += 1;
     } catch (err) {
       failed += 1;

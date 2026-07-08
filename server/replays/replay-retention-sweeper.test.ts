@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'os';
 import path from 'path';
 import { mkdirSync, rmSync, existsSync } from 'fs';
@@ -11,6 +11,7 @@ import {
   DEFAULT_MAX_PER_SWEEP,
 } from './replay-retention-sweeper.js';
 import { resetArtifactStoreCache } from '../artifacts/artifact-store.js';
+import { S3ArtifactStore } from '../artifacts/artifact-store-s3.js';
 import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
 
 const EVENTS: ReplayEvent[] = [
@@ -148,6 +149,76 @@ describe('runReplayRetentionSweep', () => {
     expect(existsSync(blobPath(fresh))).toBe(true);
   });
 
+  /** Seed an expired, S3-backed row directly (no bytes written). */
+  function seedS3Row(id: string): void {
+    stmts.insertSessionReplay.run(
+      id,
+      'proj',
+      100,
+      3,
+      200,
+      400,
+      's3',
+      `rum/proj/2026/05/01/sess/view/${id}.json.gz`,
+      'rum-bucket',
+      'us-east-1',
+      null,
+      null,
+      null,
+    );
+    db.prepare('UPDATE session_replays SET created_at = ? WHERE id = ?').run(
+      toSqliteUtc(Date.now() - 60 * MS_PER_DAY),
+      id,
+    );
+  }
+
+  it('expires an S3-backed row WITHOUT deleting bytes when lifecycle is provisioned', async () => {
+    // Confirmed-provisioned: the object is reaped by the bucket lifecycle rule,
+    // not the app sweeper. A real S3 delete here would be a network call the sweep
+    // must never make.
+    seedS3Row('s3-expired');
+
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete');
+    try {
+      const result = await runReplayRetentionSweep({
+        stmts,
+        config,
+        isLifecycleProvisioned: () => true,
+      });
+
+      expect(result).toMatchObject({ enabled: true, deleted: 1, failed: 0 });
+      // Index row is gone (reconciled against the bytes lifecycle reaps)...
+      expect(stmts.getSessionReplay.get('s3-expired')).toBeUndefined();
+      // ...but the sweeper never touched the object.
+      expect(s3DeleteSpy).not.toHaveBeenCalled();
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
+  it('DELETES S3 bytes when lifecycle provisioning is unconfirmed (no orphans)', async () => {
+    // Provisioning is best-effort; if it failed (missing IAM), lifecycle will
+    // NOT expire the object, so the sweeper must delete it itself before dropping
+    // the only pointer — otherwise it strands an un-indexed, never-expiring orphan.
+    seedS3Row('s3-orphan-risk');
+
+    // Stub the S3 delete so the fallback path doesn't make a real network call.
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    try {
+      // isLifecycleProvisioned omitted → defaults to the safe "not provisioned".
+      const result = await runReplayRetentionSweep({ stmts, config });
+
+      expect(result).toMatchObject({ enabled: true, deleted: 1, failed: 0 });
+      expect(stmts.getSessionReplay.get('s3-orphan-risk')).toBeUndefined();
+      // The object WAS deleted by the sweeper (fallback), keyed by its storage key.
+      expect(s3DeleteSpy).toHaveBeenCalledWith(
+        'rum/proj/2026/05/01/sess/view/s3-orphan-risk.json.gz',
+      );
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
   it('never deletes linked replays even when expired (triage history is preserved)', async () => {
     const ticketLinked = await seedReplay({ id: 'r-ticket', ageDays: 365, ticketId: 'ticket-1' });
     const cardLinked = await seedReplay({ id: 'r-card', ageDays: 365, cardId: 'card-1' });
@@ -185,7 +256,7 @@ describe('runReplayRetentionSweep', () => {
   it('counts a blob-delete failure without aborting the rest of the sweep', async () => {
     await seedReplay({ id: 'r-good', ageDays: 60 });
     const bad = await seedReplay({ id: 'r-bad', ageDays: 90 });
-    // Corrupt the bad row so deleteReplay resolves the wrong backend and throws.
+    // Corrupt the bad row so expireReplayRow resolves the wrong backend and throws.
     db.prepare('UPDATE session_replays SET storage_kind = ? WHERE id = ?').run('bogus', bad.id);
 
     const logs: string[] = [];

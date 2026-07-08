@@ -67,6 +67,7 @@ import {
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { startReplayRetentionSweeper } from './replays/replay-retention-sweeper.js';
+import { provisionRumLifecycle } from './replays/replay-lifecycle-s3.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
@@ -1846,10 +1847,30 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       });
 
       // Session-replay retention GC. No-op unless `replayRetentionDays > 0`;
-      // when enabled, periodically deletes expired UNLINKED replays so capture
-      // storage can't grow without bound (a prerequisite for continuous
-      // capture). Linked (ticket/card) replays are never expired.
-      startReplayRetentionSweeper({ stmts: stmts!, config });
+      // when enabled, periodically deletes expired UNLINKED replay INDEX ROWS so
+      // the SQLite index can't grow without bound. On S3 the blob bytes are reaped
+      // by the bucket lifecycle rules — but ONLY once provisioning is confirmed
+      // (see the holder below); until then, and on local storage, the sweeper
+      // still reclaims the blob itself so a provisioning gap can't orphan bytes.
+      // Linked (ticket/card) replays are never expired.
+      const rumLifecycle = { provisioned: false };
+      startReplayRetentionSweeper({
+        stmts: stmts!,
+        config,
+        isLifecycleProvisioned: () => rumLifecycle.provisioned,
+      });
+
+      // Provision the S3-native lifecycle policy for segmented RUM objects
+      // (`rum/` prefix): blob expiry + IA/Glacier tiering owned by S3, not the
+      // app. One-shot + idempotent; a true no-op on local storage (no bucket). On
+      // S3 it reads current rules and PUTs only when the managed rule differs —
+      // when retention is disabled that means REMOVING any stale managed rule
+      // (foreign rules preserved), not skipping the call. Best-effort so a missing
+      // s3:*LifecycleConfiguration permission logs rather than crashes boot. Only
+      // on confirmed success does the sweeper start delegating S3 byte expiry.
+      void provisionRumLifecycle({ config }).then((out) => {
+        rumLifecycle.provisioned = out.provisioned;
+      });
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });
