@@ -2240,7 +2240,9 @@ describe('runAutonomousLoop — integration branch serialization', () => {
       return undefined;
     });
     stmts.getKanbanCardBySession.get.mockImplementation((sid: string) => {
-      if (sid === 'auto-session-prev') return { dispatched_by_autonomous: 1 };
+      // In-scope for the dispatching epic ('epic-1') so it consumes a slot.
+      if (sid === 'auto-session-prev')
+        return { dispatched_by_autonomous: 1, epic_id: 'epic-1', phase_id: null };
       return undefined;
     });
     const deps = makeDeps(stmts);
@@ -2257,6 +2259,53 @@ describe('runAutonomousLoop — integration branch serialization', () => {
 
     // The only assignable agent has zero remaining slots → no dispatch.
     expect(stmts.createSession.run).not.toHaveBeenCalled();
+  });
+
+  it('does NOT count a DIFFERENT epic’s autonomous session against this epic’s per-agent cap', async () => {
+    // Regression for "I turned on the phase but nothing gets picked up — those
+    // are different epics though". The per-agent slot count used to be
+    // board-wide, so a Dev already working another epic's card showed 0
+    // remaining slots and this epic's loop silently returned. Epics run
+    // independently: a session scoped to a *different* epic must not consume
+    // this epic's budget.
+    const epic = {
+      ...ACTIVE_EPIC,
+      id: 'epic-this',
+      autonomous_max_concurrent: 1, // tight cap so any leak blocks dispatch
+    } as unknown as KanbanEpicRow;
+    const card = makeCard({ id: 'card-this', epic_id: 'epic-this', title: 'OSS: add LICENSE' });
+    const stmts = makeStmts({
+      getAutonomousEpic: { get: vi.fn(() => epic) },
+      getEligibleAutonomousCards: { all: vi.fn(() => [card]) },
+      getKanbanColumns: { all: vi.fn(() => BOARD_COLS) },
+      getKanbanCardsByEpic: { all: vi.fn(() => [card]) },
+    });
+    // Active autonomous session on the SAME agent, but its linked card belongs
+    // to a different epic entirely.
+    stmts.getSession.get.mockImplementation((sid: string) => {
+      if (sid === 'auto-other-epic') return { agent_id: 'hub-lead' } as SessionRow;
+      return undefined;
+    });
+    stmts.getKanbanCardBySession.get.mockImplementation((sid: string) => {
+      if (sid === 'auto-other-epic')
+        return { dispatched_by_autonomous: 1, epic_id: 'epic-OTHER', phase_id: null };
+      return undefined;
+    });
+    const deps = makeDeps(stmts);
+    deps.findProject.mockReturnValue(
+      makeProject({
+        agents: [{ id: 'hub-lead', name: 'Lead', role: 'lead', engine: 'claude-code' }],
+      }),
+    );
+    deps.getActiveProcesses.mockReturnValue(new Map<string, unknown>([['auto-other-epic', {}]]));
+    mockGetOrCreateBoard.mockReturnValue({ board: { id: 'board-1' } });
+    initAutonomous(deps as never);
+
+    await runAutonomousLoop('proj-1');
+
+    // The other epic's session is out of scope → this epic still has its slot.
+    expect(stmts.createSession.run).toHaveBeenCalledTimes(1);
+    expect(stmts.createSession.run.mock.calls[0][1]).toBe('hub-lead');
   });
 });
 
@@ -2726,7 +2775,9 @@ describe('runAutonomousLoop — label routing', () => {
     // linked card.)
     stmts.getKanbanCardBySession.get.mockImplementation((sid: string) => {
       if (sid === 'busy-1' || sid === 'busy-2' || sid === 'busy-3') {
-        return { dispatched_by_autonomous: 1 };
+        // In-scope for the dispatching epic (ACTIVE_EPIC = 'epic-1') so the
+        // per-agent slot accounting counts them.
+        return { dispatched_by_autonomous: 1, epic_id: 'epic-1', phase_id: null };
       }
       return undefined;
     });

@@ -925,6 +925,25 @@ async function runAutonomousLoopInner(
     if (!session) continue;
     const linkedCard = d.stmts.getKanbanCardBySession.get(sid) as KanbanCardRow | undefined;
     if (!linkedCard || !linkedCard.dispatched_by_autonomous) continue;
+    // ── Per-agent slot accounting is scoped to the CURRENT dispatch scope ───
+    // A session that belongs to a *different* epic (or, when dispatching a
+    // phase, a different phase) is unrelated to THIS scope's concurrency
+    // budget: epics and phases run independently and must never starve one
+    // another through a shared board-wide per-agent cap. Previously this
+    // counted every autonomous-dispatched session board-wide, so a single Dev
+    // agent already working two *other* epics' cards would show 0 remaining
+    // slots here, and this scope's dispatch loop would hit
+    // `agentsWithSlots.length === 0` and silently return — the exact "I turned
+    // on the phase but nothing gets picked up, those are different epics
+    // though" report. The only real ceiling on dispatch volume is the
+    // per-scope `slotsAvailable` (In Progress + Review cards within this
+    // epic/phase vs. its own `max_concurrent`), which is already scoped the
+    // same way (`allScopeCards`). Aligning the per-agent count with it makes
+    // "different epics don't block each other" true by construction.
+    const inCurrentScope = phase
+      ? linkedCard.phase_id === phase.id
+      : linkedCard.epic_id === epic.id;
+    if (!inCurrentScope) continue;
     agentSessionCounts.set(session.agent_id, (agentSessionCounts.get(session.agent_id) || 0) + 1);
   }
 
