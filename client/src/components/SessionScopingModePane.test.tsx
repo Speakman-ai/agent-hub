@@ -99,6 +99,197 @@ describe('SessionScopingModePane', () => {
     expect(api.runAutonomous).not.toHaveBeenCalled();
   });
 
+  it('auto-selects a newly created epic when nothing is linked yet', async () => {
+    (api.getBoard as any)
+      .mockResolvedValueOnce({
+        columns: [{ id: 'col-todo', name: 'To Do', position: 0 }],
+        cards: [],
+        epics: [
+          { id: 'e1', name: 'Platform', color: '#6366F1', created_at: '2026-07-01 00:00:00' },
+        ],
+        phases: [],
+        specItems: [],
+      })
+      .mockResolvedValueOnce({
+        columns: [{ id: 'col-todo', name: 'To Do', position: 0 }],
+        cards: [],
+        epics: [
+          { id: 'e1', name: 'Platform', color: '#6366F1', created_at: '2026-07-01 00:00:00' },
+          { id: 'e2', name: 'New Epic', color: '#22C55E', created_at: '2026-07-08 12:00:00' },
+        ],
+        phases: [],
+        specItems: [],
+      });
+
+    const onLinkEpic = vi.fn();
+    const { rerender } = render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId={null}
+        onLinkEpic={onLinkEpic}
+        reloadToken={0}
+      />,
+    );
+
+    // First board load seeds the baseline — no auto-select over pre-existing epics.
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(1));
+    expect(onLinkEpic).not.toHaveBeenCalled();
+
+    // A new epic appears on the next board refresh → auto-linked.
+    rerender(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId={null}
+        onLinkEpic={onLinkEpic}
+        reloadToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(onLinkEpic).toHaveBeenCalledWith('e2'));
+  });
+
+  it('does not override an already-linked epic when a new epic appears', async () => {
+    (api.getBoard as any).mockResolvedValueOnce(boardWith()).mockResolvedValueOnce({
+      ...boardWith(),
+      epics: [
+        { id: 'e1', name: 'Platform', color: '#6366F1' },
+        { id: 'e2', name: 'Another', color: '#22C55E', created_at: '2026-07-08 12:00:00' },
+      ],
+    });
+
+    const onLinkEpic = vi.fn();
+    const { rerender } = render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        onLinkEpic={onLinkEpic}
+        reloadToken={0}
+      />,
+    );
+
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        onLinkEpic={onLinkEpic}
+        reloadToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+    expect(onLinkEpic).not.toHaveBeenCalled();
+  });
+
+  it('re-seeds on session switch instead of auto-linking a prior session baseline', async () => {
+    // s1 board has only e1; s2's refetch surfaces e1 + e2. Without the
+    // session-switch reset, e2 would look "new" relative to s1's baseline and
+    // get auto-linked — this guards that defensive branch.
+    (api.getBoard as any)
+      .mockResolvedValueOnce({
+        columns: [{ id: 'col-todo', name: 'To Do', position: 0 }],
+        cards: [],
+        epics: [
+          { id: 'e1', name: 'Platform', color: '#6366F1', created_at: '2026-07-01 00:00:00' },
+        ],
+        phases: [],
+        specItems: [],
+      })
+      .mockResolvedValueOnce({
+        columns: [{ id: 'col-todo', name: 'To Do', position: 0 }],
+        cards: [],
+        epics: [
+          { id: 'e1', name: 'Platform', color: '#6366F1', created_at: '2026-07-01 00:00:00' },
+          { id: 'e2', name: 'Foreign', color: '#22C55E', created_at: '2026-07-08 12:00:00' },
+        ],
+        phases: [],
+        specItems: [],
+      });
+
+    const onLinkEpic = vi.fn();
+    const { rerender } = render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        onLinkEpic={onLinkEpic}
+        reloadToken={0}
+      />,
+    );
+
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(1));
+
+    // Switch to a different session with no linked epic; its board refetch
+    // brings a new epic e2. The reset effect re-seeds → no auto-link.
+    rerender(
+      <SessionScopingModePane
+        sessionId="s2"
+        projectId="p1"
+        linkedEpicId={null}
+        onLinkEpic={onLinkEpic}
+        reloadToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(2));
+    expect(onLinkEpic).not.toHaveBeenCalled();
+  });
+
+  it('links the most recently created epic when several appear in one refresh', async () => {
+    (api.getBoard as any)
+      .mockResolvedValueOnce({
+        columns: [{ id: 'col-todo', name: 'To Do', position: 0 }],
+        cards: [],
+        epics: [],
+        phases: [],
+        specItems: [],
+      })
+      .mockResolvedValueOnce({
+        columns: [{ id: 'col-todo', name: 'To Do', position: 0 }],
+        cards: [],
+        epics: [
+          // Deliberately unordered so the tie-break can't pass by array position.
+          { id: 'older', name: 'Older', color: '#6366F1', created_at: '2026-07-08 09:00:00' },
+          { id: 'newest', name: 'Newest', color: '#22C55E', created_at: '2026-07-08 15:30:00' },
+          { id: 'middle', name: 'Middle', color: '#EAB308', created_at: '2026-07-08 12:00:00' },
+        ],
+        phases: [],
+        specItems: [],
+      });
+
+    const onLinkEpic = vi.fn();
+    const { rerender } = render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId={null}
+        onLinkEpic={onLinkEpic}
+        reloadToken={0}
+      />,
+    );
+
+    await waitFor(() => expect(api.getBoard).toHaveBeenCalledTimes(1));
+    expect(onLinkEpic).not.toHaveBeenCalled();
+
+    rerender(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId={null}
+        onLinkEpic={onLinkEpic}
+        reloadToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(onLinkEpic).toHaveBeenCalledWith('newest'));
+    expect(onLinkEpic).toHaveBeenCalledTimes(1);
+  });
+
   it('creates phases with the current session owner agent default model', async () => {
     (api.getBoard as any).mockResolvedValue(boardWith({ autonomous_running: 0 }));
 

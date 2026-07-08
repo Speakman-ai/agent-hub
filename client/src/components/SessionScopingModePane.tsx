@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GitBranch, GripVertical } from 'lucide-react';
 import { api } from '../utils/api';
 import { epicToAutonomousForm } from './EpicAutonomousPanel';
@@ -10,6 +10,21 @@ import {
   MIN_DESIGN_PANE_WIDTH,
   MAX_DESIGN_PANE_WIDTH,
 } from '../utils/sessionPreviewState';
+
+/**
+ * Parse an epic's `created_at` to epoch millis for relative ordering. SQLite
+ * emits space-separated timestamps (`'2026-07-08 12:00:00'`); `new Date(...)`
+ * on that non-ISO format is engine-dependent (V8 tolerates it, the spec does
+ * not), so normalise the space to `'T'` before parsing. Only relative order
+ * matters here, so a missing/unparseable value sorts oldest (`0`).
+ */
+function epicCreatedMs(epic: any): number {
+  const raw = epic?.created_at;
+  if (!raw) return 0;
+  const iso = typeof raw === 'string' ? raw.replace(' ', 'T') : raw;
+  const ms = new Date(iso).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
 
 /**
  * Scoping-mode side panel — epic scope workbench with flowchart / manage / spec tabs.
@@ -43,12 +58,21 @@ export default function SessionScopingModePane({
     max: MAX_DESIGN_PANE_WIDTH,
   });
 
+  // Track the latest reload token so a settled board can be stamped with the
+  // (projectId, token) it was fetched for. The auto-select effect below trusts
+  // a board only when that stamp matches the *current* props — otherwise a
+  // stale pre-refetch board (old project or previous token) races ahead and
+  // corrupts the "new epic" diff during a project/session switch.
+  const reloadTokenRef = useRef(reloadToken);
+  reloadTokenRef.current = reloadToken;
+
   const fetchBoard = useCallback(async () => {
     if (!projectId) return;
+    const token = reloadTokenRef.current;
     setLoading(true);
     try {
       const data = await api.getBoard(projectId);
-      setBoard(data);
+      setBoard({ ...data, __projectId: projectId, __token: token });
       setError(null);
     } catch (err: any) {
       setError(err.message);
@@ -92,6 +116,44 @@ export default function SessionScopingModePane({
     () => (epic ? cards.filter((c: any) => c.epic_id === epic.id) : []),
     [cards, epic],
   );
+
+  // Auto-select a newly created epic. When the agent (or user) creates an epic
+  // during scoping mode, the board refetches via `reloadToken` but the panel
+  // would otherwise stay on "Select epic…". Diff the epic set against the
+  // previous board snapshot for THIS session and, when a fresh epic appears
+  // while nothing is linked yet, link it so its phases/spec show immediately.
+  //
+  // The baseline is keyed by `projectId:sessionId`. The first settled board for
+  // a given key seeds the baseline WITHOUT selecting (so opening the panel over
+  // pre-existing epics is a no-op), and switching project or session re-seeds —
+  // that is why we never auto-link a foreign context's epics. Crucially, we
+  // only act on a board whose stamp matches the current (projectId, token): a
+  // stale board from before a switch is skipped, so the re-seed baselines
+  // against the fresh board rather than a pre-refetch snapshot.
+  //
+  // Authorship caveat: `kanban_update` is board-wide, so an epic created by a
+  // *different* session/user on the same project also surfaces here on the next
+  // refetch and would be auto-linked. We can't distinguish authorship from the
+  // board payload. This is deliberately tolerated — it only fires while nothing
+  // is linked, and the link is one click to change — but if the distinction
+  // ever matters, gate on a session-authored signal from the server instead.
+  const baselineRef = useRef<{ key: string; ids: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!board || board.__projectId !== projectId || board.__token !== reloadToken) return;
+    const key = `${projectId}:${sessionId}`;
+    const ids: Set<string> = new Set(epics.map((e: any) => e.id));
+    const base = baselineRef.current;
+    if (!base || base.key !== key) {
+      baselineRef.current = { key, ids };
+      return;
+    }
+    const added = epics.filter((e: any) => !base.ids.has(e.id));
+    baselineRef.current = { key, ids };
+    if (linkedEpicId || added.length === 0) return;
+    // Prefer the most recently created epic when several appear at once.
+    const newest = added.reduce((a: any, b: any) => (epicCreatedMs(b) >= epicCreatedMs(a) ? b : a));
+    if (newest?.id) onLinkEpic?.(newest.id);
+  }, [board, projectId, reloadToken, sessionId, epics, linkedEpicId, onLinkEpic]);
 
   useEffect(() => {
     // Seed a form for any phase that doesn't have one yet, and drop forms
