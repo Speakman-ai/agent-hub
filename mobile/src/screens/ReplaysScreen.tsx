@@ -24,7 +24,7 @@ import {
   formatSessionStart,
   formatCaptureDate,
 } from '../utils/replayFormat';
-import { computeSessionViews, type SessionViewChapter } from '../utils/replayPlayer';
+import ReplayWebViewPlayer from '../components/ReplayWebViewPlayer';
 import {
   TIME_RANGES,
   DEFAULT_RANGE_ID,
@@ -73,107 +73,48 @@ export async function unlinkReplayCapture({ api: apiClient, projectId, replayId,
   }
 }
 
-// ── Session player launcher ─────────────────────────────────────────
-// rrweb playback needs a WebView the Expo build doesn't ship yet (tracked by the
-// "Mobile: in-app rrweb WebView replay player" ticket). Until that lands, the
-// mobile player surfaces the session/replay metadata and hands off to the web
-// app's Replays dashboard in the system browser.
-//
-// For a segmented (continuous) session it additionally fetches the segment
-// manifest and renders the session's per-view chapter breakdown — the same
-// view-chapter model the web player seeks across — so the multi-view structure
-// is visible on mobile before the in-app WebView player exists. Each chapter
-// carries its ms offset on the stitched, continuous timeline
-// (`computeSessionViews`), ready for the WebView player's `goto` seek.
+// ── Session player ──────────────────────────────────────────────────
+// Full-screen in-app rrweb player. Embeds ReplayWebViewPlayer, which streams the
+// session's segments (or a monolithic capture's paginated events) into an
+// opaque-origin WebView and renders playback + view-chapter seek. The web-app
+// handoff stays as a secondary action (the web dashboard also exposes ticket
+// linking + retention flagging, not yet ported to mobile).
 export function ReplayPlayerModal({ target, projectId, onClose }: any) {
-  const isSession = target?.mode === 'session';
-  const sessionId = target?.sessionId;
-  const [views, setViews] = useState<SessionViewChapter[]>([]);
-  const [viewsError, setViewsError] = useState<string | null>(null);
-  const [viewsLoading, setViewsLoading] = useState(false);
-
-  useEffect(() => {
-    // Segmented sessions only (a monolithic capture has no segment manifest).
-    if (!isSession || !sessionId) {
-      setViews([]);
-      setViewsError(null);
-      setViewsLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setViewsLoading(true);
-    setViewsError(null);
-    (async () => {
-      try {
-        const manifest = await api.getSessionSegments(sessionId);
-        if (cancelled) return;
-        setViews(computeSessionViews(manifest));
-      } catch (e: any) {
-        if (cancelled) return;
-        setViewsError(e?.message || 'Failed to load session views');
-        setViews([]);
-      } finally {
-        if (!cancelled) setViewsLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isSession, sessionId]);
-
   if (!target) return null;
   const webUrl = buildWebReplaysUrl(projectId);
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard} testID="replay-player-modal">
-          <Text style={styles.modalTitle}>{target.title || 'Session replay'}</Text>
-          <View style={styles.metaGrid}>
-            {(target.meta || []).map((m: any) => (
-              <View key={m.label} style={styles.metaRow}>
-                <Text style={styles.metaLabel}>{m.label}</Text>
-                <Text style={styles.metaValue}>{m.value}</Text>
-              </View>
-            ))}
+      <View style={styles.playerBackdrop}>
+        <View style={styles.playerCard} testID="replay-player-modal">
+          <View style={styles.playerHeader}>
+            <Text style={styles.playerTitle} numberOfLines={1}>
+              {target.title || 'Session replay'}
+            </Text>
+            <TouchableOpacity testID="replay-player-close" onPress={onClose} style={styles.playerClose}>
+              <Text style={styles.playerCloseText}>✕</Text>
+            </TouchableOpacity>
           </View>
-          {isSession && sessionId ? (
-            <View style={styles.chapterBlock} testID="replay-view-chapters">
-              <Text style={styles.chapterHeader}>
-                {views.length > 0 ? `${views.length} view${views.length === 1 ? '' : 's'}` : 'Views'}
-              </Text>
-              {viewsLoading ? (
-                <ActivityIndicator size="small" color={colors.gray400} />
-              ) : viewsError ? (
-                <Text style={styles.chapterError}>{viewsError}</Text>
-              ) : views.length === 0 ? (
-                <Text style={styles.chapterEmpty}>No segments recorded for this session yet.</Text>
-              ) : (
-                <ScrollView style={styles.chapterList}>
-                  {views.map((v) => (
-                    <View key={v.viewId} style={styles.chapterRow} testID="replay-view-chapter">
-                      <Text style={styles.chapterLabel}>View {v.index + 1}</Text>
-                      <Text style={styles.chapterOffset}>{formatReplayDuration(v.offsetMs)}</Text>
-                    </View>
-                  ))}
-                </ScrollView>
-              )}
+          {(target.meta || []).length > 0 ? (
+            <View style={styles.metaStrip}>
+              {(target.meta || []).map((m: any) => (
+                <Text key={m.label} style={styles.metaStripItem}>
+                  <Text style={styles.metaLabel}>{m.label}: </Text>
+                  {m.value}
+                </Text>
+              ))}
             </View>
           ) : null}
-          <Text style={styles.modalNote}>
-            {isSession ? 'This session' : 'This capture'} plays in the full rrweb player. In-app
-            playback is coming to mobile; open the web dashboard to watch it now.
-          </Text>
-          <View style={styles.modalActions}>
-            <TouchableOpacity onPress={onClose} style={styles.modalCancel}>
-              <Text style={styles.modalCancelText}>Close</Text>
-            </TouchableOpacity>
+          <ReplayWebViewPlayer
+            target={{ mode: target.mode, sessionId: target.sessionId, replayId: target.replayId }}
+          />
+          <View style={styles.playerFooter}>
             {webUrl ? (
               <TouchableOpacity
                 testID="replay-open-web"
                 onPress={() => Linking.openURL(webUrl).catch(() => {})}
-                style={styles.modalSave}
+                style={styles.playerFooterBtn}
               >
-                <Text style={styles.modalSaveText}>Open in web app</Text>
+                <Text style={styles.playerFooterText}>Open in web app</Text>
               </TouchableOpacity>
             ) : null}
           </View>
@@ -538,6 +479,7 @@ export default function ReplaysScreen({ route }: any) {
   const watchReplay = (r: any) =>
     setPlayer({
       mode: 'replay',
+      replayId: r.id,
       title: formatPageUrl(r.pageUrl),
       meta: [
         { label: 'Captured', value: formatCaptureDate(r.createdAt) },
@@ -923,71 +865,64 @@ const styles = StyleSheet.create({
   },
   pagerBtnDisabled: { opacity: 0.4 },
   pagerBtnText: { color: colors.gray300, fontSize: 12 },
-  modalBackdrop: {
+  playerBackdrop: {
     flex: 1,
     backgroundColor: colors.black60,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
+    padding: 12,
   },
-  modalCard: {
+  playerCard: {
     width: '100%',
-    maxWidth: 420,
-    backgroundColor: colors.gray900,
+    maxWidth: 640,
+    height: '90%',
+    backgroundColor: colors.gray950,
     borderWidth: 1,
     borderColor: colors.gray800,
     borderRadius: 12,
-    padding: 16,
+    overflow: 'hidden',
   },
-  modalTitle: { color: colors.gray100, fontSize: 15, fontWeight: '600', marginBottom: 12 },
-  metaGrid: { gap: 6, marginBottom: 12 },
-  metaRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  playerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+    backgroundColor: colors.gray900,
+  },
+  playerTitle: { color: colors.gray100, fontSize: 14, fontWeight: '600', flexShrink: 1, flex: 1 },
+  playerClose: { padding: 4 },
+  playerCloseText: { color: colors.gray400, fontSize: 16 },
+  metaStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray800,
+    backgroundColor: colors.gray900,
+  },
+  metaStripItem: { color: colors.gray200, fontSize: 12 },
   metaLabel: { color: colors.gray500, fontSize: 12 },
-  metaValue: { color: colors.gray200, fontSize: 12, fontWeight: '600' },
-  chapterBlock: {
+  playerFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderTopWidth: 1,
     borderTopColor: colors.gray800,
-    paddingTop: 10,
-    marginBottom: 12,
+    backgroundColor: colors.gray900,
   },
-  chapterHeader: {
-    color: colors.gray600,
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  chapterList: { maxHeight: 140 },
-  chapterRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.gray700,
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 6,
-  },
-  chapterLabel: { color: colors.gray200, fontSize: 12, fontWeight: '600' },
-  chapterOffset: { color: colors.gray500, fontSize: 12 },
-  chapterEmpty: { color: colors.gray500, fontSize: 12 },
-  chapterError: { color: colors.rose400, fontSize: 12 },
-  modalNote: { color: colors.gray400, fontSize: 12, marginBottom: 14, lineHeight: 17 },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
-  modalCancel: {
+  playerFooterBtn: {
     borderWidth: 1,
     borderColor: colors.gray700,
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
-  modalCancelText: { color: colors.gray300, fontSize: 13 },
-  modalSave: {
-    backgroundColor: colors.indigo600,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  modalSaveText: { color: colors.white, fontSize: 13, fontWeight: '600' },
+  playerFooterText: { color: colors.gray300, fontSize: 13 },
 });

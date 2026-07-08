@@ -17,6 +17,9 @@ export default [
       '.worktrees/',
       'client/vite.config.ts',
       '**/*.cjs',
+      // Auto-generated vendored bundles (e.g. the rrweb-player UMD inlined as a
+      // string for the mobile WebView player). Regenerate, don't hand-edit.
+      '**/*.generated.ts',
       // Starter template payloads — these are scaffolding source trees
       // copied into newly-provisioned projects, not first-party server code.
       // They have their own linters (ruff / eslint / golangci-lint / clippy)

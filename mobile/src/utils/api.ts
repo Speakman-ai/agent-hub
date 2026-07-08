@@ -243,6 +243,20 @@ export const api = {
     // Returns { sessionId, segmentId, viewId, indexInView, hasFullSnapshot,
     // events, eventCount }.
     getSessionSegmentEvents: (sessionId: any, segmentId: any) => fetchJSON(`/replays/sessions/${encodeURIComponent(sessionId)}/segments/${encodeURIComponent(segmentId)}/events`),
+    // Monolithic capture metadata (defaultPageSize, eventCount, retainedUntil, …)
+    // — advisory input to the in-app WebView player's progress line.
+    getReplay: (replayId: any) => fetchJSON(`/replays/${encodeURIComponent(replayId)}`),
+    // One page of a monolithic capture's decoded rrweb events; the WebView player
+    // walks pages and concatenates them. Returns { events, total, hasMore, ... }.
+    getReplayEvents: (replayId: any, offset: any = 0, limit?: any) => {
+        const params = new URLSearchParams();
+        if (offset)
+            params.set('offset', String(offset));
+        if (limit != null)
+            params.set('limit', String(limit));
+        const qs = params.toString();
+        return fetchJSON(`/replays/${encodeURIComponent(replayId)}/events${qs ? `?${qs}` : ''}`);
+    },
     // RUM Session Explorer (session-grain, Datadog-parity). Lists the
     // rum_sessions rollup with indexed facet filters; blank/undefined values are
     // omitted server-side. Returns { sessions, total, limit, offset, hasMore }.

@@ -31,6 +31,12 @@ vi.mock('../utils/api', () => ({
   },
 }));
 vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.example.com' }));
+// The in-app WebView player is exercised by its own tests + the pure
+// streamReplayTarget tests; here we only assert the screen mounts it with the
+// right target, so stub it to keep the 220KB rrweb bundle out of this suite.
+vi.mock('../components/ReplayWebViewPlayer', () => ({
+  default: ({ target }: any) => <div>{`PLAYER:${JSON.stringify(target)}`}</div>,
+}));
 
 import { Linking } from 'react-native';
 import ReplaysScreen, {
@@ -148,7 +154,7 @@ describe('ReplayPlayerModal', () => {
     const html = renderToStaticMarkup(<ReplayPlayerModal target={null} projectId="p1" />);
     expect(html).toBe('');
   });
-  it('renders metadata and the web-app handoff', () => {
+  it('renders metadata, the in-app player, and the web-app handoff', () => {
     const html = renderToStaticMarkup(
       <ReplayPlayerModal
         target={{ mode: 'session', title: 'ada@example.com', meta: [{ label: 'Views', value: '3' }] }}
@@ -158,30 +164,27 @@ describe('ReplayPlayerModal', () => {
     expect(html).toContain('ada@example.com');
     expect(html).toContain('Views');
     expect(html).toContain('Open in web app');
+    expect(html).toContain('PLAYER:'); // the embedded WebView player mounts
   });
 
-  it('renders the view-chapter block for a segmented session (has a sessionId)', () => {
-    // Static markup does not run effects, so the manifest fetch never resolves —
-    // the block renders its header + the pre-fetch empty copy. This asserts the
-    // multi-view chapter surface is wired for session mode (a real fetch is
-    // exercised in the pure streamSessionSegments/computeSessionViews tests).
+  it('embeds the player with the session target for a segmented session', () => {
     const html = renderToStaticMarkup(
       <ReplayPlayerModal
         target={{ mode: 'session', sessionId: 's-1', title: 'ada@example.com', meta: [] }}
         projectId="p1"
       />,
     );
-    expect(html).toContain('No segments recorded for this session yet.');
+    expect(html).toContain('&quot;sessionId&quot;:&quot;s-1&quot;');
   });
 
-  it('omits the view-chapter block for a monolithic capture (no sessionId)', () => {
+  it('embeds the player with the replay target for a monolithic capture', () => {
     const html = renderToStaticMarkup(
       <ReplayPlayerModal
-        target={{ mode: 'replay', title: 'checkout', meta: [{ label: 'Events', value: '88' }] }}
+        target={{ mode: 'replay', replayId: 'r-1', title: 'checkout', meta: [{ label: 'Events', value: '88' }] }}
         projectId="p1"
       />,
     );
-    expect(html).not.toContain('No segments recorded for this session yet.');
+    expect(html).toContain('&quot;replayId&quot;:&quot;r-1&quot;');
   });
 });
 
