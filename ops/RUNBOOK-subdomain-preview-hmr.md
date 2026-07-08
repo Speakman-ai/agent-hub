@@ -1,8 +1,8 @@
 # Runbook: Restore subdomain preview mode (live HMR previews)
 
 **Symptom:** Session previews don't hot-reload / don't show branch changes live.
-Every project sharing the Hub's ALB is affected at once (agent-hub, surveytracker,
-field, …) because subdomain mode is **Hub-wide**.
+Every project sharing the Hub's ALB is affected at once because subdomain mode
+is **Hub-wide**.
 
 ## Why this happens
 
@@ -29,14 +29,14 @@ fall back to static and HMR is dead:
 `enable_preview_subdomain` back at its default `false`, which destroyed the
 wildcard cert + Route 53 alias + listener attachment; the `.env` separately lost
 `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`. Result: all projects dropped to static
-previews. Diagnosed by: `*.preview.agenthub.surveytracker.io` did not resolve and
+previews. Diagnosed by: `*.preview.agenthub.example.com` did not resolve and
 the ALB cert had only the apex SAN.
 
 ## Restore steps
 
 ### 1. Re-provision infra (Terraform — needs AWS apply)
 
-Preconditions (already true on the agenthub.surveytracker.io deploy): the apex
+Preconditions (already true on the agenthub.example.com deploy): the apex
 ACM cert + ALB exist, so `enable_dedicated_alb = true` and a Route 53 zone for
 `base_domain` are in place. Set the toggle in the **live** tfvars (external /
 gitignored — NOT committed; `terraform.tfvars.example` documents it):
@@ -51,15 +51,15 @@ terraform plan    # expect: +aws_acm_certificate.preview_wildcard,
                   #         +aws_route53_record.preview_wildcard_{cert_validation,alias},
                   #         +aws_lb_listener_certificate.preview_wildcard
 terraform apply
-terraform output preview_subdomain_base   # -> preview.agenthub.surveytracker.io
+terraform output preview_subdomain_base   # -> preview.agenthub.example.com
 ```
 
 DNS + ACM DNS-01 validation propagation takes a few minutes. Verify:
 
 ```bash
-dig +short test.preview.agenthub.surveytracker.io          # resolves to the ALB
-echo | openssl s_client -servername x.preview.agenthub.surveytracker.io \
-  -connect agenthub.surveytracker.io:443 2>/dev/null \
+dig +short test.preview.agenthub.example.com          # resolves to the ALB
+echo | openssl s_client -servername x.preview.agenthub.example.com \
+  -connect agenthub.example.com:443 2>/dev/null \
   | openssl x509 -noout -ext subjectAltName                # SAN includes *.preview.…
 ```
 
@@ -67,7 +67,7 @@ echo | openssl s_client -servername x.preview.agenthub.surveytracker.io \
 
 ```bash
 # /home/agenthub/agent-hub/.env  — add:
-AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=preview.agenthub.surveytracker.io
+AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=preview.agenthub.example.com
 
 sudo systemctl restart agenthub-server
 docker exec agenthub-server printenv AGENT_HUB_PREVIEW_SUBDOMAIN_BASE   # confirm
@@ -113,9 +113,9 @@ wiring — its defaults work. (`vite.config.js` already binds `0.0.0.0` and prox
 `/api` in dev; confirm the proxy target points at the `server` service when run in
 the preview container.)
 
-- **surveytracker** → `frontend` runs `ng serve --host 0.0.0.0` (drop the static
+- **An Angular app** → `frontend` runs `ng serve --host 0.0.0.0` (drop the static
   `dockerfile.preview`/nginx path), same `entryWorkdir` mount.
-- **field** → its dev server, same pattern.
+- **Any other project** → its own dev server, same pattern.
 
 ## Guardrail (so it can't silently regress again)
 

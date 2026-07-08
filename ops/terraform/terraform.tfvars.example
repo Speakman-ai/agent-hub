@@ -4,7 +4,7 @@
 #   terraform plan
 
 aws_region  = "us-east-2"
-project_name = "ryan-remote-server"
+project_name = "my-agent-hub"
 
 # Required — e.g. your public IP/32, or 0.0.0.0/0 in a throwaway lab (not for production)
 ssh_cidr_blocks = ["203.0.113.10/32"]
@@ -51,7 +51,7 @@ allowed_origins = "AUTO"
 # `<sessionId>.preview.<alb_fqdn>`, the app renders at `/`, and dev-server HMR
 # Just Works.
 #
-# Preconditions (already satisfied on the agenthub.surveytracker.io deploy —
+# Preconditions (already satisfied on the agenthub.example.com deploy —
 # the apex ACM cert + ALB exist): enable_dedicated_alb = true AND a Route 53
 # hosted zone for base_domain (route53_zone_id set, or lookup/create).
 #

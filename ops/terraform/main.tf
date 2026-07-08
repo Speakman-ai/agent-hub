@@ -47,7 +47,7 @@ provider "aws" {
 }
 
 # Cross-account provider for writing this env's NS delegation into the ROOT
-# account's apex zone (e.g. surveytracker.io in 797611956947). Only used when
+# account's apex zone (e.g. example.com in 111122223333). Only used when
 # create_route53_zone = true (prod owns its own delegated subdomain zone). The
 # assume_role block is omitted when no role ARN is set, so non-prod envs (which
 # look up an existing zone and never reference this provider) are unaffected.

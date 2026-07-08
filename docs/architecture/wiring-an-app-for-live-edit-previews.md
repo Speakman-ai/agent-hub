@@ -183,11 +183,11 @@ Expected for build-on-demand frameworks (Next.js, Vite production). HMR-based on
 
 ---
 
-## Reference: minimum opt-in for survey-tracker
+## Reference: minimum opt-in for an Angular app
 
-Concrete config that's been verified on dev (`https://agenthub.dev.surveytracker.io`):
+Concrete config verified on a dev deploy (`https://agenthub.dev.example.com`):
 
-**Project config (PATCH `/api/projects/surveytracker`):**
+**Project config (PATCH `/api/projects/<your-project>`):**
 
 ```jsonc
 {
@@ -206,7 +206,7 @@ Concrete config that's been verified on dev (`https://agenthub.dev.surveytracker
 }
 ```
 
-**`compose.preview.yml` (survey-tracker repo):**
+**`compose.preview.yml` (in the app repo):**
 
 ```yaml
 services:
@@ -215,7 +215,7 @@ services:
     command:
       - sh
       - -c
-      - npx ng serve --host 0.0.0.0 --port ${FRONTEND_PORT:-4200} --serve-path=$${AGENT_HUB_PREVIEW_BASE_PATH:-/} --allowed-hosts=.surveytracker.io --allowed-hosts=localhost --allowed-hosts=.localhost --allowed-hosts=host.docker.internal
+      - npx ng serve --host 0.0.0.0 --port ${FRONTEND_PORT:-4200} --serve-path=$${AGENT_HUB_PREVIEW_BASE_PATH:-/} --allowed-hosts=.example.com --allowed-hosts=localhost --allowed-hosts=.localhost --allowed-hosts=host.docker.internal
 ```
 
 That's the entire change on the app side.

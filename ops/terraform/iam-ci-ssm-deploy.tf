@@ -1,8 +1,8 @@
 # Optional: let the GitHub Actions OIDC role (same role as ECR push) restart the
 # dev sandbox via SSM after each successful image push (.github/workflows/push-image.yml).
 #
-# Apply from exactly one workspace per AWS account (e.g. enable only in
-# environments/ryan/ryan.tfvars) so the inline policy is not doubly-managed.
+# Apply from exactly one workspace per AWS account (e.g. enable it in only one
+# environments/<env>/<env>.tfvars) so the inline policy is not doubly-managed.
 
 # Look the role up externally ONLY when this workspace doesn't create it. When
 # manage_github_oidc_role=true the role is created in github-oidc.tf in the same

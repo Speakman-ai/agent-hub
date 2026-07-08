@@ -122,12 +122,12 @@ Each app's compose maps that to whatever its framework's base-URL knob is:
 - Each app opts in at its own pace; non-opted apps stay broken under path-prefix the same way they are today (no regression).
 
 **Cons**
-- Per-app config required. Survey-tracker happens to already wire `PREVIEW_SERVE_PATH` → `--serve-path`; other apps need a one-line compose change.
+- Per-app config required. Some apps already wire `PREVIEW_SERVE_PATH` → `--serve-path`; others need a one-line compose change.
 - Easy to forget: an app dropped into agent-hub for the first time will look broken until someone wires the env var.
 
 ### B2. Subdomain-based session previews
 
-Each session preview gets a subdomain like `s-<short>.preview.agenthub.dev.surveytracker.io`. Host nginx terminates `*.preview.<host>`, agent-hub routes requests by `Host` header instead of path. App sees itself at `/`; no app config of any kind.
+Each session preview gets a subdomain like `s-<short>.preview.agenthub.dev.example.com`. Host nginx terminates `*.preview.<host>`, agent-hub routes requests by `Host` header instead of path. App sees itself at `/`; no app config of any kind.
 
 **Pros**
 - Zero per-app config. The "doesn't matter what the app setup is" property the operator asked for.
@@ -152,9 +152,9 @@ Independent of A vs B1 vs B2:
 
 | Phase | Scope | Estimated effort | Outcome |
 |-------|-------|------------------|---------|
-| **0** | Spike — manually bind-mount worktree into survey-tracker frontend on dev, confirm `ng serve` picks up host edits and HMR fires through the existing path-prefix proxy. | 0.5 day | De-risk **A**. Decides whether anonymous-volume shadows are sufficient or if we need `compose watch`. |
+| **0** | Spike — manually bind-mount worktree into an Angular frontend on dev, confirm `ng serve` picks up host edits and HMR fires through the existing path-prefix proxy. | 0.5 day | De-risk **A**. Decides whether anonymous-volume shadows are sufficient or if we need `compose watch`. |
 | **1** | Ship **A**: extend `buildComposeOverrideYaml` with `volumes` + `AGENT_HUB_WORKTREE_PATH`. Per-project config for shadow-dirs list. Unit + integration tests. | 2–3 days | Agent edits propagate to running preview. |
-| **2** | Ship **B1**: same builder gains an `environment:` block with `AGENT_HUB_PREVIEW_BASE_PATH`. Wiki page documenting the per-framework mapping. Survey-tracker compose updated to consume it. | 1 day | Page renders correctly without operator changes for opted-in apps. |
+| **2** | Ship **B1**: same builder gains an `environment:` block with `AGENT_HUB_PREVIEW_BASE_PATH`. Wiki page documenting the per-framework mapping. An app's compose updated to consume it. | 1 day | Page renders correctly without operator changes for opted-in apps. |
 | **3** | Operator-facing docs: "How to wire your app for live-edit session previews" — covers WORKDIR convention, env-var mapping, common pitfalls. | 0.5 day | Lower discovery cost for the next app. |
 | **4** (optional) | Decision point: B2 yes/no. If yes, separate plan doc for subdomain routing, cert/DNS provisioning, nginx vhost, auth-cookie model change. | TBD per decision | — |
 

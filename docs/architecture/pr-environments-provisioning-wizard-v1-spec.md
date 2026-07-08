@@ -33,7 +33,7 @@ previewHost, previewBaseUrl}`,
 Every one of those steps is something Agent Hub already knows how to do.
 The validator surfaces the symptoms; it doesn't fix them. This is the
 inverse of the value Agent Hub is supposed to deliver, and the four
-bandaid PRs we shipped to make `ryan-sandbox` green proved it.
+bandaid PRs we shipped to make `the sandbox env` green proved it.
 
 > User quote (the test this spec has to pass): _"A user is never going
 > to go through all of this to get it set up. The whole point is to
@@ -158,7 +158,7 @@ values and keeps them on subsequent runs (the merge in
 The current `pr-env-settings.ts` `validate` route hardcodes
 `/etc/nginx/sites-available` / `sites-enabled` defaults instead of
 reading the saved `sitesAvailableDir` / `sitesEnabledDir`. That is the
-underlying root cause of the `ryan-sandbox` "sites-available: ENOENT"
+underlying root cause of the `the sandbox env` "sites-available: ENOENT"
 red row even though `config.json` says `/etc/nginx/conf.d`. The wizard
 fixes this in two halves:
 
@@ -265,19 +265,19 @@ escalating its own privileges, which is the right answer. Instead it
 emits a remediation card with:
 
 - The exact policy JSON above.
-- The detected role ARN (e.g. `arn:aws:iam::123:role/ryan-ec2-ssm`).
+- The detected role ARN (e.g. `arn:aws:iam::123:role/agent-hub-ec2-ssm`).
 - A one-click **Copy CLI command** that pastes:
 
   ```bash
   aws iam put-role-policy \
-    --role-name ryan-ec2-ssm \
+    --role-name agent-hub-ec2-ssm \
     --policy-name agent-hub-pr-env \
     --policy-document file:///tmp/agent-hub-pr-env.json
   ```
 
 - A one-click **Copy Terraform block** that pastes the equivalent
   `aws_iam_role_policy` resource — fixes the third underlying bug
-  (Terraform `ryan-ec2-ssm` role is missing `route53:GetHostedZone` /
+  (Terraform `agent-hub-ec2-ssm` role is missing `route53:GetHostedZone` /
   `route53:ListHostedZones`; should have shipped with PR #785's IAM
   block) when the operator has the option to commit it back.
 
@@ -384,7 +384,7 @@ URL, mirroring the new-project provisioning convention so the same
 │  ✓ verify            5/6 green                            │
 │                                                           │
 │  ── Remediation ─────────────────────────────             │
-│  ┌ ⚠ Attach IAM policy to ryan-ec2-ssm ─────────┐         │
+│  ┌ ⚠ Attach IAM policy to agent-hub-ec2-ssm ─────────┐         │
 │  │ Wizard couldn't put-role-policy from this box.│         │
 │  │ Copy and run from a workstation with admin:   │         │
 │  │ [ Copy CLI ]  [ Copy Terraform ]              │         │

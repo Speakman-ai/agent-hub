@@ -1,6 +1,6 @@
 # Finalize remote-runner fleet — instantiated only where enabled (test env).
-# DRAFT: pending `terraform validate`/`plan`. Default-off so ryan and every other
-# env create zero new resources. `apply` is a deliberate, confirmed step.
+# DRAFT: pending `terraform validate`/`plan`. Default-off so every env creates
+# zero new resources. `apply` is a deliberate, confirmed step.
 
 module "finalize_runners" {
   count  = var.enable_finalize_runners ? 1 : 0
@@ -54,7 +54,7 @@ module "finalize_runners" {
 # The Hub (remote backend) uploads one worktree bundle per run to the worktree
 # bucket and presigns a GET URL each fleet agent fetches credential-free. So the
 # Hub's instance role needs PutObject (upload) + GetObject (so the presigned URL
-# it mints is valid). Gated on the fleet being enabled — zero effect on ryan.
+# it mints is valid). Gated on the fleet being enabled — zero effect when off.
 resource "aws_iam_role_policy" "hub_worktree_s3" {
   count = var.enable_finalize_runners && var.enable_instance_ssm ? 1 : 0
   name  = "finalize-worktree-s3"

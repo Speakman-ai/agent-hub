@@ -57,7 +57,13 @@ describe('CaptureToTicketModal', () => {
     const titleInput = screen.getByLabelText('Title') as HTMLInputElement;
     expect(titleInput.value).toBe('Ship the release');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
+    // Wait for the loaded board to populate the column state before clicking:
+    // the button is disabled until `canSubmit` (columnId set, columns loaded),
+    // and a disabled button swallows the click, so clicking too early would
+    // never call createCard (flaky under load).
+    const createBtn = screen.getByRole('button', { name: 'Create ticket' });
+    await waitFor(() => expect(createBtn).toBeEnabled());
+    fireEvent.click(createBtn);
 
     await waitFor(() => {
       expect(mockApi.createCard).toHaveBeenCalledWith('proj-a', {
@@ -87,7 +93,9 @@ describe('CaptureToTicketModal', () => {
     fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'proj-b' } });
     await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalledWith('proj-b'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
+    const createBtn = screen.getByRole('button', { name: 'Create ticket' });
+    await waitFor(() => expect(createBtn).toBeEnabled());
+    fireEvent.click(createBtn);
 
     await waitFor(() => {
       expect(mockApi.createCard).toHaveBeenCalledWith(
@@ -106,7 +114,9 @@ describe('CaptureToTicketModal', () => {
     render(<CaptureToTicketModal draft={draft} onClose={onClose} />);
 
     await waitFor(() => expect(mockApi.getBoard).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'Create ticket' }));
+    const createBtn = screen.getByRole('button', { name: 'Create ticket' });
+    await waitFor(() => expect(createBtn).toBeEnabled());
+    fireEvent.click(createBtn);
 
     expect(await screen.findByText('boom')).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();

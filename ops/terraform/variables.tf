@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Project name used for resource naming"
   type        = string
-  default     = "ryan-remote-server"
+  default     = "agent-hub"
 }
 
 variable "instance_type" {
@@ -247,16 +247,16 @@ variable "name" {
 }
 
 variable "public_fqdn" {
-  description = "Full public hostname (e.g. agenthub.ryan.aimetrics.com). When set, overrides the composed <dns_subdomain>.<name>.<base_domain>. The name must be under the Route 53 zone for base_domain when you want Terraform to create ACM + A records in *this* account. If the zone or DNS lives in another account, set acm_certificate_arn and point the name at the ALB in that account; you still set public_fqdn + base_domain for outputs and (with base_domain) for any in-Terraform R53."
+  description = "Full public hostname (e.g. agenthub.myenv.example.com). When set, overrides the composed <dns_subdomain>.<name>.<base_domain>. The name must be under the Route 53 zone for base_domain when you want Terraform to create ACM + A records in *this* account. If the zone or DNS lives in another account, set acm_certificate_arn and point the name at the ALB in that account; you still set public_fqdn + base_domain for outputs and (with base_domain) for any in-Terraform R53."
   type        = string
   default     = null
   nullable    = true
 }
 
 variable "base_domain" {
-  description = "Parent DNS name for the public hostname. Must match the Route 53 *hosted zone* you use in this account—often the zone apex (e.g. surveytracker.io) or a delegated sub-zone (e.g. dev.surveytracker.io) if the root zone is elsewhere."
+  description = "Parent DNS name for the public hostname. Must match the Route 53 *hosted zone* you use in this account—often the zone apex (e.g. example.com) or a delegated sub-zone (e.g. dev.example.com) if the root zone is elsewhere."
   type        = string
-  default     = "surveytracker.io"
+  default     = "example.com"
 }
 
 variable "dns_subdomain" {
@@ -278,19 +278,19 @@ variable "lookup_route53_zone_in_this_account" {
 }
 
 variable "create_route53_zone" {
-  description = "If true, CREATE a public hosted zone for base_domain in THIS account (instead of looking one up), use it for the ACM cert + ALB A-record, and (when root_delegation_role_arn is set) write the NS delegation into the root apex zone. The dedicated-account / prod model (e.g. own zone for agenthub.surveytracker.io), vs. the piggy-back model (lookup_route53_zone_in_this_account)."
+  description = "If true, CREATE a public hosted zone for base_domain in THIS account (instead of looking one up), use it for the ACM cert + ALB A-record, and (when root_delegation_role_arn is set) write the NS delegation into the root apex zone. The dedicated-account / prod model (e.g. own zone for agenthub.example.com), vs. the piggy-back model (lookup_route53_zone_in_this_account)."
   type        = bool
   default     = false
 }
 
 variable "root_delegation_zone_id" {
-  description = "Zone ID of the ROOT apex domain (e.g. surveytracker.io) in the root account, into which this env's NS delegation record is written. Only used with create_route53_zone + root_delegation_role_arn."
+  description = "Zone ID of the ROOT apex domain (e.g. example.com) in the root account, into which this env's NS delegation record is written. Only used with create_route53_zone + root_delegation_role_arn."
   type        = string
   default     = ""
 }
 
 variable "root_delegation_role_arn" {
-  description = "ARN of a role in the ROOT account this account can assume to write the NS delegation (e.g. arn:aws:iam::797611956947:role/agenthub_env_role_assume). Empty = don't write the delegation (look it up / add manually)."
+  description = "ARN of a role in the ROOT account this account can assume to write the NS delegation (e.g. arn:aws:iam::111122223333:role/agenthub_env_role_assume). Empty = don't write the delegation (look it up / add manually)."
   type        = string
   default     = ""
 }
@@ -372,7 +372,7 @@ variable "enable_cross_hub_secrets_iam" {
     `kms:Decrypt` for the default Secrets Manager CMK.  This allows the
     Agent Hub server process to fetch the dev-hub API key at runtime and
     inject it into autonomous-dispatch sessions whose kanban card carries
-    the `cross-hub:dev` or `survey-tracker` label.
+    the `cross-hub:dev` label.
 
     Defaults to true when `enable_instance_ssm = true`; set explicitly to
     false to opt out.  Requires `enable_instance_ssm = true`.

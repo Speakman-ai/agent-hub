@@ -11,15 +11,15 @@ data "aws_route53_zone" "base" {
 }
 
 # Dedicated-account / prod model: create + own the public hosted zone for
-# base_domain in THIS account (e.g. agenthub.surveytracker.io in the agent-hub
+# base_domain in THIS account (e.g. agenthub.example.com in the agent-hub
 # account). The NS delegation into the root apex zone is written below.
 resource "aws_route53_zone" "owned" {
   count = var.enable_dedicated_alb && var.create_route53_zone ? 1 : 0
   name  = var.base_domain
 }
 
-# Delegate base_domain from the ROOT apex zone (surveytracker.io) to the zone we
-# just created — mirrors surveytracker's terraform/main route53 module: an NS
+# Delegate base_domain from the ROOT apex zone (example.com) to the zone we
+# just created — mirrors a root-account route53 module: an NS
 # record in the root zone, written cross-account via the assumed root role.
 resource "aws_route53_record" "owned_zone_delegation" {
   count           = var.enable_dedicated_alb && var.create_route53_zone && trimspace(var.root_delegation_role_arn) != "" && trimspace(var.root_delegation_zone_id) != "" ? 1 : 0
@@ -179,7 +179,7 @@ resource "aws_lb" "agenthub" {
   lifecycle {
     precondition {
       condition     = !var.enable_dedicated_alb || local.has_public_fqdn || (var.name != null && var.name != "")
-      error_message = "When enable_dedicated_alb is true, set public_fqdn to the full hostname (e.g. agenthub.ryan.aimetrics.com), or set name (and usually dns_subdomain) to build <dns_subdomain>.<name>.<base_domain>."
+      error_message = "When enable_dedicated_alb is true, set public_fqdn to the full hostname (e.g. agenthub.myenv.example.com), or set name (and usually dns_subdomain) to build <dns_subdomain>.<name>.<base_domain>."
     }
   }
 
@@ -295,7 +295,7 @@ resource "aws_route53_record" "agenthub" {
         local.alb_fqdn == var.base_domain ||
         endswith(local.alb_fqdn, ".${var.base_domain}")
       )
-      error_message = "public_fqdn (or composed hostname) must equal base_domain or end with .<base_domain> so the record can live in the zone for var.base_domain (e.g. agenthub.ryan.aimetrics.com with base_domain=aimetrics.com)."
+      error_message = "public_fqdn (or composed hostname) must equal base_domain or end with .<base_domain> so the record can live in the zone for var.base_domain (e.g. agenthub.myenv.example.com with base_domain=example.com)."
     }
   }
 }

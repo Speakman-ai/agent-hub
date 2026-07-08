@@ -44,7 +44,7 @@ output "dedicated_alb_zone_id" {
 }
 
 output "preview_subdomain_base" {
-  description = "Wildcard subdomain base (e.g. `preview.agenthub.dev.surveytracker.io`) for 'subdomain preview' mode when `enable_preview_subdomain = true`. Set the matching `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE` env on the agent-hub server to this value to activate the server-side dispatcher. Null when subdomain mode is off."
+  description = "Wildcard subdomain base (e.g. `preview.agenthub.dev.example.com`) for 'subdomain preview' mode when `enable_preview_subdomain = true`. Set the matching `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE` env on the agent-hub server to this value to activate the server-side dispatcher. Null when subdomain mode is off."
   value       = local.preview_subdomain_base
 }
 
