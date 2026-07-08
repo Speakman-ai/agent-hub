@@ -33,6 +33,7 @@ import ProjectCronsScreen from './src/screens/ProjectCronsScreen';
 import ProjectSecretsScreen from './src/screens/ProjectSecretsScreen';
 import RunnersScreen from './src/screens/RunnersScreen';
 import RumSettingsScreen from './src/screens/RumSettingsScreen';
+import ReplaysScreen from './src/screens/ReplaysScreen';
 import AwsProfilesScreen from './src/screens/AwsProfilesScreen';
 import ReviewerScreen from './src/screens/ReviewerScreen';
 import EpicsScreen from './src/screens/EpicsScreen';
@@ -225,6 +226,7 @@ function AppContent() {
             <Stack.Screen name="ProjectSecrets" component={ProjectSecretsScreen}/>
             <Stack.Screen name="Runners" component={RunnersScreen}/>
             <Stack.Screen name="RumSettings" component={RumSettingsScreen}/>
+            <Stack.Screen name="Replays" component={ReplaysScreen}/>
             <Stack.Screen name="AwsProfiles" component={AwsProfilesScreen}/>
             <Stack.Screen name="Reviewer" component={ReviewerScreen}/>
             <Stack.Screen name="Epics" component={EpicsScreen}/>

@@ -228,6 +228,48 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ name }),
     }),
+    // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──
+    // RUM Session Explorer (session-grain, Datadog-parity). Lists the
+    // rum_sessions rollup with indexed facet filters; blank/undefined values are
+    // omitted server-side. Returns { sessions, total, limit, offset, hasMore }.
+    listRumSessions: (projectId: any, filters: any = {}) => {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(filters)) {
+            if (value == null)
+                continue;
+            if (typeof value === 'string' && value.trim() === '')
+                continue;
+            params.set(key, String(value));
+        }
+        const qs = params.toString();
+        return fetchJSON(`/projects/${projectId}/rum/sessions${qs ? `?${qs}` : ''}`);
+    },
+    // Capture-grain replays table (session_replays), each row enriched with its
+    // linked support ticket. Returns { replays, total, limit, offset, hasMore,
+    // filter, canViewOrphans }.
+    listReplays: (projectId: any, { filter, kind, limit, offset }: any = {}) => {
+        const params = new URLSearchParams();
+        if (filter)
+            params.set('filter', filter);
+        if (kind && kind !== 'all')
+            params.set('kind', kind);
+        if (limit != null)
+            params.set('limit', String(limit));
+        if (offset)
+            params.set('offset', String(offset));
+        const qs = params.toString();
+        return fetchJSON(`/projects/${projectId}/replays${qs ? `?${qs}` : ''}`);
+    },
+    // Attach a replay to a project support ticket (inverse of the ticket-first
+    // flow). Returns { replay, ticket }. Forward-scaffolding — unused until the
+    // mobile ticket picker is ported; the mobile Link action currently defers to
+    // the web dashboard (see ReplaysScreen). Tracked in follow-up #1392.
+    linkReplayToTicket: (projectId: any, replayId: any, supportTicketId: any) => fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, {
+        method: 'POST',
+        body: JSON.stringify({ supportTicketId }),
+    }),
+    // Detach a replay from its support ticket (keeps project attribution).
+    unlinkReplay: (projectId: any, replayId: any) => fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, { method: 'DELETE' }),
     getCiRuns: (projectId: any, { trigger = 'all', limit = 30 }: any = {}) => fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
     getCiRunDetail: (projectId: any, runId: any) => fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
     // Hub workflows

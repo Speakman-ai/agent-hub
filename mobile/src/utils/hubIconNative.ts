@@ -32,6 +32,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   LayoutGrid: { family: 'feather', name: 'grid' },
   LifeBuoy: { family: 'feather', name: 'life-buoy' },
   Mail: { family: 'feather', name: 'mail' },
+  MonitorPlay: { family: 'material', name: 'play-box-outline' },
   List: { family: 'feather', name: 'list' },
   ListOrdered: { family: 'material', name: 'format-list-numbered' },
   ListTodo: { family: 'material', name: 'format-list-checks' },

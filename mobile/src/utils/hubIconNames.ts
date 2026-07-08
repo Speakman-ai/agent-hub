@@ -24,6 +24,7 @@ export const HUB_ICON_NAMES = [
     'LayoutGrid',
     'LifeBuoy',
     'Mail',
+    'MonitorPlay',
     'List',
     'ListOrdered',
     'ListTodo',

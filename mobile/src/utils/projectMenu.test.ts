@@ -13,7 +13,16 @@ describe('projectLifecycleEntries', () => {
         expect(keys).toContain('security');
         expect(keys).toContain('wiki');
         expect(keys).toContain('notes');
+        expect(keys).toContain('replays');
         expect(keys).not.toContain('workflows');
+    });
+    it('exposes Replays as a lifecycle destination', () => {
+        const entry = projectLifecycleEntries({}).find((e: any) => e.key === 'replays');
+        expect(entry).toMatchObject({
+            label: 'Replays',
+            icon: 'MonitorPlay',
+            screen: 'Replays',
+        });
     });
     it('exposes Deployments as a lifecycle destination', () => {
         const entry = projectLifecycleEntries({}).find((e: any) => e.key === 'deployments');
@@ -52,6 +61,7 @@ describe('projectLifecycleEntries', () => {
         expect(keys).not.toContain('deployments');
         expect(keys).not.toContain('support');
         expect(keys).not.toContain('security');
+        expect(keys).not.toContain('replays');
         expect(keys).toContain('board');
         expect(keys).toContain('wiki');
     });
