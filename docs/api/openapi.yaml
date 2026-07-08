@@ -7780,6 +7780,252 @@ components:
         - selected
         - releases
       description: Release history for the Agent Hub repo.
+    ReplayPlaylistErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
+    ReplayPlaylist:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        itemCount:
+          type: integer
+          minimum: 0
+        extendedRetention:
+          type: boolean
+          description: Whether the whole playlist is flagged for extended retention.
+        retainedUntil:
+          type: string
+          nullable: true
+          description: Absolute SQLite-UTC instant the playlist (and its members) are retained until, or null when on the default window.
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+      required:
+        - id
+        - projectId
+        - name
+        - description
+        - itemCount
+        - extendedRetention
+        - retainedUntil
+        - retentionFlaggedAt
+        - createdAt
+        - createdBy
+        - updatedAt
+      description: A named group of saved replay captures.
+    ReplayPlaylistItem:
+      type: object
+      properties:
+        replayId:
+          type: string
+        position:
+          type: integer
+          minimum: 0
+        addedAt:
+          type: string
+        createdAt:
+          type: string
+        durationMs:
+          type: integer
+          minimum: 0
+        eventCount:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 0
+        supportTicketId:
+          type: string
+          nullable: true
+        cardId:
+          type: string
+          nullable: true
+        retainedUntil:
+          type: string
+          nullable: true
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+        eventsUrl:
+          type: string
+      required:
+        - replayId
+        - position
+        - addedAt
+        - createdAt
+        - durationMs
+        - eventCount
+        - size
+        - supportTicketId
+        - cardId
+        - retainedUntil
+        - retentionFlaggedAt
+        - eventsUrl
+      description: A playlist membership joined to its capture metadata.
+    ReplayPlaylistWithItems:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        itemCount:
+          type: integer
+          minimum: 0
+        extendedRetention:
+          type: boolean
+          description: Whether the whole playlist is flagged for extended retention.
+        retainedUntil:
+          type: string
+          nullable: true
+          description: Absolute SQLite-UTC instant the playlist (and its members) are retained until, or null when on the default window.
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayPlaylistItem"
+      required:
+        - id
+        - projectId
+        - name
+        - description
+        - itemCount
+        - extendedRetention
+        - retainedUntil
+        - retentionFlaggedAt
+        - createdAt
+        - createdBy
+        - updatedAt
+        - items
+      description: A playlist plus its ordered member captures.
+    AddReplayPlaylistItemResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        itemCount:
+          type: integer
+          minimum: 0
+        extendedRetention:
+          type: boolean
+          description: Whether the whole playlist is flagged for extended retention.
+        retainedUntil:
+          type: string
+          nullable: true
+          description: Absolute SQLite-UTC instant the playlist (and its members) are retained until, or null when on the default window.
+        retentionFlaggedAt:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        createdBy:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+        added:
+          type: boolean
+          description: true when a new membership row was inserted; false when the capture was already a member (idempotent no-op).
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplayPlaylistItem"
+      required:
+        - id
+        - projectId
+        - name
+        - description
+        - itemCount
+        - extendedRetention
+        - retainedUntil
+        - retentionFlaggedAt
+        - createdAt
+        - createdBy
+        - updatedAt
+        - added
+        - items
+      description: A playlist with its items plus whether the capture was newly added.
+    CreateReplayPlaylistRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Playlist name (1–200 chars, trimmed).
+        description:
+          type: string
+          nullable: true
+      required:
+        - name
+      description: Body for creating a playlist.
+    UpdateReplayPlaylistRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: New name (1–200 chars).
+        description:
+          type: string
+          nullable: true
+      description: Partial update; omitted fields are unchanged.
+    AddReplayPlaylistItemRequest:
+      type: object
+      properties:
+        replayId:
+          type: string
+          description: Id of a saved capture attributed to this project.
+      required:
+        - replayId
+      description: Body for adding a capture to a playlist.
+    ReplayPlaylistRetentionRequest:
+      type: object
+      properties:
+        extend:
+          type: boolean
+          description: true flags the playlist and every member capture for extended retention; false clears the playlist-level flag (members keep their own retained_until).
+      required:
+        - extend
+      description: Body for flagging a playlist for extended retention.
     ReplaysDashboardErrorResponse:
       type: object
       properties:
@@ -28030,6 +28276,282 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/replay-playlists:
+    get:
+      tags:
+        - Replays
+      summary: List replay playlists for a project
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: The project’s playlists (with member counts).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  playlists:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ReplayPlaylist"
+                required:
+                  - playlists
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+    post:
+      tags:
+        - Replays
+      summary: Create a replay playlist
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReplayPlaylistRequest"
+      responses:
+        "201":
+          description: The created playlist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylist"
+        "400":
+          description: Invalid name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+  /api/projects/{projectId}/replay-playlists/{playlistId}:
+    get:
+      tags:
+        - Replays
+      summary: Get one playlist with its member captures
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: playlistId
+          in: path
+      responses:
+        "200":
+          description: The playlist and its items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistWithItems"
+        "404":
+          description: Project or playlist not found (cross-project playlists are masked as 404).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+    patch:
+      tags:
+        - Replays
+      summary: Rename or update a playlist
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: playlistId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateReplayPlaylistRequest"
+      responses:
+        "200":
+          description: The updated playlist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylist"
+        "400":
+          description: Invalid name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+        "404":
+          description: Project or playlist not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+    delete:
+      tags:
+        - Replays
+      summary: Delete a playlist
+      description: Removes the playlist and its membership rows (cascade). Member captures are not deleted or un-flagged.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: playlistId
+          in: path
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          description: Project or playlist not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+  /api/projects/{projectId}/replay-playlists/{playlistId}/items:
+    post:
+      tags:
+        - Replays
+      summary: Add a saved capture to a playlist
+      description: Adds a project-owned capture to the playlist (idempotent). If the playlist is flagged for extended retention, the new member inherits the flag. A capture that is unattributed or owned by another project is masked as 404.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: playlistId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddReplayPlaylistItemRequest"
+      responses:
+        "200":
+          description: Capture already present (idempotent no-op, added=false).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddReplayPlaylistItemResponse"
+        "201":
+          description: Capture added (added=true).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddReplayPlaylistItemResponse"
+        "400":
+          description: Missing replayId.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+        "404":
+          description: Project, playlist, or replay not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+  /api/projects/{projectId}/replay-playlists/{playlistId}/items/{replayId}:
+    delete:
+      tags:
+        - Replays
+      summary: Remove a capture from a playlist
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: playlistId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: replayId
+          in: path
+      responses:
+        "204":
+          description: Removed.
+        "404":
+          description: Project, playlist, or playlist item not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+  /api/projects/{projectId}/replay-playlists/{playlistId}/retention:
+    post:
+      tags:
+        - Replays
+      summary: Flag or unflag a playlist for extended retention
+      description: extend=true stamps an absolute retained_until (enable-time + the tenant’s extension window) on the playlist and every member capture’s session_replays row; extend=false clears only the playlist-level flag (members keep their retained_until).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: playlistId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplayPlaylistRetentionRequest"
+      responses:
+        "200":
+          description: The updated playlist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylist"
+        "400":
+          description: "Body must be { extend: boolean }."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
+        "404":
+          description: Project or playlist not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayPlaylistErrorResponse"
   /api/projects/{projectId}/replays:
     get:
       tags:

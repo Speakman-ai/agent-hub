@@ -138,6 +138,13 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
         card_id TEXT,
         meta TEXT
       );
+      CREATE TABLE replay_playlist_items (
+        playlist_id TEXT NOT NULL,
+        replay_id TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (playlist_id, replay_id)
+      );
     `);
     return {
       insertSessionReplay: db.prepare(
@@ -157,6 +164,9 @@ describe('storeReplay / readReplayEventsPage / deleteReplay (local store)', () =
             AND (project_id IS NULL OR project_id = ?)`,
       ),
       deleteSessionReplay: db.prepare('DELETE FROM session_replays WHERE id = ?'),
+      deleteReplayPlaylistItemsByReplay: db.prepare(
+        'DELETE FROM replay_playlist_items WHERE replay_id = ?',
+      ),
     } as unknown as Stmts;
   }
 

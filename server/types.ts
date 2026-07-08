@@ -274,6 +274,47 @@ export interface SessionReplayRow {
 }
 
 /**
+ * A named, project-scoped group of saved replay captures (Datadog "playlist").
+ * The whole playlist can be flagged for extended retention, reusing the
+ * per-session two-tier model: flagging stamps an absolute `retained_until`
+ * (enable-time + window) and fans the same flag onto every member capture's
+ * `session_replays` row. See server/replays/replay-playlist-store.ts.
+ */
+export interface ReplayPlaylistRow {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  /** 0/1 extended-retention flag. When 1, `retained_until` is set and members
+   *  added to the playlist inherit the flag. */
+  extended_retention: number;
+  /** Absolute SQLite-UTC instant the playlist (and its members) are retained
+   *  until, or NULL when not flagged. Mirrors `session_replays.retained_until`. */
+  retained_until: string | null;
+  /** When the extended-retention flag was enabled (SQLite-UTC), or NULL. */
+  retention_flagged_at: string | null;
+  created_at: string;
+  created_by: string | null;
+  updated_at: string;
+}
+
+/** A `listReplayPlaylistsByProject` row: the playlist plus its member count. */
+export interface ReplayPlaylistWithCountRow extends ReplayPlaylistRow {
+  item_count: number;
+}
+
+/**
+ * One playlist membership joined to its capture's `session_replays` row
+ * (`listReplayPlaylistItems`). Carries the join columns (`replay_id`,
+ * `position`, `added_at`) alongside every `SessionReplayRow` field.
+ */
+export interface ReplayPlaylistItemRow extends SessionReplayRow {
+  replay_id: string;
+  position: number;
+  added_at: string;
+}
+
+/**
  * One append-only replay segment: a single gzipped S3 object holding a
  * view-scoped slice of rrweb events for a `segmented` capture. S3 is the byte
  * source of truth; this row is the pointer + metadata index playback lists and
@@ -1802,6 +1843,28 @@ export interface Stmts {
   flagSessionReplayRetention: Stmt;
   /** Clear a replay's extended-retention flag. Params: (id). */
   clearSessionReplayRetention: Stmt;
+  // replay_playlists — named groups of saved captures (replay-playlist-store.ts)
+  insertReplayPlaylist: Stmt;
+  getReplayPlaylist: Stmt;
+  listReplayPlaylistsByProject: Stmt;
+  updateReplayPlaylist: Stmt;
+  deleteReplayPlaylist: Stmt;
+  /** Flag a playlist for extended retention. Params:
+   *  (retained_until, retention_flagged_at, id). */
+  flagReplayPlaylistRetention: Stmt;
+  /** Clear a playlist's extended-retention flag. Params: (id). */
+  clearReplayPlaylistRetention: Stmt;
+  insertReplayPlaylistItem: Stmt;
+  getReplayPlaylistItem: Stmt;
+  listReplayPlaylistItems: Stmt;
+  /** Count of members whose capture still exists (inner-join to session_replays).
+   *  Params: (playlistId). */
+  countReplayPlaylistItems: Stmt;
+  listReplayPlaylistItemIds: Stmt;
+  deleteReplayPlaylistItem: Stmt;
+  /** Reap all playlist memberships for a hard-deleted capture. Params: (replayId). */
+  deleteReplayPlaylistItemsByReplay: Stmt;
+  maxReplayPlaylistItemPosition: Stmt;
   // rum_segments — append-only segment manifest (segment-store.ts)
   insertRumSegment: Stmt;
   getRumSegment: Stmt;

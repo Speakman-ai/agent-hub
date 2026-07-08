@@ -140,6 +140,8 @@ export async function expireReplayRow(
     await store.delete(row.storage_key);
   }
   deps.stmts.deleteSessionReplay.run(row.id);
+  // Reap any playlist memberships so a swept capture leaves no orphan rows.
+  deps.stmts.deleteReplayPlaylistItemsByReplay.run(row.id);
 }
 
 /**

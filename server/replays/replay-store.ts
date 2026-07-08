@@ -630,6 +630,8 @@ export async function deleteReplay(deps: ReplayStoreDeps, row: SessionReplayRow)
   const store = getArtifactStoreForLocation(row, deps.config);
   await store.delete(row.storage_key);
   deps.stmts.deleteSessionReplay.run(row.id);
+  // Reap any playlist memberships so orphan rows can't accumulate.
+  deps.stmts.deleteReplayPlaylistItemsByReplay.run(row.id);
 }
 
 // ─── Linking ─────────────────────────────────────────────────────

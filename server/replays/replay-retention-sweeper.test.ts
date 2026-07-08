@@ -56,6 +56,13 @@ describe('runReplayRetentionSweep', () => {
         retention_flagged_at TEXT,
         meta TEXT
       );
+      CREATE TABLE replay_playlist_items (
+        playlist_id TEXT NOT NULL,
+        replay_id TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        added_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (playlist_id, replay_id)
+      );
     `);
     return {
       insertSessionReplay: database.prepare(
@@ -90,6 +97,9 @@ describe('runReplayRetentionSweep', () => {
         `UPDATE session_replays
             SET retained_until = ?, retention_flagged_at = ?
           WHERE id = ?`,
+      ),
+      deleteReplayPlaylistItemsByReplay: database.prepare(
+        'DELETE FROM replay_playlist_items WHERE replay_id = ?',
       ),
     } as unknown as Stmts;
   }

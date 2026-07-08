@@ -533,6 +533,50 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_project_rum_clients_prefix
       ON project_rum_clients(prefix);
 
+    -- replay_playlists: named, project-scoped groups of saved replay captures
+    -- (Datadog "playlist"). A whole playlist can be flagged for extended
+    -- retention, reusing the per-session two-tier model: flagging stamps an
+    -- absolute retained_until (enable-time + the tenant's extension window) on
+    -- the playlist AND fans the same flag out onto every member capture's
+    -- session_replays row, so the retention sweeper skips them until the window
+    -- lapses. extended_retention is the 0/1 flag; retained_until /
+    -- retention_flagged_at mirror session_replays' columns (SQLite-UTC instants,
+    -- both NULL = not flagged). See server/replays/replay-playlist-store.ts +
+    -- server/routes/replay-playlists.ts.
+    CREATE TABLE IF NOT EXISTS replay_playlists (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      extended_retention INTEGER NOT NULL DEFAULT 0,
+      retained_until TEXT,
+      retention_flagged_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_replay_playlists_project
+      ON replay_playlists(project_id, created_at DESC);
+
+    -- replay_playlist_items: membership join. A playlist references saved
+    -- monolithic session_replays captures (the rows that carry retained_until —
+    -- the same grain the per-session retention flag operates on). ON DELETE
+    -- CASCADE removes items when the playlist is dropped. position orders the
+    -- playlist; added_at records when the capture joined. The composite PK makes
+    -- re-adding the same capture idempotent (INSERT OR IGNORE).
+    CREATE TABLE IF NOT EXISTS replay_playlist_items (
+      playlist_id TEXT NOT NULL,
+      replay_id TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      added_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (playlist_id, replay_id),
+      FOREIGN KEY (playlist_id) REFERENCES replay_playlists(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_replay_playlist_items_playlist
+      ON replay_playlist_items(playlist_id, position, added_at);
+    CREATE INDEX IF NOT EXISTS idx_replay_playlist_items_replay
+      ON replay_playlist_items(replay_id);
+
     -- Delegations: tracks sub-agent tasks spawned by a lead agent
     CREATE TABLE IF NOT EXISTS delegations (
       id TEXT PRIMARY KEY,
@@ -3570,6 +3614,89 @@ function initDb(dataDir: string): void {
       `UPDATE session_replays
           SET retained_until = NULL, retention_flagged_at = NULL
         WHERE id = ?`,
+    ),
+    // replay_playlists — named groups of saved captures (replay-playlist-store.ts).
+    insertReplayPlaylist: db.prepare(
+      `INSERT INTO replay_playlists (id, project_id, name, description, created_by)
+       VALUES (?, ?, ?, ?, ?)`,
+    ),
+    getReplayPlaylist: db.prepare('SELECT * FROM replay_playlists WHERE id = ?'),
+    // item_count counts only members whose capture STILL EXISTS: the LEFT JOIN to
+    // session_replays drops membership rows orphaned by a capture hard-delete
+    // (COUNT(r.id) ignores the NULL side), so the LIST count matches the GET
+    // count (items.length, which uses the same inner join) even before the
+    // orphan membership row is reaped.
+    listReplayPlaylistsByProject: db.prepare(
+      `SELECT p.*, COUNT(r.id) AS item_count
+         FROM replay_playlists p
+         LEFT JOIN replay_playlist_items i ON i.playlist_id = p.id
+         LEFT JOIN session_replays r ON r.id = i.replay_id
+        WHERE p.project_id = ?
+        GROUP BY p.id
+        ORDER BY p.created_at DESC`,
+    ),
+    updateReplayPlaylist: db.prepare(
+      `UPDATE replay_playlists
+          SET name = ?, description = ?, updated_at = datetime('now')
+        WHERE id = ?`,
+    ),
+    deleteReplayPlaylist: db.prepare('DELETE FROM replay_playlists WHERE id = ?'),
+    // Flag / clear a playlist's extended-retention state (mirrors the per-session
+    // flag columns). Params (flag): (retained_until, retention_flagged_at, id).
+    flagReplayPlaylistRetention: db.prepare(
+      `UPDATE replay_playlists
+          SET extended_retention = 1, retained_until = ?, retention_flagged_at = ?,
+              updated_at = datetime('now')
+        WHERE id = ?`,
+    ),
+    clearReplayPlaylistRetention: db.prepare(
+      `UPDATE replay_playlists
+          SET extended_retention = 0, retained_until = NULL, retention_flagged_at = NULL,
+              updated_at = datetime('now')
+        WHERE id = ?`,
+    ),
+    // replay_playlist_items — membership join (replay-playlist-store.ts). Re-add is
+    // idempotent (composite PK + INSERT OR IGNORE). Item read joins the capture's
+    // session_replays row for dashboard metadata; missing (deleted) captures fall
+    // out of the join, so a playlist never resurrects an expired capture.
+    insertReplayPlaylistItem: db.prepare(
+      `INSERT OR IGNORE INTO replay_playlist_items (playlist_id, replay_id, position)
+       VALUES (?, ?, ?)`,
+    ),
+    getReplayPlaylistItem: db.prepare(
+      'SELECT * FROM replay_playlist_items WHERE playlist_id = ? AND replay_id = ?',
+    ),
+    listReplayPlaylistItems: db.prepare(
+      `SELECT i.replay_id, i.position, i.added_at, r.*
+         FROM replay_playlist_items i
+         JOIN session_replays r ON r.id = i.replay_id
+        WHERE i.playlist_id = ?
+        ORDER BY i.position ASC, i.added_at ASC`,
+    ),
+    // Count of members whose capture still exists (same inner-join semantics as
+    // listReplayPlaylistItems) — used where only the count is needed, so the
+    // metadata join isn't materialized just to read `.length`.
+    countReplayPlaylistItems: db.prepare(
+      `SELECT COUNT(*) AS n
+         FROM replay_playlist_items i
+         JOIN session_replays r ON r.id = i.replay_id
+        WHERE i.playlist_id = ?`,
+    ),
+    listReplayPlaylistItemIds: db.prepare(
+      'SELECT replay_id FROM replay_playlist_items WHERE playlist_id = ? ORDER BY position ASC',
+    ),
+    deleteReplayPlaylistItem: db.prepare(
+      'DELETE FROM replay_playlist_items WHERE playlist_id = ? AND replay_id = ?',
+    ),
+    // Reap every playlist membership for a capture being hard-deleted. Called at
+    // each deleteSessionReplay site (retention sweeper + replay-store delete) so
+    // orphan membership rows can't accumulate unbounded. Seeks via
+    // idx_replay_playlist_items_replay.
+    deleteReplayPlaylistItemsByReplay: db.prepare(
+      'DELETE FROM replay_playlist_items WHERE replay_id = ?',
+    ),
+    maxReplayPlaylistItemPosition: db.prepare(
+      'SELECT COALESCE(MAX(position), -1) AS max_pos FROM replay_playlist_items WHERE playlist_id = ?',
     ),
     // rum_segments — append-only segment manifest (server/replays/segment-store.ts).
     // The INSERT is the O(1) append's row-claim: the UNIQUE (session_id, view_id,
