@@ -8,6 +8,7 @@
  */
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
+import { TODO_SOURCE_TYPES } from '../source-provenance.js';
 
 const ErrorResponse = registerComponent(
   'MeTodosErrorResponse',
@@ -17,7 +18,7 @@ const ErrorResponse = registerComponent(
 );
 
 const TodoStatus = z.enum(['open', 'done']);
-const TodoSourceType = z.enum(['manual', 'email', 'calendar']);
+const TodoSourceType = z.enum([...TODO_SOURCE_TYPES]);
 
 export const UserTodoComponent = registerComponent(
   'UserTodo',

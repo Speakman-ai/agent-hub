@@ -644,6 +644,13 @@ function initDb(dataDir: string): void {
       -- remains on support_tickets; cards carry only stable ids.
       support_ticket_id TEXT,
       customer_report_id TEXT,
+      -- Capture provenance (spec CAPTURE-PROVENANCE): the shared source triple
+      -- with user_todos so a card can be traced back to the Gmail message /
+      -- Calendar event / todo it was captured from. NULL for cards created
+      -- without a tracked origin. source_meta is a JSON deep-link blob.
+      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo')),
+      source_id TEXT,
+      source_meta TEXT,
       created_by TEXT,
       -- Human-readable per-board sequence number (the "123" in "AH-123").
       -- Assigned by the kanban_card_assign_short_id trigger on insert; NULL only
@@ -2411,6 +2418,32 @@ function initDb(dataDir: string): void {
   );
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_kanban_cards_customer_report ON kanban_cards(customer_report_id)',
+  );
+
+  // Capture provenance (spec CAPTURE-PROVENANCE): the shared source triple with
+  // user_todos so a card can be traced back to the Gmail message / Calendar
+  // event / todo it was captured from. NULL on cards created without a tracked
+  // origin. The (source_type, source_id) index backs "did we already capture a
+  // card from this origin?" dedup lookups.
+  try {
+    db.prepare('SELECT source_type FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec(
+      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo'))",
+    );
+  }
+  try {
+    db.prepare('SELECT source_id FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN source_id TEXT');
+  }
+  try {
+    db.prepare('SELECT source_meta FROM kanban_cards LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN source_meta TEXT');
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_kanban_cards_source ON kanban_cards(source_type, source_id)',
   );
 
   try {
@@ -4619,6 +4652,15 @@ function initDb(dataDir: string): void {
     linkKanbanCardSupportTicket: db.prepare(
       `UPDATE kanban_cards
           SET support_ticket_id = ?, customer_report_id = ?, updated_at = datetime('now')
+        WHERE id = ?`,
+    ),
+    // Stamp capture provenance on a card after create (spec CAPTURE-PROVENANCE).
+    // Kept out of createKanbanCard's positional INSERT so the ~8 create callers
+    // don't all have to thread three more args; the create/convert paths that
+    // carry an origin call this immediately after insert.
+    setKanbanCardProvenance: db.prepare(
+      `UPDATE kanban_cards
+          SET source_type = ?, source_id = ?, source_meta = ?, updated_at = datetime('now')
         WHERE id = ?`,
     ),
     getLinkedSupportTicketsForBoard: db.prepare(

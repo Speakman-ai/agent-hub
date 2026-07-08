@@ -1004,6 +1004,14 @@ export interface KanbanCardRow {
   support_ticket_id?: string | null;
   /** Durable customer report link. Currently the support ticket id for support-ticket intake. */
   customer_report_id?: string | null;
+  /** Capture provenance (spec CAPTURE-PROVENANCE). Shared triple with
+   *  user_todos: the origin a card was captured from. `source_type` is one of
+   *  manual|email|calendar|todo (todo = promoted from a personal todo), NULL for
+   *  cards with no tracked origin. `source_meta` is the raw JSON deep-link blob
+   *  on the row; the API serializer parses it to an object. */
+  source_type?: 'manual' | 'email' | 'calendar' | 'todo' | null;
+  source_id?: string | null;
+  source_meta?: string | null;
   pr_url: string | null;
   review_status: 'awaiting_review' | 'reviewing' | 'approved' | 'changes_requested' | null;
   created_by: string | null;
@@ -2100,6 +2108,7 @@ export interface Stmts {
   getKanbanCard: Stmt;
   createKanbanCard: Stmt;
   linkKanbanCardSupportTicket: Stmt;
+  setKanbanCardProvenance: Stmt;
   getLinkedSupportTicketsForBoard: Stmt;
   updateKanbanCard: Stmt;
   moveKanbanCard: Stmt;

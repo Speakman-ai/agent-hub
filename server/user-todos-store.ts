@@ -16,9 +16,10 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { getOrgsDb } from './orgs.js';
+import { parseSourceMeta, type TodoSourceType } from './source-provenance.js';
 
 export type TodoStatus = 'open' | 'done';
-export type TodoSourceType = 'manual' | 'email' | 'calendar';
+export type { TodoSourceType };
 
 /** Public-facing todo shape. `sourceMeta` is parsed from the stored JSON blob. */
 export interface UserTodo {
@@ -70,18 +71,6 @@ export interface UpdateTodoInput {
   notes?: string;
   status?: TodoStatus;
   dueAt?: string | null;
-}
-
-function parseSourceMeta(json: string | null): Record<string, unknown> | null {
-  if (json == null) return null;
-  try {
-    const parsed = JSON.parse(json);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function rowToTodo(row: UserTodoRow): UserTodo {

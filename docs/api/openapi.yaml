@@ -1741,6 +1741,26 @@ components:
             - created_at
             - updated_at
           description: Safe linked support-ticket metadata for converted cards. reporter_email is role-gated/masked.
+        source_type:
+          type: string
+          nullable: true
+          enum:
+            - manual
+            - email
+            - calendar
+            - todo
+            - null
+          description: "Capture provenance (spec CAPTURE-PROVENANCE): the origin this card was captured from. `todo` means it was promoted from a personal todo; `email`/`calendar` a direct dashboard capture; `manual`/null a card with no tracked origin."
+        source_id:
+          type: string
+          nullable: true
+          description: Opaque id of the capture origin (Gmail message id, Calendar event id, or todo id). NULL when untracked.
+        source_meta:
+          type: object
+          nullable: true
+          additionalProperties:
+            nullable: true
+          description: Parsed JSON deep-link blob preserving a pointer back to the capture origin so the dashboard can reopen it.
         pr_url:
           type: string
           nullable: true
@@ -13774,6 +13794,27 @@ paths:
                 phaseId:
                   type: string
                   nullable: true
+                source:
+                  type: object
+                  properties:
+                    sourceType:
+                      type: string
+                      enum:
+                        - manual
+                        - email
+                        - calendar
+                        - todo
+                    sourceId:
+                      type: string
+                      nullable: true
+                    sourceMeta:
+                      type: object
+                      nullable: true
+                      additionalProperties:
+                        nullable: true
+                  required:
+                    - sourceType
+                  description: Optional capture provenance stamped on the new card (spec CAPTURE-PROVENANCE). Records the Gmail message / Calendar event / todo the card was captured from; `sourceMeta` preserves a deep link back to it.
               required:
                 - title
                 - columnId

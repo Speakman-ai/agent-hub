@@ -80,6 +80,7 @@ import {
 } from '../epic-spec.js';
 import { buildDecideForMeSessionContext, pickDefaultDecideAgent } from '../spec-decide-for-me.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
+import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
 import {
@@ -200,10 +201,12 @@ interface LinkedSupportTicketRow extends SupportTicketRow {
   card_id: string;
 }
 
-export interface SerializedKanbanCard extends KanbanCardRow {
+export interface SerializedKanbanCard extends Omit<KanbanCardRow, 'source_meta'> {
   support_ticket_id: string | null;
   customer_report_id: string | null;
   linked_support_ticket: LinkedSupportTicketMetadata | null;
+  /** Capture-provenance deep-link blob, parsed from the row's JSON TEXT. */
+  source_meta: Record<string, unknown> | null;
 }
 
 /** A card row enriched with its blocker relationships. */
@@ -283,6 +286,9 @@ export function serializeCardsForRequest(
       support_ticket_id: card.support_ticket_id ?? linkedId,
       customer_report_id: card.customer_report_id ?? card.support_ticket_id ?? linkedId,
       linked_support_ticket: linked,
+      source_type: card.source_type ?? null,
+      source_id: card.source_id ?? null,
+      source_meta: parseSourceMeta(card.source_meta),
     };
   });
 }
@@ -820,6 +826,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       createdBy,
       epicId: bodyEpicId,
       phaseId: bodyPhaseId,
+      source,
     } = parsed;
     // Merge header / spawn-creds fallbacks before dedup and intake gating so
     // both guards see the same resolved session id (not just the Zod body).
@@ -937,6 +944,18 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       null,
       maxPos,
     );
+
+    // Stamp capture provenance (spec CAPTURE-PROVENANCE) when the caller
+    // supplied an origin. Kept separate from createKanbanCard's positional
+    // INSERT; the deep link is preserved in source_meta as a JSON blob.
+    if (source) {
+      stmts.setKanbanCardProvenance.run(
+        source.sourceType,
+        source.sourceId ?? null,
+        serializeSourceMeta(source.sourceMeta ?? null),
+        id,
+      );
+    }
 
     // Apply the pre-validated scope (validation + any 400/404 already ran
     // above, before the insert).

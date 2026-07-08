@@ -41,6 +41,10 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { FinalizeRunComponent } from './finalize.openapi.js';
+import { CARD_SOURCE_TYPES } from '../source-provenance.js';
+
+/** Capture-provenance source enum for cards (spec CAPTURE-PROVENANCE). */
+const CardSourceType = z.enum([...CARD_SOURCE_TYPES]);
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
@@ -173,6 +177,18 @@ export const KanbanCardComponent = registerComponent(
       linked_support_ticket: LinkedSupportTicketComponent.nullable().optional().openapi({
         description:
           'Safe linked support-ticket metadata for converted cards. reporter_email is role-gated/masked.',
+      }),
+      source_type: CardSourceType.nullable().optional().openapi({
+        description:
+          'Capture provenance (spec CAPTURE-PROVENANCE): the origin this card was captured from. `todo` means it was promoted from a personal todo; `email`/`calendar` a direct dashboard capture; `manual`/null a card with no tracked origin.',
+      }),
+      source_id: z.string().nullable().optional().openapi({
+        description:
+          'Opaque id of the capture origin (Gmail message id, Calendar event id, or todo id). NULL when untracked.',
+      }),
+      source_meta: z.record(z.string(), z.unknown()).nullable().optional().openapi({
+        description:
+          'Parsed JSON deep-link blob preserving a pointer back to the capture origin so the dashboard can reopen it.',
       }),
       pr_url: z.string().nullable(),
       review_status: ReviewStatusSchema,
@@ -436,6 +452,18 @@ export const ErrorResponseComponent = registerComponent(
 
 // ─── Request schemas ──────────────────────────────────────────────
 
+/**
+ * Capture-provenance source ref accepted on card create/convert (spec
+ * CAPTURE-PROVENANCE). Mirrors the todo capture shape so a card can be stamped
+ * with the Gmail message / Calendar event / todo it was captured from, with a
+ * deep link preserved in `sourceMeta`.
+ */
+export const CardSourceRefSchema = z.object({
+  sourceType: CardSourceType,
+  sourceId: z.string().nullable().optional(),
+  sourceMeta: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
 export const CreateCardRequestSchema = z.preprocess(
   aliasPreprocess({
     columnId: 'column_id',
@@ -461,6 +489,10 @@ export const CreateCardRequestSchema = z.preprocess(
     createdBy: z.string().nullable().optional(),
     epicId: z.string().nullable().optional(),
     phaseId: z.string().nullable().optional(),
+    source: CardSourceRefSchema.optional().openapi({
+      description:
+        'Optional capture provenance stamped on the new card (spec CAPTURE-PROVENANCE). Records the Gmail message / Calendar event / todo the card was captured from; `sourceMeta` preserves a deep link back to it.',
+    }),
   }),
 );
 
