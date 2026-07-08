@@ -169,6 +169,45 @@ function defaultPhaseAutonomousModel(
   return null;
 }
 
+/**
+ * Resolve the phase a card should join when it's linked to an epic but no phase
+ * was supplied. Scoping requires every epic-linked ticket to live in a phase:
+ * an unphased epic card is invisible in the phase flowchart (grouped by
+ * `phase_id`) and the autonomous phase runner (which dispatches by `phase_id`)
+ * never picks it up. Returns the epic's first phase by position, materializing a
+ * default phase when the epic has none so we never leave an epic phase-less.
+ */
+function resolvePhaseForEpicLink(
+  stmts: Stmts,
+  cfg: Pick<RouteDeps['config'], 'defaultModel' | 'engineValidModels'>,
+  boardId: string,
+  epicId: string,
+): string {
+  const phases = stmts.getKanbanPhasesByEpic.all(epicId) as KanbanPhaseRow[];
+  if (phases.length > 0) {
+    return [...phases].sort((a, b) => a.position - b.position)[0].id;
+  }
+  // No phases yet — create the default one the scoping contract mandates
+  // ("never leave an epic with zero phases") and drop the ticket into it.
+  const id = uuidv4();
+  stmts.createKanbanPhase.run(id, epicId, boardId, 'Phase 1', null, 0);
+  const defaultPhaseModel = defaultPhaseAutonomousModel(cfg);
+  if (defaultPhaseModel) {
+    const created = stmts.getKanbanPhase.get(id) as KanbanPhaseRow;
+    stmts.updateKanbanPhase.run(
+      created.name,
+      created.description,
+      created.autonomous,
+      created.autonomous_interval,
+      created.autonomous_max_concurrent,
+      defaultPhaseModel,
+      created.autonomous_send_it ?? 1,
+      id,
+    );
+  }
+  return id;
+}
+
 function defaultPhaseAutonomousModelForAgent(
   cfg: RouteDeps['config'],
   agentLookup: AgentLookup | null,
@@ -916,6 +955,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       // a valid same-board epic is linked.
       if (epic && epic.board_id === board.id) {
         resolvedEpicId = String(bodyEpicId);
+        // An epic-linked card with no explicit phase must still land in a
+        // phase (scoping contract) — otherwise it's orphaned from the phase
+        // flowchart and never dispatched. Auto-resolve the epic's phase.
+        resolvedPhaseId = resolvePhaseForEpicLink(stmts, config, board.id, resolvedEpicId);
       }
     }
 
@@ -1033,6 +1076,11 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     // block below can keep `epic_id` and `phase_id` consistent.
     let nextEpicId: string | null = hasEpicId ? (epicId ?? null) : (card.epic_id ?? null);
 
+    // The phase the card will carry after this update. Starts from the request
+    // (explicit phaseId) or the card's current phase, then gets reconciled with
+    // the resolved epic below.
+    let nextPhaseId: string | null = hasPhaseId ? (phaseId ?? null) : (card.phase_id ?? null);
+
     if (hasPhaseId && phaseId != null) {
       const phase = stmts.getKanbanPhase.get(phaseId) as KanbanPhaseRow | undefined;
       if (!phase || phase.board_id !== card.board_id) {
@@ -1048,6 +1096,26 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         });
       }
       nextEpicId = phase.epic_id;
+      nextPhaseId = phase.id;
+    }
+
+    // Keep epic ↔ phase consistent. A phase belongs to exactly one epic, so a
+    // carried-over phase from a different epic (e.g. the caller changed epicId
+    // without a phaseId) is stale — drop it. Then enforce the scoping invariant:
+    // a card linked to an epic always lives in a phase (unless the caller
+    // explicitly cleared the phase in this same request).
+    if (nextEpicId) {
+      if (nextPhaseId) {
+        const cur = stmts.getKanbanPhase.get(nextPhaseId) as KanbanPhaseRow | undefined;
+        if (!cur || String(cur.epic_id) !== String(nextEpicId)) nextPhaseId = null;
+      }
+      const explicitlyCleared = hasPhaseId && phaseId == null;
+      if (!nextPhaseId && !explicitlyCleared) {
+        nextPhaseId = resolvePhaseForEpicLink(stmts, config, card.board_id, nextEpicId);
+      }
+    } else {
+      // No epic → no phase (a phase belongs to an epic).
+      nextPhaseId = null;
     }
 
     const effectiveSessionId: string | null | undefined = sessionId;
@@ -1125,7 +1193,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       hasGithubIssueUrl ? (githubIssueUrl ?? null) : card.github_issue_url,
       hasPrUrl ? (prUrl ?? null) : card.pr_url,
       nextEpicId,
-      hasPhaseId ? (phaseId ?? null) : (card.phase_id ?? null),
+      nextPhaseId,
       hasAssignModel
         ? assignModel != null && String(assignModel).trim()
           ? String(assignModel).trim()
@@ -2666,6 +2734,23 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         }
       }
       stmts.updateKanbanCardEpic.run(epicId || null, req.params.cardId);
+      // Keep phase consistent with the new epic. Unlink (epicId null) clears the
+      // phase; linking to an epic drops the card into a phase unless it already
+      // sits in one belonging to that epic (scoping invariant: an epic-linked
+      // card always lives in a phase).
+      if (!epicId) {
+        if (card.phase_id) stmts.updateKanbanCardPhase.run(null, req.params.cardId);
+      } else {
+        let keepPhase = false;
+        if (card.phase_id) {
+          const cur = stmts.getKanbanPhase.get(card.phase_id) as KanbanPhaseRow | undefined;
+          keepPhase = !!cur && String(cur.epic_id) === String(epicId);
+        }
+        if (!keepPhase) {
+          const resolvedPhase = resolvePhaseForEpicLink(stmts, config, card.board_id, epicId);
+          stmts.updateKanbanCardPhase.run(resolvedPhase, req.params.cardId);
+        }
+      }
       const affectedEpicIds = new Set<string>();
       if (card.epic_id) affectedEpicIds.add(card.epic_id);
       if (epicId) affectedEpicIds.add(epicId);
