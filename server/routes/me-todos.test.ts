@@ -14,24 +14,52 @@ import request from 'supertest';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import path from 'path';
-import type { RouteDeps } from '../types.js';
+import type { Project, RouteDeps } from '../types.js';
 
 let TMP_DIR = '';
 
 const { initOrgsDb, setOrgsDbPathForTests } = await import('../orgs.js');
+const { getOrgsDb } = await import('../orgs.js');
 const { createUser } = await import('../users-store.js');
-const { listTodos } = await import('../user-todos-store.js');
+const { listTodos, setTodoLink } = await import('../user-todos-store.js');
 const { default: createMeTodosRoutes } = await import('./me-todos.js');
 const { shouldDeliverBroadcast } = await import('../broadcast-filter.js');
+const { initDb, getStmts } = await import('../db.js');
+const { getOrCreateBoard } = await import('./board.js');
 
 const broadcast = vi.fn();
+const PROJECT_ID = 'todo-promote-project';
+const PRIVATE_PROJECT_ID = 'private-todo-promote-project';
+const project = {
+  id: PROJECT_ID,
+  name: 'Todo Promote Project',
+  cwd: '/tmp/todo-promote-project',
+  agents: [],
+} as unknown as Project;
 
 function makeDeps(): RouteDeps {
-  return { broadcast } as unknown as RouteDeps;
+  return {
+    broadcast,
+    stmts: getStmts(),
+    findProject: (id: string) => {
+      if (id === PROJECT_ID) return project;
+      if (id === PRIVATE_PROJECT_ID) {
+        return {
+          id: PRIVATE_PROJECT_ID,
+          name: 'Private Todo Promote Project',
+          cwd: '/tmp/private-todo-promote-project',
+          agents: [],
+          visibility: 'private',
+          ownerUserId: userA,
+        } as unknown as Project;
+      }
+      return null;
+    },
+  } as unknown as RouteDeps;
 }
 
 /** Mount the router behind a middleware that stamps a fixed acting user. */
-function mount(authUserId: string | null): Express {
+function mountWithDeps(authUserId: string | null, deps: RouteDeps): Express {
   const app = express();
   app.use(express.json());
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -40,8 +68,12 @@ function mount(authUserId: string | null): Express {
     }
     next();
   });
-  app.use(createMeTodosRoutes(makeDeps()));
+  app.use(createMeTodosRoutes(deps));
   return app;
+}
+
+function mount(authUserId: string | null): Express {
+  return mountWithDeps(authUserId, makeDeps());
 }
 
 let userA = '';
@@ -49,6 +81,7 @@ let userB = '';
 
 beforeEach(() => {
   TMP_DIR = mkdtempSync(path.join(tmpdir(), 'me-todos-route-'));
+  initDb(TMP_DIR);
   setOrgsDbPathForTests(path.join(TMP_DIR, 'orgs.db'));
   initOrgsDb();
   userA = createUser({ username: 'user-a', passwordHash: 'x' }).id;
@@ -318,6 +351,338 @@ describe('DELETE /api/me/todos/:id', () => {
       .send({ title: 'A keeps this' });
     await request(mount(userB)).delete(`/api/me/todos/${created.body.todo.id}`).expect(404);
     expect(listTodos(userA)).toHaveLength(1);
+  });
+});
+
+describe('POST /api/me/todos/:id/promote', () => {
+  it('creates a To Do card, links the todo back to it, and stamps todo provenance', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Ship promote endpoint', notes: 'carry me over', priority: 'high' })
+      .expect(201);
+    broadcast.mockClear();
+
+    const res = await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(201);
+
+    expect(res.body.todo).toMatchObject({
+      id: created.body.todo.id,
+      linkedType: 'card',
+      linkedId: res.body.card.id,
+      linkedCardId: res.body.card.id,
+      linkedProjectId: PROJECT_ID,
+      status: 'open',
+    });
+    expect(res.body.card).toMatchObject({
+      title: 'Ship promote endpoint',
+      description: 'carry me over',
+      priority: 'high',
+      source_type: 'todo',
+      source_id: created.body.todo.id,
+      source_meta: { todoId: created.body.todo.id, userId: userA },
+      created_by: userA,
+    });
+
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    const todoColumn = board.columns.find((c) => c.name === 'To Do');
+    expect(res.body.card.column_id).toBe(todoColumn?.id);
+    expect(broadcast).toHaveBeenCalledWith({ type: 'kanban_update', projectId: PROJECT_ID });
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'user_todo_update',
+        ownerUserId: userA,
+        action: 'promoted',
+      }),
+    );
+  });
+
+  it('honors columnId, epicId, and priority override', async () => {
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    const customColumnId = 'promote-custom-column';
+    getStmts().createKanbanColumn.run(customColumnId, board.board.id, 'Next', 99, null);
+    const epicId = 'promote-epic';
+    getStmts().createKanbanEpic.run(
+      epicId,
+      board.board.id,
+      'Promote Epic',
+      null,
+      '#6366F1',
+      0,
+      null,
+    );
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Custom target', priority: 'low' })
+      .expect(201);
+
+    const res = await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID, columnId: customColumnId, epicId, priority: 'urgent' })
+      .expect(201);
+
+    expect(res.body.card).toMatchObject({
+      column_id: customColumnId,
+      epic_id: epicId,
+      priority: 'urgent',
+    });
+  });
+
+  it('rejects a column from another board', async () => {
+    const foreignBoard = getOrCreateBoard(getStmts(), 'foreign-promote-project');
+    const foreignColumnId = 'foreign-promote-column';
+    getStmts().createKanbanColumn.run(foreignColumnId, foreignBoard.board.id, 'Foreign', 99, null);
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Wrong board column' })
+      .expect(201);
+
+    await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID, columnId: foreignColumnId })
+      .expect(404);
+  });
+
+  it('rejects promoting into a private project the user cannot view', async () => {
+    const created = await request(mount(userB))
+      .post('/api/me/todos')
+      .send({ title: 'No private project writes' })
+      .expect(201);
+
+    await request(mount(userB))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PRIVATE_PROJECT_ID })
+      .expect(404);
+
+    expect(getStmts().getKanbanBoard.get(PRIVATE_PROJECT_ID)).toBeUndefined();
+    expect(broadcast).not.toHaveBeenCalledWith({
+      type: 'kanban_update',
+      projectId: PRIVATE_PROJECT_ID,
+    });
+  });
+
+  it('appends promoted cards to the target column position order', async () => {
+    const first = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'First promoted' })
+      .expect(201);
+    const second = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Second promoted' })
+      .expect(201);
+
+    const firstPromote = await request(mount(userA))
+      .post(`/api/me/todos/${first.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(201);
+    const secondPromote = await request(mount(userA))
+      .post(`/api/me/todos/${second.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(201);
+
+    expect(firstPromote.body.card.position).toBe(0);
+    expect(secondPromote.body.card.position).toBe(1);
+  });
+
+  it('returns the existing linked card when promote is retried', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Retry-safe promote' })
+      .expect(201);
+
+    const first = await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(201);
+    const retry = await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(200);
+
+    expect(retry.body.card.id).toBe(first.body.card.id);
+    expect(retry.body.todo.linkedId).toBe(first.body.card.id);
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    const cards = getStmts().getKanbanCards.all(board.board.id) as Array<{ id: string }>;
+    expect(cards.filter((card) => card.id === first.body.card.id)).toHaveLength(1);
+    expect(cards).toHaveLength(1);
+  });
+
+  it('rejects an ordinary same-project card link that is not a prior promotion', async () => {
+    const board = getOrCreateBoard(getStmts(), PROJECT_ID);
+    const column = board.columns[0];
+    const cardId = 'ordinary-linked-card';
+    getStmts().createKanbanCard.run(
+      cardId,
+      column.id,
+      board.board.id,
+      'Ordinary linked card',
+      null,
+      'medium',
+      null,
+      null,
+      null,
+      null,
+      userA,
+      null,
+      0,
+    );
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({
+        title: 'Promote should not reuse ordinary link',
+        linkedType: 'card',
+        linkedId: cardId,
+        linkedProjectId: PROJECT_ID,
+      })
+      .expect(201);
+
+    await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(409);
+
+    const card = getStmts().getKanbanCard.get(cardId) as { source_type: string | null };
+    expect(card.source_type).toBeNull();
+  });
+
+  it('recovers a same-project promoted todo whose linked card row is missing', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Recover missing card' })
+      .expect(201);
+    const cardId = `todo-${created.body.todo.id}`;
+    setTodoLink(userA, created.body.todo.id, {
+      type: 'card',
+      id: cardId,
+      projectId: PROJECT_ID,
+    });
+
+    const recovered = await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(201);
+
+    expect(recovered.body.todo.linkedId).toBe(cardId);
+    expect(recovered.body.card).toMatchObject({
+      id: cardId,
+      title: 'Recover missing card',
+      source_type: 'todo',
+      source_id: created.body.todo.id,
+    });
+  });
+
+  it('rejects a missing ordinary same-project card link instead of promoting it', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({
+        title: 'Missing ordinary link',
+        linkedType: 'card',
+        linkedId: 'missing-ordinary-card',
+        linkedProjectId: PROJECT_ID,
+      })
+      .expect(201);
+
+    await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(409);
+  });
+
+  it('rejects stale deterministic recovered cards from another board', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Stale recovered card' })
+      .expect(201);
+    const todoId = created.body.todo.id as string;
+    const cardId = `todo-${todoId}`;
+    const oldBoard = getOrCreateBoard(getStmts(), 'old-todo-promote-project');
+    const oldColumn = oldBoard.columns[0];
+    getStmts().createKanbanCard.run(
+      cardId,
+      oldColumn.id,
+      oldBoard.board.id,
+      'Old promoted card',
+      null,
+      'medium',
+      null,
+      null,
+      null,
+      null,
+      userA,
+      null,
+      0,
+    );
+    setTodoLink(userA, todoId, { type: 'card', id: cardId, projectId: PROJECT_ID });
+
+    await request(mount(userA))
+      .post(`/api/me/todos/${todoId}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(409);
+  });
+
+  it('rejects promoting a todo already linked to a different card', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({
+        title: 'Already linked elsewhere',
+        linkedType: 'card',
+        linkedId: 'existing-card-id',
+        linkedProjectId: 'other-project',
+      })
+      .expect(201);
+
+    await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(409);
+  });
+
+  it('marks the todo done when the user preference enables auto-complete-on-promote', async () => {
+    getOrgsDb()
+      .prepare('UPDATE users SET preferences_json = ? WHERE id = ?')
+      .run(JSON.stringify({ todoAutoCompleteOnPromote: true }), userA);
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Complete me on promote' })
+      .expect(201);
+
+    const res = await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(201);
+
+    expect(res.body.todo).toMatchObject({ status: 'done', linkedType: 'card' });
+  });
+
+  it('keeps foreign todos private and rejects unknown targets', async () => {
+    const created = await request(mount(userA))
+      .post('/api/me/todos')
+      .send({ title: 'Private promote' })
+      .expect(201);
+
+    await request(mount(userB))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(404);
+
+    await request(mount(userA))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: 'missing-project' })
+      .expect(404);
+  });
+
+  it('returns a controlled error when kanban deps are not mounted', async () => {
+    const deps = { broadcast } as unknown as RouteDeps;
+    const created = await request(mountWithDeps(userA, deps))
+      .post('/api/me/todos')
+      .send({ title: 'No kanban deps' })
+      .expect(201);
+
+    await request(mountWithDeps(userA, deps))
+      .post(`/api/me/todos/${created.body.todo.id}/promote`)
+      .send({ projectId: PROJECT_ID })
+      .expect(500);
   });
 });
 

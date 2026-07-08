@@ -24419,6 +24419,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MeTodosErrorResponse"
+  /api/me/todos/{id}/promote:
+    post:
+      tags:
+        - Personal Todos
+      summary: Promote a personal todo to a project kanban card
+      description: Creates a real kanban card in the target project (To Do by default), stamps card provenance back to the source todo, and links the todo to the created card.
+      parameters:
+        - schema:
+            type: string
+            description: Todo id.
+          required: true
+          description: Todo id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                projectId:
+                  type: string
+                  minLength: 1
+                columnId:
+                  type: string
+                  minLength: 1
+                epicId:
+                  type: string
+                  minLength: 1
+                priority:
+                  type: string
+                  enum:
+                    - urgent
+                    - high
+                    - medium
+                    - low
+                  description: Overrides the created card's priority. Omit to carry over the todo priority.
+              required:
+                - projectId
+      responses:
+        "200":
+          description: Todo was already promoted; returning the existing linked card.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/UserTodo"
+                  card:
+                    $ref: "#/components/schemas/KanbanCard"
+                required:
+                  - todo
+                  - card
+        "201":
+          description: Created card and updated todo link.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  todo:
+                    $ref: "#/components/schemas/UserTodo"
+                  card:
+                    $ref: "#/components/schemas/KanbanCard"
+                required:
+                  - todo
+                  - card
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "404":
+          description: Todo, project, column, or epic not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
+        "409":
+          description: Todo is already linked to a different or missing card.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeTodosErrorResponse"
   /api/me/todos/reorder:
     post:
       tags:

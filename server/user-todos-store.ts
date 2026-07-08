@@ -340,6 +340,39 @@ export function linkTodoToCard(
   return getTodo(userId, id);
 }
 
+export type TodoPromotionClaim =
+  | { status: 'claimed'; todo: UserTodo }
+  | { status: 'already-linked'; todo: UserTodo }
+  | { status: 'not-found' };
+
+/**
+ * Atomically claim an unlinked todo for promotion before creating the card.
+ * This is the race guard for retry/double-click promotion: only the first
+ * caller can stamp the card link; later callers see the existing linked todo
+ * and must return that card or reject instead of inserting another card.
+ */
+export function claimTodoPromotionToCard(
+  userId: string,
+  id: string,
+  link: { cardId: string; projectId: string },
+): TodoPromotionClaim {
+  const db = getOrgsDb();
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE user_todos
+          SET linked_type = 'card', linked_id = ?, linked_card_id = ?,
+              linked_project_id = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?
+          AND linked_type IS NULL AND linked_id IS NULL AND linked_card_id IS NULL`,
+    )
+    .run(link.cardId, link.cardId, link.projectId, now, id, userId);
+  const todo = getTodo(userId, id);
+  if (!todo) return { status: 'not-found' };
+  if (result.changes === 0) return { status: 'already-linked', todo };
+  return { status: 'claimed', todo };
+}
+
 /**
  * Set the polymorphic link to any supported target (spec TODO-TO-TICKET LINK
  * op). `projectId` scopes a project-bound target (card / epic) and is ignored

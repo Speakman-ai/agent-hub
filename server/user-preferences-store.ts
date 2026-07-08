@@ -18,6 +18,8 @@
  *                              model is validated against that engine at spawn
  *                              time, so a stale pick simply falls back to the
  *                              per-engine default.
+ *   - `todoAutoCompleteOnPromote` — when true, promoting a personal todo to a
+ *                                   project card also marks that todo done.
  *
  * The map is stored on the `preferences_json` column so we don't have to
  * migrate the table every time a new preference is added. The column is
@@ -40,6 +42,7 @@ export interface UserPreferencesStored {
   agentEngineOverrides?: Record<string, AgentEngineOverride>;
   /** Per-agent per-user model pick (`{ [agentId]: modelId }`). */
   agentModelOverrides?: Record<string, string>;
+  todoAutoCompleteOnPromote?: boolean;
 }
 
 function normalizeAgentEngineOverrides(
@@ -84,6 +87,9 @@ function parsePrefsJson(raw: string | null): UserPreferencesStored {
     const result: UserPreferencesStored = {};
     if (ao) result.agentEngineOverrides = ao;
     if (mo) result.agentModelOverrides = mo;
+    if (typeof obj.todoAutoCompleteOnPromote === 'boolean') {
+      result.todoAutoCompleteOnPromote = obj.todoAutoCompleteOnPromote;
+    }
     return result;
   } catch {
     return {};
@@ -116,6 +122,9 @@ export function replaceUserPreferencesJson(userId: string, prefs: UserPreference
   if (prefs.agentModelOverrides && Object.keys(prefs.agentModelOverrides).length > 0) {
     stored.agentModelOverrides = prefs.agentModelOverrides;
   }
+  if (typeof prefs.todoAutoCompleteOnPromote === 'boolean') {
+    stored.todoAutoCompleteOnPromote = prefs.todoAutoCompleteOnPromote;
+  }
   const json = Object.keys(stored).length > 0 ? JSON.stringify(stored) : null;
   getOrgsDb().prepare('UPDATE users SET preferences_json = ? WHERE id = ?').run(json, userId);
 }
@@ -142,6 +151,9 @@ export function mergeUserPreferencesJson(
     next.agentModelOverrides = Object.keys(partial.agentModelOverrides).length
       ? partial.agentModelOverrides
       : undefined;
+  }
+  if (partial.todoAutoCompleteOnPromote !== undefined) {
+    next.todoAutoCompleteOnPromote = partial.todoAutoCompleteOnPromote;
   }
   replaceUserPreferencesJson(userId, next);
   return next;

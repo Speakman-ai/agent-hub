@@ -23,6 +23,7 @@ const {
   deleteTodo,
   reorderTodos,
   linkTodoToCard,
+  claimTodoPromotionToCard,
   setTodoLink,
   clearTodoLink,
 } = await import('./user-todos-store.js');
@@ -142,6 +143,26 @@ describe('user-todos-store — CRUD', () => {
     expect(linked.linkedId).toBe('card-1');
     expect(linked.linkedCardId).toBe('card-1'); // kept in sync for back-compat
     expect(linked.linkedProjectId).toBe('proj-1');
+  });
+
+  it('claimTodoPromotionToCard claims only an unlinked todo and never overwrites a card link', () => {
+    const user = createUser({ username: 'alice', passwordHash: 'x' });
+    const todo = createTodo({ userId: user.id, title: 'promote me once' });
+
+    const first = claimTodoPromotionToCard(user.id, todo.id, {
+      cardId: 'card-1',
+      projectId: 'proj-1',
+    });
+    expect(first.status).toBe('claimed');
+    expect(first.status === 'claimed' ? first.todo.linkedId : null).toBe('card-1');
+
+    const second = claimTodoPromotionToCard(user.id, todo.id, {
+      cardId: 'card-2',
+      projectId: 'proj-1',
+    });
+    expect(second.status).toBe('already-linked');
+    expect(second.status === 'already-linked' ? second.todo.linkedId : null).toBe('card-1');
+    expect(getTodo(user.id, todo.id)?.linkedId).toBe('card-1');
   });
 });
 

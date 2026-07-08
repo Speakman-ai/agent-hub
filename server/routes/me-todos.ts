@@ -14,6 +14,7 @@
  *                                   doDate/doStartAt/doEndAt/dueAt, plus the
  *                                   polymorphic link)
  *   DELETE /api/me/todos/:id        delete
+ *   POST   /api/me/todos/:id/promote create a project kanban card + link it
  *   POST   /api/me/todos/reorder    reassign per-user positions from an id order
  *
  * Create and update accept the scheduling fields (`priority`, `doDate` and its
@@ -28,7 +29,12 @@
 
 import { Router, Request, Response } from 'express';
 import type { AuthenticatedRequest } from '../auth.js';
-import type { RouteDeps } from '../types.js';
+import { recomputeEpicState } from '../epic-state.js';
+import { canViewProject } from '../project-visibility.js';
+import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
+import type { KanbanCardRow, KanbanColumnRow, KanbanEpicRow, RouteDeps } from '../types.js';
+import { getUserPreferencesRow } from '../user-preferences-store.js';
 import {
   clearTodoLink,
   createTodo,
@@ -38,11 +44,15 @@ import {
   reorderTodos,
   setTodoLink,
   updateTodo,
+  claimTodoPromotionToCard,
+  type UserTodo,
   type TodoLinkType,
   type TodoPriority,
   type TodoSourceType,
   type TodoStatus,
 } from '../user-todos-store.js';
+import { getOrCreateBoard } from './board.js';
+import { PromoteTodoRequestSchema } from './me-todos.openapi.js';
 
 function bad(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
@@ -71,6 +81,34 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
+
+function serializePromotedCard(card: KanbanCardRow): Omit<KanbanCardRow, 'source_meta'> & {
+  source_meta: Record<string, unknown> | null;
+} {
+  return { ...card, source_meta: parseSourceMeta(card.source_meta) };
+}
+
+function promotedCardIdForTodo(todoId: string): string {
+  return `todo-${todoId}`;
+}
+
+function isPromotionCardForTodo(card: KanbanCardRow, todoId: string): boolean {
+  return card.source_type === 'todo' && card.source_id === todoId;
+}
+
+class TodoAlreadyLinkedError extends Error {
+  constructor() {
+    super('Todo is already linked to a card');
+  }
+}
+
+class TodoPromoteNotFoundError extends Error {
+  constructor() {
+    super('Todo not found');
+  }
+}
+
+type PromoteResult = { todo: UserTodo; card: KanbanCardRow; created: boolean };
 
 /**
  * A scheduling date/time field (do_date / do_start_at / do_end_at). `undefined`
@@ -129,13 +167,13 @@ function parseLinkInput(
 }
 
 export default function createMeTodosRoutes(deps: RouteDeps): Router {
-  const { broadcast } = deps;
+  const { broadcast, findProject, stmts } = deps;
   const router = Router();
 
   /** Fan a per-user todo mutation out to the owner (broadcast filter enforces). */
   function emitUpdate(
     userId: string,
-    action: 'created' | 'updated' | 'deleted' | 'reordered',
+    action: 'created' | 'updated' | 'deleted' | 'reordered' | 'promoted',
   ): void {
     broadcast({ type: 'user_todo_update', ownerUserId: userId, action });
   }
@@ -371,6 +409,186 @@ export default function createMeTodosRoutes(deps: RouteDeps): Router {
     }
     emitUpdate(areq.authUserId, 'deleted');
     res.json({ ok: true });
+  });
+
+  router.post('/api/me/todos/:id/promote', (req: Request, res: Response) => {
+    const areq = req as AuthenticatedRequest;
+    if (!areq.authUserId) {
+      bad(res, 401, 'Authentication required');
+      return;
+    }
+    const userId = areq.authUserId;
+    const id = String(req.params.id ?? '');
+    const todo = getTodo(userId, id);
+    if (!todo) {
+      bad(res, 404, 'Todo not found');
+      return;
+    }
+
+    const parsed = PromoteTodoRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      bad(res, 400, parsed.error.issues[0]?.message ?? 'Invalid promote request');
+      return;
+    }
+    const { projectId, columnId: requestedColumnId, epicId, priority } = parsed.data;
+    if (!stmts || !findProject) {
+      bad(res, 500, 'Kanban dependencies unavailable');
+      return;
+    }
+    const project = findProject(projectId);
+    if (!project) {
+      bad(res, 404, 'Project not found');
+      return;
+    }
+    if (!canViewProject(project, resolveVisibilityCaller(req))) {
+      bad(res, 404, 'Project not found');
+      return;
+    }
+
+    const boardData = getOrCreateBoard(stmts, projectId);
+    const board = boardData.board;
+    const columns = boardData.columns as KanbanColumnRow[];
+    const column =
+      requestedColumnId !== undefined
+        ? (stmts.getKanbanColumn.get(requestedColumnId) as KanbanColumnRow | undefined)
+        : (columns.find((c) => c.name.toLowerCase() === 'to do') ?? columns[0]);
+    if (!column) {
+      bad(res, 404, 'Column not found');
+      return;
+    }
+    if (column.board_id !== board.id) {
+      bad(res, 404, 'Column not found on this board');
+      return;
+    }
+
+    let resolvedEpicId: string | null = null;
+    if (epicId !== undefined) {
+      const epic = stmts.getKanbanEpic.get(epicId) as KanbanEpicRow | undefined;
+      if (!epic || epic.board_id !== board.id) {
+        bad(res, 404, 'Epic not found on this board');
+        return;
+      }
+      resolvedEpicId = epic.id;
+    }
+
+    const completeOnPromote = getUserPreferencesRow(userId).todoAutoCompleteOnPromote === true;
+    const promotionCardId = promotedCardIdForTodo(todo.id);
+    const initialCardId =
+      todo.linkedType === 'card' && todo.linkedProjectId === projectId && todo.linkedId
+        ? todo.linkedId
+        : promotionCardId;
+
+    try {
+      const promote = stmts.createKanbanCard.database.transaction((): PromoteResult => {
+        const claim = claimTodoPromotionToCard(userId, todo.id, {
+          cardId: initialCardId,
+          projectId,
+        });
+        if (claim.status === 'not-found') {
+          throw new TodoPromoteNotFoundError();
+        }
+        let cardId = initialCardId;
+        let claimedTodo: UserTodo;
+        if (claim.status === 'already-linked') {
+          if (claim.todo.linkedType === 'card' && claim.todo.linkedId) {
+            const existingCard = stmts.getKanbanCard.get(claim.todo.linkedId) as
+              | KanbanCardRow
+              | undefined;
+            if (
+              existingCard &&
+              claim.todo.linkedProjectId === projectId &&
+              existingCard.board_id === board.id
+            ) {
+              if (!isPromotionCardForTodo(existingCard, todo.id)) {
+                throw new TodoAlreadyLinkedError();
+              }
+              return { todo: claim.todo, card: existingCard, created: false };
+            }
+            if (claim.todo.linkedProjectId === projectId) {
+              if (claim.todo.linkedId !== promotionCardId) {
+                throw new TodoAlreadyLinkedError();
+              }
+              cardId = claim.todo.linkedId;
+              claimedTodo = claim.todo;
+            } else {
+              throw new TodoAlreadyLinkedError();
+            }
+          } else {
+            throw new TodoAlreadyLinkedError();
+          }
+        } else {
+          claimedTodo = claim.todo;
+        }
+
+        const recoveredCard = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+        if (recoveredCard) {
+          if (
+            recoveredCard.board_id !== board.id ||
+            !isPromotionCardForTodo(recoveredCard, todo.id)
+          ) {
+            throw new TodoAlreadyLinkedError();
+          }
+          const updated = completeOnPromote
+            ? (updateTodo(userId, todo.id, { status: 'done' }) ?? claimedTodo)
+            : claimedTodo;
+          return { todo: updated, card: recoveredCard, created: false };
+        }
+
+        const existingCards = stmts.getKanbanCardsByColumn.all(column.id) as KanbanCardRow[];
+        const nextPosition =
+          existingCards.length > 0 ? Math.max(...existingCards.map((c) => c.position)) + 1 : 0;
+
+        stmts.createKanbanCard.run(
+          cardId,
+          column.id,
+          board.id,
+          todo.title,
+          todo.notes || null,
+          priority ?? todo.priority,
+          null,
+          null,
+          null,
+          null,
+          userId,
+          null,
+          nextPosition,
+        );
+        stmts.setKanbanCardProvenance.run(
+          'todo',
+          todo.id,
+          serializeSourceMeta({ todoId: todo.id, userId }),
+          cardId,
+        );
+        if (resolvedEpicId) {
+          stmts.updateKanbanCardEpic.run(resolvedEpicId, cardId);
+          recomputeEpicState(stmts, resolvedEpicId);
+        }
+        const updated = completeOnPromote
+          ? updateTodo(userId, todo.id, { status: 'done' })
+          : claimedTodo;
+        const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
+        if (!updated || !card) throw new Error('Failed to promote todo');
+        return { todo: updated, card, created: true };
+      });
+      const result = promote();
+      if (result.created) {
+        broadcast({ type: 'kanban_update', projectId });
+        emitUpdate(userId, 'promoted');
+        res.status(201).json({ todo: result.todo, card: serializePromotedCard(result.card) });
+        return;
+      }
+      res.json({ todo: result.todo, card: serializePromotedCard(result.card) });
+    } catch (err) {
+      if (err instanceof TodoPromoteNotFoundError) {
+        bad(res, 404, err.message);
+        return;
+      }
+      if (err instanceof TodoAlreadyLinkedError) {
+        bad(res, 409, err.message);
+        return;
+      }
+      bad(res, 400, err instanceof Error ? err.message : String(err));
+    }
   });
 
   router.post('/api/me/todos/reorder', (req: Request, res: Response) => {

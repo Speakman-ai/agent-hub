@@ -9,6 +9,7 @@
 
 import { z, registerPath, registerComponent } from '../openapi/registry.js';
 import { TODO_SOURCE_TYPES } from '../source-provenance.js';
+import { KanbanCardComponent } from './board.openapi.js';
 
 const ErrorResponse = registerComponent(
   'MeTodosErrorResponse',
@@ -109,6 +110,15 @@ export const ReorderTodosRequestSchema = z.object({
   }),
 });
 
+export const PromoteTodoRequestSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  columnId: z.string().min(1).optional(),
+  epicId: z.string().min(1).optional(),
+  priority: TodoPriority.optional().openapi({
+    description: "Overrides the created card's priority. Omit to carry over the todo priority.",
+  }),
+});
+
 const idParams = z.object({ id: z.string().openapi({ description: 'Todo id.' }) });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -189,6 +199,33 @@ registerPath({
     },
     401: errorResponse('Authentication required.'),
     404: errorResponse('Todo not found (or not owned by caller).'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/me/todos/{id}/promote',
+  tags: ['Personal Todos'],
+  summary: 'Promote a personal todo to a project kanban card',
+  description:
+    'Creates a real kanban card in the target project (To Do by default), stamps card provenance back to the source todo, and links the todo to the created card.',
+  request: {
+    params: idParams,
+    body: { content: jsonContent(PromoteTodoRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Todo was already promoted; returning the existing linked card.',
+      content: jsonContent(z.object({ todo: UserTodoComponent, card: KanbanCardComponent })),
+    },
+    201: {
+      description: 'Created card and updated todo link.',
+      content: jsonContent(z.object({ todo: UserTodoComponent, card: KanbanCardComponent })),
+    },
+    400: errorResponse('Validation failed.'),
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('Todo, project, column, or epic not found.'),
+    409: errorResponse('Todo is already linked to a different or missing card.'),
   },
 });
 
