@@ -24,6 +24,35 @@ function formatLastUsed(lastUsedAt: any) {
     const rel = relativeTime(lastUsedAt);
     return rel ? `last used ${rel}` : 'never used';
 }
+// Per-project retention options — mirror the web RumSettingsSection selects.
+// `0` days = "platform default" (clears the override server-side).
+export const BASE_RETENTION_OPTIONS: { value: number; label: string }[] = [
+    { value: 0, label: 'Default' },
+    { value: 7, label: '7 days' },
+    { value: 14, label: '14 days' },
+    { value: 30, label: '30 days' },
+    { value: 60, label: '60 days' },
+    { value: 90, label: '90 days' },
+];
+export const EXTENDED_RETENTION_OPTIONS: { value: number; label: string }[] = [
+    { value: 1, label: '1 mo' },
+    { value: 3, label: '3 mo' },
+    { value: 6, label: '6 mo' },
+    { value: 12, label: '12 mo' },
+    { value: 15, label: '15 mo (max)' },
+];
+// Overlay one retention key onto the persisted replay config without clobbering
+// sampling/quotas. Base-retention 0 clears the override (a persisted 0 fails the
+// server's must-be-positive validation). Returns the `replay` object to PATCH.
+// Mirrors the web handlers so both surfaces write identical shapes.
+export function buildRetentionReplayPatch(currentReplay: any, key: 'retentionDays' | 'extendedRetentionMonths', value: number): Record<string, unknown> {
+    const replay: Record<string, unknown> = { ...(currentReplay || {}) };
+    if (key === 'retentionDays' && value <= 0)
+        delete replay.retentionDays;
+    else
+        replay[key] = value;
+    return replay;
+}
 export default function RumSettingsScreen({ route, navigation }: any) {
     const { projectId, project: routeProject } = route.params || {};
     const { setActiveAgentId, setActiveSessionId } = useApp();
@@ -41,6 +70,33 @@ export default function RumSettingsScreen({ route, navigation }: any) {
     const [wizardError, setWizardError] = useState<any>(null);
     const [lastSessionId, setLastSessionId] = useState<any>(null);
     const [spawnedAgentId, setSpawnedAgentId] = useState<any>(null);
+    // Per-project retention config. Seed from the route project's persisted
+    // `replay` block; keep a local copy so successive saves preserve the other
+    // replay keys (the route project doesn't refresh after a PATCH).
+    const [replayCfg, setReplayCfg] = useState<any>(() => (project as any)?.replay || {});
+    const [savingRetention, setSavingRetention] = useState(false);
+    const [retentionError, setRetentionError] = useState<any>(null);
+    const baseRetentionDays = typeof replayCfg?.retentionDays === 'number' ? replayCfg.retentionDays : 0;
+    const extendedRetentionMonths = typeof replayCfg?.extendedRetentionMonths === 'number' ? replayCfg.extendedRetentionMonths : 15;
+    const saveRetention = useCallback(async (key: 'retentionDays' | 'extendedRetentionMonths', value: number) => {
+        if (!projectId || savingRetention)
+            return;
+        const replay = buildRetentionReplayPatch(replayCfg, key, value);
+        const prev = replayCfg;
+        setReplayCfg(replay);
+        setSavingRetention(true);
+        setRetentionError(null);
+        try {
+            await api.updateProject(projectId, { replay });
+        }
+        catch (err: any) {
+            setReplayCfg(prev);
+            setRetentionError(err?.message || 'Failed to save retention settings');
+        }
+        finally {
+            setSavingRetention(false);
+        }
+    }, [projectId, replayCfg, savingRetention]);
     const reloadDraft = useCallback(async () => {
         if (!projectId)
             return;
@@ -187,6 +243,38 @@ export default function RumSettingsScreen({ route, navigation }: any) {
             <Text style={styles.clientMeta}>{formatLastUsed(c.lastUsedAt)}</Text>
           </View>))}
         {!clientsLoading && clients.length === 0 && !clientsError && (<Text style={styles.hint}>No ingest clients yet.</Text>)}
+
+        <Text style={styles.sectionTitle}>Retention (this project)</Text>
+        <Text style={styles.hint}>
+          Captures live for the base window, then expire. Flag a session in the replay player
+          (the Keep button) to move it to the extended tier — kept for the window below (up to 15
+          months), the clock starting when you flag it.
+        </Text>
+        <View style={styles.card} testID="rum-retention-config">
+          <Text style={styles.retentionLabel}>Base-retention window</Text>
+          <Text style={styles.retentionSub}>
+            Overrides the platform default. Can only shorten it, never extend past it.
+          </Text>
+          <View style={styles.chipRow}>
+            {BASE_RETENTION_OPTIONS.map((opt) => {
+              const selected = baseRetentionDays === opt.value;
+              return (<TouchableOpacity key={opt.value} testID={`rum-base-retention-${opt.value}`} disabled={savingRetention} onPress={() => saveRetention('retentionDays', opt.value)} style={[styles.chip, selected && styles.chipActive, savingRetention && styles.btnDisabled]}>
+                  <Text style={[styles.chipText, selected && styles.chipTextActive]}>{opt.label}</Text>
+                </TouchableOpacity>);
+            })}
+          </View>
+          <Text style={[styles.retentionLabel, { marginTop: 14 }]}>Extended-retention window</Text>
+          <Text style={styles.retentionSub}>Applied to sessions flagged Keep in the player.</Text>
+          <View style={styles.chipRow}>
+            {EXTENDED_RETENTION_OPTIONS.map((opt) => {
+              const selected = extendedRetentionMonths === opt.value;
+              return (<TouchableOpacity key={opt.value} testID={`rum-extended-retention-${opt.value}`} disabled={savingRetention} onPress={() => saveRetention('extendedRetentionMonths', opt.value)} style={[styles.chip, selected && styles.chipActive, savingRetention && styles.btnDisabled]}>
+                  <Text style={[styles.chipText, selected && styles.chipTextActive]}>{opt.label}</Text>
+                </TouchableOpacity>);
+            })}
+          </View>
+          {retentionError && <Text style={styles.error}>{retentionError}</Text>}
+        </View>
       </ScrollView>
     </SafeAreaView>);
 }
@@ -253,4 +341,18 @@ const styles = StyleSheet.create({
     tokenLabel: { fontSize: 12, color: colors.amber400, marginBottom: 6 },
     tokenValue: { fontSize: 11, color: colors.gray200, fontFamily: 'monospace' },
     link: { fontSize: 12, color: colors.blue400, marginTop: 8 },
+    retentionLabel: { fontSize: 13, color: colors.gray200, fontWeight: '600' },
+    retentionSub: { fontSize: 11, color: colors.gray500, marginTop: 2 },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+    chip: {
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        backgroundColor: colors.gray900,
+    },
+    chipActive: { backgroundColor: colors.emerald800_50, borderColor: colors.emerald400 },
+    chipText: { color: colors.gray300, fontSize: 12, fontWeight: '500' },
+    chipTextActive: { color: colors.emerald400 },
 });

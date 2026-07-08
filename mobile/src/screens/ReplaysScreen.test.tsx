@@ -28,6 +28,8 @@ vi.mock('../utils/api', () => ({
     linkReplayToTicket: vi.fn(),
     unlinkReplay: vi.fn(),
     getSessionSegments: vi.fn(() => Promise.resolve({ sessionId: 's-1', segments: [] })),
+    getReplay: vi.fn(() => Promise.resolve({ retainedUntil: null })),
+    setReplayRetention: vi.fn(),
   },
 }));
 vi.mock('../utils/config', () => ({ getServerBaseUrl: () => 'https://hub.example.com' }));
@@ -47,6 +49,7 @@ import ReplaysScreen, {
   ReplayPlayerModal,
   buildWebReplaysUrl,
   unlinkReplayCapture,
+  setReplayRetentionFlag,
 } from './ReplaysScreen';
 
 const SESSION = {
@@ -185,6 +188,56 @@ describe('ReplayPlayerModal', () => {
       />,
     );
     expect(html).toContain('&quot;replayId&quot;:&quot;r-1&quot;');
+  });
+
+  it('offers the Keep (extended-retention) control for a monolithic capture', () => {
+    const html = renderToStaticMarkup(
+      <ReplayPlayerModal
+        target={{ mode: 'replay', replayId: 'r-1', title: 'checkout', meta: [] }}
+        projectId="p1"
+      />,
+    );
+    // Effects don't run under static markup, so the initial (unflagged) label shows.
+    expect(html).toContain('Keep');
+  });
+
+  it('hides the Keep control for a segmented session (no session_replays row)', () => {
+    const html = renderToStaticMarkup(
+      <ReplayPlayerModal
+        target={{ mode: 'session', sessionId: 's-1', title: 'ada@example.com', meta: [] }}
+        projectId="p1"
+      />,
+    );
+    expect(html).not.toContain('Keep');
+  });
+});
+
+describe('setReplayRetentionFlag', () => {
+  it('flags the capture and returns the server-echoed retainedUntil', async () => {
+    const apiClient = {
+      setReplayRetention: vi.fn().mockResolvedValue({ retainedUntil: '2027-09-10 09:00:00' }),
+    };
+    const next = await setReplayRetentionFlag({ api: apiClient, replayId: 'r-1', extend: true });
+    expect(apiClient.setReplayRetention).toHaveBeenCalledWith('r-1', true);
+    expect(next).toBe('2027-09-10 09:00:00');
+  });
+
+  it('falls back to a SQLite-UTC stamp when the response omits retainedUntil', async () => {
+    const apiClient = { setReplayRetention: vi.fn().mockResolvedValue({}) };
+    const next = await setReplayRetentionFlag({
+      api: apiClient,
+      replayId: 'r-1',
+      extend: true,
+      nowIso: '2026-07-08T12:34:56.789Z',
+    });
+    expect(next).toBe('2026-07-08 12:34:56');
+  });
+
+  it('returns null when unflagging (extend false)', async () => {
+    const apiClient = { setReplayRetention: vi.fn().mockResolvedValue({}) };
+    const next = await setReplayRetentionFlag({ api: apiClient, replayId: 'r-1', extend: false });
+    expect(apiClient.setReplayRetention).toHaveBeenCalledWith('r-1', false);
+    expect(next).toBeNull();
   });
 });
 

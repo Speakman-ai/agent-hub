@@ -246,6 +246,12 @@ export const api = {
     // Monolithic capture metadata (defaultPageSize, eventCount, retainedUntil, …)
     // — advisory input to the in-app WebView player's progress line.
     getReplay: (replayId: any) => fetchJSON(`/replays/${encodeURIComponent(replayId)}`),
+    // Flag / unflag a monolithic capture for extended retention (up to 15 months;
+    // the clock starts now). Returns the updated metadata row (incl. retainedUntil).
+    setReplayRetention: (replayId: any, extend: boolean) => fetchJSON(`/replays/${encodeURIComponent(replayId)}/retention`, {
+        method: 'POST',
+        body: JSON.stringify({ extend }),
+    }),
     // One page of a monolithic capture's decoded rrweb events; the WebView player
     // walks pages and concatenates them. Returns { events, total, hasMore, ... }.
     getReplayEvents: (replayId: any, offset: any = 0, limit?: any) => {

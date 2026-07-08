@@ -73,15 +73,75 @@ export async function unlinkReplayCapture({ api: apiClient, projectId, replayId,
   }
 }
 
+// ── Extended-retention flag ─────────────────────────────────────────
+// Flag / unflag a monolithic capture for extended retention (up to 15 months;
+// the clock starts now). Returns the new `retainedUntil` — the server's echoed
+// value, or a SQLite-UTC (`YYYY-MM-DD HH:MM:SS`) truthiness sentinel matching
+// what the server stores when the response omitted it (null when unflagging).
+// `nowIso` is injected so the fallback is deterministic in tests. Extracted from
+// the modal so the toggle path is unit-testable without RN touch events. Mirrors
+// the web ReplayPlayerModal toggle.
+export async function setReplayRetentionFlag({
+  api: apiClient,
+  replayId,
+  extend,
+  nowIso,
+}: any): Promise<string | null> {
+  const updated = await apiClient.setReplayRetention(replayId, extend);
+  const stamp = (nowIso || new Date().toISOString()).slice(0, 19).replace('T', ' ');
+  return updated?.retainedUntil ?? (extend ? stamp : null);
+}
+
 // ── Session player ──────────────────────────────────────────────────
 // Full-screen in-app rrweb player. Embeds ReplayWebViewPlayer, which streams the
 // session's segments (or a monolithic capture's paginated events) into an
-// opaque-origin WebView and renders playback + view-chapter seek. The web-app
-// handoff stays as a secondary action (the web dashboard also exposes ticket
-// linking + retention flagging, not yet ported to mobile).
+// opaque-origin WebView and renders playback + view-chapter seek. For a
+// monolithic capture (a `session_replays` row) the footer also exposes the
+// Keep control that flags the capture for extended retention. Segmented session
+// playback has no `session_replays` row, so retention flagging is not offered
+// there. The web-app handoff stays as a secondary action.
 export function ReplayPlayerModal({ target, projectId, onClose }: any) {
+  // Only monolithic captures (mode 'replay') carry a session_replays row that
+  // can be retention-flagged. Segmented sessions expose no Keep control.
+  const replayId = target?.mode === 'replay' ? target?.replayId : null;
+  const [retainedUntil, setRetainedUntil] = useState<string | null>(null);
+  const [flagBusy, setFlagBusy] = useState(false);
+
+  useEffect(() => {
+    if (!replayId) {
+      setRetainedUntil(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const meta = await api.getReplay(replayId);
+        if (!cancelled) setRetainedUntil(meta?.retainedUntil ?? null);
+      } catch {
+        /* metadata is best-effort; the player still works */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [replayId]);
+
+  const toggleKeep = async () => {
+    if (!replayId || flagBusy) return;
+    setFlagBusy(true);
+    try {
+      const next = await setReplayRetentionFlag({ api, replayId, extend: !retainedUntil });
+      setRetainedUntil(next);
+    } catch {
+      /* leave the prior state; the button re-enables for a retry */
+    } finally {
+      setFlagBusy(false);
+    }
+  };
+
   if (!target) return null;
   const webUrl = buildWebReplaysUrl(projectId);
+  const kept = Boolean(retainedUntil);
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.playerBackdrop}>
@@ -108,6 +168,26 @@ export function ReplayPlayerModal({ target, projectId, onClose }: any) {
             target={{ mode: target.mode, sessionId: target.sessionId, replayId: target.replayId }}
           />
           <View style={styles.playerFooter}>
+            {replayId ? (
+              <TouchableOpacity
+                testID="replay-retention-toggle"
+                accessibilityRole="switch"
+                accessibilityState={{ checked: kept }}
+                accessibilityLabel="Toggle extended retention for this session"
+                disabled={flagBusy}
+                onPress={toggleKeep}
+                style={[
+                  styles.playerFooterBtn,
+                  styles.keepBtn,
+                  kept && styles.keepBtnActive,
+                  flagBusy && styles.keepBtnBusy,
+                ]}
+              >
+                <Text style={[styles.playerFooterText, kept && styles.keepTextActive]}>
+                  {kept ? '★ Kept' : '☆ Keep'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
             {webUrl ? (
               <TouchableOpacity
                 testID="replay-open-web"
@@ -925,4 +1005,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   playerFooterText: { color: colors.gray300, fontSize: 13 },
+  keepBtn: { marginRight: 'auto' },
+  keepBtnActive: { borderColor: colors.amber400, backgroundColor: colors.gray800 },
+  keepBtnBusy: { opacity: 0.5 },
+  keepTextActive: { color: colors.amber400, fontWeight: '600' },
 });
