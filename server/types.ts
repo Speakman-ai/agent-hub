@@ -1811,6 +1811,10 @@ export interface Stmts {
   updateRumSessionRollup: Stmt;
   listRumSessionsByProject: Stmt;
   deleteRumSession: Stmt;
+  // Segmented-replay index-row TTL reconciliation (rum-segment-retention-sweeper.ts)
+  getExpiredRumSessions: Stmt;
+  deleteExpiredRumSession: Stmt;
+  getExpiredOrphanRumSegments: Stmt;
   // Per-project RUM ingest clients
   insertRumClient: Stmt;
   getRumClient: Stmt;

@@ -67,6 +67,7 @@ import {
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
 import { startReplayRetentionSweeper } from './replays/replay-retention-sweeper.js';
+import { startRumSegmentRetentionSweeper } from './replays/rum-segment-retention-sweeper.js';
 import { provisionRumLifecycle } from './replays/replay-lifecycle-s3.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
@@ -1855,6 +1856,17 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       // Linked (ticket/card) replays are never expired.
       const rumLifecycle = { provisioned: false };
       startReplayRetentionSweeper({
+        stmts: stmts!,
+        config,
+        isLifecycleProvisioned: () => rumLifecycle.provisioned,
+      });
+
+      // Index-only TTL reconciliation for SEGMENTED captures (rum_sessions /
+      // rum_segments). Same policy + lifecycle-provisioned gate as the monolithic
+      // sweeper above: once S3 lifecycle expires the `rum/` bytes these index rows
+      // point at gone objects, so reap them (dropping only the rows on confirmed
+      // S3, reclaiming the blob on local / unconfirmed provisioning).
+      startRumSegmentRetentionSweeper({
         stmts: stmts!,
         config,
         isLifecycleProvisioned: () => rumLifecycle.provisioned,

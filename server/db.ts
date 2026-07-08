@@ -415,6 +415,11 @@ function initDb(dataDir: string): void {
     -- Playback manifest: chronological across views, sequential within a view.
     CREATE INDEX IF NOT EXISTS idx_rum_segments_session
       ON rum_segments(session_id, start_ts, index_in_view);
+    -- Retention sweep: age-ordered scan for the orphan-segment reconciliation
+    -- pass (WHERE created_at < ? ORDER BY created_at). Without it the sweep scans
+    -- + sorts the whole segment index every interval as it grows toward retention.
+    CREATE INDEX IF NOT EXISTS idx_rum_segments_created_at
+      ON rum_segments(created_at);
 
     -- rum_sessions: the session-grain metadata row the RUM dashboard lists and
     -- filters on (Datadog "session" grain). One row per client-minted session id,
@@ -478,6 +483,11 @@ function initDb(dataDir: string): void {
       ON rum_sessions(project_id, os);
     CREATE INDEX IF NOT EXISTS idx_rum_sessions_geo_country
       ON rum_sessions(project_id, geo_country);
+    -- Retention sweep: age-ordered scan for the expired-session pass
+    -- (WHERE updated_at < ? ORDER BY updated_at). Without it the sweep scans +
+    -- sorts the whole session index every interval as it grows toward retention.
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_updated_at
+      ON rum_sessions(updated_at);
 
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
@@ -3582,6 +3592,43 @@ function initDb(dataDir: string): void {
         LIMIT ?`,
     ),
     deleteRumSession: db.prepare('DELETE FROM rum_sessions WHERE session_id = ?'),
+    // Index-row TTL reconciliation for segmented captures
+    // (server/replays/rum-segment-retention-sweeper.ts). Once the S3-native
+    // lifecycle rule (T61) expires the `rum/` bytes, these index rows point at
+    // gone objects and must be reaped. `updated_at` bumps on every segment
+    // rollup, so it is the wall-clock of the session's NEWEST segment: a session
+    // whose updated_at is older than the retention cutoff has ALL its segment
+    // objects past expiry, so reaping it can never drop an index row whose bytes
+    // still live. Oldest-first so a bounded batch chips at the longest-lived
+    // backlog each sweep.
+    getExpiredRumSessions: db.prepare(
+      `SELECT * FROM rum_sessions
+        WHERE updated_at < ?
+        ORDER BY updated_at ASC
+        LIMIT ?`,
+    ),
+    // Conditional session-row delete used by the sweep AFTER byte reclamation.
+    // Re-asserting `updated_at < ?` closes a TOCTOU race: byte reclamation awaits
+    // (yields the loop), so a late ingest for the same session can append a new
+    // segment and bump `updated_at` in between. Guarding the delete on the cutoff
+    // keeps a now-active session (and its fresh, un-reclaimed segment) instead of
+    // dropping the row out from under it.
+    deleteExpiredRumSession: db.prepare(
+      `DELETE FROM rum_sessions WHERE session_id = ? AND updated_at < ?`,
+    ),
+    // Orphan-segment reconciliation: rum_segments rows whose session-grain row is
+    // already gone (a best-effort rollup that threw during ingest, or a partial
+    // prior sweep) never get reaped by the session-keyed pass. Reap those whose
+    // own created_at is past the cutoff so they can't accumulate.
+    getExpiredOrphanRumSegments: db.prepare(
+      `SELECT s.* FROM rum_segments s
+        WHERE s.created_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM rum_sessions rs WHERE rs.session_id = s.session_id
+          )
+        ORDER BY s.created_at ASC
+        LIMIT ?`,
+    ),
     // Per-project RUM ingest clients (rum-clients-store.ts)
     insertRumClient: db.prepare(
       `INSERT INTO project_rum_clients (id, project_id, name, token_hash, prefix, created_by)
