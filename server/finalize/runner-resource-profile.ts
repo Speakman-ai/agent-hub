@@ -2,7 +2,7 @@
  * runner-resource-profile.ts — CPU/memory caps for Finalize DinD runners.
  *
  * Why this exists: the Finalize gate must NOT be more powerful than the
- * GitHub-hosted runner it stands in for. PR surveytracker#1001 was Finalize-green
+ * GitHub-hosted runner it stands in for. PR webapp#1001 was Finalize-green
  * / GitHub-red because a beefy ECS box hid a timing-sensitive failure (a Cypress
  * `input:visible` 10s timeout that blew on a 2-vCPU GitHub runner but passed on
  * the faster Finalize runner). A correctness gate that is faster than production

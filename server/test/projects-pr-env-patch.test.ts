@@ -540,16 +540,16 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     expect((res.body as { error: string }).error).toMatch(/mutually exclusive/);
   });
 
-  it('persists the surveytracker preview-only compose shape (PR 3 conversion)', async () => {
-    // Regression test for the surveytracker compose-pivot conversion
-    // (PR 3 of the docker-compose-per-session epic). Surveytracker runs
+  it('persists the webapp preview-only compose shape (PR 3 conversion)', async () => {
+    // Regression test for the webapp compose-pivot conversion
+    // (PR 3 of the docker-compose-per-session epic). Webapp runs
     // in "preview-only" mode: the parent PR-env runner is disabled
     // (`prEnv.enabled: false`) but the worktree-preview runtime still
     // needs the preview slot (with the compose sub-block) for
     // in-session previews. Pin this shape so a future validator
     // refactor that re-couples preview to parent-enabled is flagged.
     //
-    // The literal config below matches the live surveytracker prEnv as
+    // The literal config below matches the live webapp prEnv as
     // persisted on the dev box after PR 3 landed — keep it in lockstep
     // with the actual project config so the test doubles as docs.
     const project = await createProject();

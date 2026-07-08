@@ -26,7 +26,7 @@ describe('ensureSpawnCwd', () => {
   it('auto-creates a missing nested cwd and reports auto-created', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'ensure-cwd-'));
     created.push(root);
-    const target = path.join(root, 'projects', 'survey-tracker', 'workspace');
+    const target = path.join(root, 'projects', 'webapp', 'workspace');
 
     const result = ensureSpawnCwd(target);
     expect(result.status).toBe('auto-created');

@@ -219,11 +219,11 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
       env: {
         PATH: stubbedPath,
         HOME: os.tmpdir(),
-        PROJECT_ID: 'mcs-field',
+        PROJECT_ID: 'field-svc',
         AGENT_HUB_URL: 'http://agent-hub.test',
         AGENT_HUB_API_KEY: 'test-key',
-        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"mcsteen/mcs-field"}',
-        GH_REPO: 'mcsteen/surveytracker',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"acme/field-svc"}',
+        GH_REPO: 'acme/webapp',
         GH_TOKEN: 'gho_fake-user-oauth',
       },
       encoding: 'utf-8',
@@ -231,8 +231,8 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
     expect(result.status).toBe(2);
     const stderr = result.stderr || '';
     expect(stderr).toContain('cross-repo PR creation is not allowed');
-    expect(stderr).toContain('mcsteen/mcs-field');
-    expect(stderr).toContain('mcsteen/surveytracker');
+    expect(stderr).toContain('acme/field-svc');
+    expect(stderr).toContain('acme/webapp');
     expect(stderr).toContain('Agent Hub ticket in the target project instead');
   });
 
@@ -241,11 +241,11 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
       env: {
         PATH: stubbedPath,
         HOME: os.tmpdir(),
-        PROJECT_ID: 'mcs-field',
+        PROJECT_ID: 'field-svc',
         AGENT_HUB_URL: 'http://agent-hub.test',
         AGENT_HUB_API_KEY: 'test-key',
-        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"McSteen/MCS-Field"}',
-        GH_REPO: 'mcsteen/mcs-field',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"Acme/Field-Svc"}',
+        GH_REPO: 'acme/field-svc',
         GH_TOKEN: 'gho_fake-user-oauth',
       },
       encoding: 'utf-8',
@@ -255,8 +255,8 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
   });
 
   it.each([
-    ['ssh URL', 'ssh://git@github.com/mcsteen/mcs-field.git'],
-    ['https URL with userinfo', 'https://user@github.com/mcsteen/mcs-field.git'],
+    ['ssh URL', 'ssh://git@github.com/acme/field-svc.git'],
+    ['https URL with userinfo', 'https://user@github.com/acme/field-svc.git'],
   ])('allows create when origin is a matching GitHub %s', (_label, remoteUrl) => {
     const cwd = makeGitRepoWithOrigin(remoteUrl);
     try {
@@ -265,10 +265,10 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
         env: {
           PATH: stubbedPath,
           HOME: os.tmpdir(),
-          PROJECT_ID: 'mcs-field',
+          PROJECT_ID: 'field-svc',
           AGENT_HUB_URL: 'http://agent-hub.test',
           AGENT_HUB_API_KEY: 'test-key',
-          AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"mcsteen/mcs-field"}',
+          AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"acme/field-svc"}',
           GH_TOKEN: 'gho_fake-user-oauth',
         },
         encoding: 'utf-8',
@@ -285,10 +285,10 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
       env: {
         PATH: stubbedPath,
         HOME: os.tmpdir(),
-        PROJECT_ID: 'mcs-field',
+        PROJECT_ID: 'field-svc',
         AGENT_HUB_URL: 'http://agent-hub.test',
         AGENT_HUB_API_KEY: 'test-key',
-        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"mcsteen/mcs-field"}',
+        AGENT_HUB_TEST_PROJECT_JSON: '{"githubRepo":"acme/field-svc"}',
         GH_TOKEN: 'gho_fake-user-oauth',
       },
       encoding: 'utf-8',
@@ -303,12 +303,12 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
       env: {
         PATH: stubbedPath,
         HOME: os.tmpdir(),
-        PROJECT_ID: 'mcs-field',
+        PROJECT_ID: 'field-svc',
         AGENT_HUB_URL: 'http://agent-hub.test',
         AGENT_HUB_API_KEY: 'test-key',
         AGENT_HUB_TEST_PROJECT_JSON: '{"error":"unauthorized"}',
         AGENT_HUB_TEST_CURL_STATUS: '1',
-        GH_REPO: 'mcsteen/surveytracker',
+        GH_REPO: 'acme/webapp',
         GH_TOKEN: 'gho_fake-user-oauth',
       },
       encoding: 'utf-8',
@@ -322,11 +322,11 @@ describe('gh-pr.sh review — disabled (in-session advisor)', () => {
       env: {
         PATH: stubbedPath,
         HOME: os.tmpdir(),
-        PROJECT_ID: 'mcs-field',
+        PROJECT_ID: 'field-svc',
         AGENT_HUB_URL: 'http://agent-hub.test',
         AGENT_HUB_API_KEY: 'test-key',
         AGENT_HUB_TEST_PROJECT_JSON: 'not json',
-        GH_REPO: 'mcsteen/surveytracker',
+        GH_REPO: 'acme/webapp',
         GH_TOKEN: 'gho_fake-user-oauth',
       },
       encoding: 'utf-8',

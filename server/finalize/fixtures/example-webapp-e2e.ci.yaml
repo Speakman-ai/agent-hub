@@ -1,4 +1,4 @@
-# v2 Finalize pipeline for survey-tracker E2E (GHA parity, DinD).
+# v2 Finalize pipeline for webapp E2E (GHA parity, DinD).
 #
 # Mirrors `.github/workflows/e2e.yml`: 4 parallel matrix shards on
 # ubuntu-24.04 with inner dockerd + docker-compose.ci.agenthub.yml + Cypress.

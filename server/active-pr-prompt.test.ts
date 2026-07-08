@@ -5,7 +5,7 @@
  * `auto-git.ts` → `setCardPrUrl`), the server surfaces that URL into the
  * resumed / redispatched session's enriched system prompt so the agent does
  * NOT blindly run `gh pr create` and produce a duplicate PR for the same
- * branch. Documented failure pattern: surveytracker MCS-2197 (PR #654 vs
+ * branch. Documented failure pattern: webapp ABC-2197 (PR #654 vs
  * #655), 2026-05-14 daily note.
  *
  * The server-side auto-PR flow already dedupes by branch

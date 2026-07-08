@@ -50,7 +50,7 @@ services:
       - AGENT_HUB_HOST_PROJECTS_DIR=${AGENT_HUB_HOST_PROJECTS_DIR:-${HOME}/.agent-hub/projects}
       - AGENT_HUB_CONTAINER_PROJECTS_DIR=/data/.agent-hub/projects
       - AGENT_HUB_CONTAINER_WORKSPACES_DIR=/data/.agent-hub/workspaces
-      # Optional second root for ~/projects/* checkouts (surveytracker uses this on macOS).
+      # Optional second root for ~/projects/* checkouts (webapp uses this on macOS).
       - AGENT_HUB_HOST_MAC_PROJECTS_DIR=${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}
       - AGENT_HUB_CONTAINER_MAC_PROJECTS_DIR=${AGENT_HUB_HOST_MAC_PROJECTS:-${HOME}/projects}
       # Health polls reach host-published preview ports; iframe URLs stay localhost.

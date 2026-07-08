@@ -73,14 +73,11 @@ describe('buildPreviewServerConfig', () => {
   it('scopes allowedHosts to the *.preview.<base> subdomains plus the upstream host', () => {
     const cfg = buildPreviewServerConfig({
       AGENT_HUB_PREVIEW: '1',
-      AGENT_HUB_PREVIEW_SUBDOMAIN_BASE: 'preview.agenthub.surveytracker.io',
+      AGENT_HUB_PREVIEW_SUBDOMAIN_BASE: 'preview.agenthub.example.com',
     });
     // Public subdomain Host (browser) AND the internal upstream Host the Hub
     // proxy forwards (host.docker.internal) — both must be accepted by Vite.
-    expect(cfg!.allowedHosts).toEqual([
-      '.preview.agenthub.surveytracker.io',
-      'host.docker.internal',
-    ]);
+    expect(cfg!.allowedHosts).toEqual(['.preview.agenthub.example.com', 'host.docker.internal']);
   });
 });
 

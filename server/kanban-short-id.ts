@@ -3,7 +3,7 @@
  *
  * Each card carries a monotonic per-board number (`kanban_cards.short_id`,
  * assigned by a DB trigger). The display label pairs that number with a short
- * alphabetic prefix — Linear-style (`MCS-1688`). The prefix is persisted on the
+ * alphabetic prefix — Linear-style (`ABC-1688`). The prefix is persisted on the
  * board (`kanban_boards.card_prefix`), frozen at creation by deriving it from
  * the immutable project id/slug via `deriveCardPrefix` below. Persisting it (vs.
  * re-deriving from the mutable display name on every load) keeps already-shared

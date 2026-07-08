@@ -60,8 +60,8 @@ describe('buildFrameAncestorsCsp', () => {
   });
 
   it('includes the parent origin (scheme + host) when configured', () => {
-    expect(buildFrameAncestorsCsp('https://agenthub.dev.surveytracker.io')).toBe(
-      `frame-ancestors 'self' https://agenthub.dev.surveytracker.io`,
+    expect(buildFrameAncestorsCsp('https://agenthub.dev.example.com')).toBe(
+      `frame-ancestors 'self' https://agenthub.dev.example.com`,
     );
   });
 

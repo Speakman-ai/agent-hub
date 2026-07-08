@@ -64,7 +64,7 @@ source "$DIR/_common.sh"
 # Block `gh pr create` when the spawn carries an App installation token
 # (`ghs_…`) or no user OAuth — those would attribute the PR to the bot.
 # Per-user OAuth (`gho_` / `ghp_`) is allowed so ship/create-ticket-and-pr
-# skill turns can open PRs under the session owner. See mcsteen/surveytracker
+# skill turns can open PRs under the session owner. See acme/webapp
 # PR #682 for the bot-attribution repro.
 _pr_create_locked() {
   if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" != "1" ]]; then

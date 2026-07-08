@@ -405,7 +405,7 @@ ci.yaml v2 jobs with `runs-on: ubuntu-24.04` execute inside **privileged DinD ru
 
 - Agent Hub starts one long-lived runner per job: `docker run -d --privileged ... entrypoint.sh daemon`
 - All steps in that job run via `docker exec` into the same container
-- Nested `docker compose` talks to the **inner** daemon; Cypress hits `127.0.0.1` / `mcsteen.localhost` inside the runner
+- Nested `docker compose` talks to the **inner** daemon; Cypress hits `127.0.0.1` / `acme.localhost` inside the runner
 - Job teardown: `docker rm -f -v` removes the runner and its inner graph volume
 
 ### Host requirements
@@ -417,7 +417,7 @@ ci.yaml v2 jobs with `runs-on: ubuntu-24.04` execute inside **privileged DinD ru
 
 ### GitHub-parity resource caps (gate runner) vs pre-prod runner
 
-A correctness gate must **not** be faster or beefier than the GitHub-hosted runner it stands in for. A more powerful runner launders timing-sensitive failures: PR surveytracker#1001 was Finalize-green / GitHub-red because the runner's extra CPU let a Cypress `input:visible` 10s timeout pass that blew on a 2-vCPU GitHub runner. So every Finalize job container is CPU/memory-capped to approximate a GitHub-hosted runner.
+A correctness gate must **not** be faster or beefier than the GitHub-hosted runner it stands in for. A more powerful runner launders timing-sensitive failures: PR webapp#1001 was Finalize-green / GitHub-red because the runner's extra CPU let a Cypress `input:visible` 10s timeout pass that blew on a 2-vCPU GitHub runner. So every Finalize job container is CPU/memory-capped to approximate a GitHub-hosted runner.
 
 - **Gate runner (default)**: GitHub-parity, constrained. `docker run` gets `--cpus`, `--memory`, and `--memory-swap` (== `--memory`, so the RAM cap is hard with no swap headroom). Resolved from env in `server/finalize/runner-resource-profile.ts`; applied in the shared `buildStartJobContainerArgv` so the Hub-local and remote runner-agent paths cap identically.
 - **Pre-prod runner**: ECS/prod-like, intentionally unconstrained — for perf/soak/preview work where matching production capacity matters, **not** for the pass/fail gate. Select with `FINALIZE_RUNNER_RESOURCE_PROFILE=unconstrained`.

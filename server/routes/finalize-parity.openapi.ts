@@ -182,7 +182,7 @@ registerPath({
   summary: 'Seed the parity dataset with known false-greens (PR#1001)',
   description:
     'Idempotently seeds the project dataset with documented false-green observations, ' +
-    'starting with PR surveytracker#1001 (commit 6ad87ec).',
+    'starting with PR webapp#1001 (commit 6ad87ec).',
   request: {
     params: z.object({ projectId: z.string() }),
   },

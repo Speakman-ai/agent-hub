@@ -251,7 +251,7 @@ const MAX_QUEUE_SIZE = 10;
  * Process-lifetime cache of each checkout's default branch, keyed by cwd.
  * The agent-facing Development Lifecycle / Git Workflow prompt sections need
  * to tell the model which branch to branch from and rebase onto. Hardcoding
- * `main` was wrong for repos whose default is `master` (e.g. surveytracker),
+ * `main` was wrong for repos whose default is `master` (e.g. webapp),
  * so we detect it via `resolveDefaultBranch`. A repo's default branch changes
  * essentially never, so caching it for the process lifetime avoids spawning
  * `git symbolic-ref` on every chat turn. Returns `null` until first resolved.
@@ -3434,7 +3434,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //     installation falls through instead of poisoning the spawn.
         //     Closes the recurring "Write access to repository not
         //     granted" failures where the org owner's per-user OAuth
-        //     had lost mcsteen/<repo> access.
+        //     had lost acme/<repo> access.
         //   - reviewer role → bot installation token only when the App
         //     path didn't produce one. No per-user fallback (which
         //     historically mis-attributed reviews to the org owner's
@@ -3490,7 +3490,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         //      to GitHub. Without this isolation, dev/author/lead spawns
         //      were able to post formal PR reviews under the session-owner's
         //      OAuth token, mis-attributing automated reviews to the
-        //      human (see surveytracker PR #604 evidence).
+        //      human (see webapp PR #604 evidence).
         //   2. Inherited GH_TOKEN / GITHUB_TOKEN / GH_ENTERPRISE_TOKEN /
         //      GITHUB_ENTERPRISE_TOKEN vars are scrubbed from the cloned
         //      process.env. `applyGithubSpawnCredentials` below then

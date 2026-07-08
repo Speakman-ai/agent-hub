@@ -3492,7 +3492,7 @@ export interface AppConfig {
   previewComposeReadyTimeoutMs: number;
   /**
    * Wildcard subdomain base for "subdomain preview" mode. When set
-   * (e.g. `preview.agenthub.dev.surveytracker.io`), the request
+   * (e.g. `preview.agenthub.dev.example.com`), the request
    * dispatcher accepts `<sessionId>.<base>` hostnames and rewrites
    * them to the path-prefix proxy mount, letting apps render at
    * base `/` with zero per-app config. `null` = subdomain mode off

@@ -7,11 +7,7 @@ import { runJobPhase } from './job-runner.js';
 import type { SpawnedStep, SpawnStepFn, StepRunnerDeps } from './step-runner.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const E2E_FIXTURE = path.join(
-  path.dirname(__filename),
-  'fixtures',
-  'example-surveytracker-e2e.ci.yaml',
-);
+const E2E_FIXTURE = path.join(path.dirname(__filename), 'fixtures', 'example-webapp-e2e.ci.yaml');
 
 function makeDeps(spawnStep: SpawnStepFn): StepRunnerDeps {
   return {
@@ -84,7 +80,7 @@ jobs:
   });
 });
 
-describe('survey-tracker e2e fixture', () => {
+describe('webapp e2e fixture', () => {
   it('parses as v2 with a prepare job that the 4 e2e shards depend on', async () => {
     const result = await loadCiConfigFromFile(E2E_FIXTURE);
     expect(result.ok).toBe(true);

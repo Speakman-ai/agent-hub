@@ -99,7 +99,7 @@ describe('isAgentFiledCard', () => {
   });
 
   it('treats a different / external author as NOT agent-filed', () => {
-    expect(isAgentFiledCard('mcsteen', agent)).toBe(false);
+    expect(isAgentFiledCard('acme', agent)).toBe(false);
     expect(isAgentFiledCard('support-ticket', agent)).toBe(false);
     expect(isAgentFiledCard('Ticket Intake', agent)).toBe(false);
   });
@@ -283,7 +283,7 @@ describe('cleanupOrphanCardForClosedSession', () => {
 
   it('keeps (never deletes) a human-filed card', () => {
     const { deps, deleteRun, orphanRun, broadcast } = buildDeps({
-      card: makeCard({ created_by: 'mcsteen' }),
+      card: makeCard({ created_by: 'acme' }),
     });
     const r = cleanupOrphanCardForClosedSession(deps, 'sess-1');
     expect(r.action).toBe('keep');

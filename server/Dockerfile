@@ -83,7 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python 3 + pip — required for any project whose `commands.install` shells
 # out to `pip` / `python` during the pre-commit dependency-install step
 # (`server/auto-git.ts` → `ensureSessionWorktreeDependenciesInstalled`).
-# Without these, projects like surveytracker (Django backend, `pip install -r
+# Without these, projects like webapp (Django backend, `pip install -r
 # requirements.txt` in their install command) crash with `pip: not found`,
 # write the sticky `.agent-hub-dependency-install-failed` marker into the
 # session worktree, and every subsequent commit short-circuits with a 422.

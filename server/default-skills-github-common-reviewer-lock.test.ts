@@ -2,7 +2,7 @@
  * Verifies the AGENT_HUB_REVIEWER_LOCK gate inside
  * `default-skills/github/scripts/_common.sh::require_gh_token`.
  *
- * Closes the credential-leak path identified in mcsteen/surveytracker
+ * Closes the credential-leak path identified in acme/webapp
  * PR #612: when no GH_TOKEN/GITHUB_TOKEN is in the spawn env, the
  * historical fallback was to call `gh auth status` and treat success as
  * proof of authentication. Under the universal isolation contract

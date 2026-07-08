@@ -278,9 +278,9 @@ describe('resolvePreviewBrowserUrl', () => {
     const sid = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
     expect(
       resolvePreviewBrowserUrl(`/api/sessions/${sid}/preview/proxy/some/page?foo=1`, {
-        subdomainBase: 'preview.agenthub.dev.surveytracker.io',
+        subdomainBase: 'preview.agenthub.dev.example.com',
       }),
-    ).toBe(`https://${sid}.preview.agenthub.dev.surveytracker.io/some/page?foo=1`);
+    ).toBe(`https://${sid}.preview.agenthub.dev.example.com/some/page?foo=1`);
   });
 
   it('falls back to path-prefix when subdomainBase is set but sessionId is not a UUID', () => {

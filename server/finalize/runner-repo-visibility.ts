@@ -4,7 +4,7 @@
  *
  * Why this exists: the gate runner defaults to the stricter `ubuntu-private`
  * tier (2 vCPU / 8 GB) because being faster than the GitHub-hosted runner
- * launders timing-sensitive failures into false-greens (PR surveytracker#1001).
+ * launders timing-sensitive failures into false-greens (PR webapp#1001).
  * For a PUBLIC repo GitHub gives 4 vCPU / 16 GB, so the conservative default
  * runs the gate slower than GitHub — safe, but a source of conservative
  * false-reds until an operator opts up. By reading the repo's actual visibility

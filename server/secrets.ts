@@ -2,7 +2,7 @@
  * AWS Secrets Manager helpers for Agent Hub.
  *
  * Currently surfaces a single named secret — the per-user `ahub_*` API key
- * provisioned on the dev hub (`agenthub.dev.surveytracker.io`) and stored at
+ * provisioned on the dev hub (`agenthub.dev.example.com`) and stored at
  * `agent-hub/dev-hub/api-key`.  Extend this module if more per-environment
  * secrets are provisioned in the future.
  *

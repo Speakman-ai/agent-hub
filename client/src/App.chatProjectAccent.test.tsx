@@ -18,7 +18,7 @@ const PROJECTS = [
   },
   {
     id: 'p-st',
-    name: 'Survey Tracker',
+    name: 'Webapp',
     color: '#10B981',
     cwd: '/st',
     agents: [

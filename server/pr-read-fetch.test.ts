@@ -48,18 +48,16 @@ describe('fetchPrDiff', () => {
     );
 
     const { fetchPrDiff } = await import('./pr-read-fetch.js');
-    const result = await fetchPrDiff(
-      baseConfig(),
-      { owner: 'mcsteen', repo: 'surveytracker' },
-      621,
-      { userAccessToken: 'user-tok', fetchImpl },
-    );
+    const result = await fetchPrDiff(baseConfig(), { owner: 'acme', repo: 'webapp' }, 621, {
+      userAccessToken: 'user-tok',
+      fetchImpl,
+    });
 
     expect(result.source).toBe('user-oauth');
     expect(result.diff).toContain('diff --git a/foo b/foo');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(String(url)).toBe('https://api.github.com/repos/mcsteen/surveytracker/pulls/621');
+    expect(String(url)).toBe('https://api.github.com/repos/acme/webapp/pulls/621');
     expect((init?.headers as Record<string, string>)?.Authorization).toBe('Bearer user-tok');
     expect((init?.headers as Record<string, string>)?.Accept).toBe(
       'application/vnd.github.v3.diff',

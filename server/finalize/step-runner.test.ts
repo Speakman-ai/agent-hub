@@ -1482,7 +1482,7 @@ describe('FAILURE_SIGNAL_RE', () => {
       'db-1  | server started',
       'db-1  | CREATE DATABASE',
       'db-1  | PostgreSQL init process complete; ready for start up.',
-      'Container survey-tracker-api-1 Started',
+      'Container webapp-api-1 Started',
       '0 passing (4m)',
     ]) {
       expect(re().test(line), line).toBe(false);

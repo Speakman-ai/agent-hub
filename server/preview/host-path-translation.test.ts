@@ -25,21 +25,21 @@ describe('translateContainerPathToHost', () => {
   });
 
   it('rewrites a path that lives directly under the container projects root', () => {
-    const r = translateContainerPathToHost('/home/node/projects/surveytracker', {
+    const r = translateContainerPathToHost('/home/node/projects/webapp', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
       hostWorkspacesDir: null,
     });
-    expect(r.hostPath).toBe('/var/lib/agent-hub/projects/surveytracker');
+    expect(r.hostPath).toBe('/var/lib/agent-hub/projects/webapp');
     expect(r.matchedRoot).toBe('projects');
     expect(r.skippedReason).toBeUndefined();
   });
 
   it('rewrites a nested path under the container projects root', () => {
-    const r = translateContainerPathToHost('/home/node/projects/surveytracker/frontend/src', {
+    const r = translateContainerPathToHost('/home/node/projects/webapp/frontend/src', {
       hostProjectsDir: '/var/lib/agent-hub/projects',
       hostWorkspacesDir: null,
     });
-    expect(r.hostPath).toBe('/var/lib/agent-hub/projects/surveytracker/frontend/src');
+    expect(r.hostPath).toBe('/var/lib/agent-hub/projects/webapp/frontend/src');
     expect(r.matchedRoot).toBe('projects');
   });
 
@@ -116,26 +116,23 @@ describe('translateContainerPathToHost', () => {
   // mounted empty dirs.
 
   it('rewrites a worktree path under the container workspaces root', () => {
-    const r = translateContainerPathToHost(
-      '/home/node/.agent-hub/workspaces/surveytracker/session-abc',
-      {
-        hostProjectsDir: null,
-        hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
-      },
-    );
-    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/surveytracker/session-abc');
+    const r = translateContainerPathToHost('/home/node/.agent-hub/workspaces/webapp/session-abc', {
+      hostProjectsDir: null,
+      hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
+    });
+    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/webapp/session-abc');
     expect(r.matchedRoot).toBe('workspaces');
   });
 
   it('rewrites a nested worktree path under the container workspaces root', () => {
     const r = translateContainerPathToHost(
-      '/home/node/.agent-hub/workspaces/surveytracker/session-abc/frontend',
+      '/home/node/.agent-hub/workspaces/webapp/session-abc/frontend',
       {
         hostProjectsDir: null,
         hostWorkspacesDir: '/var/lib/agent-hub/workspaces',
       },
     );
-    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/surveytracker/session-abc/frontend');
+    expect(r.hostPath).toBe('/var/lib/agent-hub/workspaces/webapp/session-abc/frontend');
     expect(r.matchedRoot).toBe('workspaces');
   });
 
@@ -190,13 +187,13 @@ describe('translateContainerPathToHost', () => {
   });
 
   it('rewrites macOS ~/projects checkouts when mac projects roots are configured', () => {
-    const r = translateContainerPathToHost('/Users/dev/projects/surveytracker', {
+    const r = translateContainerPathToHost('/Users/dev/projects/webapp', {
       hostProjectsDir: null,
       hostWorkspacesDir: null,
       hostMacProjectsDir: '/Users/dev/projects',
       containerMacProjectsDir: '/Users/dev/projects',
     });
-    expect(r.hostPath).toBe('/Users/dev/projects/surveytracker');
+    expect(r.hostPath).toBe('/Users/dev/projects/webapp');
     expect(r.matchedRoot).toBe('macProjects');
   });
 
@@ -236,7 +233,7 @@ describe('resolveComposeProjectDirectory', () => {
     delete process.env.AGENT_HUB_HOST_PROJECTS_DIR;
     delete process.env.AGENT_HUB_HOST_WORKSPACES_DIR;
     try {
-      const worktree = '/data/.agent-hub/workspaces/surveytracker/session-6445b988';
+      const worktree = '/data/.agent-hub/workspaces/webapp/session-6445b988';
       const translation = translateContainerPathToHost(worktree, {
         hostWorkspacesDir: '/Users/dev/.agent-hub/data/.agent-hub/workspaces',
         containerWorkspacesDir: '/data/.agent-hub/workspaces',

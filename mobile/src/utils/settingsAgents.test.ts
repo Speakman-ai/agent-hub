@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { groupAgentsByProject, resolveNewAgentForm, validateNewAgentForm, buildCreateAgentPayload, buildUpdateAgentPayload, settingsEngineChoices, settingsModelsForEngine, settingsDefaultModelForEngine, PER_USER_DEFAULT_MODEL, settingsSelectedModelChip, settingsResolveModelChip, settingsEffectiveEngine, settingsModelOverrideIsStale, isAutonomyLocked, isAutonomyLockedOn, isAutonomyLockedOff, agentAcceptsAutonomousTickets, } from './settingsAgents';
 const projects = [
-    { id: 'p1', name: 'Survey Tracker', color: '#f00' },
+    { id: 'p1', name: 'Webapp', color: '#f00' },
     { id: 'p2', name: 'Agent Hub' },
 ];
 describe('groupAgentsByProject', () => {
@@ -13,7 +13,7 @@ describe('groupAgentsByProject', () => {
         ];
         const groups = groupAgentsByProject(agents, projects);
         expect(groups).toHaveLength(2);
-        expect(groups[0]).toMatchObject({ projectId: 'p1', projectName: 'Survey Tracker', color: '#f00' });
+        expect(groups[0]).toMatchObject({ projectId: 'p1', projectName: 'Webapp', color: '#f00' });
         expect(groups[0].agents.map((a: any) => a.id)).toEqual(['a1', 'a2']);
         expect(groups[1].agents).toEqual([]);
     });

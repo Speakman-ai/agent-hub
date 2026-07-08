@@ -1,14 +1,14 @@
 /**
- * Tests for the survey-tracker reference `.agent-hub/ci.yaml` shipped as
+ * Tests for the webapp reference `.agent-hub/ci.yaml` shipped as
  * a fixture in this repo.
  *
- * Card 5df552ec — "Roll out Finalize Code Changes to survey-tracker repo
- * (second dogfood)" — proposed a v1 ci.yaml for the survey-tracker
+ * Card 5df552ec — "Roll out Finalize Code Changes to webapp repo
+ * (second dogfood)" — proposed a v1 ci.yaml for the webapp
  * (Angular + Django) stack. Because Agent Hub's PR machinery pushes the
  * worktree branch to the agent-hub remote, the actual commit into the
- * survey-tracker repo must happen via a session on the surveytracker
+ * webapp repo must happen via a session on the webapp
  * board. To keep the proposed file from bitrotting in the meantime, the
- * content lives at `server/finalize/fixtures/example-surveytracker.ci.yaml`
+ * content lives at `server/finalize/fixtures/example-webapp.ci.yaml`
  * and these tests pin its shape against the same v1 parser the
  * orchestrator uses.
  *
@@ -18,11 +18,11 @@
  *      source of truth on the v1 wire format). If the parser tightens
  *      in a follow-up, this test fails loudly so the fixture is
  *      updated alongside the parser change — preventing the case
- *      where a survey-tracker session ships a now-invalid file.
+ *      where a webapp session ships a now-invalid file.
  *
  *   2. The fixture declares both `finalize` and `manual` triggers,
  *      mirroring the agent-hub config. Manual is needed during the
- *      dogfood phase so the survey-tracker session can replay a failed
+ *      dogfood phase so the webapp session can replay a failed
  *      run without re-clicking the kanban card.
  *
  *   3. The step set matches the v1-dogfood contract documented in the
@@ -37,7 +37,7 @@
  *      `npm ci` on Angular 18 + a venv install + Cypress + ng build
  *      takes ~6 min on a clean runner; leaving the ceiling at 60
  *      gives plenty of headroom for the frontend Cypress flake recovery
- *      that survey-tracker's existing GH Actions occasionally hit.
+ *      that webapp's existing GH Actions occasionally hit.
  */
 
 import path from 'path';
@@ -45,22 +45,18 @@ import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'url';
 import { loadCiConfigFromFile, FINALIZE_TIMEOUT_DEFAULT_MINUTES } from './ci-config.js';
 
-// `server/finalize/repo-ci-yaml-example-surveytracker.test.ts` and the
-// fixture file `server/finalize/fixtures/example-surveytracker.ci.yaml`
+// `server/finalize/repo-ci-yaml-example-webapp.test.ts` and the
+// fixture file `server/finalize/fixtures/example-webapp.ci.yaml`
 // share the same parent directory, so the path is local.
 const __filename = fileURLToPath(import.meta.url);
-const FIXTURE_PATH = path.join(
-  path.dirname(__filename),
-  'fixtures',
-  'example-surveytracker.ci.yaml',
-);
+const FIXTURE_PATH = path.join(path.dirname(__filename), 'fixtures', 'example-webapp.ci.yaml');
 
-describe('survey-tracker reference: example-surveytracker.ci.yaml', () => {
+describe('webapp reference: example-webapp.ci.yaml', () => {
   it('parses cleanly against the v1 schema', async () => {
     const result = await loadCiConfigFromFile(FIXTURE_PATH);
     if (!result.ok) {
       throw new Error(
-        `survey-tracker fixture failed to parse: code=${result.error.code} path=${result.error.path ?? '(root)'} message=${result.error.message}`,
+        `webapp fixture failed to parse: code=${result.error.code} path=${result.error.path ?? '(root)'} message=${result.error.message}`,
       );
     }
     expect(result.config.version).toBe(1);
@@ -94,7 +90,7 @@ describe('survey-tracker reference: example-surveytracker.ci.yaml', () => {
 
     // 1. Backend venv install — must create `.venv` so ./lint can find
     //    `.venv/bin/python`, and must install black pinned at 25.1.0
-    //    (matches the agreed black version across the survey-tracker
+    //    (matches the agreed black version across the webapp
     //    repo's `pyproject.toml` + lint workflow).
     expect(runs[0]).toMatch(/python3?\s+-m\s+venv\s+\.venv/);
     expect(runs[0]).toMatch(/black==25\.1\.0/);
@@ -107,7 +103,7 @@ describe('survey-tracker reference: example-surveytracker.ci.yaml', () => {
 
     // 3. `./lint` — wraps Python + Angular linters. We pin the literal
     //    invocation because changing it (e.g. inlining flake8/black/ng
-    //    lint here) would drift from how survey-tracker engineers run
+    //    lint here) would drift from how webapp engineers run
     //    the same checks locally.
     expect(runs[2]).toMatch(/\.\/lint/);
 

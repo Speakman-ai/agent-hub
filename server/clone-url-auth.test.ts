@@ -11,10 +11,10 @@ import {
 
 describe('classifyCloneUrl', () => {
   it('recognizes plain https github URLs', () => {
-    const p = classifyCloneUrl('https://github.com/mcsteen/surveytracker');
+    const p = classifyCloneUrl('https://github.com/acme/webapp');
     expect(p.kind).toBe('github-https');
-    expect(p.owner).toBe('mcsteen');
-    expect(p.repo).toBe('surveytracker');
+    expect(p.owner).toBe('acme');
+    expect(p.repo).toBe('webapp');
   });
 
   it('strips the .git suffix from https URLs', () => {

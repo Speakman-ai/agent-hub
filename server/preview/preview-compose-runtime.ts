@@ -4,7 +4,7 @@
  * Per-session compose orchestration for worktree previews — see the ADR
  * page `worktree-previews-compose-pivot-adr` on the wiki. PR 1 shipped
  * the skeleton + schema, PR 2 wired the runtime into the chat handler,
- * and PR 3 converted the surveytracker project's prEnv from the legacy
+ * and PR 3 converted the webapp project's prEnv from the legacy
  * `./quickstart` spawn to `preview.compose.entryService = 'frontend'`
  * targeting `compose.preview.yml`. PR 4 removes the legacy spawn path.
  *
@@ -739,7 +739,7 @@ export class PreviewComposeRuntime {
    * cleanly (code 0) for a group — i.e. the image build finished and the
    * containers were created/started. The health-check loop reads this to
    * **rebase** its readiness deadline: a slow first-time image build (e.g.
-   * surveytracker's `pyproj sync` pulling geodetic grids for minutes) must
+   * webapp's `pyproj sync` pulling geodetic grids for minutes) must
    * not eat into the app-readiness budget. Without this rebase the single
    * `readyTimeoutMs` window covers build + start + health, so a long build
    * trips "health check timed out" before the app ever gets a chance.
@@ -1015,13 +1015,13 @@ export class PreviewComposeRuntime {
     // via env var rather than a CLI flag — the compose file is
     // expected to reference `${AGENTHUB_HOST_PORT}` on the entry
     // service's `ports:` mapping. The exact env-var contract is
-    // documented in the ADR. Surveytracker (PR 3) was the first
+    // documented in the ADR. Webapp (PR 3) was the first
     // project to wire it; the contract is stable for new projects.
     const composeEnv: NodeJS.ProcessEnv = {
       ...process.env,
       AGENTHUB_HOST_PORT: String(port),
       AGENTHUB_ENTRY_PORT: String(cfg.entryPort),
-      // Survey Tracker (and similar stacks) bind ng serve with FRONTEND_PORT /
+      // Webapp (and similar stacks) bind ng serve with FRONTEND_PORT /
       // PORT, not AGENTHUB_HOST_PORT. Both MUST be the entry (container-internal)
       // port, NOT the host port: the override publishes `hostPort:entryPort`
       // (e.g. 4100:4200), so the in-container dev server has to listen on

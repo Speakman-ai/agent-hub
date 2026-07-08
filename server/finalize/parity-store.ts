@@ -299,7 +299,7 @@ export function summarizeParity(records: ReadonlyArray<ParityRecord>): ParitySum
 
 /**
  * Known parity observations to seed a fresh dataset with. The first entry is
- * PR surveytracker#1001 (commit 6ad87ec) — the documented false-green that
+ * PR webapp#1001 (commit 6ad87ec) — the documented false-green that
  * motivated this harness: Finalize green (0 failing jobs), GitHub red (3
  * failing jobs).
  */
@@ -319,7 +319,7 @@ export const KNOWN_PARITY_SEEDS: ReadonlyArray<Omit<ParityObservationInput, 'pro
       { name: 'frontend', state: 'red' },
       { name: 'e2e', state: 'red' },
     ],
-    note: 'Seed: PR surveytracker#1001 — first known false_green (Finalize 0 vs GitHub 3 failing).',
+    note: 'Seed: PR webapp#1001 — first known false_green (Finalize 0 vs GitHub 3 failing).',
   },
 ];
 

@@ -24,7 +24,7 @@
  * Mode selection
  * ──────────────
  * Subdomain mode is **opt-in** via the `AGENT_HUB_PREVIEW_SUBDOMAIN_BASE`
- * env var (e.g. `preview.agenthub.dev.surveytracker.io`). Unset = mode
+ * env var (e.g. `preview.agenthub.dev.example.com`). Unset = mode
  * off, every code path falls back to the existing path-prefix proxy.
  * That means local Hub installs (Electron, dev box) and any deployment
  * without the wildcard cert keep working with no changes.

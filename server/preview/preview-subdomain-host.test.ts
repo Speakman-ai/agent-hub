@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildPreviewSubdomainHost, parsePreviewSubdomainHost } from './preview-subdomain-host.js';
 
 const SID = 'b371b1ba-37d3-4a10-8b44-40bd1cddcc6d';
-const BASE = 'preview.agenthub.dev.surveytracker.io';
+const BASE = 'preview.agenthub.dev.example.com';
 
 describe('parsePreviewSubdomainHost', () => {
   it('returns null when subdomain mode is off (base unset)', () => {

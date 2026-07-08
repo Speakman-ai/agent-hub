@@ -270,7 +270,7 @@ export function applyReviewerSpawnIsolation(
  *   new fallback branch to `resolveGithubSpawnToken`, or a future
  *   helper forwards a user token to reviewers) and makes sure the spawn
  *   still cannot use it to forge commits or open PRs — the failure mode
- *   documented in mcsteen/surveytracker PR #622 where
+ *   documented in acme/webapp PR #622 where
  *   `agent-hub-reviewer-main[bot]` opened a PR with bot-authored commits.
  *
  * Pure env mutation; no filesystem effect. Call AFTER

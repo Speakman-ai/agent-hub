@@ -725,7 +725,7 @@ app.use(
 
 // Subdomain preview dispatch — opt-in via AGENT_HUB_PREVIEW_SUBDOMAIN_BASE.
 // When a request arrives at `<sessionId>.<base>` (e.g.
-// `b371b1ba-….preview.agenthub.dev.surveytracker.io`), rewrite the URL to
+// `b371b1ba-….preview.agenthub.dev.example.com`), rewrite the URL to
 // the path-prefix mount so the rest of the pipeline (authMiddleware →
 // session router → previewProxyHandler) handles it identically — no
 // dual code path, no auth-bypass risk.

@@ -7,7 +7,7 @@
  * write surface is denied so that even if a future change leaks a
  * GitHub token into the reviewer spawn env, the credential cannot be
  * used to forge commits or open PRs (the failure mode documented in
- * mcsteen/surveytracker PR #622).
+ * acme/webapp PR #622).
  *
  * Surfaces under test:
  *

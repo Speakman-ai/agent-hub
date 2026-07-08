@@ -405,7 +405,7 @@ const config: AppConfig = {
   ),
 
   // Wildcard subdomain base for "subdomain preview" mode. When set
-  // (e.g. `preview.agenthub.dev.surveytracker.io`), the request
+  // (e.g. `preview.agenthub.dev.example.com`), the request
   // dispatcher accepts `<sessionId>.<base>` hostnames and rewrites
   // them to the same path-prefix proxy mount, letting apps render at
   // their default base of `/` with zero per-app config. Unset =

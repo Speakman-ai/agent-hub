@@ -18,9 +18,9 @@ describe('validateTokenForRepo', () => {
 
   it('returns true on a 200 response', async () => {
     const fetcher = vi.fn(async () => ({ ok: true, status: 200 }));
-    expect(await validateTokenForRepo('token', 'mcsteen', 'surveytracker', fetcher)).toBe(true);
+    expect(await validateTokenForRepo('token', 'acme', 'webapp', fetcher)).toBe(true);
     expect(fetcher).toHaveBeenCalledWith(
-      'https://api.github.com/repos/mcsteen/surveytracker',
+      'https://api.github.com/repos/acme/webapp',
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({
@@ -63,8 +63,8 @@ describe('resolveGithubSpawnToken', () => {
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       userGhToken: 'gho_user_pat',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
+      repoOwner: 'acme',
+      repoName: 'webapp',
       validateFetcher: async () => ({ ok: true, status: 200 }),
     });
     expect(token).toBe('gho_user_pat');
@@ -75,7 +75,7 @@ describe('resolveGithubSpawnToken', () => {
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       userGhToken: 'gho_user_pat',
-      repoOwner: 'mcsteen',
+      repoOwner: 'acme',
       validateFetcher: validate,
     });
     expect(token).toBe('gho_user_pat');
@@ -86,8 +86,8 @@ describe('resolveGithubSpawnToken', () => {
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       userGhToken: null,
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
+      repoOwner: 'acme',
+      repoName: 'webapp',
       validateFetcher: async () => ({ ok: true, status: 200 }),
     });
     expect(token).toBeNull();
@@ -97,8 +97,8 @@ describe('resolveGithubSpawnToken', () => {
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       userGhToken: 'gho_dead_token',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
+      repoOwner: 'acme',
+      repoName: 'webapp',
       validateFetcher: async () => ({ ok: false, status: 403 }),
     });
     expect(token).toBeNull();
@@ -112,8 +112,8 @@ describe('resolveGithubSpawnToken', () => {
     const token = await resolveGithubSpawnToken({
       role: 'reviewer',
       userGhToken: 'gho_user_pat',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
+      repoOwner: 'acme',
+      repoName: 'webapp',
       validateFetcher: async () => ({ ok: true, status: 200 }),
     });
     expect(token).toBeNull();
@@ -123,8 +123,8 @@ describe('resolveGithubSpawnToken', () => {
     const token = await resolveGithubSpawnToken({
       role: 'developer',
       userGhToken: 'gho_user_pat',
-      repoOwner: 'mcsteen',
-      repoName: 'surveytracker',
+      repoOwner: 'acme',
+      repoName: 'webapp',
       autonomousOrigin: true,
       validateFetcher: async () => ({ ok: true, status: 200 }),
     });

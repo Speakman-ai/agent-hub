@@ -42,7 +42,7 @@ require_gh_token() {
   # that override (a different `gh` on PATH, a future gh that reads a
   # fallback config, etc.), the fallback can silently authenticate as
   # the host operator. That is exactly the leak that produced
-  # surveytracker PR #612 (head `review/pr-609`, opened as the host
+  # webapp PR #612 (head `review/pr-609`, opened as the host
   # user `speakmanra`). Hard-fail under the lock so there is no third
   # path: env token → ok; lock set → fail; otherwise → fall back to host gh.
   if [[ "${AGENT_HUB_REVIEWER_LOCK:-}" == "1" ]]; then
@@ -288,7 +288,7 @@ GUARD
 #     broader structural backstop: assumes a future change accidentally
 #     leaks a GitHub token into the reviewer spawn env, and makes sure the
 #     spawn still cannot use it to forge commits or open PRs (the failure
-#     mode documented in surveytracker PR #622).
+#     mode documented in webapp PR #622).
 #
 # This file owns the role-lock enforcement helpers; gh-pr.sh calls
 # `_reviewer_role_locked` directly for subcommand-level denials, and
@@ -317,7 +317,7 @@ no longer posts formal reviews to GitHub.
 Direct invocations of \`gh pr review / create / merge / close / ready / edit\`
 and arbitrary write \`gh api\` calls are blocked structurally — even if a
 token is reachable in this spawn — to prevent reviewer identity leaks of
-the kind documented in mcsteen/surveytracker PR #622. PR conversation
+the kind documented in acme/webapp PR #622. PR conversation
 comments (POST .../issues/<n>/comments) remain available.
 
 If you legitimately need to create commits or open PRs, your agent must
@@ -412,7 +412,7 @@ must not be configured with role=reviewer; use a dev/lead/author spawn instead.
 
 This guard is structural defense-in-depth: even if a future change leaks a
 GitHub token into the reviewer spawn env, the credential cannot be used to
-forge commits or open PRs (mcsteen/surveytracker PR #622 reference case).
+forge commits or open PRs (acme/webapp PR #622 reference case).
 DENIED
   exit 2
 }

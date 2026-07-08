@@ -208,14 +208,14 @@ describe('orgs.js — auth header propagation', () => {
       if (init?.method === 'POST') {
         return {
           ok: true,
-          json: async () => ({ id: 'new-org', name: 'McSteen', mode: 'local' }) as any,
+          json: async () => ({ id: 'new-org', name: 'Acme', mode: 'local' }) as any,
         };
       }
       return { ok: true, json: async () => [] as any };
     }) as any);
 
     const { createOrg } = await import('./orgs.js');
-    await createOrg({ name: 'McSteen', mode: 'local' });
+    await createOrg({ name: 'Acme', mode: 'local' });
 
     const createCall = (fetchSpy as any).mock.calls.find(
       ([url, init]: any) => url === '/api/orgs' && init?.method === 'POST',

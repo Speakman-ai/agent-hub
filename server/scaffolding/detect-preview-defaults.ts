@@ -253,7 +253,7 @@ function detectFullstackDjangoReact(workspaceDir: string): DetectedPreviewDefaul
   if (!frontendStack) return null;
   const frontendDefaults = STACK_DEFAULTS[frontendStack];
 
-  // Prefer requirements-local.txt when present (matches the SurveyTracker
+  // Prefer requirements-local.txt when present (matches the Webapp
   // convention); fall back to requirements.txt; otherwise skip pip install.
   const reqLocal = existsSync(path.join(backendDir, 'requirements-local.txt'));
   const reqDefault = existsSync(path.join(backendDir, 'requirements.txt'));

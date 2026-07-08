@@ -103,7 +103,7 @@ describe('GET /api/pr/diff', () => {
     });
 
     const res = await request(app).get(
-      '/api/pr/diff?prUrl=https://github.com/mcsteen/surveytracker/pull/621',
+      '/api/pr/diff?prUrl=https://github.com/acme/webapp/pull/621',
     );
 
     expect(res.status).toBe(200);
@@ -112,8 +112,8 @@ describe('GET /api/pr/diff', () => {
     expect(res.text).toContain('diff --git a/x b/x');
 
     expect((fetchPrDiff as ReturnType<typeof vi.fn>).mock.calls[0][1]).toEqual({
-      owner: 'mcsteen',
-      repo: 'surveytracker',
+      owner: 'acme',
+      repo: 'webapp',
     });
     expect((fetchPrDiff as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(621);
   });
@@ -125,13 +125,13 @@ describe('GET /api/pr/diff', () => {
       diff: 'inline diff',
     });
 
-    const res = await request(app).get('/api/pr/diff?owner=mcsteen&repo=surveytracker&number=621');
+    const res = await request(app).get('/api/pr/diff?owner=acme&repo=webapp&number=621');
 
     expect(res.status).toBe(200);
     expect(res.text).toBe('inline diff');
     expect((fetchPrDiff as ReturnType<typeof vi.fn>).mock.calls[0][1]).toEqual({
-      owner: 'mcsteen',
-      repo: 'surveytracker',
+      owner: 'acme',
+      repo: 'webapp',
     });
     expect((fetchPrDiff as ReturnType<typeof vi.fn>).mock.calls[0][2]).toBe(621);
   });
@@ -239,7 +239,7 @@ describe('GET /api/pr/data', () => {
     });
 
     const res = await request(app).get(
-      '/api/pr/data?prUrl=https://github.com/mcsteen/surveytracker/pull/621',
+      '/api/pr/data?prUrl=https://github.com/acme/webapp/pull/621',
     );
     expect(res.status).toBe(200);
     expect(res.body.source).toBe('github-app');

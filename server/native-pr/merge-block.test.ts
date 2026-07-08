@@ -5,7 +5,7 @@ import { isRetryableMergeBlock } from './merge-block.js';
 // required check is still running → re-attempt when it goes green) vs terminal
 // (changes requested / checks failed / conflict → leave it). Getting this wrong
 // in either direction is the bug: terminal-as-retryable would loop, and
-// retryable-as-terminal is exactly what stranded surveytracker #4/#5 open.
+// retryable-as-terminal is exactly what stranded webapp #4/#5 open.
 
 describe('isRetryableMergeBlock', () => {
   it('treats "checks still running" as retryable (raw reason)', () => {
@@ -18,7 +18,7 @@ describe('isRetryableMergeBlock', () => {
     // This is the exact shape that reaches autoMergeFinalizedPr's catch.
     expect(
       isRetryableMergeBlock(
-        'native merge failed for /projects/surveytracker/pulls/4 (status 409): ' +
+        'native merge failed for /projects/webapp/pulls/4 (status 409): ' +
           'Branch protection: checks are still running for the head commit.',
       ),
     ).toBe(true);

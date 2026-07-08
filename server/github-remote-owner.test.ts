@@ -14,16 +14,16 @@ describe('parseGithubRemote', () => {
   });
 
   it('parses https://github.com/owner/repo', () => {
-    expect(parseGithubRemote('https://github.com/mcsteen/surveytracker')).toEqual({
-      owner: 'mcsteen',
-      repo: 'surveytracker',
+    expect(parseGithubRemote('https://github.com/acme/webapp')).toEqual({
+      owner: 'acme',
+      repo: 'webapp',
     });
   });
 
   it('parses https://github.com/owner/repo.git', () => {
-    expect(parseGithubRemote('https://github.com/mcsteen/surveytracker.git')).toEqual({
-      owner: 'mcsteen',
-      repo: 'surveytracker',
+    expect(parseGithubRemote('https://github.com/acme/webapp.git')).toEqual({
+      owner: 'acme',
+      repo: 'webapp',
     });
   });
 
@@ -34,9 +34,9 @@ describe('parseGithubRemote', () => {
   });
 
   it('parses git@github.com:owner/repo.git', () => {
-    expect(parseGithubRemote('git@github.com:mcsteen/surveytracker.git')).toEqual({
-      owner: 'mcsteen',
-      repo: 'surveytracker',
+    expect(parseGithubRemote('git@github.com:acme/webapp.git')).toEqual({
+      owner: 'acme',
+      repo: 'webapp',
     });
   });
 
@@ -48,9 +48,9 @@ describe('parseGithubRemote', () => {
   });
 
   it('trims surrounding whitespace from git remote output', () => {
-    expect(parseGithubRemote('  https://github.com/mcsteen/surveytracker.git\n')).toEqual({
-      owner: 'mcsteen',
-      repo: 'surveytracker',
+    expect(parseGithubRemote('  https://github.com/acme/webapp.git\n')).toEqual({
+      owner: 'acme',
+      repo: 'webapp',
     });
   });
 
@@ -79,10 +79,10 @@ describe('getRepoOwnerForCwd', () => {
     const calls: Array<{ cmd: string; args: string[]; cwd: string }> = [];
     const exec = async (cmd: string, args: string[], opts: { cwd: string }) => {
       calls.push({ cmd, args, cwd: opts.cwd });
-      return { stdout: 'https://github.com/mcsteen/surveytracker.git\n', stderr: '' };
+      return { stdout: 'https://github.com/acme/webapp.git\n', stderr: '' };
     };
     const owner = await getRepoOwnerForCwd('/tmp/some-project', exec);
-    expect(owner).toEqual({ owner: 'mcsteen', repo: 'surveytracker' });
+    expect(owner).toEqual({ owner: 'acme', repo: 'webapp' });
     expect(calls).toEqual([
       {
         cmd: 'git',

@@ -27,7 +27,7 @@ export type PreviewProxyDeps = {
   userOwnsSession: (req: AuthenticatedRequest, sessionId: string) => boolean;
   /**
    * Public URL of the Hub UI that's expected to iframe the preview
-   * (e.g. `https://agenthub.dev.surveytracker.io`). Injected into
+   * (e.g. `https://agenthub.dev.example.com`). Injected into
    * the CSP `frame-ancestors` directive on proxy responses so a
    * cross-origin iframe load (subdomain mode) succeeds while
    * unrelated origins are still refused. `null`/missing falls back

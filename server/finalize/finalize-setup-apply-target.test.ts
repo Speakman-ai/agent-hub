@@ -11,8 +11,8 @@ import { execFileSync } from 'child_process';
 
 function makeProject(cwd: string): Project {
   return {
-    id: 'surveytracker',
-    name: 'Survey Tracker',
+    id: 'webapp',
+    name: 'Webapp',
     cwd,
     color: '#000',
     agents: [{ id: 'agent-1', name: 'Dev', engine: 'claude-code' }],

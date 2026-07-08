@@ -9,7 +9,7 @@
  * once we can prove Finalize and GitHub agree on the same commit — and, more
  * importantly, that Finalize never says "green" when GitHub says "red".
  *
- * PR surveytracker#1001 (commit 6ad87ec) was exactly that failure: Finalize
+ * PR webapp#1001 (commit 6ad87ec) was exactly that failure: Finalize
  * green / GitHub red (0 failing jobs vs 3). A single such "false green" is
  * dangerous because it would let a broken commit reach `main` if GitHub were
  * retired. This module is the pure classifier the parity harness uses to label

@@ -8,7 +8,7 @@
  */
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
 
-/** Named volumes declared in Survey Tracker `compose.preview.yml` (and peers). */
+/** Named volumes declared in Webapp `compose.preview.yml` (and peers). */
 export const COMPOSE_PROJECT_VOLUME_SUFFIXES = [
   'preview-postgres-data',
   'preview-frontend-node-modules',

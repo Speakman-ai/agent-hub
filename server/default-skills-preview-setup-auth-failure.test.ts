@@ -9,7 +9,7 @@
  * didn't thread `spawnCredsUserId` to `buildSpawnEnv` — the agent
  * improvised bad workarounds, including asking the operator to paste
  * a bearer token into chat. Captured in session `53cf73a5` against
- * the SurveyTracker Lead preview wizard.
+ * the Webapp Lead preview wizard.
  *
  * The skill now contains an explicit **Auth failure** rule with three
  * binding contracts: (1) never ask for a token in chat, (2) point the
