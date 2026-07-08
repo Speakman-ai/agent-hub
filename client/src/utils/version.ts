@@ -11,16 +11,29 @@
  * comparison.
  */
 
-const S3_BUCKET_BASE = 'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com';
+import { importMetaEnv } from './importMetaEnv';
+import { trimTrailingSlashes } from '@shared/utils/trimTrailingSlashes';
 
 /**
- * Root of the published release bucket (trailing slash). Use this when we want
- * to point the user at "all releases" rather than a specific DMG — e.g. the
- * General settings download link, or the UpdateAvailableModal fallback when no
- * platform-specific DMG exists. Single source of truth so the URL only lives in
- * one place.
+ * Resolve the release/update bucket base URL from the build-time
+ * `VITE_RELEASE_BUCKET_BASE` env (trailing slashes stripped). Returns '' when
+ * unset — a self-hosted build points at no vendor bucket, so the desktop
+ * update-download flow is simply not offered.
  */
-export const RELEASE_BUCKET_ROOT = `${S3_BUCKET_BASE}/`;
+export function resolveReleaseBucketBase(env: any = importMetaEnv()) {
+  return trimTrailingSlashes(env?.VITE_RELEASE_BUCKET_BASE);
+}
+
+const S3_BUCKET_BASE = resolveReleaseBucketBase();
+
+/**
+ * Root of the published release bucket (trailing slash), or '' when no release
+ * bucket is configured. Use this when we want to point the user at "all
+ * releases" rather than a specific DMG — e.g. the General settings download
+ * link, or the UpdateAvailableModal fallback when no platform-specific DMG
+ * exists. Callers must treat '' as "no releases published" and hide the link.
+ */
+export const RELEASE_BUCKET_ROOT = S3_BUCKET_BASE ? `${S3_BUCKET_BASE}/` : '';
 
 /**
  * Parse a version string into a `[major, minor, patch]` tuple of numbers.
@@ -76,10 +89,12 @@ export function compareSemver(a: any, b: any) {
 export function buildDmgDownloadUrl({ version, platform, arch }: any = {}) {
   if (platform !== 'darwin') return null;
   if (typeof version !== 'string' || !version.trim()) return null;
+  const base = resolveReleaseBucketBase();
+  if (!base) return null; // no release bucket configured → no direct download
   const v = version.trim().replace(/^[vV]/, '');
   const suffix = arch === 'arm64' ? '-arm64' : '';
   const filename = `Agent%20Hub-${encodeURIComponent(v)}${suffix}.dmg`;
-  return `${S3_BUCKET_BASE}/v${encodeURIComponent(v)}/${filename}`;
+  return `${base}/v${encodeURIComponent(v)}/${filename}`;
 }
 
 /** Exposed for testing. Not part of the public API. */

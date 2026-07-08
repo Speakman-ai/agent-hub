@@ -1,14 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   submitBugReport,
-  BUG_REPORT_ENDPOINT,
   BUG_REPORT_PROJECT_ID,
   defaultReporterEmail,
+  resolveBugReportEndpoint,
 } from './bugReport';
+
+// Configured endpoint used by the POST tests. The default (unset env) is
+// intentionally empty so self-hosted builds never phone home; each POST test
+// stubs the env to opt into an intake hub.
+const ENDPOINT = 'https://hub.example.test/api/bug-reports';
+
+describe('resolveBugReportEndpoint', () => {
+  it('is empty (disabled) when the env var is unset — no phone-home default', () => {
+    expect(resolveBugReportEndpoint({})).toBe('');
+    expect(resolveBugReportEndpoint(null)).toBe('');
+  });
+
+  it('reads VITE_BUG_REPORT_ENDPOINT and strips trailing slashes', () => {
+    expect(resolveBugReportEndpoint({ VITE_BUG_REPORT_ENDPOINT: `${ENDPOINT}/` })).toBe(ENDPOINT);
+    expect(resolveBugReportEndpoint({ VITE_BUG_REPORT_ENDPOINT: `  ${ENDPOINT}  ` })).toBe(
+      ENDPOINT,
+    );
+  });
+});
 
 describe('submitBugReport', () => {
   beforeEach(() => {
     localStorage.clear();
+    vi.stubEnv('VITE_BUG_REPORT_ENDPOINT', ENDPOINT);
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -22,12 +42,15 @@ describe('submitBugReport', () => {
 
   afterEach(() => {
     localStorage.clear();
+    vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it('targets the production hub intake endpoint', () => {
-    expect(BUG_REPORT_ENDPOINT!).toBe('https://agenthub.surveytracker.io/api/bug-reports');
+  it('refuses to post when no intake endpoint is configured', async () => {
+    vi.stubEnv('VITE_BUG_REPORT_ENDPOINT', '');
+    await expect(submitBugReport({ title: 'valid title' })).rejects.toThrow(/not configured/i);
+    expect(fetch!).not.toHaveBeenCalled();
   });
 
   it('rejects an empty title', async () => {
@@ -49,7 +72,7 @@ describe('submitBugReport', () => {
 
     expect(fetch!).toHaveBeenCalledTimes(1);
     const [url, init] = vi.mocked(fetch).mock.calls[0];
-    expect(url!).toBe(BUG_REPORT_ENDPOINT);
+    expect(url!).toBe(ENDPOINT);
     expect(init!.method).toBe('POST');
     expect(init!.body).toBeInstanceOf(FormData);
     const fd = init!.body;

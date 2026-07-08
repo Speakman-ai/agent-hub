@@ -20,6 +20,15 @@ export default defineConfig({
     'process.env.NODE_ENV': '"development"',
   },
   test: {
+    // Telemetry endpoints are unset by default (self-hosted builds don't phone
+    // home). Configure a bug-report intake for the test run so the
+    // record-on-error replay suite exercises the *configured* path; the
+    // disabled-default behavior is covered by dedicated resolver tests. The
+    // release bucket is intentionally left unset so version.ts tests its
+    // disabled default.
+    env: {
+      VITE_BUG_REPORT_ENDPOINT: 'https://hub.example.test/api/bug-reports',
+    },
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],

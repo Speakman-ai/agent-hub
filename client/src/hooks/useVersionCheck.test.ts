@@ -61,13 +61,22 @@ describe('useVersionCheck', () => {
     expect(result!.current.clientVersion).toBe('1.4.2');
   });
 
-  it('returns a darwin arm64 download URL for Apple Silicon desktops', () => {
+  it('returns a darwin arm64 download URL for Apple Silicon desktops when a bucket is configured', () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', 'https://releases.example.test');
     stubElectron({ platform: 'darwin', arch: 'arm64' });
     stubClientVersion('1.4.2');
     const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
     expect(result!.current.downloadUrl).toBe(
-      'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/v1.5.0/Agent%20Hub-1.5.0-arm64.dmg',
+      'https://releases.example.test/v1.5.0/Agent%20Hub-1.5.0-arm64.dmg',
     );
+  });
+
+  it('returns null downloadUrl when no release bucket is configured (self-hosted)', () => {
+    stubElectron({ platform: 'darwin', arch: 'arm64' });
+    stubClientVersion('1.4.2');
+    const { result } = renderHook(() => useVersionCheck({ serverVersion: '1.5.0' }));
+    expect(result!.current.updateAvailable).toBe(true);
+    expect(result!.current.downloadUrl).toBeNull();
   });
 
   it('returns null downloadUrl on non-darwin Electron (no published DMG)', () => {

@@ -1,11 +1,31 @@
 // Bug report capture + submission helpers.
 //
-// The endpoint is intentionally hard-coded to the production Agent Hub — bug
-// reports must always flow to the central intake regardless of where the
-// client runs.
+// The intake endpoint is build-time configurable so a self-hosted deployment
+// never phones home. Set `VITE_BUG_REPORT_ENDPOINT` (e.g. to your own hub's
+// `/api/bug-reports`) to route reports to your infra. Unset → bug reporting is
+// disabled: `submitBugReport` throws rather than posting anywhere.
 import { getAuthRecord } from './auth';
+import { importMetaEnv } from './importMetaEnv';
+import { trimTrailingSlashes } from '@shared/utils/trimTrailingSlashes';
 
-export const BUG_REPORT_ENDPOINT = 'https://agenthub.surveytracker.io/api/bug-reports';
+/**
+ * Resolve the bug-report intake endpoint from the build-time
+ * `VITE_BUG_REPORT_ENDPOINT` env. Trailing slashes are stripped. Returns '' when
+ * unset — the sovereign default: no configured hub means no telemetry leaves the
+ * deployment.
+ *
+ * Vite exposes the full `import.meta.env` object at runtime (all `VITE_`-prefixed
+ * vars), so reading it via an alias is safe here — unlike Expo/Metro, which only
+ * inlines a literal `process.env.EXPO_PUBLIC_*` member access (see the mobile
+ * resolver).
+ */
+export function resolveBugReportEndpoint(env: any = importMetaEnv()) {
+  return trimTrailingSlashes(env?.VITE_BUG_REPORT_ENDPOINT);
+}
+
+export const BUG_REPORT_ENDPOINT = resolveBugReportEndpoint();
+/** True when a bug-report intake endpoint is configured for this build. */
+export const BUG_REPORT_ENABLED = BUG_REPORT_ENDPOINT !== '';
 export const BUG_REPORT_PROJECT_ID = 'agent-hub';
 
 function looksLikeEmail(value: any) {
@@ -109,6 +129,13 @@ export async function submitBugReport({
     throw new Error('Title is required');
   }
 
+  // Resolve at call time so a build that configures the endpoint later (or a
+  // test that stubs the env) is honoured. Unset → refuse to phone home.
+  const endpoint = resolveBugReportEndpoint();
+  if (!endpoint) {
+    throw new Error('Bug reporting is not configured for this deployment');
+  }
+
   const form = new FormData();
   form.append('title', String(title).trim().slice(0, 200));
   form.append('description', description ? String(description) : '');
@@ -139,7 +166,7 @@ export async function submitBugReport({
   // so the intake agent / operator can diagnose a "didn't capture replay" report.
   else if (replayMissReason) form.append('replayMissReason', String(replayMissReason));
 
-  const res = await fetch(BUG_REPORT_ENDPOINT, {
+  const res = await fetch(endpoint, {
     method: 'POST',
     mode: 'cors',
     body: form,

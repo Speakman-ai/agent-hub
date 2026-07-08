@@ -99,7 +99,12 @@ jobs:
           npm ci --include=dev
           (cd server && npm ci --include=dev)
           (cd client && npm ci --include=dev)
-          npm run build
+          # First-party build injects the vendor control-plane endpoints from
+          # GitHub repo variables (values live in repo Settings → Variables, not
+          # committed — see .env.example). Unset → empty → feature disabled (the
+          # self-hoster default). VITE_REPLAY_INGEST_ENDPOINT derives from the
+          # bug-report origin automatically when unset.
+          VITE_BUG_REPORT_ENDPOINT="${{ vars.VITE_BUG_REPORT_ENDPOINT }}" VITE_RELEASE_BUCKET_BASE="${{ vars.VITE_RELEASE_BUCKET_BASE }}" npm run build
           bash scripts/pm2-reload-and-wait.sh
           INNER
           )

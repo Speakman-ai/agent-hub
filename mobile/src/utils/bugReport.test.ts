@@ -1,5 +1,8 @@
 // @ts-nocheck
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 vi.mock('react-native-view-shot', () => ({
   captureScreen: vi.fn(async () => 'file:///tmp/screenshot.png'),
@@ -10,13 +13,22 @@ vi.mock('./auth', () => ({
   getAuthRecord: () => state.authRecord,
 }));
 
-const { submitBugReport, BUG_REPORT_ENDPOINT, BUG_REPORT_PROJECT_ID, defaultReporterEmail } =
-  await import('./bugReport');
+const {
+  submitBugReport,
+  BUG_REPORT_PROJECT_ID,
+  defaultReporterEmail,
+  resolveBugReportEndpoint,
+} = await import('./bugReport');
+
+// Configured endpoint the POST tests opt into. The default (unset env) is empty
+// so a self-hosted build never phones home.
+const ENDPOINT = 'https://hub.example.test/api/bug-reports';
 
 let mockFetch: any;
 
 beforeEach(() => {
   state.authRecord = null;
+  process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT = ENDPOINT;
   mockFetch = vi.fn().mockResolvedValue({
     ok: true,
     text: async () => JSON.stringify({ status: 'received', ticketId: 'tkt-1' }),
@@ -24,14 +36,68 @@ beforeEach(() => {
   globalThis.fetch = mockFetch;
 });
 
+afterEach(() => {
+  delete process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT;
+});
+
 function lastFormData(): FormData {
   expect(mockFetch).toHaveBeenCalledTimes(1);
   return mockFetch.mock.calls[0][1].body;
 }
 
+describe('resolveBugReportEndpoint', () => {
+  it('is empty (disabled) for unset / non-string values — no phone-home default', () => {
+    // The test seam is a RAW value (not an env object) because the production
+    // read is a literal `process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT` that Metro
+    // inlines — see the regression guard below.
+    expect(resolveBugReportEndpoint('')).toBe('');
+    expect(resolveBugReportEndpoint('   ')).toBe('');
+    expect(resolveBugReportEndpoint(null)).toBe('');
+    expect(resolveBugReportEndpoint(undefined as any)).not.toBeUndefined(); // resolves via default, never throws
+  });
+
+  it('normalizes the raw value (trim + strip trailing slashes)', () => {
+    expect(resolveBugReportEndpoint(`${ENDPOINT}/`)).toBe(ENDPOINT);
+    expect(resolveBugReportEndpoint(`  ${ENDPOINT}  `)).toBe(ENDPOINT);
+  });
+
+  it('defaults to the live EXPO_PUBLIC_BUG_REPORT_ENDPOINT when called with no arg', () => {
+    // beforeEach sets process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT = ENDPOINT.
+    expect(resolveBugReportEndpoint()).toBe(ENDPOINT);
+    delete process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT;
+    expect(resolveBugReportEndpoint()).toBe('');
+  });
+
+  // Regression guard for the Metro static-inlining contract: babel-preset-expo
+  // rewrites EXPO_PUBLIC_* reads ONLY for a literal `process.env.EXPO_PUBLIC_X`
+  // member access. Aliasing / destructuring / bracket access are NOT rewritten,
+  // so a real Expo build would read `undefined` and silently disable bug
+  // reporting. Vitest can't catch that (Node keeps a live process.env), so we
+  // assert the source shape directly.
+  it('reads the literal process.env member access so Metro inlines it', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'bugReport.ts'), 'utf8');
+    expect(src).toContain('process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT');
+    // No aliased / destructured / bracket forms that the transform won't rewrite.
+    expect(src).not.toMatch(/=\s*process\.env\b(?!\.EXPO_PUBLIC_BUG_REPORT_ENDPOINT)/);
+    expect(src).not.toMatch(/const\s*\{[^}]*EXPO_PUBLIC_BUG_REPORT_ENDPOINT/);
+    expect(src).not.toMatch(/process\.env\[/);
+    expect(src).not.toMatch(/env\?\.EXPO_PUBLIC_BUG_REPORT_ENDPOINT/);
+  });
+});
+
 describe('mobile submitBugReport', () => {
-  it('targets the production hub intake endpoint', () => {
-    expect(BUG_REPORT_ENDPOINT).toBe('https://agenthub.surveytracker.io/api/bug-reports');
+  it('refuses to post when no intake endpoint is configured', async () => {
+    delete process.env.EXPO_PUBLIC_BUG_REPORT_ENDPOINT;
+    await expect(submitBugReport({ screenshotUri: '', title: 'valid title' })).rejects.toThrow(
+      /not configured/i,
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('posts to the configured intake endpoint', async () => {
+    await submitBugReport({ screenshotUri: '', title: 'Endpoint check' });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][0]).toBe(ENDPOINT);
   });
 
   it('posts the fixed project id and authenticated reporter email when available', async () => {

@@ -10,9 +10,13 @@
  *       • the `default` CLI profile (local dev), OR
  *       • ambient env-var credentials populated by aws-actions/configure-aws-credentials (CI)
  *
- * Uploads to: s3://agent-hub-prod-releases/v<version>/
+ * Uploads to: s3://<bucket>/v<version>/
  *   - Agent Hub-<version>-arm64.dmg
  *   - Agent Hub-<version>.dmg   (Intel x64)
+ *
+ * The destination bucket/region are env-configurable so a fork can publish to
+ * its own infra without editing this script: set `AGENT_HUB_RELEASE_BUCKET` /
+ * `AGENT_HUB_RELEASE_REGION`. They fall back to the reference release bucket.
  */
 import { readFileSync, existsSync } from 'fs';
 import { spawnSync } from 'child_process';
@@ -22,8 +26,25 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 
-export const BUCKET = 'agent-hub-prod-releases';
-export const REGION = 'us-east-2';
+/** Default destination bucket when `AGENT_HUB_RELEASE_BUCKET` is unset. */
+export const DEFAULT_BUCKET = 'agent-hub-prod-releases';
+/** Default region when `AGENT_HUB_RELEASE_REGION` is unset. */
+export const DEFAULT_REGION = 'us-east-2';
+
+/** Resolve the S3 release bucket from env, falling back to the reference bucket. */
+export function resolveBucket(env = process.env) {
+  const raw = typeof env.AGENT_HUB_RELEASE_BUCKET === 'string' ? env.AGENT_HUB_RELEASE_BUCKET.trim() : '';
+  return raw || DEFAULT_BUCKET;
+}
+
+/** Resolve the S3 release region from env, falling back to the reference region. */
+export function resolveRegion(env = process.env) {
+  const raw = typeof env.AGENT_HUB_RELEASE_REGION === 'string' ? env.AGENT_HUB_RELEASE_REGION.trim() : '';
+  return raw || DEFAULT_REGION;
+}
+
+export const BUCKET = resolveBucket();
+export const REGION = resolveRegion();
 export const AWS_PROFILE = 'default';
 export const PRODUCT_NAME = 'Agent Hub';
 

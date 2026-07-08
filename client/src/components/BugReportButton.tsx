@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Bug } from 'lucide-react';
 import BugReportModal from './BugReportModal';
-import { captureScreenshot } from '../utils/bugReport';
+import { captureScreenshot, BUG_REPORT_ENABLED } from '../utils/bugReport';
 
 export default function BugReportButton({ projectId, agentId, onToast }: any) {
   const [isOpen, setIsOpen] = useState(false);
@@ -29,6 +29,11 @@ export default function BugReportButton({ projectId, agentId, onToast }: any) {
       setCapturing(false);
     }
   };
+
+  // Self-hosted builds that haven't configured an intake endpoint don't phone
+  // home — so there's no "Report a bug" control to offer. Checked after the
+  // hooks above (a module constant, so hook order stays stable across renders).
+  if (!BUG_REPORT_ENABLED) return null;
 
   return (
     <>

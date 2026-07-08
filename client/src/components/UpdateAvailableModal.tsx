@@ -67,7 +67,7 @@ export default function UpdateAvailableModal({
             latest is <span className="font-mono text-gray-200">{serverVersion}</span>. Download the
             newest build to stay in sync with the server.
           </p>
-          {!downloadUrl && (
+          {!downloadUrl && RELEASE_BUCKET_ROOT && (
             <p className="text-xs text-gray-500">
               Direct download isn&apos;t published for your platform yet. You can browse the
               releases at{' '}

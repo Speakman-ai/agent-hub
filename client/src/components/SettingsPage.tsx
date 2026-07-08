@@ -858,7 +858,7 @@ export function GeneralSection() {
         )}
       </div>
 
-      {!isElectron() && (
+      {!isElectron() && RELEASE_BUCKET_ROOT && (
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
           <div className="flex items-center gap-2">
             <Monitor size={16} className="text-sky-400 shrink-0" />

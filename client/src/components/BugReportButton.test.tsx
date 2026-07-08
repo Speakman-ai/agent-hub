@@ -3,8 +3,12 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import BugReportButton from './BugReportButton';
 import { captureScreenshot } from '../utils/bugReport';
 
+const bugReportState = vi.hoisted(() => ({ enabled: true }));
 vi.mock('../utils/bugReport', () => ({
   captureScreenshot: vi.fn(),
+  get BUG_REPORT_ENABLED() {
+    return bugReportState.enabled;
+  },
 }));
 
 vi.mock('./BugReportModal', () => ({
@@ -19,7 +23,15 @@ vi.mock('./BugReportModal', () => ({
 
 describe('BugReportButton', () => {
   beforeEach(() => {
+    bugReportState.enabled = true;
     vi.mocked(captureScreenshot).mockReset();
+  });
+
+  it('renders nothing when no bug-report intake is configured (self-hosted default)', () => {
+    bugReportState.enabled = false;
+    const { container } = render(<BugReportButton projectId="agent-hub" agentId="agent-hub-dev" />);
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole('button', { name: /report a bug/i })).toBeNull();
   });
 
   it('opens the modal with a screenshot miss reason when initial capture fails', async () => {

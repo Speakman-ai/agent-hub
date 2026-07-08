@@ -1,16 +1,40 @@
-import { describe, it, expect } from 'vitest';
-import { compareSemver, buildDmgDownloadUrl, RELEASE_BUCKET_ROOT } from './version';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  compareSemver,
+  buildDmgDownloadUrl,
+  RELEASE_BUCKET_ROOT,
+  resolveReleaseBucketBase,
+} from './version';
 
-describe('RELEASE_BUCKET_ROOT', () => {
-  it('is the release bucket base with a trailing slash', () => {
-    expect(RELEASE_BUCKET_ROOT!).toBe(
-      'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/',
-    );
+// Reference bucket a build opts into via VITE_RELEASE_BUCKET_BASE. The default
+// (unset env) is empty so a self-hosted build points at no vendor bucket.
+const BASE = 'https://releases.example.test';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+describe('resolveReleaseBucketBase', () => {
+  it('is empty (no releases) when the env var is unset', () => {
+    expect(resolveReleaseBucketBase({})).toBe('');
+    expect(resolveReleaseBucketBase(null)).toBe('');
   });
 
-  it('shares the same origin as buildDmgDownloadUrl output', () => {
+  it('reads VITE_RELEASE_BUCKET_BASE and strips trailing slashes', () => {
+    expect(resolveReleaseBucketBase({ VITE_RELEASE_BUCKET_BASE: `${BASE}/` })).toBe(BASE);
+    expect(resolveReleaseBucketBase({ VITE_RELEASE_BUCKET_BASE: `  ${BASE}  ` })).toBe(BASE);
+  });
+});
+
+describe('RELEASE_BUCKET_ROOT', () => {
+  it('is empty by default (no release bucket configured at build time)', () => {
+    expect(RELEASE_BUCKET_ROOT!).toBe('');
+  });
+
+  it('shares the same origin as buildDmgDownloadUrl output when configured', () => {
+    vi.stubEnv('VITE_RELEASE_BUCKET_BASE', BASE);
     const dmg = buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'arm64' });
-    expect(dmg!.startsWith(RELEASE_BUCKET_ROOT)).toBe(true);
+    expect(dmg!.startsWith(`${BASE}/`)).toBe(true);
   });
 });
 
@@ -57,28 +81,39 @@ describe('compareSemver', () => {
 });
 
 describe('buildDmgDownloadUrl', () => {
-  it('returns the arm64 URL on darwin + arm64', () => {
-    expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'arm64' })).toBe(
-      'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/v1.4.2/Agent%20Hub-1.4.2-arm64.dmg',
-    );
+  it('returns null when no release bucket is configured (self-hosted default)', () => {
+    // env unstubbed → VITE_RELEASE_BUCKET_BASE unset
+    expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'arm64' })).toBeNull();
   });
 
-  it('returns the x64 URL on darwin + x64', () => {
-    expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'x64' })).toBe(
-      'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/v1.4.2/Agent%20Hub-1.4.2.dmg',
-    );
-  });
+  describe('with a configured release bucket', () => {
+    beforeEach(() => {
+      vi.stubEnv('VITE_RELEASE_BUCKET_BASE', BASE);
+    });
 
-  it('falls back to x64 URL when arch is undefined on darwin', () => {
-    expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin' })).toBe(
-      'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/v1.4.2/Agent%20Hub-1.4.2.dmg',
-    );
-  });
+    it('returns the arm64 URL on darwin + arm64', () => {
+      expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'arm64' })).toBe(
+        `${BASE}/v1.4.2/Agent%20Hub-1.4.2-arm64.dmg`,
+      );
+    });
 
-  it('strips a leading v prefix from the version', () => {
-    expect(buildDmgDownloadUrl({ version: 'v1.4.2', platform: 'darwin', arch: 'arm64' })).toBe(
-      'https://agent-hub-prod-releases.s3.us-east-2.amazonaws.com/v1.4.2/Agent%20Hub-1.4.2-arm64.dmg',
-    );
+    it('returns the x64 URL on darwin + x64', () => {
+      expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin', arch: 'x64' })).toBe(
+        `${BASE}/v1.4.2/Agent%20Hub-1.4.2.dmg`,
+      );
+    });
+
+    it('falls back to x64 URL when arch is undefined on darwin', () => {
+      expect(buildDmgDownloadUrl({ version: '1.4.2', platform: 'darwin' })).toBe(
+        `${BASE}/v1.4.2/Agent%20Hub-1.4.2.dmg`,
+      );
+    });
+
+    it('strips a leading v prefix from the version', () => {
+      expect(buildDmgDownloadUrl({ version: 'v1.4.2', platform: 'darwin', arch: 'arm64' })).toBe(
+        `${BASE}/v1.4.2/Agent%20Hub-1.4.2-arm64.dmg`,
+      );
+    });
   });
 
   it('returns null on non-darwin platforms (we only publish DMGs today)', () => {

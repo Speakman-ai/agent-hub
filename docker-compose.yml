@@ -86,6 +86,13 @@ services:
     build:
       context: .
       dockerfile: client/Dockerfile
+      # Vendor control-plane endpoints — DISABLED by default (empty) so a
+      # self-hosted build never phones home. Set these in .env to point the
+      # built client at your own hub (see .env.example).
+      args:
+        VITE_BUG_REPORT_ENDPOINT: "${VITE_BUG_REPORT_ENDPOINT:-}"
+        VITE_REPLAY_INGEST_ENDPOINT: "${VITE_REPLAY_INGEST_ENDPOINT:-}"
+        VITE_RELEASE_BUCKET_BASE: "${VITE_RELEASE_BUCKET_BASE:-}"
     container_name: agent-hub-client
     restart: unless-stopped
     ports:

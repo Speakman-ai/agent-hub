@@ -35,6 +35,7 @@ import {
   RRWEB_FULL_SNAPSHOT,
   RRWEB_META,
   REPLAY_INGEST_ENDPOINT,
+  resolveReplayIngestEndpoint,
   gzipString,
   UPLOAD_TIMEOUT_MS,
   FLUSH_TIMEOUT_MS,
@@ -462,12 +463,34 @@ describe('masking mode', () => {
 });
 
 describe('REPLAY_INGEST_ENDPOINT', () => {
-  it('derives from the bug-report endpoint origin', () => {
+  it('derives from the configured bug-report endpoint origin', () => {
+    // The test env sets VITE_BUG_REPORT_ENDPOINT (see vitest.config.ts), so the
+    // ingest endpoint derives from it and swaps /api/bug-reports → /api/replays.
     expect(REPLAY_INGEST_ENDPOINT!).toMatch(/\/api\/replays$/);
     expect(REPLAY_INGEST_ENDPOINT!).not.toMatch(/bug-reports/);
+    expect(REPLAY_INGEST_ENDPOINT!).toBe('https://hub.example.test/api/replays');
   });
-  it('points at the production hub (not the dev hub)', () => {
-    expect(REPLAY_INGEST_ENDPOINT!).toBe('https://agenthub.surveytracker.io/api/replays');
+});
+
+describe('resolveReplayIngestEndpoint', () => {
+  it('is empty (disabled) when nothing is configured — no phone-home default', () => {
+    expect(resolveReplayIngestEndpoint({}, '')).toBe('');
+    expect(resolveReplayIngestEndpoint(null, null)).toBe('');
+  });
+
+  it('prefers an explicit VITE_REPLAY_INGEST_ENDPOINT (trailing slashes stripped)', () => {
+    expect(
+      resolveReplayIngestEndpoint(
+        { VITE_REPLAY_INGEST_ENDPOINT: 'https://r.example.test/api/replays/' },
+        'https://ignored.test/api/bug-reports',
+      ),
+    ).toBe('https://r.example.test/api/replays');
+  });
+
+  it('derives from the bug-report endpoint when no explicit override is set', () => {
+    expect(resolveReplayIngestEndpoint({}, 'https://hub.example.test/api/bug-reports')).toBe(
+      'https://hub.example.test/api/replays',
+    );
   });
 });
 

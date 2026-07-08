@@ -10,6 +10,8 @@
 // intake agent investigates the report.
 
 import { BUG_REPORT_ENDPOINT } from './bugReport';
+import { importMetaEnv } from './importMetaEnv';
+import { trimTrailingSlashes } from '@shared/utils/trimTrailingSlashes';
 import { FrustrationDetector } from '../rum/frustration';
 
 /**
@@ -210,19 +212,40 @@ export function hasFullSnapshot(events: any) {
   return Array.isArray(events) && events.some((e: any) => e && e.type === RRWEB_FULL_SNAPSHOT);
 }
 
-/** Ingest endpoint, derived from the bug-report endpoint's origin. */
-export const REPLAY_INGEST_ENDPOINT = BUG_REPORT_ENDPOINT.replace(
-  /\/api\/bug-reports\/?$/,
-  '/api/replays',
-);
+/**
+ * Resolve the replay ingest endpoint. Build-time configurable so a self-hosted
+ * deployment never phones home:
+ *   1. explicit `VITE_REPLAY_INGEST_ENDPOINT` (trailing slashes stripped), else
+ *   2. derived from the configured bug-report endpoint's origin, else
+ *   3. '' — no configured hub means replay upload is disabled.
+ */
+export function resolveReplayIngestEndpoint(
+  env: any = importMetaEnv(),
+  bugReportEndpoint: any = BUG_REPORT_ENDPOINT,
+) {
+  const explicit = trimTrailingSlashes(env?.VITE_REPLAY_INGEST_ENDPOINT);
+  if (explicit) {
+    return explicit;
+  }
+  if (typeof bugReportEndpoint === 'string' && bugReportEndpoint) {
+    return bugReportEndpoint.replace(/\/api\/bug-reports\/?$/, '/api/replays');
+  }
+  return '';
+}
+
+/** Ingest endpoint, configured via env or derived from the bug-report endpoint. */
+export const REPLAY_INGEST_ENDPOINT = resolveReplayIngestEndpoint();
 
 /**
  * Public per-project replay-policy endpoint (`GET /api/replays/config`), on the
  * same central hub the recorder uploads to. Server-delivered config is the
  * single source of truth for the sample rate so a project's policy applies to
- * ALL users, not whoever flipped their own localStorage toggle.
+ * ALL users, not whoever flipped their own localStorage toggle. Empty when no
+ * ingest endpoint is configured.
  */
-export const REPLAY_CONFIG_ENDPOINT = `${REPLAY_INGEST_ENDPOINT}/config`;
+export const REPLAY_CONFIG_ENDPOINT = REPLAY_INGEST_ENDPOINT
+  ? `${REPLAY_INGEST_ENDPOINT}/config`
+  : '';
 
 // Hard bound on the boot-time policy fetch. The recorder must start promptly on
 // its built-in default rather than hang behind a slow/stalled
@@ -382,6 +405,8 @@ export function getContinuousFlushIntervalMs() {
 export async function fetchServerReplayConfig(opts: any = {}) {
   if (typeof fetch !== 'function') return null;
   const endpoint = opts.endpoint ?? REPLAY_CONFIG_ENDPOINT;
+  // No configured hub → nothing to fetch (and never phone home).
+  if (!endpoint) return null;
   const projectId = opts.projectId ?? resolveReplayProjectId();
   const rumToken = opts.rumToken ?? resolveReplayRumToken();
   const timeoutMs = opts.timeoutMs ?? REPLAY_CONFIG_TIMEOUT_MS;
@@ -480,9 +505,13 @@ export function resolveSampleRate() {
   return clampSampleRate(envRate);
 }
 
-/** True when session replay is currently enabled (effective sample rate > 0). */
+/**
+ * True when session replay is currently enabled: an ingest endpoint is
+ * configured AND the effective sample rate is > 0. Without a configured endpoint
+ * the recorder never uploads, so it reports disabled regardless of sample rate.
+ */
 export function isSessionReplayEnabled() {
-  return resolveSampleRate() > 0;
+  return REPLAY_INGEST_ENDPOINT !== '' && resolveSampleRate() > 0;
 }
 
 /** Decide, once per session, whether this client samples in. */
@@ -714,6 +743,9 @@ export async function submitReplay(
 ) {
   if (!Array.isArray(events) || events.length === 0) {
     throw new Error('No replay events to submit');
+  }
+  if (!endpoint) {
+    throw new Error('Replay ingest is not configured for this deployment');
   }
   // Abort a slow/stalled ingest so a flush can never block its caller. Falls
   // back gracefully where AbortSignal.timeout isn't available.
@@ -2638,6 +2670,10 @@ export async function setReplayMaskingMode(maskAll: any) {
  */
 export async function initSessionReplay(opts: any = {}) {
   if (typeof window === 'undefined') return null;
+  // No configured ingest endpoint → never start the recorder or fetch policy.
+  // This is the sovereign default: a self-hosted build that hasn't opted into a
+  // telemetry hub records nothing and phones nowhere.
+  if (!REPLAY_INGEST_ENDPOINT) return null;
   if (_initialized) return _recorder;
   _initialized = true;
 

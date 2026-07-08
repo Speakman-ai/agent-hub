@@ -13,6 +13,10 @@ import {
   resolveAwsProfile,
   awsCpArgs,
   electronBuilderArgs,
+  resolveBucket,
+  resolveRegion,
+  DEFAULT_BUCKET,
+  DEFAULT_REGION,
   BUCKET,
   REGION,
   AWS_PROFILE,
@@ -21,13 +25,32 @@ import {
 
 describe('release-mac helpers', () => {
   describe('constants', () => {
-    it('points at the agent-hub-prod-releases bucket in us-east-2', () => {
+    it('defaults to the reference release bucket in us-east-2', () => {
       expect(BUCKET).toBe('agent-hub-prod-releases');
       expect(REGION).toBe('us-east-2');
     });
 
     it('uses the default AWS profile', () => {
       expect(AWS_PROFILE).toBe('default');
+    });
+  });
+
+  describe('resolveBucket / resolveRegion', () => {
+    it('falls back to the reference bucket/region when env is unset', () => {
+      expect(resolveBucket({})).toBe(DEFAULT_BUCKET);
+      expect(resolveRegion({})).toBe(DEFAULT_REGION);
+    });
+
+    it('honours AGENT_HUB_RELEASE_BUCKET / AGENT_HUB_RELEASE_REGION so a fork can self-publish', () => {
+      expect(resolveBucket({ AGENT_HUB_RELEASE_BUCKET: '  my-fork-releases  ' })).toBe(
+        'my-fork-releases'
+      );
+      expect(resolveRegion({ AGENT_HUB_RELEASE_REGION: 'eu-west-1' })).toBe('eu-west-1');
+    });
+
+    it('treats a blank env value as unset', () => {
+      expect(resolveBucket({ AGENT_HUB_RELEASE_BUCKET: '   ' })).toBe(DEFAULT_BUCKET);
+      expect(resolveRegion({ AGENT_HUB_RELEASE_REGION: '' })).toBe(DEFAULT_REGION);
     });
 
     it('targets the Agent Hub product name', () => {

@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import AppIcon from './AppIcon';
 import { colors } from '../theme/colors';
-import { captureScreenshot } from '../utils/bugReport';
+import { captureScreenshot, BUG_REPORT_ENABLED } from '../utils/bugReport';
 import BugReportModal from './BugReportModal';
 /**
  * Icon button that captures a screenshot, then opens the bug report modal.
@@ -47,6 +47,11 @@ export default function BugReportButton({ projectId, agentId, sourceUrl, buttonS
         }
         return uri;
     }, []);
+    // Self-hosted builds without a configured intake endpoint don't phone home,
+    // so there's no "Report a bug" control to offer. Checked after the hooks
+    // above (a module constant, so hook order stays stable across renders).
+    if (!BUG_REPORT_ENABLED)
+        return null;
     return (<>
       <TouchableOpacity style={[styles.button, buttonStyle]} onPress={openWithScreenshot} disabled={capturing} accessibilityLabel="Report a bug">
         <AppIcon name="bug-outline" size={20} color={colors.gray400}/>
