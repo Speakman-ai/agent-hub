@@ -84,17 +84,45 @@ jobs:
       - name: Typecheck (all packages)
         run: npm run typecheck
 
+  secret-scan:
+    # Per-change secret scan. Fails the PR if a credential is committed that the
+    # root .gitleaks.toml allowlist does not cover. Working-tree scan only
+    # (`gitleaks dir`) — a full history scan is deliberately NOT run here because
+    # unscrubbed history still contains known leaks (see .gitleaks.toml header).
+    # The run: script is kept byte-identical to the `secret-scan` job in
+    # .agent-hub/ci.yaml so `npm run check:workflow-drift` sees strict parity.
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      # Shallow checkout (fetch-depth: 1, the default) keeps this a WORKING-TREE
+      # scan. `.git/` is also allowlisted in .gitleaks.toml so even a deep
+      # checkout (fetch-depth: 0) would not turn this into a history scan — but
+      # do not add history to this job's checkout: unscrubbed history holds known
+      # leaks and a history scan is deliberately not gated (see .gitleaks.toml).
+      - uses: actions/checkout@v4
+
+      - name: Scan working tree for secrets
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks dir . --config .gitleaks.toml --redact --no-banner --exit-code 1
+
   ci:
     # Single required status check. Aggregates the always-on jobs above.
     name: CI
-    needs: [build]
+    needs: [build, secret-scan]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded
         env:
           BUILD: ${{ needs.build.result }}
+          SECRET_SCAN: ${{ needs.secret-scan.result }}
         run: |
           set -euo pipefail
           case "$BUILD" in success) ;; *) echo "::error::Build & typecheck job: $BUILD"; exit 1 ;; esac
-          echo "CI: OK (build=$BUILD)"
+          case "$SECRET_SCAN" in success) ;; *) echo "::error::Secret scan job: $SECRET_SCAN"; exit 1 ;; esac
+          echo "CI: OK (build=$BUILD, secret-scan=$SECRET_SCAN)"

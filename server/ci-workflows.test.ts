@@ -57,9 +57,28 @@ describe('PR baseline (.github/workflows/ci.yml)', () => {
   });
 
   it('aggregates into a single required status named `CI`', () => {
-    // The required check is the `ci:` job with `name: CI` that `needs` build.
+    // The required check is the `ci:` job with `name: CI` that `needs` the
+    // real gate jobs: build (build + typecheck) and secret-scan (gitleaks).
     expect(yml).toMatch(/^\s{2}ci:\s*\n[\s\S]+?name:\s*CI\b/m);
-    expect(yml).toMatch(/needs:\s*\[\s*build\s*\]/);
+    expect(yml).toMatch(/needs:\s*\[\s*build\s*,\s*secret-scan\s*\]/);
+  });
+
+  it('runs a gitleaks secret-scan job that gates the aggregator', () => {
+    // The per-change secret gate must exist as its own job AND be a dependency
+    // of the `CI` aggregator, or a committed credential could slip through green.
+    const scanBlock = extractJob(yml, 'secret-scan');
+    expect(scanBlock, 'ci.yml is missing a `secret-scan:` job').toBeTruthy();
+    expect(scanBlock).toMatch(/gitleaks dir \. --config \.gitleaks\.toml/);
+  });
+
+  it('allowlists `.git/` so a deep checkout cannot turn the gate into a history scan', () => {
+    // `gitleaks dir` walks `.git` as raw files. The gate is working-tree-only,
+    // but that must hold BY CONSTRUCTION — not by relying on checkout's shallow
+    // `fetch-depth: 1` default. Allowlisting `.git/` in .gitleaks.toml makes a
+    // future `fetch-depth: 0` inert instead of red-on-every-PR (known historical
+    // leaks). If this allowlist entry is dropped, this test fires.
+    const gitleaksToml = readFileSync(join(repoRoot, '.gitleaks.toml'), 'utf8');
+    expect(gitleaksToml).toMatch(/\(\^\|\/\)\\\.git\//);
   });
 
   it('does not run server or client test suites', () => {

@@ -1,7 +1,13 @@
 # gitleaks configuration for the agent-hub repo.
 #
-# Run a working-tree scan:      gitleaks detect --no-git --source .
-# Run a full git-history scan:  gitleaks detect --log-opts="--all" --source .
+# Run a working-tree scan:      gitleaks dir . --config .gitleaks.toml
+# Run a full git-history scan:  gitleaks git . --config .gitleaks.toml
+#
+# The per-change CI gate (.github/workflows/ci.yml `secret-scan` +
+# .agent-hub/ci.yaml `secret-scan`) runs the working-tree scan (`gitleaks dir`)
+# only. A history scan is intentionally NOT gated: unscrubbed history still
+# contains known leaks (see below), so it would fail every run until the
+# history is rewritten.
 #
 # The allowlist below only covers *confirmed* false positives — test
 # fixtures and documentation example keys. Real credentials must never be
@@ -18,6 +24,17 @@ useDefault = true
 [allowlist]
 description = "Confirmed false positives: test fixtures and documentation example keys."
 paths = [
+  # The .git directory itself. In `gitleaks dir` (working-tree) mode gitleaks
+  # walks .git as raw files, so packed objects / loose blobs from git history
+  # would otherwise be scanned — and history still holds known leaks (see the
+  # header). On a git worktree (.agent-hub/ci.yaml side) `.git` is a pointer
+  # FILE, so nothing is traversed; on GitHub Actions `actions/checkout@v4` is a
+  # DIRECTORY. Allowlisting it here makes both sides behave identically BY
+  # CONSTRUCTION rather than relying on checkout's shallow `fetch-depth: 1`
+  # default — a future `fetch-depth: 0` cannot silently turn the working-tree
+  # gate into a (failing) history scan. It does NOT weaken `gitleaks git`,
+  # whose finding paths are repo-relative (e.g. `server/foo.ts`), not `.git/…`.
+  '''(^|/)\.git/''',
   # Unit/integration test fixtures use throwaway/fake credentials by design.
   '''.*\.test\.(ts|tsx|js|jsx)$''',
   '''server/test/.*''',

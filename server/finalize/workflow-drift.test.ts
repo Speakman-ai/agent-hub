@@ -516,7 +516,43 @@ describe('integration: the real agent-hub repo passes its own drift check', () =
     });
     expect(report.notConfigured).toBe(false);
     expect(report.hasBlockingDrift).toBe(false);
-    expect(report.matches.map((m) => m.ciJob).sort()).toEqual(['build', 'lint']);
+    expect(report.matches.map((m) => m.ciJob).sort()).toEqual(['build', 'lint', 'secret-scan']);
+  });
+
+  it('mirrors the gitleaks secret-scan gate strictly with no command drift', async () => {
+    const parsed = await loadCiConfigFromFile(join(repoRoot, '.agent-hub', 'ci.yaml'));
+    if (!parsed.ok || parsed.config.version !== 2)
+      throw new Error('expected real ci.yaml to be v2');
+    const manifestResult = await loadMirrorManifest(join(repoRoot, '.agent-hub', 'ci-mirror.yaml'));
+    if (!manifestResult.ok || !manifestResult.manifest) throw new Error('expected mirror manifest');
+    const workflows = await loadGithubWorkflows(join(repoRoot, '.github', 'workflows'));
+
+    // The gitleaks scan must exist as a real job on BOTH sides — this is the
+    // per-change enforcement the card adds.
+    const ciYaml = parsed.config;
+    expect(Object.keys(ciYaml.jobs)).toContain('secret-scan');
+    const scanRun = ciYaml.jobs['secret-scan'].steps.map((s) => s.run).join('\n');
+    expect(scanRun).toContain('gitleaks dir . --config .gitleaks.toml');
+
+    const ghCi = workflows.find((w) => w.filename === 'ci.yml');
+    const ghScan = ghCi?.jobs.find((j) => j.jobId === 'secret-scan');
+    expect(ghScan, 'ci.yml must define a secret-scan job').toBeTruthy();
+    expect(ghScan!.runScripts.join('\n')).toContain('gitleaks dir . --config .gitleaks.toml');
+
+    // Strict mirror: same canonical gate commands on both sides, so the drift
+    // check must produce NO command_drift for the secret-scan job.
+    const report = computeWorkflowDrift({
+      ciConfig: ciYaml,
+      manifest: manifestResult.manifest,
+      workflows,
+    });
+    const scanMatch = report.matches.find((m) => m.ciJob === 'secret-scan');
+    expect(scanMatch).toEqual({
+      ciJob: 'secret-scan',
+      githubRef: 'ci.yml:secret-scan',
+      comparedCommands: true,
+    });
+    expect(report.findings.filter((f) => f.ref === 'jobs.secret-scan')).toEqual([]);
   });
 
   it('loadGithubWorkflows returns [] for a missing directory', async () => {

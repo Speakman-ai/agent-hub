@@ -27,6 +27,8 @@ ignore:
 # the literal `finalize-only` (no GitHub counterpart).
 jobs:
   build: ci.yml:build
+  # Strict mirror: the gitleaks working-tree scan runs identically on both sides.
+  secret-scan: ci.yml:secret-scan
   # No GitHub counterpart: the PR gate runs build+typecheck only, the full test
   # suite is Finalize-exclusive. This is the intentional divergence.
   test: finalize-only

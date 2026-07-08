@@ -94,7 +94,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(result.config.on).toContain('manual');
   });
 
-  it('fans onto the GHA-parity jobs (build, test, lint) with a 12-way test matrix', async () => {
+  it('fans onto the GHA-parity jobs (build, test, lint, secret-scan) with a 12-way test matrix', async () => {
     const result = await loadCiConfigFromFile(CI_YAML_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok || result.config.version !== 2) return;
@@ -104,7 +104,7 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     // an accidental grouping (e.g. merging lint into build to "save" a
     // runner) fails the test rather than silently undoing the parity.
     const jobIds = Object.keys(result.config.jobs).sort();
-    expect(jobIds).toEqual(['build', 'lint', 'test']);
+    expect(jobIds).toEqual(['build', 'lint', 'secret-scan', 'test']);
 
     // Every job runs on `ubuntu-24.04` — same image GitHub Actions uses
     // for the canonical workflows. Drift here means the runner image
@@ -152,11 +152,11 @@ describe('agent-hub repo: .agent-hub/ci.yaml', () => {
     expect(mobileShards).toEqual(['1', '2']);
 
     // The full expansion is what the orchestrator actually fans out.
-    // Single-instance jobs (build, lint) + 12 test shards = 14 concurrent
-    // runners. Pin it so a future "single global runner" refactor
+    // Single-instance jobs (build, lint, secret-scan) + 12 test shards = 15
+    // concurrent runners. Pin it so a future "single global runner" refactor
     // surfaces here.
     const instances = expandJobInstances(result.config, {});
-    expect(instances).toHaveLength(14);
+    expect(instances).toHaveLength(15);
   });
 
   it('passes the matrix shard flag into sharded Vitest suites', async () => {
