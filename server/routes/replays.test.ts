@@ -507,6 +507,91 @@ describe('POST /api/replays — token verification precheck (abuse guard)', () =
   });
 });
 
+describe('per-tenant ingest quota (X-RUM-Token, configurable per project)', () => {
+  let app: Express;
+  let serverDir: string;
+
+  const TENANT_TOKEN = 'rum_tenantwithacustomquota0000000000000000000000';
+  const TENANT = { id: 'tenant-proj', replay: { ingestQuota: 2, eventsIngestQuota: 2 } };
+
+  beforeEach(() => {
+    _resetRateLimit();
+    (verifyRumToken as Mock).mockReset();
+    // A valid token for our low-quota tenant; anything else is unknown.
+    (verifyRumToken as Mock).mockImplementation((t: string) =>
+      t === TENANT_TOKEN ? { projectId: TENANT.id } : null,
+    );
+    ({ app, serverDir } = makeApp({ projects: [TENANT as unknown as Project] }));
+  });
+
+  afterEach(() => {
+    try {
+      if (serverDir && existsSync(serverDir)) rmSync(serverDir, { recursive: true, force: true });
+    } catch {
+      /* noop */
+    }
+  });
+
+  it('rejects one-shot ingest with 429 once the per-project quota is spent', async () => {
+    // The project's `replay.ingestQuota` is 2 — two token ingests succeed, the
+    // third trips the per-project budget (well below the global default of 600),
+    // proving the quota is read from project config rather than the constant.
+    for (let i = 0; i < 2; i++) {
+      await supertest(app)
+        .post('/api/replays')
+        .set('X-RUM-Token', TENANT_TOKEN)
+        .send({ events: [SNAPSHOT] })
+        .expect(201);
+    }
+    const res = await supertest(app)
+      .post('/api/replays')
+      .set('X-RUM-Token', TENANT_TOKEN)
+      .send({ events: [SNAPSHOT] });
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatch(/rate limit/i);
+    expect(res.headers['retry-after']).toBeDefined();
+  });
+
+  it('rejects chunked-event ingest with 429 once the per-project events quota is spent', async () => {
+    // `eventsIngestQuota` is 2 — the third chunk (new id each time so the append
+    // itself always succeeds) is rejected by the per-project events budget.
+    for (let i = 0; i < 2; i++) {
+      await supertest(app)
+        .post(`/api/replays/quota-chunk-${i}00000/events`)
+        .set('X-RUM-Token', TENANT_TOKEN)
+        .send({ events: [META, SNAPSHOT] })
+        .expect(201);
+    }
+    const res = await supertest(app)
+      .post('/api/replays/quota-chunk-overflow/events')
+      .set('X-RUM-Token', TENANT_TOKEN)
+      .send({ events: [META, SNAPSHOT] });
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBeDefined();
+  });
+
+  it('falls back to the global default budget for a project with no configured quota', async () => {
+    // A different tenant (no replay quota) resolves to the generous global
+    // default, so a handful of ingests are nowhere near the limit.
+    const OTHER_TOKEN = 'rum_tenantwithnocustomquota000000000000000000000';
+    (verifyRumToken as Mock).mockImplementation((t: string) =>
+      t === OTHER_TOKEN ? { projectId: 'other-proj' } : null,
+    );
+    const other = makeApp({ projects: [{ id: 'other-proj' } as unknown as Project] });
+    try {
+      for (let i = 0; i < 5; i++) {
+        await supertest(other.app)
+          .post('/api/replays')
+          .set('X-RUM-Token', OTHER_TOKEN)
+          .send({ events: [SNAPSHOT] })
+          .expect(201);
+      }
+    } finally {
+      if (existsSync(other.serverDir)) rmSync(other.serverDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('POST /api/replays durable-store failure cleanup', () => {
   let app: Express;
   let serverDir: string;
@@ -1526,6 +1611,9 @@ describe('GET /api/replays/config', () => {
       continuous: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
     expect(verifyRumToken as unknown as Mock).not.toHaveBeenCalled();
   });
@@ -1540,6 +1628,9 @@ describe('GET /api/replays/config', () => {
       continuous: true,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -1551,6 +1642,9 @@ describe('GET /api/replays/config', () => {
       continuous: true,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -1562,6 +1656,9 @@ describe('GET /api/replays/config', () => {
       continuous: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -1573,6 +1670,9 @@ describe('GET /api/replays/config', () => {
       continuous: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -1592,6 +1692,9 @@ describe('GET /api/replays/config', () => {
       continuous: true,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
     expect(verifyRumToken as unknown as Mock).toHaveBeenCalledWith('rum_sometoken');
   });
@@ -1605,6 +1708,20 @@ describe('GET /api/replays/config', () => {
     const { app } = makeApp({ projects: [project] });
     const res = await supertest(app).get('/api/replays/config?projectId=proj-cadence').expect(200);
     expect(res.body.flushIntervalMs).toBe(120_000);
+  });
+
+  it('delivers the two-level nested sample rates and their effective product', async () => {
+    const project = {
+      id: 'proj-nested',
+      name: 'Nested',
+      replay: { sessionSampleRate: 0.5, sessionReplaySampleRate: 0.4 },
+    } as unknown as Project;
+    const { app } = makeApp({ projects: [project] });
+    const res = await supertest(app).get('/api/replays/config?projectId=proj-nested').expect(200);
+    expect(res.body.sessionSampleRate).toBeCloseTo(0.5);
+    expect(res.body.sessionReplaySampleRate).toBeCloseTo(0.4);
+    // Replay % is OF the sampled sessions → 0.5 × 0.4 = 0.2 effective.
+    expect(res.body.effectiveReplaySampleRate).toBeCloseTo(0.2);
   });
 
   it('answers the CORS preflight with 204 and an allow-origin header', async () => {

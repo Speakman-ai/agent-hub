@@ -48,6 +48,36 @@ export interface ProjectReplayConfig {
    * deferred segmented-storage upgrade path).
    */
   flushIntervalMs?: number;
+  /**
+   * Datadog-style two-level sampling, level 1: fraction of SESSIONS the tenant
+   * tracks, in [0, 1]. Unset (absent) means the recorder keeps its built-in
+   * default. This gates whether a session is sampled at all; the replay decision
+   * ({@link sessionReplaySampleRate}) is nested underneath it.
+   */
+  sessionSampleRate?: number;
+  /**
+   * Datadog-style two-level sampling, level 2: fraction OF the sampled sessions
+   * that also record a replay, in [0, 1]. This is a percentage OF the sessions
+   * that already passed {@link sessionSampleRate}, NOT an independent gate — so
+   * the effective replay probability is the PRODUCT of the two (see
+   * {@link resolveEffectiveReplayRate}). Unset means the recorder keeps its
+   * built-in default.
+   */
+  sessionReplaySampleRate?: number;
+  /**
+   * Per-tenant hourly quota for one-shot (`POST /api/replays`) ingest, keyed on
+   * the RUM token's project. Overrides the global default budget so a heavy
+   * tenant can be granted more (or a noisy one capped tighter). Unset → the
+   * global default. A positive integer; floored on persist.
+   */
+  ingestQuota?: number;
+  /**
+   * Per-tenant hourly quota for streaming ingest (chunked `POST
+   * /api/replays/:id/events` and view-scoped segment appends share this budget),
+   * keyed on the RUM token's project. Overrides the global default. Unset → the
+   * global default. A positive integer; floored on persist.
+   */
+  eventsIngestQuota?: number;
 }
 
 /** The resolved policy delivered to a recorder / the admin UI. */
@@ -77,6 +107,26 @@ export interface ResolvedReplayPolicy {
    * range (the floor bars sub-minute cadence per the MVP storage decision).
    */
   flushIntervalMs: number;
+  /**
+   * Two-level sampling level 1: fraction of sessions tracked, or `null` when the
+   * project has not set one (client keeps its built-in default). See
+   * {@link ProjectReplayConfig.sessionSampleRate}.
+   */
+  sessionSampleRate: number | null;
+  /**
+   * Two-level sampling level 2: fraction OF sampled sessions that record a
+   * replay, or `null` when unset. Nested under {@link sessionSampleRate}, not
+   * independent. See {@link ProjectReplayConfig.sessionReplaySampleRate}.
+   */
+  sessionReplaySampleRate: number | null;
+  /**
+   * The effective replay probability: the PRODUCT of the two nested rates
+   * (`sessionSampleRate * sessionReplaySampleRate`), treating an unset level as
+   * 1. `null` only when BOTH nested rates are unset — the recorder then keeps its
+   * built-in default rather than reading `null` as off. Precomputed here so a
+   * recorder can gate on one number without re-deriving the nested math.
+   */
+  effectiveReplaySampleRate: number | null;
 }
 
 /** Default continuous-flush cadence (5 min) — the MVP interval. */
@@ -98,7 +148,39 @@ export const DEFAULT_REPLAY_POLICY: ResolvedReplayPolicy = Object.freeze({
   continuous: false,
   maskAllEnforced: false,
   flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+  sessionSampleRate: null,
+  sessionReplaySampleRate: null,
+  effectiveReplaySampleRate: null,
 });
+
+/**
+ * Nested two-level sampling math (Datadog parity). The effective probability
+ * that a session records a replay is the PRODUCT of the session sample rate and
+ * the replay sample rate — the replay rate is a percentage OF the already-sampled
+ * sessions, not an independent draw. Both inputs are clamped to [0, 1], so the
+ * result is always a valid probability. Pure — unit-testable in isolation.
+ */
+export function resolveEffectiveReplayRate(
+  sessionSampleRate: number,
+  sessionReplaySampleRate: number,
+): number {
+  return clampReplaySampleRate(sessionSampleRate) * clampReplaySampleRate(sessionReplaySampleRate);
+}
+
+/**
+ * Resolve the per-tenant hourly ingest quota. A configured positive value wins
+ * (floored to an integer); anything unset / non-finite / non-positive falls back
+ * to the global default budget. Pure — unit-testable in isolation.
+ */
+export function resolveIngestQuota(
+  configured: number | undefined | null,
+  fallback: number,
+): number {
+  if (typeof configured === 'number' && Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured);
+  }
+  return fallback;
+}
 
 /** Clamp an arbitrary finite number to a valid sample rate in [0, 1]. */
 export function clampReplaySampleRate(value: number): number {
@@ -187,6 +269,29 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     out.flushIntervalMs = clampFlushIntervalMs(n);
   }
 
+  for (const key of ['sessionSampleRate', 'sessionReplaySampleRate'] as const) {
+    if (obj[key] !== undefined) {
+      const n = obj[key];
+      if (typeof n !== 'number' || !Number.isFinite(n)) {
+        return { ok: false, error: `replay.${key} must be a finite number in [0, 1]` };
+      }
+      if (n < 0 || n > 1) {
+        return { ok: false, error: `replay.${key} must be between 0 and 1` };
+      }
+      out[key] = clampReplaySampleRate(n);
+    }
+  }
+
+  for (const key of ['ingestQuota', 'eventsIngestQuota'] as const) {
+    if (obj[key] !== undefined) {
+      const n = obj[key];
+      if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+        return { ok: false, error: `replay.${key} must be a positive number (requests/hour)` };
+      }
+      out[key] = Math.floor(n);
+    }
+  }
+
   // An empty object (no recognized config keys) clears the config rather than
   // persisting `{}`, so the project row stays lean. `maskAllEnforced` is not a
   // standalone config — without `continuous`/`sampleRate`/`flushIntervalMs` it is
@@ -194,7 +299,11 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
   if (
     out.sampleRate === undefined &&
     out.continuous === undefined &&
-    out.flushIntervalMs === undefined
+    out.flushIntervalMs === undefined &&
+    out.sessionSampleRate === undefined &&
+    out.sessionReplaySampleRate === undefined &&
+    out.ingestQuota === undefined &&
+    out.eventsIngestQuota === undefined
   ) {
     return { ok: true, value: null };
   }
@@ -236,6 +345,21 @@ export function resolveReplayPolicy(
   // depth: `normalizeReplayConfig` already pins it at persist time, but a config
   // loaded from any other source resolves safely here too.)
   if (continuous && sampleRate === null) sampleRate = 0;
+  const sessionSampleRate =
+    typeof cfg.sessionSampleRate === 'number' && Number.isFinite(cfg.sessionSampleRate)
+      ? clampReplaySampleRate(cfg.sessionSampleRate)
+      : null;
+  const sessionReplaySampleRate =
+    typeof cfg.sessionReplaySampleRate === 'number' && Number.isFinite(cfg.sessionReplaySampleRate)
+      ? clampReplaySampleRate(cfg.sessionReplaySampleRate)
+      : null;
+  // Nested product, treating an unset level as 1 (Datadog's default). Null only
+  // when BOTH levels are unset, so the client keeps its built-in default rather
+  // than reading a bare `null` as "off".
+  const effectiveReplaySampleRate =
+    sessionSampleRate === null && sessionReplaySampleRate === null
+      ? null
+      : resolveEffectiveReplayRate(sessionSampleRate ?? 1, sessionReplaySampleRate ?? 1);
   return {
     sampleRate,
     continuous,
@@ -244,5 +368,8 @@ export function resolveReplayPolicy(
     // With continuous off, mask-all is never enforced (per-browser choice wins).
     maskAllEnforced: continuous && cfg.maskAllEnforced !== false,
     flushIntervalMs: clampFlushIntervalMs(cfg.flushIntervalMs),
+    sessionSampleRate,
+    sessionReplaySampleRate,
+    effectiveReplaySampleRate,
   };
 }

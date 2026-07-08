@@ -272,8 +272,10 @@ export function resolveReplayRumToken() {
 /**
  * Apply a server-delivered replay policy (shape: `{ sampleRate, continuous,
  * maskAllEnforced }`):
- *   - `sampleRate` (numeric) becomes authoritative over the localStorage
- *     override; a null/absent rate leaves the client on its built-in default.
+ *   - the effective sample rate (`effectiveReplaySampleRate` — the two-level
+ *     nested product — when set, else the flat `sampleRate`) becomes
+ *     authoritative over the localStorage override; a null/absent rate leaves
+ *     the client on its built-in default.
  *   - `maskAllEnforced` forces the recorder into mask-all mode (see
  *     `resolveMaskingMode`). This is the SERVER's resolved decision: it is true
  *     when continuous capture is on AND an Admin has not opted the project out
@@ -292,7 +294,17 @@ export function resolveReplayRumToken() {
  * rate.
  */
 export function applyServerReplayConfig(policy: any) {
-  const rate = policy == null ? null : policy.sampleRate;
+  // Prefer the server's precomputed two-level effective rate (sessionSampleRate ×
+  // sessionReplaySampleRate) when it is set; a project that configures the nested
+  // Datadog-style rates governs the recorder at their product. Fall back to the
+  // flat `sampleRate` for projects that only set the single-level rate.
+  const effective = policy == null ? null : policy.effectiveReplaySampleRate;
+  const rate =
+    typeof effective === 'number' && Number.isFinite(effective)
+      ? effective
+      : policy == null
+        ? null
+        : policy.sampleRate;
   _serverSampleRate =
     typeof rate === 'number' && Number.isFinite(rate) ? clampSampleRate(rate) : null;
   // Trust the server's resolved `maskAllEnforced` verbatim — it already folds in

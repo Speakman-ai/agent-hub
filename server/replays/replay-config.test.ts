@@ -4,6 +4,8 @@ import {
   clampFlushIntervalMs,
   normalizeReplayConfig,
   resolveReplayPolicy,
+  resolveEffectiveReplayRate,
+  resolveIngestQuota,
   DEFAULT_REPLAY_POLICY,
   DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
   MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
@@ -168,6 +170,9 @@ describe('resolveReplayPolicy', () => {
       continuous: false,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -180,6 +185,9 @@ describe('resolveReplayPolicy', () => {
       continuous: true,
       maskAllEnforced: true,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -196,6 +204,9 @@ describe('resolveReplayPolicy', () => {
       continuous: true,
       maskAllEnforced: false,
       flushIntervalMs: DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+      sessionSampleRate: null,
+      sessionReplaySampleRate: null,
+      effectiveReplaySampleRate: null,
     });
   });
 
@@ -231,5 +242,110 @@ describe('resolveReplayPolicy', () => {
     expect(resolveReplayPolicy({ sampleRate: 0.5 }).flushIntervalMs).toBe(
       DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
     );
+  });
+});
+
+describe('resolveEffectiveReplayRate (two-level nested sampling math)', () => {
+  it('multiplies the two levels: replay % is OF the sampled sessions', () => {
+    // 50% of sessions sampled, 50% of THOSE recorded → 25% overall, not 50%.
+    expect(resolveEffectiveReplayRate(0.5, 0.5)).toBeCloseTo(0.25);
+    expect(resolveEffectiveReplayRate(0.2, 0.1)).toBeCloseTo(0.02);
+    expect(resolveEffectiveReplayRate(1, 1)).toBe(1);
+  });
+
+  it('a zero at either level yields zero effective replay', () => {
+    expect(resolveEffectiveReplayRate(0, 1)).toBe(0);
+    expect(resolveEffectiveReplayRate(1, 0)).toBe(0);
+  });
+
+  it('clamps out-of-range inputs before multiplying', () => {
+    expect(resolveEffectiveReplayRate(2, 0.5)).toBeCloseTo(0.5); // 2 → 1
+    expect(resolveEffectiveReplayRate(-1, 0.5)).toBe(0); // -1 → 0
+    expect(resolveEffectiveReplayRate(NaN, 0.5)).toBe(0); // non-finite → 0
+  });
+});
+
+describe('resolveIngestQuota (per-tenant budget)', () => {
+  it('uses a configured positive quota, floored to an integer', () => {
+    expect(resolveIngestQuota(1200, 600)).toBe(1200);
+    expect(resolveIngestQuota(50.9, 600)).toBe(50);
+  });
+
+  it('falls back to the global default when unset / invalid / non-positive', () => {
+    expect(resolveIngestQuota(undefined, 600)).toBe(600);
+    expect(resolveIngestQuota(null, 600)).toBe(600);
+    expect(resolveIngestQuota(0, 600)).toBe(600);
+    expect(resolveIngestQuota(-5, 600)).toBe(600);
+    expect(resolveIngestQuota(NaN, 600)).toBe(600);
+    expect(resolveIngestQuota(Infinity, 600)).toBe(600);
+  });
+});
+
+describe('normalizeReplayConfig — two-level sampling + quotas', () => {
+  it('accepts and clamps the nested sample rates', () => {
+    expect(normalizeReplayConfig({ sessionSampleRate: 0.5, sessionReplaySampleRate: 0.2 })).toEqual(
+      {
+        ok: true,
+        value: { sessionSampleRate: 0.5, sessionReplaySampleRate: 0.2 },
+      },
+    );
+  });
+
+  it('rejects out-of-range or non-numeric nested rates', () => {
+    expect(normalizeReplayConfig({ sessionSampleRate: 1.5 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ sessionSampleRate: -0.1 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ sessionReplaySampleRate: 'half' }).ok).toBe(false);
+    expect(normalizeReplayConfig({ sessionReplaySampleRate: NaN }).ok).toBe(false);
+  });
+
+  it('accepts positive integer ingest quotas (floored)', () => {
+    expect(normalizeReplayConfig({ ingestQuota: 1200, eventsIngestQuota: 9000.7 })).toEqual({
+      ok: true,
+      value: { ingestQuota: 1200, eventsIngestQuota: 9000 },
+    });
+  });
+
+  it('rejects non-positive or non-numeric quotas', () => {
+    expect(normalizeReplayConfig({ ingestQuota: 0 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ ingestQuota: -1 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ eventsIngestQuota: 'lots' }).ok).toBe(false);
+  });
+
+  it('keeps a config that sets only nested rates or only a quota (not cleared)', () => {
+    expect(normalizeReplayConfig({ sessionSampleRate: 0.3 })).toEqual({
+      ok: true,
+      value: { sessionSampleRate: 0.3 },
+    });
+    expect(normalizeReplayConfig({ ingestQuota: 100 })).toEqual({
+      ok: true,
+      value: { ingestQuota: 100 },
+    });
+  });
+});
+
+describe('resolveReplayPolicy — nested rates', () => {
+  it('delivers both nested rates and their effective product', () => {
+    const policy = resolveReplayPolicy({ sessionSampleRate: 0.5, sessionReplaySampleRate: 0.4 });
+    expect(policy.sessionSampleRate).toBeCloseTo(0.5);
+    expect(policy.sessionReplaySampleRate).toBeCloseTo(0.4);
+    expect(policy.effectiveReplaySampleRate).toBeCloseTo(0.2);
+  });
+
+  it('treats an unset level as 1 when the other is set', () => {
+    // Only level-1 set → effective is just the session rate.
+    expect(resolveReplayPolicy({ sessionSampleRate: 0.3 }).effectiveReplaySampleRate).toBeCloseTo(
+      0.3,
+    );
+    // Only level-2 set → effective is just the replay rate.
+    expect(
+      resolveReplayPolicy({ sessionReplaySampleRate: 0.25 }).effectiveReplaySampleRate,
+    ).toBeCloseTo(0.25);
+  });
+
+  it('leaves effective null when both nested rates are unset (built-in default)', () => {
+    const policy = resolveReplayPolicy({ sampleRate: 0.5 });
+    expect(policy.sessionSampleRate).toBeNull();
+    expect(policy.sessionReplaySampleRate).toBeNull();
+    expect(policy.effectiveReplaySampleRate).toBeNull();
   });
 });

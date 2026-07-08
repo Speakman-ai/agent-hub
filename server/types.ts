@@ -3212,12 +3212,24 @@ export interface Project {
    * - `flushIntervalMs`: continuous-recorder flush cadence (ms). Unset = the
    *   5-min default; clamped to a >=60s floor (no sub-minute cadence on the
    *   monolithic-append MVP storage).
+   * - `sessionSampleRate` / `sessionReplaySampleRate`: Datadog-style two-level
+   *   sampling in [0, 1]. Level 1 gates whether a session is tracked; level 2 is
+   *   a percentage OF the sampled sessions that also record a replay (nested,
+   *   not independent — effective replay rate is the product). Unset on either
+   *   keeps the recorder's built-in default.
+   * - `ingestQuota` / `eventsIngestQuota`: per-tenant hourly ingest budgets
+   *   (requests/hour) keyed on the RUM token's project, overriding the global
+   *   default for the one-shot and streaming paths respectively.
    */
   replay?: {
     sampleRate?: number;
     continuous?: boolean;
     maskAllEnforced?: boolean;
     flushIntervalMs?: number;
+    sessionSampleRate?: number;
+    sessionReplaySampleRate?: number;
+    ingestQuota?: number;
+    eventsIngestQuota?: number;
   };
   /**
    * Branch protection for the hosted repo's default branch (Agent

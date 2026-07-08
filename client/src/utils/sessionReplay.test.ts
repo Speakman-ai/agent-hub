@@ -183,6 +183,22 @@ describe('applyServerReplayConfig / fetchServerReplayConfig', () => {
     expect(applyServerReplayConfig({ sampleRate: 'half' })).toBeNull();
   });
 
+  it('prefers the two-level effective rate over the flat sampleRate', () => {
+    // 0.5 sessions × 0.4 replay = 0.2 effective; it must win over the flat rate.
+    expect(applyServerReplayConfig({ sampleRate: 1, effectiveReplaySampleRate: 0.2 })).toBeCloseTo(
+      0.2,
+    );
+    expect(getServerSampleRate()).toBeCloseTo(0.2);
+  });
+
+  it('falls back to the flat sampleRate when no effective nested rate is present', () => {
+    // Only single-level config → the flat rate still governs (back-compat).
+    expect(
+      applyServerReplayConfig({ sampleRate: 0.3, effectiveReplaySampleRate: null }),
+    ).toBeCloseTo(0.3);
+    expect(getServerSampleRate()).toBeCloseTo(0.3);
+  });
+
   it('fetches the policy and applies the rate', async () => {
     vi.stubGlobal(
       'fetch',

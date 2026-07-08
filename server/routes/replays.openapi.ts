@@ -345,6 +345,18 @@ const ReplayPolicyResponse = registerComponent(
         description:
           'Cadence (ms) the continuous recorder flushes appended chunks at. Always present; defaults to 5 min and is clamped to a >=60s floor (no sub-minute cadence on the monolithic-append MVP storage).',
       }),
+      sessionSampleRate: z.number().nullable().openapi({
+        description:
+          'Datadog-style two-level sampling, level 1: fraction of sessions tracked in [0, 1], or null when unset (recorder keeps its built-in default).',
+      }),
+      sessionReplaySampleRate: z.number().nullable().openapi({
+        description:
+          'Two-level sampling, level 2: fraction OF the sampled sessions that also record a replay, in [0, 1], or null when unset. Nested under sessionSampleRate (a percentage of already-sampled sessions), not an independent gate.',
+      }),
+      effectiveReplaySampleRate: z.number().nullable().openapi({
+        description:
+          'Precomputed effective replay probability: the product of the two nested rates (an unset level counts as 1). Null only when both nested rates are unset, so the recorder keeps its built-in default rather than reading null as off.',
+      }),
     })
     .openapi({ description: 'Server-delivered per-project session-replay policy.' }),
 );

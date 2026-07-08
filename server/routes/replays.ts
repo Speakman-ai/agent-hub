@@ -29,7 +29,7 @@ import { ArtifactStoreUnavailableError } from '../artifacts/artifact-store.js';
 import { canViewProject, type VisibilityCaller } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import { verifyRumToken } from '../rum-clients-store.js';
-import { resolveReplayPolicy } from '../replays/replay-config.js';
+import { resolveReplayPolicy, resolveIngestQuota } from '../replays/replay-config.js';
 
 /**
  * Public, rate-limited session-replay ingest endpoint, plus authenticated read
@@ -306,6 +306,18 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
   const UPLOADS_DIR = path.join(serverDir, 'uploads');
   mkdirSync(UPLOADS_DIR, { recursive: true });
 
+  // Per-tenant hourly ingest budgets, keyed on the RUM token's project. A tenant
+  // may override the global default (`replay.ingestQuota` / `eventsIngestQuota`);
+  // an unset / invalid override falls back to the global constant. The one-shot
+  // and streaming (chunked + segment) paths carry independent budgets.
+  const projectIngestQuota = (projectId: string): number =>
+    resolveIngestQuota(findProject(projectId)?.replay?.ingestQuota, RUM_PROJECT_RATE_LIMIT_MAX);
+  const projectEventsIngestQuota = (projectId: string): number =>
+    resolveIngestQuota(
+      findProject(projectId)?.replay?.eventsIngestQuota,
+      RUM_PROJECT_EVENTS_RATE_LIMIT_MAX,
+    );
+
   /**
    * Fetch a replay row only if the caller is authorized to read it; otherwise
    * write a 404 and return null. Unauthorized and not-found collapse to the
@@ -386,7 +398,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
             const rl = bucketCheck(
               _projectRateBuckets,
               attributedProjectId,
-              RUM_PROJECT_RATE_LIMIT_MAX,
+              projectIngestQuota(attributedProjectId),
             );
             if (!rl.ok) {
               res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
@@ -528,7 +540,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         const rl = bucketCheck(
           _projectEventsRateBuckets,
           verified.projectId,
-          RUM_PROJECT_EVENTS_RATE_LIMIT_MAX,
+          projectEventsIngestQuota(verified.projectId),
         );
         if (!rl.ok) {
           res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
@@ -698,7 +710,7 @@ export default function createReplayRoutes(deps: RouteDeps): Router {
         const rl = bucketCheck(
           _projectEventsRateBuckets,
           verified.projectId,
-          RUM_PROJECT_EVENTS_RATE_LIMIT_MAX,
+          projectEventsIngestQuota(verified.projectId),
         );
         if (!rl.ok) {
           res.setHeader('Retry-After', Math.ceil(rl.retryAfterMs / 1000));
