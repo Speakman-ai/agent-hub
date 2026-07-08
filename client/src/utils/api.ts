@@ -58,6 +58,78 @@ export interface UserTodoWire {
   updatedAt: string;
 }
 
+// Personal Dashboard aggregation (GET /api/me/dashboard, /api/me/work). Mirrors
+// the server MeDashboardPayload / DashboardWork shapes (server/me-dashboard.ts,
+// server/me-dashboard-google.ts) for the User Module home.
+export type DashboardCardPriority = 'urgent' | 'high' | 'medium' | 'low';
+
+export interface DashboardWorkCardWire {
+  id: string;
+  shortId: number | null;
+  title: string;
+  priority: DashboardCardPriority;
+  columnId: string;
+  columnName: string;
+  isDone: boolean;
+  projectId: string;
+  projectName: string;
+  boardId: string;
+  epicId: string | null;
+  prUrl: string | null;
+  reviewStatus: string | null;
+  sessionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DashboardWorkWire {
+  cards: DashboardWorkCardWire[];
+  counts: {
+    total: number;
+    open: number;
+    byPriority: Record<DashboardCardPriority, number>;
+  };
+}
+
+export interface DashboardCalendarEventWire {
+  id: string | null;
+  summary: string | null;
+  location: string | null;
+  allDay: boolean;
+  start: string | null;
+  end: string | null;
+  htmlLink: string | null;
+  hangoutLink: string | null;
+}
+
+export interface DashboardGoogleWire {
+  configured: boolean;
+  connected: boolean;
+  email: string | null;
+  reconnectRequired: boolean;
+  calendar: {
+    scopeGranted: boolean;
+    date: string | null;
+    timeZone: string | null;
+    events: DashboardCalendarEventWire[];
+    error: string | null;
+  };
+  mail: {
+    scopeGranted: boolean;
+    unread: number | null;
+    starred: number | null;
+    important: number | null;
+    error: string | null;
+  };
+}
+
+export interface MeDashboardWire {
+  generatedAt: string;
+  work: DashboardWorkWire;
+  todos: { open: UserTodoWire[]; openCount: number };
+  google: DashboardGoogleWire;
+}
+
 interface CreateTodoBody {
   title: string;
   notes?: string;
@@ -273,6 +345,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ orderedIds }),
     }),
+  // Per-user cross-project aggregation for the Dashboard home (spec
+  // AGGREGATION). One RBAC-filtered fan-out; cached server-side, `fresh` busts
+  // the cache. `date`/`tz` bracket the caller's local day for the calendar pane.
+  getMeDashboard: (opts: { fresh?: boolean; date?: string; tz?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.fresh) params.set('fresh', '1');
+    if (opts.date) params.set('date', opts.date);
+    if (opts.tz) params.set('tz', opts.tz);
+    const qs = params.toString();
+    return fetchJSON<MeDashboardWire>(`/me/dashboard${qs ? `?${qs}` : ''}`);
+  },
+  getMyWork: () => fetchJSON<DashboardWorkWire>('/me/work'),
   listGoogleCalendarEvents: ({
     calendarId,
     timeMin,

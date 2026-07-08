@@ -18,6 +18,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  House,
   Plus,
   Palette,
   Archive,
@@ -469,6 +470,24 @@ export default function Sidebar({
               </button>
             )}
           </div>
+
+          {/* Personal Dashboard home — the User Module's global (non-project)
+              landing page (spec NAV-PLACEMENT). Four panes (My Work, Todos,
+              Calendar, Gmail) over the per-user aggregation. Always shown; the
+              Google panes self-gate. Distinct from the org "Dashboard" below,
+              which is the org-wide admin overview. */}
+          <button
+            onClick={() => onNavigate('home')}
+            data-testid="sidebar-global-home"
+            className={`w-full text-left px-3 py-2 rounded-lg mb-3 flex items-center gap-2 transition-colors ${
+              currentView === 'home'
+                ? 'bg-gray-800 text-white'
+                : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+            }`}
+          >
+            <House size={14} className="flex-shrink-0" />
+            <span className="flex-1 truncate text-sm font-medium">Home</span>
+          </button>
 
           {/* Org-scoped dashboard — sits above the project list because it's
               not tied to any single project. */}

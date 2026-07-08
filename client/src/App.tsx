@@ -68,6 +68,7 @@ import CustomerSupportPage from './components/CustomerSupportPage';
 import CalendarAgendaPage from './components/CalendarAgendaPage';
 import GmailPage from './components/GmailPage';
 import TodosPage from './components/TodosPage';
+import PersonalDashboard from './components/PersonalDashboard';
 import { useGoogleStatus } from './hooks/useGoogleStatus';
 import { shouldShowCalendarNav, shouldShowGmailNav } from './utils/googleSurface';
 import DeploymentsPage from './components/DeploymentsPage';
@@ -5691,6 +5692,15 @@ export default function App({ initialView }: any = {}) {
                   initialTicketId={supportTicketId}
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
+                />
+              ) : currentView === 'home' ? (
+                <PersonalDashboard
+                  onNavigate={setCurrentView}
+                  onOpenAccountSettings={() => setCurrentView('settings:account')}
+                  onOpenKanban={(projectId: any) => {
+                    setCurrentView(`kanban:${projectId}`);
+                    setSidebarOpen(false);
+                  }}
                 />
               ) : currentView === 'todos' ? (
                 <TodosPage />
