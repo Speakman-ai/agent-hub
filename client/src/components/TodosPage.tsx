@@ -13,12 +13,16 @@ import {
   RefreshCw,
   ExternalLink,
 } from 'lucide-react';
-import { api, type UserTodoWire } from '../utils/api';
+import { api, type UserTodoWire, type TodoPriority } from '../utils/api';
 import {
   moveTodoId,
   splitTodos,
+  sortOpenTodos,
   dueState,
   dueLabel,
+  todoDoDate,
+  timeWindowLabel,
+  todoLinkLabel,
   dateInputToIso,
   isoToDateInput,
 } from '../utils/todos';
@@ -44,12 +48,31 @@ const DUE_BADGE_CLASS: Record<string, string> = {
   upcoming: 'bg-gray-800 text-gray-400 border-gray-700',
 };
 
+// Priority chip colors — reuse the kanban-card / dashboard priority palette so a
+// promoted todo keeps the same visual weight (spec TODO-MODEL).
+const PRIORITY_BADGE_CLASS: Record<TodoPriority, string> = {
+  urgent: 'bg-red-900/40 text-red-300 border-red-800',
+  high: 'bg-amber-900/40 text-amber-300 border-amber-800',
+  medium: 'bg-gray-800 text-gray-400 border-gray-700',
+  low: 'bg-gray-800/60 text-gray-500 border-gray-700',
+};
+
+const PRIORITY_OPTIONS: TodoPriority[] = ['urgent', 'high', 'medium', 'low'];
+
+// Link badge color per polymorphic target type (spec TODO-TO-TICKET).
+const LINK_BADGE_CLASS: Record<string, string> = {
+  Ticket: 'border-violet-800 bg-violet-900/30 text-violet-300',
+  Epic: 'border-indigo-800 bg-indigo-900/30 text-indigo-300',
+  Session: 'border-teal-800 bg-teal-900/30 text-teal-300',
+};
+
 export default function TodosPage() {
   const [todos, setTodos] = useState<UserTodoWire[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
   const [newDue, setNewDue] = useState('');
+  const [newPriority, setNewPriority] = useState<TodoPriority>('medium');
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
@@ -89,30 +112,46 @@ export default function TodosPage() {
     return () => window.removeEventListener('user_todo_update', onUpdate);
   }, [load]);
 
-  const { open, done } = useMemo(() => splitTodos(todos), [todos]);
+  // Open todos render most-urgent first (priority sort); position breaks ties so
+  // a manual reorder still decides order within a priority band. Done todos keep
+  // their incoming order in the collapsed section.
+  const { open, done } = useMemo(() => {
+    const split = splitTodos(todos);
+    return { open: sortOpenTodos(split.open), done: split.done };
+  }, [todos]);
 
   const addTodo = useCallback(async () => {
     const title = newTitle.trim();
     if (!title) return;
     setAdding(true);
     try {
-      const { todo } = await api.createTodo({ title, dueAt: dateInputToIso(newDue) });
+      const { todo } = await api.createTodo({
+        title,
+        doDate: dateInputToIso(newDue),
+        priority: newPriority,
+      });
       if (!mountedRef.current) return;
       setTodos((prev) => [...prev, todo]);
       setNewTitle('');
       setNewDue('');
+      setNewPriority('medium');
       setError(null);
     } catch (err: any) {
       if (mountedRef.current) setError(err?.message || String(err));
     } finally {
       if (mountedRef.current) setAdding(false);
     }
-  }, [newTitle, newDue]);
+  }, [newTitle, newDue, newPriority]);
 
   const patchTodo = useCallback(
     async (
       id: string,
-      patch: { title?: string; status?: 'open' | 'done'; dueAt?: string | null },
+      patch: {
+        title?: string;
+        status?: 'open' | 'done';
+        doDate?: string | null;
+        priority?: TodoPriority;
+      },
     ) => {
       try {
         const { todo } = await api.updateTodo(id, patch);
@@ -145,16 +184,19 @@ export default function TodosPage() {
 
   const reorder = useCallback(
     async (id: string, dir: 'up' | 'down') => {
-      // Reorder acts within the open list only. Compute the new full order and
-      // apply it optimistically, reverting on failure.
-      const openIds = todos.filter((t) => t.status === 'open').map((t) => t.id);
+      // Reorder acts within the open list only, over the displayed (priority-
+      // sorted) order so up/down matches what the user sees. Persist positions in
+      // that order, then reapply optimistically, reverting on failure.
+      const openIds = open.map((t) => t.id);
       const nextOpenIds = moveTodoId(openIds, id, dir);
       if (nextOpenIds === openIds) return; // no-op (already at the end)
 
       const prev = todos;
       const byId = new Map(todos.map((t) => [t.id, t]));
-      const reorderedOpen = nextOpenIds.map((tid) => byId.get(tid)!);
-      const doneTodos = todos.filter((t) => t.status === 'done');
+      // Re-densify positions in the new visual order so the priority-sort tie-
+      // break follows the manual move within the band.
+      const reorderedOpen = nextOpenIds.map((tid, i) => ({ ...byId.get(tid)!, position: i }));
+      const doneTodos = done;
       setTodos([...reorderedOpen, ...doneTodos]);
 
       try {
@@ -167,7 +209,7 @@ export default function TodosPage() {
         }
       }
     },
-    [todos],
+    [todos, open, done],
   );
 
   return (
@@ -210,11 +252,24 @@ export default function TodosPage() {
             data-testid="todo-new-title"
             className="flex-1 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
+          <select
+            value={newPriority}
+            onChange={(e) => setNewPriority(e.target.value as TodoPriority)}
+            aria-label="New todo priority"
+            data-testid="todo-new-priority"
+            className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            {PRIORITY_OPTIONS.map((p) => (
+              <option key={p} value={p} className="capitalize">
+                {p}
+              </option>
+            ))}
+          </select>
           <input
             type="date"
             value={newDue}
             onChange={(e) => setNewDue(e.target.value)}
-            aria-label="New todo due date"
+            aria-label="New todo do date"
             data-testid="todo-new-due"
             className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
@@ -331,7 +386,11 @@ interface TodoRowProps {
   onStartEdit: () => void;
   onCancelEdit: () => void;
   onToggle: () => void;
-  onSave: (patch: { title: string; dueAt: string | null }) => void | Promise<void>;
+  onSave: (patch: {
+    title: string;
+    doDate: string | null;
+    priority: TodoPriority;
+  }) => void | Promise<void>;
   onDelete: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -350,20 +409,25 @@ function TodoRow({
   onMoveUp,
   onMoveDown,
 }: TodoRowProps) {
+  const doDate = todoDoDate(todo);
   const [title, setTitle] = useState(todo.title);
-  const [due, setDue] = useState(isoToDateInput(todo.dueAt));
+  const [due, setDue] = useState(isoToDateInput(doDate));
+  const [priority, setPriority] = useState<TodoPriority>(todo.priority ?? 'medium');
 
   // Reset the draft whenever we (re)enter edit mode for this todo.
   useEffect(() => {
     if (editing) {
       setTitle(todo.title);
-      setDue(isoToDateInput(todo.dueAt));
+      setDue(isoToDateInput(doDate));
+      setPriority(todo.priority ?? 'medium');
     }
-  }, [editing, todo.title, todo.dueAt]);
+  }, [editing, todo.title, doDate, todo.priority]);
 
   const done = todo.status === 'done';
-  const state = dueState(todo.dueAt);
-  const badge = dueLabel(todo.dueAt);
+  const state = dueState(doDate);
+  const badge = dueLabel(doDate);
+  const timeWindow = timeWindowLabel(todo.doStartAt, todo.doEndAt);
+  const linkLabel = todoLinkLabel(todo);
   const originLabel = todoOriginLabel(todo);
   const originLink = todoOriginDeepLink(todo);
 
@@ -377,18 +441,34 @@ function TodoRow({
           aria-label="Edit todo title"
           className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
+        <select
+          value={priority}
+          onChange={(e) => setPriority(e.target.value as TodoPriority)}
+          aria-label="Edit todo priority"
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 capitalize focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          {PRIORITY_OPTIONS.map((p) => (
+            <option key={p} value={p} className="capitalize">
+              {p}
+            </option>
+          ))}
+        </select>
         <input
           type="date"
           value={due}
           onChange={(e) => setDue(e.target.value)}
-          aria-label="Edit todo due date"
+          aria-label="Edit todo do date"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() =>
-              onSave({ title: title.trim() || todo.title, dueAt: dateInputToIso(due) })
+              onSave({
+                title: title.trim() || todo.title,
+                doDate: dateInputToIso(due),
+                priority,
+              })
             }
             disabled={!title.trim()}
             aria-label="Save todo"
@@ -427,45 +507,59 @@ function TodoRow({
         >
           {todo.title}
         </div>
-        {(badge || todo.linkedCardId || originLabel) && (
-          <div className="mt-1 flex items-center gap-2">
-            {badge && (
-              <span
-                data-testid="todo-due-badge"
-                className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium ${
-                  done ? 'bg-gray-800 text-gray-500 border-gray-700' : DUE_BADGE_CLASS[state]
-                }`}
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <span
+            data-testid="todo-priority"
+            className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium capitalize ${
+              done
+                ? 'bg-gray-800 text-gray-500 border-gray-700'
+                : PRIORITY_BADGE_CLASS[todo.priority ?? 'medium']
+            }`}
+          >
+            {todo.priority ?? 'medium'}
+          </span>
+          {badge && (
+            <span
+              data-testid="todo-due-badge"
+              className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium ${
+                done ? 'bg-gray-800 text-gray-500 border-gray-700' : DUE_BADGE_CLASS[state]
+              }`}
+            >
+              {badge}
+              {timeWindow ? ` · ${timeWindow}` : ''}
+            </span>
+          )}
+          {linkLabel && (
+            <span
+              data-testid="todo-link-badge"
+              className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium ${
+                LINK_BADGE_CLASS[linkLabel] ?? LINK_BADGE_CLASS.Ticket
+              }`}
+            >
+              {linkLabel}
+            </span>
+          )}
+          {originLabel &&
+            (originLink ? (
+              <a
+                href={originLink}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="todo-origin"
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-[10px] font-medium hover:bg-sky-900/50"
               >
-                {badge}
+                {originLabel}
+                <ExternalLink size={9} />
+              </a>
+            ) : (
+              <span
+                data-testid="todo-origin"
+                className="inline-flex items-center px-1.5 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-[10px] font-medium"
+              >
+                {originLabel}
               </span>
-            )}
-            {originLabel &&
-              (originLink ? (
-                <a
-                  href={originLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  data-testid="todo-origin"
-                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-[10px] font-medium hover:bg-sky-900/50"
-                >
-                  {originLabel}
-                  <ExternalLink size={9} />
-                </a>
-              ) : (
-                <span
-                  data-testid="todo-origin"
-                  className="inline-flex items-center px-1.5 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-[10px] font-medium"
-                >
-                  {originLabel}
-                </span>
-              ))}
-            {todo.linkedCardId && (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-violet-800 bg-violet-900/30 text-violet-300 text-[10px] font-medium">
-                Ticket
-              </span>
-            )}
-          </div>
-        )}
+            ))}
+        </div>
       </div>
       {!done && (
         <div className="flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">

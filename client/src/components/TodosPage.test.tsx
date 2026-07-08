@@ -25,11 +25,17 @@ function todo(over: Partial<any> = {}): any {
     title: over.title || `Todo ${idCounter}`,
     notes: '',
     status: over.status || 'open',
+    priority: over.priority ?? 'medium',
+    doDate: over.doDate ?? null,
+    doStartAt: over.doStartAt ?? null,
+    doEndAt: over.doEndAt ?? null,
     dueAt: over.dueAt ?? null,
     position: over.position ?? idCounter,
     sourceType: 'manual',
     sourceId: null,
     sourceMeta: null,
+    linkedType: over.linkedType ?? null,
+    linkedId: over.linkedId ?? null,
     linkedCardId: over.linkedCardId ?? null,
     linkedProjectId: null,
     createdAt: '2026-07-07T00:00:00.000Z',
@@ -79,7 +85,9 @@ describe('TodosPage — add', () => {
     await waitFor(() => expect(mockApi.createTodo).toHaveBeenCalledTimes(1));
     const arg = mockApi.createTodo.mock.calls[0][0];
     expect(arg.title).toBe('Buy milk');
-    expect(arg.dueAt).not.toBeNull();
+    // The add form writes the scheduling do-date (not the deprecated dueAt).
+    expect(arg.doDate).not.toBeNull();
+    expect(arg.priority).toBe('medium');
     expect(await screen.findByText('Buy milk')).toBeInTheDocument();
   });
 
@@ -167,6 +175,96 @@ describe('TodosPage — edit', () => {
     await waitFor(() => expect(mockApi.updateTodo).toHaveBeenCalledTimes(1));
     expect(mockApi.updateTodo.mock.calls[0][1].title).toBe('New title');
     expect(await screen.findByText('New title')).toBeInTheDocument();
+  });
+});
+
+describe('TodosPage — priority chip & sort', () => {
+  it('renders a priority chip for each todo', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [todo({ id: 'a', title: 'Urgent thing', status: 'open', priority: 'urgent' })],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Urgent thing');
+    const chip = screen.getByTestId('todo-priority');
+    expect(chip).toHaveTextContent(/urgent/i);
+  });
+
+  it('orders open todos most-urgent first regardless of stored position', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({ id: 'lo', title: 'Low task', status: 'open', priority: 'low', position: 0 }),
+        todo({ id: 'ur', title: 'Urgent task', status: 'open', priority: 'urgent', position: 1 }),
+        todo({ id: 'me', title: 'Medium task', status: 'open', priority: 'medium', position: 2 }),
+      ],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Urgent task');
+    const rows = screen.getAllByTestId('todo-row');
+    const titles = rows.map((r) => within(r).getByTitle(/task/).textContent);
+    expect(titles).toEqual(['Urgent task', 'Medium task', 'Low task']);
+  });
+});
+
+describe('TodosPage — do-date time window & link badge', () => {
+  it('renders the do-date with an optional time window', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({
+          id: 'a',
+          title: 'Scheduled task',
+          status: 'open',
+          doDate: '2026-07-12T00:00:00.000Z',
+          doStartAt: '2026-07-12T14:00:00.000Z',
+          doEndAt: '2026-07-12T15:30:00.000Z',
+        }),
+      ],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Scheduled task');
+    const badge = screen.getByTestId('todo-due-badge');
+    // Time window rendered next to the date (locale clock, so match the dash).
+    expect(badge.textContent).toMatch(/–/);
+  });
+
+  it('renders a link badge reflecting the polymorphic linked_type', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({
+          id: 'c',
+          title: 'Linked to card',
+          status: 'open',
+          linkedType: 'card',
+          linkedId: 'k1',
+        }),
+        todo({
+          id: 'e',
+          title: 'Linked to epic',
+          status: 'open',
+          linkedType: 'epic',
+          linkedId: 'p1',
+        }),
+        todo({
+          id: 's',
+          title: 'Linked to session',
+          status: 'open',
+          linkedType: 'session',
+          linkedId: 'sess1',
+        }),
+      ],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Linked to card');
+    const badges = screen.getAllByTestId('todo-link-badge').map((b) => b.textContent);
+    expect(badges).toEqual(expect.arrayContaining(['Ticket', 'Epic', 'Session']));
+  });
+
+  it('falls back to a Ticket badge for a legacy linkedCardId', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [todo({ id: 'l', title: 'Legacy link', status: 'open', linkedCardId: 'k9' })],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Legacy link');
+    expect(screen.getByTestId('todo-link-badge')).toHaveTextContent('Ticket');
   });
 });
 

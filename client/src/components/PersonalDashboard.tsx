@@ -18,7 +18,7 @@ import {
   type UserTodoWire,
 } from '../utils/api';
 import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils/dashboardPanes';
-import { dueLabel, dueState } from '../utils/todos';
+import { dueLabel, dueState, todoDoDate } from '../utils/todos';
 
 /**
  * Personal Dashboard home — the User Module's global (non-project) landing page
@@ -384,16 +384,17 @@ function WorkCardRow({ card, onOpen }: { card: DashboardWorkCardWire; onOpen: ()
 }
 
 function TodoRow({ todo }: { todo: UserTodoWire }) {
-  const state = dueState(todo.dueAt);
+  const doDate = todoDoDate(todo);
+  const state = dueState(doDate);
   return (
     <li className="flex items-center gap-2 rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2">
       <Circle size={12} className="text-gray-600 flex-shrink-0" />
       <span className="text-sm text-gray-200 flex-1 truncate">{todo.title}</span>
-      {todo.dueAt && (
+      {doDate && (
         <span
           className={`text-[10px] px-1.5 py-0.5 rounded border ${DUE_BADGE_CLASS[state] || DUE_BADGE_CLASS.upcoming}`}
         >
-          {dueLabel(todo.dueAt)}
+          {dueLabel(doDate)}
         </span>
       )}
     </li>

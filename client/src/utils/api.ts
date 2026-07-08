@@ -40,6 +40,11 @@ interface UpdateNotificationRoutingBody {
   meta?: unknown;
 }
 
+/** Todo priority — reuses the kanban-card enum so a promote maps 1:1. */
+export type TodoPriority = 'urgent' | 'high' | 'medium' | 'low';
+/** Polymorphic link target type (spec TODO-TO-TICKET). */
+export type TodoLinkType = 'card' | 'epic' | 'session';
+
 /** Cross-project personal todo (spec TODO-MODEL). Mirrors `UserTodo` server-side. */
 export interface UserTodoWire {
   id: string;
@@ -47,13 +52,23 @@ export interface UserTodoWire {
   title: string;
   notes: string;
   status: 'open' | 'done';
+  priority: TodoPriority;
+  /** Day the user plans to WORK the task (scheduling "do" date, not a deadline). */
+  doDate: string | null;
+  doStartAt: string | null;
+  doEndAt: string | null;
+  /** Deprecated: retained for back-compat only; no longer written. Use `doDate`. */
   dueAt: string | null;
   position: number;
   sourceType: 'manual' | 'email' | 'calendar';
   sourceId: string | null;
   sourceMeta: Record<string, unknown> | null;
-  linkedCardId: string | null;
+  /** Polymorphic link (card | epic | session), or null when unlinked. */
+  linkedType: TodoLinkType | null;
+  linkedId: string | null;
   linkedProjectId: string | null;
+  /** Deprecated: superseded by linkedType/linkedId. Kept in sync for a card link. */
+  linkedCardId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,6 +148,11 @@ export interface MeDashboardWire {
 interface CreateTodoBody {
   title: string;
   notes?: string;
+  priority?: TodoPriority;
+  doDate?: string | null;
+  doStartAt?: string | null;
+  doEndAt?: string | null;
+  /** Deprecated: retained for back-compat. Prefer `doDate`. */
   dueAt?: string | null;
   // Capture provenance (spec CAPTURE-PROVENANCE) — set when a todo is captured
   // from a Gmail message / Calendar event so it can be traced back to its origin.
@@ -145,6 +165,11 @@ interface UpdateTodoBody {
   title?: string;
   notes?: string;
   status?: 'open' | 'done';
+  priority?: TodoPriority;
+  doDate?: string | null;
+  doStartAt?: string | null;
+  doEndAt?: string | null;
+  /** Deprecated: retained for back-compat. Prefer `doDate`. */
   dueAt?: string | null;
 }
 

@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   moveTodoId,
   splitTodos,
+  sortOpenTodos,
+  priorityRank,
+  comparePriority,
+  todoDoDate,
+  timeWindowLabel,
+  todoLinkLabel,
   dueState,
   dueLabel,
   dateInputToIso,
@@ -58,6 +64,97 @@ describe('splitTodos', () => {
     const { open, done } = splitTodos(todos);
     expect(open.map((t) => t.id)).toEqual(['1', '3']);
     expect(done.map((t) => t.id)).toEqual(['2', '4']);
+  });
+});
+
+describe('priorityRank / comparePriority / sortOpenTodos', () => {
+  it('ranks urgent highest and low lowest', () => {
+    expect(priorityRank('urgent')).toBeLessThan(priorityRank('high'));
+    expect(priorityRank('high')).toBeLessThan(priorityRank('medium'));
+    expect(priorityRank('medium')).toBeLessThan(priorityRank('low'));
+  });
+
+  it('treats an unset/unknown priority as medium', () => {
+    expect(priorityRank(null)).toBe(priorityRank('medium'));
+    expect(priorityRank(undefined)).toBe(priorityRank('medium'));
+    expect(priorityRank('bogus' as any)).toBe(priorityRank('medium'));
+  });
+
+  it('sorts open todos most-urgent first, breaking ties by position', () => {
+    const todos = [
+      mk({ id: 'lo', priority: 'low', position: 0 }),
+      mk({ id: 'ur', priority: 'urgent', position: 5 }),
+      mk({ id: 'me2', priority: 'medium', position: 2 }),
+      mk({ id: 'me1', priority: 'medium', position: 1 }),
+    ];
+    expect(sortOpenTodos(todos).map((t) => t.id)).toEqual(['ur', 'me1', 'me2', 'lo']);
+  });
+
+  it('does not mutate the input array', () => {
+    const todos = [mk({ id: 'a', priority: 'low' }), mk({ id: 'b', priority: 'urgent' })];
+    sortOpenTodos(todos);
+    expect(todos.map((t) => t.id)).toEqual(['a', 'b']);
+  });
+
+  it('comparePriority returns a stable numeric ordering', () => {
+    const a = mk({ id: 'a', priority: 'high', position: 3 });
+    const b = mk({ id: 'b', priority: 'high', position: 1 });
+    expect(comparePriority(a, b)).toBeGreaterThan(0);
+    expect(comparePriority(b, a)).toBeLessThan(0);
+  });
+});
+
+describe('todoDoDate', () => {
+  it('prefers doDate over the deprecated dueAt', () => {
+    expect(todoDoDate({ doDate: '2026-07-12T00:00:00Z', dueAt: '2026-01-01T00:00:00Z' })).toBe(
+      '2026-07-12T00:00:00Z',
+    );
+  });
+
+  it('falls back to dueAt for legacy rows without a doDate', () => {
+    expect(todoDoDate({ doDate: null, dueAt: '2026-01-01T00:00:00Z' })).toBe(
+      '2026-01-01T00:00:00Z',
+    );
+  });
+
+  it('returns null when neither is set', () => {
+    expect(todoDoDate({ doDate: null, dueAt: null })).toBeNull();
+    expect(todoDoDate({})).toBeNull();
+  });
+});
+
+describe('timeWindowLabel', () => {
+  it('renders a start–end range when both bounds are set', () => {
+    const label = timeWindowLabel('2026-07-12T14:00:00Z', '2026-07-12T15:30:00Z');
+    expect(label).toMatch(/–/);
+  });
+
+  it('renders a single time when only one bound is set', () => {
+    expect(timeWindowLabel('2026-07-12T14:00:00Z', null)).not.toMatch(/–/);
+    expect(timeWindowLabel('2026-07-12T14:00:00Z', null)).not.toBe('');
+    expect(timeWindowLabel(null, '2026-07-12T15:30:00Z')).not.toBe('');
+  });
+
+  it('is empty when neither bound is set or a value is invalid', () => {
+    expect(timeWindowLabel(null, null)).toBe('');
+    expect(timeWindowLabel('garbage', null)).toBe('');
+  });
+});
+
+describe('todoLinkLabel', () => {
+  it('maps each polymorphic link type to a label', () => {
+    expect(todoLinkLabel({ linkedType: 'card' })).toBe('Ticket');
+    expect(todoLinkLabel({ linkedType: 'epic' })).toBe('Epic');
+    expect(todoLinkLabel({ linkedType: 'session' })).toBe('Session');
+  });
+
+  it('falls back to Ticket for a legacy linkedCardId', () => {
+    expect(todoLinkLabel({ linkedType: null, linkedCardId: 'k1' })).toBe('Ticket');
+  });
+
+  it('is empty when unlinked', () => {
+    expect(todoLinkLabel({})).toBe('');
+    expect(todoLinkLabel({ linkedType: null, linkedCardId: null })).toBe('');
   });
 });
 

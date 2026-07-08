@@ -6,10 +6,19 @@
  * functions own the ordering business rules and display formatting.
  */
 
+/** Todo priority — mirrors the kanban-card enum so a promote maps 1:1. */
+export type TodoPriority = 'urgent' | 'high' | 'medium' | 'low';
+
+/** Polymorphic link target type (spec TODO-TO-TICKET). */
+export type TodoLinkType = 'card' | 'epic' | 'session';
+
 export interface TodoLike {
   id: string;
   status: 'open' | 'done';
+  /** Day the user plans to work the task. Falls back to the deprecated dueAt. */
+  doDate?: string | null;
   dueAt: string | null;
+  priority?: TodoPriority | null;
   position: number;
 }
 
@@ -38,6 +47,81 @@ export function splitTodos<T extends TodoLike>(todos: T[]): { open: T[]; done: T
   const done: T[] = [];
   for (const t of todos) (t.status === 'done' ? done : open).push(t);
   return { open, done };
+}
+
+/**
+ * Priority sort rank — lower is more urgent. Reuses the kanban-card ordering so
+ * `urgent` floats to the top and an unset/unknown priority sorts as `medium`.
+ */
+const PRIORITY_RANK: Record<TodoPriority, number> = {
+  urgent: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+export function priorityRank(priority: TodoPriority | null | undefined): number {
+  return PRIORITY_RANK[(priority as TodoPriority) ?? 'medium'] ?? PRIORITY_RANK.medium;
+}
+
+/**
+ * Compare two todos for the open-list display order: most-urgent first, then by
+ * position so a manual reorder still decides ties within a priority band.
+ */
+export function comparePriority<T extends TodoLike>(a: T, b: T): number {
+  const byPriority = priorityRank(a.priority) - priorityRank(b.priority);
+  return byPriority !== 0 ? byPriority : a.position - b.position;
+}
+
+/** Order open todos urgent→low, breaking ties by position. Pure (no mutation). */
+export function sortOpenTodos<T extends TodoLike>(todos: T[]): T[] {
+  return todos.slice().sort(comparePriority);
+}
+
+/** The scheduling "do" date, falling back to the deprecated dueAt for old rows. */
+export function todoDoDate(todo: { doDate?: string | null; dueAt?: string | null }): string | null {
+  return todo.doDate ?? todo.dueAt ?? null;
+}
+
+/**
+ * Human label for an optional do-date time window ('9:00 AM – 10:30 AM',
+ * '2:00 PM', or '' when neither bound is set). Rendered next to the do-date.
+ */
+export function timeWindowLabel(
+  startAt: string | null | undefined,
+  endAt: string | null | undefined,
+): string {
+  const start = formatClock(startAt);
+  const end = formatClock(endAt);
+  if (start && end) return `${start} – ${end}`;
+  return start || end || '';
+}
+
+function formatClock(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * Badge label for a todo's polymorphic link, or '' when unlinked. Prefers the
+ * new `linkedType`, falling back to the deprecated `linkedCardId` ('Ticket').
+ */
+export function todoLinkLabel(todo: {
+  linkedType?: TodoLinkType | null;
+  linkedCardId?: string | null;
+}): string {
+  switch (todo.linkedType) {
+    case 'card':
+      return 'Ticket';
+    case 'epic':
+      return 'Epic';
+    case 'session':
+      return 'Session';
+    default:
+      return todo.linkedCardId ? 'Ticket' : '';
+  }
 }
 
 /** Local-midnight start of the given date, for whole-day due comparisons. */
