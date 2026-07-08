@@ -70,9 +70,16 @@ defaults:
 
 env:
   AWS_REGION: us-east-1 # ECR Public API is us-east-1 only
-  ECR_PUBLIC_URI: public.ecr.aws/h9t4v7h0/agent-hub
-  ECR_PUBLIC_RUNNER_URI: public.ecr.aws/h9t4v7h0/agent-hub-finalize-runner
-  AWS_ROLE_TO_ASSUME: arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push
+  # ECR Public registry base. Set repo/org Actions Variable ECR_REGISTRY (e.g.
+  # public.ecr.aws/<alias>) to publish under your own registry; the vendor
+  # default keeps forks building without extra config. No account-specific
+  # identifier is baked in here.
+  ECR_PUBLIC_URI: ${{ vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0' }}/agent-hub
+  ECR_PUBLIC_RUNNER_URI: ${{ vars.ECR_REGISTRY || 'public.ecr.aws/h9t4v7h0' }}/agent-hub-finalize-runner
+  # OIDC role assumed to push images to ECR Public. Set repo/org Actions
+  # Variable ECR_PUSH_ROLE_ARN to your account's CI push role ARN, so no
+  # account-specific ARN ships in the public tree.
+  AWS_ROLE_TO_ASSUME: ${{ vars.ECR_PUSH_ROLE_ARN }}
 
 jobs:
   push:
@@ -193,7 +200,7 @@ jobs:
         env:
           ST_SHA: ${{ steps.tags.outputs.sha_short }}
           ST_BRANCH: ${{ steps.tags.outputs.branch }}
-          ECR_PUBLIC_RUNNER_URI: public.ecr.aws/h9t4v7h0/agent-hub-finalize-runner
+          # ECR_PUBLIC_URI / ECR_PUBLIC_RUNNER_URI are inherited from workflow env.
         run: |
           {
             echo "### Pushed images"
@@ -223,17 +230,18 @@ jobs:
       id-token: write
       contents: read
     env:
-      # Docker rollout target. Defaults to the dev sandbox (acct 120569607241,
-      # i-066e44ff85ec24d8e) so existing behavior is unchanged until the repo
-      # Variables below are set. Point releases at another account's box —
-      # e.g. agenthub prod (acct 350025135582, i-0415277dd6022627a) — by setting
-      # repo Variables DOCKER_DEPLOY_ROLE_ARN / DOCKER_DEPLOY_INSTANCE_ID /
-      # DOCKER_DEPLOY_REGION. The image PUSH (above) still goes to the dev-account
-      # public ECR (h9t4v7h0); only this deploy step assumes the target-account
-      # role and SSMs that instance. The target box must run the agenthub-server
-      # systemd unit and pull public.ecr.aws/h9t4v7h0/agent-hub:main (cross-account
-      # pull is fine — the repo is public), so the digest assertion still holds.
-      AWS_ROLE_TO_ASSUME: ${{ vars.DOCKER_DEPLOY_ROLE_ARN || 'arn:aws:iam::120569607241:role/agent-hub-ci-ecr-push' }}
+      # Docker rollout target, set via repo/org Actions Variables so no
+      # account-specific identifier ships in the public tree:
+      #   DOCKER_DEPLOY_ROLE_ARN     OIDC role assumed on the target account
+      #   DOCKER_DEPLOY_INSTANCE_ID  EC2 instance SSM'd for the restart
+      #   DOCKER_DEPLOY_REGION       region of that instance
+      # When DOCKER_DEPLOY_ROLE_ARN is unset the ECR push role (ECR_PUSH_ROLE_ARN)
+      # is reused, so a single-account setup only needs the push role configured.
+      # The image PUSH (above) targets ECR_REGISTRY; this deploy step assumes the
+      # target-account role and SSMs that instance. The target box runs the
+      # agenthub-server systemd unit and pulls ${ECR_PUBLIC_URI}:main (cross-account
+      # pull is fine — the registry is public), so the digest assertion still holds.
+      AWS_ROLE_TO_ASSUME: ${{ vars.DOCKER_DEPLOY_ROLE_ARN || vars.ECR_PUSH_ROLE_ARN }}
       AWS_DEPLOY_REGION: ${{ vars.DOCKER_DEPLOY_REGION || 'us-east-2' }}
       DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID || 'i-066e44ff85ec24d8e' }}
       EXPECTED_DIGEST: ${{ needs.push.outputs.digest }}
@@ -289,11 +297,11 @@ jobs:
           attempts=0
           while :; do
             attempts=\$(( attempts + 1 ))
-            LOCAL_DIGEST=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main \
+            LOCAL_DIGEST=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:main \
               --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
               | grep -oE 'sha256:[a-f0-9]+' | head -1 || true)
             CONTAINER_IMAGE_ID=\$(sudo docker inspect agenthub-server --format '{{.Image}}' 2>/dev/null || true)
-            LOCAL_IMAGE_ID=\$(sudo docker image inspect public.ecr.aws/h9t4v7h0/agent-hub:main --format '{{.Id}}' 2>/dev/null || true)
+            LOCAL_IMAGE_ID=\$(sudo docker image inspect ${ECR_PUBLIC_URI}:main --format '{{.Id}}' 2>/dev/null || true)
 
             digest_ok="false"
             container_ok="false"

@@ -1,15 +1,11 @@
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.join(__dirname, '..');
-const ecrPublishWorkflowPath = path.join(
-  repoRoot,
-  '.github',
-  'workflows',
-  'ecr-publish-rollout-docker-dev.yml',
-);
-const pushImageWorkflowPath = path.join(repoRoot, '.github', 'workflows', 'push-image.yml');
+const workflowsDir = path.join(repoRoot, '.github', 'workflows');
+const ecrPublishWorkflowPath = path.join(workflowsDir, 'ecr-publish-rollout-docker-dev.yml');
+const pushImageWorkflowPath = path.join(workflowsDir, 'push-image.yml');
 
 /**
  * Guards CI contract: ECR push + dev-sandbox SSM rollout live in the reusable
@@ -123,5 +119,53 @@ describe('ECR publish + push-image deploy contract', () => {
     // The old single-shot `sleep 8` must be gone. Any future fixed-duration
     // sleep before the inspect block is the regression we are guarding against.
     expect(yml, 'fixed `sleep 8` before inspect must not return').not.toMatch(/^\s*sleep 8\s*$/m);
+  });
+});
+
+// Hard gate for going public (AH-1395 / AH-1341 flip): no account-specific
+// infra identifier may ship in any GitHub Actions workflow. Account IDs and
+// role ARNs must be sourced from repo/org Actions Variables & Secrets, not
+// baked into the public tree. This mirrors the acceptance grep on the card:
+//   grep -rE "1205696|350025135582|797611956947|arn:aws" .github/workflows -> 0
+describe('workflow infra-id hygiene (publishable surface)', () => {
+  const FORBIDDEN: Array<{ label: string; re: RegExp }> = [
+    { label: 'real AWS account id', re: /\b(?:120569607241|350025135582|797611956947)\b/ },
+    { label: 'literal AWS ARN', re: /arn:aws:/ },
+  ];
+
+  function workflowFiles(): string[] {
+    return readdirSync(workflowsDir)
+      .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
+      .map((f) => path.join(workflowsDir, f));
+  }
+
+  it('scans at least the ECR publish workflow', () => {
+    const files = workflowFiles();
+    expect(files.length).toBeGreaterThan(0);
+    expect(files).toContain(ecrPublishWorkflowPath);
+  });
+
+  it('contains no hardcoded AWS account ids or ARNs in any workflow', () => {
+    const offenders: string[] = [];
+    for (const file of workflowFiles()) {
+      const body = readFileSync(file, 'utf8');
+      for (const { label, re } of FORBIDDEN) {
+        const m = body.match(re);
+        if (m) offenders.push(`${path.basename(file)}: ${label} (${m[0]})`);
+      }
+    }
+    expect(offenders, `account-specific literals found:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  it('sources the ECR push role from a repo/org Actions Variable', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    // Push role and rollout role must resolve from vars.*, never a literal ARN.
+    expect(yml).toMatch(/AWS_ROLE_TO_ASSUME:\s*\$\{\{\s*vars\.ECR_PUSH_ROLE_ARN\s*\}\}/);
+    expect(yml).toMatch(/vars\.DOCKER_DEPLOY_ROLE_ARN\s*\|\|\s*vars\.ECR_PUSH_ROLE_ARN/);
+  });
+
+  it('parameterizes the ECR registry base via vars.ECR_REGISTRY', () => {
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml).toMatch(/vars\.ECR_REGISTRY\s*\|\|\s*'public\.ecr\.aws\/h9t4v7h0'/);
   });
 });
