@@ -377,6 +377,12 @@ function initDb(dataDir: string): void {
       retention_flagged_at TEXT,
       meta TEXT
     );
+    -- Also serves the per-tenant BASE-retention override sweep
+    -- (getExpiredUnlinkedSessionReplaysByProject: WHERE project_id = ? AND
+    -- created_at < ? ORDER BY created_at ASC): the (project_id, created_at)
+    -- composite seeks straight to the tenant's rows, and SQLite reverse-scans the
+    -- DESC index to satisfy the ASC LIMIT without a full sort — so no separate ASC
+    -- index is needed.
     CREATE INDEX IF NOT EXISTS idx_session_replays_project
       ON session_replays(project_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_session_replays_ticket
@@ -420,6 +426,12 @@ function initDb(dataDir: string): void {
     -- + sorts the whole segment index every interval as it grows toward retention.
     CREATE INDEX IF NOT EXISTS idx_rum_segments_created_at
       ON rum_segments(created_at);
+    -- Per-tenant BASE-retention override sweep: getExpiredOrphanRumSegmentsByProject
+    -- runs (WHERE project_id = ? AND created_at < ? ...) once per overriding tenant
+    -- every sweep. This composite seeks straight to the tenant's aged orphan
+    -- segments instead of scanning the whole global age range per tenant.
+    CREATE INDEX IF NOT EXISTS idx_rum_segments_project_created
+      ON rum_segments(project_id, created_at);
 
     -- rum_sessions: the session-grain metadata row the RUM dashboard lists and
     -- filters on (Datadog "session" grain). One row per client-minted session id,
@@ -488,6 +500,13 @@ function initDb(dataDir: string): void {
     -- sorts the whole session index every interval as it grows toward retention.
     CREATE INDEX IF NOT EXISTS idx_rum_sessions_updated_at
       ON rum_sessions(updated_at);
+    -- Per-tenant BASE-retention override sweep: getExpiredRumSessionsByProject
+    -- runs (WHERE project_id = ? AND updated_at < ? ORDER BY updated_at) once per
+    -- overriding tenant every sweep. The global idx_rum_sessions_updated_at would
+    -- force each of those to scan the whole global age range and filter by
+    -- project; this composite seeks straight to the tenant's rows in age order.
+    CREATE INDEX IF NOT EXISTS idx_rum_sessions_project_updated
+      ON rum_sessions(project_id, updated_at);
 
     -- project_rum_clients: per-project RUM (real user monitoring) ingest
     -- credentials. A third-party vendor site authenticates a replay upload to
@@ -3523,6 +3542,21 @@ function initDb(dataDir: string): void {
         ORDER BY created_at ASC
         LIMIT ?`,
     ),
+    // Per-project variant for a tenant with a BASE retention override: same
+    // oldest-first, unlinked, extended-retention-exempt filter, scoped to one
+    // project_id so the tighter per-tenant cutoff can be applied with its own
+    // per-sweep budget (batch-stall avoidance). Params: (cutoff, now, projectId,
+    // limit).
+    getExpiredUnlinkedSessionReplaysByProject: db.prepare(
+      `SELECT * FROM session_replays
+        WHERE created_at < ?
+          AND (retained_until IS NULL OR retained_until <= ?)
+          AND support_ticket_id IS NULL
+          AND card_id IS NULL
+          AND project_id = ?
+        ORDER BY created_at ASC
+        LIMIT ?`,
+    ),
     // Flag / re-flag a replay for extended retention: stamp an absolute
     // retained_until (enable-time + window) and the enable instant. The sweeper
     // skips the row while retained_until is in the future.
@@ -3607,6 +3641,17 @@ function initDb(dataDir: string): void {
         ORDER BY updated_at ASC
         LIMIT ?`,
     ),
+    // Per-project variant for a tenant with a BASE retention override: the tighter
+    // per-tenant cutoff is applied to just this project's sessions, with its own
+    // per-sweep budget so one heavy tenant can't stall another's window. Params:
+    // (cutoff, projectId, limit).
+    getExpiredRumSessionsByProject: db.prepare(
+      `SELECT * FROM rum_sessions
+        WHERE updated_at < ?
+          AND project_id = ?
+        ORDER BY updated_at ASC
+        LIMIT ?`,
+    ),
     // Conditional session-row delete used by the sweep AFTER byte reclamation.
     // Re-asserting `updated_at < ?` closes a TOCTOU race: byte reclamation awaits
     // (yields the loop), so a late ingest for the same session can append a new
@@ -3623,6 +3668,20 @@ function initDb(dataDir: string): void {
     getExpiredOrphanRumSegments: db.prepare(
       `SELECT s.* FROM rum_segments s
         WHERE s.created_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM rum_sessions rs WHERE rs.session_id = s.session_id
+          )
+        ORDER BY s.created_at ASC
+        LIMIT ?`,
+    ),
+    // Per-project variant for a tenant with a BASE retention override: orphan
+    // segments (session-grain row already gone) scoped to one project_id so the
+    // tighter cutoff reaps them on the tenant's own schedule. Params: (cutoff,
+    // projectId, limit).
+    getExpiredOrphanRumSegmentsByProject: db.prepare(
+      `SELECT s.* FROM rum_segments s
+        WHERE s.created_at < ?
+          AND s.project_id = ?
           AND NOT EXISTS (
             SELECT 1 FROM rum_sessions rs WHERE rs.session_id = s.session_id
           )

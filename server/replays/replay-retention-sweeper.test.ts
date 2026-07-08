@@ -76,6 +76,16 @@ describe('runReplayRetentionSweep', () => {
           ORDER BY created_at ASC
           LIMIT ?`,
       ),
+      getExpiredUnlinkedSessionReplaysByProject: database.prepare(
+        `SELECT * FROM session_replays
+          WHERE created_at < ?
+            AND (retained_until IS NULL OR retained_until <= ?)
+            AND support_ticket_id IS NULL
+            AND card_id IS NULL
+            AND project_id = ?
+          ORDER BY created_at ASC
+          LIMIT ?`,
+      ),
       flagSessionReplayRetention: database.prepare(
         `UPDATE session_replays
             SET retained_until = ?, retention_flagged_at = ?
@@ -92,6 +102,7 @@ describe('runReplayRetentionSweep', () => {
     ageDays: number;
     ticketId?: string | null;
     cardId?: string | null;
+    projectId?: string | null;
   }): Promise<SessionReplayRow> {
     await storeReplay(
       { stmts, config },
@@ -99,8 +110,8 @@ describe('runReplayRetentionSweep', () => {
     );
     const createdAt = toSqliteUtc(Date.now() - opts.ageDays * MS_PER_DAY);
     db.prepare(
-      'UPDATE session_replays SET created_at = ?, support_ticket_id = ?, card_id = ? WHERE id = ?',
-    ).run(createdAt, opts.ticketId ?? null, opts.cardId ?? null, opts.id);
+      'UPDATE session_replays SET created_at = ?, support_ticket_id = ?, card_id = ?, project_id = ? WHERE id = ?',
+    ).run(createdAt, opts.ticketId ?? null, opts.cardId ?? null, opts.projectId ?? null, opts.id);
     return db
       .prepare('SELECT * FROM session_replays WHERE id = ?')
       .get(opts.id) as SessionReplayRow;
@@ -314,6 +325,105 @@ describe('runReplayRetentionSweep', () => {
   it('uses a default per-sweep cap when none is given', () => {
     expect(DEFAULT_MAX_PER_SWEEP).toBeGreaterThan(0);
   });
+
+  it('enforces a per-tenant tighter window before the global window applies', async () => {
+    const fast = await seedReplay({ id: 'fast-old', ageDays: 10, projectId: 'fast' });
+    const slow = await seedReplay({ id: 'slow-mid', ageDays: 10, projectId: 'proj' });
+
+    const result = await runReplayRetentionSweep({
+      stmts,
+      config,
+      getRetentionOverrides: () => [{ projectId: 'fast', retentionDays: 7 }],
+    });
+
+    expect(result).toMatchObject({ enabled: true, deleted: 1 });
+    // The overridden tenant's 10-day replay is gone (> 7-day window); the default
+    // tenant's 10-day replay survives (< 30-day global window).
+    expect(stmts.getSessionReplay.get('fast-old')).toBeUndefined();
+    expect(existsSync(blobPath(fast))).toBe(false);
+    expect(stmts.getSessionReplay.get('slow-mid')).toBeTruthy();
+    expect(existsSync(blobPath(slow))).toBe(true);
+  });
+
+  it('runs per-tenant passes even when the global window is off', async () => {
+    config = { dataDir, replayRetentionDays: 0 } as unknown as AppConfig;
+    await seedReplay({ id: 'opt-in-old', ageDays: 20, projectId: 'optin' });
+    await seedReplay({ id: 'default-old', ageDays: 90, projectId: 'proj' });
+
+    const result = await runReplayRetentionSweep({
+      stmts,
+      config,
+      getRetentionOverrides: () => [{ projectId: 'optin', retentionDays: 14 }],
+    });
+
+    expect(result).toMatchObject({ enabled: true, deleted: 1, cutoff: null });
+    expect(stmts.getSessionReplay.get('opt-in-old')).toBeUndefined();
+    expect(stmts.getSessionReplay.get('default-old')).toBeTruthy();
+  });
+
+  // ── Per-tenant S3 byte-ownership gate (regression: reviewer finding 2) ──────
+  it('per-tenant pass DELETES S3 bytes itself when the tenant prefix rule is unconfirmed (global off)', async () => {
+    // Global window OFF + a tenant override. If the sweeper delegated to a
+    // per-prefix lifecycle rule that was never installed, the bytes would live
+    // FOREVER. It must delete them itself instead.
+    config = { dataDir, replayRetentionDays: 0 } as unknown as AppConfig;
+    seedS3Row('t-off'); // project 'proj', 60 days old
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    try {
+      const result = await runReplayRetentionSweep({
+        stmts,
+        config,
+        getRetentionOverrides: () => [{ projectId: 'proj', retentionDays: 7 }],
+        // isProjectLifecycleProvisioned omitted → the tenant rule is not confirmed.
+      });
+      expect(result.deleted).toBe(1);
+      expect(stmts.getSessionReplay.get('t-off')).toBeUndefined();
+      expect(s3DeleteSpy).toHaveBeenCalledWith('rum/proj/2026/05/01/sess/view/t-off.json.gz');
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
+  it('per-tenant pass does NOT trust the GLOBAL lifecycle flag (tighter window would be violated)', async () => {
+    // Global lifecycle IS confirmed, but the tenant's own tighter prefix rule is
+    // NOT. Trusting the global rule would keep the tenant's bytes until the looser
+    // global window. The per-tenant pass must delete them itself.
+    seedS3Row('t-leak'); // project 'proj', 60 days old; global window = 30d
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    try {
+      const result = await runReplayRetentionSweep({
+        stmts,
+        config,
+        getRetentionOverrides: () => [{ projectId: 'proj', retentionDays: 7 }],
+        isLifecycleProvisioned: () => true, // global confirmed...
+        isProjectLifecycleProvisioned: () => false, // ...tenant prefix NOT confirmed
+      });
+      expect(result.deleted).toBe(1);
+      // The global flag must not leak into the per-tenant pass.
+      expect(s3DeleteSpy).toHaveBeenCalledWith('rum/proj/2026/05/01/sess/view/t-leak.json.gz');
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
+  it('per-tenant pass DELEGATES S3 bytes once the tenant prefix rule is confirmed', async () => {
+    seedS3Row('t-prov'); // project 'proj', 60 days old
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete');
+    try {
+      const result = await runReplayRetentionSweep({
+        stmts,
+        config,
+        getRetentionOverrides: () => [{ projectId: 'proj', retentionDays: 7 }],
+        isProjectLifecycleProvisioned: (pid) => pid === 'proj',
+      });
+      expect(result.deleted).toBe(1);
+      expect(stmts.getSessionReplay.get('t-prov')).toBeUndefined();
+      // The tenant's prefix rule owns the bytes — the sweeper must not touch S3.
+      expect(s3DeleteSpy).not.toHaveBeenCalled();
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
 });
 
 describe('startReplayRetentionSweeper', () => {
@@ -338,5 +448,25 @@ describe('startReplayRetentionSweeper', () => {
     // No synchronous run at start; the first fire is one interval ahead.
     expect(calls).toBe(0);
     stop();
+  });
+
+  it('starts even when the global window is off if per-tenant overrides may exist', async () => {
+    let calls = 0;
+    const stmts = {
+      getExpiredUnlinkedSessionReplaysByProject: { all: () => (calls++, []) },
+    } as unknown as Stmts;
+    const stop = startReplayRetentionSweeper(
+      {
+        stmts,
+        config: { replayRetentionDays: 0 } as unknown as AppConfig,
+        getRetentionOverrides: () => [{ projectId: 'p', retentionDays: 7 }],
+      },
+      10,
+    );
+    // The timer is live (not the no-op stopper): it fires and hits the per-project
+    // query even though the global window is off.
+    await new Promise((r) => setTimeout(r, 25));
+    stop();
+    expect(calls).toBeGreaterThan(0);
   });
 });

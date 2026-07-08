@@ -23,6 +23,7 @@ import {
   type ApplyRumLifecycleResult,
   type LifecycleRule,
   type LifecycleS3Port,
+  type RumLifecycleProjectOverride,
 } from './replay-lifecycle.js';
 
 /**
@@ -71,6 +72,14 @@ export interface ProvisionRumLifecycleDeps {
   /** Injectable port for tests; defaults to a real S3 port from config. */
   port?: LifecycleS3Port;
   log?: (msg: string) => void;
+  /**
+   * Per-tenant BASE-retention overrides (prefix + effective window), emitting an
+   * extra `rum/<project>/` lifecycle rule each so a tenant's bytes expire on its
+   * own tighter schedule. Built by the caller from the project config (see
+   * `buildProjectStoragePrefix` + `collectRetentionOverrides`). Unset → the single
+   * global rule only.
+   */
+  projectOverrides?: RumLifecycleProjectOverride[];
 }
 
 export interface ProvisionRumLifecycleOutcome {
@@ -112,6 +121,7 @@ export async function provisionRumLifecycle(
   try {
     const result = await applyRumLifecyclePolicy(port, {
       retentionDays: config.replayRetentionDays,
+      projectOverrides: deps.projectOverrides,
     });
     if (result.changed) {
       log(

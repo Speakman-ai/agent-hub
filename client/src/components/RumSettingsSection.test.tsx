@@ -504,6 +504,51 @@ describe('RumSettingsSection', () => {
     );
   });
 
+  // ── Per-project base-retention override ─────────────────────────────
+  it('initializes the base-retention control (defaults to platform default = 0)', async () => {
+    render(<RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: {} }]} />);
+    const days = (await screen.findByTestId('rum-base-retention-days')) as HTMLSelectElement;
+    expect(days.value).toBe('0');
+  });
+
+  it('reflects a persisted base-retention override', async () => {
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { retentionDays: 14 } }]}
+      />,
+    );
+    const days = (await screen.findByTestId('rum-base-retention-days')) as HTMLSelectElement;
+    expect(days.value).toBe('14');
+  });
+
+  it('PATCHes the base-retention override, preserving other replay config', async () => {
+    render(
+      <RumSettingsSection projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5 } }]} />,
+    );
+    const days = (await screen.findByTestId('rum-base-retention-days')) as HTMLSelectElement;
+    fireEvent.change(days, { target: { value: '7' } });
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5, retentionDays: 7 },
+      }),
+    );
+  });
+
+  it('clears the override (omits retentionDays) when set back to platform default', async () => {
+    render(
+      <RumSettingsSection
+        projects={[{ id: 'demo', name: 'Demo', replay: { sampleRate: 0.5, retentionDays: 7 } }]}
+      />,
+    );
+    const days = (await screen.findByTestId('rum-base-retention-days')) as HTMLSelectElement;
+    fireEvent.change(days, { target: { value: '0' } });
+    await waitFor(() =>
+      expect(api.updateProject as any).toHaveBeenCalledWith('demo', {
+        replay: { sampleRate: 0.5 },
+      }),
+    );
+  });
+
   // ── Per-project server-delivered replay policy ──────────────────────
   it('initializes the sample-rate form from the project.replay', async () => {
     render(

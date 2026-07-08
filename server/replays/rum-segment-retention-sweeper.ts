@@ -32,15 +32,19 @@
  * idempotent store.delete that tolerates an already-gone object) means a failed
  * delete leaves the rows for the next sweep instead of stranding bytes.
  *
- * Policy mirrors the monolithic sweeper: OFF unless `replayRetentionDays > 0`,
- * bounded per sweep (`maxPerSweep`) so a large backlog drains over several ticks,
- * oldest-first so the longest-lived rows go first.
+ * Policy mirrors the monolithic sweeper: runs when the global window is on
+ * (`replayRetentionDays > 0`) OR any project sets a per-tenant BASE override
+ * (`getRetentionOverrides`). Each overriding tenant gets its own bounded pass at
+ * its own tighter cutoff + `project_id` filter (batch-stall avoidance), then a
+ * default pass at the global window. Bounded per sweep (`maxPerSweep`) so a large
+ * backlog drains over several ticks, oldest-first so the longest-lived rows go first.
  */
 
 import { getArtifactStoreForLocation } from '../artifacts/artifact-store.js';
 import { listSessionSegments } from './segment-store.js';
 import { toSqliteUtc } from './replay-retention.js';
 import { RETENTION_SWEEP_INTERVAL_MS, DEFAULT_MAX_PER_SWEEP } from './replay-retention-sweeper.js';
+import type { ProjectRetentionOverride } from './replay-config.js';
 import type { AppConfig, RumSegmentRow, RumSessionRow, Stmts } from '../types.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -60,12 +64,34 @@ export interface RumSegmentRetentionDeps {
    * each sweep. Defaults to "not provisioned" (the safe fallback).
    */
   isLifecycleProvisioned?: () => boolean;
+  /**
+   * Whether the PER-PROJECT `rum/<project>/` S3 lifecycle rule for a specific
+   * tenant is CONFIRMED provisioned. A per-tenant pass may only delegate S3
+   * segment byte expiry to lifecycle once THIS tenant's own (tighter) prefix rule
+   * is confirmed installed; the global `rum/` rule expires at the looser global
+   * window, so trusting it for a tighter-window tenant would keep bytes past the
+   * tenant's contract (or forever, when the global window is off). Until
+   * confirmed, the per-tenant pass deletes the segment objects itself (no orphans,
+   * honors the tighter window). Read fresh each sweep. Defaults to "not
+   * provisioned" (safe fallback).
+   */
+  isProjectLifecycleProvisioned?: (projectId: string) => boolean;
+  /**
+   * Projects whose effective BASE (hot/index) retention window differs from the
+   * global default (see `collectRetentionOverrides`). Each gets its own bounded
+   * pass at its own tighter cutoff and `project_id` filter, so a heavy tenant
+   * can't stall another tenant's window. Read fresh each sweep so project edits
+   * take effect without a restart. Unset / empty → the single global-window pass.
+   */
+  getRetentionOverrides?: () => ProjectRetentionOverride[];
 }
 
 export interface RumSegmentSweepResult {
-  /** Whether retention is enabled (replayRetentionDays > 0). */
+  /** Whether retention ran (global `replayRetentionDays > 0` OR any per-project
+   *  override is set). */
   enabled: boolean;
-  /** ISO cutoff; rows older than this were eligible. Null when disabled. */
+  /** The GLOBAL-window cutoff; rows older than this were eligible in the default
+   *  pass. Null when the global window is off (only per-project passes ran). */
   cutoff: string | null;
   /** Number of `rum_sessions` rows reaped this sweep. */
   sessionsDeleted: number;
@@ -170,61 +196,109 @@ export async function runRumSegmentRetentionSweep(
   const log = deps.log ?? ((msg: string) => console.error(msg));
   const now = deps.now ?? Date.now;
 
-  const days = config.replayRetentionDays;
-  if (!Number.isFinite(days) || days <= 0) {
+  const globalDays = config.replayRetentionDays;
+  const globalEnabled = Number.isFinite(globalDays) && globalDays > 0;
+  const overrides = deps.getRetentionOverrides?.() ?? [];
+  if (!globalEnabled && overrides.length === 0) {
     return { enabled: false, cutoff: null, sessionsDeleted: 0, segmentsDeleted: 0, failed: 0 };
   }
 
-  const cutoff = toSqliteUtc(now() - days * MS_PER_DAY);
+  const nowMs = now();
   const cap = Math.max(1, Math.trunc(maxPerSweep));
-  const lifecycleProvisioned = deps.isLifecycleProvisioned?.() ?? false;
 
   let sessionsDeleted = 0;
   let segmentsDeleted = 0;
   let failed = 0;
 
-  const sessions = stmts.getExpiredRumSessions.all(cutoff, cap) as RumSessionRow[];
-  for (const row of sessions) {
-    try {
-      const outcome = await expireRumSession(
-        { stmts, config },
-        row.session_id,
-        cutoff,
-        lifecycleProvisioned,
-      );
-      segmentsDeleted += outcome.segmentsDeleted;
-      // A session refreshed by a mid-sweep ingest is intentionally kept; only
-      // count rows we actually removed.
-      if (outcome.sessionDeleted) sessionsDeleted += 1;
-    } catch (err) {
-      failed += 1;
-      log(`[rum-retention] failed to expire session ${row.session_id}: ${(err as Error).message}`);
+  // `provisioned` is scoped PER PASS: the default pass trusts the global `rum/`
+  // rule; a per-tenant pass trusts ONLY that tenant's own `rum/<project>/` rule.
+  const reapSessions = async (
+    rows: RumSessionRow[],
+    cutoff: string,
+    provisioned: boolean,
+  ): Promise<void> => {
+    for (const row of rows) {
+      try {
+        const outcome = await expireRumSession(
+          { stmts, config },
+          row.session_id,
+          cutoff,
+          provisioned,
+        );
+        segmentsDeleted += outcome.segmentsDeleted;
+        // A session refreshed by a mid-sweep ingest is intentionally kept; only
+        // count rows we actually removed.
+        if (outcome.sessionDeleted) sessionsDeleted += 1;
+      } catch (err) {
+        failed += 1;
+        log(
+          `[rum-retention] failed to expire session ${row.session_id}: ${(err as Error).message}`,
+        );
+      }
     }
-  }
+  };
 
-  // Orphan-segment reconciliation: segments whose rum_sessions row no longer
-  // exists (a rollup that threw at ingest, or a partial prior sweep) are never
-  // reached by the session-keyed pass. Reap the aged ones directly.
-  const orphans = stmts.getExpiredOrphanRumSegments.all(cutoff, cap) as RumSegmentRow[];
-  for (const seg of orphans) {
-    try {
-      await reclaimSegmentBytes(config, seg, lifecycleProvisioned);
-      stmts.deleteRumSegment.run(seg.id);
-      segmentsDeleted += 1;
-    } catch (err) {
-      failed += 1;
-      log(`[rum-retention] failed to expire orphan segment ${seg.id}: ${(err as Error).message}`);
+  const reapOrphans = async (orphans: RumSegmentRow[], provisioned: boolean): Promise<void> => {
+    for (const seg of orphans) {
+      try {
+        await reclaimSegmentBytes(config, seg, provisioned);
+        stmts.deleteRumSegment.run(seg.id);
+        segmentsDeleted += 1;
+      } catch (err) {
+        failed += 1;
+        log(`[rum-retention] failed to expire orphan segment ${seg.id}: ${(err as Error).message}`);
+      }
     }
-  }
+  };
 
-  if (sessionsDeleted > 0 || segmentsDeleted > 0 || failed > 0) {
-    log(
-      `[rum-retention] swept ${sessionsDeleted} session(s) / ${segmentsDeleted} segment(s) ` +
-        `older than ${cutoff} (${days}d retention)${failed ? `, ${failed} failed` : ''}`,
+  // Per-tenant passes first: each override gets its own bounded budget at its own
+  // tighter cutoff + project_id filter (batch-stall avoidance). Overrides only
+  // tighten, so anything reaped here would also be eligible in the looser global
+  // pass — reaping it here first keeps the global budget for default-window tenants.
+  // A per-tenant pass delegates S3 bytes to lifecycle ONLY when this tenant's own
+  // prefix rule is confirmed provisioned; otherwise the objects are deleted here
+  // (the global rule would keep them past the tenant's tighter window / forever).
+  for (const o of overrides) {
+    const cutoff = toSqliteUtc(nowMs - o.retentionDays * MS_PER_DAY);
+    const projectProvisioned = deps.isProjectLifecycleProvisioned?.(o.projectId) ?? false;
+    await reapSessions(
+      stmts.getExpiredRumSessionsByProject.all(cutoff, o.projectId, cap) as RumSessionRow[],
+      cutoff,
+      projectProvisioned,
+    );
+    await reapOrphans(
+      stmts.getExpiredOrphanRumSegmentsByProject.all(cutoff, o.projectId, cap) as RumSegmentRow[],
+      projectProvisioned,
     );
   }
 
-  return { enabled: true, cutoff, sessionsDeleted, segmentsDeleted, failed };
+  // Default pass at the global window (skipped when the global window is off:
+  // non-overridden tenants keep-forever).
+  let globalCutoff: string | null = null;
+  if (globalEnabled) {
+    const globalProvisioned = deps.isLifecycleProvisioned?.() ?? false;
+    globalCutoff = toSqliteUtc(nowMs - globalDays * MS_PER_DAY);
+    await reapSessions(
+      stmts.getExpiredRumSessions.all(globalCutoff, cap) as RumSessionRow[],
+      globalCutoff,
+      globalProvisioned,
+    );
+    await reapOrphans(
+      stmts.getExpiredOrphanRumSegments.all(globalCutoff, cap) as RumSegmentRow[],
+      globalProvisioned,
+    );
+  }
+
+  if (sessionsDeleted > 0 || segmentsDeleted > 0 || failed > 0) {
+    const windowDesc = globalEnabled ? `${globalDays}d global` : 'per-tenant';
+    log(
+      `[rum-retention] swept ${sessionsDeleted} session(s) / ${segmentsDeleted} segment(s) ` +
+        `(${windowDesc}${overrides.length ? ` + ${overrides.length} tenant override(s)` : ''})` +
+        `${failed ? `, ${failed} failed` : ''}`,
+    );
+  }
+
+  return { enabled: true, cutoff: globalCutoff, sessionsDeleted, segmentsDeleted, failed };
 }
 
 /**
@@ -237,7 +311,12 @@ export function startRumSegmentRetentionSweeper(
   deps: RumSegmentRetentionDeps,
   intervalMs: number = RETENTION_SWEEP_INTERVAL_MS,
 ): () => void {
-  if (!Number.isFinite(deps.config.replayRetentionDays) || deps.config.replayRetentionDays <= 0) {
+  const globalEnabled =
+    Number.isFinite(deps.config.replayRetentionDays) && deps.config.replayRetentionDays > 0;
+  // Start when a global window is set OR per-tenant overrides may exist (the dep
+  // is wired) — a project can toggle an override at runtime, so with the dep
+  // present we always run and let each sweep no-op when idle.
+  if (!globalEnabled && !deps.getRetentionOverrides) {
     return () => {};
   }
   const timer = setInterval(() => {

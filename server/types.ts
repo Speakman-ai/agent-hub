@@ -1793,6 +1793,10 @@ export interface Stmts {
    *  Params: (cutoff, now, limit) — flagged rows with a future retained_until are
    *  excluded. */
   getExpiredUnlinkedSessionReplays: Stmt;
+  /** Per-project variant of {@link getExpiredUnlinkedSessionReplays} for a
+   *  tenant with a BASE retention override. Params: (cutoff, now, projectId,
+   *  limit). */
+  getExpiredUnlinkedSessionReplaysByProject: Stmt;
   /** Flag / re-flag a replay for extended retention. Params:
    *  (retained_until, retention_flagged_at, id). */
   flagSessionReplayRetention: Stmt;
@@ -1813,8 +1817,14 @@ export interface Stmts {
   deleteRumSession: Stmt;
   // Segmented-replay index-row TTL reconciliation (rum-segment-retention-sweeper.ts)
   getExpiredRumSessions: Stmt;
+  /** Per-project variant of {@link getExpiredRumSessions} for a tenant with a
+   *  BASE retention override. Params: (cutoff, projectId, limit). */
+  getExpiredRumSessionsByProject: Stmt;
   deleteExpiredRumSession: Stmt;
   getExpiredOrphanRumSegments: Stmt;
+  /** Per-project variant of {@link getExpiredOrphanRumSegments} for a tenant with
+   *  a BASE retention override. Params: (cutoff, projectId, limit). */
+  getExpiredOrphanRumSegmentsByProject: Stmt;
   // Per-project RUM ingest clients
   insertRumClient: Stmt;
   getRumClient: Stmt;
@@ -3274,6 +3284,10 @@ export interface Project {
     /** Per-tenant extended-retention window in whole months, applied when an
      *  operator flags a session (see ProjectReplayConfig.extendedRetentionMonths). */
     extendedRetentionMonths?: number;
+    /** Per-tenant BASE (hot/index) retention window in whole days, overriding the
+     *  global `replayRetentionDays` for this project. Tighten-only relative to a
+     *  set global default (see ProjectReplayConfig.retentionDays). */
+    retentionDays?: number;
   };
   /**
    * Branch protection for the hosted repo's default branch (Agent

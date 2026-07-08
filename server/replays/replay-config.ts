@@ -102,6 +102,27 @@ export interface ProjectReplayConfig {
    * ENABLED, not at capture, so flagging persists an absolute `retained_until`.
    */
   extendedRetentionMonths?: number;
+  /**
+   * Per-tenant BASE (hot/index) retention window in whole DAYS, overriding the
+   * global `config.replayRetentionDays` for this project's captures. This is the
+   * default-tier window the retention sweeper enforces on the SQLite index rows
+   * (and per-prefix S3 lifecycle rules enforce on the segment bytes), distinct
+   * from the per-session EXTENDED tier ({@link extendedRetentionMonths}).
+   *
+   * Semantics are TIGHTEN-ONLY relative to a set global default: the effective
+   * window is `min(override, global)` (see {@link resolveBaseRetentionDays}). A
+   * value LONGER than the global default resolves back to the global window
+   * because S3 honors the SHORTEST overlapping lifecycle expiration, so a longer
+   * per-prefix rule could never actually keep the bytes past the global `rum/`
+   * rule — and letting the index sweeper keep rows past that point would strand
+   * index rows whose bytes are already gone. When the global window is OFF
+   * (`replayRetentionDays <= 0`, keep-forever) an override instead turns
+   * retention ON for just this tenant. A positive integer; floored on persist.
+   * Blanket per-tenant LENGTHENING beyond the global default is out of scope —
+   * the extended tier ({@link extendedRetentionMonths}) covers keeping individual
+   * flagged sessions longer.
+   */
+  retentionDays?: number;
 }
 
 /** The resolved policy delivered to a recorder / the admin UI. */
@@ -199,6 +220,14 @@ export const MIN_SEGMENTED_FLUSH_INTERVAL_MS = 1_000;
  */
 export const DEFAULT_SEGMENTED_FLUSH_INTERVAL_MS = 5_000;
 
+/**
+ * Ceiling on a per-tenant BASE retention override, in days. The base (hot/index)
+ * tier is meant to be short; longer keeps belong to the per-session EXTENDED tier
+ * (up to 15 months). ~13 months (400 days) leaves generous headroom without
+ * letting a typo persist an absurd window. See {@link ProjectReplayConfig.retentionDays}.
+ */
+export const MAX_BASE_RETENTION_DAYS = 400;
+
 /** The policy returned when a project has no replay config (or no project). */
 export const DEFAULT_REPLAY_POLICY: ResolvedReplayPolicy = Object.freeze({
   sampleRate: null,
@@ -238,6 +267,68 @@ export function resolveIngestQuota(
     return Math.floor(configured);
   }
   return fallback;
+}
+
+/**
+ * Resolve a project's effective BASE (hot/index) retention window in days from
+ * its optional per-tenant override and the global default. TIGHTEN-ONLY:
+ *   - No valid override → the global default (`<= 0` means retention is off for
+ *     this tenant, i.e. keep-forever).
+ *   - Override + global default ON → `min(override, global)`. A longer override
+ *     resolves back to the global window, because S3 honors the SHORTEST
+ *     overlapping lifecycle expiration and the index sweeper must never keep a
+ *     row past the point its bytes are reaped.
+ *   - Override + global default OFF → the override (turns retention ON for just
+ *     this tenant).
+ * Returns a whole number of days (`0` means "no expiry"). Pure — unit-testable.
+ */
+export function resolveBaseRetentionDays(
+  override: number | undefined | null,
+  globalDays: number,
+): number {
+  const global = Number.isFinite(globalDays) && globalDays > 0 ? Math.floor(globalDays) : 0;
+  if (typeof override !== 'number' || !Number.isFinite(override) || override <= 0) {
+    return global;
+  }
+  const o = Math.floor(override);
+  // Global off (keep-forever) → the override turns retention on. Global on →
+  // tighten only (a longer override can't beat the global S3 rule).
+  return global === 0 ? o : Math.min(o, global);
+}
+
+/** A project whose effective base window genuinely differs from the global
+ *  default, so the sweeper runs a dedicated per-project pass for it. */
+export interface ProjectRetentionOverride {
+  projectId: string;
+  /** Effective window in whole days (always > 0 — a `0`/off project is not an override). */
+  retentionDays: number;
+}
+
+/**
+ * Collect the projects whose effective base retention window differs from the
+ * global default, resolving each through {@link resolveBaseRetentionDays}. Only
+ * projects that actually change the window (a real tightening, or turning
+ * retention on while the global is off) are returned — a longer-than-global
+ * override that resolves back to the global window is omitted (it behaves as the
+ * default, so no separate pass is needed). Pure — the sweeper calls it fresh each
+ * tick so project edits take effect without a restart.
+ */
+export function collectRetentionOverrides(
+  projects: ReadonlyArray<{ id: string; replay?: ProjectReplayConfig | null }>,
+  globalDays: number,
+): ProjectRetentionOverride[] {
+  const global = Number.isFinite(globalDays) && globalDays > 0 ? Math.floor(globalDays) : 0;
+  const out: ProjectRetentionOverride[] = [];
+  for (const project of projects) {
+    const override = project.replay?.retentionDays;
+    const effective = resolveBaseRetentionDays(override, global);
+    // Include only when it genuinely differs from the default window AND actually
+    // expires something (> 0). effective === global → behaves as default.
+    if (effective > 0 && effective !== global) {
+      out.push({ projectId: project.id, retentionDays: effective });
+    }
+  }
+  return out;
 }
 
 /** Clamp an arbitrary finite number to a valid sample rate in [0, 1]. */
@@ -375,6 +466,20 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     }
   }
 
+  if (obj.retentionDays !== undefined) {
+    const n = obj.retentionDays;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: 'replay.retentionDays must be a positive number of days' };
+    }
+    if (Math.floor(n) > MAX_BASE_RETENTION_DAYS) {
+      return {
+        ok: false,
+        error: `replay.retentionDays must be at most ${MAX_BASE_RETENTION_DAYS} days`,
+      };
+    }
+    out.retentionDays = Math.floor(n);
+  }
+
   if (obj.extendedRetentionMonths !== undefined) {
     const n = obj.extendedRetentionMonths;
     if (typeof n !== 'number' || !Number.isFinite(n)) {
@@ -404,7 +509,8 @@ export function normalizeReplayConfig(raw: unknown): NormalizeResult {
     out.sessionReplaySampleRate === undefined &&
     out.ingestQuota === undefined &&
     out.eventsIngestQuota === undefined &&
-    out.extendedRetentionMonths === undefined
+    out.extendedRetentionMonths === undefined &&
+    out.retentionDays === undefined
   ) {
     return { ok: true, value: null };
   }

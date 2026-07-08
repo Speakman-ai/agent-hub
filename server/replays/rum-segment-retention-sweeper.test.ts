@@ -110,12 +110,29 @@ function makeStmts(database: Database.Database): Stmts {
         ORDER BY updated_at ASC
         LIMIT ?`,
     ),
+    getExpiredRumSessionsByProject: database.prepare(
+      `SELECT * FROM rum_sessions
+        WHERE updated_at < ?
+          AND project_id = ?
+        ORDER BY updated_at ASC
+        LIMIT ?`,
+    ),
     deleteExpiredRumSession: database.prepare(
       `DELETE FROM rum_sessions WHERE session_id = ? AND updated_at < ?`,
     ),
     getExpiredOrphanRumSegments: database.prepare(
       `SELECT s.* FROM rum_segments s
         WHERE s.created_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM rum_sessions rs WHERE rs.session_id = s.session_id
+          )
+        ORDER BY s.created_at ASC
+        LIMIT ?`,
+    ),
+    getExpiredOrphanRumSegmentsByProject: database.prepare(
+      `SELECT s.* FROM rum_segments s
+        WHERE s.created_at < ?
+          AND s.project_id = ?
           AND NOT EXISTS (
             SELECT 1 FROM rum_sessions rs WHERE rs.session_id = s.session_id
           )
@@ -157,6 +174,7 @@ describe('runRumSegmentRetentionSweep', () => {
   async function seedLocalSession(opts: {
     sessionId: string;
     ageDays: number;
+    projectId?: string;
   }): Promise<RumSegmentRow> {
     const seg = await appendSegment(
       { stmts, config },
@@ -164,7 +182,7 @@ describe('runRumSegmentRetentionSweep', () => {
         sessionId: opts.sessionId,
         viewId: 'v0',
         indexInView: 0,
-        projectId: 'proj',
+        projectId: opts.projectId ?? 'proj',
         events: SNAPSHOT_EVENTS,
         meta: null,
       },
@@ -373,6 +391,127 @@ describe('runRumSegmentRetentionSweep', () => {
     expect(stmts.getRumSession.get('s-weird')).toBeTruthy();
     expect(stmts.getRumSegment.get('s-weird-seg0')).toBeTruthy();
     expect(logs.some((l) => l.includes('failed to expire session s-weird'))).toBe(true);
+  });
+
+  it('enforces a per-tenant tighter window before the global window applies', async () => {
+    // Tenant "fast" has a 7-day override; the global default is 30 days. A 10-day-old
+    // "fast" session is expired under its own window but a 10-day-old default-tenant
+    // session is not.
+    await seedLocalSession({ sessionId: 'fast-old', ageDays: 10, projectId: 'fast' });
+    await seedLocalSession({ sessionId: 'slow-mid', ageDays: 10, projectId: 'proj' });
+
+    const result = await runRumSegmentRetentionSweep({
+      stmts,
+      config,
+      getRetentionOverrides: () => [{ projectId: 'fast', retentionDays: 7 }],
+    });
+
+    expect(result).toMatchObject({ enabled: true, sessionsDeleted: 1 });
+    // The overridden tenant's 10-day session is gone (past its 7-day window)...
+    expect(stmts.getRumSession.get('fast-old')).toBeUndefined();
+    // ...while the default-tenant 10-day session survives (< 30-day global window).
+    expect(stmts.getRumSession.get('slow-mid')).toBeTruthy();
+  });
+
+  it('runs per-tenant passes even when the global window is off', async () => {
+    config = { dataDir, replayRetentionDays: 0 } as unknown as AppConfig;
+    await seedLocalSession({ sessionId: 'opt-in-old', ageDays: 20, projectId: 'optin' });
+    await seedLocalSession({ sessionId: 'default-old', ageDays: 90, projectId: 'proj' });
+
+    const result = await runRumSegmentRetentionSweep({
+      stmts,
+      config,
+      getRetentionOverrides: () => [{ projectId: 'optin', retentionDays: 14 }],
+    });
+
+    // Global off → enabled true because an override exists; only the opted-in
+    // tenant's expired session is reaped, the default tenant keeps-forever.
+    expect(result).toMatchObject({ enabled: true, sessionsDeleted: 1, cutoff: null });
+    expect(stmts.getRumSession.get('opt-in-old')).toBeUndefined();
+    expect(stmts.getRumSession.get('default-old')).toBeTruthy();
+  });
+
+  it('gives each override its own per-sweep budget (batch-stall avoidance)', async () => {
+    // Two tenants, each with 3 expired sessions and a tighter window. With a cap of
+    // 2, each tenant's own pass reaps up to 2 — a heavy tenant can't consume the
+    // other's budget.
+    for (let i = 0; i < 3; i++) {
+      await seedLocalSession({ sessionId: `a-${i}`, ageDays: 20, projectId: 'ta' });
+      await seedLocalSession({ sessionId: `b-${i}`, ageDays: 20, projectId: 'tb' });
+    }
+    const result = await runRumSegmentRetentionSweep(
+      {
+        stmts,
+        config: { dataDir, replayRetentionDays: 0 } as unknown as AppConfig,
+        getRetentionOverrides: () => [
+          { projectId: 'ta', retentionDays: 7 },
+          { projectId: 'tb', retentionDays: 7 },
+        ],
+      },
+      2,
+    );
+    // 2 from ta + 2 from tb = 4 in one sweep (independent budgets), not a shared 2.
+    expect(result.sessionsDeleted).toBe(4);
+  });
+
+  // ── Per-tenant S3 byte-ownership gate (regression: reviewer finding 2) ──────
+  it('per-tenant pass DELETES S3 segment bytes itself when the tenant prefix rule is unconfirmed (global off)', async () => {
+    config = { dataDir, replayRetentionDays: 0 } as unknown as AppConfig;
+    seedS3Session('s3-off'); // project 'proj', updated_at 60 days old
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    try {
+      const result = await runRumSegmentRetentionSweep({
+        stmts,
+        config,
+        getRetentionOverrides: () => [{ projectId: 'proj', retentionDays: 7 }],
+        // isProjectLifecycleProvisioned omitted → tenant rule not confirmed.
+      });
+      expect(result).toMatchObject({ sessionsDeleted: 1, segmentsDeleted: 1 });
+      expect(s3DeleteSpy).toHaveBeenCalledWith('rum/proj/2026/05/01/s3-off/v0/0.json.gz');
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
+  it('per-tenant pass does NOT trust the GLOBAL lifecycle flag', async () => {
+    // Global confirmed but the tenant's tighter prefix rule is not: trusting the
+    // global rule keeps the tenant's bytes until the looser global window. The
+    // per-tenant pass must delete them itself.
+    seedS3Session('s3-leak'); // project 'proj', 60d; global window = 30d
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete').mockResolvedValue(undefined);
+    try {
+      const result = await runRumSegmentRetentionSweep({
+        stmts,
+        config,
+        getRetentionOverrides: () => [{ projectId: 'proj', retentionDays: 7 }],
+        isLifecycleProvisioned: () => true,
+        isProjectLifecycleProvisioned: () => false,
+      });
+      expect(result).toMatchObject({ sessionsDeleted: 1 });
+      expect(s3DeleteSpy).toHaveBeenCalledWith('rum/proj/2026/05/01/s3-leak/v0/0.json.gz');
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
+  });
+
+  it('per-tenant pass DELEGATES S3 bytes once the tenant prefix rule is confirmed', async () => {
+    seedS3Session('s3-prov'); // project 'proj', 60d
+    const s3DeleteSpy = vi.spyOn(S3ArtifactStore.prototype, 'delete');
+    try {
+      const result = await runRumSegmentRetentionSweep({
+        stmts,
+        config,
+        getRetentionOverrides: () => [{ projectId: 'proj', retentionDays: 7 }],
+        isProjectLifecycleProvisioned: (pid) => pid === 'proj',
+      });
+      expect(result).toMatchObject({ sessionsDeleted: 1, segmentsDeleted: 1 });
+      expect(stmts.getRumSession.get('s3-prov')).toBeUndefined();
+      expect(stmts.getRumSegment.get('s3-prov-seg0')).toBeUndefined();
+      // The tenant's prefix rule owns the bytes — no S3 delete from the sweeper.
+      expect(s3DeleteSpy).not.toHaveBeenCalled();
+    } finally {
+      s3DeleteSpy.mockRestore();
+    }
   });
 
   it('expireRumSession drops both segment rows and the session row', async () => {

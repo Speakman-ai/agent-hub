@@ -8,6 +8,8 @@ import {
   RUM_STORAGE_PREFIX,
   RUM_LIFECYCLE_RULE_ID,
   RUM_MANAGED_RULE_ID_PREFIX,
+  RUM_PROJECT_RULE_ID_PREFIX,
+  rumProjectRuleId,
   type LifecycleRule,
   type LifecycleS3Port,
 } from './replay-lifecycle.js';
@@ -90,6 +92,68 @@ describe('buildRumLifecycleConfiguration', () => {
       glacierTransitionDays: 90,
     });
     expect(Rules[0].Transitions).toEqual([{ Days: 90, StorageClass: 'GLACIER' }]);
+  });
+});
+
+describe('buildRumLifecycleConfiguration — per-tenant overrides', () => {
+  it('emits a per-prefix rule per override alongside the global rule', () => {
+    const { Rules } = buildRumLifecycleConfiguration({
+      retentionDays: 30,
+      projectOverrides: [
+        { prefix: 'rum/acme/', retentionDays: 7, ruleId: rumProjectRuleId('acme') },
+        { prefix: 'rum/globex/', retentionDays: 14, ruleId: rumProjectRuleId('globex') },
+      ],
+    });
+    expect(Rules).toHaveLength(3);
+    expect(Rules[0].ID).toBe(RUM_LIFECYCLE_RULE_ID);
+    expect(Rules[0].Expiration).toEqual({ Days: 30 });
+
+    const acme = Rules.find((r) => r.ID === rumProjectRuleId('acme'))!;
+    expect(acme.Filter).toEqual({ Prefix: 'rum/acme/' });
+    expect(acme.Expiration).toEqual({ Days: 7 });
+    // Short window → no room to tier, expiration-only.
+    expect(acme.Transitions).toBeUndefined();
+    // Every per-project rule id is recognized as managed (cleaned up on re-provision).
+    expect(acme.ID?.startsWith(RUM_PROJECT_RULE_ID_PREFIX)).toBe(true);
+    expect(isManagedRumRule(acme)).toBe(true);
+
+    const globex = Rules.find((r) => r.ID === rumProjectRuleId('globex'))!;
+    expect(globex.Expiration).toEqual({ Days: 14 });
+  });
+
+  it('emits ONLY per-tenant rules when the global window is off', () => {
+    const { Rules } = buildRumLifecycleConfiguration({
+      retentionDays: 0, // global keep-forever
+      projectOverrides: [
+        { prefix: 'rum/acme/', retentionDays: 7, ruleId: rumProjectRuleId('acme') },
+      ],
+    });
+    expect(Rules).toHaveLength(1);
+    expect(Rules[0].ID).toBe(rumProjectRuleId('acme'));
+    expect(Rules[0].Expiration).toEqual({ Days: 7 });
+  });
+
+  it('dedupes overrides by rule id (last one wins)', () => {
+    const { Rules } = buildRumLifecycleConfiguration({
+      retentionDays: 30,
+      projectOverrides: [
+        { prefix: 'rum/acme/', retentionDays: 7, ruleId: rumProjectRuleId('acme') },
+        { prefix: 'rum/acme/', retentionDays: 9, ruleId: rumProjectRuleId('acme') },
+      ],
+    });
+    const acme = Rules.filter((r) => r.ID === rumProjectRuleId('acme'));
+    expect(acme).toHaveLength(1);
+    // First-wins dedupe (the second is skipped).
+    expect(acme[0].Expiration).toEqual({ Days: 7 });
+  });
+
+  it('derives a default rule id from the prefix when none is given', () => {
+    const { Rules } = buildRumLifecycleConfiguration({
+      retentionDays: 30,
+      projectOverrides: [{ prefix: 'rum/acme/', retentionDays: 7 }],
+    });
+    const acme = Rules.find((r) => r.Filter?.Prefix === 'rum/acme/')!;
+    expect(acme.ID).toBe(`${RUM_PROJECT_RULE_ID_PREFIX}rum/acme/`);
   });
 });
 

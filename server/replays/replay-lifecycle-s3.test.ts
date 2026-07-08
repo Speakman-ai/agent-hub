@@ -8,6 +8,7 @@ import {
 import { createS3LifecyclePort, provisionRumLifecycle } from './replay-lifecycle-s3.js';
 import {
   RUM_LIFECYCLE_RULE_ID,
+  rumProjectRuleId,
   type LifecycleRule,
   type LifecycleS3Port,
 } from './replay-lifecycle.js';
@@ -120,6 +121,30 @@ describe('provisionRumLifecycle', () => {
     expect(out.provisioned).toBe(true);
     expect(out.result?.changed).toBe(true);
     expect(state.rules.map((r) => r.ID)).toEqual([RUM_LIFECYCLE_RULE_ID]);
+  });
+
+  it('provisions a per-tenant prefix rule for each override alongside the global rule', async () => {
+    const state: { rules: LifecycleRule[] } = { rules: [] };
+    const port: LifecycleS3Port = {
+      async getBucketLifecycleRules() {
+        return state.rules;
+      },
+      async putBucketLifecycleRules(rules) {
+        state.rules = rules;
+      },
+    };
+    const out = await provisionRumLifecycle({
+      config: { ...baseConfig, artifactsBucket: 'bkt' } as AppConfig,
+      port,
+      projectOverrides: [
+        { prefix: 'rum/acme/', retentionDays: 7, ruleId: rumProjectRuleId('acme') },
+      ],
+    });
+    expect(out.provisioned).toBe(true);
+    expect(state.rules.map((r) => r.ID)).toEqual([RUM_LIFECYCLE_RULE_ID, rumProjectRuleId('acme')]);
+    const acme = state.rules.find((r) => r.ID === rumProjectRuleId('acme'))!;
+    expect(acme.Filter).toEqual({ Prefix: 'rum/acme/' });
+    expect(acme.Expiration).toEqual({ Days: 7 });
   });
 
   it('swallows a provisioning failure and returns it as an error (boot stays up)', async () => {

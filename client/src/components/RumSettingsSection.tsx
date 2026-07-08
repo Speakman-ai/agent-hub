@@ -112,6 +112,13 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
   const [savingRetention, setSavingRetention] = useState(false);
   const [retentionError, setRetentionError] = useState<any>(null);
 
+  // Per-tenant BASE (hot/index) retention window override in days. `0` means "use
+  // the platform default" (no override persisted). Tighten-only: a value longer
+  // than the platform default resolves back to the default server-side. Persisted
+  // on the project's `replay` config.
+  const [baseRetentionDays, setBaseRetentionDays] = useState<number>(0);
+  const [savingBaseRetention, setSavingBaseRetention] = useState(false);
+
   // Ingest-client state
   const [clients, setClients] = useState<any[]>([]);
   const [loadingClients, setLoadingClients] = useState(false);
@@ -221,6 +228,8 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
     );
     setRetentionError(null);
     setSavingRetention(false);
+    setBaseRetentionDays(typeof cfg.retentionDays === 'number' ? cfg.retentionDays : 0);
+    setSavingBaseRetention(false);
   }, [project]);
 
   // Persist the per-project replay sample rate. The operator's choice is always
@@ -371,6 +380,33 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
         );
       } finally {
         if (activePidRef.current === pid) setSavingRetention(false);
+      }
+    },
+    [project, showToast],
+  );
+
+  const handleChangeBaseRetentionDays = useCallback(
+    async (value: number) => {
+      if (!project) return;
+      const pid = project.id;
+      setBaseRetentionDays(value);
+      setSavingBaseRetention(true);
+      setRetentionError(null);
+      const replay: Record<string, unknown> = { ...((project as any)?.replay || {}) };
+      // 0 = "platform default" → clear the override (a persisted 0 would fail the
+      // must-be-positive validation).
+      if (value > 0) replay.retentionDays = value;
+      else delete replay.retentionDays;
+      try {
+        await api.updateProject(pid, { replay });
+        if (showToast) showToast('Retention settings saved for this project.', 'success', 2500);
+      } catch (err: any) {
+        if (activePidRef.current !== pid) return;
+        setRetentionError(err?.message || 'Failed to save retention settings');
+        const cfg = (project as any)?.replay || {};
+        setBaseRetentionDays(typeof cfg.retentionDays === 'number' ? cfg.retentionDays : 0);
+      } finally {
+        if (activePidRef.current === pid) setSavingBaseRetention(false);
       }
     },
     [project, showToast],
@@ -797,6 +833,33 @@ export default function RumSettingsSection({ projects = [], onOpenSession, showT
             button) to move it to the <strong className="text-gray-300">extended tier</strong> —
             kept for the window below (up to 15 months), with the clock starting when you flag it.
           </p>
+        </div>
+
+        <div className="mt-4 flex items-center gap-4">
+          <label
+            htmlFor="rum-base-retention-days"
+            className="text-xs font-semibold text-gray-300 flex-1"
+          >
+            Base-retention window (this project)
+            <span className="block font-normal text-gray-500">
+              Overrides the platform default. Can only shorten it, never extend past it.
+            </span>
+          </label>
+          <select
+            id="rum-base-retention-days"
+            data-testid="rum-base-retention-days"
+            value={String(baseRetentionDays)}
+            disabled={!project || savingBaseRetention}
+            onChange={(e: any) => handleChangeBaseRetentionDays(Number(e.target.value))}
+            className="bg-gray-900/60 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+          >
+            <option value="0">Platform default</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+          </select>
         </div>
 
         <div className="mt-4 flex items-center gap-4">

@@ -6,6 +6,9 @@ import {
   resolveReplayPolicy,
   resolveEffectiveReplayRate,
   resolveIngestQuota,
+  resolveBaseRetentionDays,
+  collectRetentionOverrides,
+  MAX_BASE_RETENTION_DAYS,
   DEFAULT_REPLAY_POLICY,
   DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
   MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
@@ -491,5 +494,93 @@ describe('resolveReplayPolicy — nested rates', () => {
     expect(policy.sessionSampleRate).toBeNull();
     expect(policy.sessionReplaySampleRate).toBeNull();
     expect(policy.effectiveReplaySampleRate).toBeNull();
+  });
+});
+
+describe('normalizeReplayConfig — retentionDays (per-tenant BASE window)', () => {
+  it('accepts a positive integer and floors fractions', () => {
+    expect(normalizeReplayConfig({ retentionDays: 7 })).toEqual({
+      ok: true,
+      value: { retentionDays: 7 },
+    });
+    expect(normalizeReplayConfig({ retentionDays: 7.9 })).toEqual({
+      ok: true,
+      value: { retentionDays: 7 },
+    });
+  });
+
+  it('rejects non-positive, non-finite, and over-max values', () => {
+    expect(normalizeReplayConfig({ retentionDays: 0 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ retentionDays: -5 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ retentionDays: NaN }).ok).toBe(false);
+    expect(normalizeReplayConfig({ retentionDays: 'week' }).ok).toBe(false);
+    expect(normalizeReplayConfig({ retentionDays: MAX_BASE_RETENTION_DAYS + 1 }).ok).toBe(false);
+    expect(normalizeReplayConfig({ retentionDays: MAX_BASE_RETENTION_DAYS }).ok).toBe(true);
+  });
+
+  it('coexists with other replay config keys', () => {
+    expect(normalizeReplayConfig({ sampleRate: 0.5, retentionDays: 14 })).toEqual({
+      ok: true,
+      value: { sampleRate: 0.5, retentionDays: 14 },
+    });
+  });
+});
+
+describe('resolveBaseRetentionDays', () => {
+  it('returns the global default when there is no override', () => {
+    expect(resolveBaseRetentionDays(undefined, 30)).toBe(30);
+    expect(resolveBaseRetentionDays(null, 30)).toBe(30);
+    expect(resolveBaseRetentionDays(0, 30)).toBe(30);
+    // Global off (keep-forever) with no override → 0.
+    expect(resolveBaseRetentionDays(undefined, 0)).toBe(0);
+  });
+
+  it('tightens: min(override, global) when the global window is on', () => {
+    expect(resolveBaseRetentionDays(7, 30)).toBe(7);
+    // A longer override cannot beat the global S3 rule → clamps to the global window.
+    expect(resolveBaseRetentionDays(90, 30)).toBe(30);
+    expect(resolveBaseRetentionDays(30, 30)).toBe(30);
+  });
+
+  it('turns retention ON for a tenant when the global window is off', () => {
+    expect(resolveBaseRetentionDays(7, 0)).toBe(7);
+    expect(resolveBaseRetentionDays(400, 0)).toBe(400);
+  });
+
+  it('floors a fractional override', () => {
+    expect(resolveBaseRetentionDays(7.9, 30)).toBe(7);
+  });
+});
+
+describe('collectRetentionOverrides', () => {
+  const proj = (id: string, retentionDays?: number) => ({
+    id,
+    replay: retentionDays === undefined ? undefined : { retentionDays },
+  });
+
+  it('returns only projects whose effective window differs from the global default', () => {
+    const overrides = collectRetentionOverrides(
+      [
+        proj('tighter', 7), // < global → included
+        proj('same', 30), // == global → omitted
+        proj('longer', 90), // clamps to global → omitted (behaves as default)
+        proj('default'), // no override → omitted
+      ],
+      30,
+    );
+    expect(overrides).toEqual([{ projectId: 'tighter', retentionDays: 7 }]);
+  });
+
+  it('includes tenants that opt into retention while the global window is off', () => {
+    const overrides = collectRetentionOverrides([proj('opt-in', 14), proj('off')], 0);
+    expect(overrides).toEqual([{ projectId: 'opt-in', retentionDays: 14 }]);
+  });
+
+  it('ignores non-positive / missing overrides', () => {
+    const overrides = collectRetentionOverrides(
+      [{ id: 'a', replay: { sampleRate: 0.5 } }, { id: 'b', replay: null }, { id: 'c' }],
+      30,
+    );
+    expect(overrides).toEqual([]);
   });
 });

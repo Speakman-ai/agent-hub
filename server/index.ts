@@ -66,9 +66,16 @@ import {
 } from './heartbeat.js';
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
-import { startReplayRetentionSweeper } from './replays/replay-retention-sweeper.js';
+import {
+  startReplayRetentionSweeper,
+  RETENTION_SWEEP_INTERVAL_MS,
+} from './replays/replay-retention-sweeper.js';
 import { startRumSegmentRetentionSweeper } from './replays/rum-segment-retention-sweeper.js';
-import { provisionRumLifecycle } from './replays/replay-lifecycle-s3.js';
+import { collectRetentionOverrides } from './replays/replay-config.js';
+import {
+  createRumLifecycleState,
+  reconcileRumLifecycle,
+} from './replays/rum-lifecycle-reconciler.js';
 import { appendDailyNote } from './memory.js';
 import config, { refreshShellPath } from './config.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
@@ -1854,11 +1861,24 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
       // (see the holder below); until then, and on local storage, the sweeper
       // still reclaims the blob itself so a provisioning gap can't orphan bytes.
       // Linked (ticket/card) replays are never expired.
-      const rumLifecycle = { provisioned: false };
+      // Shared S3-lifecycle confirmation state the sweepers gate byte delegation
+      // on. `provisioned` = the global `rum/` rule is confirmed; `provisionedProjects`
+      // = the per-tenant `rum/<project>/` rules confirmed installed. Kept in sync by
+      // the reconciler below; the sweepers hold closures over this object.
+      const rumLifecycle = createRumLifecycleState();
+      // Per-tenant BASE (hot/index) retention overrides, resolved fresh each sweep
+      // from the current project config so an operator toggling
+      // `project.replay.retentionDays` takes effect without a restart. Only
+      // projects whose effective window actually differs from the global default
+      // are returned (tighten-only; see collectRetentionOverrides).
+      const getRetentionOverrides = () =>
+        collectRetentionOverrides(getProjects(), config.replayRetentionDays);
       startReplayRetentionSweeper({
         stmts: stmts!,
         config,
         isLifecycleProvisioned: () => rumLifecycle.provisioned,
+        isProjectLifecycleProvisioned: (pid) => rumLifecycle.provisionedProjects.has(pid),
+        getRetentionOverrides,
       });
 
       // Index-only TTL reconciliation for SEGMENTED captures (rum_sessions /
@@ -1870,19 +1890,30 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
         stmts: stmts!,
         config,
         isLifecycleProvisioned: () => rumLifecycle.provisioned,
+        isProjectLifecycleProvisioned: (pid) => rumLifecycle.provisionedProjects.has(pid),
+        getRetentionOverrides,
       });
 
-      // Provision the S3-native lifecycle policy for segmented RUM objects
-      // (`rum/` prefix): blob expiry + IA/Glacier tiering owned by S3, not the
-      // app. One-shot + idempotent; a true no-op on local storage (no bucket). On
-      // S3 it reads current rules and PUTs only when the managed rule differs —
-      // when retention is disabled that means REMOVING any stale managed rule
-      // (foreign rules preserved), not skipping the call. Best-effort so a missing
-      // s3:*LifecycleConfiguration permission logs rather than crashes boot. Only
-      // on confirmed success does the sweeper start delegating S3 byte expiry.
-      void provisionRumLifecycle({ config }).then((out) => {
-        rumLifecycle.provisioned = out.provisioned;
-      });
+      // Provision the S3-native lifecycle policy for segmented RUM objects: the
+      // global `rum/` rule (blob expiry + IA/Glacier tiering owned by S3, not the
+      // app) plus one `rum/<project>/` rule per per-tenant override at its tighter
+      // window (S3 honors the shortest overlapping expiration). Idempotent + a true
+      // no-op on local storage; best-effort on S3 so a missing
+      // s3:*LifecycleConfiguration permission logs rather than crashes boot.
+      //
+      // Run on an interval (not one-shot): the sweepers read the override set fresh
+      // each tick, so a runtime `project.replay.retentionDays` edit must also get
+      // its per-prefix rule installed and confirmed — otherwise the sweeper would
+      // (safely, per its per-project provisioned gate) keep deleting that tenant's
+      // bytes itself instead of delegating to lifecycle. Reconciling keeps the S3
+      // rules and the confirmation state in step with live project config.
+      const reconcileLifecycle = () =>
+        reconcileRumLifecycle({ config, getProjects, state: rumLifecycle }).catch((err: Error) =>
+          console.error(`[replay-lifecycle] reconcile failed: ${err.message}`),
+        );
+      void reconcileLifecycle();
+      const rumLifecycleTimer = setInterval(reconcileLifecycle, RETENTION_SWEEP_INTERVAL_MS);
+      if (typeof rumLifecycleTimer.unref === 'function') rumLifecycleTimer.unref();
     }
 
     initIosBuildEngine({ stmts: stmts!, broadcast });

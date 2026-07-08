@@ -26,8 +26,11 @@
  *     dev installs). This is the orphan/reclamation path for that backend.
  *
  * Policy:
- *   - Retention is OFF unless `replayRetentionDays > 0`. With it unset (the
- *     default) the sweep is a no-op — matching the off/opt-in posture.
+ *   - Retention runs when the global window is on (`replayRetentionDays > 0`) OR
+ *     any project sets a per-tenant BASE override (`getRetentionOverrides`); with
+ *     neither the sweep is a no-op, matching the off/opt-in posture. Each
+ *     overriding tenant gets its own bounded pass at its own (tighter) cutoff and
+ *     `project_id` filter so a heavy tenant can't stall another tenant's window.
  *   - Only UNLINKED replays are deleted. A replay attached to a support ticket
  *     or kanban card (`support_ticket_id` / `card_id`) is an intentional triage
  *     artifact; expiring it would silently destroy investigation history, so
@@ -47,6 +50,7 @@
 
 import { getArtifactStoreForLocation } from '../artifacts/artifact-store.js';
 import { toSqliteUtc } from './replay-retention.js';
+import type { ProjectRetentionOverride } from './replay-config.js';
 import type { AppConfig, SessionReplayRow, Stmts } from '../types.js';
 
 // Re-exported from the pure retention module (`replay-retention.ts`) so existing
@@ -71,22 +75,45 @@ export interface ReplayRetentionDeps {
   /** Optional structured logger. Defaults to console.error. */
   log?: (msg: string) => void;
   /**
-   * Whether the S3-native RUM lifecycle policy is CONFIRMED provisioned. Only when
-   * this returns true does the sweeper trust the bucket lifecycle to expire S3
-   * bytes and drop just the index row; otherwise it deletes the object itself so a
-   * provisioning gap (best-effort, may fail on a missing IAM permission) can't
-   * orphan un-indexed bytes. Read fresh each sweep (provisioning completes
-   * asynchronously after boot). Defaults to "not provisioned" (safe fallback).
+   * Whether the GLOBAL `rum/` S3-native lifecycle rule is CONFIRMED provisioned.
+   * Only when this returns true does the DEFAULT (global-window) pass trust the
+   * bucket lifecycle to expire S3 bytes and drop just the index row; otherwise it
+   * deletes the object itself so a provisioning gap (best-effort, may fail on a
+   * missing IAM permission) can't orphan un-indexed bytes. Read fresh each sweep
+   * (provisioning completes asynchronously after boot). Defaults to "not
+   * provisioned" (safe fallback).
    */
   isLifecycleProvisioned?: () => boolean;
+  /**
+   * Whether the PER-PROJECT `rum/<project>/` S3 lifecycle rule for a specific
+   * tenant is CONFIRMED provisioned. A per-tenant pass may only delegate S3 byte
+   * expiry to lifecycle once THIS tenant's own (tighter) prefix rule is confirmed
+   * installed — the global `rum/` rule expires at the looser global window, so
+   * trusting it for a tighter-window tenant would keep bytes past the tenant's
+   * contract (or forever, when the global window is off). Until confirmed, the
+   * per-tenant pass deletes the bytes itself (no orphans, honors the tighter
+   * window). Read fresh each sweep. Defaults to "not provisioned" (safe fallback).
+   */
+  isProjectLifecycleProvisioned?: (projectId: string) => boolean;
+  /**
+   * Projects whose effective BASE (hot/index) retention window differs from the
+   * global default (see `collectRetentionOverrides`). Each gets its own bounded
+   * pass at its own tighter cutoff and `project_id` filter, so a heavy tenant
+   * can't stall another tenant's window and each per-tenant override is enforced.
+   * Read fresh each sweep so project edits take effect without a restart. Unset /
+   * empty → the single global-window pass (legacy behavior).
+   */
+  getRetentionOverrides?: () => ProjectRetentionOverride[];
 }
 
 export interface RetentionSweepResult {
-  /** Whether retention is enabled (replayRetentionDays > 0). */
+  /** Whether retention ran (global `replayRetentionDays > 0` OR any per-project
+   *  override is set). */
   enabled: boolean;
-  /** ISO cutoff; rows older than this were eligible. Null when disabled. */
+  /** The GLOBAL-window cutoff; rows older than this were eligible in the default
+   *  pass. Null when the global window is off (only per-project passes ran). */
   cutoff: string | null;
-  /** Number of replays whose blob + row were removed this sweep. */
+  /** Number of replays whose blob + row were removed this sweep (all passes). */
   deleted: number;
   /** Replays matched but whose deletion threw (left for the next sweep). */
   failed: number;
@@ -129,44 +156,83 @@ export async function runReplayRetentionSweep(
   const log = deps.log ?? ((msg: string) => console.error(msg));
   const now = deps.now ?? Date.now;
 
-  const days = config.replayRetentionDays;
-  if (!Number.isFinite(days) || days <= 0) {
+  const globalDays = config.replayRetentionDays;
+  const globalEnabled = Number.isFinite(globalDays) && globalDays > 0;
+  const overrides = deps.getRetentionOverrides?.() ?? [];
+  // Nothing to do when neither a global window nor any per-tenant override exists.
+  if (!globalEnabled && overrides.length === 0) {
     return { enabled: false, cutoff: null, deleted: 0, failed: 0 };
   }
 
   const nowMs = now();
-  const cutoff = toSqliteUtc(nowMs - days * MS_PER_DAY);
   // A session flagged for extended retention carries a future `retained_until`;
-  // it stays exempt from the default sweep until that instant passes. Pass the
-  // current UTC instant so the query can filter those rows out.
-  const rows = stmts.getExpiredUnlinkedSessionReplays.all(
-    cutoff,
-    toSqliteUtc(nowMs),
-    Math.max(1, Math.trunc(maxPerSweep)),
-  ) as SessionReplayRow[];
-
-  const lifecycleProvisioned = deps.isLifecycleProvisioned?.() ?? false;
+  // it stays exempt from every pass until that instant passes. Pass the current
+  // UTC instant so each query can filter those rows out.
+  const nowUtc = toSqliteUtc(nowMs);
+  const cap = Math.max(1, Math.trunc(maxPerSweep));
 
   let deleted = 0;
   let failed = 0;
-  for (const row of rows) {
-    try {
-      await expireReplayRow({ stmts, config }, row, lifecycleProvisioned);
-      deleted += 1;
-    } catch (err) {
-      failed += 1;
-      log(`[replay-retention] failed to delete replay ${row.id}: ${(err as Error).message}`);
+  // `provisioned` is scoped PER PASS: the default pass trusts the global `rum/`
+  // rule; a per-tenant pass trusts ONLY that tenant's own `rum/<project>/` rule.
+  const reap = async (rows: SessionReplayRow[], provisioned: boolean): Promise<void> => {
+    for (const row of rows) {
+      try {
+        await expireReplayRow({ stmts, config }, row, provisioned);
+        deleted += 1;
+      } catch (err) {
+        failed += 1;
+        log(`[replay-retention] failed to delete replay ${row.id}: ${(err as Error).message}`);
+      }
     }
+  };
+
+  // Per-tenant passes first: each override gets its own bounded budget at its own
+  // tighter cutoff + project_id filter, so a heavy tenant can't starve another's
+  // window (batch-stall avoidance). Overrides only tighten, so a row reaped here
+  // would also be eligible in the looser global pass below — reaping it here
+  // first keeps the global pass's budget for default-window tenants. A per-tenant
+  // pass delegates S3 bytes to lifecycle ONLY when this tenant's own prefix rule
+  // is confirmed provisioned; otherwise the bytes are deleted here (the global
+  // rule would keep them past the tenant's tighter window / forever if global-off).
+  for (const o of overrides) {
+    const cutoff = toSqliteUtc(nowMs - o.retentionDays * MS_PER_DAY);
+    const projectProvisioned = deps.isProjectLifecycleProvisioned?.(o.projectId) ?? false;
+    const rows = stmts.getExpiredUnlinkedSessionReplaysByProject.all(
+      cutoff,
+      nowUtc,
+      o.projectId,
+      cap,
+    ) as SessionReplayRow[];
+    await reap(rows, projectProvisioned);
+  }
+
+  // Default pass at the global window (skipped when the global window is off:
+  // non-overridden tenants keep-forever). Harmlessly mops up any overridden-tenant
+  // rows past the global window too (delete is idempotent), but in steady state
+  // the per-tenant pass already reaped them at the tighter cutoff.
+  let globalCutoff: string | null = null;
+  if (globalEnabled) {
+    const globalProvisioned = deps.isLifecycleProvisioned?.() ?? false;
+    globalCutoff = toSqliteUtc(nowMs - globalDays * MS_PER_DAY);
+    const rows = stmts.getExpiredUnlinkedSessionReplays.all(
+      globalCutoff,
+      nowUtc,
+      cap,
+    ) as SessionReplayRow[];
+    await reap(rows, globalProvisioned);
   }
 
   if (deleted > 0 || failed > 0) {
+    const windowDesc = globalEnabled ? `${globalDays}d global` : 'per-tenant';
     log(
-      `[replay-retention] swept ${deleted} expired replay(s) older than ${cutoff} ` +
-        `(${days}d retention)${failed ? `, ${failed} failed` : ''}`,
+      `[replay-retention] swept ${deleted} expired replay(s) ` +
+        `(${windowDesc}${overrides.length ? ` + ${overrides.length} tenant override(s)` : ''})` +
+        `${failed ? `, ${failed} failed` : ''}`,
     );
   }
 
-  return { enabled: true, cutoff, deleted, failed };
+  return { enabled: true, cutoff: globalCutoff, deleted, failed };
 }
 
 /**
@@ -180,7 +246,12 @@ export function startReplayRetentionSweeper(
   deps: ReplayRetentionDeps,
   intervalMs: number = RETENTION_SWEEP_INTERVAL_MS,
 ): () => void {
-  if (!Number.isFinite(deps.config.replayRetentionDays) || deps.config.replayRetentionDays <= 0) {
+  const globalEnabled =
+    Number.isFinite(deps.config.replayRetentionDays) && deps.config.replayRetentionDays > 0;
+  // Start the timer when a global window is set OR per-tenant overrides may exist
+  // (the dep is wired). A project can enable/disable an override at runtime, so
+  // with the dep present we always run and let each sweep no-op when idle.
+  if (!globalEnabled && !deps.getRetentionOverrides) {
     return () => {};
   }
   const timer = setInterval(() => {

@@ -59,6 +59,17 @@ function safeSegment(s: string): string {
 }
 
 /**
+ * The S3 key prefix all of one project's segment objects live under:
+ * `rum/<safe(projectId)>/`. Applies the SAME id sanitization as
+ * {@link buildSegmentKey} (a client-minted project id can't traverse the storage
+ * root), so a per-project S3 lifecycle rule keyed on this prefix matches the
+ * exact objects the store writes. `null` (anonymous ingest) → `rum/_anon/`. Pure.
+ */
+export function buildProjectStoragePrefix(projectId?: string | null): string {
+  return `rum/${safeSegment(projectId ?? '_anon')}/`;
+}
+
+/**
  * Build the storage key for a segment object. Date-partitioned by the segment's
  * start timestamp (epoch ms, UTC) so S3 lifecycle rules can key on the
  * tenant/date prefix. `projectId` null (anonymous ingest) partitions under

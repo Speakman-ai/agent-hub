@@ -38,6 +38,33 @@ export const RUM_LIFECYCLE_RULE_ID = 'agent-hub-rum-retention';
  *  our rules without clobbering foreign rules an operator set on the bucket. */
 export const RUM_MANAGED_RULE_ID_PREFIX = 'agent-hub-rum';
 
+/** Id prefix for a per-tenant override rule (`rum/<project>/`). Distinct enough
+ *  from the default rule id (`agent-hub-rum-retention`) that a project literally
+ *  named `retention` can't collide with it. */
+export const RUM_PROJECT_RULE_ID_PREFIX = 'agent-hub-rum-project-';
+
+/** Build the managed rule id for a per-tenant override on `prefix`. */
+export function rumProjectRuleId(projectId: string): string {
+  return `${RUM_PROJECT_RULE_ID_PREFIX}${projectId}`;
+}
+
+/**
+ * A per-tenant BASE-retention override delivered to the lifecycle builder. The
+ * caller supplies the exact S3 key `prefix` (`rum/<safe(projectId)>/`, built via
+ * `buildProjectStoragePrefix` so it matches the objects the segment store writes)
+ * and the effective (already tighten-clamped) `retentionDays`. Because S3 honors
+ * the SHORTEST overlapping expiration, a per-prefix rule with a shorter window
+ * than the global `rum/` rule expires that tenant's bytes on the tighter schedule.
+ */
+export interface RumLifecycleProjectOverride {
+  /** S3 key prefix (`rum/<project>/`) this rule scopes to. */
+  prefix: string;
+  /** Effective expiration window in days (> 0 — already tighten-clamped). */
+  retentionDays: number;
+  /** Managed rule id; defaults to a deterministic id derived from the prefix. */
+  ruleId?: string;
+}
+
 // ── S3 hard constraints ────────────────────────────────────────────
 /** STANDARD_IA can't be entered before 30 days. */
 const MIN_IA_TRANSITION_DAYS = 30;
@@ -92,23 +119,34 @@ export interface RumLifecycleOptions {
   ruleId?: string;
   /** Emit IA/Glacier transitions. Default true; false = expiration-only. */
   enableTiering?: boolean;
+  /**
+   * Per-tenant BASE-retention overrides, each emitting an additional managed rule
+   * scoped to that tenant's `rum/<project>/` prefix at its own (tighter) window.
+   * Because S3 honors the SHORTEST overlapping expiration, a per-prefix rule with
+   * a shorter window than the global `rum/` rule expires that tenant's bytes on
+   * the tighter schedule. A tenant with NO global rule (global retention off)
+   * still expires under its own rule.
+   */
+  projectOverrides?: RumLifecycleProjectOverride[];
 }
 
 /**
- * Build the lifecycle configuration for segmented RUM objects. Pure. Returns an
- * empty rule set when retention is disabled (`retentionDays <= 0`) so provisioning
- * touches nothing until an operator opts in. Transitions that can't legally fit
- * before expiration are dropped rather than emitted (which would make S3 reject
- * the whole config).
+ * Build one lifecycle rule (expiration + best-fit tiering + MPU abort) for a
+ * prefix at `retentionDays`. Returns null when retention is off (`<= 0`) so the
+ * prefix is simply not managed. Transitions that can't legally fit before
+ * expiration are dropped (S3 rejects a config with a transition on/after
+ * expiration). Pure.
  */
-export function buildRumLifecycleConfiguration(opts: RumLifecycleOptions): LifecycleConfiguration {
-  const prefix = opts.prefix ?? RUM_STORAGE_PREFIX;
-  const ruleId = opts.ruleId ?? RUM_LIFECYCLE_RULE_ID;
+function buildRumLifecycleRule(opts: {
+  prefix: string;
+  retentionDays: number;
+  ruleId: string;
+  iaTransitionDays?: number | null;
+  glacierTransitionDays?: number | null;
+  enableTiering?: boolean;
+}): LifecycleRule | null {
   const retention = Math.trunc(opts.retentionDays);
-
-  if (!Number.isFinite(retention) || retention <= 0) {
-    return { Rules: [] };
-  }
+  if (!Number.isFinite(retention) || retention <= 0) return null;
 
   const transitions: LifecycleTransition[] = [];
   if (opts.enableTiering !== false) {
@@ -136,15 +174,57 @@ export function buildRumLifecycleConfiguration(opts: RumLifecycleOptions): Lifec
   }
 
   const rule: LifecycleRule = {
-    ID: ruleId,
+    ID: opts.ruleId,
     Status: 'Enabled',
-    Filter: { Prefix: prefix },
+    Filter: { Prefix: opts.prefix },
     Expiration: { Days: retention },
     AbortIncompleteMultipartUpload: { DaysAfterInitiation: ABORT_INCOMPLETE_MPU_DAYS },
   };
   if (transitions.length > 0) rule.Transitions = transitions;
+  return rule;
+}
 
-  return { Rules: [rule] };
+/**
+ * Build the lifecycle configuration for segmented RUM objects: the global `rum/`
+ * rule at `retentionDays` plus one per-tenant rule per {@link RumLifecycleOptions.projectOverrides}.
+ * Pure. Returns an empty rule set when BOTH the global retention is disabled
+ * (`retentionDays <= 0`) and there are no overrides, so provisioning touches
+ * nothing until an operator opts in. Per-tenant tiering is left at the defaults
+ * (short windows simply emit expiration-only, since a transition can't fit before
+ * a sub-30-day expiration). Transitions that can't legally fit are dropped rather
+ * than emitted (which would make S3 reject the whole config).
+ */
+export function buildRumLifecycleConfiguration(opts: RumLifecycleOptions): LifecycleConfiguration {
+  const rules: LifecycleRule[] = [];
+
+  const globalRule = buildRumLifecycleRule({
+    prefix: opts.prefix ?? RUM_STORAGE_PREFIX,
+    retentionDays: opts.retentionDays,
+    ruleId: opts.ruleId ?? RUM_LIFECYCLE_RULE_ID,
+    iaTransitionDays: opts.iaTransitionDays,
+    glacierTransitionDays: opts.glacierTransitionDays,
+    enableTiering: opts.enableTiering,
+  });
+  if (globalRule) rules.push(globalRule);
+
+  // Dedupe overrides by rule id (a repeated project id would emit a duplicate
+  // rule; last one wins, matching a re-provision).
+  const seen = new Set<string>();
+  for (const o of opts.projectOverrides ?? []) {
+    const ruleId = o.ruleId ?? `${RUM_PROJECT_RULE_ID_PREFIX}${o.prefix}`;
+    if (seen.has(ruleId)) continue;
+    seen.add(ruleId);
+    const rule = buildRumLifecycleRule({
+      prefix: o.prefix,
+      retentionDays: o.retentionDays,
+      ruleId,
+      // Per-tenant windows are typically short (sub-30-day), so tiering is left at
+      // the defaults and dropped when it can't fit before expiration.
+    });
+    if (rule) rules.push(rule);
+  }
+
+  return { Rules: rules };
 }
 
 /** True when a rule is one this module owns (id starts with the managed prefix). */
