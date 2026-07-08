@@ -4,3 +4,11 @@
 *.pem
 terraform.tfvars
 !terraform.tfvars.example
+
+# Real per-environment inputs carry live account IDs / ARNs / instance IDs and
+# must never be committed. Operators copy the tracked *.example templates and
+# fill in real values locally (or source them from CI via TF_VAR_*).
+environments/*/*.tfvars
+environments/*/backend.hcl
+!environments/*/*.tfvars.example
+!environments/*/backend.hcl.example

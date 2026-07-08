@@ -33,7 +33,12 @@ describe('PR-environments Terraform removal contract', () => {
   const outputsTf = readFileSync(resolve(tfDir, 'outputs.tf'), 'utf8');
   const userData = readFileSync(resolve(tfDir, 'agent-hub-user-data.tftpl'), 'utf8');
   const tfvarsExample = readFileSync(resolve(tfDir, 'terraform.tfvars.example'), 'utf8');
-  const ryanTfvars = readFileSync(resolve(tfDir, 'environments/ryan/ryan.tfvars'), 'utf8');
+  // Real per-env tfvars are gitignored (AH-1388); the ryan sandbox env dir was
+  // renamed to the generic `dev`. Assert against the tracked .example template.
+  const devTfvarsExample = readFileSync(
+    resolve(tfDir, 'environments/dev/dev.tfvars.example'),
+    'utf8',
+  );
 
   // -- Variables ------------------------------------------------------------
 
@@ -125,16 +130,16 @@ describe('PR-environments Terraform removal contract', () => {
     expect(existsSync(resolve(tfDir, 'templates/pr-env-base-nginx.conf.tftpl'))).toBe(false);
   });
 
-  // -- Example tfvars + ryan.tfvars ----------------------------------------
+  // -- Example tfvars + dev.tfvars.example ---------------------------------
 
   it('terraform.tfvars.example no longer mentions PR-env vars', () => {
     expect(tfvarsExample).not.toMatch(/enable_pr_environments\s*=/);
     expect(tfvarsExample).not.toMatch(/^\s*cert_renewal_email\s*=/m);
   });
 
-  it('ryan.tfvars no longer assigns PR-env vars', () => {
-    expect(ryanTfvars).not.toMatch(/^\s*enable_pr_env/m);
-    expect(ryanTfvars).not.toMatch(/^\s*cert_renewal_email\s*=/m);
-    expect(ryanTfvars).not.toMatch(/^\s*pr_env_preview_subdomain\s*=/m);
+  it('dev.tfvars.example no longer assigns PR-env vars', () => {
+    expect(devTfvarsExample).not.toMatch(/^\s*enable_pr_env/m);
+    expect(devTfvarsExample).not.toMatch(/^\s*cert_renewal_email\s*=/m);
+    expect(devTfvarsExample).not.toMatch(/^\s*pr_env_preview_subdomain\s*=/m);
   });
 });

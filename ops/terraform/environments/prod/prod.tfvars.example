@@ -1,0 +1,141 @@
+# PRODUCTION Agent Hub — dedicated AWS account, us-east-2. Fully
+# Terraform-managed: own DNS zone (delegated from a root zone), the remote
+# Finalize fleet (spot, autoscaled, scale-to-zero), and the shared base-image
+# registry mirror.
+#
+# Copy to prod.tfvars and fill in your account-specific values. The real
+# prod.tfvars is gitignored and must never be committed — it carries live
+# account IDs / ARNs / instance IDs. Source the placeholders below from your
+# private overlay or from CI via TF_VAR_* environment variables.
+#
+#   cp environments/prod/prod.tfvars.example environments/prod/prod.tfvars
+#   AWS_PROFILE=<profile> terraform init -reconfigure -backend-config=environments/prod/backend.hcl
+#   AWS_PROFILE=<profile> terraform apply -var-file=environments/prod/prod.tfvars
+
+aws_region   = "us-east-2"
+project_name = "agenthub"
+name         = "agenthub"
+
+# ── DNS: own zone, delegated from a root zone ────────────────────────────────
+public_fqdn                         = "agenthub.example.com"
+base_domain                         = "agenthub.example.com"
+create_route53_zone                 = true
+lookup_route53_zone_in_this_account = false
+root_delegation_zone_id             = "<ROOT_DELEGATION_ZONE_ID>" # root zone (root account)
+root_delegation_role_arn            = "arn:aws:iam::<ROOT_ACCOUNT_ID>:role/agenthub_env_role_assume"
+
+enable_dedicated_alb    = true
+web_cidr_blocks         = ["0.0.0.0/0"]
+alb_ingress_cidr_blocks = ["0.0.0.0/0"]
+
+# Subdomain preview mode → live HMR previews (wildcard cert + Route 53 alias +
+# ALB listener cert for *.preview.<public_fqdn>). Pair with
+# AGENT_HUB_PREVIEW_SUBDOMAIN_BASE on the Hub. See ops/RUNBOOK-subdomain-preview-hmr.md
+enable_preview_subdomain = true
+
+# ── Access: SSM only ─────────────────────────────────────────────────────────
+create_ssh_key      = false
+enable_ssh_ingress  = false
+enable_instance_ssm = true
+ssh_cidr_blocks     = []
+
+# ── App image: published :main from public ECR (cross-account pull) ──────────
+bootstrap_agent_hub = true
+agent_hub_image_uri = "public.ecr.aws/<ECR_PUBLIC_ALIAS>/agent-hub:main"
+
+# CI release deploy → THIS box. The release workflow pushes :main to the public
+# ECR, then assumes the role below in THIS account to restart the server over
+# SSM. Create the GitHub OIDC provider here (new account) and the assumed role.
+manage_github_oidc_role             = true
+create_github_oidc_provider         = true
+enable_ci_ssm_deploy_after_ecr_push = true
+ci_ssm_deploy_instance_id           = "<PROD_HUB_INSTANCE_ID>" # agenthub prod Hub
+
+agent_hub_default_username = "admin"
+agent_hub_default_password = "auto"
+
+# Hub no longer runs CI (the fleet does) → right-sized vs the test box.
+instance_type    = "m7i.2xlarge" # 8 vCPU / 32 GB
+root_volume_size = 150
+
+# ── Hub data volume + daily snapshots (hub-data.tf) ──────────────────────────
+# Dedicated encrypted volume holding the Hub DB + data dir, with a DLM daily
+# snapshot policy. The KMS ARN must match the live volume's CMK exactly, or TF
+# plans a replacement. hub_data_availability_zone must match the live volume's AZ.
+enable_hub_data_volume     = true
+hub_data_volume_size       = 256
+hub_data_availability_zone = "us-east-2a"
+hub_data_kms_key_arn       = "arn:aws:kms:us-east-2:<PROD_ACCOUNT_ID>:key/<HUB_DATA_KMS_KEY_ID>"
+
+# ALB access logs — bucket must already exist in this account.
+alb_access_logs_bucket = "agent-hub-alb-logs-<PROD_ACCOUNT_ID>"
+
+# Health check — tolerant values for a SINGLE-instance target group (no peer to
+# fail over to). Deliberately more forgiving than the multi-target default.
+alb_health_check_timeout             = 10
+alb_health_check_unhealthy_threshold = 5
+
+# ── Finalize remote-runner fleet (full production config) ────────────────────
+enable_finalize_runners      = true
+manage_shared_finalize_infra = true # this account owns its buckets/ECR
+# The ASG launches from instance_types (the mixed-instances override pool), NOT
+# instance_type. All entries are 16 GB m-family xlarge (4 vCPU); diversified
+# across families/generations to keep on-demand/Spot fulfillable. instance_type
+# is kept in sync as the no-override fallback but is otherwise inert here.
+finalize_runner_instance_type = "m7a.xlarge"
+# Deepened Spot pool: 10 full-performance 16 GB / 4 vCPU m-family xlarge types,
+# all offered across all 3 us-east-2 AZs → 30 capacity-optimized Spot pools, so
+# a single capacity-pool reclaim touches a smaller fraction of the fleet.
+# Intentionally EXCLUDES burstable m7i-flex (baseline-CPU throttling would
+# reintroduce the timing-sensitive E2E flakes the GitHub-parity caps prevent).
+finalize_runner_instance_types = [
+  "m7a.xlarge", "m7i.xlarge", "m6a.xlarge", "m6i.xlarge", "m6in.xlarge",
+  "m6id.xlarge", "m5.xlarge", "m5a.xlarge", "m5n.xlarge", "m5d.xlarge",
+]
+finalize_runner_task_memory_mib = 12288 # ~12 GB on a 16 GB host → still one job/instance
+# gp3 free baseline (3000 IOPS / 125 MB/s) — sampled CI I/O well under the
+# provisioned premium.
+finalize_runner_root_iops       = 3000
+finalize_runner_root_throughput = 125
+# Spot is the INTENTIONAL steady state (~⅔ cheaper; lost jobs retry on a fresh
+# agent). Reclaim survivability is engineered (capacity_rebalance, a 30-pool
+# override, and a generous Hub reclaim-retry budget). Do NOT flip this to false
+# to "fix" reclaim failures — that silently converts the fleet to ~3x-cost
+# on-demand; harden Spot instead.
+finalize_runner_use_spot = true
+# Spot-reclaim auto-retry depth (Hub env FINALIZE_MAX_RECLAIM_RETRY_GENERATIONS)
+# so a long E2E job survives a correlated reclaim wave instead of terminating
+# green code as infra_error. Reclaim-retry active time is non-billable.
+finalize_max_reclaim_retry_generations = 5
+# Runner-agent ECS task-protection lease. Covers the longest expected shard in a
+# single arming so a long shard stays shielded through a dynamic mid-run
+# scale-in. Lives in the finalize-runner agent image; takes effect once that
+# image rolls.
+finalize_task_protection_expiry_minutes = 40
+# Dynamic fleet scale-down (Hub env FINALIZE_FLEET_DYNAMIC_SCALE_DOWN). Trims
+# idle agents mid-run; its one hazard (scale-in killing long in-flight shards)
+# is closed by finalize_task_protection_expiry_minutes above. The two MUST move
+# together.
+finalize_fleet_dynamic_scale_down = true
+finalize_runner_min_size          = 0 # scale-to-zero when idle
+# Agent ceiling. Drives the ASG max_size, on_demand_base_capacity, and
+# maximum_scaling_step_size AND the Hub env FINALIZE_FLEET_MAX_AGENTS in
+# lockstep — one task per instance, so agents == instances. The quota guard
+# (finalize-runners.tf) reads the LIVE On-Demand vCPU quota and FAILS the plan
+# if this would exceed it, so a bump past the approved quota is blocked until the
+# quota is raised first.
+finalize_runner_max_size = 64
+# Baked AMI: AL2023 ECS-optimized + the runner image pre-pulled, so fleet
+# instances skip the multi-GB boot `docker pull`. Re-bake when the base AMI /
+# runner image change.
+finalize_runner_ami_id          = "<FINALIZE_RUNNER_AMI_ID>"
+finalize_agent_desired_count    = 0 # scaler owns it at runtime
+finalize_cache_bucket_name      = "agent-hub-finalize-cache-<PROD_ACCOUNT_ID>"
+finalize_worktree_bucket_name   = "agent-hub-finalize-worktree-<PROD_ACCOUNT_ID>"
+finalize_fleet_token_secret_arn = "" # empty → TF generates the token + creates the secret
+
+# Shared base-image pull-through cache on the Hub (registry:2). Set
+# finalize_dockerhub_secret_arn to a {username,accessToken} secret in THIS
+# account for an authenticated upstream; empty = anonymous.
+enable_finalize_registry_mirror = true
+finalize_dockerhub_secret_arn   = ""

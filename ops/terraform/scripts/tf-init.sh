@@ -38,7 +38,7 @@ BACKEND_HCL="${TF_DIR}/environments/${ENV_NAME}/backend.hcl"
 
 if [[ ! -f "${BACKEND_HCL}" ]]; then
   echo "error: backend config not found at ${BACKEND_HCL}" >&2
-  echo "       create it before running this script. See environments/ryan/backend.hcl for a template." >&2
+  echo "       create it from the tracked template: cp environments/${ENV_NAME}/backend.hcl.example environments/${ENV_NAME}/backend.hcl" >&2
   exit 2
 fi
 

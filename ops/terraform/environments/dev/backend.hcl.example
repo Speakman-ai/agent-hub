@@ -1,0 +1,13 @@
+# S3 backend for the `dev` environment (personal dev sandbox).
+# Copy to backend.hcl and fill in your account-specific bucket. The real
+# backend.hcl is gitignored and must never be committed.
+#
+#   cp environments/dev/backend.hcl.example environments/dev/backend.hcl
+#   AWS_PROFILE=<profile> ./scripts/tf-init.sh dev
+
+bucket  = "agent-hub-tfstate-<DEV_ACCOUNT_ID>"
+key     = "dev/terraform.tfstate"
+region  = "us-east-2"
+encrypt = true
+
+dynamodb_table = "agent-hub-tfstate-lock"

@@ -1,0 +1,77 @@
+# test: CI-sized Agent Hub instance (dev AWS account).
+#
+# Purpose : a bigger box dedicated to running Finalize CI (parallel e2e shards +
+#           builds) without OOM. Separate state (environments/test/backend.hcl,
+#           key test/terraform.tfstate) — fully isolated from `dev`.
+#
+# Copy to test.tfvars and fill in your account-specific values. The real
+# test.tfvars is gitignored and must never be committed. Source the placeholders
+# below from your private overlay or from CI via TF_VAR_* environment variables.
+#
+#   cp environments/test/test.tfvars.example environments/test/test.tfvars
+#   AWS_PROFILE=<profile> ./scripts/tf-init.sh test
+#   AWS_PROFILE=<profile> terraform plan  -var-file=environments/test/test.tfvars
+#   AWS_PROFILE=<profile> terraform apply -var-file=environments/test/test.tfvars
+
+aws_region   = "us-east-2"
+project_name = "test"
+name         = "test"
+
+# Hosted under the existing dev zone; a sibling record of the dev sandbox but
+# fully isolated (separate host/ALB/cert/state).
+public_fqdn = "agenthub-test.dev.example.com"
+base_domain = "dev.example.com"
+
+enable_dedicated_alb                = true
+lookup_route53_zone_in_this_account = true
+
+# SSM-only access.
+create_ssh_key      = false
+enable_ssh_ingress  = false
+enable_instance_ssm = true
+ssh_cidr_blocks     = []
+
+# Pull the published image; skip git clone + docker build.
+bootstrap_agent_hub = true
+agent_hub_image_uri = "public.ecr.aws/<ECR_PUBLIC_ALIAS>/agent-hub:main"
+
+web_cidr_blocks         = ["0.0.0.0/0"]
+alb_ingress_cidr_blocks = ["0.0.0.0/0"]
+
+# Do NOT manage the shared GitHub OIDC ECR-push role (one per account). Keeps
+# `terraform destroy` here from breaking CI for other envs.
+manage_github_oidc_role = false
+
+# Do NOT wire CI auto-deploy here. This box pulls :main on its own restart /
+# manual SSM, keeping it independent of the CI pipeline.
+enable_ci_ssm_deploy_after_ecr_push = false
+
+# First-launch admin credentials (random password written to
+# <dataDir>/initial-credentials.txt; retrieve via SSM).
+agent_hub_default_username = "admin"
+agent_hub_default_password = "auto"
+
+# Compute / storage — BIGGER than dev to run the Finalize matrix in parallel
+# without OOM (e2e is memory-bound: each shard is a full DinD stack ~5-6 GB).
+instance_type    = "r7i.2xlarge" # 8 vCPU / 64 GB
+root_volume_size = 500
+
+# ── Finalize remote-runner fleet (modules/finalize-runners) ──────────────────
+# To enable: create the shared fleet token in Secrets Manager and set
+# finalize_fleet_token_secret_arn; build/publish an agent image and set
+# finalize_agent_image_uri; then flip enable_finalize_runners = true (and
+# manage_shared_finalize_infra = true — this env owns the shared buckets/ECR).
+enable_finalize_runners         = true
+manage_shared_finalize_infra    = true
+finalize_runner_instance_type   = "r7i.xlarge"
+# The Hub's queue-depth autoscaler drives the agent count (desiredCount, ignored
+# by TF) between min and max, scaling back to zero when idle.
+finalize_runner_min_size        = 0 # scale-to-zero when no jobs are queued
+finalize_runner_max_size        = 8 # up to 8 shards concurrently
+finalize_agent_desired_count    = 0 # initial only; the scaler owns it at runtime
+finalize_cache_bucket_name      = "agent-hub-finalize-cache-<DEV_ACCOUNT_ID>"
+finalize_worktree_bucket_name   = "agent-hub-finalize-worktree-<DEV_ACCOUNT_ID>"
+finalize_fleet_token_secret_arn = "arn:aws:secretsmanager:us-east-2:<DEV_ACCOUNT_ID>:secret:agent-hub/finalize/fleet-token-<SUFFIX>"
+# Agent baked into the finalize-runner image (entrypoint `agent` mode), pushed
+# to the private dev ECR.
+finalize_agent_image_uri = "<DEV_ACCOUNT_ID>.dkr.ecr.us-east-2.amazonaws.com/agent-hub-finalize-runner:test"

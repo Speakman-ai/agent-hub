@@ -1,0 +1,15 @@
+# S3 backend for the `test` environment (CI-sized Agent Hub box).
+# SAME bucket as `dev` — DIFFERENT state key, so this stack can never plan
+# changes against the dev instance. Copy to backend.hcl and fill in your
+# account-specific bucket. The real backend.hcl is gitignored and must never be
+# committed.
+#
+#   cp environments/test/backend.hcl.example environments/test/backend.hcl
+#   AWS_PROFILE=<profile> ./scripts/tf-init.sh test
+
+bucket  = "agent-hub-tfstate-<DEV_ACCOUNT_ID>"
+key     = "test/terraform.tfstate"
+region  = "us-east-2"
+encrypt = true
+
+dynamodb_table = "agent-hub-tfstate-lock"

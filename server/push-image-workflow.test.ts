@@ -14,20 +14,13 @@ const pushImageWorkflowPath = path.join(workflowsDir, 'push-image.yml');
 describe('ECR publish + push-image deploy contract', () => {
   // The deploy target is parameterized via repo Variables with a fallback
   // default — e.g. `DEPLOY_INSTANCE_ID: ${{ vars.DOCKER_DEPLOY_INSTANCE_ID || 'i-...' }}`.
-  // Parse the fallback default (the instance used when the repo vars are unset),
-  // which must stay in sync with ryan.tfvars (the dev-sandbox SSM deploy target).
+  // Parse the fallback default (the instance used when the repo vars are unset).
   function parseSandboxInstanceFromEcrWorkflow(workflowYaml: string): string {
     const line = workflowYaml.match(/^\s*DEPLOY_INSTANCE_ID:.*$/m);
     expect(line?.[0], 'DEPLOY_INSTANCE_ID in ecr-publish-rollout-docker-dev.yml').toBeTruthy();
     const id = line![0].match(/i-[a-f0-9]+/);
     expect(id?.[0], 'fallback instance id on the DEPLOY_INSTANCE_ID line').toBeTruthy();
     return id![0];
-  }
-
-  function parseTfvarsSandboxInstance(tfvarsBody: string): string {
-    const m = tfvarsBody.match(/^\s*ci_ssm_deploy_instance_id\s*=\s*"([^"]+)"\s*$/m);
-    expect(m?.[1], 'ci_ssm_deploy_instance_id in ryan.tfvars').toBeTruthy();
-    return m![1];
   }
 
   it('defines deploy-dev-sandbox with SSM restart and a DEPLOY_INSTANCE_ID target', () => {
@@ -39,15 +32,30 @@ describe('ECR publish + push-image deploy contract', () => {
     expect(id).toMatch(/^i-[a-f0-9]{8,}$/);
   });
 
-  it('keeps Terraform ryan.tfvars CI SSM instance in sync with the ECR rollout workflow', () => {
-    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
-    const tfvars = readFileSync(
-      path.join(repoRoot, 'ops', 'terraform', 'environments', 'ryan', 'ryan.tfvars'),
+  // Previously this asserted the dev-sandbox `ci_ssm_deploy_instance_id` in
+  // ryan.tfvars stayed byte-identical to the workflow's DEPLOY_INSTANCE_ID
+  // fallback. As of AH-1388 the real per-env tfvars are gitignored (they carried
+  // live account / instance ids) and the sandbox env dir was renamed ryan -> dev,
+  // so the real instance id no longer lives in the tracked tree — the workflow
+  // sources it from the DOCKER_DEPLOY_INSTANCE_ID repo Variable and operators
+  // keep the matching value in their private tfvars overlay. What is still
+  // guardable in-tree: the dev `.example` template documents the same knob (so an
+  // operator knows which var to set) with a placeholder, never a real id, and the
+  // workflow keeps the deploy target parameterized via the repo Variable.
+  it('documents the dev-sandbox CI SSM instance knob in the tracked .example template', () => {
+    const example = readFileSync(
+      path.join(repoRoot, 'ops', 'terraform', 'environments', 'dev', 'dev.tfvars.example'),
       'utf8',
     );
-    const fromWorkflow = parseSandboxInstanceFromEcrWorkflow(yml);
-    const fromTfvars = parseTfvarsSandboxInstance(tfvars);
-    expect(fromTfvars).toBe(fromWorkflow);
+    const m = example.match(/^\s*ci_ssm_deploy_instance_id\s*=\s*"([^"]+)"\s*$/m);
+    expect(m?.[1], 'ci_ssm_deploy_instance_id in dev.tfvars.example').toBeTruthy();
+    // Placeholder only — the real instance id must never ship in the public tree.
+    expect(m![1]).not.toMatch(/^i-[a-f0-9]{8,}$/);
+
+    const yml = readFileSync(ecrPublishWorkflowPath, 'utf8');
+    expect(yml, 'workflow must keep DEPLOY_INSTANCE_ID sourced from a repo Variable').toMatch(
+      /DEPLOY_INSTANCE_ID:\s*\$\{\{\s*vars\.DOCKER_DEPLOY_INSTANCE_ID/,
+    );
   });
 
   // Regression guard for kanban 89903017. The previous deploy flow trusted

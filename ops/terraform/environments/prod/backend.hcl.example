@@ -1,0 +1,12 @@
+# S3 backend for the PRODUCTION Agent Hub (dedicated account, own AWS profile).
+# Copy to backend.hcl and fill in your account-specific bucket. The real
+# backend.hcl is gitignored and must never be committed.
+#
+#   cp environments/prod/backend.hcl.example environments/prod/backend.hcl
+#   AWS_PROFILE=<profile> terraform init -reconfigure -backend-config=environments/prod/backend.hcl
+
+bucket         = "agent-hub-tfstate-<PROD_ACCOUNT_ID>"
+key            = "prod/terraform.tfstate"
+region         = "us-east-2"
+encrypt        = true
+dynamodb_table = "agent-hub-tfstate-lock"

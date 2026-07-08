@@ -1,0 +1,57 @@
+# dev: personal Agent Hub sandbox (dev AWS account).
+#
+# Copy to dev.tfvars and fill in your account-specific values. The real
+# dev.tfvars is gitignored and must never be committed. Source the placeholders
+# below from your private overlay or from CI via TF_VAR_* environment variables.
+#
+#   cp environments/dev/dev.tfvars.example environments/dev/dev.tfvars
+#   AWS_PROFILE=<profile> ./scripts/tf-init.sh dev
+#   AWS_PROFILE=<profile> terraform plan  -var-file=environments/dev/dev.tfvars
+#   AWS_PROFILE=<profile> terraform apply -var-file=environments/dev/dev.tfvars
+
+aws_region   = "us-east-2"
+project_name = "dev"
+name         = "dev"
+
+public_fqdn = "agenthub.dev.example.com"
+base_domain = "dev.example.com"
+
+enable_dedicated_alb                = true
+lookup_route53_zone_in_this_account = true
+
+# SSM-only access (no SSH, no key pair).
+create_ssh_key      = false
+enable_ssh_ingress  = false
+enable_instance_ssm = true
+ssh_cidr_blocks     = []
+
+# Pull the published image; skip git clone + docker build. The public ECR repo
+# is created out-of-band — see ops/terraform/ecr-public.tf.
+bootstrap_agent_hub = true
+agent_hub_image_uri = "public.ecr.aws/<ECR_PUBLIC_ALIAS>/agent-hub:main"
+
+web_cidr_blocks         = ["0.0.0.0/0"]
+alb_ingress_cidr_blocks = ["0.0.0.0/0"]
+
+# GitHub OIDC role for CI image push is shared infra (one role per AWS account).
+# Don't let the sandbox stack manage it — `terraform destroy` here should never
+# break CI for other envs.
+manage_github_oidc_role = false
+
+# After CI pushes :main to ECR, GitHub Actions restarts the server on this
+# instance (SSM). Instance id must match the sandbox instance id used by the
+# push-image workflow.
+enable_ci_ssm_deploy_after_ecr_push = true
+ci_ssm_deploy_instance_id           = "<DEV_SANDBOX_INSTANCE_ID>"
+
+# First-launch admin credentials. The server writes a random password to
+# <dataDir>/initial-credentials.txt (mode 0600) when
+# agent_hub_default_password = "auto". Retrieve it after first boot via SSM.
+agent_hub_default_username = "admin"
+agent_hub_default_password = "auto"
+
+# Compute / storage sizing — keep in lockstep with cloud reality. A plan that
+# reverts these would try to downsize the instance and shrink/recreate the root
+# volume, destroying the Hub data dir (sessions, workspaces, preview DBs).
+instance_type    = "m7i-flex.2xlarge"
+root_volume_size = 500

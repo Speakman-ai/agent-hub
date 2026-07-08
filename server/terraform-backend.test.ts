@@ -11,6 +11,11 @@ import { describe, it, expect } from 'vitest';
  * without those keys, init silently picks the wrong state or errors with a
  * cryptic "Backend configuration required" message. These tests catch that
  * at PR time instead of at apply time.
+ *
+ * The real per-env `backend.hcl` is gitignored (it carries the account-specific
+ * state bucket — see AH-1388); operators copy the tracked `backend.hcl.example`
+ * template. These invariants are asserted against the committed `.example`
+ * templates, which are the only backend configs present in a fresh checkout.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,8 +34,9 @@ describe('ops/terraform/backend.tf', () => {
   });
 });
 
-describe('ops/terraform/environments/*/backend.hcl', () => {
+describe('ops/terraform/environments/*/backend.hcl.example', () => {
   const envsDir = join(tfDir, 'environments');
+  const BACKEND_TEMPLATE = 'backend.hcl.example';
   const envs = readdirSync(envsDir).filter((name) => {
     const p = join(envsDir, name);
     return statSync(p).isDirectory();
@@ -54,18 +60,18 @@ describe('ops/terraform/environments/*/backend.hcl', () => {
     return out;
   }
 
-  it('every env has a backend.hcl file', () => {
-    // Not strictly required (an env could exist without remote state yet), but
-    // once we flip the world to remote-state-by-default we want this to hold.
+  it('every env ships a backend.hcl.example template', () => {
+    // The real backend.hcl is gitignored; every env must still commit a
+    // sanitized template so operators can bootstrap remote state.
     for (const env of envs) {
-      const p = join(envsDir, env, 'backend.hcl');
+      const p = join(envsDir, env, BACKEND_TEMPLATE);
       expect(() => statSync(p), `missing ${p}`).not.toThrow();
     }
   });
 
-  it('each backend.hcl sets bucket, region, and encrypt=true', () => {
+  it('each backend.hcl.example sets bucket, region, and encrypt=true', () => {
     for (const env of envs) {
-      const p = join(envsDir, env, 'backend.hcl');
+      const p = join(envsDir, env, BACKEND_TEMPLATE);
       const cfg = parseKV(readText(p));
       expect(cfg.bucket, `${env}: bucket`).toBeTruthy();
       expect(cfg.region, `${env}: region`).toBeTruthy();
@@ -73,9 +79,9 @@ describe('ops/terraform/environments/*/backend.hcl', () => {
     }
   });
 
-  it('each backend.hcl specifies either use_lockfile=true OR dynamodb_table (state locking is required)', () => {
+  it('each backend.hcl.example specifies either use_lockfile=true OR dynamodb_table (state locking is required)', () => {
     for (const env of envs) {
-      const p = join(envsDir, env, 'backend.hcl');
+      const p = join(envsDir, env, BACKEND_TEMPLATE);
       const cfg = parseKV(readText(p));
       const hasNativeLock = cfg.use_lockfile === 'true';
       const hasDdbLock = typeof cfg.dynamodb_table === 'string' && cfg.dynamodb_table.length > 0;
@@ -86,9 +92,9 @@ describe('ops/terraform/environments/*/backend.hcl', () => {
     }
   });
 
-  it('each backend.hcl key matches the convention <env>/terraform.tfstate', () => {
+  it('each backend.hcl.example key matches the convention <env>/terraform.tfstate', () => {
     for (const env of envs) {
-      const p = join(envsDir, env, 'backend.hcl');
+      const p = join(envsDir, env, BACKEND_TEMPLATE);
       const cfg = parseKV(readText(p));
       expect(cfg.key, `${env}: key convention`).toBe(`${env}/terraform.tfstate`);
     }
