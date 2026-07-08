@@ -11,6 +11,7 @@ import {
   X,
   Check,
   RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
 import { api, type UserTodoWire } from '../utils/api';
 import {
@@ -21,6 +22,7 @@ import {
   dateInputToIso,
   isoToDateInput,
 } from '../utils/todos';
+import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
 
 /**
  * Cross-project personal Todos pane (spec NAV-PLACEMENT). A per-user, global
@@ -362,6 +364,8 @@ function TodoRow({
   const done = todo.status === 'done';
   const state = dueState(todo.dueAt);
   const badge = dueLabel(todo.dueAt);
+  const originLabel = todoOriginLabel(todo);
+  const originLink = todoOriginDeepLink(todo);
 
   if (editing) {
     return (
@@ -423,7 +427,7 @@ function TodoRow({
         >
           {todo.title}
         </div>
-        {(badge || todo.linkedCardId) && (
+        {(badge || todo.linkedCardId || originLabel) && (
           <div className="mt-1 flex items-center gap-2">
             {badge && (
               <span
@@ -435,6 +439,26 @@ function TodoRow({
                 {badge}
               </span>
             )}
+            {originLabel &&
+              (originLink ? (
+                <a
+                  href={originLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid="todo-origin"
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-[10px] font-medium hover:bg-sky-900/50"
+                >
+                  {originLabel}
+                  <ExternalLink size={9} />
+                </a>
+              ) : (
+                <span
+                  data-testid="todo-origin"
+                  className="inline-flex items-center px-1.5 py-0.5 rounded border border-sky-800 bg-sky-900/30 text-sky-300 text-[10px] font-medium"
+                >
+                  {originLabel}
+                </span>
+              ))}
             {todo.linkedCardId && (
               <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-violet-800 bg-violet-900/30 text-violet-300 text-[10px] font-medium">
                 Ticket

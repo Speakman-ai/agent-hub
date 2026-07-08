@@ -8,6 +8,7 @@ vi.mock('../utils/api', () => ({
     startGoogleOAuth: vi.fn(),
     createGoogleCalendarEvent: vi.fn(),
     updateGoogleCalendarEvent: vi.fn(),
+    createTodo: vi.fn(),
   },
 }));
 
@@ -118,5 +119,50 @@ describe('CalendarAgendaPage', () => {
       });
     });
     expect(await screen.findByText('Planning')).toBeInTheDocument();
+  });
+
+  it('captures an event into a personal todo with capture provenance', async () => {
+    mockApi.getGoogleStatus.mockResolvedValueOnce({
+      connected: true,
+      email: 'person@example.com',
+      grantedScopes: [CALENDAR_EVENTS_SCOPE],
+      serverConfigured: true,
+    });
+    mockApi.listGoogleCalendarEvents.mockResolvedValueOnce({
+      events: [
+        {
+          id: 'event-42',
+          summary: 'Design sync',
+          location: 'Room 4',
+          htmlLink: 'https://calendar.google.com/event?eid=event-42',
+          start: { dateTime: '2026-07-09T10:00:00Z' },
+          end: { dateTime: '2026-07-09T11:00:00Z' },
+        },
+      ],
+    });
+    mockApi.createTodo.mockResolvedValueOnce({ todo: { id: 'todo-1' } });
+
+    render(<CalendarAgendaPage />);
+
+    const captureButton = await screen.findByRole('button', { name: /Todo/i });
+    fireEvent.click(captureButton);
+
+    await waitFor(() => {
+      expect(mockApi.createTodo).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Design sync',
+          notes: 'At Room 4',
+          sourceType: 'calendar',
+          sourceId: 'event-42',
+          sourceMeta: expect.objectContaining({
+            kind: 'calendar',
+            eventId: 'event-42',
+            deepLink: 'https://calendar.google.com/event?eid=event-42',
+          }),
+        }),
+      );
+    });
+    // The button flips to an "Added" confirmation after a successful capture.
+    expect(await screen.findByText('Added')).toBeInTheDocument();
   });
 });

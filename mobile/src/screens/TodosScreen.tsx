@@ -8,6 +8,7 @@ import {
     StyleSheet,
     ActivityIndicator,
     RefreshControl,
+    Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SidebarContext } from '../context/SidebarContext';
@@ -23,6 +24,7 @@ import {
     dateInputToIso,
     isoToDateInput,
 } from '../utils/todos';
+import { todoOriginLabel, todoOriginDeepLink } from '@shared/utils/captureTodo';
 
 /**
  * Cross-project personal Todos screen (spec NAV-PLACEMENT) — the mobile 1:1
@@ -400,6 +402,8 @@ export function TodoRow({
     }
 
     const badgeStyle = DUE_BADGE_STYLE[state] || DUE_BADGE_STYLE.upcoming;
+    const originLabel = todoOriginLabel(todo);
+    const originLink = todoOriginDeepLink(todo);
 
     return (
         <View style={styles.row} testID="todo-row">
@@ -422,7 +426,7 @@ export function TodoRow({
                 >
                     {todo.title}
                 </Text>
-                {badge || todo.linkedCardId ? (
+                {badge || todo.linkedCardId || originLabel ? (
                     <View style={styles.badgeRow}>
                         {badge ? (
                             <View
@@ -443,6 +447,19 @@ export function TodoRow({
                                     {badge}
                                 </Text>
                             </View>
+                        ) : null}
+                        {originLabel ? (
+                            <TouchableOpacity
+                                testID="todo-origin"
+                                disabled={!originLink}
+                                onPress={() => originLink && Linking.openURL(originLink)}
+                                style={[styles.badge, styles.originBadge]}
+                                accessibilityLabel={originLabel}
+                            >
+                                <Text style={[styles.badgeText, { color: colors.blue300 }]}>
+                                    {originLabel}
+                                </Text>
+                            </TouchableOpacity>
                         ) : null}
                         {todo.linkedCardId ? (
                             <View style={[styles.badge, styles.ticketBadge]}>
@@ -672,6 +689,10 @@ const styles = StyleSheet.create({
     ticketBadge: {
         backgroundColor: colors.purple900_40,
         borderColor: colors.purple500,
+    },
+    originBadge: {
+        backgroundColor: colors.blue900_40,
+        borderColor: colors.blue500,
     },
     rowActions: {
         flexDirection: 'row',

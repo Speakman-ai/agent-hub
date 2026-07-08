@@ -21,6 +21,7 @@ import {
   hasGmailReadScope,
   hasGmailSendScope,
 } from '../utils/googleSurface';
+import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
 
 export { GMAIL_SURFACE_SCOPES };
 
@@ -238,14 +239,35 @@ function ComposeModal({ saving, error, onClose, onSend }: any) {
   );
 }
 
-function ThreadModal({ loading, error, subject, messages, onClose }: any) {
+function ThreadModal({
+  loading,
+  error,
+  subject,
+  messages,
+  capturing,
+  captured,
+  onCapture,
+  onClose,
+}: any) {
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
-          <Text style={styles.modalTitle} numberOfLines={1}>
-            {subject || '(no subject)'}
-          </Text>
+          <View style={styles.threadHeader}>
+            <Text style={[styles.modalTitle, { flex: 1, marginBottom: 0 }]} numberOfLines={1}>
+              {subject || '(no subject)'}
+            </Text>
+            <TouchableOpacity
+              onPress={onCapture}
+              disabled={loading || capturing}
+              style={styles.captureButton}
+              accessibilityLabel="Add to todos"
+            >
+              <Text style={styles.captureButtonText}>
+                {capturing ? 'Adding…' : captured ? '✓ Added' : '+ Todo'}
+              </Text>
+            </TouchableOpacity>
+          </View>
           <ScrollView>
             {loading ? (
               <View style={styles.centerCard}>
@@ -293,6 +315,8 @@ export default function GmailScreen({ navigation }: any) {
   const [threadMessages, setThreadMessages] = useState<any[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState<any>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [captured, setCaptured] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -332,6 +356,7 @@ export default function GmailScreen({ navigation }: any) {
     setOpenThread({ id: thread.id, subject: '' });
     setThreadMessages([]);
     setThreadError(null);
+    setCaptured(false);
     setThreadLoading(true);
     try {
       const body = await api.getGoogleGmailThread(thread.id, { format: 'full' });
@@ -343,6 +368,29 @@ export default function GmailScreen({ navigation }: any) {
       setThreadError(err.message || 'Failed to load thread');
     } finally {
       setThreadLoading(false);
+    }
+  };
+
+  const captureThread = async () => {
+    if (!openThread) return;
+    const first =
+      threadMessages.find((m: any) => m.subject || m.from || m.snippet) || threadMessages[0];
+    setCapturing(true);
+    try {
+      await api.createTodo(
+        buildEmailTodoDraft({
+          threadId: openThread.id,
+          messageId: first?.id ?? null,
+          subject: first?.subject ?? openThread.subject,
+          from: first?.from ?? null,
+          snippet: first?.snippet ?? null,
+        }),
+      );
+      setCaptured(true);
+    } catch (err: any) {
+      Alert.alert('Todos', err.message || 'Failed to add to todos');
+    } finally {
+      setCapturing(false);
     }
   };
 
@@ -394,6 +442,9 @@ export default function GmailScreen({ navigation }: any) {
           error={threadError}
           subject={openThread.subject}
           messages={threadMessages}
+          capturing={capturing}
+          captured={captured}
+          onCapture={captureThread}
           onClose={() => setOpenThread(null)}
         />
       ) : null}
@@ -494,6 +545,20 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   modalTitle: { color: colors.white, fontSize: 18, fontWeight: '700', marginBottom: 14 },
+  threadHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  captureButton: {
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  captureButtonText: { color: colors.blue300, fontSize: 12, fontWeight: '600' },
   inputLabel: { color: colors.gray400, fontSize: 12, marginBottom: 6, marginTop: 8 },
   input: {
     color: colors.white,

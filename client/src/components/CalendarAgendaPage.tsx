@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   CalendarDays,
+  Check,
   ExternalLink,
+  ListPlus,
   Loader2,
   Pencil,
   Plus,
@@ -10,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../utils/api';
+import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
 import {
   CALENDAR_EVENTS_SCOPE,
   hasCalendarScope,
@@ -307,6 +310,10 @@ export default function CalendarAgendaPage({
   const [modalEvent, setModalEvent] = useState<CalendarEvent | null | undefined>(undefined);
   const [modalError, setModalError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Per-event capture state: the id being captured, and the id just captured (for
+  // a transient "Added" confirmation on the button).
+  const [capturingId, setCapturingId] = useState<string | null>(null);
+  const [capturedId, setCapturedId] = useState<string | null>(null);
   const range = useMemo(() => defaultCalendarRange(), []);
 
   const load = useCallback(async () => {
@@ -369,6 +376,23 @@ export default function CalendarAgendaPage({
       setModalError(err.message || 'Failed to save event');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const captureEvent = async (event: CalendarEvent) => {
+    const key = event.id || event.summary || '';
+    setCapturingId(key);
+    setError(null);
+    try {
+      await api.createTodo(buildCalendarTodoDraft(event));
+      setCapturedId(key);
+      window.setTimeout(() => {
+        setCapturedId((current) => (current === key ? null : current));
+      }, 2000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to add to todos');
+    } finally {
+      setCapturingId((current) => (current === key ? null : current));
     }
   };
 
@@ -496,14 +520,38 @@ export default function CalendarAgendaPage({
                         <p className="mt-1 text-xs text-gray-400">{event.location}</p>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setModalEvent(event)}
-                      className="inline-flex flex-shrink-0 items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
-                    >
-                      <Pencil size={12} />
-                      Edit
-                    </button>
+                    <div className="flex flex-shrink-0 items-center gap-2">
+                      {(() => {
+                        const key = event.id || event.summary || '';
+                        const isCaptured = capturedId === key;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => captureEvent(event)}
+                            disabled={capturingId === key}
+                            title="Add to todos"
+                            className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                          >
+                            {capturingId === key ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : isCaptured ? (
+                              <Check size={12} className="text-emerald-400" />
+                            ) : (
+                              <ListPlus size={12} />
+                            )}
+                            {isCaptured ? 'Added' : 'Todo'}
+                          </button>
+                        );
+                      })()}
+                      <button
+                        type="button"
+                        onClick={() => setModalEvent(event)}
+                        className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                      >
+                        <Pencil size={12} />
+                        Edit
+                      </button>
+                    </div>
                   </div>
                   {event.description && (
                     <p className="mt-2 whitespace-pre-wrap text-sm text-gray-300">

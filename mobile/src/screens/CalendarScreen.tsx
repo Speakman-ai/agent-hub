@@ -23,6 +23,7 @@ import {
   eventTimeLabel,
   localTimeZone,
 } from '@shared/utils/calendarEvents';
+import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
 
 export { defaultCalendarRange };
 
@@ -141,6 +142,9 @@ export function CalendarAgendaContent({
   onOpenSettings,
   onCreate,
   onEdit,
+  onCapture,
+  capturingId,
+  capturedId,
 }: any) {
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
@@ -201,14 +205,30 @@ export function CalendarAgendaContent({
         <FlatList
           data={events}
           keyExtractor={(item: any, index) => item.id || `${item.summary}-${index}`}
-          renderItem={({ item }: any) => (
-            <TouchableOpacity onPress={() => onEdit(item)} style={styles.eventCard}>
-              <Text style={styles.eventTime}>{eventTimeLabel(item)}</Text>
-              <Text style={styles.eventTitle}>{item.summary || '(no title)'}</Text>
-              {item.location ? <Text style={styles.eventMeta}>{item.location}</Text> : null}
-              {item.description ? <Text style={styles.eventDescription}>{item.description}</Text> : null}
-            </TouchableOpacity>
-          )}
+          renderItem={({ item }: any) => {
+            const key = item.id || item.summary || '';
+            const isCaptured = capturedId === key;
+            return (
+              <TouchableOpacity onPress={() => onEdit(item)} style={styles.eventCard}>
+                <Text style={styles.eventTime}>{eventTimeLabel(item)}</Text>
+                <Text style={styles.eventTitle}>{item.summary || '(no title)'}</Text>
+                {item.location ? <Text style={styles.eventMeta}>{item.location}</Text> : null}
+                {item.description ? (
+                  <Text style={styles.eventDescription}>{item.description}</Text>
+                ) : null}
+                <TouchableOpacity
+                  onPress={() => onCapture(item)}
+                  disabled={capturingId === key}
+                  style={styles.captureButton}
+                  accessibilityLabel="Add to todos"
+                >
+                  <Text style={styles.captureButtonText}>
+                    {capturingId === key ? 'Adding…' : isCaptured ? '✓ Added to todos' : '+ Add to todos'}
+                  </Text>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            );
+          }}
         />
       )}
     </View>
@@ -278,6 +298,8 @@ export default function CalendarScreen({ navigation }: any) {
   const [modalEvent, setModalEvent] = useState<any>(undefined);
   const [modalError, setModalError] = useState<any>(null);
   const [saving, setSaving] = useState(false);
+  const [capturingId, setCapturingId] = useState<string | null>(null);
+  const [capturedId, setCapturedId] = useState<string | null>(null);
   const range = useMemo(() => defaultCalendarRange(), []);
 
   const load = useCallback(async () => {
@@ -310,6 +332,20 @@ export default function CalendarScreen({ navigation }: any) {
       await openCalendarOAuth({ apiClient: api, openURL: Linking.openURL });
     } catch (err: any) {
       Alert.alert('Google Calendar', err.message || 'Failed to start Google consent');
+    }
+  };
+
+  const capture = async (event: any) => {
+    const key = event.id || event.summary || '';
+    setCapturingId(key);
+    try {
+      await api.createTodo(buildCalendarTodoDraft(event));
+      setCapturedId(key);
+      setTimeout(() => setCapturedId((cur) => (cur === key ? null : cur)), 2000);
+    } catch (err: any) {
+      Alert.alert('Todos', err.message || 'Failed to add to todos');
+    } finally {
+      setCapturingId((cur) => (cur === key ? null : cur));
     }
   };
 
@@ -351,6 +387,9 @@ export default function CalendarScreen({ navigation }: any) {
         onOpenSettings={() => navigation.navigate('Settings', { tab: 'account' })}
         onCreate={() => setModalEvent(null)}
         onEdit={(event: any) => setModalEvent(event)}
+        onCapture={capture}
+        capturingId={capturingId}
+        capturedId={capturedId}
       />
       {modalEvent !== undefined ? (
         <EventModal event={modalEvent} saving={saving} error={modalError} onClose={() => setModalEvent(undefined)} onSave={save} />
@@ -386,6 +425,16 @@ const styles = StyleSheet.create({
   eventTitle: { color: colors.white, fontSize: 16, fontWeight: '700' },
   eventMeta: { color: colors.gray400, fontSize: 12, marginTop: 4 },
   eventDescription: { color: colors.gray300, fontSize: 13, marginTop: 8, lineHeight: 18 },
+  captureButton: {
+    marginTop: 10,
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: colors.gray700,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  captureButtonText: { color: colors.blue300, fontSize: 12, fontWeight: '600' },
   modalBackdrop: { flex: 1, backgroundColor: colors.black60, justifyContent: 'center', padding: 16 },
   modalCard: { maxHeight: '90%', borderRadius: 8, backgroundColor: colors.gray900, borderWidth: 1, borderColor: colors.gray700, padding: 16 },
   modalTitle: { color: colors.white, fontSize: 18, fontWeight: '700', marginBottom: 14 },

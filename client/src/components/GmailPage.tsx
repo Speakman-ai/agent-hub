@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, ExternalLink, Loader2, Mail, RefreshCw, Send, X } from 'lucide-react';
+import {
+  AlertCircle,
+  Check,
+  ExternalLink,
+  ListPlus,
+  Loader2,
+  Mail,
+  RefreshCw,
+  Send,
+  X,
+} from 'lucide-react';
 import { api } from '../utils/api';
+import { buildEmailTodoDraft } from '@shared/utils/captureTodo';
 import {
   GMAIL_SURFACE_SCOPES,
   hasGmailReadScope,
@@ -175,23 +186,47 @@ function ThreadModal({
   error,
   subject,
   messages,
+  capturing,
+  captured,
+  onCapture,
   onClose,
 }: {
   loading: boolean;
   error: string | null;
   subject: string;
   messages: GmailMessage[];
+  capturing: boolean;
+  captured: boolean;
+  onCapture: () => void;
   onClose: () => void;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
-          <h3 className="truncate text-sm font-semibold text-white">{subject || '(no subject)'}</h3>
+        <div className="flex items-center justify-between gap-2 border-b border-gray-800 px-4 py-3">
+          <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
+            {subject || '(no subject)'}
+          </h3>
+          <button
+            type="button"
+            onClick={onCapture}
+            disabled={loading || capturing}
+            title="Add to todos"
+            className="inline-flex flex-shrink-0 items-center gap-1 rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+          >
+            {capturing ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : captured ? (
+              <Check size={13} className="text-emerald-400" />
+            ) : (
+              <ListPlus size={13} />
+            )}
+            {captured ? 'Added' : 'Add to todos'}
+          </button>
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-white"
+            className="flex-shrink-0 rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-white"
             aria-label="Close thread"
           >
             <X size={16} />
@@ -255,6 +290,8 @@ export default function GmailPage({
   const [threadMessages, setThreadMessages] = useState<GmailMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [captured, setCaptured] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -299,6 +336,7 @@ export default function GmailPage({
     setOpenThread({ id: thread.id, subject: '' });
     setThreadMessages([]);
     setThreadError(null);
+    setCaptured(false);
     setThreadLoading(true);
     try {
       const body = await api.getGoogleGmailThread(thread.id, { format: 'full' });
@@ -310,6 +348,31 @@ export default function GmailPage({
       setThreadError(err.message || 'Failed to load thread');
     } finally {
       setThreadLoading(false);
+    }
+  };
+
+  const captureThread = async () => {
+    if (!openThread) return;
+    // Capture the selected thread: prefer the first message's headers (richer),
+    // falling back to the thread id / modal subject.
+    const first = threadMessages.find((m) => m.subject || m.from || m.snippet) || threadMessages[0];
+    setCapturing(true);
+    setError(null);
+    try {
+      await api.createTodo(
+        buildEmailTodoDraft({
+          threadId: openThread.id,
+          messageId: first?.id ?? null,
+          subject: first?.subject ?? openThread.subject,
+          from: first?.from ?? null,
+          snippet: first?.snippet ?? null,
+        }),
+      );
+      setCaptured(true);
+    } catch (err: any) {
+      setError(err.message || 'Failed to add to todos');
+    } finally {
+      setCapturing(false);
     }
   };
 
@@ -467,6 +530,9 @@ export default function GmailPage({
           error={threadError}
           subject={openThread.subject}
           messages={threadMessages}
+          capturing={capturing}
+          captured={captured}
+          onCapture={captureThread}
           onClose={() => setOpenThread(null)}
         />
       )}

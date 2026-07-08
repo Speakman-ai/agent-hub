@@ -170,6 +170,29 @@ describe('TodosPage — edit', () => {
   });
 });
 
+describe('TodosPage — capture origin', () => {
+  it('shows an origin link back to the source for a captured todo', async () => {
+    mockApi.listTodos.mockResolvedValue({
+      todos: [
+        todo({
+          id: 'c',
+          title: 'Review the Q3 budget',
+          status: 'open',
+          sourceType: 'email',
+          sourceId: 'msg-9',
+          sourceMeta: { kind: 'gmail', deepLink: 'https://mail.google.com/mail/u/0/#all/t1' },
+        }),
+      ],
+    });
+    render(<TodosPage />);
+    await screen.findByText('Review the Q3 budget');
+
+    const origin = screen.getByTestId('todo-origin');
+    expect(origin).toHaveTextContent('From email');
+    expect(origin).toHaveAttribute('href', 'https://mail.google.com/mail/u/0/#all/t1');
+  });
+});
+
 describe('TodosPage — live updates', () => {
   it('refetches when a user_todo_update window event fires', async () => {
     mockApi.listTodos.mockResolvedValueOnce({ todos: [] });

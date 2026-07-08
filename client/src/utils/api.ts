@@ -134,6 +134,11 @@ interface CreateTodoBody {
   title: string;
   notes?: string;
   dueAt?: string | null;
+  // Capture provenance (spec CAPTURE-PROVENANCE) — set when a todo is captured
+  // from a Gmail message / Calendar event so it can be traced back to its origin.
+  sourceType?: 'manual' | 'email' | 'calendar';
+  sourceId?: string | null;
+  sourceMeta?: Record<string, unknown> | null;
 }
 
 interface UpdateTodoBody {
