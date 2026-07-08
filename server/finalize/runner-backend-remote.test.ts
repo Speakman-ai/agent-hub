@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { initOrgsDb, setOrgsDbPathForTests } from '../orgs.js';
-import { claimRunnerJob } from './runner-queue.js';
+import { claimRunnerJob, reportRunnerJob } from './runner-queue.js';
 import { getJobChannel } from './runner-job-channel.js';
 import { createRemoteRunnerBackend, __test } from './runner-backend-remote.js';
 import type { BundleStore } from './worktree-bundle.js';
@@ -80,6 +80,53 @@ describe('createRemoteRunnerBackend', () => {
     await lease.release();
     expect(await finishP).toEqual({ type: 'finish' });
     expect(getJobChannel(claimed!.id)).toBeUndefined();
+  });
+
+  // Loss-evidence seam: every remote step must carry a probe wired to its queue
+  // row so step-runner can tell "genuine overrun on a live runner" (timeout,
+  // parked) from "the runner died underneath the step" (infra, retried) when a
+  // hard timeout fires without a terminal event.
+  it('wires probeRunnerLoss on every spawned step to the job queue row', async () => {
+    const backend = createRemoteRunnerBackend({ acquireTimeoutMs: 2000 });
+    const acquireP = backend.acquire({
+      orgId: 'orgA',
+      projectId: 'p1',
+      runId: 'r1',
+      jobId: 'e2e',
+      matrixKey: '',
+      image: 'img:latest',
+      worktreePath: '/tmp/wt',
+      composeProjectName: 'cp',
+      env: {},
+      labels: {},
+    });
+    const claimed = claimRunnerJob({ agentId: 'agent-1', leaseMs: 60_000, now: Date.now() });
+    const channel = getJobChannel(claimed!.id)!;
+    void channel.nextDirective(1000); // first poll attaches → unblocks acquire
+    const lease = await acquireP;
+
+    const step = lease.spawnStep({
+      step: { name: 's', run: 'echo hi' },
+      index: 0,
+      cwd: '/tmp/wt',
+      env: {},
+    });
+    // Lease alive: no loss signal, but real evidence flows from the queue row.
+    expect(step.probeRunnerLoss).toBeTypeOf('function');
+    expect(step.probeRunnerLoss!()).toMatchObject({
+      state: 'claimed',
+      lost: false,
+      leaseExpired: false,
+      spotInterrupted: false,
+    });
+    // Reaper marks the job lost → the same probe now reports the loss.
+    reportRunnerJob({
+      jobId: claimed!.id,
+      state: 'lost',
+      detail: 'lease expired',
+      now: Date.now(),
+    });
+    expect(step.probeRunnerLoss!()).toMatchObject({ state: 'lost', lost: true });
   });
 
   // The production seam: step-runner computes the per-step deadline and hands it

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import {
+  agentIsDraining,
   httpTransport,
   resolveEcsTaskArn,
   runAgentJob,
@@ -745,5 +746,26 @@ describe('runExecStepChild (exit-vs-close + process-group kill)', () => {
     await expect(p).resolves.toBe(143);
     await new Promise((r) => setTimeout(r, 70));
     expect(fc.killed).toEqual(['SIGTERM']); // no stray SIGKILL after it settled
+  });
+});
+
+// A draining instance (pending EC2 Spot reclaim) must never claim fresh work —
+// any job it picks up inside the 2-minute window is guaranteed to be lost
+// mid-run, burning a retry generation and minutes of the run's wall clock.
+describe('agentIsDraining (claim-loop Spot guard)', () => {
+  it('reports draining once the IMDS probe sees a pending interruption', async () => {
+    await expect(agentIsDraining(async () => true)).resolves.toBe(true);
+  });
+
+  it('reports healthy when no interruption is pending', async () => {
+    await expect(agentIsDraining(async () => false)).resolves.toBe(false);
+  });
+
+  it('fails open to healthy on a probe error (off-EC2 / IMDS blip must not idle the fleet)', async () => {
+    await expect(
+      agentIsDraining(async () => {
+        throw new Error('IMDS unreachable');
+      }),
+    ).resolves.toBe(false);
   });
 });

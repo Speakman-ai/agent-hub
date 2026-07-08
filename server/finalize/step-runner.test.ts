@@ -18,6 +18,8 @@ import {
   STEP_ACTIVE_SECONDS_PER_STEP,
   STEP_POST_EXIT_FLUSH_GRACE_MS,
   STEP_KILL_SETTLE_GRACE_MS,
+  REMOTE_LOSS_CONFIRM_POLL_MS,
+  REMOTE_LOSS_CONFIRM_MAX_WAIT_MS,
   TASKS_PHASE_ENTRY_ACTIVE_SECONDS,
   __test,
   defaultSpawnStep,
@@ -27,6 +29,7 @@ import {
   type SpawnedStep,
   type StepRunnerDeps,
 } from './step-runner.js';
+import type { RunnerJobLossProbe } from './runner-queue.js';
 import type {
   FinalizeStepLogStore,
   StepLogPersist,
@@ -804,6 +807,125 @@ describe('runStepPhase — timeout (fake timers)', () => {
     expect(fakes[0].killed).toContain('SIGTERM');
     expect(fakes[0].killed).toContain('SIGKILL');
     expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
+  });
+});
+
+// A force-settling REMOTE step is ambiguous: genuine overrun on a live runner
+// (CI-class `timeout`, parked) vs. the runner dying underneath the step (Spot
+// reclaim / crash — infra-class, retried on a fresh agent). When the step
+// carries a runner-loss probe (remote backend), the settlement must consult it
+// instead of blindly parking the run as timed_out — that blind park is exactly
+// how a Spot death used to burn a green change set.
+describe('runStepPhase — loss-aware remote timeout classification (fake timers)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function runWithProbe(probe: () => RunnerJobLossProbe | null) {
+    const stmts = makeStmts();
+    const fakes: ReturnType<typeof makeFakeChild>[] = [];
+    const spawnStep: SpawnStepFn = () => {
+      const f = makeFakeChild();
+      f.child.probeRunnerLoss = probe;
+      fakes.push(f);
+      return f.child;
+    };
+    const deps: StepRunnerDeps = {
+      stmts: stmts as never,
+      broadcast: vi.fn(),
+      spawnStep,
+      now: () => Date.now(),
+      spawnHardTimeoutMs: 100,
+    };
+    const resultP = runStepPhase(deps, {
+      runId: RUN_ID,
+      config: makeConfig([{ name: 'sleeper', run: 'sleep 9999' }]),
+      worktreePath: WORKTREE,
+      sessionId: SESSION_ID,
+    });
+    return { stmts, fakes, resultP };
+  }
+
+  const evidence = (over: Partial<RunnerJobLossProbe> = {}): RunnerJobLossProbe => ({
+    state: 'running',
+    lost: false,
+    leaseExpired: false,
+    spotInterrupted: false,
+    heartbeatAt: 0,
+    detail: null,
+    ...over,
+  });
+
+  it('a spot-interrupted runner reclassifies the timeout as spot_reclaimed (infra, retried)', async () => {
+    const { stmts, resultP } = runWithProbe(() =>
+      evidence({ state: 'lost', lost: true, spotInterrupted: true, detail: 'lease expired' }),
+    );
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100 + 1_000 + STEP_KILL_SETTLE_GRACE_MS + 100);
+
+    const result = await resultP;
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('spot_reclaimed');
+    // Infra-class: the orchestrator owns the retry — no CI-terminal DB write.
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('a lease-expired runner (reaper tick pending) reclassifies as container_unavailable', async () => {
+    const { stmts, resultP } = runWithProbe(() => evidence({ leaseExpired: true }));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100 + 1_000 + STEP_KILL_SETTLE_GRACE_MS + 100);
+
+    const result = await resultP;
+    expect(result.status).toBe('infra_error');
+    expect(result.failureReason).toBe('container_unavailable');
+    expect(stmts.failFinalizeRun.run).not.toHaveBeenCalled();
+  });
+
+  it('a live runner (heartbeat newer than the kill) keeps the genuine timeout classification', async () => {
+    // First probe tick: heartbeat older than the kill (inconclusive) → the
+    // confirm loop must poll again rather than settle. Second tick: a fresh
+    // heartbeat proves the agent is alive → genuine overrun → timeout.
+    let heartbeatAt = 0;
+    const { stmts, resultP } = runWithProbe(() => evidence({ heartbeatAt }));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100 + 1_000 + STEP_KILL_SETTLE_GRACE_MS + 100);
+    heartbeatAt = Date.now() + 1; // newer than the kill timestamp
+    await vi.advanceTimersByTimeAsync(REMOTE_LOSS_CONFIRM_POLL_MS + 100);
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
+    expect(stmts.failFinalizeRun.run).toHaveBeenCalledWith('timed_out', 'timeout', RUN_ID);
+  });
+
+  it('inconclusive evidence settles as timeout once the max confirm wait elapses', async () => {
+    // Heartbeat never advances and the lease never expires (e.g. a wedged
+    // agent whose heartbeat loop also died but whose row was hand-edited) —
+    // the conservative direction is a genuine timeout, never a hidden retry.
+    const { resultP } = runWithProbe(() => evidence({ heartbeatAt: 0 }));
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(
+      100 +
+        1_000 +
+        STEP_KILL_SETTLE_GRACE_MS +
+        REMOTE_LOSS_CONFIRM_MAX_WAIT_MS +
+        REMOTE_LOSS_CONFIRM_POLL_MS +
+        100,
+    );
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
+  });
+
+  it('a missing queue row (probe null) settles immediately as timeout (old behavior)', async () => {
+    const { resultP } = runWithProbe(() => null);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(100 + 1_000 + STEP_KILL_SETTLE_GRACE_MS + 100);
+
+    const result = await resultP;
+    expect(result.status).toBe('timeout');
   });
 });
 

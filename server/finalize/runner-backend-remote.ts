@@ -11,7 +11,7 @@
  * S3 bundle ref added to the wire spec by the worktree-bundle increment.
  */
 import { createJobChannel, removeJobChannel } from './runner-job-channel.js';
-import { enqueueRunnerJob, reportRunnerJob } from './runner-queue.js';
+import { enqueueRunnerJob, probeRunnerJobLoss, reportRunnerJob } from './runner-queue.js';
 import { reconcileFleetCapacity } from './runner-fleet-scaler.js';
 import type { JobClaimSpec, RunnerBackend, RunnerLease } from './runner-backend.js';
 import type { RepoVisibility, RunnerResourceProfileName } from './runner-resource-profile.js';
@@ -198,8 +198,15 @@ export function createRemoteRunnerBackend(opts?: {
       }
 
       return {
-        spawnStep: ({ step, index, env, deadlineMs }: SpawnStepArgs) =>
-          channel.runStep(index, step.run, toEnvRecord(env), deadlineMs),
+        spawnStep: ({ step, index, env, deadlineMs }: SpawnStepArgs) => {
+          const spawned = channel.runStep(index, step.run, toEnvRecord(env), deadlineMs);
+          // Loss-evidence seam: lets step-runner distinguish "the step overran
+          // its deadline on a live runner" (genuine timeout, parked) from "the
+          // runner died underneath the step" (Spot reclaim / crash — infra,
+          // retried on a fresh agent) when no terminal event ever arrives.
+          spawned.probeRunnerLoss = () => probeRunnerJobLoss(queueJobId, now());
+          return spawned;
+        },
         release: async () => {
           channel.finish();
           // Queue-level "the runner completed its lease" — the authoritative

@@ -308,6 +308,59 @@ export function runnerInflightCount(orgId?: string): number {
   return row.n;
 }
 
+/**
+ * Point-in-time loss evidence for a leased job, read by the step-runner when a
+ * remote step hits its hard timeout without ever reporting termination. The
+ * step-runner uses this to decide whether the "timeout" is a genuine step
+ * overrun on a live runner (CI-class, parked) or the runner dying underneath
+ * the step (infra-class, retried on a fresh agent).
+ */
+export interface RunnerJobLossProbe {
+  state: RunnerJobState;
+  /** The reaper (or an error report) already marked the job terminal-lost. */
+  lost: boolean;
+  /** Still claimed/running but the lease deadline has passed (reaper tick pending). */
+  leaseExpired: boolean;
+  /** The agent reported an EC2 Spot interruption notice (sticky stamp). */
+  spotInterrupted: boolean;
+  /** Last heartbeat (epoch ms), or null if the agent never heartbeat. */
+  heartbeatAt: number | null;
+  /** The persisted queue-row detail, when any. */
+  detail: string | null;
+}
+
+/**
+ * Read the loss evidence for one queue job. Returns null when the row is gone
+ * (nothing to conclude — callers fall back to their default classification).
+ * Pure read; safe on the step-settlement hot path.
+ */
+export function probeRunnerJobLoss(jobId: string, now: number): RunnerJobLossProbe | null {
+  const row = getOrgsDb()
+    .prepare(
+      `SELECT state, lease_expires_at, heartbeat_at, spot_interruption_at, detail
+         FROM runner_jobs WHERE id=?`,
+    )
+    .get(jobId) as
+    | {
+        state: RunnerJobState;
+        lease_expires_at: number | null;
+        heartbeat_at: number | null;
+        spot_interruption_at: number | null;
+        detail: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  const live = row.state === 'claimed' || row.state === 'running';
+  return {
+    state: row.state,
+    lost: row.state === 'lost',
+    leaseExpired: live && row.lease_expires_at != null && row.lease_expires_at < now,
+    spotInterrupted: row.spot_interruption_at != null,
+    heartbeatAt: row.heartbeat_at ?? null,
+    detail: row.detail ?? null,
+  };
+}
+
 /** A job marked `lost` by the reaper, plus whether it was a known Spot reclaim. */
 export interface ReapedRunnerJob {
   id: string;

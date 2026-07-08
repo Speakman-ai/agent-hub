@@ -12,6 +12,7 @@
  */
 import { PassThrough } from 'stream';
 import type { SpawnedStep } from './step-runner.js';
+import type { RunnerJobLossProbe } from './runner-queue.js';
 
 export interface RemoteStepSink {
   /** Ask the remote agent to cancel this step (maps to SpawnedStep.kill). */
@@ -21,6 +22,13 @@ export interface RemoteStepSink {
 export class RemoteSpawnedStep implements SpawnedStep {
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
+  /**
+   * Loss evidence for the runner-agent backing this step, wired by the remote
+   * backend to the job's queue row. step-runner consults it when the hard
+   * timeout fires without a terminal event, so a dead runner classifies as
+   * infra loss (retried) instead of a CI-class timeout (parked).
+   */
+  probeRunnerLoss?: () => RunnerJobLossProbe | null;
   private exitListener?: (code: number | null) => void;
   private closeListener?: (code: number | null) => void;
   private errorListener?: (err: Error) => void;

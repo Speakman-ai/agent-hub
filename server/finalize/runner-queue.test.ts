@@ -9,6 +9,7 @@ import {
   enqueueRunnerJob,
   heartbeatRunnerJob,
   markRunnerJobSpotInterruption,
+  probeRunnerJobLoss,
   pruneRunnerJobLogs,
   reapExpiredRunnerLeases,
   reportRunnerJob,
@@ -127,6 +128,48 @@ describe('runner-queue', () => {
       detail: string;
     };
     expect(row.detail).toBe('lease expired after spot interruption notice');
+  });
+
+  it('probeRunnerJobLoss reads the loss evidence for each lifecycle state', () => {
+    enq({ jobId: 'j', now: 1000 });
+    const c = claimRunnerJob({ agentId: 'a', leaseMs: 10_000, now: 2000 })!;
+
+    // Freshly claimed, lease alive: no loss signal, heartbeat visible.
+    expect(probeRunnerJobLoss(c.id, 5000)).toEqual({
+      state: 'claimed',
+      lost: false,
+      leaseExpired: false,
+      spotInterrupted: false,
+      heartbeatAt: 2000,
+      detail: null,
+    });
+
+    // Lease deadline passed but the reaper has not ticked yet: leaseExpired.
+    expect(probeRunnerJobLoss(c.id, 13_000)).toMatchObject({
+      lost: false,
+      leaseExpired: true,
+    });
+
+    // Spot interruption stamped (sticky) surfaces even while the lease lives.
+    markRunnerJobSpotInterruption({ jobId: c.id, agentId: 'a', now: 6000 });
+    expect(probeRunnerJobLoss(c.id, 5000)).toMatchObject({
+      leaseExpired: false,
+      spotInterrupted: true,
+    });
+
+    // Reaped: terminal lost with the persisted detail; leaseExpired no longer
+    // applies (the state is no longer live).
+    reapExpiredRunnerLeases(40_000);
+    expect(probeRunnerJobLoss(c.id, 50_000)).toMatchObject({
+      state: 'lost',
+      lost: true,
+      leaseExpired: false,
+      spotInterrupted: true,
+      detail: 'lease expired after spot interruption notice',
+    });
+
+    // Missing row → null (caller falls back to default classification).
+    expect(probeRunnerJobLoss('no-such-job', 5000)).toBeNull();
   });
 
   it('markRunnerJobSpotInterruption refuses a non-claiming agent', () => {

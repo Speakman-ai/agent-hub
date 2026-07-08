@@ -96,7 +96,8 @@ import {
   writeFinalizeChecksRoundTimeline,
   type TimelineMessageDeps,
 } from './timeline-message.js';
-import { detailIsSpotReclaim } from './spot-interruption.js';
+import { detailIsSpotReclaim, spotReclaimDetail } from './spot-interruption.js';
+import type { RunnerJobLossProbe } from './runner-queue.js';
 import { hasTestFailureSummary, isRunnerTeardownExit } from './runner-teardown.js';
 import { isRunnerCancellationCollateral } from './step-cancellation.js';
 
@@ -166,6 +167,39 @@ export const STEP_POST_EXIT_FLUSH_GRACE_MS = 2_000;
 export const STEP_KILL_SETTLE_GRACE_MS = (() => {
   const n = Number.parseInt(process.env.FINALIZE_STEP_KILL_SETTLE_GRACE_MS ?? '', 10);
   return Number.isFinite(n) && n > 0 ? n : 5_000;
+})();
+
+/**
+ * A remote step that force-settles is AMBIGUOUS: either the step genuinely
+ * overran its deadline on a live runner (a CI-class timeout, parked with no
+ * auto-retry) or the runner instance died underneath it (a Spot reclaim or
+ * crash — infra-class, retried on a fresh agent, with reclaim time refunded
+ * from the family budget). Settling it blindly as `timeout` is how a Spot
+ * death parks a green change set as `timed_out`.
+ *
+ * So instead of settling immediately, the step-runner polls the job's queue
+ * row ({@link RunnerJobLossProbe}) until the evidence is definitive:
+ *
+ *   - job `lost` / lease expired / Spot-interruption stamp → runner death →
+ *     settle as a spawn-error (→ `spot_reclaimed` / `container_unavailable`).
+ *   - a heartbeat NEWER than the kill → the agent is alive and just slow at
+ *     teardown → settle as a genuine `timeout`.
+ *   - max wait elapsed with neither → settle as `timeout` (the conservative
+ *     direction: never hide a possible real overrun behind a retry).
+ *
+ * The max wait is sized to one full lease window (300s) plus margin so a dead
+ * agent's lease provably expires inside it; a live agent heartbeats every 30s,
+ * so the alive verdict lands within one poll tick. Local steps never enter
+ * this path (they have no probe — SIGKILL always yields `exit`).
+ */
+export const REMOTE_LOSS_CONFIRM_POLL_MS = (() => {
+  const n = Number.parseInt(process.env.FINALIZE_REMOTE_LOSS_CONFIRM_POLL_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 15_000;
+})();
+
+export const REMOTE_LOSS_CONFIRM_MAX_WAIT_MS = (() => {
+  const n = Number.parseInt(process.env.FINALIZE_REMOTE_LOSS_CONFIRM_MAX_WAIT_MS ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 390_000;
 })();
 
 /**
@@ -347,6 +381,15 @@ export interface SpawnedStep {
   on(event: 'exit', listener: (code: number | null) => void): unknown;
   on(event: 'error', listener: (err: Error) => void): unknown;
   kill(signal?: NodeJS.Signals): boolean;
+  /**
+   * Loss evidence for the runner backing this step, when one exists (remote
+   * backend only — the remote lease wires it to the job's queue row). Consulted
+   * by {@link runSingleStep} when the hard timeout fires and no terminal event
+   * follows, to distinguish a genuine step overrun (live runner → `timeout`)
+   * from the runner dying underneath the step (→ spawn-error → infra retry).
+   * Local child processes leave it unset; their behavior is unchanged.
+   */
+  probeRunnerLoss?: () => RunnerJobLossProbe | null;
 }
 
 export interface SpawnStepArgs {
@@ -1029,10 +1072,20 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       // `running` indefinitely — the 4h stranded-shard bug). A LOCAL child always
       // emits `exit` after SIGKILL, so the close/exit handlers settle first and
       // this timer no-ops. `detachOpenOutput` destroys the pipes so a leaked FD
-      // can't hold us either. `timedOut` is already true, so this resolves as a
-      // `timeout` outcome.
+      // can't hold us either.
+      //
+      // For a step that carries a runner-loss probe (remote backend), reaching
+      // this point is ambiguous — genuine overrun on a live runner vs. the
+      // runner dying underneath the step — so classification is deferred to
+      // `confirmRemoteTimeoutClass` below, which polls the job's queue row
+      // until the evidence is definitive. Steps without a probe (local child,
+      // tests) keep the immediate `timeout` settle.
       setTimeout(() => {
         if (settled) return;
+        if (typeof child.probeRunnerLoss === 'function') {
+          confirmRemoteTimeoutClass(now());
+          return;
+        }
         emit(
           'stderr',
           '[finalize] step exceeded its hard timeout and never reported termination ' +
@@ -1099,12 +1152,15 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
       }
     };
 
-    child.on('error', (err: Error) => {
+    const settleAsSpawnError = (
+      detail: string,
+      opts: { detachOpenOutput?: boolean } = {},
+    ): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(postExitTimer);
-      const detail = err.message || String(err);
+      if (opts.detachOpenOutput) detachOutputStreams();
       const line = `[spawn-error] ${detail}`;
       stderrLines += 1;
       emit('stderr', line);
@@ -1125,7 +1181,55 @@ function runSingleStep(args: RunSingleStepArgs): Promise<SingleStepOutcome> {
         failureExcerpt: excerpt.snapshot(),
         logSnapshot: logAcc.snapshot(),
       });
+    };
+
+    child.on('error', (err: Error) => {
+      settleAsSpawnError(err.message || String(err));
     });
+
+    // Deferred classification for a force-settling REMOTE step: poll the job's
+    // queue row until we can prove which way the ambiguity resolves. A dead
+    // runner's lease provably expires within the max wait (one lease window +
+    // margin); a live runner heartbeats every ~30s, so a heartbeat NEWER than
+    // the kill is proof of life. Neither within the max wait → conservative
+    // `timeout` (never hide a possible genuine overrun behind a retry). The
+    // reaper's `channel.fail()` can also land mid-wait — it settles the step as
+    // a spawn-error through the `error` handler and every later settle no-ops.
+    const confirmRemoteTimeoutClass = (killAt: number): void => {
+      const check = (): void => {
+        if (settled) return;
+        let evidence: RunnerJobLossProbe | null = null;
+        try {
+          evidence = child.probeRunnerLoss?.() ?? null;
+        } catch {
+          evidence = null;
+        }
+        if (evidence && (evidence.lost || evidence.leaseExpired || evidence.spotInterrupted)) {
+          const human =
+            `runner-agent lost while step was in flight (job ${evidence.state}` +
+            `${evidence.detail ? `: ${evidence.detail}` : ''}); no terminal event after the ` +
+            'hard-timeout kill — reclassifying the timeout as runner loss.';
+          settleAsSpawnError(evidence.spotInterrupted ? spotReclaimDetail(human) : human, {
+            detachOpenOutput: true,
+          });
+          return;
+        }
+        const alive = evidence?.heartbeatAt != null && evidence.heartbeatAt > killAt;
+        const waited = now() - killAt;
+        if (alive || !evidence || waited >= REMOTE_LOSS_CONFIRM_MAX_WAIT_MS) {
+          emit(
+            'stderr',
+            '[finalize] step exceeded its hard timeout and never reported termination ' +
+              `(runner ${alive ? 'is alive — genuine overrun' : 'state inconclusive'}) — ` +
+              `force-settling as timeout after ${Math.round(waited / 1000)}s.`,
+          );
+          settleFromCode(null, { detachOpenOutput: true });
+          return;
+        }
+        setTimeout(check, REMOTE_LOSS_CONFIRM_POLL_MS).unref?.();
+      };
+      check();
+    };
 
     const settleFromCode = (
       code: number | null,
