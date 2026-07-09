@@ -1204,6 +1204,28 @@ describe('Sessions', () => {
       expect(res.body).toEqual([]);
     });
 
+    // Guards the Phase-2 async-DB migration: the non-paginated branch now loads
+    // the full transcript through the async reader facade (readAll). Response
+    // must stay byte-for-byte identical to the old sync path: every message,
+    // oldest-first by created_at then rowid.
+    it('returns the full transcript oldest-first via the async reader path', async () => {
+      const session = await createSession();
+      const sessionId = session.id as string;
+      const { getDb } = await import('../db.js');
+      const db = getDb();
+      const insert = db.prepare(
+        `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+      );
+      insert.run('t1', sessionId, 'user', 'one', '2026-03-01T00:00:00.000Z');
+      insert.run('t2', sessionId, 'assistant', 'two', '2026-03-01T00:01:00.000Z');
+      insert.run('t3', sessionId, 'user', 'three', '2026-03-01T00:02:00.000Z');
+
+      const res = await request.get(`/api/sessions/${sessionId}/messages`).expect(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      expect(res.body.map((m: { id: string }) => m.id)).toEqual(['t1', 't2', 't3']);
+      expect(res.body.map((m: { content: string }) => m.content)).toEqual(['one', 'two', 'three']);
+    });
+
     it('treats a before cursor from another session as an empty page (no cross-session leak)', async () => {
       const sessionA = await createSession();
       const sessionB = await createSession();
@@ -2320,6 +2342,32 @@ describe('Background Tasks', () => {
   describe('GET /api/tasks/:taskId', () => {
     it('returns 404 for nonexistent task', async () => {
       await request.get('/api/tasks/nonexistent-task-id').expect(404);
+    });
+
+    // Guards the Phase-2 async-DB migration: the task-detail handler loads the
+    // session transcript through the async reader facade (readAll). Seed a task
+    // + session + messages directly and assert the response carries the full
+    // ordered transcript unchanged.
+    it('returns the task with its full transcript via the async reader path', async () => {
+      const agent = await createAgent();
+      const session = await createSession({ agentId: agent.id as string, name: 'BG' });
+      const sessionId = session.id as string;
+      const { getDb } = await import('../db.js');
+      const db = getDb();
+      const taskId = 'task-async-read';
+      db.prepare(
+        `INSERT INTO background_tasks (id, session_id, agent_id, prompt) VALUES (?, ?, ?, ?)`,
+      ).run(taskId, sessionId, agent.id as string, 'do the thing');
+      const insert = db.prepare(
+        `INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+      );
+      insert.run('bgm1', sessionId, 'user', 'a', '2026-04-01T00:00:00.000Z');
+      insert.run('bgm2', sessionId, 'assistant', 'b', '2026-04-01T00:01:00.000Z');
+
+      const res = await request.get(`/api/tasks/${taskId}`).expect(200);
+      expect(res.body.id).toBe(taskId);
+      expect(Array.isArray(res.body.messages)).toBe(true);
+      expect(res.body.messages.map((m: { id: string }) => m.id)).toEqual(['bgm1', 'bgm2']);
     });
   });
 });

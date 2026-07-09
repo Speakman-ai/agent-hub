@@ -33,6 +33,7 @@ import { trackChild, killProcessGroup } from '../process-groups.js';
 import { appendCodexShellEnvironmentPolicyArgs } from '../codex-exec-sandbox.js';
 import { markSessionTermination } from '../process-termination.js';
 import { getDb } from '../db.js';
+import { readAll } from '../db-async/read-facade.js';
 import {
   buildSessionRunSnapshot,
   buildAggregationSkippedRunSnapshot,
@@ -621,14 +622,15 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     });
   });
 
-  router.get('/api/sessions/:sessionId/messages', (req: Request, res: Response) => {
+  router.get('/api/sessions/:sessionId/messages', async (req: Request, res: Response) => {
     const sid = req.params.sessionId;
 
     // Opt-in keyset pagination: newest page first, older pages via `?before=`
     // (the oldest loaded message's id). Returns a plain oldest-first array so
     // the response shape matches the legacy endpoint; the client infers
     // "more older messages" from page fullness. The DB-side LIMIT is what
-    // keeps a huge post-finalize transcript from loading all at once.
+    // keeps a huge post-finalize transcript from loading all at once. Paginated
+    // reads stay sync: they are bounded by LIMIT and measured fast.
     if (isPaginatedMessagesQuery(req.query)) {
       const pageSize = parseMessagesPageSize(req.query.limit);
       const before = parseBeforeMessageId(req.query.before);
@@ -641,7 +643,18 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
       return;
     }
 
-    const all = stmts.getMessages.all(sid) as MessageRow[];
+    // Unbounded full-transcript load — the measured-slow read this endpoint is
+    // known for (a long post-finalize session returns thousands of large rows,
+    // and no index shrinks the row set). Route it through the async reader pool
+    // so the SQLite work + row marshalling happen off the Node event loop.
+    let all: MessageRow[];
+    try {
+      all = await readAll<MessageRow>(stmts.getMessages, [sid]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'messages_read_failed', message: msg });
+      return;
+    }
     const limited = applyMessagesLimitQuery(all, req.query.limit);
     const body = buildSessionMessagesHttpBody(limited);
     if (!Array.isArray(body) && body.truncated) {
@@ -715,7 +728,7 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     res.json(enriched);
   });
 
-  router.get('/api/tasks/:taskId', (req: Request, res: Response) => {
+  router.get('/api/tasks/:taskId', async (req: Request, res: Response) => {
     const task = stmts.getBackgroundTask.get(req.params.taskId) as BackgroundTaskRow | undefined;
     if (!task) return res.status(404).json({ error: 'Task not found' });
     if (!userOwnsSession(req as AuthenticatedRequest, task.session_id)) {
@@ -723,7 +736,16 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
 
     const agent = getEnrichedAgent(task.agent_id);
-    const messages = stmts.getMessages.all(task.session_id) as MessageRow[];
+    // Same unbounded full-transcript read as GET /messages — off-load to the
+    // async reader pool so a large background-task session doesn't stall the loop.
+    let messages: MessageRow[];
+    try {
+      messages = await readAll<MessageRow>(stmts.getMessages, [task.session_id]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: 'messages_read_failed', message: msg });
+      return;
+    }
     res.json({
       ...task,
       agentName: agent?.name || task.agent_id,

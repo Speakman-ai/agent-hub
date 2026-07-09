@@ -169,6 +169,15 @@ cp.execFileSync = makeGuard('execFileSync', cp.execFileSync);
 const { installTestNetworkGuard } = await import('./network-guard.js');
 installTestNetworkGuard();
 
+// Async DB read facade: route handlers migrated to the reader pool (Phase-2
+// async-DB) call the facade instead of a synchronous SELECT. In tests we
+// install the synchronous-backed facade so those handlers run without spawning
+// worker_threads (fast, deterministic, no async teardown / open-handle leak),
+// while still exercising the exact same async handler code. The reader pool
+// itself is covered directly by reader-pool.test.ts / read-facade.test.ts.
+const { setReadFacadeForTesting, syncReadFacade } = await import('../db-async/read-facade.js');
+setReadFacadeForTesting(syncReadFacade);
+
 mkdirSync(TEST_DATA_DIR, { recursive: true });
 writeFileSync(path.join(TEST_DATA_DIR, 'projects.json'), '[]');
 
