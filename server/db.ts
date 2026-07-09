@@ -3,6 +3,7 @@ import path from 'path';
 import config from './config.js';
 import { assertSafeTestDataDir } from './db-safety.js';
 import { WORKFLOWS_SCHEMA, WORKFLOWS_WEBHOOK_PATH_INDEX_SQL } from './workflows-schema.js';
+import { JOBS_SCHEMA } from './jobs/schema.js';
 import {
   WORKTREE_PREVIEWS_SCHEMA,
   WORKTREE_PREVIEW_GROUPS_SCHEMA,
@@ -3208,6 +3209,11 @@ function initDb(dataDir: string): void {
   // Workflow builder (MVP): definitions, steps, and execution rows. DDL is
   // shared with workflows-schema.test.ts via workflows-schema.ts.
   db.exec(WORKFLOWS_SCHEMA);
+
+  // Background job queue (in-house, SQLite). Owned by `server/jobs/`; DDL is
+  // shared with the queue's tests via jobs/schema.ts. Additive — no consumer
+  // is wired yet; heartbeats/crons migrate onto it in follow-up cards.
+  db.exec(JOBS_SCHEMA);
 
   // Worktree-preview runtime: per-session preview process tracking, owned
   // by `server/preview/preview-runtime.ts`. Schema lives alongside the
