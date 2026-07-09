@@ -2224,6 +2224,19 @@ export const api = {
     return fetchJSON(`/projects/${projectId}/tool-errors${qs ? '?' + qs : ''}`);
   },
 
+  // Background job queue (Admin observability surface)
+  getJobs: ({ status, type, limit, offset }: any = {}) => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (type) params.set('type', type);
+    if (limit) params.set('limit', String(limit));
+    if (offset) params.set('offset', String(offset));
+    const qs = params.toString();
+    return fetchJSON(`/jobs${qs ? '?' + qs : ''}`);
+  },
+  retryJob: (id: any) => fetchJSON(`/jobs/${id}/retry`, { method: 'POST' }),
+  deleteJob: (id: any) => fetchJSON(`/jobs/${id}`, { method: 'DELETE' }),
+
   // Generic helpers (for endpoints without dedicated methods)
   get: (url: any) => fetchJSON(url),
   post: (url: any, data: any) =>

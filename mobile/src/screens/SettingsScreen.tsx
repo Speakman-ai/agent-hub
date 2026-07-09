@@ -12,6 +12,7 @@ import humanCron from '@shared/utils/humanCron';
 import { localTimeZone } from '@shared/utils/calendarEvents';
 import { cronEngineChoices, defaultModelForCronEngine, effectiveCronEngine, inheritedCronEngineForHelper, modelsForCronEngine, } from '../utils/cronEngine';
 import { getOrgs, getActiveOrg, createOrg, updateOrg, deleteOrg, testConnection, loadOrgs } from '../utils/orgs';
+import { hasRole, getUserRole } from '../utils/auth';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
@@ -21,6 +22,7 @@ import PushNotificationsSection from '../components/settings/PushNotificationsSe
 import GeneralSettingsSection from '../components/settings/GeneralSettingsSection';
 import GitHubSettingsSection from '../components/settings/GitHubSettingsSection';
 import ToolErrorsSection from '../components/settings/ToolErrorsSection';
+import JobQueueSection from '../components/settings/JobQueueSection';
 import ServerLogsSection from '../components/settings/ServerLogsSection';
 import MembersSection from '../components/settings/MembersSection';
 import MfaSettingsSection from '../components/settings/MfaSettingsSection';
@@ -1852,6 +1854,7 @@ const SETTINGS_TABS = [
     { id: 'slack', label: 'Slack' },
     { id: 'usage', label: 'Usage' },
     { id: 'tool-errors', label: 'Tool Errors' },
+    { id: 'jobs', label: 'Background Jobs' },
     { id: 'backup', label: 'Backup' },
     { id: 'logs', label: 'Logs' },
 ];
@@ -1883,6 +1886,23 @@ export default function SettingsScreen({ route }: any) {
             return;
         setTab(normalizeSettingsTab(routeTab, SETTINGS_TAB_IDS, LEGACY_TAB_IDS));
     }, [routeTab]);
+    // Mirror the web client's `isAdminPlus` gate for operator-only tabs.
+    // `hasRole('Admin')` covers authenticated admins/owners; a null role means
+    // the server has no auth configured (every caller is treated as Owner
+    // server-side), so we show the tab there too — matching web's local-mode
+    // allowance and the server's own `requireRole('Admin')` behaviour.
+    const isAdminPlus = hasRole('Admin') || getUserRole() == null;
+    // Admin/Owner-only tabs, hidden from the picker for non-admins (parity with
+    // web `visibleSettingsTabs`). The server still enforces access.
+    const visibleSettingsTabs = useMemo<any[]>(
+        () => SETTINGS_TABS.filter((t: any) => t.id !== 'jobs' || isAdminPlus),
+        [isAdminPlus],
+    );
+    // A non-admin deep-linking to the gated jobs tab falls back to General.
+    useEffect(() => {
+        if (tab === 'jobs' && !isAdminPlus)
+            setTab('general');
+    }, [tab, isAdminPlus]);
     const activeTab = useMemo<any>(() => SETTINGS_TABS.find((t: any) => t.id === tab) ?? SETTINGS_TABS[1], [tab]);
     const selectTab = (tabId: any) => {
         setTab(tabId);
@@ -1906,7 +1926,7 @@ export default function SettingsScreen({ route }: any) {
         <Pressable style={styles.tabMenuBackdrop} onPress={() => setTabMenuOpen(false)}>
           <View style={styles.tabMenu}>
             <ScrollView keyboardShouldPersistTaps="handled">
-              {SETTINGS_TABS.map((t: any) => {
+              {visibleSettingsTabs.map((t: any) => {
             const active = tab === t.id;
             return (<TouchableOpacity key={t.id} style={[styles.tabMenuItem, active && styles.tabMenuItemActive]} onPress={() => selectTab(t.id)} testID={`settings-tab-${t.id}`}>
                     <Text style={[styles.tabMenuItemText, active && styles.tabMenuItemTextActive]}>
@@ -1934,6 +1954,7 @@ export default function SettingsScreen({ route }: any) {
               <SlackSection />
             </>)}
           {tab === 'tool-errors' && <ToolErrorsSection />}
+          {tab === 'jobs' && isAdminPlus && <JobQueueSection />}
           {tab === 'backup' && <ConfigBackupSection />}
           {tab === 'logs' && <ServerLogsSection />}
         </ScrollView>

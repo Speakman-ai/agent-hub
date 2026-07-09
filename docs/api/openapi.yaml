@@ -55,6 +55,8 @@ tags:
     description: Per-agent scheduled check-ins.
   - name: Crons
     description: Project-scoped automated jobs.
+  - name: Jobs
+    description: Host-wide background job queue admin surface.
   - name: Admin
     description: Owner-only administrative endpoints.
 components:
@@ -24280,6 +24282,317 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HooksErrorResponse"
+  /api/jobs:
+    get:
+      tags:
+        - Jobs
+      summary: List background jobs (Admin) — filter by status and/or type
+      description: Newest-first listing of the host-wide job queue with per-status counts and the distinct job types present. Admin/Owner only.
+      parameters:
+        - schema:
+            type: string
+            enum:
+              - queued
+              - running
+              - done
+              - dead_letter
+          required: false
+          name: status
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: type
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          required: false
+          name: limit
+          in: query
+        - schema:
+            type: integer
+            nullable: true
+            minimum: 0
+          required: false
+          name: offset
+          in: query
+      responses:
+        "200":
+          description: Jobs, counts, and the distinct types present.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        type:
+                          type: string
+                        payload:
+                          type: string
+                        status:
+                          type: string
+                          enum:
+                            - queued
+                            - running
+                            - done
+                            - dead_letter
+                        priority:
+                          type: integer
+                        attempts:
+                          type: integer
+                        max_attempts:
+                          type: integer
+                        run_at:
+                          type: number
+                        claimed_by:
+                          type: string
+                          nullable: true
+                        claimed_at:
+                          type: number
+                          nullable: true
+                        lease_id:
+                          type: string
+                          nullable: true
+                        last_error:
+                          type: string
+                          nullable: true
+                        created_at:
+                          type: number
+                        updated_at:
+                          type: number
+                      required:
+                        - id
+                        - type
+                        - payload
+                        - status
+                        - priority
+                        - attempts
+                        - max_attempts
+                        - run_at
+                        - claimed_by
+                        - claimed_at
+                        - lease_id
+                        - last_error
+                        - created_at
+                        - updated_at
+                  counts:
+                    type: object
+                    properties:
+                      queued:
+                        type: integer
+                      running:
+                        type: integer
+                      done:
+                        type: integer
+                      dead_letter:
+                        type: integer
+                      total:
+                        type: integer
+                    required:
+                      - queued
+                      - running
+                      - done
+                      - dead_letter
+                      - total
+                  types:
+                    type: array
+                    items:
+                      type: string
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                required:
+                  - jobs
+                  - counts
+                  - types
+                  - limit
+                  - offset
+        "400":
+          description: Invalid filter.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "403":
+          description: Not an Admin/Owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/jobs/{id}/retry:
+    post:
+      tags:
+        - Jobs
+      summary: Requeue a dead-lettered job (Admin)
+      description: Resets a dead_letter job back to queued with a fresh attempt budget so a worker retries it. Only dead_letter jobs are retryable (409 otherwise).
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Job requeued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      type:
+                        type: string
+                      payload:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - queued
+                          - running
+                          - done
+                          - dead_letter
+                      priority:
+                        type: integer
+                      attempts:
+                        type: integer
+                      max_attempts:
+                        type: integer
+                      run_at:
+                        type: number
+                      claimed_by:
+                        type: string
+                        nullable: true
+                      claimed_at:
+                        type: number
+                        nullable: true
+                      lease_id:
+                        type: string
+                        nullable: true
+                      last_error:
+                        type: string
+                        nullable: true
+                      created_at:
+                        type: number
+                      updated_at:
+                        type: number
+                    required:
+                      - id
+                      - type
+                      - payload
+                      - status
+                      - priority
+                      - attempts
+                      - max_attempts
+                      - run_at
+                      - claimed_by
+                      - claimed_at
+                      - lease_id
+                      - last_error
+                      - created_at
+                      - updated_at
+                required:
+                  - job
+        "403":
+          description: Not an Admin/Owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "409":
+          description: Job is not in the dead_letter state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+  /api/jobs/{id}:
+    delete:
+      tags:
+        - Jobs
+      summary: Delete a background job row (Admin)
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Job deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                required:
+                  - ok
+        "403":
+          description: Not an Admin/Owner.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
+        "404":
+          description: Unknown job.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                required:
+                  - error
   /api/mcp-catalog:
     get:
       tags:

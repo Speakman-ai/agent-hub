@@ -12,6 +12,7 @@ import { localTimeZone } from '@shared/utils/calendarEvents';
 import CronSchedulePicker from './CronSchedulePicker';
 import AgentAvatar from './AgentAvatar';
 import AccountSection, { OrganizationSection } from './AccountSection';
+import JobQueueSection from './JobQueueSection';
 import GithubConnectionSection from './GithubConnectionSection';
 import PersonalOAuthConfigSection from './PersonalOAuthConfigSection';
 import AuthUpgradeBanner from './AuthUpgradeBanner';
@@ -7118,6 +7119,9 @@ const SETTINGS_TABS = [
   { id: 'slack', iconName: 'MessageSquare', text: 'Slack' },
   { id: 'usage', iconName: 'BarChart3', text: 'Usage' },
   { id: 'tool-errors', iconName: 'AlertTriangle', text: 'Tool Errors' },
+  // Host-wide background job queue admin surface — Admin/Owner-only (gated
+  // in `visibleSettingsTabs` below, same as the other operator tabs).
+  { id: 'jobs', iconName: 'Activity', text: 'Background Jobs' },
   { id: 'backup', iconName: 'HardDrive', text: 'Backup' },
   { id: 'logs', iconName: 'FileText', text: 'Logs' },
 ];
@@ -7218,6 +7222,8 @@ export default function SettingsPage({
       if (t.id === 'claude-auth' && !isAdminPlus) return false;
       // Org administration (members, invites, SMTP) is Admin/Owner-only.
       if (t.id === 'organization' && !isAdminPlus) return false;
+      // Background job queue admin surface is Admin/Owner-only.
+      if (t.id === 'jobs' && !isAdminPlus) return false;
       return true;
     });
   }, [electronShell, isAdminPlus]);
@@ -7230,6 +7236,10 @@ export default function SettingsPage({
     }
     // Non-Admin users deep-linking to the org-admin tab get sent to Account.
     if (tab === 'organization' && !isAdminPlus) {
+      setTab('account');
+    }
+    // Same for the Admin-only background jobs tab.
+    if (tab === 'jobs' && !isAdminPlus) {
       setTab('account');
     }
   }, [tab, isAdminPlus]);
@@ -7351,6 +7361,7 @@ export default function SettingsPage({
               {tab === 'slack' && <SlackSection />}
               {tab === 'usage' && <UsageSection />}
               {tab === 'tool-errors' && <ToolErrorsSection projects={projects} />}
+              {tab === 'jobs' && isAdminPlus && <JobQueueSection />}
               {tab === 'backup' && (
                 <>
                   <InstanceBackupSection showToast={showToast} />

@@ -964,6 +964,21 @@ export const api = {
         const qs = params.toString();
         return fetchJSON(`/projects/${projectId}/tool-errors${qs ? `?${qs}` : ''}`);
     },
+    getJobs: ({ status, type, limit, offset }: any = {}) => {
+        const params = new URLSearchParams();
+        if (status)
+            params.set('status', status);
+        if (type)
+            params.set('type', type);
+        if (limit)
+            params.set('limit', String(limit));
+        if (offset)
+            params.set('offset', String(offset));
+        const qs = params.toString();
+        return fetchJSON(`/jobs${qs ? `?${qs}` : ''}`);
+    },
+    retryJob: (id: any) => fetchJSON(`/jobs/${id}/retry`, { method: 'POST', body: JSON.stringify({}) }),
+    deleteJob: (id: any) => fetchJSON(`/jobs/${id}`, { method: 'DELETE' }),
     getServerLogs: () => fetchJSON('/server-logs'),
     getMe: () => fetchJSON('/auth/me'),
     getUsers: () => fetchJSON('/auth/users'),
