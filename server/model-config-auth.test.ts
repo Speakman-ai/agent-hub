@@ -63,6 +63,7 @@ function makeConfig(): AppConfig {
     replayRetentionDays: 0,
     previewComposeReadyTimeoutMs: 600_000,
     previewSubdomainBase: null,
+    dbInstrumentation: { enabled: false, slowThresholdMs: 10, logSlow: true },
     get allValidModels() {
       return Object.values(this.engineValidModels).flat();
     },

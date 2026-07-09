@@ -29,6 +29,7 @@ import {
   KANBAN_BOARD_CARD_SEQ_RECONCILE_SQL,
 } from './kanban-short-id.js';
 import type { Stmts } from './types.js';
+import { configureDbInstrumentation, instrumentStmts } from './db-instrumentation.js';
 
 let db: Database.Database | undefined;
 let stmts: Stmts | undefined;
@@ -6731,6 +6732,11 @@ function initDb(dataDir: string): void {
         ORDER BY started_at DESC LIMIT 20`,
     ),
   } as Stmts;
+
+  // Phase 1 async-DB instrumentation. When disabled (the default),
+  // `instrumentStmts` returns the map untouched — zero per-call overhead.
+  configureDbInstrumentation(config.dbInstrumentation);
+  stmts = instrumentStmts(stmts);
 
   dbRegistry.set(dataDir, { db, stmts });
 }

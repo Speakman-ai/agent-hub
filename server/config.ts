@@ -533,6 +533,25 @@ const config: AppConfig = {
     resolveInt('AGENT_HUB_REPLAY_RETENTION_DAYS', 'replayRetentionDays', 0),
   ),
 
+  // ── DB statement instrumentation (Phase 1 async-DB epic) ────────
+  // Off by default: when disabled, prepared statements are never wrapped, so
+  // there is zero per-call overhead. Enable to time every statement and surface
+  // slow ones at GET /api/config/db-stats. Threshold defaults to 10ms.
+  dbInstrumentation: (() => {
+    const block = (fileConfig.dbInstrumentation as Record<string, unknown> | undefined) || {};
+    const envKey = 'AGENT_HUB_DB_INSTRUMENTATION' as const;
+    const enabled =
+      process.env[envKey] !== undefined
+        ? envMeansTrue(envKey) ||
+          (!envMeansFalse(envKey) && coerceConfigBooleanLoose(process.env[envKey], false))
+        : coerceConfigBooleanLoose(block.enabled, false);
+    const envThresh = process.env.AGENT_HUB_DB_SLOW_THRESHOLD_MS;
+    const rawThresh = envThresh !== undefined ? Number(envThresh) : block.slowThresholdMs;
+    const slowThresholdMs = clampFiniteInt(rawThresh, 10, 0, 60_000);
+    const logSlow = coerceConfigBooleanLoose(block.logSlow, true);
+    return { enabled, slowThresholdMs, logSlow };
+  })(),
+
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();

@@ -3702,6 +3702,23 @@ export interface AppConfig {
    * `AGENT_HUB_REPLAY_RETENTION_DAYS`; config.json: `replayRetentionDays`.
    */
   replayRetentionDays: number;
+  /**
+   * Phase-1 async-DB instrumentation. When `enabled` is true at boot, every
+   * prepared statement is wrapped to time its `run`/`get`/`all` calls
+   * (`iterate` is intentionally not timed — it returns a lazy iterator);
+   * calls at or above `slowThresholdMs` are counted and (when `logSlow`)
+   * logged with the statement tag + duration only (never raw SQL / params).
+   * Aggregates are exposed at `GET /api/config/db-stats`. Disabled by default —
+   * when off, statements are never wrapped, so there is zero per-call overhead.
+   * Env: `AGENT_HUB_DB_INSTRUMENTATION` (enable), `AGENT_HUB_DB_SLOW_THRESHOLD_MS`;
+   * config.json: `dbInstrumentation: { enabled, slowThresholdMs, logSlow }`.
+   * Changing `enabled` requires a restart to (un)wrap statements.
+   */
+  dbInstrumentation: {
+    enabled: boolean;
+    slowThresholdMs: number;
+    logSlow: boolean;
+  };
   readonly allValidModels: string[];
 }
 

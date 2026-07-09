@@ -3246,6 +3246,53 @@ components:
         - from
         - configured
       description: SMTP settings with password masked.
+    DbInstrumentationStats:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether statement timing is active.
+        slowThresholdMs:
+          type: number
+          description: Calls at or above this wall-time (ms) count as slow.
+        totalStatements:
+          type: integer
+          description: Distinct statement tags with at least one recorded call.
+        totalCalls:
+          type: integer
+        totalSlowCalls:
+          type: integer
+        statements:
+          type: array
+          items:
+            type: object
+            properties:
+              tag:
+                type: string
+                description: Statement key (never contains SQL text or params).
+              count:
+                type: integer
+              totalMs:
+                type: number
+              maxMs:
+                type: number
+              slowCount:
+                type: integer
+            required:
+              - tag
+              - count
+              - totalMs
+              - maxMs
+              - slowCount
+          description: Per-statement aggregates, sorted by total wall time descending.
+      required:
+        - enabled
+        - slowThresholdMs
+        - totalStatements
+        - totalCalls
+        - totalSlowCalls
+        - statements
+      description: Aggregated prepared-statement wall-time timings.
     Cron:
       type: object
       properties:
@@ -18704,6 +18751,62 @@ paths:
                 properties:
                   ok:
                     type: boolean
+                required:
+                  - ok
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/db-stats:
+    get:
+      tags:
+        - Config
+      summary: Read aggregated DB prepared-statement wall-time timings
+      description: Per-statement timing aggregates for the async-DB Phase-1 instrumentation. Tags only — no SQL text or bound parameters are exposed. Empty when instrumentation is disabled (the default).
+      responses:
+        "200":
+          description: Timing snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DbInstrumentationStats"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+        "403":
+          description: Requires the Admin role or higher.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigErrorResponse"
+  /api/config/db-stats/reset:
+    post:
+      tags:
+        - Config
+      summary: Clear accumulated DB statement timing aggregates
+      responses:
+        "200":
+          description: Cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    enum:
+                      - true
                 required:
                   - ok
         "401":

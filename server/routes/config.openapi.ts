@@ -609,6 +609,67 @@ registerPath({
   },
 });
 
+// ─── DB instrumentation ──────────────────────────────────────────
+
+const DbStatsComponent = registerComponent(
+  'DbInstrumentationStats',
+  z
+    .object({
+      enabled: z.boolean().openapi({ description: 'Whether statement timing is active.' }),
+      slowThresholdMs: z
+        .number()
+        .openapi({ description: 'Calls at or above this wall-time (ms) count as slow.' }),
+      totalStatements: z
+        .number()
+        .int()
+        .openapi({ description: 'Distinct statement tags with at least one recorded call.' }),
+      totalCalls: z.number().int(),
+      totalSlowCalls: z.number().int(),
+      statements: z
+        .array(
+          z.object({
+            tag: z
+              .string()
+              .openapi({ description: 'Statement key (never contains SQL text or params).' }),
+            count: z.number().int(),
+            totalMs: z.number(),
+            maxMs: z.number(),
+            slowCount: z.number().int(),
+          }),
+        )
+        .openapi({
+          description: 'Per-statement aggregates, sorted by total wall time descending.',
+        }),
+    })
+    .openapi({ description: 'Aggregated prepared-statement wall-time timings.' }),
+);
+
+registerPath({
+  method: 'get',
+  path: '/api/config/db-stats',
+  tags: ['Config'],
+  summary: 'Read aggregated DB prepared-statement wall-time timings',
+  description:
+    'Per-statement timing aggregates for the async-DB Phase-1 instrumentation. Tags only — no SQL text or bound parameters are exposed. Empty when instrumentation is disabled (the default).',
+  responses: {
+    200: { description: 'Timing snapshot.', content: jsonContent(DbStatsComponent) },
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/config/db-stats/reset',
+  tags: ['Config'],
+  summary: 'Clear accumulated DB statement timing aggregates',
+  responses: {
+    200: { description: 'Cleared.', content: jsonContent(z.object({ ok: z.literal(true) })) },
+    401: errorResponse('Authentication required.'),
+    403: errorResponse('Requires the Admin role or higher.'),
+  },
+});
+
 // ─── GitHub CLI ──────────────────────────────────────────────────
 
 registerPath({

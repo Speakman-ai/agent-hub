@@ -38,6 +38,10 @@ import {
   sendEmail,
 } from '../email-sender.js';
 import { resolveProjectSkillsDir } from '../project-model.js';
+import {
+  getDbInstrumentationSnapshot,
+  resetDbInstrumentationStats,
+} from '../db-instrumentation.js';
 
 interface FileConfig {
   claudeBin?: string;
@@ -573,6 +577,25 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       ),
     });
   });
+
+  // ─── DB statement instrumentation stats (Phase 1 async-DB epic) ─────────
+  // Aggregated per-statement wall-time timings, sorted by total time. Admin-only
+  // — it exposes which internal statements dominate DB time (tags only, never
+  // SQL text or bound params). Empty `statements` when instrumentation is
+  // disabled (the default) or nothing has run yet.
+  router.get('/api/config/db-stats', requireRole('Admin'), (_req: Request, res: Response) => {
+    res.json(getDbInstrumentationSnapshot());
+  });
+
+  // Clears the accumulated aggregates so a fresh measurement window can start.
+  router.post(
+    '/api/config/db-stats/reset',
+    requireRole('Admin'),
+    (_req: Request, res: Response) => {
+      resetDbInstrumentationStats();
+      res.json({ ok: true });
+    },
+  );
 
   // ─── Spawn-env PATH refresh ─────────────────────────────────────────────
   // Returns the current cached login-shell PATH used when spawning agents.

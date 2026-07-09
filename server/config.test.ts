@@ -734,3 +734,121 @@ describe('config.ts — codexProfile resolution', () => {
     expect(mod.default.codexProfile).toBe('my-profile');
   });
 });
+
+describe('config.ts — dbInstrumentation resolution', () => {
+  // Phase-1 async-DB instrumentation block: OFF by default, env overrides
+  // enabled + threshold, threshold clamped to [0, 60000].
+  function freshDataDir(label: string): string {
+    return path.join(
+      os.tmpdir(),
+      `agent-hub-dbinstr-${label}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+  }
+
+  function writeConfig(dir: string, body: Record<string, unknown>): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(body), 'utf8');
+  }
+
+  function clearEnv(): void {
+    delete process.env.AGENT_HUB_DB_INSTRUMENTATION;
+    delete process.env.AGENT_HUB_DB_SLOW_THRESHOLD_MS;
+  }
+
+  it('defaults to disabled, 10ms threshold, logSlow on', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('default');
+    const mod = await import('./config.js');
+    expect(mod.default.dbInstrumentation).toEqual({
+      enabled: false,
+      slowThresholdMs: 10,
+      logSlow: true,
+    });
+  });
+
+  it('enables via AGENT_HUB_DB_INSTRUMENTATION env (truthy forms)', async () => {
+    for (const raw of ['1', 'true', 'on', 'yes']) {
+      vi.resetModules();
+      clearEnv();
+      process.env.AGENT_HUB_TEST_MODE = '1';
+      process.env.AGENT_HUB_DATA_DIR = freshDataDir(`en-${raw}`);
+      process.env.AGENT_HUB_DB_INSTRUMENTATION = raw;
+      const mod = await import('./config.js');
+      expect(mod.default.dbInstrumentation.enabled).toBe(true);
+    }
+  });
+
+  it('env falsy form disables even when config.json enables it (env wins)', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('env-false-wins');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    process.env.AGENT_HUB_DB_INSTRUMENTATION = 'off';
+    writeConfig(dir, { dbInstrumentation: { enabled: true } });
+    const mod = await import('./config.js');
+    expect(mod.default.dbInstrumentation.enabled).toBe(false);
+  });
+
+  it('reads the block from config.json when env is unset', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('file');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    writeConfig(dir, { dbInstrumentation: { enabled: true, slowThresholdMs: 25, logSlow: false } });
+    const mod = await import('./config.js');
+    expect(mod.default.dbInstrumentation).toEqual({
+      enabled: true,
+      slowThresholdMs: 25,
+      logSlow: false,
+    });
+  });
+
+  it('env threshold wins over config.json and clamps to [0, 60000]', async () => {
+    // over-max clamps down
+    {
+      vi.resetModules();
+      clearEnv();
+      process.env.AGENT_HUB_TEST_MODE = '1';
+      const dir = freshDataDir('clamp-hi');
+      process.env.AGENT_HUB_DATA_DIR = dir;
+      process.env.AGENT_HUB_DB_SLOW_THRESHOLD_MS = '999999';
+      writeConfig(dir, { dbInstrumentation: { slowThresholdMs: 30 } });
+      const mod = await import('./config.js');
+      expect(mod.default.dbInstrumentation.slowThresholdMs).toBe(60_000);
+    }
+    // negative clamps up to 0
+    {
+      vi.resetModules();
+      clearEnv();
+      process.env.AGENT_HUB_TEST_MODE = '1';
+      process.env.AGENT_HUB_DATA_DIR = freshDataDir('clamp-lo');
+      process.env.AGENT_HUB_DB_SLOW_THRESHOLD_MS = '-5';
+      const mod = await import('./config.js');
+      expect(mod.default.dbInstrumentation.slowThresholdMs).toBe(0);
+    }
+    // valid env value passes through
+    {
+      vi.resetModules();
+      clearEnv();
+      process.env.AGENT_HUB_TEST_MODE = '1';
+      process.env.AGENT_HUB_DATA_DIR = freshDataDir('valid');
+      process.env.AGENT_HUB_DB_SLOW_THRESHOLD_MS = '50';
+      const mod = await import('./config.js');
+      expect(mod.default.dbInstrumentation.slowThresholdMs).toBe(50);
+    }
+  });
+
+  it('non-numeric env threshold falls back to the 10ms default', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('nan');
+    process.env.AGENT_HUB_DB_SLOW_THRESHOLD_MS = 'not-a-number';
+    const mod = await import('./config.js');
+    expect(mod.default.dbInstrumentation.slowThresholdMs).toBe(10);
+  });
+});
