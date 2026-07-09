@@ -8,6 +8,14 @@
  * existing prepared `Stmts` entry, and the facade reads its `.source` so the SQL
  * text has a single source of truth and can never drift from the sync path.
  *
+ * ⚠️ THE RULE: a transaction must never span an `await`. Sync better-sqlite3
+ * gives an implicit no-interleaving guarantee that keeps every read-modify-write
+ * race-free. The instant you `await readGet(...)` and then write a value derived
+ * from it, two operations can interleave and lose an update — a bug class that
+ * cannot exist today. Reads-only: safe to route here. Read-modify-write: keep it
+ * as ONE synchronous `db.transaction(...)`, no await inside. See ./README.md and
+ * the regression net in ./concurrency-harness.test.ts.
+ *
  * Two implementations, one interface:
  *   - `poolReadFacade` (production default) forwards `stmt.source` + params to the
  *     shared `worker_threads` reader pool, so the SQLite work happens off the
