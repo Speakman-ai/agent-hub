@@ -3566,6 +3566,23 @@ export interface AppConfig {
    */
   schedulerTimezone: string;
   /**
+   * When true (default), scheduled heartbeat and cron ticks ENQUEUE a job onto
+   * the in-house SQLite job queue instead of executing inline in their
+   * node-cron timer callbacks. A single worker loop then drains the queue.
+   * node-cron still owns scheduling (timezone / interval / missed-run
+   * accounting); the queue owns execution. Set false to fall back to the
+   * legacy direct-execution path for one release.
+   * Env: `AGENT_HUB_SCHEDULED_JOBS_VIA_QUEUE`; config.json: `scheduledJobsViaQueue`.
+   */
+  scheduledJobsViaQueue: boolean;
+  /**
+   * Max scheduled jobs (heartbeats + crons) the queue worker runs at once.
+   * Only smooths load — runHeartbeat has its own in-flight guard and each run
+   * records its own logs, so this never changes user-visible output. Env:
+   * `AGENT_HUB_SCHEDULED_JOBS_CONCURRENCY`; config.json: `scheduledJobsConcurrency`.
+   */
+  scheduledJobsConcurrency: number;
+  /**
    * Server-wide default for compose preview health polling (ms). Overridden
    * per project via `prEnv.preview.compose.readyTimeoutMs`. Env:
    * `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS`; config.json:

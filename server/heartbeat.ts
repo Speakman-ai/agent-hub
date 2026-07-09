@@ -16,7 +16,13 @@ import { getOrCreateProcessWorktree } from './worktree.js';
 import { runWorkspacePurge } from './session-purge.js';
 import { reconcileMemoryFromWiki } from './memory.js';
 import { listPages, getPage } from './wiki.js';
-import { getProjects, saveProjects } from './project-model.js';
+import { getProjects, saveProjects, getEnrichedAgent } from './project-model.js';
+import {
+  initScheduledJobQueue,
+  getScheduledJobQueue,
+  enqueueHeartbeatJob,
+  enqueueCronJob,
+} from './jobs/scheduled-jobs.js';
 import { backfillHeartbeatOwner, backfillHeartbeatOwners } from './heartbeat-ownership.js';
 import { setSessionOwner } from './session-ownership.js';
 import { resolveOneShotEngine, NoEnginesAvailableError } from './engine-resolver.js';
@@ -854,7 +860,73 @@ export async function runCronJob(cronJob: CronRow): Promise<CronRunResult> {
   }
 }
 
+/** True when scheduled work should run through the job queue (default). */
+function scheduledJobsEnabled(): boolean {
+  return config.scheduledJobsViaQueue !== false;
+}
+
+/**
+ * Lazily construct + start the scheduled-work job queue and register the
+ * heartbeat / cron handlers. Idempotent. No-op when the config flag is off
+ * (legacy direct-execution path). The handlers resolve their subject fresh at
+ * run time — the same "read the current row, then run" contract the legacy
+ * timer callbacks used — so a config edit between enqueue and execution is
+ * honoured, and a deleted agent / disabled cron simply skips.
+ */
+export function ensureScheduledJobQueue(): void {
+  if (!scheduledJobsEnabled()) return;
+  initScheduledJobQueue({
+    db,
+    concurrency: config.scheduledJobsConcurrency,
+    heartbeatHandler: async (job) => {
+      const { agentId } = job.payload;
+      const agent = getEnrichedAgent(agentId);
+      if (!agent) {
+        console.warn(`[Scheduler] Heartbeat job for unknown agent ${agentId} — skipping`);
+        return;
+      }
+      await runHeartbeat(agent);
+    },
+    cronHandler: async (job) => {
+      const { cronId } = job.payload;
+      const fresh = stmts.getCron.get(cronId) as CronRow | undefined;
+      if (fresh && fresh.enabled) {
+        await runCronJob(fresh);
+      }
+    },
+  });
+}
+
+/**
+ * Run a heartbeat from a scheduler tick. In queue mode the tick just enqueues
+ * a job (the worker resolves the agent fresh and runs it); in legacy mode the
+ * captured agent runs inline exactly as before.
+ */
+export function dispatchHeartbeat(agent: EnrichedAgent): void | Promise<unknown> {
+  if (scheduledJobsEnabled() && getScheduledJobQueue()) {
+    enqueueHeartbeatJob(agent.id);
+    return;
+  }
+  return runHeartbeat(agent);
+}
+
+/**
+ * Run a cron from a scheduler tick. Queue mode enqueues by id (the worker
+ * re-reads the row + enabled flag); legacy mode re-reads inline and runs,
+ * matching the historical timer-callback behaviour.
+ */
+export function dispatchCron(cronId: number): void | Promise<unknown> {
+  if (scheduledJobsEnabled() && getScheduledJobQueue()) {
+    enqueueCronJob(cronId);
+    return;
+  }
+  const fresh = stmts.getCron.get(cronId) as CronRow | undefined;
+  if (fresh && fresh.enabled) return runCronJob(fresh);
+}
+
 export function scheduleAll(agents: EnrichedAgent[]): void {
+  ensureScheduledJobQueue();
+
   for (const [, task] of scheduledTasks) {
     task.stop();
   }
@@ -890,7 +962,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
       }
       const task = cron.schedule(
         agent.heartbeat.interval,
-        wrapCronTick(() => runHeartbeat(agent), `heartbeat:${agent.id}`),
+        wrapCronTick(() => dispatchHeartbeat(agent), `heartbeat:${agent.id}`),
         defaultTickOptions({
           intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
           name: `heartbeat:${agent.id}`,
@@ -907,7 +979,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         console.log(
           `[Heartbeat] ${agent.name} missed a run (was due ${lateBySec}s ago) — catching up`,
         );
-        missed.push(() => runHeartbeat(agent));
+        missed.push(() => dispatchHeartbeat(agent));
       }
 
       persistNextRun('heartbeat', agent.id, task);
@@ -927,12 +999,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
       }
       const task = cron.schedule(
         cronJob.schedule,
-        wrapCronTick(() => {
-          const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
-          if (fresh && fresh.enabled) {
-            runCronJob(fresh);
-          }
-        }, `cron:${cronJob.id}`),
+        wrapCronTick(() => dispatchCron(cronJob.id), `cron:${cronJob.id}`),
         defaultTickOptions({
           intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
           name: `cron:${cronJob.id}`,
@@ -948,10 +1015,7 @@ export function scheduleAll(agents: EnrichedAgent[]): void {
         console.log(
           `[Cron] "${cronJob.name}" missed a run (was due ${lateBySec}s ago) — catching up`,
         );
-        missed.push(() => {
-          const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
-          if (fresh && fresh.enabled) return runCronJob(fresh);
-        });
+        missed.push(() => dispatchCron(cronJob.id));
       }
 
       persistNextRun('cron', cronJob.id, task);
@@ -1092,6 +1156,9 @@ export async function runWikiMemorySync(): Promise<void> {
 }
 
 export function rescheduleCron(cronJob: CronRow): void {
+  // The queue is initialised once by scheduleAll() at boot, well before any
+  // API-driven reschedule; dispatchCron falls back to inline execution if it
+  // is somehow not up yet, so no ensure call is needed here.
   const key = `cron:${cronJob.id}`;
   const existing = scheduledTasks.get(key);
   if (existing) {
@@ -1102,12 +1169,7 @@ export function rescheduleCron(cronJob: CronRow): void {
   if (cronJob.enabled && cron.validate(cronJob.schedule)) {
     const task = cron.schedule(
       cronJob.schedule,
-      wrapCronTick(() => {
-        const fresh = stmts.getCron.get(cronJob.id) as CronRow | undefined;
-        if (fresh && fresh.enabled) {
-          runCronJob(fresh);
-        }
-      }, `cron:${cronJob.id}`),
+      wrapCronTick(() => dispatchCron(cronJob.id), `cron:${cronJob.id}`),
       defaultTickOptions({
         intervalSeconds: estimateIntervalSeconds(cronJob.schedule),
         name: `cron:${cronJob.id}`,
@@ -1149,6 +1211,8 @@ export function unscheduleHeartbeat(agentId: string): void {
 }
 
 export function rescheduleHeartbeat(agent: EnrichedAgent): void {
+  // Queue is initialised at boot by scheduleAll(); dispatchHeartbeat falls back
+  // to inline execution if it is not up yet, so no ensure call is needed here.
   const key = `heartbeat:${agent.id}`;
   const existing = scheduledTasks.get(key);
   if (existing) {
@@ -1163,7 +1227,7 @@ export function rescheduleHeartbeat(agent: EnrichedAgent): void {
   ) {
     const task = cron.schedule(
       agent.heartbeat.interval,
-      wrapCronTick(() => runHeartbeat(agent), `heartbeat:${agent.id}`),
+      wrapCronTick(() => dispatchHeartbeat(agent), `heartbeat:${agent.id}`),
       defaultTickOptions({
         intervalSeconds: estimateIntervalSeconds(agent.heartbeat.interval),
         name: `heartbeat:${agent.id}`,

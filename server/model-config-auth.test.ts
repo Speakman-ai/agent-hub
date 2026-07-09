@@ -32,6 +32,8 @@ function makeConfig(): AppConfig {
     slackTimeoutMs: 1000,
     conferenceTimeoutMs: 1000,
     schedulerTimezone: 'UTC',
+    scheduledJobsViaQueue: true,
+    scheduledJobsConcurrency: 10,
     publicUrl: null,
     defaultReviewer: null,
     personalOAuth: null,

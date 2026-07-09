@@ -389,6 +389,26 @@ const config: AppConfig = {
       return 'UTC';
     }
   })(),
+  // Scheduled work → job queue. Default true: heartbeat/cron ticks enqueue a
+  // job onto the in-house SQLite queue instead of running inline in the
+  // node-cron callback. Set AGENT_HUB_SCHEDULED_JOBS_VIA_QUEUE=false (or
+  // `"scheduledJobsViaQueue": false`) to fall back to the legacy direct path
+  // for one release.
+  scheduledJobsViaQueue: (() => {
+    const k = 'AGENT_HUB_SCHEDULED_JOBS_VIA_QUEUE' as const;
+    if (process.env[k] !== undefined) {
+      if (envMeansFalse(k)) return false;
+      if (envMeansTrue(k)) return true;
+      return coerceConfigBooleanLoose(process.env[k], true);
+    }
+    return coerceConfigBooleanLoose(fileConfig.scheduledJobsViaQueue, true);
+  })(),
+  // Max scheduled jobs the queue worker runs concurrently. Load smoothing only
+  // — see AppConfig doc. Clamped to at least 1.
+  scheduledJobsConcurrency: Math.max(
+    1,
+    resolveInt('AGENT_HUB_SCHEDULED_JOBS_CONCURRENCY', 'scheduledJobsConcurrency', 10),
+  ),
   // Compose preview health poll — how long `PreviewComposeRuntime` waits for
   // 2xx on the entry service before marking the group failed. Override via
   // `AGENT_HUB_PREVIEW_READY_TIMEOUT_MS` or `previewComposeReadyTimeoutMs`
