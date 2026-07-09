@@ -2,20 +2,24 @@ import { useState } from 'react';
 import { MonitorPlay } from 'lucide-react';
 import RumSessionsExplorer from './RumSessionsExplorer';
 import ReplayCaptureTable from './ReplayCaptureTable';
+import ReplayPlaylistsPanel from './ReplayPlaylistsPanel';
 
-// Replays dashboard shell. Two views:
+// Replays dashboard shell. Three views:
 //   - "Sessions" — the Datadog-parity, session-grain Explorer (rum_sessions
 //     rollup, facet + time-range filters). Default view.
 //   - "Replays" — the capture-grain table (session_replays), one row per rrweb
-//     blob, with support-ticket linking (the inverse ticket-attribution flow).
+//     blob, with support-ticket linking and add-to-playlist.
+//   - "Playlists" — named, project-scoped groups of saved captures plus the
+//     playlist-level Keep (extended-retention) toggle.
 
-const VIEWS: { id: 'sessions' | 'replays'; label: string }[] = [
+const VIEWS: { id: 'sessions' | 'replays' | 'playlists'; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
   { id: 'replays', label: 'Replays' },
+  { id: 'playlists', label: 'Playlists' },
 ];
 
 export default function ReplaysDashboardPage({ projectId, onNotify }: any) {
-  const [view, setView] = useState<'sessions' | 'replays'>('sessions');
+  const [view, setView] = useState<'sessions' | 'replays' | 'playlists'>('sessions');
 
   return (
     <div className="h-full overflow-y-auto bg-gray-950">
@@ -44,8 +48,10 @@ export default function ReplaysDashboardPage({ projectId, onNotify }: any) {
 
         {view === 'sessions' ? (
           <RumSessionsExplorer projectId={projectId} />
-        ) : (
+        ) : view === 'replays' ? (
           <ReplayCaptureTable projectId={projectId} onNotify={onNotify} />
+        ) : (
+          <ReplayPlaylistsPanel projectId={projectId} onNotify={onNotify} />
         )}
       </div>
     </div>

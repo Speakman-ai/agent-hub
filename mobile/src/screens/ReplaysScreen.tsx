@@ -10,6 +10,7 @@ import {
   TextInput,
   Modal,
   Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -25,6 +26,7 @@ import {
   formatCaptureDate,
 } from '../utils/replayFormat';
 import ReplayWebViewPlayer from '../components/ReplayWebViewPlayer';
+import { ReplayPlaylistsView, AddToPlaylistModal } from '../components/ReplayPlaylistsView';
 import {
   TIME_RANGES,
   DEFAULT_RANGE_ID,
@@ -48,9 +50,10 @@ import {
 // pure `rumSessionFilters` + `replayFormat` utils so it stays testable and
 // identical to web.
 
-const VIEWS: { id: 'sessions' | 'replays'; label: string }[] = [
+const VIEWS: { id: 'sessions' | 'replays' | 'playlists'; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
   { id: 'replays', label: 'Replays' },
+  { id: 'playlists', label: 'Playlists' },
 ];
 
 /** Deep link to the web app's Replays dashboard for a project — the handoff
@@ -249,7 +252,7 @@ export function RumSessionRow({ session, onPlay }: any) {
 }
 
 // ── Capture row ─────────────────────────────────────────────────────
-export function ReplayCaptureRow({ replay, onWatch, onLink, onUnlink }: any) {
+export function ReplayCaptureRow({ replay, onWatch, onLink, onUnlink, onAddToPlaylist }: any) {
   const r = replay;
   return (
     <View testID="replay-capture-row" style={styles.card}>
@@ -283,6 +286,13 @@ export function ReplayCaptureRow({ replay, onWatch, onLink, onUnlink }: any) {
       <View style={styles.actionRow}>
         <TouchableOpacity testID="replay-watch" onPress={() => onWatch?.(r)} style={styles.actionBtn}>
           <Text style={styles.actionText}>▶ Watch</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="replay-add-playlist"
+          onPress={() => onAddToPlaylist?.(r)}
+          style={styles.actionBtn}
+        >
+          <Text style={styles.actionText}>Playlist</Text>
         </TouchableOpacity>
         {r.ticket ? (
           <TouchableOpacity onPress={() => onUnlink?.(r)} style={styles.actionBtn}>
@@ -348,7 +358,7 @@ export function RumSessionsList({ sessions, loading, error, active, onPlay }: an
 }
 
 // ── Replays tab ─────────────────────────────────────────────────────
-export function ReplayCaptureList({ replays, loading, error, filter, kind, onWatch, onLink, onUnlink }: any) {
+export function ReplayCaptureList({ replays, loading, error, filter, kind, onWatch, onLink, onUnlink, onAddToPlaylist }: any) {
   if (error) {
     return (
       <View style={styles.centerState}>
@@ -385,7 +395,13 @@ export function ReplayCaptureList({ replays, loading, error, filter, kind, onWat
       keyExtractor={(item: any) => item.id}
       contentContainerStyle={styles.listPad}
       renderItem={({ item }: any) => (
-        <ReplayCaptureRow replay={item} onWatch={onWatch} onLink={onLink} onUnlink={onUnlink} />
+        <ReplayCaptureRow
+          replay={item}
+          onWatch={onWatch}
+          onLink={onLink}
+          onUnlink={onUnlink}
+          onAddToPlaylist={onAddToPlaylist}
+        />
       )}
     />
   );
@@ -426,8 +442,15 @@ export default function ReplaysScreen({ route }: any) {
   const projectId = route?.params?.projectId || projects?.[0]?.id;
   const project = projects?.find((p: any) => p.id === projectId);
 
-  const [view, setView] = useState<'sessions' | 'replays'>('sessions');
+  const [view, setView] = useState<'sessions' | 'replays' | 'playlists'>('sessions');
   const [player, setPlayer] = useState<any>(null);
+  const [addToPlaylist, setAddToPlaylist] = useState<any>(null); // capture row being added to a playlist
+
+  // Playlist actions surface errors via Alert; successes stay silent to avoid
+  // an alert on every add/rename/keep (matches the low-friction mobile flow).
+  const notify = useCallback((message: string, type?: string) => {
+    if (type === 'error') Alert.alert('Playlists', message);
+  }, []);
 
   // ── Sessions tab state ──
   const [draft, setDraft] = useState<FilterDraft>({});
@@ -570,6 +593,20 @@ export default function ReplaysScreen({ route }: any) {
     });
   const unlinkReplay = (r: any) =>
     unlinkReplayCapture({ api, projectId, replayId: r.id, reload: loadReplays });
+  // Launch the player for a playlist item (shape: PlaylistItemView — replayId +
+  // capture summary columns) — same monolithic-capture player as a Replays row.
+  const watchPlaylistItem = (it: any) =>
+    setPlayer({
+      mode: 'replay',
+      replayId: it.replayId,
+      title: `Capture ${it.replayId}`,
+      meta: [
+        { label: 'Captured', value: formatCaptureDate(it.createdAt) },
+        { label: 'Duration', value: formatReplayDuration(it.durationMs) },
+        { label: 'Events', value: String(it.eventCount ?? 0) },
+        { label: 'Size', value: formatBytes(it.size) },
+      ],
+    });
   // The ticket picker isn't ported to mobile yet (follow-up #1392). The Link
   // action opens the web Replays dashboard — where a capture can be linked to a
   // support ticket — rather than the playback modal. Falls back to a no-op when
@@ -726,6 +763,8 @@ export default function ReplaysScreen({ route }: any) {
             </View>
           )}
         </>
+      ) : view === 'playlists' ? (
+        <ReplayPlaylistsView projectId={projectId} onWatch={watchPlaylistItem} onNotify={notify} />
       ) : (
         <>
           <View style={styles.filterRow}>
@@ -769,6 +808,7 @@ export default function ReplaysScreen({ route }: any) {
               onWatch={watchReplay}
               onLink={linkReplay}
               onUnlink={unlinkReplay}
+              onAddToPlaylist={setAddToPlaylist}
             />
             <Pager
               offset={rOffset}
@@ -784,6 +824,19 @@ export default function ReplaysScreen({ route }: any) {
       )}
 
       <ReplayPlayerModal target={player} projectId={projectId} onClose={() => setPlayer(null)} />
+
+      {addToPlaylist ? (
+        <AddToPlaylistModal
+          projectId={projectId}
+          replay={addToPlaylist}
+          onClose={() => setAddToPlaylist(null)}
+          onAdded={() => setAddToPlaylist(null)}
+          onError={(msg: string) => {
+            setAddToPlaylist(null);
+            notify(msg, 'error');
+          }}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }

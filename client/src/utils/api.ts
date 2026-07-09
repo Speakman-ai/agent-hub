@@ -2107,6 +2107,50 @@ export const api = {
   unlinkReplay: (projectId: any, replayId: any) =>
     fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, { method: 'DELETE' }),
 
+  // ── Replay playlists (Datadog "playlist") ───────────────────────────
+  // Named, project-scoped groups of saved captures + playlist-level extended
+  // retention. Backend: server/routes/replay-playlists.ts.
+  // Returns { playlists: PlaylistView[] } (each carries itemCount).
+  listReplayPlaylists: (projectId: any) => fetchJSON(`/projects/${projectId}/replay-playlists`),
+  // Returns a PlaylistView plus { items: PlaylistItemView[] }.
+  getReplayPlaylist: (projectId: any, playlistId: any) =>
+    fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}`),
+  // Create a playlist. Returns the new PlaylistView (itemCount 0). An empty /
+  // blank description is omitted (the form always sends a trimmed string) so the
+  // server stores null rather than "".
+  createReplayPlaylist: (projectId: any, { name, description }: any = {}) =>
+    fetchJSON(`/projects/${projectId}/replay-playlists`, {
+      method: 'POST',
+      body: JSON.stringify({ name, ...(description ? { description } : {}) }),
+    }),
+  // Rename / edit a playlist. Only the provided fields change. Returns PlaylistView.
+  updateReplayPlaylist: (projectId: any, playlistId: any, patch: any = {}) =>
+    fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  // Delete a playlist (items cascade; member captures are untouched). 204.
+  deleteReplayPlaylist: (projectId: any, playlistId: any) =>
+    fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}`, { method: 'DELETE' }),
+  // Add a capture to a playlist. Returns { added, ...PlaylistView, items }.
+  addReplayPlaylistItem: (projectId: any, playlistId: any, replayId: any) =>
+    fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}/items`, {
+      method: 'POST',
+      body: JSON.stringify({ replayId }),
+    }),
+  // Remove a capture from a playlist. 204 on success, 404 when not a member.
+  removeReplayPlaylistItem: (projectId: any, playlistId: any, replayId: any) =>
+    fetchJSON(
+      `/projects/${projectId}/replay-playlists/${playlistId}/items/${encodeURIComponent(replayId)}`,
+      { method: 'DELETE' },
+    ),
+  // Flag / unflag a whole playlist for extended retention. Returns PlaylistView.
+  setReplayPlaylistRetention: (projectId: any, playlistId: any, extend: boolean) =>
+    fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}/retention`, {
+      method: 'POST',
+      body: JSON.stringify({ extend: !!extend }),
+    }),
+
   // Threads
   getThreads: (projectId: any, type: any) => {
     const qs = type ? `?type=${type}` : '';

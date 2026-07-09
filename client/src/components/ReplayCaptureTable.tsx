@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Link2, Unlink, RefreshCw, X, AlertCircle } from 'lucide-react';
+import { Play, Link2, Unlink, RefreshCw, X, AlertCircle, ListVideo, Plus } from 'lucide-react';
 import { api } from '../utils/api';
 import ReplayPlayerModal from './ReplayPlayerModal';
 import { formatReplayDuration, formatBytes, formatPageUrl } from '../utils/replayFormat';
+import { addToPlaylistMessage } from '../utils/replayPlaylist';
 
 // Capture-grain replay table: one row per rrweb blob (session_replays). Surfaces
 // attributed captures AND (for privileged callers) global orphaned captures so
@@ -47,6 +48,7 @@ export default function ReplayCaptureTable({ projectId, onNotify }: any) {
   const [offset, setOffset] = useState(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [linkFor, setLinkFor] = useState<any>(null); // replay row currently being linked
+  const [playlistFor, setPlaylistFor] = useState<any>(null); // replay row being added to a playlist
   const reqSeq = useRef(0);
 
   const notify = useCallback(
@@ -301,6 +303,15 @@ export default function ReplayCaptureTable({ projectId, onNotify }: any) {
                         <Play size={12} />
                         Watch
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setPlaylistFor(r)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-300 border border-gray-700 hover:bg-gray-800"
+                        title="Add to a playlist"
+                      >
+                        <ListVideo size={12} />
+                        Playlist
+                      </button>
                       {r.ticket ? (
                         <button
                           type="button"
@@ -373,7 +384,153 @@ export default function ReplayCaptureTable({ projectId, onNotify }: any) {
           onError={(msg: string) => notify(msg, 'error')}
         />
       )}
+
+      {playlistFor && (
+        <AddToPlaylistModal
+          projectId={projectId}
+          replay={playlistFor}
+          onClose={() => setPlaylistFor(null)}
+          onAdded={(msg: string) => {
+            setPlaylistFor(null);
+            notify(msg, 'success');
+          }}
+          onError={(msg: string) => notify(msg, 'error')}
+        />
+      )}
     </>
+  );
+}
+
+// ── Add-to-playlist picker ──────────────────────────────────────────
+// Lists the project's playlists and adds this capture to the chosen one, or
+// creates a new playlist inline and adds it. Mirrors the Playlists tab
+// (ReplayPlaylistsPanel) but scoped to a single capture.
+function AddToPlaylistModal({ projectId, replay, onClose, onAdded, onError }: any) {
+  const [playlists, setPlaylists] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string>('');
+  const [newName, setNewName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api.listReplayPlaylists(projectId);
+        if (alive) setPlaylists(res?.playlists ?? []);
+      } catch (e: any) {
+        if (alive) onError?.(e?.message || 'Failed to load playlists');
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // `onError` is intentionally excluded: the parent passes it as a fresh
+    // inline arrow, so including it would re-run this fetch on every parent
+    // re-render while the modal is open. It's only read in the catch path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      let playlistId = selected;
+      let createdName = '';
+      if (selected === '__new__') {
+        const name = newName.trim();
+        if (!name) {
+          setSubmitting(false);
+          return;
+        }
+        const created = await api.createReplayPlaylist(projectId, { name });
+        playlistId = created.id;
+        createdName = created.name;
+      }
+      if (!playlistId) {
+        setSubmitting(false);
+        return;
+      }
+      const res = await api.addReplayPlaylistItem(projectId, playlistId, replay.id);
+      onAdded(addToPlaylistMessage(res, createdName));
+    } catch (e: any) {
+      onError?.(e?.message || 'Failed to add to playlist');
+      setSubmitting(false);
+    }
+  };
+
+  const canSubmit = selected === '__new__' ? newName.trim().length > 0 : Boolean(selected);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-gray-800 bg-gray-900 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-100">Add capture to a playlist</h2>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="p-4 space-y-3">
+          {loading ? (
+            <p className="text-sm text-gray-500">Loading playlists…</p>
+          ) : (
+            <>
+              <label className="block text-xs text-gray-400">Playlist</label>
+              <select
+                value={selected}
+                onChange={(e) => setSelected(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="">Select a playlist…</option>
+                {playlists.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.itemCount})
+                  </option>
+                ))}
+                <option value="__new__">+ New playlist…</option>
+              </select>
+              {selected === '__new__' && (
+                <div className="flex items-center gap-2">
+                  <Plus size={14} className="text-indigo-400" />
+                  <input
+                    autoFocus
+                    value={newName}
+                    maxLength={200}
+                    onChange={(e) => setNewName(e.target.value)}
+                    placeholder="New playlist name"
+                    className="flex-1 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-gray-800">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-xs text-gray-300 border border-gray-700 hover:bg-gray-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!canSubmit || submitting}
+            onClick={submit}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40"
+          >
+            {submitting ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

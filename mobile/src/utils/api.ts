@@ -304,6 +304,31 @@ export const api = {
     }),
     // Detach a replay from its support ticket (keeps project attribution).
     unlinkReplay: (projectId: any, replayId: any) => fetchJSON(`/projects/${projectId}/replays/${replayId}/link`, { method: 'DELETE' }),
+    // ── Replay playlists (Datadog "playlist") — 1:1 with client/src/utils/api.ts.
+    // Named, project-scoped groups of saved captures + playlist-level extended
+    // retention. Backend: server/routes/replay-playlists.ts.
+    listReplayPlaylists: (projectId: any) => fetchJSON(`/projects/${projectId}/replay-playlists`),
+    getReplayPlaylist: (projectId: any, playlistId: any) => fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}`),
+    createReplayPlaylist: (projectId: any, { name, description }: any = {}) => fetchJSON(`/projects/${projectId}/replay-playlists`, {
+        method: 'POST',
+        // An empty/blank description is omitted (the form always sends a trimmed
+        // string) so the server stores null rather than "".
+        body: JSON.stringify({ name, ...(description ? { description } : {}) }),
+    }),
+    updateReplayPlaylist: (projectId: any, playlistId: any, patch: any = {}) => fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+    }),
+    deleteReplayPlaylist: (projectId: any, playlistId: any) => fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}`, { method: 'DELETE' }),
+    addReplayPlaylistItem: (projectId: any, playlistId: any, replayId: any) => fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}/items`, {
+        method: 'POST',
+        body: JSON.stringify({ replayId }),
+    }),
+    removeReplayPlaylistItem: (projectId: any, playlistId: any, replayId: any) => fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}/items/${encodeURIComponent(replayId)}`, { method: 'DELETE' }),
+    setReplayPlaylistRetention: (projectId: any, playlistId: any, extend: boolean) => fetchJSON(`/projects/${projectId}/replay-playlists/${playlistId}/retention`, {
+        method: 'POST',
+        body: JSON.stringify({ extend: !!extend }),
+    }),
     getCiRuns: (projectId: any, { trigger = 'all', limit = 30 }: any = {}) => fetchJSON(`/projects/${projectId}/ci-runs?trigger=${trigger}&limit=${limit}`),
     getCiRunDetail: (projectId: any, runId: any) => fetchJSON(`/projects/${projectId}/ci-runs/${runId}`),
     // Hub workflows

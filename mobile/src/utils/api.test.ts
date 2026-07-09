@@ -851,3 +851,72 @@ describe('api segmented session replay helpers — URL + method parity with web 
         expect(url).toBe('https://example.test/api/replays/sessions/a%2Fb/segments/c%2Fd/events');
     });
 });
+describe('api replay-playlist helpers — URL + method parity with web client', () => {
+    it('listReplayPlaylists → GET /projects/:p/replay-playlists', async () => {
+        await api.listReplayPlaylists('proj-1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists');
+        expect(init?.method ?? 'GET').toBe('GET');
+    });
+    it('getReplayPlaylist → GET /projects/:p/replay-playlists/:id', async () => {
+        await api.getReplayPlaylist('proj-1', 'pl-1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists/pl-1');
+        expect(init?.method ?? 'GET').toBe('GET');
+    });
+    it('createReplayPlaylist → POST with name + description', async () => {
+        await api.createReplayPlaylist('proj-1', { name: 'Checkout', description: 'bugs' });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ name: 'Checkout', description: 'bugs' });
+    });
+    it('createReplayPlaylist omits description when not provided', async () => {
+        await api.createReplayPlaylist('proj-1', { name: 'Checkout' });
+        const [, init] = lastCall();
+        expect(JSON.parse(init.body)).toEqual({ name: 'Checkout' });
+    });
+    it('createReplayPlaylist omits a blank description (form sends trimmed "")', async () => {
+        await api.createReplayPlaylist('proj-1', { name: 'Checkout', description: '' });
+        const [, init] = lastCall();
+        expect(JSON.parse(init.body)).toEqual({ name: 'Checkout' });
+    });
+    it('updateReplayPlaylist → PATCH with the given patch', async () => {
+        await api.updateReplayPlaylist('proj-1', 'pl-1', { name: 'Renamed', description: null });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists/pl-1');
+        expect(init.method).toBe('PATCH');
+        expect(JSON.parse(init.body)).toEqual({ name: 'Renamed', description: null });
+    });
+    it('deleteReplayPlaylist → DELETE', async () => {
+        await api.deleteReplayPlaylist('proj-1', 'pl-1');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists/pl-1');
+        expect(init.method).toBe('DELETE');
+    });
+    it('addReplayPlaylistItem → POST .../items with replayId', async () => {
+        await api.addReplayPlaylistItem('proj-1', 'pl-1', 'r-9');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists/pl-1/items');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ replayId: 'r-9' });
+    });
+    it('removeReplayPlaylistItem → DELETE .../items/:replayId (encoded)', async () => {
+        await api.removeReplayPlaylistItem('proj-1', 'pl-1', 'r/9');
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists/pl-1/items/r%2F9');
+        expect(init.method).toBe('DELETE');
+    });
+    it('setReplayPlaylistRetention → POST .../retention with { extend }', async () => {
+        await api.setReplayPlaylistRetention('proj-1', 'pl-1', true);
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/proj-1/replay-playlists/pl-1/retention');
+        expect(init.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ extend: true });
+    });
+    it('setReplayPlaylistRetention coerces truthiness to a boolean', async () => {
+        await api.setReplayPlaylistRetention('proj-1', 'pl-1', 0);
+        const [, init] = lastCall();
+        expect(JSON.parse(init.body)).toEqual({ extend: false });
+    });
+});
