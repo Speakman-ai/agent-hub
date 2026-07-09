@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useContext, useMemo, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Linking, } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, RefreshControl, Linking, Alert, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { SidebarContext } from '../context/SidebarContext';
@@ -20,6 +20,9 @@ import { openPrDashboardStatusBadge } from '../utils/prFormatting';
 import { hasCalendarScope } from '../utils/googleSurface';
 import { activityLabel, filterActivity, countByType, ACTIVITY_TYPE_KEYS, sortSupportBySeverity, SUPPORT_SEVERITY_DOT, PR_PRIORITY_DOT, resolveActivityTarget, activityIsActionable, resolveOpenPrTarget, openPrIsActionable, } from '../utils/dashboard';
 import { defaultCalendarRange, eventTimeLabel, localTimeZone, sortCalendarEvents } from '@shared/utils/calendarEvents';
+import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
+import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import CaptureToTicketModal from '../components/CaptureToTicketModal';
 /** How often the dashboard silently re-polls while the app is foregrounded. */
 const DASHBOARD_REFRESH_MS = 5000;
 const ACTIVITY_DOT: Record<string, any> = {
@@ -44,6 +47,12 @@ export default function DashboardScreen() {
     const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
     const [calendarLoading, setCalendarLoading] = useState(true);
     const [calendarError, setCalendarError] = useState<any>(null);
+    // Per-event capture state, mirroring CalendarScreen: the event key being
+    // captured to todos, the key just captured (transient "Added" flag), and the
+    // draft that seeds the create-ticket picker.
+    const [capturingId, setCapturingId] = useState<string | null>(null);
+    const [capturedId, setCapturedId] = useState<string | null>(null);
+    const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
     const [activeTypes, setActiveTypes] = useState(() => new Set());
     const currentUser = getAuthRecord()?.user || null;
     const accountName = currentUser?.email || currentUser?.username || 'Account';
@@ -294,6 +303,28 @@ export default function DashboardScreen() {
     useEffect(() => {
         loadCalendar();
     }, [loadCalendar]);
+    // `key` is the row's stable key (folds in the list index) so two same-titled
+    // events without an `id` don't share capture/captured state.
+    const captureEvent = useCallback(async (event: any, key: string) => {
+        setCapturingId(key);
+        try {
+            await api.createTodo(buildCalendarTodoDraft(event));
+            if (!mountedRef.current)
+                return;
+            setCapturedId(key);
+            setTimeout(() => {
+                if (mountedRef.current)
+                    setCapturedId((cur) => (cur === key ? null : cur));
+            }, 2000);
+        }
+        catch (err: any) {
+            Alert.alert('Todos', err.message || 'Failed to add to todos');
+        }
+        finally {
+            if (mountedRef.current)
+                setCapturingId((cur) => (cur === key ? null : cur));
+        }
+    }, []);
     // Return the combined promise so the hook's in-flight guard waits for both
     // requests — a slow poll then skips the next 5s tick instead of stacking.
     useVisibleIntervalRefresh(() => Promise.all([
@@ -342,19 +373,12 @@ export default function DashboardScreen() {
                   Failed to load Calendar: {calendarError}
                 </Text>) : calendarLoading ? (<Text style={styles.muted}>Loading Calendar...</Text>) : !calendarStatus?.connected ? (<DashboardCalendarEmpty title={calendarStatus?.serverConfigured === false ? 'Google is not configured' : 'Connect Google to show Calendar'} body={calendarStatus?.serverConfigured === false
                     ? 'An Admin needs to add the Google OAuth app before Calendar can connect.'
-                    : 'Link your Google account in Account settings to show this week on the dashboard.'} action="Account settings" onPress={() => navigation.navigate('Settings', { tab: 'account' })}/>) : !hasCalendarScope(calendarStatus) ? (<DashboardCalendarEmpty title="Enable Calendar access" body={`Connected as ${calendarStatus?.email || 'Google account'}, but Calendar access has not been granted yet.`} action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : calendarEvents.length === 0 ? (<DashboardCalendarEmpty title="No events this week" body="Your primary Google Calendar has no events in the next seven days." action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : (calendarEvents.slice(0, 6).map((event: any, index: number) => (<TouchableOpacity key={event.id || `${event.summary}-${index}`} style={styles.activityRow} onPress={() => navigation.navigate('Calendar')}>
-                    <HubIcon name="CalendarDays" size={16} color={colors.blue400} style={styles.prIcon}/>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={styles.activityTitle} numberOfLines={1}>
-                        {event.summary || '(no title)'}
-                      </Text>
-                      <Text style={styles.activityMeta} numberOfLines={1}>
-                        {eventTimeLabel(event)}
-                        {event.location ? ` · ${event.location}` : ''}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>)))}
+                    : 'Link your Google account in Account settings to show this week on the dashboard.'} action="Account settings" onPress={() => navigation.navigate('Settings', { tab: 'account' })}/>) : !hasCalendarScope(calendarStatus) ? (<DashboardCalendarEmpty title="Enable Calendar access" body={`Connected as ${calendarStatus?.email || 'Google account'}, but Calendar access has not been granted yet.`} action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : calendarEvents.length === 0 ? (<DashboardCalendarEmpty title="No events this week" body="Your primary Google Calendar has no events in the next seven days." action="Open Calendar" onPress={() => navigation.navigate('Calendar')}/>) : (calendarEvents.slice(0, 6).map((event: any, index: number) => {
+                    const rowKey = event.id || `${event.summary}-${index}`;
+                    return (<DashboardCalendarRow key={rowKey} rowKey={rowKey} event={event} capturingId={capturingId} capturedId={capturedId} onOpen={() => navigation.navigate('Calendar')} onCapture={captureEvent} onTicket={(e: any) => setTicketDraft(buildCalendarCardDraft(e))}/>);
+                  }))}
             </View>
+            {ticketDraft ? (<CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)}/>) : null}
 
             {(() => {
                 const allSessions = data.activeSessions || [];
@@ -561,6 +585,38 @@ function DashboardCalendarEmpty({ title, body, action, onPress }: any) {
       {action ? (<TouchableOpacity onPress={onPress} style={styles.calendarAction}>
           <Text style={styles.calendarActionText}>{action}</Text>
         </TouchableOpacity>) : null}
+    </View>);
+}
+// A single "This week" event row with the same Todo / Ticket capture
+// affordances as the full Calendar screen (spec CAPTURE-PROVENANCE parity).
+export function DashboardCalendarRow({ event, rowKey, capturingId, capturedId, onOpen, onCapture, onTicket }: any) {
+    // Falls back to the id/summary composite for standalone (test) renders that
+    // don't thread a rowKey; the screen always passes an index-folded key.
+    const key = rowKey ?? (event.id || event.summary || '');
+    const isCaptured = capturedId === key;
+    return (<View>
+      <TouchableOpacity style={styles.activityRow} onPress={onOpen}>
+        <HubIcon name="CalendarDays" size={16} color={colors.blue400} style={styles.prIcon}/>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.activityTitle} numberOfLines={1}>
+            {event.summary || '(no title)'}
+          </Text>
+          <Text style={styles.activityMeta} numberOfLines={1}>
+            {eventTimeLabel(event)}
+            {event.location ? ` · ${event.location}` : ''}
+          </Text>
+        </View>
+      </TouchableOpacity>
+      <View style={styles.calendarCaptureRow}>
+        <TouchableOpacity onPress={() => onCapture(event, key)} disabled={capturingId === key} style={styles.calendarCaptureButton} accessibilityLabel="Add to todos">
+          <Text style={styles.calendarCaptureButtonText}>
+            {capturingId === key ? 'Adding…' : isCaptured ? '✓ Added to todos' : '+ Add to todos'}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => onTicket(event)} style={styles.calendarCaptureButton} accessibilityLabel="Create ticket">
+          <Text style={styles.calendarCaptureButtonText}>+ Ticket</Text>
+        </TouchableOpacity>
+      </View>
     </View>);
 }
 const styles = StyleSheet.create({
@@ -814,6 +870,26 @@ const styles = StyleSheet.create({
     prIcon: {
         width: 20,
         flexShrink: 0,
+    },
+    calendarCaptureRow: {
+        flexDirection: 'row',
+        gap: 8,
+        paddingLeft: 28,
+        paddingBottom: 10,
+        marginTop: -4,
+    },
+    calendarCaptureButton: {
+        alignSelf: 'flex-start',
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+    },
+    calendarCaptureButtonText: {
+        color: colors.blue300,
+        fontSize: 12,
+        fontWeight: '600',
     },
     prTitleRow: {
         flexDirection: 'row',

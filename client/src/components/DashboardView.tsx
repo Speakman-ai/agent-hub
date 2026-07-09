@@ -11,6 +11,10 @@ import {
   UserCircle,
   LifeBuoy,
   Folder,
+  Check,
+  ListPlus,
+  Loader2,
+  Ticket,
 } from 'lucide-react';
 import { api } from '../utils/api';
 import { hasCalendarScope } from '../utils/googleSurface';
@@ -21,6 +25,9 @@ import {
   localTimeZone,
   sortCalendarEvents,
 } from '@shared/utils/calendarEvents';
+import { buildCalendarTodoDraft } from '@shared/utils/captureTodo';
+import { buildCalendarCardDraft, type CaptureCardDraft } from '@shared/utils/captureCard';
+import CaptureToTicketModal from './CaptureToTicketModal';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
 import { getApiBase, getAuthHeaders } from '../utils/connection';
 import { getAuthRecord } from '../utils/auth';
@@ -259,6 +266,16 @@ function WeeklyCalendarPanel({ onNavigate }: any) {
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<any>(null);
+  // Per-event capture state, mirroring CalendarAgendaPage: the event key being
+  // captured to todos, the key just captured (transient "Added" flag), and the
+  // draft that seeds the create-ticket picker. `captureError` is a separate
+  // transient channel from `error` (the load-error branch that blanks the
+  // list) so a failed todo POST doesn't wipe the whole event list for a
+  // non-critical action.
+  const [capturingId, setCapturingId] = useState<string | null>(null);
+  const [capturedId, setCapturedId] = useState<string | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [ticketDraft, setTicketDraft] = useState<CaptureCardDraft | null>(null);
   const mountedRef = useRef(true);
   const genRef = useRef(createRequestGenerationState());
 
@@ -309,6 +326,27 @@ function WeeklyCalendarPanel({ onNavigate }: any) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // `key` is the row's stable key (folds in the list index) so two same-titled
+  // events without an `id` don't share capture/captured state.
+  const captureEvent = useCallback(async (event: any, key: string) => {
+    setCapturingId(key);
+    setCaptureError(null);
+    try {
+      await api.createTodo(buildCalendarTodoDraft(event));
+      if (!mountedRef.current) return;
+      setCapturedId(key);
+      window.setTimeout(() => {
+        if (mountedRef.current) setCapturedId((current) => (current === key ? null : current));
+      }, 2000);
+    } catch (err: any) {
+      // Isolated from the load-error branch: surface a transient inline notice
+      // instead of blanking the event list.
+      if (mountedRef.current) setCaptureError(err.message || 'Failed to add to todos');
+    } finally {
+      if (mountedRef.current) setCapturingId((current) => (current === key ? null : current));
+    }
+  }, []);
 
   const connected = !!status?.connected;
   const configured = status?.serverConfigured !== false;
@@ -381,21 +419,62 @@ function WeeklyCalendarPanel({ onNavigate }: any) {
             )}
           </div>
         ) : (
-          events.slice(0, 6).map((event: any, index) => (
-            <div key={event.id || `${event.summary}-${index}`} className="px-4 py-3 flex gap-3">
-              <div className="w-32 flex-shrink-0 text-[11px] text-gray-500">
-                {eventTimeLabel(event)}
+          events.slice(0, 6).map((event: any, index) => {
+            const key = event.id || `${event.summary}-${index}`;
+            const isCaptured = capturedId === key;
+            return (
+              <div key={key} className="px-4 py-3 flex gap-3">
+                <div className="w-32 flex-shrink-0 text-[11px] text-gray-500">
+                  {eventTimeLabel(event)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-white truncate">{event.summary || '(no title)'}</div>
+                  {event.location ? (
+                    <div className="mt-0.5 text-[11px] text-gray-500 truncate">
+                      {event.location}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex flex-shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => captureEvent(event, key)}
+                    disabled={capturingId === key}
+                    title="Add to todos"
+                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    {capturingId === key ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : isCaptured ? (
+                      <Check size={12} className="text-emerald-400" />
+                    ) : (
+                      <ListPlus size={12} />
+                    )}
+                    {isCaptured ? 'Added' : 'Todo'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTicketDraft(buildCalendarCardDraft(event))}
+                    title="Create ticket"
+                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
+                  >
+                    <Ticket size={12} />
+                    Ticket
+                  </button>
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-white truncate">{event.summary || '(no title)'}</div>
-                {event.location ? (
-                  <div className="mt-0.5 text-[11px] text-gray-500 truncate">{event.location}</div>
-                ) : null}
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
+      {captureError && (
+        <div className="mt-2 text-[11px] text-red-400" role="alert">
+          {captureError}
+        </div>
+      )}
+      {ticketDraft && (
+        <CaptureToTicketModal draft={ticketDraft} onClose={() => setTicketDraft(null)} />
+      )}
     </section>
   );
 }

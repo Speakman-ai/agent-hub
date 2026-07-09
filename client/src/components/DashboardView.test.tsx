@@ -266,6 +266,153 @@ describe('DashboardView', () => {
     expect(within(calendar).getByText('Room 4')).toBeInTheDocument();
   });
 
+  it('adds a calendar event to todos from the dashboard Todo button', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routedFetch(
+        SAMPLE,
+        SUPPORT_SAMPLE,
+        {
+          connected: true,
+          email: 'person@example.com',
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+          serverConfigured: true,
+        },
+        {
+          events: [
+            {
+              id: 'event-1',
+              summary: 'Planning',
+              start: { dateTime: '2026-07-01T17:00:00Z' },
+              end: { dateTime: '2026-07-01T18:00:00Z' },
+            },
+          ],
+        },
+      ),
+    );
+
+    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
+
+    const calendar = await screen.findByTestId('dashboard-calendar');
+    await waitFor(() => {
+      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
+    });
+
+    // Each event exposes both capture affordances.
+    expect(within(calendar).getByTitle('Add to todos')).toBeInTheDocument();
+    expect(within(calendar).getByTitle('Create ticket')).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(within(calendar).getByTitle('Add to todos'));
+    });
+
+    await waitFor(() => {
+      expect(within(calendar).getByText('Added')).toBeInTheDocument();
+    });
+
+    const todoPosts = (fetch as any).mock.calls.filter(
+      (c: any) => /\/me\/todos$/.test(String(c[0])) && c[1]?.method === 'POST',
+    );
+    expect(todoPosts).toHaveLength(1);
+    const posted = JSON.parse(String(todoPosts[0][1].body));
+    expect(posted.title).toContain('Planning');
+  });
+
+  it('opens the capture-to-ticket modal from the dashboard Ticket button', async () => {
+    vi.stubGlobal(
+      'fetch',
+      routedFetch(
+        SAMPLE,
+        SUPPORT_SAMPLE,
+        {
+          connected: true,
+          email: 'person@example.com',
+          grantedScopes: [CALENDAR_EVENTS_SCOPE],
+          serverConfigured: true,
+        },
+        {
+          events: [
+            {
+              id: 'event-1',
+              summary: 'Planning',
+              start: { dateTime: '2026-07-01T17:00:00Z' },
+              end: { dateTime: '2026-07-01T18:00:00Z' },
+            },
+          ],
+        },
+      ),
+    );
+
+    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
+
+    const calendar = await screen.findByTestId('dashboard-calendar');
+    await waitFor(() => {
+      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
+    });
+
+    // The modal is not mounted until the Ticket button is clicked.
+    expect(screen.queryByText('Create ticket from capture')).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(within(calendar).getByTitle('Create ticket'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Create ticket from capture')).toBeInTheDocument();
+    });
+  });
+
+  it('isolates a todo-capture failure from the load-error state (keeps the event list)', async () => {
+    // Route /me/todos POSTs to a rejected fetch; everything else succeeds.
+    const baseFetch = routedFetch(
+      SAMPLE,
+      SUPPORT_SAMPLE,
+      {
+        connected: true,
+        email: 'person@example.com',
+        grantedScopes: [CALENDAR_EVENTS_SCOPE],
+        serverConfigured: true,
+      },
+      {
+        events: [
+          {
+            id: 'event-1',
+            summary: 'Planning',
+            start: { dateTime: '2026-07-01T17:00:00Z' },
+            end: { dateTime: '2026-07-01T18:00:00Z' },
+          },
+        ],
+      },
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: any, init: any) => {
+        if (/\/me\/todos$/.test(String(url)) && init?.method === 'POST') {
+          return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+        }
+        return baseFetch(url);
+      }),
+    );
+
+    render(<DashboardView orgId="org-1" onNavigate={() => {}} />);
+
+    const calendar = await screen.findByTestId('dashboard-calendar');
+    await waitFor(() => {
+      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.click(within(calendar).getByTitle('Add to todos'));
+    });
+
+    // The event list survives — the failure must NOT trip the load-error branch.
+    await waitFor(() => {
+      expect(within(calendar).getByText('Planning')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Failed to load Calendar/i)).not.toBeInTheDocument();
+    expect(within(calendar).getByText('Planning')).toBeInTheDocument();
+  });
+
   it('loads under React.StrictMode (mountedRef survives dev remount)', async () => {
     render(
       <React.StrictMode>
