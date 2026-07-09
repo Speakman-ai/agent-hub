@@ -41,7 +41,19 @@ RUN cd client && npm ci
 COPY package.json ./
 COPY client/ ./client/
 COPY shared/ ./shared/
-RUN cd client && VITE_API_PORT="" npm run build
+# Vendor control-plane endpoints (build-time; inlined by Vite). Empty by default
+# so a self-hosted / fork build never phones home — the first-party release must
+# pass these as --build-arg (the ECR publish workflow sources them from GitHub
+# repo Variables). VITE_REPLAY_INGEST_ENDPOINT derives from the bug-report origin
+# when unset. See .env.example + client/Dockerfile for the same contract.
+ARG VITE_BUG_REPORT_ENDPOINT=""
+ARG VITE_REPLAY_INGEST_ENDPOINT=""
+ARG VITE_RELEASE_BUCKET_BASE=""
+RUN cd client && VITE_API_PORT="" \
+    VITE_BUG_REPORT_ENDPOINT="${VITE_BUG_REPORT_ENDPOINT}" \
+    VITE_REPLAY_INGEST_ENDPOINT="${VITE_REPLAY_INGEST_ENDPOINT}" \
+    VITE_RELEASE_BUCKET_BASE="${VITE_RELEASE_BUCKET_BASE}" \
+    npm run build
 
 # ─── Runtime stage ───────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime

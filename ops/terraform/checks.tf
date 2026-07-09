@@ -29,6 +29,21 @@ check "agent_hub_bootstrap_source" {
 # pr_env_wildcard_requires_zone check removed in PR-Env Removal #6. See
 # alb.tf for the teardown note.
 
+check "artifacts_bucket_requires_ssm" {
+  assert {
+    # The artifacts/replays S3 policy attaches to the SSM EC2 instance role, so
+    # the whole S3 backend (bucket + IAM policy + AGENT_HUB_ARTIFACTS_BUCKET env)
+    # only wires up when enable_instance_ssm = true — see
+    # local.artifacts_bucket_enabled in artifacts.tf, which folds the two together
+    # so they can't diverge. This assert surfaces the requested-but-not-wired case
+    # (bucket asked for, SSM off) instead of silently degrading to the local data
+    # dir. Unconditional by design: the old lifecycle precondition lived on a
+    # resource whose count is 0 in exactly this case, so it never fired.
+    condition     = !local.artifacts_bucket_requested || var.enable_instance_ssm
+    error_message = "enable_artifacts_bucket = true requires enable_instance_ssm = true (the artifacts/replays S3 policy attaches to the SSM EC2 instance role). Set enable_instance_ssm = true to use the S3 backend, or leave the artifacts bucket disabled to keep using the local data dir."
+  }
+}
+
 check "finalize_spot_pool_depth" {
   assert {
     # A Spot Finalize fleet survives reclaims by diversifying across many

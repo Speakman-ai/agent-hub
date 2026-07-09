@@ -83,6 +83,11 @@ locals {
     local.emit_default_owner_env && length(local.default_owner_username_trim) > 0 ? [
       join("", ["AGENT_HUB_DEFAULT_USERNAME=", jsonencode(local.default_owner_username_trim)]),
     ] : [],
+    # S3-backed artifacts + RUM replays (see artifacts.tf). Absent → local data dir.
+    local.artifacts_bucket_enabled ? [
+      join("", ["AGENT_HUB_ARTIFACTS_BUCKET=", jsonencode(var.artifacts_bucket_name)]),
+      join("", ["AGENT_HUB_ARTIFACTS_BUCKET_REGION=", jsonencode(var.aws_region)]),
+    ] : [],
   ))
 
   # Docker: pass-through to container (server/Dockerfile + --env-file).
@@ -137,6 +142,12 @@ locals {
     # ops/RUNBOOK-subdomain-preview-hmr.md.
     local.preview_subdomain_create ? [
       "AGENT_HUB_PREVIEW_SUBDOMAIN_BASE=${local.preview_subdomain_base}",
+    ] : [],
+    # S3-backed artifacts + RUM replays (see artifacts.tf). Absent → local data dir
+    # (/data/artifacts on the hub-data volume).
+    local.artifacts_bucket_enabled ? [
+      "AGENT_HUB_ARTIFACTS_BUCKET=${var.artifacts_bucket_name}",
+      "AGENT_HUB_ARTIFACTS_BUCKET_REGION=${var.aws_region}",
     ] : [],
     # Remote Finalize fleet wiring (backend=remote, worktree bucket, autoscaler
     # cluster/service + bounds, fleet token) — empty unless enable_finalize_runners.

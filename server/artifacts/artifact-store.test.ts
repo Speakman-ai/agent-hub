@@ -94,6 +94,25 @@ describe('getArtifactStore', () => {
   });
 });
 
+describe('test-harness hermeticity — ambient S3 bucket is neutralized', () => {
+  // Regression: prod hosts and the Finalize runner container inject
+  // AGENT_HUB_ARTIFACTS_BUCKET, so getArtifactStore() selects S3. When that
+  // leaked into the vitest worker env, route tests that upload replays/artifacts
+  // fired a real s3:PutObject and 500'd on AccessDenied (server shards 3/4/6).
+  // server/test/setup.ts deletes the var (before any server module loads) to
+  // keep the suite on the local store; this guards that rail so it can't be
+  // dropped silently. undefined (deleted) and '' both satisfy `?? ''`.
+  it('deletes AGENT_HUB_ARTIFACTS_BUCKET from the worker env', () => {
+    expect(process.env.AGENT_HUB_ARTIFACTS_BUCKET ?? '').toBe('');
+  });
+
+  it('the loaded Hub config selects the LOCAL store, never real S3', async () => {
+    const { default: config } = await import('../config.js');
+    expect(config.artifactsBucket).toBeFalsy();
+    expect(getArtifactStore(config).kind).toBe('local');
+  });
+});
+
 describe('getArtifactStoreForLocation', () => {
   const baseConfig = (overrides: Partial<AppConfig>): AppConfig =>
     ({

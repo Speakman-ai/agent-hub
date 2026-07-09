@@ -9,6 +9,12 @@ name: Release
 #          the tag commit (`:branch`, `:sha`, `:vX.Y.Z`), then SSM restart of
 #          the docker dev sandbox (`agenthub.dev` pull :main + digest checks).
 #        - build-mac        — DMGs → S3 (non-gating vs server rollout).
+#        - terraform-apply  — OPT-IN (apply_terraform input, default off):
+#          `terraform apply` against the prod stack in ops/terraform. Off by
+#          default because a rendered-user_data change stops/starts the Hub
+#          instance (brief downtime + new public IP). Requires the CI prereqs
+#          documented on the job below (PROD_TFVARS secret, AWS_TERRAFORM_ROLE_ARN
+#          + TF_STATE_* vars).
 #
 # Dev EC2 hosts that still use npm/git rather than Docker are upgraded with
 # "Deploy Dev" (`.github/workflows/deploy-dev.yml`) manually if needed — it is
@@ -32,6 +38,15 @@ on:
         description: >-
           With ECR roll: wipe Agent Hub SQLite/uploads/projects on docker dev sandbox
           before restart (fresh-setup drill). Leaves TLS + data/config intact.
+        required: false
+        type: boolean
+        default: false
+      apply_terraform:
+        description: >-
+          Run `terraform apply` on the prod stack (ops/terraform, prod env) after
+          the release. DEFAULT OFF — a user_data change stops/starts the Hub
+          (brief downtime + new public IP). Needs PROD_TFVARS secret +
+          AWS_TERRAFORM_ROLE_ARN / TF_STATE_BUCKET / TF_STATE_LOCK_TABLE vars.
         required: false
         type: boolean
         default: false
@@ -235,9 +250,87 @@ jobs:
       rollout: true
       reset_instance: ${{ inputs.docker_reset_instance }}
 
+  # OPT-IN prod infrastructure apply. Runs only when the `apply_terraform`
+  # dispatch input is true. Independent of the image rollout: the ECR/SSM path
+  # ships app code, this ships infra (buckets, IAM, ALB, fleet, Hub user_data).
+  #
+  # Required CI configuration (nothing account-specific is hardcoded here — this
+  # workflow lives in a public repo):
+  #   - secret PROD_TFVARS         — the full contents of
+  #                                  environments/prod/prod.tfvars (gitignored;
+  #                                  carries live account IDs / ARNs / instance IDs).
+  #   - var    AWS_TERRAFORM_ROLE_ARN — an OIDC role in the prod account with
+  #                                  permission to read/write the S3 state + lock
+  #                                  table and manage every resource in the stack.
+  #   - var    TF_STATE_BUCKET     — remote-state bucket (e.g. agent-hub-tfstate-<acct>).
+  #   - var    TF_STATE_LOCK_TABLE — DynamoDB lock table (e.g. agent-hub-tfstate-lock).
+  #   - var    AWS_REGION          — defaults to us-east-2 when unset.
+  terraform-apply:
+    name: Terraform apply (prod infra)
+    needs: release
+    if: ${{ inputs.apply_terraform }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC for AWS
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
+    defaults:
+      run:
+        working-directory: ops/terraform
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-release-all-tf-${{ github.run_id }}
+
+      # Pinned to the version the committed .terraform.lock.hcl + state lineage
+      # were produced with, so CI never silently upgrades prod state. Wrapper off
+      # so `terraform` exit codes propagate normally.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.3
+          terraform_wrapper: false
+
+      # The real prod.tfvars is gitignored (live account IDs / ARNs), so it is
+      # never in the checkout — materialize it from the PROD_TFVARS secret.
+      - name: Materialize prod.tfvars from secret
+        env:
+          PROD_TFVARS: ${{ secrets.PROD_TFVARS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PROD_TFVARS:-}" ]; then
+            echo "::error::PROD_TFVARS secret is empty — refusing to apply prod terraform." >&2
+            exit 1
+          fi
+          mkdir -p environments/prod
+          printf '%s' "$PROD_TFVARS" > environments/prod/prod.tfvars
+
+      # Backend values are non-secret; passed inline so no backend.hcl is needed.
+      - name: Terraform init
+        run: |
+          set -euo pipefail
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=prod/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ vars.TF_STATE_LOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform apply
+        run: terraform apply -input=false -auto-approve -var-file=environments/prod/prod.tfvars
+
   summary:
     name: Release summary
-    needs: [release, docker-ecr-dev, build-mac]
+    needs: [release, docker-ecr-dev, build-mac, terraform-apply]
     # Always run so the operator gets a single status block at the bottom
     # of the workflow page, regardless of which fan-out leg succeeded.
     if: always()
@@ -247,6 +340,7 @@ jobs:
       RELEASE_RESULT: ${{ needs.release.result }}
       DOCKER_ECR_RESULT: ${{ needs.docker-ecr-dev.result }}
       MAC_RESULT: ${{ needs.build-mac.result }}
+      TERRAFORM_RESULT: ${{ needs.terraform-apply.result }}
     steps:
       - name: Emit summary
         run: |
@@ -268,4 +362,5 @@ jobs:
             echo "| Tag & release      | $(icon "$RELEASE_RESULT") $RELEASE_RESULT |"
             echo "| ECR + docker dev   | $(icon "$DOCKER_ECR_RESULT") $DOCKER_ECR_RESULT |"
             echo "| Build mac DMGs     | $(icon "$MAC_RESULT") $MAC_RESULT (non-gating) |"
+            echo "| Terraform apply    | $(icon "$TERRAFORM_RESULT") $TERRAFORM_RESULT (opt-in) |"
           } >> "$GITHUB_STEP_SUMMARY"
