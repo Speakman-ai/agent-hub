@@ -1158,6 +1158,16 @@ function initDb(dataDir: string): void {
     );
     CREATE INDEX IF NOT EXISTS finalize_runs_card ON finalize_runs(card_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS finalize_runs_session ON finalize_runs(session_id);
+    -- getActiveFinalizeRuns runs on every WS-connect handshake (finalize
+    -- snapshot): active (non-terminal) runs ORDER BY started_at DESC, id DESC.
+    -- Nearly all rows are terminal, so a partial index over just the active
+    -- runs, pre-ordered by (started_at DESC, id DESC), turns a full scan +
+    -- TEMP B-TREE into a short ordered index scan. Both the WHERE clause (to
+    -- match the query's status predicate verbatim) and the full ORDER BY
+    -- tiebreak (started_at, then id) must be covered or SQLite falls back to a
+    -- TEMP B-TREE for the last ORDER BY term.
+    CREATE INDEX IF NOT EXISTS idx_finalize_runs_active ON finalize_runs(started_at DESC, id DESC)
+      WHERE status NOT IN ('pushed','failed','timed_out','infra_error','cancelled','stalled_no_response');
     CREATE TABLE IF NOT EXISTS finalize_kickoff_claims (
       claim_key TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -2183,7 +2193,44 @@ function initDb(dataDir: string): void {
   }
 
   try {
-    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_deleted_at ON sessions(deleted_at)');
+    // Hot path: getRecentLiveSessions runs on every WS-connect handshake
+    // (awaiting-input snapshot) — `deleted_at IS NULL AND updated_at >= ?
+    // ORDER BY updated_at DESC LIMIT 200`. The (deleted_at, updated_at DESC)
+    // composite lets SQLite seek the live rows and read them already ordered,
+    // eliminating the TEMP B-TREE sort of the whole non-deleted set. It also
+    // supersedes the old single-column idx_sessions_deleted_at (deleted_at is
+    // the leading column), so we drop that to avoid write amplification on a
+    // hot, frequently-updated table.
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_sessions_live ON sessions(deleted_at, updated_at DESC)',
+    );
+    db.exec('DROP INDEX IF EXISTS idx_sessions_deleted_at');
+  } catch (_e) {
+    /* already exists */
+  }
+
+  try {
+    // stale-PR scheduled check (getStalePendingPrSessions): `changes_ready IS
+    // NOT NULL AND stale_pr_notified_at IS NULL AND updated_at <= ?`. A partial
+    // index over just the un-notified pending-PR sessions keeps this a tiny
+    // seek instead of a full scan of the sessions table.
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_sessions_stale_pr ON sessions(updated_at)
+         WHERE changes_ready IS NOT NULL AND stale_pr_notified_at IS NULL`,
+    );
+  } catch (_e) {
+    /* already exists */
+  }
+
+  try {
+    // getAllCronSessions drives the cron-session list off cron_id. Most
+    // sessions are not cron sessions, so a partial index over just the
+    // cron-linked rows lets the join scan a few hundred rows instead of the
+    // whole table.
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_sessions_cron ON sessions(cron_id, updated_at DESC)
+         WHERE cron_id IS NOT NULL`,
+    );
   } catch (_e) {
     /* already exists */
   }
