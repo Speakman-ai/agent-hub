@@ -79,6 +79,7 @@ import {
   normalizeSpecItemStatus,
 } from '../epic-spec.js';
 import { buildDecideForMeSessionContext, pickDefaultDecideAgent } from '../spec-decide-for-me.js';
+import { buildNoteScopingKickoff } from '../note-scoping.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -102,6 +103,7 @@ import {
   UpdateSpecItemRequestSchema,
   DecideForMeRequestSchema,
   ScopeEpicRequestSchema,
+  ScopeFromNotesRequestSchema,
   CreateCardTemplateRequestSchema,
   UpdateCardTemplateRequestSchema,
 } from './board.openapi.js';
@@ -2548,6 +2550,87 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       stmts.updateSessionLinkedEpic.run(epic.id, sessionId);
       markSessionFinalizeAutomation(stmts, sessionId, 'manual');
       setSessionOwner(sessionId, ownerUserId);
+
+      const sessionRow = stmts.getSession.get(sessionId) as SessionRow;
+      broadcast({
+        type: 'session_created',
+        agentId: agent.id,
+        session: enrichSessionForClient(sessionRow, stmts),
+      });
+
+      res.json({ sessionId, agentId: agent.id });
+    },
+  );
+
+  // Open a scoping-mode session seeded with free-form note content (a whole
+  // note or a single heading-scoped block). Unlike the epic-linked scope route,
+  // this is NOT tied to an existing epic and DOES auto-send a kickoff message so
+  // the agent immediately turns the captured notes into an Epic → Phases →
+  // Tickets structure. The scoping-mode preamble (chat.ts) still injects the
+  // hierarchy contract and rules on the first turn.
+  router.post(
+    '/api/projects/:projectId/board/scope-from-notes',
+    async (req: Request, res: Response) => {
+      const parsed = parseBody(ScopeFromNotesRequestSchema, req, res);
+      if (!parsed) return;
+
+      // Auth before existence: check authentication (401) before revealing
+      // whether the project exists (404), so an unauthenticated caller can't
+      // probe project ids.
+      const ownerUserId = resolveOwnerUserId(req as AuthenticatedRequest);
+      if (!ownerUserId) {
+        return res.status(401).json({ error: 'Authentication required to scope notes' });
+      }
+
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      let found = parsed.agentId ? findAgent(parsed.agentId) : null;
+      // An explicitly chosen agent must belong to THIS project — `findAgent` is
+      // a global lookup, so without this guard a caller could open a scoping
+      // session for this project under a foreign project's agent.
+      if (parsed.agentId && (!found || found.project?.id !== project.id)) {
+        return res.status(400).json({ error: 'agentId does not belong to this project' });
+      }
+      if (!found) {
+        const pick = pickDefaultDecideAgent(project);
+        if (!pick) return res.status(400).json({ error: 'No agent available for this project' });
+        found = findAgent(pick.id);
+      }
+      if (!found) return res.status(404).json({ error: 'Agent not found' });
+      const { agent } = found;
+
+      const sessionId = crypto.randomUUID();
+      const { engine, model: resolvedModel } = resolveEffectiveEngineAndModel(config, {
+        agentId: agent.id,
+        agentEngine: agent.engine || 'claude-code',
+        agentModel: agent.model ?? null,
+        ownerUserId,
+      });
+
+      const rawTitle = (parsed.title ?? '').trim();
+      const sessionTitle = rawTitle ? `Scope: ${rawTitle}` : 'Scope: notes';
+      stmts.createSession.run(sessionId, agent.id, sessionTitle, engine, resolvedModel, 0, 1, 1);
+      stmts.updateSessionMode.run('scoping', sessionId);
+      markSessionFinalizeAutomation(stmts, sessionId, 'manual');
+      setSessionOwner(sessionId, ownerUserId);
+
+      const kickoff = buildNoteScopingKickoff({
+        content: parsed.content,
+        title: rawTitle || null,
+        projectName: project.name,
+      });
+
+      handleChat(null, {
+        type: 'chat',
+        agentId: agent.id,
+        sessionId,
+        content: kickoff,
+        hookSpecificOutput: { sessionTitle },
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[ScopeFromNotes] handleChat failed for session ${sessionId}:`, msg);
+      });
 
       const sessionRow = stmts.getSession.get(sessionId) as SessionRow;
       broadcast({

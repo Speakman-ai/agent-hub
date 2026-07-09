@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, ScrollView, StyleSheet, Alert, KeyboardAvoidingView, Platform, } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, ScrollView, StyleSheet, Alert, KeyboardAvoidingView, Platform, Modal, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Markdown from 'react-native-markdown-display';
 import { useApp } from '../context/AppContext';
@@ -7,6 +7,8 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import { SidebarContext } from '../context/SidebarContext';
+import { listMarkdownSections, listMarkdownLineItems } from '@shared/utils/markdownSections';
+import { pickTodoColumn } from '@shared/utils/pickTodoColumn';
 const mdStyles = {
     body: { color: colors.gray200, fontSize: 14 },
     paragraph: { marginTop: 0, marginBottom: 8 },
@@ -62,6 +64,11 @@ export default function NotesScreen({ route }: any) {
     const [searchQuery, setSearchQuery] = useState('');
     const [loading, setLoading] = useState(false);
     const [processing, setProcessing] = useState(false);
+    const [scoping, setScoping] = useState(false);
+    const [scopePickerOpen, setScopePickerOpen] = useState(false);
+    const [ticketing, setTicketing] = useState(false);
+    const [ticketPickerOpen, setTicketPickerOpen] = useState(false);
+    const boardColumnsRef = useRef<any>(null);
     // Edit form state
     const [editTitle, setEditTitle] = useState('');
     const [editContent, setEditContent] = useState('');
@@ -103,6 +110,7 @@ export default function NotesScreen({ route }: any) {
             setSelectedNote(full);
             setEditing(false);
             setCreating(false);
+            boardColumnsRef.current = null;
         }
         catch (err: any) {
             Alert.alert('Error', 'Failed to load note');
@@ -206,6 +214,74 @@ export default function NotesScreen({ route }: any) {
             setProcessing(false);
         }
     };
+    // Sections available to scope (one per heading) for the selected note.
+    const scopeSections = selectedNote ? listMarkdownSections(selectedNote.content || '') : [];
+    const handleScope = () => {
+        if (!selectedNote || scoping)
+            return;
+        // With headings, let the user pick a heading-scoped block or the whole
+        // note; otherwise scope the whole note directly.
+        if (scopeSections.length > 0) {
+            setScopePickerOpen(true);
+        }
+        else {
+            runScope(selectedNote.content, selectedNote.title);
+        }
+    };
+    const runScope = async (content: any, title: any) => {
+        if (!content || !String(content).trim())
+            return;
+        setScopePickerOpen(false);
+        setScoping(true);
+        try {
+            await api.scopeFromNotes(projectId, { content: String(content), title: title || undefined });
+            Alert.alert('Scoping session started', 'An agent session will scope these notes into an epic, phases, and tickets.');
+        }
+        catch (err: any) {
+            Alert.alert('Error', err.message || 'Failed to start scoping session');
+        }
+        finally {
+            setScoping(false);
+        }
+    };
+    // Line items available to convert into tickets for the selected note.
+    const lineItems = selectedNote ? listMarkdownLineItems(selectedNote.content || '') : [];
+    const handleTicket = () => {
+        if (!selectedNote || ticketing)
+            return;
+        if (lineItems.length === 0) {
+            Alert.alert('No line items', 'This note has no bullet/list items to convert into tickets.');
+            return;
+        }
+        setTicketPickerOpen(true);
+    };
+    const resolveTodoColumn = async () => {
+        if (!boardColumnsRef.current) {
+            const board = await api.getProjectBoard(projectId);
+            boardColumnsRef.current = board?.columns || [];
+        }
+        return pickTodoColumn(boardColumnsRef.current || []);
+    };
+    const createTicketFromLine = async (text: any) => {
+        const t = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!t)
+            return;
+        setTicketPickerOpen(false);
+        setTicketing(true);
+        try {
+            const column = await resolveTodoColumn();
+            if (!column)
+                throw new Error('No board column available');
+            await api.createKanbanCard(projectId, { title: t, columnId: column.id });
+            Alert.alert('Ticket created', `Added “${t.length > 60 ? t.slice(0, 60) + '…' : t}” to To Do.`);
+        }
+        catch (err: any) {
+            Alert.alert('Error', err.message || 'Failed to create ticket');
+        }
+        finally {
+            setTicketing(false);
+        }
+    };
     const handleCancel = () => {
         setEditing(false);
         setCreating(false);
@@ -276,6 +352,12 @@ export default function NotesScreen({ route }: any) {
             <TouchableOpacity onPress={handleProcess} style={styles.headerAction} disabled={processing}>
               <Text style={styles.headerActionText}>{processing ? '…' : 'Process'}</Text>
             </TouchableOpacity>
+            <TouchableOpacity onPress={handleScope} style={styles.headerAction} disabled={scoping}>
+              <Text style={styles.headerActionText}>{scoping ? '…' : 'Scope'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleTicket} style={styles.headerAction} disabled={ticketing}>
+              <Text style={styles.headerActionText}>{ticketing ? '…' : 'Ticket'}</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={handleEdit} style={styles.headerAction}>
               <Text style={styles.headerActionText}>Edit</Text>
             </TouchableOpacity>
@@ -313,6 +395,47 @@ export default function NotesScreen({ route }: any) {
             <Markdown style={mdStyles as any}>{selectedNote?.content || '*No content yet*'}</Markdown>
           </View>
         </ScrollView>)}
+
+      <Modal visible={scopePickerOpen} transparent animationType="fade" onRequestClose={() => setScopePickerOpen(false)}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setScopePickerOpen(false)}>
+          <View style={styles.scopeSheet}>
+            <Text style={styles.scopeSheetTitle}>Scope into a planning session</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              <TouchableOpacity style={styles.scopeOption} onPress={() => runScope(selectedNote?.content, selectedNote?.title)}>
+                <Text style={styles.scopeOptionTitle}>Whole note</Text>
+                <Text style={styles.scopeOptionMeta}>Everything in “{selectedNote?.title}”</Text>
+              </TouchableOpacity>
+              {scopeSections.map((s: any, i: any) => (<TouchableOpacity key={`${s.line}-${i}`} style={styles.scopeOption} onPress={() => runScope(s.section, s.heading)}>
+                  <Text style={styles.scopeOptionTitle} numberOfLines={1}>
+                    {'#'.repeat(s.level)} {s.heading || 'Untitled section'}
+                  </Text>
+                  <Text style={styles.scopeOptionMeta}>Everything under this heading</Text>
+                </TouchableOpacity>))}
+            </ScrollView>
+            <TouchableOpacity style={styles.scopeCancel} onPress={() => setScopePickerOpen(false)}>
+              <Text style={styles.scopeCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={ticketPickerOpen} transparent animationType="fade" onRequestClose={() => setTicketPickerOpen(false)}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setTicketPickerOpen(false)}>
+          <View style={styles.scopeSheet}>
+            <Text style={styles.scopeSheetTitle}>Convert a line into a To Do ticket</Text>
+            <ScrollView style={{ maxHeight: 360 }}>
+              {lineItems.map((it: any, i: any) => (<TouchableOpacity key={`${it.line}-${i}`} style={styles.scopeOption} onPress={() => createTicketFromLine(it.text)}>
+                  <Text style={[styles.scopeOptionTitle, { color: colors.emerald400, marginLeft: Math.min(it.indent, 8) * 2 }]} numberOfLines={2}>
+                    {it.text}
+                  </Text>
+                </TouchableOpacity>))}
+            </ScrollView>
+            <TouchableOpacity style={styles.scopeCancel} onPress={() => setTicketPickerOpen(false)}>
+              <Text style={styles.scopeCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>);
 }
 const styles = StyleSheet.create({
@@ -449,4 +572,34 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     saveButtonText: { fontSize: 14, fontWeight: '600', color: colors.white },
+    modalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        justifyContent: 'flex-end',
+    },
+    scopeSheet: {
+        backgroundColor: colors.gray900,
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        padding: 16,
+        borderTopWidth: 1,
+        borderColor: colors.gray800,
+    },
+    scopeSheetTitle: {
+        fontSize: 16,
+        fontWeight: '600',
+        color: colors.white,
+        marginBottom: 12,
+    },
+    scopeOption: {
+        paddingVertical: 12,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        backgroundColor: colors.gray800,
+        marginBottom: 8,
+    },
+    scopeOptionTitle: { fontSize: 15, fontWeight: '600', color: colors.blue600 },
+    scopeOptionMeta: { fontSize: 12, color: colors.gray500, marginTop: 2 },
+    scopeCancel: { paddingVertical: 12, alignItems: 'center', marginTop: 4 },
+    scopeCancelText: { fontSize: 14, fontWeight: '600', color: colors.gray400 },
 });

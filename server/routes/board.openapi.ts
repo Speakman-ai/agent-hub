@@ -1264,6 +1264,44 @@ export const ScopeEpicRequestSchema = z.object({
   }),
 });
 
+export const ScopeFromNotesRequestSchema = z.object({
+  content: z.string().min(1).openapi({
+    description:
+      'The note content to scope — a whole note or a single heading-scoped block of markdown.',
+  }),
+  title: z.string().optional().openapi({
+    description: 'Human label for the session (e.g. the note title or heading text).',
+  }),
+  agentId: z.string().min(1).optional().openapi({
+    description: 'Agent to run the scoping session. Defaults to the project lead.',
+  }),
+});
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/board/scope-from-notes',
+  tags: ['Board'],
+  summary: 'Open a scoping-mode session seeded with note content',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    body: { content: jsonContent(ScopeFromNotesRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Scoping session created and seeded with the note content.',
+      content: jsonContent(
+        z.object({
+          sessionId: z.string(),
+          agentId: z.string(),
+        }),
+      ),
+    },
+    400: errorResponse('No agent available or agent does not belong to this project.'),
+    401: errorResponse('Authentication required.'),
+    404: errorResponse('Project not found.'),
+  },
+});
+
 registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/board/epics/{epicId}/scope',

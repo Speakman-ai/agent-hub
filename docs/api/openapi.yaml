@@ -15314,6 +15314,69 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardErrorResponse"
+  /api/projects/{projectId}/board/scope-from-notes:
+    post:
+      tags:
+        - Board
+      summary: Open a scoping-mode session seeded with note content
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                  minLength: 1
+                  description: The note content to scope — a whole note or a single heading-scoped block of markdown.
+                title:
+                  type: string
+                  description: Human label for the session (e.g. the note title or heading text).
+                agentId:
+                  type: string
+                  minLength: 1
+                  description: Agent to run the scoping session. Defaults to the project lead.
+              required:
+                - content
+      responses:
+        "200":
+          description: Scoping session created and seeded with the note content.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  agentId:
+                    type: string
+                required:
+                  - sessionId
+                  - agentId
+        "400":
+          description: No agent available or agent does not belong to this project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "401":
+          description: Authentication required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardErrorResponse"
   /api/projects/{projectId}/board/epics/{epicId}/scope:
     post:
       tags:

@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { normalizeNotesMarkdown } from '../utils/notesMarkdown';
+import { sliceSectionAtLine } from '@shared/utils/markdownSections';
+import { pickTodoColumn } from '@shared/utils/pickTodoColumn';
 import {
   StickyNote,
   Search,
@@ -17,6 +19,8 @@ import {
   CheckCircle2,
   XCircle,
   ChevronDown,
+  Telescope,
+  TicketPlus,
 } from 'lucide-react';
 import { api } from '../utils/api';
 
@@ -37,6 +41,105 @@ function parseSnippet(html: any) {
       return { text: stripTags(part), bold: false };
     })
     .filter((seg: any) => seg.text);
+}
+
+/**
+ * Extract the text of a rendered list item, EXCLUDING any nested `<ul>`/`<ol>`
+ * sub-lists — so "convert this line" uses the bullet's own text as the ticket
+ * title, not the concatenation of its children.
+ */
+function extractLineItemText(node: any): string {
+  if (node == null || node === false) return '';
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractLineItemText).join('');
+  const type = node?.type;
+  if (type === 'ul' || type === 'ol') return ''; // skip nested lists
+  const children = node?.props?.children;
+  return children != null ? extractLineItemText(children) : '';
+}
+
+interface ScopeComponentOpts {
+  onScope: (content: string, title: string) => void;
+  onTicket: (title: string) => void;
+  scopingRef: { current: boolean };
+  ticketingRef: { current: boolean };
+  noteTitle?: string;
+}
+
+/**
+ * Build the react-markdown `components` map that renders a hover "Scope" button
+ * next to each heading and a hover "Ticket" button on each list item.
+ *
+ * IMPORTANT: this is defined at module scope (not inside render) and is meant to
+ * be memoized by the caller on `normalized` + stable handler identities. If the
+ * returned component functions were recreated on every render, react-markdown
+ * would treat them as new element *types* and remount the entire preview subtree
+ * on each keystroke / state toggle. The volatile `scoping`/`ticketing` flags are
+ * read through refs so they don't force new component identities on click.
+ */
+function makeScopeComponents(normalized: string, opts: ScopeComponentOpts) {
+  const { onScope, onTicket, scopingRef, ticketingRef, noteTitle } = opts;
+
+  const makeHeading =
+    (Tag: any) =>
+    ({ node, children, ...props }: any) => {
+      const line = node?.position?.start?.line;
+      return (
+        <Tag {...props} className="group/heading flex items-center gap-2">
+          <span>{children}</span>
+          {line != null && (
+            <button
+              type="button"
+              onClick={() => {
+                const sec = sliceSectionAtLine(normalized, line);
+                if (sec) onScope(sec.section, sec.heading || noteTitle || '');
+              }}
+              disabled={scopingRef.current}
+              title="Scope everything under this heading into a planning session"
+              className="opacity-0 group-hover/heading:opacity-100 focus:opacity-100 flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-600/10 rounded transition-all disabled:opacity-50 no-underline"
+            >
+              <Telescope size={11} />
+              Scope
+            </button>
+          )}
+        </Tag>
+      );
+    };
+
+  // Each list item gets a hover "Ticket" button that converts JUST that line
+  // into a kanban card in the To Do column (nested sub-bullets excluded).
+  const li = ({ node: _node, children, ...props }: any) => {
+    const title = extractLineItemText(children).replace(/\s+/g, ' ').trim();
+    return (
+      <li {...props} className="group/li">
+        {children}
+        {title && (
+          <button
+            type="button"
+            onClick={() => onTicket(title)}
+            disabled={ticketingRef.current}
+            title="Convert this line into a To Do ticket"
+            aria-label={`Convert "${title}" into a To Do ticket`}
+            className="ml-2 opacity-0 group-hover/li:opacity-100 focus:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 align-middle text-[11px] font-medium text-emerald-400 hover:text-emerald-300 hover:bg-emerald-600/10 rounded transition-all disabled:opacity-50 no-underline"
+          >
+            <TicketPlus size={11} />
+            Ticket
+          </button>
+        )}
+      </li>
+    );
+  };
+
+  return {
+    h1: makeHeading('h1'),
+    h2: makeHeading('h2'),
+    h3: makeHeading('h3'),
+    h4: makeHeading('h4'),
+    h5: makeHeading('h5'),
+    h6: makeHeading('h6'),
+    li,
+  };
 }
 
 /** Strip all HTML tags and decode common entities */
@@ -110,10 +213,24 @@ export default function NotesEditor({ projectId }: any) {
   const [processTarget, setProcessTarget] = useState('auto');
   const [processResult, setProcessResult] = useState<any>(null); // { status, message }
   const [showTargetDropdown, setShowTargetDropdown] = useState(false);
+  // Scoping state — turn a note (or a heading-scoped block) into a scoping session
+  const [scoping, setScoping] = useState(false);
+  const [scopeResult, setScopeResult] = useState<any>(null); // { status, message }
+  // Convert-line-item-to-ticket state
+  const [ticketing, setTicketing] = useState(false);
+  const [ticketResult, setTicketResult] = useState<any>(null); // { status, message }
   const searchTimerRef = useRef<any>(null);
   const saveTimerRef = useRef<any>(null);
   const textareaRef = useRef<any>(null);
   const dropdownRef = useRef<any>(null);
+  const columnsCacheRef = useRef<any>(null); // cached board columns for ticket creation
+  // Mirror volatile in-flight flags into refs so the memoized markdown
+  // components (below) can read the live value for `disabled` without being
+  // rebuilt on every scoping/ticketing toggle (which would remount the preview).
+  const scopingRef = useRef(false);
+  const ticketingRef = useRef(false);
+  scopingRef.current = scoping;
+  ticketingRef.current = ticketing;
 
   const fetchNotes = useCallback(
     async (query: any = '') => {
@@ -219,6 +336,8 @@ export default function NotesEditor({ projectId }: any) {
     setSelectedNoteId(null);
     setSelectedNote(null);
     setProcessResult(null);
+    setScopeResult(null);
+    setTicketResult(null);
     // Focus textarea after render
     setTimeout(() => textareaRef.current?.focus(), 100);
   };
@@ -353,6 +472,76 @@ export default function NotesEditor({ projectId }: any) {
     }
   };
 
+  // Start a scoping session seeded with `content`. Used both for the whole note
+  // and for a single heading-scoped block (via the button next to a heading).
+  const handleScopeContent = useCallback(
+    async (content: any, title: any) => {
+      // Guard via ref (not the `scoping` state) so this callback keeps a stable
+      // identity across scoping toggles — the memoized markdown components
+      // depend on it and must not be rebuilt (and remounted) on click.
+      if (!content || !String(content).trim() || scopingRef.current) return;
+      setScoping(true);
+      setScopeResult(null);
+      try {
+        const result = await api.scopeFromNotes(projectId, {
+          content: String(content),
+          title: title || undefined,
+        });
+        setScopeResult({
+          status: 'success',
+          message: `Scoping session started${title ? ` for "${title}"` : ''}. Session: ${result.sessionId?.slice(0, 8)}...`,
+        });
+      } catch (err: any) {
+        setScopeResult({
+          status: 'error',
+          message: err.message || 'Failed to start scoping session',
+        });
+      } finally {
+        setScoping(false);
+      }
+    },
+    [projectId],
+  );
+
+  const handleScopeWholeNote = () => {
+    if (!selectedNote) return;
+    handleScopeContent(selectedNote.content, selectedNote.title);
+  };
+
+  // Resolve the board's "To Do" column (falling back to the first column),
+  // caching the columns so repeated line-item conversions don't refetch.
+  const resolveTodoColumn = useCallback(async () => {
+    if (!columnsCacheRef.current) {
+      const board = await api.getBoard(projectId);
+      columnsCacheRef.current = board?.columns || [];
+    }
+    return pickTodoColumn(columnsCacheRef.current || []);
+  }, [projectId]);
+
+  // Convert a single line item into a kanban ticket in the To Do column. The
+  // server dedupes by title, so double-clicks return the same card. Guards via
+  // ref so the callback identity stays stable (see handleScopeContent).
+  const handleConvertToTicket = useCallback(
+    async (title: any) => {
+      const t = (title || '').replace(/\s+/g, ' ').trim();
+      if (!t || ticketingRef.current) return;
+      setTicketing(true);
+      setTicketResult(null);
+      try {
+        const column = await resolveTodoColumn();
+        if (!column) throw new Error('No board column available');
+        await api.createCard(projectId, { title: t, columnId: column.id });
+        const short = t.length > 60 ? `${t.slice(0, 60)}…` : t;
+        setTicketResult({ status: 'success', message: `Ticket created: "${short}"` });
+      } catch (err: any) {
+        setTicketResult({ status: 'error', message: err.message || 'Failed to create ticket' });
+      } finally {
+        setTicketing(false);
+      }
+    },
+    [projectId, resolveTodoColumn],
+  );
+
   // Handle keyboard shortcuts in textarea
   const handleKeyDown = (e: any) => {
     // Cmd/Ctrl+S to save
@@ -376,9 +565,31 @@ export default function NotesEditor({ projectId }: any) {
     }
   };
 
-  const renderMarkdownPreview = (content: any) => (
+  // Normalize the selected note's content once, and derive the scope/ticket
+  // components from it. Both are memoized so react-markdown receives stable
+  // component identities across re-renders (including scoping/ticketing toggles,
+  // which read their flags via refs) — otherwise the whole preview subtree would
+  // remount and re-parse on every click. The slice runs against the SAME
+  // normalized string react-markdown parsed, so heading line numbers line up.
+  const viewNormalized = useMemo(
+    () => normalizeNotesMarkdown(selectedNote?.content || ''),
+    [selectedNote?.content],
+  );
+  const scopeComponents = useMemo(
+    () =>
+      makeScopeComponents(viewNormalized, {
+        onScope: handleScopeContent,
+        onTicket: handleConvertToTicket,
+        scopingRef,
+        ticketingRef,
+        noteTitle: selectedNote?.title,
+      }),
+    [viewNormalized, handleScopeContent, handleConvertToTicket, selectedNote?.title],
+  );
+
+  const renderMarkdownPreview = (content: any, components?: any) => (
     <div className="prose prose-invert prose-sm max-w-none text-gray-300">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {normalizeNotesMarkdown(content || '')}
       </ReactMarkdown>
     </div>
@@ -442,6 +653,9 @@ export default function NotesEditor({ projectId }: any) {
                   setEditing(false);
                   setCreating(false);
                   setProcessResult(null);
+                  setScopeResult(null);
+                  setTicketResult(null);
+                  columnsCacheRef.current = null;
                   clearTimeout(saveTimerRef.current);
                 }}
                 className={`px-3 py-2.5 cursor-pointer border-b border-gray-800/50 transition-colors ${
@@ -651,6 +865,20 @@ export default function NotesEditor({ projectId }: any) {
                   </div>
 
                   <button
+                    onClick={handleScopeWholeNote}
+                    disabled={scoping}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 rounded-lg transition-colors disabled:opacity-50"
+                    title="Scope this whole note into a planning session (epic → phases → tickets)"
+                  >
+                    {scoping ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Telescope size={14} />
+                    )}
+                    Scope
+                  </button>
+
+                  <button
                     onClick={handleEdit}
                     className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition-colors"
                   >
@@ -677,8 +905,46 @@ export default function NotesEditor({ projectId }: any) {
                   {processResult.message}
                 </div>
               )}
+
+              {/* Scope result feedback */}
+              {scopeResult && (
+                <div
+                  className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${
+                    scopeResult.status === 'success'
+                      ? 'bg-green-900/20 text-green-400'
+                      : 'bg-red-900/20 text-red-400'
+                  }`}
+                >
+                  {scopeResult.status === 'success' ? (
+                    <CheckCircle2 size={14} />
+                  ) : (
+                    <XCircle size={14} />
+                  )}
+                  {scopeResult.message}
+                </div>
+              )}
+
+              {/* Ticket (line-item → card) result feedback */}
+              {ticketResult && (
+                <div
+                  className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${
+                    ticketResult.status === 'success'
+                      ? 'bg-green-900/20 text-green-400'
+                      : 'bg-red-900/20 text-red-400'
+                  }`}
+                >
+                  {ticketResult.status === 'success' ? (
+                    <CheckCircle2 size={14} />
+                  ) : (
+                    <XCircle size={14} />
+                  )}
+                  {ticketResult.message}
+                </div>
+              )}
             </div>
-            <div className="px-6 py-4 flex-1">{renderMarkdownPreview(selectedNote.content)}</div>
+            <div className="px-6 py-4 flex-1">
+              {renderMarkdownPreview(selectedNote.content, scopeComponents)}
+            </div>
           </div>
         ) : (
           /* Empty state */

@@ -879,6 +879,10 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
     }),
+    scopeFromNotes: (projectId: any, data: { content: string; title?: string; agentId?: string }) => fetchJSON(`/projects/${projectId}/board/scope-from-notes`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+    }),
     linkCardToEpic: (projectId: any, cardId: any, epicId: any) => fetchJSON(`/projects/${projectId}/board/cards/${cardId}/epic`, {
         method: 'POST',
         body: JSON.stringify({ epicId }),
