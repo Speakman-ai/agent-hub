@@ -552,6 +552,40 @@ const config: AppConfig = {
     return { enabled, slowThresholdMs, logSlow };
   })(),
 
+  // ── Async-DB reader pool (Phase 2 async-DB epic) ────────────────
+  // Sizes the worker_threads pool backing server/db-async. Infrastructure
+  // only: no call site routes through it yet. Env overrides win over the
+  // config.json `dbReaderPool` block.
+  dbReaderPool: (() => {
+    const block = (fileConfig.dbReaderPool as Record<string, unknown> | undefined) || {};
+    const envNum = (key: string): number | undefined => {
+      const raw = process.env[key];
+      if (raw === undefined) return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const size = clampFiniteInt(envNum('AGENT_HUB_DB_READER_POOL_SIZE') ?? block.size, 2, 1, 16);
+    const queryTimeoutMs = clampFiniteInt(
+      envNum('AGENT_HUB_DB_READER_QUERY_TIMEOUT_MS') ?? block.queryTimeoutMs,
+      30_000,
+      100,
+      600_000,
+    );
+    const maxQueueDepth = clampFiniteInt(
+      envNum('AGENT_HUB_DB_READER_MAX_QUEUE_DEPTH') ?? block.maxQueueDepth,
+      1_000,
+      1,
+      100_000,
+    );
+    const busyTimeoutMs = clampFiniteInt(
+      envNum('AGENT_HUB_DB_READER_BUSY_TIMEOUT_MS') ?? block.busyTimeoutMs,
+      5_000,
+      0,
+      60_000,
+    );
+    return { size, queryTimeoutMs, maxQueueDepth, busyTimeoutMs };
+  })(),
+
   // ── Derived / helpers ──────────────────────────────────────────
   get allValidModels(): string[] {
     return Object.values(this.engineValidModels).flat();

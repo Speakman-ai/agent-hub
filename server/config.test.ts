@@ -852,3 +852,98 @@ describe('config.ts — dbInstrumentation resolution', () => {
     expect(mod.default.dbInstrumentation.slowThresholdMs).toBe(10);
   });
 });
+
+describe('config.ts — dbReaderPool resolution', () => {
+  // Phase-2 async-DB reader pool block: sensible defaults, config.json read,
+  // env overrides, and clamping of each field to its bounds.
+  function freshDataDir(label: string): string {
+    return path.join(
+      os.tmpdir(),
+      `agent-hub-dbreader-${label}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+  }
+
+  function writeConfig(dir: string, body: Record<string, unknown>): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(body), 'utf8');
+  }
+
+  function clearEnv(): void {
+    delete process.env.AGENT_HUB_DB_READER_POOL_SIZE;
+    delete process.env.AGENT_HUB_DB_READER_QUERY_TIMEOUT_MS;
+    delete process.env.AGENT_HUB_DB_READER_MAX_QUEUE_DEPTH;
+    delete process.env.AGENT_HUB_DB_READER_BUSY_TIMEOUT_MS;
+  }
+
+  it('defaults: size 2, 30s timeout, 1000 queue depth, 5s busy timeout', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('default');
+    const mod = await import('./config.js');
+    expect(mod.default.dbReaderPool).toEqual({
+      size: 2,
+      queryTimeoutMs: 30_000,
+      maxQueueDepth: 1_000,
+      busyTimeoutMs: 5_000,
+    });
+  });
+
+  it('reads the block from config.json when env is unset', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('file');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    writeConfig(dir, {
+      dbReaderPool: { size: 4, queryTimeoutMs: 12_000, maxQueueDepth: 50, busyTimeoutMs: 250 },
+    });
+    const mod = await import('./config.js');
+    expect(mod.default.dbReaderPool).toEqual({
+      size: 4,
+      queryTimeoutMs: 12_000,
+      maxQueueDepth: 50,
+      busyTimeoutMs: 250,
+    });
+  });
+
+  it('env overrides win over config.json', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    const dir = freshDataDir('env-wins');
+    process.env.AGENT_HUB_DATA_DIR = dir;
+    writeConfig(dir, { dbReaderPool: { size: 8 } });
+    process.env.AGENT_HUB_DB_READER_POOL_SIZE = '3';
+    const mod = await import('./config.js');
+    expect(mod.default.dbReaderPool.size).toBe(3);
+  });
+
+  it('clamps size to [1, 16] and queue depth / timeouts to their bounds', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('clamp');
+    process.env.AGENT_HUB_DB_READER_POOL_SIZE = '999';
+    process.env.AGENT_HUB_DB_READER_QUERY_TIMEOUT_MS = '1';
+    process.env.AGENT_HUB_DB_READER_MAX_QUEUE_DEPTH = '0';
+    process.env.AGENT_HUB_DB_READER_BUSY_TIMEOUT_MS = '999999';
+    const mod = await import('./config.js');
+    expect(mod.default.dbReaderPool).toEqual({
+      size: 16,
+      queryTimeoutMs: 100,
+      maxQueueDepth: 1,
+      busyTimeoutMs: 60_000,
+    });
+  });
+
+  it('non-numeric env values fall back to defaults', async () => {
+    vi.resetModules();
+    clearEnv();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDir('nan');
+    process.env.AGENT_HUB_DB_READER_POOL_SIZE = 'not-a-number';
+    const mod = await import('./config.js');
+    expect(mod.default.dbReaderPool.size).toBe(2);
+  });
+});

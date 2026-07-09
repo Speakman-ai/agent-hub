@@ -3719,6 +3719,21 @@ export interface AppConfig {
     slowThresholdMs: number;
     logSlow: boolean;
   };
+  /**
+   * Phase-2 async-DB reader pool (see `server/db-async`). Sizes the pool of
+   * `worker_threads` that hold read-only better-sqlite3 connections for the
+   * async read facade. Infrastructure only — no call site routes through it
+   * yet; a later card migrates measured-slow read paths onto it.
+   * Env: `AGENT_HUB_DB_READER_POOL_SIZE`, `AGENT_HUB_DB_READER_QUERY_TIMEOUT_MS`,
+   * `AGENT_HUB_DB_READER_MAX_QUEUE_DEPTH`, `AGENT_HUB_DB_READER_BUSY_TIMEOUT_MS`;
+   * config.json: `dbReaderPool: { size, queryTimeoutMs, maxQueueDepth, busyTimeoutMs }`.
+   */
+  dbReaderPool: {
+    size: number;
+    queryTimeoutMs: number;
+    maxQueueDepth: number;
+    busyTimeoutMs: number;
+  };
   readonly allValidModels: string[];
 }
 

@@ -64,6 +64,7 @@ function makeConfig(): AppConfig {
     previewComposeReadyTimeoutMs: 600_000,
     previewSubdomainBase: null,
     dbInstrumentation: { enabled: false, slowThresholdMs: 10, logSlow: true },
+    dbReaderPool: { size: 2, queryTimeoutMs: 30_000, maxQueueDepth: 1_000, busyTimeoutMs: 5_000 },
     get allValidModels() {
       return Object.values(this.engineValidModels).flat();
     },
