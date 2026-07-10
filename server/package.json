@@ -1,6 +1,6 @@
 {
   "name": "agent-hub-server",
-  "version": "2.31.31",
+  "version": "2.31.32",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
