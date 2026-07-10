@@ -25,6 +25,7 @@ export const ENGINE_MODELS: Record<string, any> = {
     // with HTTP 400 by the ChatGPT backend. Keep in sync with server/config.ts
     // and client/src/components/TopBar.jsx.
     'codex-cli': [
+        { id: 'gpt-5.6', label: 'GPT-5.6', short: '5.6' },
         { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
         { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
         { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
@@ -40,7 +41,7 @@ export const ENGINE_MODELS: Record<string, any> = {
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
     'claude-code': 'claude-opus-4-8',
     'cursor-agent': 'composer-2.5',
-    'codex-cli': 'gpt-5.5',
+    'codex-cli': 'gpt-5.6',
     'grok-cli': 'grok-composer-2.5-fast',
 };
 // Display labels for models that are no longer selectable but may still appear

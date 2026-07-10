@@ -107,6 +107,7 @@ describe('shouldPassModelFlag', () => {
 
   it('allowlist includes the current default so fresh sessions never get dropped', () => {
     // Keep in sync with server/config.ts → engineDefaultModels['codex-cli'].
+    expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain('gpt-5.6');
     expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain('gpt-5.5');
     // Regression: the deprecated gpt-5.3-codex must NOT be forwarded under
     // ChatGPT OAuth — it is rejected by the backend and would spin forever.

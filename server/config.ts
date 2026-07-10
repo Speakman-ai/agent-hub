@@ -221,7 +221,7 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
   // drop --model when an unsupported/stale ID is still persisted on a
   // session (so resumes from old DBs don't spin forever).
-  'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
+  'codex-cli': ['gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
   // Grok Build CLI model slugs from `grok models` (2026-06). Keep in sync with
   // client TopBar.jsx and mobile engineOptions.js.
   'grok-cli': ['grok-build', 'grok-composer-2.5-fast'],
@@ -235,14 +235,14 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'gemini-cli': 'gemini-2.5-pro',
-  // Codex: default is gpt-5.5, OpenAI's recommended frontier model and the
+  // Codex: default is gpt-5.6, OpenAI's newest frontier model and the
   // strongest general coding model, accepted under BOTH auth modes (ChatGPT
-  // OAuth and API-key). The prior default gpt-5.3-codex is no longer accepted
-  // under ChatGPT OAuth and was removed from the selectable list. Older IDs
-  // like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max get rejected with
-  // HTTP 400 under ChatGPT OAuth — see diagnosis in AGENTS' kanban card
-  // "Codex not working (round 2)".
-  'codex-cli': 'gpt-5.5',
+  // OAuth and API-key). gpt-5.5 remains selectable. The prior default
+  // gpt-5.3-codex is no longer accepted under ChatGPT OAuth and was removed
+  // from the selectable list. Older IDs like gpt-5.2-codex / gpt-5-codex /
+  // gpt-5.1-codex-max get rejected with HTTP 400 under ChatGPT OAuth — see
+  // diagnosis in AGENTS' kanban card "Codex not working (round 2)".
+  'codex-cli': 'gpt-5.6',
   'grok-cli': 'grok-composer-2.5-fast',
 };
 

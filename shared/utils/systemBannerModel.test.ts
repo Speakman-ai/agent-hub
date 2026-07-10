@@ -7,6 +7,10 @@ describe('systemBannerModel', () => {
     expect(modelPrimaryLabel('gpt-5.5')).toBe('GPT-5.5');
   });
 
+  it('maps gpt-5.6 to GPT-5.6', () => {
+    expect(modelPrimaryLabel('gpt-5.6')).toBe('GPT-5.6');
+  });
+
   it('maps claude-opus-4-8 to Opus 4.8', () => {
     expect(modelPrimaryLabel('claude-opus-4-8')).toBe('Opus 4.8');
   });

@@ -56,7 +56,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
       .expect(200);
     expect(switched.body.engine).toBe('codex-cli');
     // Default codex model per config.ts.
-    expect(switched.body.model).toBe('gpt-5.5');
+    expect(switched.body.model).toBe('gpt-5.6');
 
     // Sanity check: a subsequent `PUT .../model` with the reset-to value
     // round-trips cleanly (the client no longer has a stale mismatched
@@ -64,9 +64,9 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
     // server accepts it).
     const replay = await request
       .put(`/api/sessions/${sessionId}/model`)
-      .send({ model: 'gpt-5.5' })
+      .send({ model: 'gpt-5.6' })
       .expect(200);
-    expect(replay.body.model).toBe('gpt-5.5');
+    expect(replay.body.model).toBe('gpt-5.6');
   });
 
   it('preserves the model on a same-engine PUT (no unnecessary reset)', async () => {
@@ -103,7 +103,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
       .send({ engine: 'codex-cli' })
       .expect(200);
     expect(switched.body.engine).toBe('codex-cli');
-    expect(switched.body.model).toBe('gpt-5.5');
+    expect(switched.body.model).toBe('gpt-5.6');
   });
 
   it('returns 404 when the session does not exist (no silent model write)', async () => {

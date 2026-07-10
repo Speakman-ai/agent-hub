@@ -43,6 +43,7 @@ export interface CodexAuthInfo {
  * filter there.
  */
 export const CODEX_CHATGPT_ALLOWED_MODELS: readonly string[] = [
+  'gpt-5.6',
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',

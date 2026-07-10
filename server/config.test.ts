@@ -286,15 +286,16 @@ describe('config.ts — codex-cli model defaults', () => {
     return (await import('./config.js')).default;
   }
 
-  it('offers exactly the ChatGPT-OAuth-accepted Codex models, default gpt-5.5', async () => {
+  it('offers exactly the ChatGPT-OAuth-accepted Codex models, default gpt-5.6', async () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['codex-cli']).toEqual([
+      'gpt-5.6',
       'gpt-5.5',
       'gpt-5.4',
       'gpt-5.4-mini',
       'gpt-5.2',
     ]);
-    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.5');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6');
   });
 
   it('does NOT offer gpt-5.3-codex — deprecated, rejected under ChatGPT OAuth', async () => {
