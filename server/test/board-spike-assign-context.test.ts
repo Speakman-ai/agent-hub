@@ -57,6 +57,7 @@ function buildApp(card: Partial<KanbanCardRow>, specItem?: KanbanEpicSpecItemRow
     getKanbanColumns: { all: () => [{ id: 'col-prog', name: 'In Progress' }] },
     updateKanbanCard: noop,
     moveKanbanCard: noop,
+    setKanbanCardAssignedUser: noop,
     setKanbanCardAutoMerge: noop,
     createKanbanCardComment: noop,
     getSession: { get: () => sessionRow },

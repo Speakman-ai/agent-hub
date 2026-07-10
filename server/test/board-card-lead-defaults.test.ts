@@ -1,12 +1,12 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import supertest from 'supertest';
 import { v4 as uuidv4 } from 'uuid';
-import { getRequest, createProject } from './helpers.js';
+import { getRequest, createProject, createAgent, createCard } from './helpers.js';
 import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import createBoardRoutes from '../routes/board.js';
-import { getEnrichedAgent, findProject } from '../project-model.js';
+import { getEnrichedAgent, findAgent, findProject } from '../project-model.js';
 import { getStmts } from '../db.js';
 import { setSessionOwner } from '../session-ownership.js';
 import type { AuthenticatedRequest } from '../auth.js';
@@ -83,6 +83,43 @@ function seedOwnedSession(ownerUserId: string): string {
 async function firstColumnId(req: typeof request): Promise<string> {
   const boardRes = await req.get(`/api/projects/${projectId}/board`).expect(200);
   return (boardRes.body as { columns: Array<{ id: string }> }).columns[0]!.id;
+}
+
+/**
+ * Authenticated human caller with real agent lookups wired in, so the
+ * `POST /board/cards/:cardId/assign` dispatch resolves a genuine agent. Mirrors
+ * the UI "Assign" button. `handleChat` is a no-op — we only assert card state.
+ */
+function buildHumanAssignRequest(userId: string, orgId = getActiveOrgId()) {
+  const app = express();
+  app.use(express.json());
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    const authedReq = req as AuthenticatedRequest;
+    authedReq.authUserId = userId;
+    authedReq.authUser = 'lead-default-user';
+    authedReq.authRole = 'User';
+    authedReq.authOrgId = orgId;
+    next();
+  });
+  app.use(
+    createBoardRoutes({
+      findProject,
+      findAgent,
+      getEnrichedAgent,
+      broadcast: () => {},
+      stmts: getStmts(),
+      handleChat: () => Promise.resolve(),
+      lastDispatchedReviewId: new Map(),
+      scheduleAutonomousEpic: () => {},
+      autonomousCrons: new Map(),
+      runAutonomousLoop: () => Promise.resolve(),
+      config: {
+        engineValidModels: { 'claude-code': ['claude-x'] },
+        engineDefaultModels: { 'claude-code': 'claude-x' },
+      },
+    } as unknown as RouteDeps),
+  );
+  return supertest(app);
 }
 
 beforeAll(async () => {
@@ -186,5 +223,71 @@ describe('Card/epic lead defaults', () => {
       .expect(200);
 
     expect((created.body as { assigned_user_id: string | null }).assigned_user_id).toBe(chosen.id);
+  });
+});
+
+describe('Assign-to-agent lead defaults', () => {
+  it('stamps the dispatching user as the card lead when the card has no lead yet', async () => {
+    // Reproduces the support-ticket-converted card in the bug report: created by
+    // a system flow (no acting user → null lead), then dispatched to an agent by
+    // a human. Before the fix the lead stayed null, so the now-in-progress card
+    // never appeared in the dispatcher's "My Work" home pane.
+    const orgId = getActiveOrgId();
+    const dispatcher = createUser({
+      username: `dispatcher-${Date.now()}`,
+      passwordHash: 'scrypt$dead',
+    });
+    createMembership(dispatcher.id, orgId, 'User');
+    const agent = await createAgent({ projectId });
+
+    // Card created with no lead (the default `request` helper carries no
+    // authUserId, so `assigned_user_id` stays null — like a converted ticket).
+    const card = await createCard(projectId, { title: `unowned card ${Date.now()}` });
+    expect((card as { assigned_user_id: string | null }).assigned_user_id).toBeNull();
+
+    const req = buildHumanAssignRequest(dispatcher.id);
+    const res = await req
+      .post(`/api/projects/${projectId}/board/cards/${card.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect((res.body.card as { assigned_user_id: string | null }).assigned_user_id).toBe(
+      dispatcher.id,
+    );
+  });
+
+  it('does not override an existing card lead on assign', async () => {
+    const orgId = getActiveOrgId();
+    const originalLead = createUser({
+      username: `orig-lead-${Date.now()}`,
+      passwordHash: 'scrypt$dead',
+    });
+    const dispatcher = createUser({
+      username: `other-dispatcher-${Date.now()}`,
+      passwordHash: 'scrypt$dead',
+    });
+    createMembership(originalLead.id, orgId, 'User');
+    createMembership(dispatcher.id, orgId, 'User');
+    const agent = await createAgent({ projectId });
+
+    // Card already carries a lead (created by the original lead as a human).
+    const columnId = await firstColumnId(buildHumanAssignRequest(originalLead.id));
+    const created = await buildHumanAssignRequest(originalLead.id)
+      .post(`/api/projects/${projectId}/board/cards`)
+      .send({ title: `led card ${Date.now()}`, columnId, assignedUserId: originalLead.id })
+      .expect(200);
+    expect((created.body as { assigned_user_id: string | null }).assigned_user_id).toBe(
+      originalLead.id,
+    );
+
+    // A different user dispatches it — the original lead must survive.
+    const res = await buildHumanAssignRequest(dispatcher.id)
+      .post(`/api/projects/${projectId}/board/cards/${created.body.id}/assign`)
+      .send({ agentId: agent.id })
+      .expect(200);
+
+    expect((res.body.card as { assigned_user_id: string | null }).assigned_user_id).toBe(
+      originalLead.id,
+    );
   });
 });

@@ -1464,6 +1464,14 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         req.params.cardId,
       );
       stmts.moveKanbanCard.run(inProgressColumnId, 0, req.params.cardId);
+      // If the card has no lead user yet, the person dispatching the work
+      // becomes its lead so the now-in-progress card surfaces in their "My
+      // Work" home pane. Mirrors card-create defaulting the lead to the acting
+      // user (`normalizeAssignedUserForCreate`); an existing lead (e.g. an epic
+      // lead already propagated) is never overridden.
+      if (assignOwnerUid && !card.assigned_user_id) {
+        stmts.setKanbanCardAssignedUser.run(assignOwnerUid, req.params.cardId);
+      }
       recomputeEpicState(stmts, card.epic_id);
 
       // Persist an explicit auto-merge override on the card so it stays visible
