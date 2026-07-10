@@ -46,39 +46,63 @@ type PrTextGenerator = (
 ) => Promise<string>;
 
 /**
- * Default generator: the Claude CLI in print mode with the REQUESTING
- * USER's stored account credentials (same resolution as chat sessions —
- * without it the spawn gets the credential-less host-creds HOME and the
- * CLI answers "Not logged in"). Lazy imports keep this route free of
- * heartbeat's module-load side effects. Tests inject a fake.
+ * Default generator: a one-shot CLI print run with the REQUESTING USER's
+ * stored account credentials (same resolution as chat sessions — without it
+ * the spawn gets the credential-less host-creds HOME and the CLI answers
+ * "Not logged in"). Claude is preferred, but when the user has no Claude
+ * account connected we fall back to whichever agent engine they do have
+ * (Cursor / Codex / Grok) via `resolveOneShotEngine` instead of hard-failing.
+ * Lazy imports keep this route free of the engine modules' load-time side
+ * effects. Tests inject a fake.
  */
 let generatorOverride: PrTextGenerator | null = null;
 export function __setPrTextGeneratorForTests(fn: PrTextGenerator | null): void {
   generatorOverride = fn;
 }
 
-async function generatePrText(
+export async function generatePrText(
   prompt: string,
   systemPrompt: string,
   cwd: string,
   userId: string | null,
 ): Promise<string> {
   if (generatorOverride) return generatorOverride(prompt, systemPrompt, cwd, userId);
-  const [{ runClaude }, { resolveSessionCliSpawnEnv }, { default: config }] = await Promise.all([
-    import('../heartbeat.js'),
+  const [
+    { runOneShotPrompt },
+    { resolveOneShotEngine },
+    { resolveSessionCliSpawnEnv },
+    { default: config },
+  ] = await Promise.all([
+    import('../one-shot-spawn.js'),
+    import('../engine-resolver.js'),
     import('../per-user-cli-spawn.js'),
     import('../config.js'),
   ]);
-  // Throws EngineAuthRequiredError when the user has no Claude account
-  // connected — surfaced as a friendly 400 by the route.
+  // Prefer Claude, but fall back to any agent engine the acting user has
+  // connected. Throws NoEnginesAvailableError when the user has none — the
+  // route surfaces it as a friendly 400. The availability probe keys off the
+  // same per-account creds that `resolveSessionCliSpawnEnv` reads, so the
+  // resolved engine is guaranteed to pass the credential guard below.
+  const resolved = await resolveOneShotEngine(config, { preferred: 'claude-code', userId });
   const spawnEnv = resolveSessionCliSpawnEnv({
     cfg: config,
     ownerId: userId,
     credsOwnerId: userId,
     sessionId: null,
-    engine: 'claude-code',
+    engine: resolved.engine,
   });
-  return runClaude(prompt, cwd, systemPrompt, { timeoutMs: 90_000, spawnEnv });
+  return runOneShotPrompt(
+    {
+      engine: resolved.engine,
+      model: resolved.model,
+      prompt,
+      systemPrompt,
+      cwd,
+      timeoutMs: 90_000,
+      env: spawnEnv,
+    },
+    config,
+  );
 }
 
 /** Parse the model's TITLE:/BODY: response with fallbacks for sloppiness. */
@@ -818,8 +842,12 @@ export default function createPullsNativeRoutes(deps: RouteDeps): Router {
         if (err instanceof Error && err.name === 'EngineAuthRequiredError') {
           return res.status(400).json({
             error:
-              'Your Claude account is not connected — add it under Settings → Account, then try again.',
+              'No AI engine is connected for your account — add Claude, Cursor, Codex, or Grok under Settings → Account, then try again.',
           });
+        }
+        // No engine in the fallback chain was available for this user.
+        if (err instanceof Error && err.name === 'NoEnginesAvailableError') {
+          return res.status(400).json({ error: msg });
         }
         return res.status(502).json({ error: `Generation failed: ${msg.split('\n')[0]}` });
       }
