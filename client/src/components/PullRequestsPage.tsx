@@ -307,27 +307,8 @@ function CommentBlock({ comment }: any) {
   );
 }
 
-function ActivityKindIcon({ kind, check }: any) {
+function ActivityKindIcon({ kind }: any) {
   const common = 'flex-shrink-0 mt-0.5';
-  if (kind === 'check' && check && typeof check === 'object') {
-    const st = String(check.status || '').toLowerCase();
-    const concl = String(check.conclusion || '').toLowerCase();
-    if (st && st !== 'completed') {
-      return <Clock size={16} className={`${common} text-yellow-400`} aria-hidden />;
-    }
-    if (
-      concl === 'failure' ||
-      concl === 'timed_out' ||
-      concl === 'cancelled' ||
-      concl === 'action_required'
-    ) {
-      return <XCircle size={16} className={`${common} text-red-400`} aria-hidden />;
-    }
-    if (concl === 'success' || concl === 'skipped' || concl === 'neutral') {
-      return <CheckCircle2 size={16} className={`${common} text-emerald-400`} aria-hidden />;
-    }
-    return <AlertCircle size={16} className={`${common} text-gray-400`} aria-hidden />;
-  }
   switch (kind) {
     case 'opened':
       return <GitPullRequest size={16} className={`${common} text-blue-400`} aria-hidden />;
@@ -339,8 +320,6 @@ function ActivityKindIcon({ kind, check }: any) {
       return <Eye size={16} className={`${common} text-amber-400`} aria-hidden />;
     case 'comment':
       return <MessageSquare size={16} className={`${common} text-sky-400`} aria-hidden />;
-    case 'check':
-      return <AlertCircle size={16} className={`${common} text-gray-400`} aria-hidden />;
     default:
       return <AlertCircle size={16} className={`${common} text-gray-500`} aria-hidden />;
   }
@@ -388,27 +367,6 @@ function ActivityTimelineRow({ item }: any) {
   if (k === 'comment' && item.comment) {
     return <CommentBlock comment={item.comment} />;
   }
-  if (k === 'check' && item.check) {
-    const chk = item.check;
-    const label = (chk.conclusion || chk.status || '').toLowerCase();
-    const RowTag = chk.html_url ? 'a' : 'div';
-    const rowProps = chk.html_url
-      ? { href: chk.html_url, target: '_blank', rel: 'noopener noreferrer' }
-      : {};
-    return (
-      <RowTag
-        {...rowProps}
-        className={`block rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm ${
-          chk.html_url ? 'hover:bg-gray-800/50 transition-colors' : ''
-        }`}
-      >
-        <span className="font-medium text-gray-200">CI check</span>
-        <span className="text-gray-400"> — {chk.name || 'unnamed'}</span>
-        {label ? <span className="text-gray-500"> · {label}</span> : null}
-        {time ? <span className="text-gray-600"> · {time}</span> : null}
-      </RowTag>
-    );
-  }
   return null;
 }
 
@@ -421,10 +379,7 @@ function PrActivityTimeline({ pr, detail }: any) {
     <ul className="space-y-4">
       {activity.map((item: any) => (
         <li key={item.id} className="flex gap-3">
-          <ActivityKindIcon
-            kind={item.kind}
-            check={item.kind === 'check' ? item.check : undefined}
-          />
+          <ActivityKindIcon kind={item.kind} />
           <div className="flex-1 min-w-0">
             <ActivityTimelineRow item={item} />
           </div>
@@ -1011,8 +966,8 @@ function PrDetail({
 
         <SectionHeader>Activity</SectionHeader>
         <p className="text-xs text-gray-500 mb-3">
-          Chronological history{isNative ? '' : ' from GitHub'} (open/merge/close, checks, reviews,
-          and comments).
+          Chronological history{isNative ? '' : ' from GitHub'} (open/merge/close, reviews, and
+          comments).
         </p>
         <PrActivityTimeline pr={pr} detail={detail} />
 

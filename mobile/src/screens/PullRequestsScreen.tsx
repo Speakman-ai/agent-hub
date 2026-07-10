@@ -105,9 +105,7 @@ function PrActivityBlock({ pr, detail, styles }: any) {
                             ? 'R'
                             : item.kind === 'comment'
                                 ? 'C'
-                                : item.kind === 'check'
-                                    ? '\u2713'
-                                    : '\u2022'}
+                                : '\u2022'}
           </Text>
           <View style={styles.activityBody}>
             <ActivityRowBody item={item} styles={styles}/>
@@ -173,18 +171,6 @@ function ActivityRowBody({ item, styles }: any) {
             {c.body}
           </Text>) : null}
       </View>);
-    }
-    if (k === 'check' && item.check) {
-        const chk = item.check;
-        const lbl = (chk.conclusion || chk.status || '').toLowerCase();
-        return (<TouchableOpacity style={styles.activityCheckCard} onPress={() => chk.html_url && Linking.openURL(chk.html_url)} disabled={!chk.html_url}>
-        <Text style={styles.activityLine}>
-          <Text style={styles.activityStrong}>CI check</Text>
-          <Text style={styles.activityMuted}> — {chk.name || 'unnamed'}</Text>
-          {lbl ? <Text style={styles.activityMuted}> · {lbl}</Text> : null}
-          {time ? <Text style={styles.activityMuted}> · {time}</Text> : null}
-        </Text>
-      </TouchableOpacity>);
     }
     return null;
 }
@@ -324,7 +310,7 @@ function PrDetail({ detail, projectId, onBack, onRefresh, refreshing, onResolve,
 
       <Text style={styles.activitySectionHeader}>Activity</Text>
       <Text style={styles.activitySub}>
-        Chronological history from GitHub (open/merge/close, checks, reviews, and issue comments).
+        Chronological history from GitHub (open/merge/close, reviews, and issue comments).
       </Text>
       <PrActivityBlock detail={detail} pr={pr} styles={styles}/>
 
@@ -932,13 +918,6 @@ const styles = StyleSheet.create({
     activityMuted: {
         color: colors.gray500,
         fontSize: 13,
-    },
-    activityCheckCard: {
-        padding: 10,
-        backgroundColor: colors.gray900,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: colors.gray800,
     },
     summaryStrip: {
         flexDirection: 'row',

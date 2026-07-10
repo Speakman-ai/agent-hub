@@ -290,6 +290,19 @@ describe('buildPrActivityTimeline', () => {
             checks: [{ id: 30, name: 'CI', status: 'completed', conclusion: 'success', completed_at: t0 }],
         };
         const out = buildPrActivityTimeline(pr, detail);
-        expect(out.map((x: any) => x.kind)).toEqual(['opened', 'check', 'comment', 'review', 'merged']);
+        expect(out.map((x: any) => x.kind)).toEqual(['opened', 'comment', 'review', 'merged']);
+    });
+
+    it('excludes CI check runs from the activity timeline', () => {
+        const t0 = '2026-05-01T10:00:00Z';
+        const pr = { created_at: t0, user: 'bob' };
+        const detail = {
+            reviews: [],
+            comments: [],
+            checks: [{ id: 30, name: 'CI', status: 'completed', conclusion: 'success', completed_at: t0 }],
+        };
+        const out = buildPrActivityTimeline(pr, detail);
+        expect(out.some((x: any) => x.kind === 'check')).toBe(false);
+        expect(out.map((x: any) => x.kind)).toEqual(['opened']);
     });
 });

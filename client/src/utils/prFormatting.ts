@@ -607,26 +607,8 @@ export function buildPrActivityTimeline(pr: any, detail: any) {
     });
   }
 
-  const checks = Array.isArray(detail?.checks) ? detail.checks : [];
-  checks.forEach((chk: any, i: any) => {
-    const raw = /** @type {Record<string, unknown>} */ chk;
-    const completed = prActivityAtMs(/** @type {string|undefined} */ raw.completed_at);
-    const started = prActivityAtMs(/** @type {string|undefined} */ raw.started_at);
-    const ms = completed ?? started;
-    if (ms === null) return;
-    const at =
-      (typeof raw.completed_at === 'string' && completed !== null
-        ? raw.completed_at
-        : raw.started_at) || null;
-    const cid = raw.id != null && String(raw.id) !== '' ? String(raw.id) : `idx-${i}`;
-    items.push({
-      id: `check-${cid}-${ms}`,
-      kind: 'check',
-      at,
-      atMs: ms,
-      check: raw,
-    });
-  });
+  // CI check runs are intentionally excluded from this timeline — the dedicated
+  // "CI Checks" section already surfaces them, so echoing them here is redundant.
 
   if (pr?.merged_at) {
     const m = prActivityAtMs(pr.merged_at);
@@ -650,7 +632,7 @@ export function buildPrActivityTimeline(pr: any, detail: any) {
     }
   }
 
-  const kindOrder = { opened: 0, check: 1, comment: 2, review: 3, merged: 4, closed: 5 } as Record<
+  const kindOrder = { opened: 0, comment: 1, review: 2, merged: 3, closed: 4 } as Record<
     string,
     any
   >;
