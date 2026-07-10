@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
 import { api } from '../utils/api';
+import { nonDoneEpicsForFilter } from '../utils/epics';
 import {
   applySnapshot,
   deleteFilterSet,
@@ -49,6 +50,8 @@ type SidebarEpic = {
   name: string;
   color?: string;
   autonomous?: number;
+  /** Derived lifecycle from linked cards. Null means the epic has no linked cards. */
+  state?: 'not_started' | 'in_progress' | 'done' | null;
 };
 
 export default function KanbanSidebarEpicsPanel({
@@ -98,6 +101,13 @@ export default function KanbanSidebarEpicsPanel({
       cancelled = true;
     };
   }, [projectId, refreshKey]);
+
+  // Only surface non-done epics in the filter list. A done epic is still shown
+  // if it is currently selected, so an active filter chip stays deselectable.
+  const visibleEpics = useMemo(
+    () => nonDoneEpicsForFilter(epics, selectedEpicIds) as SidebarEpic[],
+    [epics, selectedEpicIds],
+  );
 
   const filteredLabels = useMemo(() => {
     const q = labelSearch.trim().toLowerCase();
@@ -348,13 +358,13 @@ export default function KanbanSidebarEpicsPanel({
         ) : null}
       </div>
 
-      {epics.length > 0 ? (
+      {visibleEpics.length > 0 ? (
         <div
           className="mb-4 px-1 max-h-[180px] overflow-y-auto kanban-column-scroll rounded-xl border border-white/[0.06] bg-white/[0.02] p-1.5"
           data-testid="kanban-sidebar-epic-list"
         >
           <div className="flex flex-col gap-1">
-            {epics.map((epic) => {
+            {visibleEpics.map((epic) => {
               const active = selectedEpicIds.has(epic.id);
               return (
                 <button
@@ -388,7 +398,7 @@ export default function KanbanSidebarEpicsPanel({
         </div>
       ) : (
         <div className="mb-4 px-3 py-2 text-xs text-gray-500 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-          No epics on the board yet.
+          {epics.length > 0 ? 'No active epics to filter by.' : 'No epics on the board yet.'}
         </div>
       )}
 

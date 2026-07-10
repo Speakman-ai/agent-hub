@@ -92,6 +92,23 @@ export function epicsWithActiveCards(epics: any, countFor: any, selectedEpicId: 
 }
 
 /**
+ * Filter the epics shown in the board's sidebar epic filter (multi-select) so
+ * Done epics drop out of the picker. Any epic whose id is in `selectedEpicIds`
+ * is always kept visible even when Done, so an active filter chip stays
+ * deselectable. Unlike `epicsWithActiveCards` this does not depend on card
+ * counts — the sidebar panel only asks "is this epic still active?".
+ *
+ * @param {Array} epics - epic rows from the board payload (carry `state`)
+ * @param {Set<string>|Iterable<string>} selectedEpicIds - currently filtered epic ids
+ */
+export function nonDoneEpicsForFilter(epics: any, selectedEpicIds: any = new Set()) {
+  if (!Array.isArray(epics)) return [];
+  const selected =
+    selectedEpicIds instanceof Set ? selectedEpicIds : new Set(selectedEpicIds || []);
+  return epics.filter((e: any) => e.state !== 'done' || selected.has(e.id));
+}
+
+/**
  * POST /board/epics only accepts name, description, color. Autonomous
  * settings are applied via a follow-up PUT if needed.
  */

@@ -73,6 +73,62 @@ describe('KanbanSidebarEpicsPanel', () => {
     expect(within(panel).getByTestId('kanban-sidebar-label-list')).toBeInTheDocument();
   });
 
+  it('hides done epics from the filter list but keeps selected done epics', async () => {
+    (api.getEpics as any).mockResolvedValueOnce([
+      { id: 'e1', name: 'Platform', color: '#6366F1', autonomous: 0, state: 'in_progress' },
+      { id: 'e2', name: 'Mobile', color: '#22C55E', autonomous: 1, state: 'done' },
+      { id: 'e3', name: 'Shipped', color: '#EF4444', autonomous: 0, state: 'done' },
+    ]);
+
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set(['e3'])}
+        onSelectedEpicIdsChange={vi.fn()}
+        availableLabels={['bug']}
+        selectedLabels={new Set()}
+        onSelectedLabelsChange={vi.fn()}
+      />,
+    );
+
+    const panel = screen.getByTestId('kanban-sidebar-epics-panel');
+    await waitFor(() =>
+      expect(within(panel).getByTestId('kanban-sidebar-epic-e1')).toBeInTheDocument(),
+    );
+
+    // Active epic is shown; unselected done epic is hidden; selected done epic stays visible.
+    expect(within(panel).getByTestId('kanban-sidebar-epic-e1')).toBeInTheDocument();
+    expect(within(panel).queryByTestId('kanban-sidebar-epic-e2')).not.toBeInTheDocument();
+    expect(within(panel).getByTestId('kanban-sidebar-epic-e3')).toBeInTheDocument();
+  });
+
+  it('shows an "active epics" empty state when every epic is done', async () => {
+    (api.getEpics as any).mockResolvedValueOnce([
+      { id: 'e1', name: 'Done A', color: '#6366F1', autonomous: 0, state: 'done' },
+    ]);
+
+    render(
+      <KanbanSidebarEpicsPanel
+        projectId="p1"
+        searchQuery=""
+        onSearchChange={vi.fn()}
+        selectedEpicIds={new Set()}
+        onSelectedEpicIdsChange={vi.fn()}
+        availableLabels={['bug']}
+        selectedLabels={new Set()}
+        onSelectedLabelsChange={vi.fn()}
+      />,
+    );
+
+    const panel = screen.getByTestId('kanban-sidebar-epics-panel');
+    await waitFor(() =>
+      expect(within(panel).getByText('No active epics to filter by.')).toBeInTheDocument(),
+    );
+    expect(within(panel).queryByTestId('kanban-sidebar-epic-list')).not.toBeInTheDocument();
+  });
+
   it('toggles lead user multi-select', () => {
     const onSelectedUserIdsChange = vi.fn();
     render(

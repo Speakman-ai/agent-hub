@@ -3,6 +3,7 @@ import {
   epicFormToUpdateBody,
   epicFormToCreateBody,
   epicsWithActiveCards,
+  nonDoneEpicsForFilter,
   phaseFormToUpdateBody,
   autonomousModelOptions,
   defaultAutonomousModel,
@@ -55,6 +56,49 @@ describe('epicsWithActiveCards', () => {
 
   it('returns an empty array for a non-array input', () => {
     expect(epicsWithActiveCards(null, countFor, null)).toEqual([]);
+  });
+});
+
+describe('nonDoneEpicsForFilter', () => {
+  const epics = [
+    { id: 'e1', name: 'Platform', state: 'in_progress' },
+    { id: 'e2', name: 'Mobile', state: 'not_started' },
+    { id: 'e3', name: 'Legacy', state: null },
+    { id: 'e4', name: 'Complete', state: 'done' },
+    { id: 'e5', name: 'Shipped', state: 'done' },
+  ];
+
+  it('drops done epics from the board sidebar filter', () => {
+    expect(nonDoneEpicsForFilter(epics).map((e: any) => e.id)).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  it('keeps a done epic that is currently selected so its chip stays deselectable', () => {
+    expect(nonDoneEpicsForFilter(epics, new Set(['e4'])).map((e: any) => e.id)).toEqual([
+      'e1',
+      'e2',
+      'e3',
+      'e4',
+    ]);
+  });
+
+  it('accepts an iterable of selected ids, not just a Set', () => {
+    expect(nonDoneEpicsForFilter(epics, ['e5']).map((e: any) => e.id)).toEqual([
+      'e1',
+      'e2',
+      'e3',
+      'e5',
+    ]);
+  });
+
+  it('treats epics without a state as active', () => {
+    expect(nonDoneEpicsForFilter([{ id: 'x', name: 'No state' }]).map((e: any) => e.id)).toEqual([
+      'x',
+    ]);
+  });
+
+  it('returns an empty array for a non-array input', () => {
+    expect(nonDoneEpicsForFilter(null)).toEqual([]);
+    expect(nonDoneEpicsForFilter(undefined)).toEqual([]);
   });
 });
 
