@@ -14,6 +14,8 @@ const MODEL_KNOWN_LABELS: Record<string, string> = {
   // Retired from selection; label retained for historical sessions.
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'composer-2.5': 'Composer 2.5',
+  // Retired from selection (rejected under ChatGPT OAuth); labels retained for
+  // historical sessions.
   'gpt-5.3-codex': 'GPT-5.3 Codex',
   'gpt-5.6': 'GPT-5.6',
   'gpt-5.5': 'GPT-5.5',

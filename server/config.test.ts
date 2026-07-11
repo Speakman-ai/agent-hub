@@ -18,6 +18,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { shouldPassModelFlag, CODEX_CHATGPT_ALLOWED_MODELS } from './codex-auth.js';
 import { fileURLToPath } from 'url';
 
 const originalEnv = { ...process.env };
@@ -286,16 +287,37 @@ describe('config.ts — codex-cli model defaults', () => {
     return (await import('./config.js')).default;
   }
 
-  it('offers exactly the ChatGPT-OAuth-accepted Codex models, default gpt-5.6', async () => {
+  it('offers exactly the ChatGPT-OAuth-accepted Codex models, default gpt-5.5', async () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['codex-cli']).toEqual([
-      'gpt-5.6',
       'gpt-5.5',
       'gpt-5.4',
       'gpt-5.4-mini',
       'gpt-5.2',
     ]);
-    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.5');
+  });
+
+  it('does NOT offer gpt-5.6 — rejected under ChatGPT OAuth, unknown to codex-cli', async () => {
+    // Regression: gpt-5.6 was briefly the default but the ChatGPT backend
+    // rejects it (HTTP 400 "not supported when using Codex with a ChatGPT
+    // account") and the installed codex-cli can't resolve its metadata, so a
+    // default of gpt-5.6 broke every ChatGPT-account Codex session. It must not
+    // be selectable or the default.
+    const cfg = await importDefaults();
+    expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.6');
+    expect(cfg.engineDefaultModels['codex-cli']).not.toBe('gpt-5.6');
+  });
+
+  it('the codex default model is forwardable under ChatGPT OAuth (would have caught the gpt-5.6 bug)', async () => {
+    // Root-cause invariant behind support ticket "5.6 not working": the codex
+    // default was gpt-5.6, which is NOT in CODEX_CHATGPT_ALLOWED_MODELS, so every
+    // ChatGPT-account session on the default forwarded `--model gpt-5.6` and got
+    // an HTTP 400. The default must always be a model the ChatGPT backend accepts.
+    const cfg = await importDefaults();
+    const codexDefault = cfg.engineDefaultModels['codex-cli'];
+    expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain(codexDefault);
+    expect(shouldPassModelFlag('chatgpt', codexDefault)).toBe(true);
   });
 
   it('does NOT offer gpt-5.3-codex — deprecated, rejected under ChatGPT OAuth', async () => {

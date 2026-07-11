@@ -43,7 +43,11 @@ export interface CodexAuthInfo {
  * filter there.
  */
 export const CODEX_CHATGPT_ALLOWED_MODELS: readonly string[] = [
-  'gpt-5.6',
+  // NOTE: gpt-5.6 is intentionally absent. The ChatGPT backend rejects it with
+  // HTTP 400 ("not supported when using Codex with a ChatGPT account") and the
+  // installed codex-cli warns it can't find its metadata, so a persisted/stale
+  // gpt-5.6 session must drop --model and fall back to the ChatGPT default
+  // rather than forward an ID that spins forever.
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',

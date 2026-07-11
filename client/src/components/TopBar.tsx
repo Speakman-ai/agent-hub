@@ -35,6 +35,8 @@ const MODEL_LABELS = {
   // render a clean label instead of a title-cased id.
   'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
   'composer-2.5': { label: 'Composer 2.5', short: 'Composer 2.5' },
+  // gpt-5.3-codex / gpt-5.6 retired from selection (rejected under ChatGPT
+  // OAuth); labels retained so historical sessions render cleanly.
   'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
   'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },
   'gpt-5.5': { label: 'GPT-5.5', short: '5.5' },
@@ -56,7 +58,7 @@ function modelDisplay(id: any) {
 
 function fallbackModelsForEngine(engine: any) {
   if (engine === 'cursor-agent') return ['composer-2.5'];
-  if (engine === 'codex-cli') return ['gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
+  if (engine === 'codex-cli') return ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
   if (engine === 'grok-cli') return ['grok-composer-2.5-fast', 'grok-build'];
   return [
     'claude-fable-5',

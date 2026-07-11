@@ -212,16 +212,19 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   //   ChatGPT account." (HTTP 400, surfaced as a `turn.failed` JSONL event).
   // Empirically the following fail under ChatGPT:
   //   gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max,
-  //   gpt-5.3-codex-spark (Pro-only research preview), and — as of June 2026 —
-  //   gpt-5.3-codex itself (no longer accepted under ChatGPT OAuth; removed
-  //   from the selectable list, though its display label is retained for
-  //   historical sessions in TopBar.jsx / systemBannerModel.js).
+  //   gpt-5.3-codex-spark (Pro-only research preview), gpt-5.3-codex (no longer
+  //   accepted as of June 2026), and gpt-5.6 (as of July 2026: rejected with the
+  //   same HTTP 400, and the installed codex-cli doesn't even recognize it,
+  //   warning "Model metadata for 'gpt-5.6' not found"). gpt-5.6 was removed
+  //   from the selectable list and is no longer the default; its display label
+  //   is retained for historical sessions in systemBannerModel.ts.
   // These currently succeed under ChatGPT OAuth and are the only IDs we
-  // allow the UI to select. Keep in sync with client/src/components/TopBar.jsx
-  // and mobile/src/utils/engineOptions.js. Runtime guard in chat.ts will
-  // drop --model when an unsupported/stale ID is still persisted on a
-  // session (so resumes from old DBs don't spin forever).
-  'codex-cli': ['gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
+  // allow the UI to select. The client (TopBar) and mobile (engineOptions) read
+  // this list from GET /api/config/models, so there is nothing to hand-sync
+  // there. Runtime guard in chat.ts will drop --model when an unsupported/stale
+  // ID is still persisted on a session (so resumes from old DBs do not spin
+  // forever).
+  'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
   // Grok Build CLI model slugs from `grok models` (2026-06). Keep in sync with
   // client TopBar.jsx and mobile engineOptions.js.
   'grok-cli': ['grok-build', 'grok-composer-2.5-fast'],
@@ -235,14 +238,14 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'gemini-cli': 'gemini-2.5-pro',
-  // Codex: default is gpt-5.6, OpenAI's newest frontier model and the
-  // strongest general coding model, accepted under BOTH auth modes (ChatGPT
-  // OAuth and API-key). gpt-5.5 remains selectable. The prior default
-  // gpt-5.3-codex is no longer accepted under ChatGPT OAuth and was removed
-  // from the selectable list. Older IDs like gpt-5.2-codex / gpt-5-codex /
-  // gpt-5.1-codex-max get rejected with HTTP 400 under ChatGPT OAuth — see
-  // diagnosis in AGENTS' kanban card "Codex not working (round 2)".
-  'codex-cli': 'gpt-5.6',
+  // Codex: default is gpt-5.5, the strongest general coding model accepted
+  // under BOTH auth modes (ChatGPT OAuth and API-key). The prior default
+  // gpt-5.6 turned out to be rejected under ChatGPT OAuth (HTTP 400, "not
+  // supported when using Codex with a ChatGPT account") and unknown to the
+  // installed codex-cli, so it was removed from selection just like the earlier
+  // gpt-5.3-codex. Older IDs like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max
+  // are likewise rejected with HTTP 400 under ChatGPT OAuth.
+  'codex-cli': 'gpt-5.5',
   'grok-cli': 'grok-composer-2.5-fast',
 };
 

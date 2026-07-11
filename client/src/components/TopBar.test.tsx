@@ -154,8 +154,10 @@ describe('<TopBar /> engine picker', () => {
     // gpt-5-codex, gpt-5.2-codex, and gpt-5.1-codex-max — all rejected with
     // HTTP 400 under ChatGPT OAuth. The current allowlist must only offer
     // models the ChatGPT backend accepts. As of June 2026 gpt-5.3-codex is
-    // also no longer accepted under ChatGPT OAuth and must NOT be selectable.
-    // Keep in sync with server/config.ts → engineValidModels['codex-cli'].
+    // also no longer accepted under ChatGPT OAuth, and as of July 2026 gpt-5.6
+    // is likewise rejected (and unknown to the installed codex-cli) — neither
+    // must be selectable. Keep in sync with server/config.ts →
+    // engineValidModels['codex-cli'].
     renderTopBar({ sessionEngine: 'codex-cli', sessionModel: 'gpt-5.5' });
     const trigger = screen.getByRole('button', { name: /select engine/i });
     expect((trigger as any).textContent).toMatch(/Codex/);
@@ -163,12 +165,12 @@ describe('<TopBar /> engine picker', () => {
     const modelTrigger = screen.getByTitle(/^Model: /);
     fireEvent.click(modelTrigger as any);
     // Present:
-    expect(screen.getAllByText(/^GPT-5.6$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^GPT-5.5$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^GPT-5.4$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/GPT-5.4 Mini/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^GPT-5.2$/).length).toBeGreaterThan(0);
     // Absent (deprecated / rejected under ChatGPT OAuth):
+    expect(screen.queryByText(/^GPT-5.6$/)).toBeNull();
     expect(screen.queryByText(/GPT-5.3 Codex/)).toBeNull();
     expect(screen.queryByText(/GPT-5.2 Codex/)).toBeNull();
     expect(screen.queryByText(/GPT-5.1 Codex Max/)).toBeNull();

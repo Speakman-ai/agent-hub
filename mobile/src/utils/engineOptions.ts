@@ -21,18 +21,18 @@ export const ENGINE_MODELS: Record<string, any> = {
     ],
     'cursor-agent': [{ id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' }],
     // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
-    // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) are rejected
-    // with HTTP 400 by the ChatGPT backend. Keep in sync with server/config.ts
-    // and client/src/components/TopBar.jsx.
+    // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) plus gpt-5.3-codex
+    // and gpt-5.6 are rejected with HTTP 400 by the ChatGPT backend. This is only
+    // the offline fallback; the live list comes from GET /api/config/models. Keep
+    // in sync with server/config.ts → engineValidModels['codex-cli'].
     'codex-cli': [
-        { id: 'gpt-5.6', label: 'GPT-5.6', short: '5.6' },
         { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
         { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
         { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
         { id: 'gpt-5.2', label: 'GPT-5.2', short: '5.2' },
     ],
-    // Grok Build CLI — xAI. Keep in sync with server/config.ts and
-    // client/src/components/TopBar.jsx.
+    // Grok Build CLI — xAI. Keep in sync with server/config.ts →
+    // engineValidModels['grok-cli'].
     'grok-cli': [
         { id: 'grok-composer-2.5-fast', label: 'Composer 2.5 Fast', short: 'Composer' },
         { id: 'grok-build', label: 'Grok Build', short: 'Build' },
@@ -41,7 +41,7 @@ export const ENGINE_MODELS: Record<string, any> = {
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
     'claude-code': 'claude-opus-4-8',
     'cursor-agent': 'composer-2.5',
-    'codex-cli': 'gpt-5.6',
+    'codex-cli': 'gpt-5.5',
     'grok-cli': 'grok-composer-2.5-fast',
 };
 // Display labels for models that are no longer selectable but may still appear
@@ -52,6 +52,9 @@ export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
 // (selectable) in client/src/components/TopBar.tsx.
 export const HISTORICAL_MODEL_LABELS: Record<string, { label: string; short: string }> = {
     'claude-sonnet-4-6': { label: 'Sonnet 4.6', short: 'Sonnet 4.6' },
+    // Retired from selection (rejected under ChatGPT OAuth).
+    'gpt-5.3-codex': { label: 'GPT-5.3 Codex', short: '5.3 Codex' },
+    'gpt-5.6': { label: 'GPT-5.6', short: '5.6' },
 };
 export function modelDisplay(id: any) {
     const known = Object.values(ENGINE_MODELS)
