@@ -8,6 +8,7 @@ import request from 'supertest';
 import { tmpdir } from 'os';
 import { mkdtempSync } from 'fs';
 import path from 'path';
+import type { CodexModelsCache } from '../codex-model-capability.js';
 import type { RouteDeps, Project, Agent } from '../types.js';
 
 const mockConfig = {
@@ -36,6 +37,16 @@ vi.mock('../config.js', async () => {
       mockConfig.engineDefaultModels[engine as keyof typeof mockConfig.engineDefaultModels] ??
       mockConfig.defaultModel,
   };
+});
+
+const { readCodexModelsCacheForUser } = vi.hoisted(() => ({
+  readCodexModelsCacheForUser: vi.fn<() => CodexModelsCache | null>(() => null),
+}));
+vi.mock('../codex-model-capability.js', async () => {
+  const actual = await vi.importActual<typeof import('../codex-model-capability.js')>(
+    '../codex-model-capability.js',
+  );
+  return { ...actual, readCodexModelsCacheForUser };
 });
 
 let TMP_DIR = '';
@@ -117,8 +128,10 @@ describe('POST /api/agents/bulk-engine — per-user overrides', () => {
       saveProjects: vi.fn(),
       ensureProjectRoom: vi.fn(),
       getProjects: () => projects,
-      config: mockConfig,
+      config: { ...mockConfig, dataDir: '/tmp/data' },
     } as unknown as RouteDeps;
+
+    readCodexModelsCacheForUser.mockReturnValue(null);
   });
 
   function mount(authUserId: string): Express {
@@ -161,6 +174,23 @@ describe('POST /api/agents/bulk-engine — per-user overrides', () => {
 
     expect(res.body.model).toBe('gpt-5.5');
     expect(getUserPreferencesRow(userId).agentModelOverrides?.['a-shared']).toBe('gpt-5.5');
+  });
+
+  it('accepts a capability-gated codex model advertised by the caller cache', async () => {
+    readCodexModelsCacheForUser.mockReturnValue({
+      clientVersion: '0.144.0',
+      modelSlugs: new Set(['gpt-5.6-sol', 'gpt-5.5']),
+      path: '/tmp/models_cache.json',
+    });
+    const app = mount(userId);
+    const res = await request(app)
+      .post('/api/agents/bulk-engine')
+      .send({ engine: 'codex-cli', model: 'gpt-5.6-sol' })
+      .expect(200);
+
+    expect(res.body).toMatchObject({ updated: 1, engine: 'codex-cli', model: 'gpt-5.6-sol' });
+    expect(readCodexModelsCacheForUser).toHaveBeenCalledWith(userId, '/tmp/data');
+    expect(getUserPreferencesRow(userId).agentModelOverrides?.['a-shared']).toBe('gpt-5.6-sol');
   });
 
   it('returns 401 without authUserId', async () => {

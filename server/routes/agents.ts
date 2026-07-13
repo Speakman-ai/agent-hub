@@ -17,6 +17,10 @@ import { getUserPreferencesRow, mergeUserPreferencesJson } from '../user-prefere
 import { resolveOwnerUserId } from '../session-ownership.js';
 import { defaultHeartbeatOwnerUserId } from '../heartbeat-ownership.js';
 import {
+  readCodexModelsCacheForUser,
+  resolveSelectableCodexModels,
+} from '../codex-model-capability.js';
+import {
   CreateAgentRequestSchema,
   UpdateAgentRequestSchema,
   BulkEngineRequestSchema,
@@ -229,7 +233,12 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
         error: `Invalid or missing engine. Must be one of: ${engines.join(', ')}`,
       });
     }
-    const allowed = deps.config.engineValidModels[engine] || [];
+    const staticAllowed = deps.config.engineValidModels[engine] || [];
+    let allowed = staticAllowed;
+    if (engine === 'codex-cli') {
+      const codexCache = readCodexModelsCacheForUser(userId, deps.config.dataDir);
+      allowed = resolveSelectableCodexModels(staticAllowed, codexCache);
+    }
     let resolved = defaultModelForEngine(engine);
     if (model && allowed.includes(model)) {
       resolved = model;
