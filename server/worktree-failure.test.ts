@@ -11,6 +11,15 @@ describe('buildWorktreeFailureMessage', () => {
     expect(body).toContain('Edits will land in the project checkout');
     expect(body).toContain('push the branch and open the PR manually');
   });
+
+  it('adds a classified likely-cause and prevention hint', () => {
+    const body = buildWorktreeFailureMessage(
+      'fatal: Authentication failed for https://github.com/acme/private.git',
+    );
+    expect(body).toContain('Likely cause:');
+    expect(body).toContain('How to prevent it:');
+    expect(body).toContain('Settings → GitHub');
+  });
 });
 
 describe('handleWorktreeFailure', () => {

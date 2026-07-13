@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { BroadcastFn, MessageRow, Stmts } from './types.js';
+import { classifyWorktreeFailure } from './worktree-failure-cause.js';
 
 // ─── Worktree-creation failure handler ───────────────────────────────────────
 //
@@ -32,10 +33,14 @@ type CardRow = { id: string; board_id: string };
 type BoardRow = { id: string; project_id: string };
 
 export function buildWorktreeFailureMessage(errorMessage: string): string {
+  const { reason, prevention } = classifyWorktreeFailure(errorMessage);
   return [
     '**Worktree creation failed — auto-PR is disabled for this session.**',
     '',
     `Error: ${errorMessage}`,
+    '',
+    `Likely cause: ${reason}`,
+    `How to prevent it: ${prevention}`,
     '',
     'Effect:',
     '- Edits will land in the project checkout, not an isolated worktree.',
