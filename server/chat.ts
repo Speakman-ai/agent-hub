@@ -8,11 +8,7 @@ import { trackChild, killProcessGroup } from './process-groups.js';
 import { createStreamParser } from './stream-parser.js';
 import { shouldPersistStreamEvent } from './benign-stream-events.js';
 import { clampPayload } from './session-events-store.js';
-import config, {
-  buildSpawnEnv,
-  resolveAgentHubApiBaseForSpawn,
-  resolveGrokSpawnModel,
-} from './config.js';
+import config, { resolveAgentHubApiBaseForSpawn, resolveGrokSpawnModel } from './config.js';
 import { resolveSessionCliSpawnEnv, EngineAuthRequiredError } from './per-user-cli-spawn.js';
 import { resolveEffectiveEngineAndModel, resolveEffectiveModel } from './effective-model.js';
 import {
@@ -5191,8 +5187,9 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
 
                   reconcileMemoryAfterSession(project.ahw, summary, {
                     cfg: config,
-                    spawnEnv: buildSpawnEnv(config),
+                    spawnEnv: sessionCliEnv,
                     cwd: project.cwd,
+                    spawnOwnerUserId: ownerId,
                   }).catch((err: unknown) => {
                     const message = err instanceof Error ? err.message : String(err);
                     console.error('[Memory Reconciliation] Post-session failed:', message);
