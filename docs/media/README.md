@@ -1,28 +1,24 @@
 # README media — shot list & capture runbook
 
-The top-level `README.md` links here for the product walkthrough (annotated UI
-screenshots + a short demo GIF). **Capturing these requires a running Agent Hub
-instance with representative demo data and a human to drive it** — preview boot
-inside Agent Hub is human-only, so an autonomous agent cannot produce these
-assets. They are tracked as a human follow-up rather than committed as broken
-image links.
+The top-level `README.md` embeds the screenshots in this directory. The stills
+below are captured and committed; a short demo GIF is still an open follow-up.
 
-When capturing, drop the files into this directory and reference them from the
-**Screenshots & demo** section of `README.md` (e.g.
-`![Kanban board](docs/media/kanban.png)`), replacing the interim
-"run it locally" note.
+When adding or replacing a shot, drop the file here and reference it from
+`README.md` (e.g. `![Kanban board](docs/media/kanban.png)`).
 
-## Required shots
+## Shots
 
-| File           | View (web client)                          | What it should show                                                 | Notes                        |
-| -------------- | ------------------------------------------ | ------------------------------------------------------------------- | ---------------------------- |
-| `hero.png`     | Dashboard / project home (`DashboardView`) | Web client dashboard / project home, dark theme                     | Above-the-fold hero          |
-| `chat.png`     | `chat` view                                | Live agent chat with a streaming response                           | Show the engine picker       |
-| `kanban.png`   | `kanban` view                              | A project kanban board with epics + an autonomously dispatched card | Core "issue tracking" claim  |
-| `finalize.png` | `finalize` panel (open from a session)     | Finalize Code Changes panel mid-run on an isolated CI runner        | Core "CI gating" claim       |
-| `replay.png`   | `replays` view                             | Session replay / RUM timeline with a frustration signal             | Replaces LogRocket/FullStory |
-| `wiki.png`     | `wiki` view                                | Wiki page with FTS5 search results                                  | Knowledge base               |
-| `demo.gif`     | kanban → chat/session → finalize           | The kanban → autonomous dispatch → Finalize loop, ~15–25s           | Headline demo                |
+| File              | View (web client)                     | Shows                                                    | Status      |
+| ----------------- | ------------------------------------- | -------------------------------------------------------- | ----------- |
+| `dashboard.png`   | Project activity / home               | Activity feed: PR reviews, running tests, support issues | ✅ committed |
+| `chat.png`        | `chat` view                           | Live agent chat with the engine picker + ask panel       | ✅ committed |
+| `kanban.png`      | `kanban` view                         | Project board with epics + an autonomously dispatched card | ✅ committed |
+| `finalize.png`    | `finalize` panel (open from a session) | Finalize Code Changes review + checks on a CI runner     | ✅ committed |
+| `replay.png`      | `replays` view                        | Session replay / RUM list with linked tickets            | ✅ committed |
+| `security.png`    | `security` view                       | Per-commit secret / vulnerability findings               | ✅ committed |
+| `deployments.png` | `deployments` view                    | A deployment run with live stream + release changes      | ✅ committed |
+| `support.png`     | `support` view                        | Customer support ticket with replay + convert-to-card    | ✅ committed |
+| `demo.gif`        | kanban → chat/session → finalize      | The kanban → autonomous dispatch → Finalize loop, ~15–25s | ⏳ follow-up |
 
 ## Capture runbook (human)
 
