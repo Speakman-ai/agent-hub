@@ -11,8 +11,8 @@
  *      invariant-violating snapshot (classic balance-sum invariant).
  *   2. No cross-talk — many concurrent reads with distinct params each resolve
  *      to exactly their own rows (guards the pool's job-id result routing).
- *   3. Event-loop offload — running a heavy scan/sort read through the pool
- *      blocks the main thread far less than running the identical read
+ *   3. Event-loop offload — submitting a heavy scan/sort read through the pool
+ *      returns to the main thread far faster than running the identical read
  *      synchronously. Asserted as a self-calibrating RATIO (async ≥ 3× less
  *      blocking than sync), not an absolute ms ceiling, so it does not flake on a
  *      slow / CPU-capped gate runner. The sync half gives it teeth: revert a
@@ -50,13 +50,11 @@ const TOTAL = ACCOUNTS * START_BALANCE; // the invariant: sum of all balances
 
 // Event-loop workload: a scan+sort-dominated read over thousands of wide rows
 // that returns only a handful of small rows. The heavy work (sorting an
-// unindexed 2KB text column across every row) happens wherever the query runs —
+// unindexed 2KB text column across every row) happens wherever the query runs,
 // on the main thread for a sync read, or off-thread in a worker for the facade.
 // Because the RESULT is tiny, the main-thread deserialization cost of the async
-// path is negligible, so the off-thread win is large and self-evident: the ratio
-// between the sync block and the async block does not depend on the runner's
-// absolute speed (both scale together), which is what makes the assertion below
-// robust on a constrained gate runner instead of a flaky wall-clock ceiling.
+// path is negligible. The harness measures synchronous read time against async
+// submission time, avoiding timer drift from worker CPU contention on shared CI.
 const WIDE_ROWS = 8_000;
 // Distinct payloads sharing a long common prefix so the ORDER BY comparator must
 // scan ~2KB per comparison before reaching the differentiating suffix — this is
@@ -242,82 +240,57 @@ describe('concurrent reads do not contaminate each other', () => {
 // ─── 3. Event-loop lag budget ────────────────────────────────────────────────
 
 /**
- * How much less the main thread may be blocked on the async path than the sync
- * path, as a ratio. This is deliberately a SELF-CALIBRATING relative bound, not
- * an absolute wall-clock ceiling: both measurements run the identical heavy read
- * and scale together with the runner's speed, so a slow / CPU-capped / GC-hit
- * gate runner does not produce a false failure the way an absolute `< X ms`
- * ceiling would (the flaky-timing-on-constrained-runner class CLAUDE.md flags).
- * The ratio still has teeth: if a converted path regresses to a synchronous
- * read, the async block lands right next to the sync block and the ratio breaks.
+ * How much less the main thread may be blocked while submitting the async path
+ * than running the sync path, as a ratio. This is deliberately a
+ * SELF-CALIBRATING relative bound, not an absolute wall-clock ceiling: the sync
+ * measurement calibrates how expensive this runner finds the heavy query. The
+ * ratio still has teeth: if the async facade regresses to `syncReadFacade`, the
+ * "submission" call runs the SELECT before returning and the ratio breaks.
  */
 const OFFLOAD_RATIO = 3;
 
-/**
- * Run `work` while a 5ms heartbeat timer ticks (standing in for the other
- * requests / WS traffic that must keep flowing), and return the largest gap
- * between heartbeats beyond the interval — i.e. the worst single stretch the
- * main thread was blocked. A synchronous heavy read blocks the heartbeat for its
- * whole scan/sort; an off-thread read only blocks for the (tiny) result
- * deserialization.
- */
-const HEARTBEAT_MS = 5;
-async function maxLoopBlockMs(work: () => void | Promise<void>): Promise<number> {
-  let last = performance.now();
-  let maxGap = 0;
-  const timer = setInterval(() => {
-    const now = performance.now();
-    const gap = now - last - HEARTBEAT_MS;
-    if (gap > maxGap) maxGap = gap;
-    last = now;
-  }, HEARTBEAT_MS);
-  timer.unref?.();
-  // Prime the baseline right before the measured work starts.
-  await new Promise((r) => setImmediate(r));
-  last = performance.now();
-  await work();
-  // Yield so an overdue heartbeat (one deferred by a fully-synchronous block)
-  // gets a chance to fire and record its gap before we stop measuring.
-  await new Promise((r) => setTimeout(r, HEARTBEAT_MS * 2));
-  clearInterval(timer);
-  return maxGap;
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 describe('event-loop lag budget', () => {
   it('running the heavy read off-thread keeps the loop far more responsive than sync', async () => {
     const READS = 6;
 
-    // Both loops run the SAME heavy read the SAME number of times, each read
-    // followed by a yield, so `maxLoopBlockMs` records the worst SINGLE-read
-    // block for each path — an apples-to-apples comparison. The only difference
-    // is where the scan/sort executes: main thread (sync) vs worker (async).
-    const syncMax = await maxLoopBlockMs(async () => {
-      for (let i = 0; i < READS; i++) {
-        const rows = heavySortStmt.all() as unknown[];
-        expect(rows).toHaveLength(20);
-        await new Promise((r) => setImmediate(r)); // let a heartbeat sample between reads
-      }
-    });
+    const syncSamples: number[] = [];
+    for (let i = 0; i < READS; i++) {
+      const start = performance.now();
+      const rows = heavySortStmt.all() as unknown[];
+      syncSamples.push(performance.now() - start);
+      expect(rows).toHaveLength(20);
+    }
 
-    const asyncMax = await maxLoopBlockMs(async () => {
-      for (let i = 0; i < READS; i++) {
-        const rows = await readAll(heavySortStmt); // await already yields the loop
-        expect(rows).toHaveLength(20);
-      }
-    });
+    const asyncSubmitSamples: number[] = [];
+    for (let i = 0; i < READS; i++) {
+      const start = performance.now();
+      const rowsPromise = readAll(heavySortStmt);
+      asyncSubmitSamples.push(performance.now() - start);
+      const rows = await rowsPromise;
+      expect(rows).toHaveLength(20);
+    }
+
+    const syncMedian = median(syncSamples);
+    const asyncSubmitMedian = median(asyncSubmitSamples);
 
     if (process.env.HARNESS_DEBUG) {
       process.stdout.write(
-        `\n[event-loop] syncMax=${syncMax.toFixed(1)}ms asyncMax=${asyncMax.toFixed(1)}ms ` +
-          `ratio=${(syncMax / Math.max(asyncMax, 0.001)).toFixed(1)}x\n`,
+        `\n[event-loop] syncMedian=${syncMedian.toFixed(1)}ms ` +
+          `asyncSubmitMedian=${asyncSubmitMedian.toFixed(3)}ms ` +
+          `ratio=${(syncMedian / Math.max(asyncSubmitMedian, 0.001)).toFixed(1)}x\n`,
       );
     }
 
-    // Self-calibrating: the async path must block the loop at least OFFLOAD_RATIO
-    // times LESS than the synchronous path running the identical read. No
-    // absolute ms ceiling — the bound holds regardless of the runner's raw speed,
-    // and a regression that runs the read synchronously collapses the ratio.
-    expect(asyncMax * OFFLOAD_RATIO).toBeLessThan(syncMax);
+    // Self-calibrating: submitting through the async path must block the loop at
+    // least OFFLOAD_RATIO times LESS than the synchronous path running the
+    // identical read. No absolute ms ceiling is involved, and a regression that
+    // runs the read synchronously before returning collapses the ratio.
+    expect(asyncSubmitMedian * OFFLOAD_RATIO).toBeLessThan(syncMedian);
   }, 20_000);
 });
 

@@ -50,13 +50,14 @@ the rest of the server suite (which runs against the sync-backed facade from
    (balance-sum invariant holds on every read).
 2. **No cross-talk** — concurrent parametrized reads each resolve to exactly
    their own rows (guards the pool's job-id result routing).
-3. **Event-loop offload** — running a heavy scan/sort read through the pool
-   blocks the main thread far less than running the identical read
-   synchronously. Asserted as a self-calibrating **ratio** (async blocks ≥ 3×
-   less than sync), not an absolute wall-clock ceiling, so it does not flake on
-   a slow / CPU-capped gate runner — both measurements scale together with the
-   runner's speed. The sync half is what gives the assertion teeth: revert a
-   converted path to a synchronous SELECT and the ratio collapses.
+3. **Event-loop offload** — submitting a heavy scan/sort read through the pool
+   returns to the main thread far faster than running the identical read
+   synchronously. Asserted as a self-calibrating **ratio** (async submission
+   blocks ≥ 3× less than sync), not an absolute wall-clock ceiling, so it does
+   not flake on a slow / CPU-capped gate runner. The sync half is what gives the
+   assertion teeth: revert a converted path to a synchronous SELECT and the
+   async "submission" call runs the query before returning, collapsing the
+   ratio.
 4. **Rule rationale** — a deterministic demonstration that a read-modify-write
    spanning an `await` loses updates, and that the safe synchronous-transaction
    pattern does not.

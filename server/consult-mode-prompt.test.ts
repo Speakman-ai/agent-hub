@@ -17,6 +17,20 @@ describe('consult-mode-prompt', () => {
     expect(legacyDev).toContain('Switch to a **Build** mode');
   });
 
+  it('requires unresolved spec questions to be asked up front with the picker', () => {
+    const prompt = buildConsultModePreamble({
+      project: { id: 'ops', name: 'Ops', mode: 'workflow' },
+    });
+
+    expect(prompt).toContain('### Spec questions up front');
+    expect(prompt).toMatch(/top of your first substantive reply/i);
+    expect(prompt).toContain('fenced `agenthub:ask` picker');
+    expect(prompt).toContain('Defer this question');
+    expect(prompt.indexOf('### Spec questions up front')).toBeLessThan(
+      prompt.indexOf('### Hard limits'),
+    );
+  });
+
   it('loads Hub skills for consult and legacy ask_mode rows', () => {
     expect(requiredConsultSkillIds({ session_mode: 'consult' })).toEqual([
       'agent-hub',
