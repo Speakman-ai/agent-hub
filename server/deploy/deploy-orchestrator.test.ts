@@ -99,6 +99,19 @@ environments:
       - run: ./deploy-prod.sh
 `);
 
+const GITHUB_WORKFLOW_CONFIG = parseDeployConfig(`
+version: 1
+environments:
+  production:
+    steps:
+      - name: trigger-release
+        github_workflow:
+          workflow: release-all.yml
+          ref: main
+          inputs:
+            bump: patch
+`);
+
 /** A scripted fake child: per-step exit codes + optional output, in call order. */
 interface StepScript {
   exitCode: number;
@@ -192,6 +205,13 @@ function makeDeps(
     // commit-range resolver inject their own stub.
     collectReleaseRangeLinks:
       collectReleaseRangeLinks ?? (async ({ currentRef }) => ({ refs: [currentRef], prUrls: [] })),
+  };
+}
+
+function makeGithubWorkflowDeps(backend: RunnerBackend): DeployOrchestratorDeps {
+  return {
+    ...makeDeps(backend),
+    resolveProjectGithubRepo: () => 'owner/repo',
   };
 }
 
@@ -488,7 +508,7 @@ environments:
         worktreePath: WORKTREE,
         config: WF_CONFIG,
       },
-      makeDeps(fb.backend),
+      makeGithubWorkflowDeps(fb.backend),
     );
 
     expect(dep.status).toBe('success');
@@ -523,7 +543,7 @@ environments:
         worktreePath: WORKTREE,
         config: WF_CONFIG,
       },
-      makeDeps(fb.backend),
+      makeGithubWorkflowDeps(fb.backend),
     );
 
     expect(dep.status).toBe('success');
@@ -551,7 +571,7 @@ environments:
         worktreePath: WORKTREE,
         config: WF_CONFIG,
       },
-      makeDeps(fb.backend),
+      makeGithubWorkflowDeps(fb.backend),
     );
 
     expect(dep.status).toBe('error');
@@ -585,7 +605,7 @@ describe('recoverInFlightDeployments', () => {
       },
     ]);
 
-    const recovered = recoverInFlightDeployments(makeDeps(fb.backend));
+    const recovered = recoverInFlightDeployments(makeGithubWorkflowDeps(fb.backend));
     expect(recovered.map((deployment) => deployment.id)).toEqual([deploymentId]);
     await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'success');
 
@@ -624,7 +644,7 @@ describe('recoverInFlightDeployments', () => {
     }));
 
     recoverInFlightDeployments({
-      ...makeDeps(fb.backend),
+      ...makeGithubWorkflowDeps(fb.backend),
       prepareRecoveryCheckout,
     });
     await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'success');
@@ -652,7 +672,7 @@ describe('recoverInFlightDeployments', () => {
       },
     };
 
-    recoverInFlightDeployments(makeDeps(backend));
+    recoverInFlightDeployments(makeGithubWorkflowDeps(backend));
     await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'error');
 
     expect(listDeploymentSteps(deploymentId)[0]).toMatchObject({
@@ -677,7 +697,7 @@ describe('recoverInFlightDeployments', () => {
       },
     ]);
 
-    recoverInFlightDeployments(makeDeps(fb.backend));
+    recoverInFlightDeployments(makeGithubWorkflowDeps(fb.backend));
     await waitFor(() => listDeploymentSteps(deploymentId)[0].status === 'success');
 
     expect(fb.spawnArgs[0].run).toContain(`WORKFLOW='release-all.yml'`);
@@ -826,6 +846,85 @@ describe('runDeployment — GH_REPO injection (self-hosted-forge gh targeting)',
 
     expect(resolveProjectGithubRepo).toHaveBeenCalledWith(PROJECT);
     expect(fb.acquireCalls[0].env?.GH_REPO).toBeUndefined();
+  });
+
+  it('retargets github_workflow deploy steps to the configured GitHub repo', async () => {
+    const fb = makeFakeBackend([
+      {
+        exitCode: 0,
+        stdout:
+          '::agent-hub-github-run::{"runId":"123","url":"https://github.com/Speakman-ai/agent-hub/actions/runs/123","status":"completed","conclusion":"success"}\n',
+      },
+    ]);
+    const resolveProjectGithubRepo = vi.fn(() => 'Speakman-ai/agent-hub');
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-release',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveProjectGithubRepo,
+      },
+    );
+
+    expect(dep.status).toBe('success');
+    expect(fb.acquireCalls[0].env?.GH_REPO).toBe('Speakman-ai/agent-hub');
+    expect(fb.spawnArgs[0].env?.GH_REPO).toBe('Speakman-ai/agent-hub');
+    expect(fb.spawnArgs[0].run).toContain('gh workflow run "${WORKFLOW}" --ref "${REF}"');
+  });
+
+  it('fails github_workflow deploy steps before runner acquire when GH_REPO is missing', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-release-missing-repo',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveProjectGithubRepo: vi.fn(() => null),
+      },
+    );
+    const steps = listDeploymentSteps(dep.id);
+
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('github_workflow deploy steps require GH_REPO');
+    expect(steps[0].status).toBe('error');
+    expect(fb.acquireCalls).toHaveLength(0);
+  });
+
+  it('fails github_workflow deploy steps before runner acquire when GH_REPO is malformed', async () => {
+    const fb = makeFakeBackend([{ exitCode: 0 }]);
+    const dep = await triggerDeployment(
+      {
+        projectId: PROJECT,
+        environment: 'production',
+        ref: 'sha-release-bad-repo',
+        worktreePath: WORKTREE,
+        config: GITHUB_WORKFLOW_CONFIG,
+      },
+      {
+        broadcast: vi.fn(),
+        runnerBackend: fb.backend,
+        env: { PATH: '/usr/bin' },
+        resolveProjectGithubRepo: vi.fn(() => 'https://github.com/Speakman-ai/agent-hub'),
+      },
+    );
+
+    expect(dep.status).toBe('error');
+    expect(dep.error).toContain('GH_REPO in [HOST/]OWNER/REPO form');
+    expect(fb.acquireCalls).toHaveLength(0);
   });
 
   it('injects GH_REPO for a gated environment resumed via approveDeployment', async () => {

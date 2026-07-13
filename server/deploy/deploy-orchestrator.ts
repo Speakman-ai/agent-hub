@@ -546,6 +546,19 @@ function parseReleaseInclusionMeta(metaText: string | null): {
   };
 }
 
+function deployUsesGithubWorkflow(envConfig: DeployEnvironmentConfig): boolean {
+  return envConfig.steps.some((step) => step.githubWorkflow !== undefined);
+}
+
+function isValidGhRepoTarget(value: string | undefined): boolean {
+  const repo = value?.trim();
+  if (!repo) return false;
+  if (/^https?:\/\//i.test(repo) || repo.includes(' ') || repo.includes('\\')) return false;
+  const parts = repo.split('/');
+  if (parts.length !== 2 && parts.length !== 3) return false;
+  return parts.every((part) => /^[A-Za-z0-9_.-]+$/.test(part));
+}
+
 function isProductionEnvironment(environment: string): boolean {
   const normalized = environment.trim().toLowerCase();
   return normalized === 'prod' || normalized === 'production';
@@ -990,6 +1003,13 @@ export async function runDeployment(
       sessionId: ctx.sessionId ?? null,
       overwriteExisting: true,
     });
+
+    if (deployUsesGithubWorkflow(envConfig) && !isValidGhRepoTarget(baseEnv.GH_REPO)) {
+      return fail(
+        'github_workflow deploy steps require GH_REPO in [HOST/]OWNER/REPO form. ' +
+          'Set project.githubRepo or a project GH_REPO secret before deploying.',
+      );
+    }
 
     const backend = deps.runnerBackend ?? resolveRunnerBackend();
     const spec: JobClaimSpec = {
