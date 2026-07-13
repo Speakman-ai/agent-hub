@@ -14,9 +14,16 @@
  * caller supplies. That keeps this test tightly focused on the cascade logic.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
+
+const projectMembersStore = vi.hoisted(() => ({
+  removeAllProjectMembers: vi.fn(() => 0),
+}));
+
+vi.mock('./project-members-store.js', () => projectMembersStore);
+
 import { cascadeDeleteUserPrivateProjects } from './project-owner-cascade.js';
 import { resolveProjectSkillsDir } from './project-skill-paths.js';
 import type { Project, Stmts } from './types.js';
@@ -57,6 +64,11 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 describe('cascadeDeleteUserPrivateProjects', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    projectMembersStore.removeAllProjectMembers.mockReturnValue(0);
+  });
+
   it('deletes private projects owned by the user', () => {
     const projects: Project[] = [
       makeProject({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }),
@@ -174,6 +186,33 @@ describe('cascadeDeleteUserPrivateProjects', () => {
       expect(projects.map((p) => p.id)).toEqual(['p2']);
       expect(saveProjects).toHaveBeenCalledTimes(1);
       expect(consoleErr).toHaveBeenCalled();
+    } finally {
+      consoleErr.mockRestore();
+    }
+  });
+
+  it('does not remove a project when member ACL cleanup fails', () => {
+    const projects: Project[] = [
+      makeProject({ id: 'p1', visibility: 'private', ownerUserId: 'u1' }),
+    ];
+    projectMembersStore.removeAllProjectMembers.mockImplementationOnce(() => {
+      throw new Error('orgs.db unavailable');
+    });
+    const saveProjects = vi.fn();
+    const consoleErr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = cascadeDeleteUserPrivateProjects(
+        { stmts: makeStmts(), getProjects: () => projects, saveProjects },
+        'u1',
+      );
+
+      expect(result.deletedProjectIds).toEqual([]);
+      expect(projects.map((p) => p.id)).toEqual(['p1']);
+      expect(saveProjects).not.toHaveBeenCalled();
+      expect(consoleErr).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to delete private project "p1"'),
+        'orgs.db unavailable',
+      );
     } finally {
       consoleErr.mockRestore();
     }

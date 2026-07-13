@@ -529,3 +529,173 @@ registerPath({
     },
   },
 });
+
+// ─── Per-project member assignment (Owner-managed visibility ACL) ───
+
+const jsonContentMembers = <T extends z.ZodTypeAny>(schema: T) => ({
+  'application/json': { schema },
+});
+
+export const ProjectMemberComponent = registerComponent(
+  'ProjectMember',
+  z
+    .object({
+      userId: z.string().openapi({ description: 'Assigned user id.' }),
+      username: z.string().openapi({ description: 'Assigned user’s username.' }),
+      addedBy: z.string().nullable().openapi({
+        description:
+          'User id of the Owner who made the assignment; null if that user was later deleted.',
+      }),
+      createdAt: z.string().openapi({ description: 'When the assignment was made.' }),
+    })
+    .openapi({ description: 'A user assigned to a project (a visibility-ACL row).' }),
+);
+
+export const ProjectMembersListComponent = registerComponent(
+  'ProjectMembersList',
+  z
+    .object({
+      projectId: z.string(),
+      ownerUserId: z.string().nullable().openapi({
+        description:
+          'The project creator; always effectively a member (sees the project) even without an explicit row.',
+      }),
+      visibility: z.enum(['shared', 'private']).openapi({
+        description:
+          'Project visibility. Shared projects with no members are org-visible; private projects with no members are owner-only.',
+      }),
+      restricted: z.boolean().openapi({
+        description:
+          'True when the project has an active assignment ACL, even if it currently has zero assigned users. False means no explicit member ACL; combine with visibility to determine whether the project is org-visible (shared) or owner-only (private).',
+      }),
+      members: z.array(ProjectMemberComponent),
+    })
+    .openapi({ description: 'The assignment ACL for a project.' }),
+);
+
+export const ProjectMemberAddedComponent = registerComponent(
+  'ProjectMemberAdded',
+  z
+    .object({
+      projectId: z.string(),
+      userId: z.string(),
+      username: z.string(),
+    })
+    .openapi({ description: 'Confirmation that a user was assigned to a project.' }),
+);
+
+export const ProjectMemberRemovedComponent = registerComponent(
+  'ProjectMemberRemoved',
+  z
+    .object({
+      projectId: z.string(),
+      userId: z.string(),
+      removed: z.literal(true),
+    })
+    .openapi({ description: 'Confirmation that a user was unassigned from a project.' }),
+);
+
+const ProjectMemberErrorComponent = registerComponent(
+  'ProjectMemberErrorResponse',
+  z.object({ error: z.string() }).openapi({
+    description: 'Error envelope for the project-member routes.',
+  }),
+);
+
+// GET /api/projects/:projectId/members
+registerPath({
+  method: 'get',
+  path: '/api/projects/{projectId}/members',
+  tags: ['Projects'],
+  summary: 'List the users assigned to a project',
+  description:
+    'Returns the project’s visibility ACL. Owner-only (org Owner role, or the local-bundle / global-apiKey break-glass). ' +
+    '`restricted: false` means no assignment ACL: shared projects are org-visible and private projects are owner-only. `restricted: true` means assignment-gated even if no users are currently assigned.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'The project member list.',
+      content: jsonContentMembers(ProjectMembersListComponent),
+    },
+    403: {
+      description: 'Caller is not an Owner.',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+    404: {
+      description: 'Project not found (or not visible to the caller).',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+  },
+});
+
+// POST /api/projects/:projectId/members
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/members',
+  tags: ['Projects'],
+  summary: 'Assign a user to a project',
+  description:
+    'Adds a user to the project’s visibility ACL so they can see and enter it. Owner-only. ' +
+    'Assigning the first member flips the project from org-visible to members-only. Idempotent — re-assigning an existing member is a no-op. ' +
+    'Broadcasts `projects_updated` over the WebSocket.',
+  request: {
+    params: z.object({ projectId: z.string() }),
+    body: {
+      content: jsonContentMembers(
+        z.object({ userId: z.string().openapi({ description: 'Id of the org user to assign.' }) }),
+      ),
+    },
+  },
+  responses: {
+    200: {
+      description: 'User was already assigned; no new row was created.',
+      content: jsonContentMembers(ProjectMemberAddedComponent),
+    },
+    201: {
+      description: 'User assigned.',
+      content: jsonContentMembers(ProjectMemberAddedComponent),
+    },
+    400: {
+      description: 'Missing userId, or the user is not a member of this org.',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+    403: {
+      description: 'Caller is not an Owner.',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+    404: {
+      description: 'Project or user not found.',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+  },
+});
+
+// DELETE /api/projects/:projectId/members/:userId
+registerPath({
+  method: 'delete',
+  path: '/api/projects/{projectId}/members/{userId}',
+  tags: ['Projects'],
+  summary: 'Unassign a user from a project',
+  description:
+    'Removes a user from the project’s visibility ACL. Owner-only. ' +
+    'Removing the last member keeps the assignment ACL active, so a restricted shared project does not reopen to the whole org. Broadcasts `projects_updated`.',
+  request: {
+    params: z.object({ projectId: z.string(), userId: z.string() }),
+  },
+  responses: {
+    200: {
+      description: 'User unassigned.',
+      content: jsonContentMembers(ProjectMemberRemovedComponent),
+    },
+    403: {
+      description: 'Caller is not an Owner.',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+    404: {
+      description: 'Project not found, or the user was not a member.',
+      content: jsonContentMembers(ProjectMemberErrorComponent),
+    },
+  },
+});

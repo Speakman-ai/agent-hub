@@ -30,6 +30,11 @@ vi.mock('../memberships-store.js', () => ({
   ]),
 }));
 
+vi.mock('../project-members-store.js', () => ({
+  assignedProjectIdsForUser: vi.fn(() => new Set<string>()),
+  restrictedProjectIds: vi.fn(() => new Set<string>()),
+}));
+
 const { default: createHeartbeatRoutes } = await import('./heartbeats.js');
 const { resetHeartbeatOwnerBackfillForTests } = await import('../heartbeat-ownership.js');
 

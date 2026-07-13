@@ -51,22 +51,70 @@ export interface VisibilityCaller {
    * caller sees every project — there's only one user, so privacy is moot.
    */
   localBypass?: boolean;
+  /**
+   * Project ids this caller is explicitly assigned to (their
+   * `project_members` rows). An assigned member always sees the project,
+   * shared or private. Populated by `resolveVisibilityCaller`; left unset
+   * for bypass callers (who see everything anyway) and for the pure-unit
+   * call sites in tests (which then observe the pre-ACL default).
+   */
+  assignedProjectIds?: ReadonlySet<string>;
+  /**
+   * Project ids with an active assignment ACL ("restricted"). A shared
+   * project in this set is members-only even when every member row has been
+   * removed; a shared project NOT in it has no assignment ACL and stays
+   * visible to the whole org. When unset, no project is treated as
+   * restricted — preserving the pre-feature "shared = visible to everyone"
+   * default for unit call sites.
+   */
+  restrictedProjectIds?: ReadonlySet<string>;
+  /**
+   * True when the route-layer resolver tried to load assignment ACLs from
+   * orgs.db and failed. Real requests must fail closed in that state: a
+   * shared project might be restricted, and treating the missing set as
+   * "unrestricted" would leak it to non-members.
+   */
+  assignmentAclUnavailable?: boolean;
 }
 
 /**
  * May this caller read/enter this project?
  *
- * Shared projects → yes for everyone in the org.
- * Private projects → only the owner (and the local-bundled synthetic owner).
- * Org Owners do NOT get a read bypass — they can list-and-delete from the
- * admin endpoint, but they cannot read the contents of a private project
- * they don't own.
+ * Resolution order:
+ *   1. Local-bundled / break-glass bypass → always yes.
+ *   2. The project's own `ownerUserId` → always yes (their project).
+ *   3. An explicitly assigned member (`project_members`) → always yes,
+ *      whether the project is shared or private. This is the assignment
+ *      ACL an Owner manages via `/api/projects/:id/members`.
+ *   4. Private projects → otherwise no. Org Owners do NOT get a read
+ *      bypass — they can list-and-delete from the admin endpoint, but not
+ *      read the contents of a private project they don't own.
+ *   5. Shared projects:
+ *        - Org Owners → yes (they manage everything).
+ *        - If the project has an active assignment ACL ("restricted"):
+ *          members-only — a non-member is denied, even if the current member
+ *          list is empty after user/member deletion.
+ *        - If the project has NO assignment ACL: visible to the whole org.
+ *          This is the back-compat default so existing installs upgrade with
+ *          no visibility change and no data backfill.
+ *
+ * `assignedProjectIds` / `restrictedProjectIds` are populated by
+ * `resolveVisibilityCaller`. When they're unset (pure unit call sites) the
+ * function collapses to the pre-feature "shared = visible to everyone,
+ * private = owner-only" behavior. When `assignmentAclUnavailable` is set,
+ * real request callers fail closed after owner / explicit Owner checks.
  */
 export function canViewProject(project: Project, caller: VisibilityCaller): boolean {
-  if (getVisibility(project) === 'shared') return true;
   if (caller.localBypass) return true;
-  if (!caller.userId) return false;
-  return project.ownerUserId === caller.userId;
+  if (caller.userId && project.ownerUserId === caller.userId) return true;
+  if (caller.userId && caller.assignedProjectIds?.has(project.id)) return true;
+  if (getVisibility(project) === 'private') return false;
+  // Shared project from here down.
+  if (caller.role === 'Owner') return true;
+  if (caller.assignmentAclUnavailable) return false;
+  // Restricted → members-only; the non-member falls through to denial.
+  // No assignment ACL → open to the org.
+  return !caller.restrictedProjectIds?.has(project.id);
 }
 
 /**

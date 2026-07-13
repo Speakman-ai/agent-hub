@@ -96,11 +96,11 @@ function uid(prefix = 'preview-wizard'): string {
   return `${prefix}-${Date.now()}-${++_counter}`;
 }
 
-async function makeProject(): Promise<string> {
+async function makeProject(authToken: string = adminJwt): Promise<string> {
   const id = uid('proj');
   const res = await request
     .post('/api/projects')
-    .set('Authorization', `Bearer ${adminJwt}`)
+    .set('Authorization', `Bearer ${authToken}`)
     .send({ id, name: `Test ${id}`, cwd: '/tmp', color: '#3B82F6' })
     .expect(201);
   return (res.body as { id: string }).id;
@@ -772,7 +772,7 @@ describe('POST /api/projects/:projectId/preview/wizard-complete', () => {
   });
 
   it('returns { ok: true } for a known project (User role passes the gate)', async () => {
-    const projectId = await makeProject();
+    const projectId = await makeProject(userJwt);
     const res = await request
       .post(`/api/projects/${projectId}/preview/wizard-complete`)
       .set('Authorization', `Bearer ${userJwt}`)

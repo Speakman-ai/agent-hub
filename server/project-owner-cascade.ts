@@ -13,15 +13,16 @@
  * reassign to the actor that performed the deletion, but that's out of
  * scope for the visibility feature.
  *
- * This helper is intentionally side-effect-only — no JSON return, no
- * thrown errors for partial failure. Each project delete is attempted
- * independently; one failure does not block the sweep. The caller logs.
+ * This helper is intentionally side-effect-only — no JSON return. Each
+ * project delete is attempted independently; one failure does not block
+ * the sweep. The caller logs.
  */
 
 import type { Project } from './types.js';
 import type { Stmts } from './types.js';
 import { deleteAllPreviewSecretsForProject } from './preview/preview-secrets-store.js';
 import { deleteProjectSkillsDir } from './project-skill-paths.js';
+import { removeAllProjectMembers } from './project-members-store.js';
 
 export interface CascadeDeps {
   stmts: Stmts;
@@ -44,7 +45,6 @@ export interface CascadeResult {
  * delete paths will pick it up automatically.
  */
 export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
-  deleteProjectSkillsDir(project);
   try {
     deleteAllPreviewSecretsForProject(project.id);
   } catch (err) {
@@ -53,6 +53,11 @@ export function deleteProjectScopedRows(stmts: Stmts, project: Project): void {
       (err as Error).message,
     );
   }
+  // Critical: project_members lives in orgs.db with no FK to projects.json.
+  // Project ids can be reused, so deletion must stop if ACL cleanup fails;
+  // otherwise a future project with the same id could inherit stale members.
+  removeAllProjectMembers(project.id);
+  deleteProjectSkillsDir(project);
   stmts.deleteEscalationsByProject.run(project.id);
   stmts.deleteSupportTicketsByProject.run(project.id);
   stmts.deleteNotesByProject.run(project.id);

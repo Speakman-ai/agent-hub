@@ -9,6 +9,7 @@ import { GOOGLE_CONNECTIONS_SCHEMA } from './google-connections-schema.js';
 import { AUTH_CREDENTIAL_AUDIT_SCHEMA } from './auth-credential-audit-schema.js';
 import { RUNNER_QUEUE_SCHEMA } from './finalize/runner-queue-schema.js';
 import { USER_TODOS_SCHEMA } from './user-todos-schema.js';
+import { PROJECT_MEMBERS_SCHEMA } from './project-members-schema.js';
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user');
 
@@ -174,6 +175,10 @@ export function initOrgsDb(): void {
   // Cross-project personal todos, keyed by user_id. Global (non-project)
   // capture primitive — see user-todos-store.ts / user-todos-schema.ts.
   orgsDb.exec(USER_TODOS_SCHEMA);
+  // Per-project user assignment ACL (project visibility gate). Keyed on
+  // (project_id, user_id); FK on user_id CASCADEs from users. See
+  // project-members-store.ts / project-visibility.ts.
+  orgsDb.exec(PROJECT_MEMBERS_SCHEMA);
 
   // Additive migration for installs that created user_todos before the
   // priority / do_date-window / polymorphic-link columns existed (spec

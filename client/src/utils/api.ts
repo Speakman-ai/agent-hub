@@ -258,6 +258,35 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  // Per-project member assignment (Owner-managed visibility ACL).
+  getProjectMembers: (projectId: string) =>
+    fetchJSON<{
+      projectId: string;
+      ownerUserId: string | null;
+      visibility: 'shared' | 'private';
+      restricted: boolean;
+      members: Array<{
+        userId: string;
+        username: string;
+        addedBy: string | null;
+        createdAt: string;
+      }>;
+    }>(`/projects/${projectId}/members`),
+  addProjectMember: (projectId: string, userId: string) =>
+    fetchJSON<{ projectId: string; userId: string; username: string }>(
+      `/projects/${projectId}/members`,
+      { method: 'POST', body: JSON.stringify({ userId }) },
+    ),
+  removeProjectMember: (projectId: string, userId: string) =>
+    fetchJSON<{ projectId: string; userId: string; removed: true }>(
+      `/projects/${projectId}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' },
+    ),
+  // Org user roster (Admin+). Used to populate the member-assignment picker.
+  getOrgUsers: () =>
+    fetchJSON<{
+      users: Array<{ id: string | null; username: string; role: string }>;
+    }>('/auth/users'),
   // Per-user, project-scoped settings (e.g. default Finalize automation level).
   getProjectUserSettings: (projectId: any) => fetchJSON(`/projects/${projectId}/user-settings`),
   updateProjectUserSettings: (projectId: any, data: any) =>

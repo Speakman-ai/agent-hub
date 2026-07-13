@@ -45,6 +45,11 @@ vi.mock('../memberships-store.js', () => ({
   ]),
 }));
 
+vi.mock('../project-members-store.js', () => ({
+  assignedProjectIdsForUser: vi.fn(() => new Set<string>()),
+  restrictedProjectIds: vi.fn(() => new Set<string>()),
+}));
+
 interface AuthClaims {
   authUserId?: string;
   authUser?: string;

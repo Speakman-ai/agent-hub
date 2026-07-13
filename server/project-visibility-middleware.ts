@@ -29,6 +29,7 @@ import type { Request, Response, NextFunction } from 'express';
 import type { Project } from './types.js';
 import { canViewProject, type VisibilityCaller } from './project-visibility.js';
 import type { AuthenticatedRequest } from './auth.js';
+import { assignedProjectIdsForUser, restrictedProjectIds } from './project-members-store.js';
 
 export interface VisibilityGateDeps {
   findProject: (projectId: string) => Project | null;
@@ -54,10 +55,32 @@ export interface VisibilityGateDeps {
 export function resolveVisibilityCaller(req: Request): VisibilityCaller {
   const areq = req as AuthenticatedRequest;
   const noAuthConfigured = !areq.authUserId && !areq.authUser && areq.authRole === 'Owner';
+  const localBypass = Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured);
+  const userId = areq.authUserId ?? null;
+  // Bypass callers see everything, so skip the two ACL lookups entirely.
+  // For everyone else load the assignment ACL from orgs.db. A store failure
+  // must fail closed for non-Owner shared-project access; otherwise a
+  // restricted project could be mistaken for an org-visible one.
+  let assignedProjectIds: ReadonlySet<string> | undefined;
+  let restricted: ReadonlySet<string> | undefined;
+  let assignmentAclUnavailable = false;
+  if (!localBypass) {
+    try {
+      restricted = restrictedProjectIds();
+      assignedProjectIds = userId ? assignedProjectIdsForUser(userId) : new Set<string>();
+    } catch {
+      assignedProjectIds = new Set<string>();
+      restricted = new Set<string>();
+      assignmentAclUnavailable = true;
+    }
+  }
   return {
-    userId: areq.authUserId ?? null,
+    userId,
     role: areq.authRole,
-    localBypass: Boolean(areq.authLocalOrgBypass || areq.authViaApiKey || noAuthConfigured),
+    localBypass,
+    assignedProjectIds,
+    restrictedProjectIds: restricted,
+    assignmentAclUnavailable,
   };
 }
 
@@ -81,12 +104,15 @@ export function createProjectVisibilityGate(
     }
     const caller = resolveVisibilityCaller(req);
     if (!canViewProject(project, caller)) {
-      // Two exceptions where we let the request through to its handler
+      // Exceptions where we let the request through to its handler
       // and let the handler enforce its own deeper auth:
       //   1. DELETE /api/projects/:projectId — Owners get the kill-switch
       //      bypass via `canDeleteProject` inside the route handler.
       //      Blocking here would 404 before that check ever runs.
-      //   2. GitHub webhook delivery routes — none currently live under
+      //   2. /api/projects/:projectId/members — org Owners must be able to
+      //      manage membership for private projects they don't own, but they
+      //      still don't get read access to the project itself.
+      //   3. GitHub webhook delivery routes — none currently live under
       //      this prefix, but if any are added they MUST be allowed
       //      through (webhooks have no `authUserId` to compare). The
       //      check is on req.path so a future move is caught.
@@ -95,7 +121,12 @@ export function createProjectVisibilityGate(
         req.method === 'DELETE' &&
         (req.baseUrl + req.path === `/api/projects/${projectId}` ||
           originalUrl === `/api/projects/${projectId}`);
+      const isProjectMembersRoute = req.path === '/members' || req.path.startsWith('/members/');
       if (isDeleteSelf) {
+        next();
+        return;
+      }
+      if (isProjectMembersRoute && (caller.role === 'Owner' || caller.localBypass)) {
         next();
         return;
       }

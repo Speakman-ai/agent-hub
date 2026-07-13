@@ -87,6 +87,134 @@ describe('project-visibility', () => {
     });
   });
 
+  describe('canViewProject — assignment ACL', () => {
+    it('shared + restricted (has ACL): only assigned members and the owner see it', () => {
+      const p = makeProject({ id: 'proj', visibility: 'shared', ownerUserId: 'owner' });
+      const restricted = new Set(['proj']);
+      // Assigned member sees it.
+      expect(
+        canViewProject(p, {
+          userId: 'member',
+          role: 'User',
+          assignedProjectIds: new Set(['proj']),
+          restrictedProjectIds: restricted,
+        }),
+      ).toBe(true);
+      // Non-member (not assigned) is denied even though the project is shared.
+      expect(
+        canViewProject(p, {
+          userId: 'stranger',
+          role: 'User',
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: restricted,
+        }),
+      ).toBe(false);
+      // The project owner always sees their own project, assigned or not.
+      expect(
+        canViewProject(p, {
+          userId: 'owner',
+          role: 'User',
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: restricted,
+        }),
+      ).toBe(true);
+    });
+
+    it('shared + restricted: org Owner sees it without an explicit assignment', () => {
+      const p = makeProject({ id: 'proj', visibility: 'shared' });
+      expect(
+        canViewProject(p, {
+          userId: 'boss',
+          role: 'Owner',
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: new Set(['proj']),
+        }),
+      ).toBe(true);
+    });
+
+    it('shared + NO ACL (zero members): visible to the whole org (back-compat)', () => {
+      const p = makeProject({ id: 'proj', visibility: 'shared' });
+      expect(
+        canViewProject(p, {
+          userId: 'anyone',
+          role: 'User',
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: new Set(), // proj is not restricted
+        }),
+      ).toBe(true);
+    });
+
+    it('shared + unavailable ACL: non-Owner callers fail closed', () => {
+      const p = makeProject({ id: 'proj', visibility: 'shared' });
+      expect(
+        canViewProject(p, {
+          userId: 'anyone',
+          role: 'User',
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: new Set(),
+          assignmentAclUnavailable: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('private + assigned member: an Owner-assigned user can see a private project', () => {
+      const p = makeProject({ id: 'proj', visibility: 'private', ownerUserId: 'owner' });
+      expect(
+        canViewProject(p, {
+          userId: 'member',
+          role: 'User',
+          assignedProjectIds: new Set(['proj']),
+          restrictedProjectIds: new Set(['proj']),
+        }),
+      ).toBe(true);
+      // Not assigned → still denied for a private project.
+      expect(
+        canViewProject(p, {
+          userId: 'stranger',
+          role: 'User',
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: new Set(['proj']),
+        }),
+      ).toBe(false);
+    });
+
+    it('local bypass ignores the ACL entirely', () => {
+      const p = makeProject({ id: 'proj', visibility: 'shared' });
+      expect(
+        canViewProject(p, {
+          userId: null,
+          localBypass: true,
+          assignedProjectIds: new Set(),
+          restrictedProjectIds: new Set(['proj']),
+        }),
+      ).toBe(true);
+    });
+
+    it('filterVisibleProjects applies the ACL across a mixed list', () => {
+      const open = makeProject({ id: 'open', visibility: 'shared' });
+      const locked = makeProject({ id: 'locked', visibility: 'shared' });
+      const caller = {
+        userId: 'member',
+        role: 'User' as const,
+        assignedProjectIds: new Set(['locked']),
+        restrictedProjectIds: new Set(['locked']),
+      };
+      // `open` has no ACL → visible; `locked` is restricted but caller is a member → visible.
+      expect(filterVisibleProjects([open, locked], caller).map((p) => p.id)).toEqual([
+        'open',
+        'locked',
+      ]);
+      // A stranger sees only the open project.
+      const stranger = {
+        userId: 'stranger',
+        role: 'User' as const,
+        assignedProjectIds: new Set<string>(),
+        restrictedProjectIds: new Set(['locked']),
+      };
+      expect(filterVisibleProjects([open, locked], stranger).map((p) => p.id)).toEqual(['open']);
+    });
+  });
+
   describe('canDeleteProject', () => {
     it('owners can delete their own private project', () => {
       const p = makeProject({ visibility: 'private', ownerUserId: 'u1' });

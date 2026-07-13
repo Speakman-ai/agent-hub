@@ -52,6 +52,15 @@ import {
   classifyVisibilityTransition,
 } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import {
+  addProjectMember,
+  isProjectMember,
+  isProjectRestricted,
+  removeProjectMember,
+  listProjectMembers,
+} from '../project-members-store.js';
+import { getMembershipRole } from '../memberships-store.js';
+import { getActiveOrgId } from '../orgs.js';
 import { deleteProjectScopedRows } from '../project-owner-cascade.js';
 import {
   FINALIZE_AUTOMATION_LEVELS,
@@ -1760,6 +1769,90 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     res.json(rows);
   });
 
+  // ─── Per-project member assignment (Owner-managed visibility ACL) ───
+  //
+  // A user sees a project only if assigned to it (see project-visibility.ts).
+  // These routes let an Owner manage that assignment set. They sit behind
+  // the `/api/projects/:projectId` visibility gate, so a caller who cannot
+  // view the project is already masked as 404; `requireProjectMemberAdmin`
+  // is the management gate layered on top — only org Owners (and the
+  // local-bundle / global-apiKey break-glass) may mutate the ACL.
+  function requireProjectMemberAdmin(req: Request, res: Response): boolean {
+    const areq = req as AuthenticatedRequest;
+    const caller = resolveVisibilityCaller(req);
+    if (areq.authRole === 'Owner' || caller.localBypass) return true;
+    res.status(403).json({ error: 'Owner role required to manage project members.' });
+    return false;
+  }
+
+  router.get('/api/projects/:projectId/members', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!requireProjectMemberAdmin(req, res)) return;
+    const members = listProjectMembers(project.id);
+    // `restricted` tells the UI whether the assignment ACL is active. It is
+    // deliberately stored separately from member rows so deleting the last
+    // assigned user does not implicitly reopen a shared project.
+    res.json({
+      projectId: project.id,
+      ownerUserId: project.ownerUserId ?? null,
+      visibility: getVisibility(project),
+      restricted: isProjectRestricted(project.id),
+      members,
+    });
+  });
+
+  router.post('/api/projects/:projectId/members', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!requireProjectMemberAdmin(req, res)) return;
+    const body = req.body as { userId?: unknown };
+    if (typeof body.userId !== 'string' || !body.userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    const user = getUserById(body.userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    // Only assign users who belong to the active org — a cross-org id would
+    // create a dangling ACL row that never resolves to a real caller.
+    if (getMembershipRole(user.id, getActiveOrgId()) === null) {
+      return res.status(400).json({ error: 'User is not a member of this org' });
+    }
+    const actorUserId = (req as AuthenticatedRequest).authUserId ?? null;
+    const alreadyMember = isProjectMember(project.id, user.id);
+    addProjectMember(project.id, user.id, actorUserId);
+    try {
+      broadcast({
+        type: 'projects_updated',
+        reason: 'project-members-changed',
+        projectId: project.id,
+      });
+    } catch {
+      /* best-effort */
+    }
+    res
+      .status(alreadyMember ? 200 : 201)
+      .json({ projectId: project.id, userId: user.id, username: user.username });
+  });
+
+  router.delete('/api/projects/:projectId/members/:userId', (req: Request, res: Response) => {
+    const project = findProject(req.params.projectId as string);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!requireProjectMemberAdmin(req, res)) return;
+    const userId = req.params.userId as string;
+    const removed = removeProjectMember(project.id, userId);
+    if (!removed) return res.status(404).json({ error: 'Member not found' });
+    try {
+      broadcast({
+        type: 'projects_updated',
+        reason: 'project-members-changed',
+        projectId: project.id,
+      });
+    } catch {
+      /* best-effort */
+    }
+    res.json({ projectId: project.id, userId, removed: true });
+  });
+
   router.get('/api/setup/status', async (req: Request, res: Response) => {
     const projects = getProjects();
 
@@ -2279,13 +2372,18 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
       });
     }
     const dataDir = getProjectDataDir(id);
+    // Authenticated creators get a private durable staging state first.
+    // Once their member ACL row exists, a shared project can be published
+    // safely. If any post-save ACL/publish step fails, the project remains
+    // private rather than org-visible with zero members.
+    const initialVisibility: 'shared' | 'private' = ownerUserId ? 'private' : createVisibility;
     const project: Project = {
       id,
       name: name || id,
       cwd: cwd || config.defaultCwd,
       ahw: dataDir,
       color: color || '#6b7280',
-      visibility: createVisibility,
+      visibility: initialVisibility,
       ownerUserId,
       agents: [],
     };
@@ -2315,7 +2413,60 @@ export default function createProjectRoutes(deps: RouteDeps): Router {
     mkdirSync(path.join(dataDir, 'memory'), { recursive: true });
 
     projects.push(project);
-    saveProjects();
+    try {
+      saveProjects();
+    } catch (err) {
+      const idx = projects.findIndex((p) => p.id === project.id);
+      if (idx !== -1) projects.splice(idx, 1);
+      rmSync(dataDir, { recursive: true, force: true });
+      console.error(
+        `[POST /api/projects] Failed to persist project "${project.id}":`,
+        (err as Error).message,
+      );
+      return res.status(500).json({ error: 'project_create_failed' });
+    }
+
+    // Auto-assign the creator to the visibility ACL. This makes a new
+    // project "restricted" (≥1 member) before it is ever published as shared,
+    // so it's private to its creator until an Owner assigns others — the
+    // intended "only assigned users see it" default. Callers with no
+    // authenticated user (local bundle / global apiKey) have
+    // `ownerUserId === null` and skip this: their projects stay unassigned
+    // (org-visible), which is correct for single-tenant installs.
+    //
+    // If seeding fails after the private staging save, keep the project and
+    // return success with `visibility: private`. The client learns the created
+    // project id, retries do not collide, and the persisted state is still
+    // fail-closed.
+    let creatorMemberSeedFailed = false;
+    if (ownerUserId) {
+      try {
+        addProjectMember(project.id, ownerUserId, ownerUserId);
+      } catch (err) {
+        console.error(
+          `[POST /api/projects] Failed to seed creator membership for "${project.id}":`,
+          (err as Error).message,
+        );
+        creatorMemberSeedFailed = true;
+      }
+    }
+
+    if (!creatorMemberSeedFailed && project.visibility !== createVisibility) {
+      project.visibility = createVisibility;
+      try {
+        saveProjects();
+      } catch (err) {
+        project.visibility = initialVisibility;
+        console.error(
+          `[POST /api/projects] Failed to publish project visibility for "${project.id}":`,
+          (err as Error).message,
+        );
+        return res.status(500).json({
+          error: 'project_visibility_publish_failed',
+          message: 'The project remains private.',
+        });
+      }
+    }
 
     // Workflow-mode scaffolding — match the shell a dev project gets minus
     // the GitHub/PR-specific bits. Without this, the wizard lands the user

@@ -1,5 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
+
+const aclStore = vi.hoisted(() => ({
+  assignedProjectIdsForUser: vi.fn(() => new Set<string>()),
+  restrictedProjectIds: vi.fn(() => new Set<string>()),
+}));
+
+vi.mock('./project-members-store.js', () => aclStore);
+
 import {
   createProjectVisibilityGate,
   resolveVisibilityCaller,
@@ -50,6 +58,12 @@ function makeRes() {
  * use real authUserId values so that noAuthConfigured resolves to false.
  */
 describe('createProjectVisibilityGate — non-bypass branches', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    aclStore.assignedProjectIdsForUser.mockReturnValue(new Set<string>());
+    aclStore.restrictedProjectIds.mockReturnValue(new Set<string>());
+  });
+
   const privateProject = makeProject({ id: 'p1', visibility: 'private', ownerUserId: 'owner-123' });
   const gate = createProjectVisibilityGate({ findProject: () => privateProject });
 
@@ -139,6 +153,47 @@ describe('createProjectVisibilityGate — non-bypass branches', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it('org Owner GETs private project members they do not own → next() (ACL admin route decides)', () => {
+    const req = makeReq({
+      params: { projectId: 'p1' },
+      method: 'GET',
+      baseUrl: '/api/projects/p1',
+      path: '/members',
+      originalUrl: '/api/projects/p1/members',
+      authUserId: 'org-owner-id',
+      authUser: 'org-owner',
+      authRole: 'Owner',
+    });
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    gate(req, res, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it('non-Owner GETs private project members they do not own → 404', () => {
+    const req = makeReq({
+      params: { projectId: 'p1' },
+      method: 'GET',
+      baseUrl: '/api/projects/p1',
+      path: '/members',
+      originalUrl: '/api/projects/p1/members',
+      authUserId: 'other-user',
+      authUser: 'other-user-name',
+      authRole: 'User',
+    });
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    gate(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Project not found' });
+  });
+
   it('shared project: any caller passes through', () => {
     const sharedGate = createProjectVisibilityGate({
       findProject: () => makeProject({ id: 'p1', visibility: 'shared' }),
@@ -157,6 +212,28 @@ describe('createProjectVisibilityGate — non-bypass branches', () => {
     expect(res.status).not.toHaveBeenCalled();
   });
 
+  it('shared project: non-Owner fails closed when the assignment ACL cannot be loaded', () => {
+    aclStore.restrictedProjectIds.mockImplementationOnce(() => {
+      throw new Error('orgs.db unavailable');
+    });
+    const sharedGate = createProjectVisibilityGate({
+      findProject: () => makeProject({ id: 'p1', visibility: 'shared' }),
+    });
+    const req = makeReq({
+      authUserId: 'some-user',
+      authUser: 'some-user-name',
+      authRole: 'User',
+    });
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    sharedGate(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Project not found' });
+  });
+
   it('missing project: gate passes through (downstream route owns 404)', () => {
     const missingGate = createProjectVisibilityGate({ findProject: () => null });
     const req = makeReq({ authUserId: 'u1', authUser: 'u1', authRole: 'User' });
@@ -171,11 +248,24 @@ describe('createProjectVisibilityGate — non-bypass branches', () => {
 });
 
 describe('resolveVisibilityCaller', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    aclStore.assignedProjectIdsForUser.mockReturnValue(new Set<string>());
+    aclStore.restrictedProjectIds.mockReturnValue(new Set<string>());
+  });
+
   it('authenticated User → userId set, role copied, no bypass', () => {
     const caller = resolveVisibilityCaller(
       makeReq({ authUserId: 'u-123', authUser: 'ada', authRole: 'User' }),
     );
-    expect(caller).toEqual({ userId: 'u-123', role: 'User', localBypass: false });
+    expect(caller).toMatchObject({
+      userId: 'u-123',
+      role: 'User',
+      localBypass: false,
+      assignmentAclUnavailable: false,
+    });
+    expect(caller.assignedProjectIds).toEqual(new Set<string>());
+    expect(caller.restrictedProjectIds).toEqual(new Set<string>());
   });
 
   it('authenticated Owner → userId set, role=Owner, no bypass', () => {
@@ -185,7 +275,24 @@ describe('resolveVisibilityCaller', () => {
     const caller = resolveVisibilityCaller(
       makeReq({ authUserId: 'owner-1', authUser: 'owner-1', authRole: 'Owner' }),
     );
-    expect(caller).toEqual({ userId: 'owner-1', role: 'Owner', localBypass: false });
+    expect(caller).toMatchObject({
+      userId: 'owner-1',
+      role: 'Owner',
+      localBypass: false,
+      assignmentAclUnavailable: false,
+    });
+  });
+
+  it('authenticated User → marks ACL unavailable when the store throws', () => {
+    aclStore.restrictedProjectIds.mockImplementationOnce(() => {
+      throw new Error('orgs.db unavailable');
+    });
+    const caller = resolveVisibilityCaller(
+      makeReq({ authUserId: 'u-123', authUser: 'ada', authRole: 'User' }),
+    );
+    expect(caller.assignmentAclUnavailable).toBe(true);
+    expect(caller.assignedProjectIds).toEqual(new Set<string>());
+    expect(caller.restrictedProjectIds).toEqual(new Set<string>());
   });
 
   it('local-bundled bypass → bypass=true even with no userId', () => {
@@ -217,5 +324,6 @@ describe('resolveVisibilityCaller', () => {
     const caller = resolveVisibilityCaller(makeReq({}));
     expect(caller.userId).toBeNull();
     expect(caller.localBypass).toBe(false);
+    expect(caller.assignmentAclUnavailable).toBe(false);
   });
 });

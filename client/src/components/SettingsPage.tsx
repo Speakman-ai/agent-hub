@@ -23,6 +23,7 @@ import { effectiveEngine, modelOverrideIsStale } from '../utils/perUserModelOver
 import ProjectSecretsEditor from './ProjectSecretsEditor';
 import GitHostSettingsSection from './GitHostSettingsSection';
 import ProjectDefaultAutomationSection from './finalize/ProjectDefaultAutomationSection';
+import ProjectMembersSection from './ProjectMembersSection';
 import { AVATAR_ICON_NAMES, buildIconAvatar, isIconAvatar } from '../utils/avatar';
 import { isWorkflowProject } from '../utils/projectMode';
 import {
@@ -1132,6 +1133,11 @@ export function ProjectsSection({
   const projectSettingsBody = (p: any) => (
     <div className={singleProjectMode ? 'space-y-4' : 'pl-8 pt-3 space-y-4'}>
       <ProjectSecretsEditor projectId={p.id} />
+
+      {/* Owner-managed visibility ACL — assign which users can see and open
+          this project. Self-hides for non-Owner callers (endpoint returns
+          403). */}
+      <ProjectMembersSection project={p} showToast={showToast} />
 
       {/* Per-user default Finalize automation level for new sessions in this
           project. Scoped to the signed-in user. */}

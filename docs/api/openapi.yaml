@@ -7643,6 +7643,95 @@ components:
         - dataDir
         - projectsDir
       description: Boot-time setup + engine status. Hit on every app load to decide whether to show the setup wizard and which engines are usable.
+    ProjectMember:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: Assigned user id.
+        username:
+          type: string
+          description: Assigned user’s username.
+        addedBy:
+          type: string
+          nullable: true
+          description: User id of the Owner who made the assignment; null if that user was later deleted.
+        createdAt:
+          type: string
+          description: When the assignment was made.
+      required:
+        - userId
+        - username
+        - addedBy
+        - createdAt
+      description: A user assigned to a project (a visibility-ACL row).
+    ProjectMembersList:
+      type: object
+      properties:
+        projectId:
+          type: string
+        ownerUserId:
+          type: string
+          nullable: true
+          description: The project creator; always effectively a member (sees the project) even without an explicit row.
+        visibility:
+          type: string
+          enum:
+            - shared
+            - private
+          description: Project visibility. Shared projects with no members are org-visible; private projects with no members are owner-only.
+        restricted:
+          type: boolean
+          description: True when the project has an active assignment ACL, even if it currently has zero assigned users. False means no explicit member ACL; combine with visibility to determine whether the project is org-visible (shared) or owner-only (private).
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectMember"
+      required:
+        - projectId
+        - ownerUserId
+        - visibility
+        - restricted
+        - members
+      description: The assignment ACL for a project.
+    ProjectMemberAdded:
+      type: object
+      properties:
+        projectId:
+          type: string
+        userId:
+          type: string
+        username:
+          type: string
+      required:
+        - projectId
+        - userId
+        - username
+      description: Confirmation that a user was assigned to a project.
+    ProjectMemberRemoved:
+      type: object
+      properties:
+        projectId:
+          type: string
+        userId:
+          type: string
+        removed:
+          type: boolean
+          enum:
+            - true
+      required:
+        - projectId
+        - userId
+        - removed
+      description: Confirmation that a user was unassigned from a project.
+    ProjectMemberErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope for the project-member routes.
     ReleaseDigestRecipient:
       type: object
       properties:
@@ -27604,6 +27693,126 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SetupStatusResponse"
+  /api/projects/{projectId}/members:
+    get:
+      tags:
+        - Projects
+      summary: List the users assigned to a project
+      description: "Returns the project’s visibility ACL. Owner-only (org Owner role, or the local-bundle / global-apiKey break-glass). `restricted: false` means no assignment ACL: shared projects are org-visible and private projects are owner-only. `restricted: true` means assignment-gated even if no users are currently assigned."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: The project member list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMembersList"
+        "403":
+          description: Caller is not an Owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
+        "404":
+          description: Project not found (or not visible to the caller).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
+    post:
+      tags:
+        - Projects
+      summary: Assign a user to a project
+      description: Adds a user to the project’s visibility ACL so they can see and enter it. Owner-only. Assigning the first member flips the project from org-visible to members-only. Idempotent — re-assigning an existing member is a no-op. Broadcasts `projects_updated` over the WebSocket.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                  description: Id of the org user to assign.
+              required:
+                - userId
+      responses:
+        "200":
+          description: User was already assigned; no new row was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberAdded"
+        "201":
+          description: User assigned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberAdded"
+        "400":
+          description: Missing userId, or the user is not a member of this org.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
+        "403":
+          description: Caller is not an Owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
+        "404":
+          description: Project or user not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
+  /api/projects/{projectId}/members/{userId}:
+    delete:
+      tags:
+        - Projects
+      summary: Unassign a user from a project
+      description: Removes a user from the project’s visibility ACL. Owner-only. Removing the last member keeps the assignment ACL active, so a restricted shared project does not reopen to the whole org. Broadcasts `projects_updated`.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: userId
+          in: path
+      responses:
+        "200":
+          description: User unassigned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberRemoved"
+        "403":
+          description: Caller is not an Owner.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
+        "404":
+          description: Project not found, or the user was not a member.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectMemberErrorResponse"
   /api/projects/provision/suggest:
     post:
       tags:
