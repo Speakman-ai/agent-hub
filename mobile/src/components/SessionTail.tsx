@@ -12,6 +12,7 @@ import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
 import DiffView from './DiffView';
 import SubagentCard from './SubagentCard';
 import AskUserQuestion from './AskUserQuestion';
+import CredentialRequestPrompt from './CredentialRequestPrompt';
 import BrowserActivityPanel from './BrowserActivityPanel';
 const TOOL_COLORS: Record<string, any> = {
     Bash: colors.emerald400,
@@ -179,7 +180,7 @@ function formatToolInput(input: any) {
         return String(input);
     }
 }
-function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, onAskSubmit, askSubmittedIds, browserScreenshots = {}, }: any) {
+function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, onAskSubmit, onCredentialSubmit, askSubmittedIds, browserScreenshots = {}, }: any) {
     const [expanded, setExpanded] = useState(false);
     const [expandedBlocks, setExpandedBlocks] = useState<any>({});
     const [loading, setLoading] = useState(false);
@@ -265,6 +266,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
     const browserHint = useMemo<any>(() => deriveStreamingBrowserHint(events ?? []), [events]);
     const hasBrowserTimeline = browserRows.length > 0 || (!!streaming && !!browserHint);
     const askBlocks = useMemo<any>(() => blocks.filter((b: any) => b.kind === 'ask_question'), [blocks]);
+    const credentialBlocks = useMemo<any>(() => blocks.filter((b: any) => b.kind === 'credential_request'), [blocks]);
     const browserPanel = hasBrowserTimeline ? (<BrowserActivityPanel timelineEntries={events ?? []} streaming={streaming} screenshots={browserScreenshots}/>) : null;
     const toolCount = blocks.filter((b: any) => ['tool', 'subagent', 'explored', 'todos', 'plan_proposal'].includes(b.kind)).length;
     const thinkingCount = blocks.filter((b: any) => b.kind === 'thinking').length;
@@ -272,7 +274,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
     if (!expanded) {
         const hasClassicMeta = toolCount > 0 || thinkingCount > 0 || resultBlock;
         const hasMeta = hasClassicMeta || hasBrowserTimeline;
-        if (!hasMeta && !events && askBlocks.length === 0) {
+        if (!hasMeta && !events && askBlocks.length === 0 && credentialBlocks.length === 0) {
             if (eventsFetchFailed) {
                 return (<View style={styles.retryBanner}>
             <TouchableOpacity onPress={() => {
@@ -287,6 +289,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
         }
         return (<View>
         {askBlocks.map((b: any) => (<AskUserQuestion key={b.event.askId} askId={b.event.askId} questions={b.event.questions || []} onSubmit={(text: any) => onAskSubmit?.(b.event.askId, text)} submitted={askSubmittedIds?.has(b.event.askId)}/>))}
+        {credentialBlocks.map((b: any) => (<CredentialRequestPrompt key={b.event.request.requestId} sessionId={message?.session_id} request={b.event.request} onSubmit={(text: any) => onCredentialSubmit?.(b.event.request.requestId, text)}/>))}
         {browserPanel}
         {hasClassicMeta && (<TouchableOpacity style={styles.summaryBar} onPress={() => setExpanded(true)}>
             <View style={[styles.barDot, { backgroundColor: agentColor || colors.gray500 }]}/>
@@ -313,6 +316,7 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
       {browserPanel}
 
       {askBlocks.map((b: any) => (<AskUserQuestion key={b.event.askId} askId={b.event.askId} questions={b.event.questions || []} onSubmit={(text: any) => onAskSubmit?.(b.event.askId, text)} submitted={askSubmittedIds?.has(b.event.askId)}/>))}
+      {credentialBlocks.map((b: any) => (<CredentialRequestPrompt key={b.event.request.requestId} sessionId={message?.session_id} request={b.event.request} onSubmit={(text: any) => onCredentialSubmit?.(b.event.request.requestId, text)}/>))}
 
       {loading && <Text style={styles.loadingText}>Loading events...</Text>}
 
@@ -327,6 +331,8 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
             const isBlockExpanded = expandedBlocks[idx];
             const toggle = () => setExpandedBlocks((prev: any) => ({ ...prev, [idx]: !prev[idx] }));
             switch (block.kind) {
+                case 'credential_request':
+                    return null;
                 case 'thinking': {
                     const t = block.event?.text || '';
                     return (<TouchableOpacity key={idx} style={styles.eventRow} onPress={toggle}>

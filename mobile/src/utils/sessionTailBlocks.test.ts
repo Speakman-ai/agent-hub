@@ -247,6 +247,28 @@ describe('eventsToBlocks — misc', () => {
         expect(blocks.map((b: any) => b.kind)).toEqual(['text', 'ask_question']);
         expect(blocks[0].text).toBe('Choose wisely');
     });
+    it('extracts credential request blocks from assistant text', () => {
+        const body = JSON.stringify({
+            requestId: 'survey-tracker-login',
+            service: 'Survey Tracker',
+            purpose: 'Sign in to query work orders.',
+            fields: [
+                { key: 'username', label: 'Username', type: 'username' },
+                { key: 'password', label: 'Password', type: 'password' },
+            ],
+        });
+        const blocks = eventsToBlocks(wrap([
+            {
+                type: 'assistant_text',
+                text: `Please sign in.\n\n\`\`\`agenthub:credential-request\n${body}\n\`\`\``,
+                partial: false,
+            },
+        ]));
+        expect(blocks.map((b: any) => b.kind)).toEqual(['credential_request', 'text']);
+        expect(blocks[0].event.request.service).toBe('Survey Tracker');
+        expect(blocks[1].text).toBe('Please sign in.');
+        expect(blocks[1].text).not.toContain('agenthub:credential-request');
+    });
     it('subagent tools', () => {
         const kinds = eventsToBlocks(wrap([
             { type: 'tool_use', id: 'a', tool: 'Task', input: { description: 'x' } },

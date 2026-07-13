@@ -15,6 +15,7 @@ import {
   PutSessionLinkedDesignRequestSchema,
   RewindRequestSchema,
   PatchCheckpointRequestSchema,
+  SubmitSessionCredentialRequestSchema,
 } from './sessions.openapi.js';
 import {
   normalizeSessionMode,
@@ -130,6 +131,12 @@ import { getActiveOrgId } from '../orgs.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
+import {
+  consumeSessionCredentialRequest,
+  getSessionCredentialRequestStatus,
+  submitSessionCredentialRequest,
+  SessionCredentialRequestError,
+} from '../session-credential-requests.js';
 
 /**
  * A session row joined with its parent cron's metadata, as returned by
@@ -664,6 +671,82 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     }
     sendSessionMessagesJson(res, body);
   });
+
+  router.get(
+    '/api/sessions/:sessionId/credential-requests/:requestId',
+    (req: Request, res: Response) => {
+      const sessionId = String(req.params.sessionId);
+      const requestId = String(req.params.requestId);
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      try {
+        const status = getSessionCredentialRequestStatus(sessionId, requestId);
+        if (!status) return res.status(404).json({ error: 'Credential request not found' });
+        res.json(status);
+      } catch (err) {
+        if (err instanceof SessionCredentialRequestError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.put(
+    '/api/sessions/:sessionId/credential-requests/:requestId',
+    (req: Request, res: Response) => {
+      const sessionId = String(req.params.sessionId);
+      const requestId = String(req.params.requestId);
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      const parsed = SubmitSessionCredentialRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: 'Invalid credential request body',
+          details: parsed.error.issues.map((issue) => ({
+            path: issue.path,
+            message: issue.message,
+          })),
+        });
+      }
+      try {
+        const status = submitSessionCredentialRequest({
+          sessionId,
+          requestId,
+          ...parsed.data,
+        });
+        res.json(status);
+      } catch (err) {
+        if (err instanceof SessionCredentialRequestError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        throw err;
+      }
+    },
+  );
+
+  router.post(
+    '/api/sessions/:sessionId/credential-requests/:requestId/consume',
+    (req: Request, res: Response) => {
+      const sessionId = String(req.params.sessionId);
+      const requestId = String(req.params.requestId);
+      if (!userOwnsSession(req as AuthenticatedRequest, sessionId)) {
+        return res.status(404).json({ error: 'Session not found' });
+      }
+      try {
+        const consumed = consumeSessionCredentialRequest(sessionId, requestId);
+        if (!consumed) return res.status(404).json({ error: 'Credential request not available' });
+        res.json(consumed);
+      } catch (err) {
+        if (err instanceof SessionCredentialRequestError) {
+          return res.status(err.statusCode).json({ error: err.message });
+        }
+        throw err;
+      }
+    },
+  );
 
   router.post('/api/tasks', (req: Request, res: Response) => {
     const { agentId, prompt } = req.body;

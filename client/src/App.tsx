@@ -4550,6 +4550,10 @@ export default function App({ initialView }: any = {}) {
     handleSend(messageText);
   };
 
+  const handleCredentialSubmit = (_requestId: any, messageText: any) => {
+    handleSend(messageText);
+  };
+
   const handleSend = async (content: any, images: any = [], { interrupt = false }: any = {}) => {
     let sessionId = activeSessionIdRef.current;
     if (!sessionId) {
@@ -5982,6 +5986,7 @@ export default function App({ initialView }: any = {}) {
                                       agentName={activeAgent?.name}
                                       onEventsLoaded={handleEventsLoaded}
                                       onAskSubmit={handleAskSubmit}
+                                      onCredentialSubmit={handleCredentialSubmit}
                                       askSubmittedIds={askSubmitted}
                                       fromAgent={activeAgent}
                                       agents={agents}
@@ -6037,6 +6042,7 @@ export default function App({ initialView }: any = {}) {
                                     key={streamingMsgId}
                                     message={{
                                       id: streamingMsgId,
+                                      session_id: activeSessionId,
                                       role: 'assistant',
                                       engine: streamingEngine,
                                       model: sessionModel,
@@ -6051,6 +6057,7 @@ export default function App({ initialView }: any = {}) {
                                     streaming
                                     onInterrupt={handleCancel}
                                     onAskSubmit={handleAskSubmit}
+                                    onCredentialSubmit={handleCredentialSubmit}
                                     askSubmittedIds={askSubmitted}
                                     fromAgent={activeAgent}
                                     agents={agents}

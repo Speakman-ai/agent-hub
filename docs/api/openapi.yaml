@@ -2543,6 +2543,82 @@ components:
       required:
         - error
       description: Error envelope. `details` is populated for 400 schema-validation errors with one entry per failing Zod issue.
+    SessionCredentialField:
+      type: object
+      properties:
+        key:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Stable field key, for example `username` or `password`.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 80
+        type:
+          type: string
+          enum:
+            - text
+            - username
+            - password
+      required:
+        - key
+        - label
+        - type
+    SessionCredentialStatusResponse:
+      type: object
+      properties:
+        requestId:
+          type: string
+        service:
+          type: string
+        purpose:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionCredentialField"
+        status:
+          type: string
+          enum:
+            - submitted
+            - consumed
+            - expired
+        submittedAt:
+          type: string
+        consumedAt:
+          type: string
+          nullable: true
+        expiresAt:
+          type: string
+      required:
+        - requestId
+        - service
+        - purpose
+        - fields
+        - status
+        - submittedAt
+        - consumedAt
+        - expiresAt
+    ConsumeSessionCredentialResponse:
+      type: object
+      properties:
+        requestId:
+          type: string
+        service:
+          type: string
+        purpose:
+          type: string
+        values:
+          type: object
+          additionalProperties:
+            type: string
+          description: Plaintext values. This response is available once; the encrypted payload is erased immediately after a successful consume.
+      required:
+        - requestId
+        - service
+        - purpose
+        - values
     SessionChangeFile:
       type: object
       properties:
@@ -16595,6 +16671,151 @@ paths:
                   - $ref: "#/components/schemas/SessionMessagesList"
         "404":
           description: Session not found (or hidden by ownership).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/credential-requests/{requestId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get session credential request status
+      description: Returns metadata and status for an ephemeral credential request. Plaintext credential values are never returned by this endpoint.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Agent-supplied credential request id from the chat prompt block.
+          required: true
+          description: Agent-supplied credential request id from the chat prompt block.
+          name: requestId
+          in: path
+      responses:
+        "200":
+          description: Credential request metadata and status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCredentialStatusResponse"
+        "404":
+          description: Session or credential request not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+    put:
+      tags:
+        - Sessions
+      summary: Submit ephemeral session credentials
+      description: Stores user-submitted credentials encrypted with a short TTL. The values are not added to chat history and are not returned by status reads.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Agent-supplied credential request id from the chat prompt block.
+          required: true
+          description: Agent-supplied credential request id from the chat prompt block.
+          name: requestId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                service:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                  description: Human-facing service name, for example `Survey Tracker`.
+                purpose:
+                  type: string
+                  minLength: 1
+                  maxLength: 240
+                  description: Why the agent is requesting these credentials.
+                fields:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/SessionCredentialField"
+                  minItems: 1
+                  maxItems: 6
+                values:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Plaintext values keyed by field key. Stored encrypted until one-time consumption, never returned by status endpoints.
+                ttlSeconds:
+                  type: number
+                  minimum: 0
+                  exclusiveMinimum: true
+                  maximum: 3600
+                  description: Credential lifetime in seconds. Defaults to 15 minutes, capped at 1 hour.
+              required:
+                - service
+                - purpose
+                - fields
+                - values
+      responses:
+        "200":
+          description: Credential request accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCredentialStatusResponse"
+        "400":
+          description: Validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+        "404":
+          description: Session not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionErrorResponse"
+  /api/sessions/{sessionId}/credential-requests/{requestId}/consume:
+    post:
+      tags:
+        - Sessions
+      summary: Consume ephemeral session credentials once
+      description: Returns plaintext values one time, then erases the encrypted payload. A second consume, an expired request, or a missing request returns 404.
+      parameters:
+        - schema:
+            type: string
+            description: Session UUID.
+          required: true
+          description: Session UUID.
+          name: sessionId
+          in: path
+        - schema:
+            type: string
+            description: Agent-supplied credential request id from the chat prompt block.
+          required: true
+          description: Agent-supplied credential request id from the chat prompt block.
+          name: requestId
+          in: path
+      responses:
+        "200":
+          description: Plaintext values for this one consume call.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsumeSessionCredentialResponse"
+        "404":
+          description: Session or available credential request not found.
           content:
             application/json:
               schema:

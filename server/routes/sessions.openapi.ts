@@ -276,6 +276,61 @@ export const PutSessionModelRequestSchema = z.object({
   model: z.string({ error: 'Invalid model' }).min(1, 'Invalid model'),
 });
 
+const SessionCredentialFieldSchema = registerComponent(
+  'SessionCredentialField',
+  z.object({
+    key: z.string().min(1).max(64).openapi({
+      description: 'Stable field key, for example `username` or `password`.',
+    }),
+    label: z.string().min(1).max(80),
+    type: z.enum(['text', 'username', 'password']),
+  }),
+);
+
+export const SubmitSessionCredentialRequestSchema = z.object({
+  service: z.string().min(1).max(120).openapi({
+    description: 'Human-facing service name, for example `Survey Tracker`.',
+  }),
+  purpose: z.string().min(1).max(240).openapi({
+    description: 'Why the agent is requesting these credentials.',
+  }),
+  fields: z.array(SessionCredentialFieldSchema).min(1).max(6),
+  values: z.record(z.string(), z.string()).openapi({
+    description:
+      'Plaintext values keyed by field key. Stored encrypted until one-time consumption, never returned by status endpoints.',
+  }),
+  ttlSeconds: z.number().positive().max(3600).optional().openapi({
+    description: 'Credential lifetime in seconds. Defaults to 15 minutes, capped at 1 hour.',
+  }),
+});
+
+const SessionCredentialStatusResponse = registerComponent(
+  'SessionCredentialStatusResponse',
+  z.object({
+    requestId: z.string(),
+    service: z.string(),
+    purpose: z.string(),
+    fields: z.array(SessionCredentialFieldSchema),
+    status: z.enum(['submitted', 'consumed', 'expired']),
+    submittedAt: z.string(),
+    consumedAt: z.string().nullable(),
+    expiresAt: z.string(),
+  }),
+);
+
+const ConsumeSessionCredentialResponse = registerComponent(
+  'ConsumeSessionCredentialResponse',
+  z.object({
+    requestId: z.string(),
+    service: z.string(),
+    purpose: z.string(),
+    values: z.record(z.string(), z.string()).openapi({
+      description:
+        'Plaintext values. This response is available once; the encrypted payload is erased immediately after a successful consume.',
+    }),
+  }),
+);
+
 /**
  * PUT /api/sessions/:sessionId/reasoning-effort — Codex "thinking" level.
  * `high` (default) maps to `model_reasoning_effort=high`; `pro` maps to
@@ -347,6 +402,12 @@ const sessionIdParams = z.object({
 
 const sessionAgentIdParams = sessionIdParams.extend({
   agentId: z.string().openapi({ description: 'Advisor agent ID to remove.' }),
+});
+
+const sessionCredentialRequestParams = sessionIdParams.extend({
+  requestId: z.string().openapi({
+    description: 'Agent-supplied credential request id from the chat prompt block.',
+  }),
 });
 
 const jsonContent = <T extends z.ZodTypeAny>(schema: T) => ({
@@ -518,6 +579,64 @@ registerPath({
       content: jsonContent(z.union([z.array(MessageComponent), SessionMessagesListComponent])),
     },
     404: errorResponse('Session not found (or hidden by ownership).'),
+  },
+});
+
+// GET /api/sessions/:sessionId/credential-requests/:requestId
+registerPath({
+  method: 'get',
+  path: '/api/sessions/{sessionId}/credential-requests/{requestId}',
+  tags: ['Sessions'],
+  summary: 'Get session credential request status',
+  description:
+    'Returns metadata and status for an ephemeral credential request. Plaintext credential values are never returned by this endpoint.',
+  request: { params: sessionCredentialRequestParams },
+  responses: {
+    200: {
+      description: 'Credential request metadata and status.',
+      content: jsonContent(SessionCredentialStatusResponse),
+    },
+    404: errorResponse('Session or credential request not found.'),
+  },
+});
+
+// PUT /api/sessions/:sessionId/credential-requests/:requestId
+registerPath({
+  method: 'put',
+  path: '/api/sessions/{sessionId}/credential-requests/{requestId}',
+  tags: ['Sessions'],
+  summary: 'Submit ephemeral session credentials',
+  description:
+    'Stores user-submitted credentials encrypted with a short TTL. The values are not added to chat history and are not returned by status reads.',
+  request: {
+    params: sessionCredentialRequestParams,
+    body: { content: jsonContent(SubmitSessionCredentialRequestSchema) },
+  },
+  responses: {
+    200: {
+      description: 'Credential request accepted.',
+      content: jsonContent(SessionCredentialStatusResponse),
+    },
+    400: errorResponse('Validation failed.'),
+    404: errorResponse('Session not found.'),
+  },
+});
+
+// POST /api/sessions/:sessionId/credential-requests/:requestId/consume
+registerPath({
+  method: 'post',
+  path: '/api/sessions/{sessionId}/credential-requests/{requestId}/consume',
+  tags: ['Sessions'],
+  summary: 'Consume ephemeral session credentials once',
+  description:
+    'Returns plaintext values one time, then erases the encrypted payload. A second consume, an expired request, or a missing request returns 404.',
+  request: { params: sessionCredentialRequestParams },
+  responses: {
+    200: {
+      description: 'Plaintext values for this one consume call.',
+      content: jsonContent(ConsumeSessionCredentialResponse),
+    },
+    404: errorResponse('Session or available credential request not found.'),
   },
 });
 

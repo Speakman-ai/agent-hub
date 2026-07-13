@@ -24,7 +24,7 @@ import ResolveSessionPrBanner from '../components/ResolveSessionPrBanner';
 import { shouldShowViewChanges } from '../utils/sessionExtras';
 import { inferPrUrlFromSessionTitle, isResolvePrSessionTitle, parseResolvePrNumberFromTitle, } from '@shared/utils/sessionTitlePr';
 export default function ChatScreen() {
-    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, } = useApp();
+    const { agents, activeAgent, activeAgentId, setActiveAgentId, messages, thinking, streamingContent, streamingEngine, streamingMsgId, sessionModel, connected, isProcessing, handleSend, handleCancel, chatScrollNonce, skills, delegations, messageQueues, eventsByMessage, browserScreensBySession, handleDequeue, handleInterruptQueuedMessage, handleEditQueuedMessage, handleDelegationCancel, handleEventsLoaded, activeSessionId, changesReady, dismissChangesReady, triggerCreateTicketAndPr, shipFailureAt, projects, sessionHandoffs, handleOpenHandoffSession, sessionConsultMode, askSubmitted, handleAskSubmit, handleCredentialSubmit, reloadMessages, sessionAgents, sessionRoundProcessing, handleSessionAgentsUpdated, sessions, } = useApp();
     // NOTE: `activeSession` is declared once below (useMemo) — a duplicate
     // plain declaration here previously made this module fail to parse.
     const navigation = useNavigation<any>();
@@ -97,7 +97,7 @@ export default function ChatScreen() {
                 const isQueued = queuedIds.has(msg.id);
                 return (<View>
             <ChatMessage message={{ ...msg, queued: isQueued }} agentColor={activeAgent?.color} agentName={activeAgent?.name} onDequeue={isQueued ? handleDequeue : undefined} onEditQueued={isQueued ? handleEditQueuedMessage : undefined} onInterrupt={isQueued && isProcessing ? handleInterruptQueuedMessage : undefined} inFlightWhileStreaming={isQueued && isProcessing} fromAgent={activeAgent} agents={agents} sessionHandoffs={sessionHandoffs} onOpenSession={handleOpenHandoffSession}/>
-            {msg.role === 'assistant' && (<SessionTail message={msg} events={eventsByMessage[msg.id]} agentColor={activeAgent?.color} onEventsLoaded={handleEventsLoaded} onAskSubmit={handleAskSubmit} askSubmittedIds={askSubmitted} browserScreenshots={(activeSessionId && browserScreensBySession[activeSessionId]?.[msg.id]) || {}}/>)}
+            {msg.role === 'assistant' && (<SessionTail message={msg} events={eventsByMessage[msg.id]} agentColor={activeAgent?.color} onEventsLoaded={handleEventsLoaded} onAskSubmit={handleAskSubmit} onCredentialSubmit={handleCredentialSubmit} askSubmittedIds={askSubmitted} browserScreenshots={(activeSessionId && browserScreensBySession[activeSessionId]?.[msg.id]) || {}}/>)}
           </View>);
             }
             case 'thinking':
@@ -112,10 +112,11 @@ export default function ChatScreen() {
                                 `messages`. */}
             {streamingMsgId && (<SessionTail message={{
                             id: streamingMsgId,
+                            session_id: activeSessionId,
                             role: 'assistant',
                             engine: streamingEngine,
                             model: sessionModel,
-                        }} events={eventsByMessage[streamingMsgId]} agentColor={activeAgent?.color} streaming onEventsLoaded={handleEventsLoaded} onAskSubmit={handleAskSubmit} askSubmittedIds={askSubmitted} browserScreenshots={(activeSessionId &&
+                        }} events={eventsByMessage[streamingMsgId]} agentColor={activeAgent?.color} streaming onEventsLoaded={handleEventsLoaded} onAskSubmit={handleAskSubmit} onCredentialSubmit={handleCredentialSubmit} askSubmittedIds={askSubmitted} browserScreenshots={(activeSessionId &&
                             browserScreensBySession[activeSessionId]?.[streamingMsgId]) ||
                             {}}/>)}
           </View>);

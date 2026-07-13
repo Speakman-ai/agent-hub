@@ -24,7 +24,9 @@ import { extractReviewVerdictContent } from '../utils/finalizeTimeline';
 import { extractAskBlocks } from '@shared/utils/extractAskBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';
 import { formatSystemBannerModelLine } from '@shared/utils/systemBannerModel';
+import { extractCredentialRequestBlocks } from '../utils/credentialRequests';
 import AskUserQuestion from './AskUserQuestion';
+import CredentialRequestPrompt from './CredentialRequestPrompt';
 import HandoffCard from './HandoffCard';
 import DelegateCard from './DelegateCard';
 import BrowserActivityPanel from './BrowserActivityPanel';
@@ -80,6 +82,7 @@ function SessionTail({
   streaming,
   onEventsLoaded,
   onAskSubmit,
+  onCredentialSubmit,
   askSubmittedIds,
   fromAgent,
   agents,
@@ -429,6 +432,17 @@ function SessionTail({
                     onSubmit={(text: any) => onAskSubmit?.(block.event.askId, text)}
                   />
                 );
+              case 'credential_request':
+                return (
+                  <CredentialRequestPrompt
+                    key={`b${i}`}
+                    sessionId={message?.session_id}
+                    request={block.event.request}
+                    onSubmit={(text: any) =>
+                      onCredentialSubmit?.(block.event.request.requestId, text)
+                    }
+                  />
+                );
               case 'result':
                 return <ResultFooter key={`b${i}`} result={block.event} />;
               case 'checkpoint':
@@ -512,6 +526,21 @@ export function eventsToBlocks(events: any) {
     if (!textBuf) return;
     const rawText = textBuf.final || textBuf.partials;
     let prose = rawText;
+    if (prose.includes('agenthub:credential-request')) {
+      const { strippedText, requests } = extractCredentialRequestBlocks(prose);
+      if (requests.length > 0) {
+        for (const request of requests) {
+          blocks.push({
+            kind: 'credential_request',
+            event: {
+              type: 'credential_request',
+              request,
+            },
+          });
+        }
+        prose = strippedText;
+      }
+    }
     if (prose.includes('agenthub:ask')) {
       const { strippedText, asks } = extractAskBlocks(prose);
       if (asks.length > 0) {

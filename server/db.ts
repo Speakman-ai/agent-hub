@@ -310,6 +310,25 @@ function initDb(dataDir: string): void {
     CREATE INDEX IF NOT EXISTS idx_session_progress_session
       ON session_progress(session_id, started_at ASC);
 
+    CREATE TABLE IF NOT EXISTS session_credential_requests (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      service TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      fields_json TEXT NOT NULL,
+      values_enc TEXT NOT NULL,
+      submitted_at TEXT NOT NULL,
+      consumed_at TEXT,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(session_id, request_id),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_credential_requests_session
+      ON session_credential_requests(session_id, updated_at);
+
     -- artifacts: per-session documents an agent generated (PDFs, scripts,
     -- reports, …). The bytes live in object storage (S3 or a local dir; see
     -- server/artifacts/artifact-store.ts); this table is the metadata index

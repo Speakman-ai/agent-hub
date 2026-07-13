@@ -258,6 +258,17 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  getSessionCredentialRequest: (sessionId: string, requestId: string) =>
+    fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`),
+  submitSessionCredentialRequest: (
+    sessionId: string,
+    requestId: string,
+    body: Record<string, unknown>,
+  ) =>
+    fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   // Per-project member assignment (Owner-managed visibility ACL).
   getProjectMembers: (projectId: string) =>
     fetchJSON<{

@@ -38,6 +38,11 @@ export const api = {
     getAgents: () => fetchJSON('/agents'),
     getSessions: (agentId: any) => fetchJSON(`/agents/${agentId}/sessions`),
     getSession: (sessionId: any) => fetchJSON(`/sessions/${sessionId}`),
+    getSessionCredentialRequest: (sessionId: any, requestId: any) => fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`),
+    submitSessionCredentialRequest: (sessionId: any, requestId: any, body: any) => fetchJSON(`/sessions/${sessionId}/credential-requests/${encodeURIComponent(requestId)}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+    }),
     createSession: (agentId: any, name: any, options: any = {}) => fetchJSON(`/agents/${agentId}/sessions`, {
         method: 'POST',
         body: JSON.stringify({

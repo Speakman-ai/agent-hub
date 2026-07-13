@@ -111,6 +111,37 @@ describe('eventsToBlocks — browser_tool_activity handling', () => {
 });
 
 describe('eventsToBlocks — agenthub:ask recovery', () => {
+  it('extracts credential request blocks from assistant text', () => {
+    const body = JSON.stringify({
+      requestId: 'survey-tracker-login',
+      service: 'Survey Tracker',
+      purpose: 'Sign in to query work orders.',
+      fields: [
+        { key: 'username', label: 'Username', type: 'username' },
+        { key: 'password', label: 'Password', type: 'password' },
+      ],
+    });
+    const events = [
+      {
+        seq: 1,
+        event: {
+          type: 'assistant_text',
+          text: `Please sign in.\n\n\`\`\`agenthub:credential-request\n${body}\n\`\`\``,
+          partial: false,
+        },
+      },
+    ];
+
+    const blocks = eventsToBlocks(events);
+    expect(blocks.map((b: any) => b.kind)).toEqual(['credential_request', 'text']);
+    expect(blocks[0].event.request).toMatchObject({
+      requestId: 'survey-tracker-login',
+      service: 'Survey Tracker',
+    });
+    expect(blocks[1].text).toBe('Please sign in.');
+    expect(blocks[1].text).not.toContain('agenthub:credential-request');
+  });
+
   it('renders a picker for flat fenced envelope (askId + question at top level)', () => {
     const body = JSON.stringify({
       askId: 'preview-bootstrap-approval',

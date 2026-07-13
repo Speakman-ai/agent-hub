@@ -1682,6 +1682,11 @@ export function AppProvider({ children }: any) {
         });
         handleSend(messageText);
     }, [handleSend]);
+    const handleCredentialSubmit = useCallback((_requestId: any, messageText: any) => {
+        if (!messageText)
+            return;
+        handleSend(messageText);
+    }, [handleSend]);
     // Load session agents when active session changes.
     useEffect(() => {
         if (!activeSessionId) {
@@ -2047,6 +2052,7 @@ export function AppProvider({ children }: any) {
         // Ask-prompt (`agenthub:ask`) submission state and handler
         askSubmitted,
         handleAskSubmit,
+        handleCredentialSubmit,
         // Finalize setup wizard (Settings → Finalize)
         lastFinalizeWizardEvent,
         lastFinalizeRunEvent,

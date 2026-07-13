@@ -9,6 +9,7 @@
  */
 import { stripAssistantControlBlocks } from '@shared/utils/stripAssistantControlBlocks';
 import { shouldSuppressStreamEvent } from '@shared/utils/benignStreamEvents';
+import { extractCredentialRequestBlocks } from './credentialRequests';
 const EXPLORE_TOOLS = new Set(['Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'NotebookRead']);
 /**
  * @param {{ seq?: number, event: object }[]|null|undefined} events
@@ -42,7 +43,20 @@ export function eventsToBlocks(events: any) {
         if (!textBuf)
             return;
         const rawText = textBuf.final || textBuf.partials;
-        const text = stripAssistantControlBlocks(rawText);
+        let prose = rawText;
+        if (prose.includes('agenthub:credential-request')) {
+            const { strippedText, requests } = extractCredentialRequestBlocks(prose);
+            if (requests.length > 0) {
+                for (const request of requests) {
+                    blocks.push({
+                        kind: 'credential_request',
+                        event: { type: 'credential_request', request },
+                    });
+                }
+                prose = strippedText;
+            }
+        }
+        const text = stripAssistantControlBlocks(prose);
         if (text && text.trim())
             blocks.push({ kind: 'text', text });
         textBuf = null;
