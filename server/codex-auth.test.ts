@@ -106,6 +106,17 @@ describe('shouldPassModelFlag', () => {
     }
   });
 
+  it('under chatgpt, capability extraAllowed lets an advertised newer model through', () => {
+    // gpt-5.6-sol is not baseline, so it's dropped without capability info...
+    expect(shouldPassModelFlag('chatgpt', 'gpt-5.6-sol')).toBe(false);
+    // ...but forwarded when the installed CLI advertises it (extraAllowed).
+    expect(shouldPassModelFlag('chatgpt', 'gpt-5.6-sol', ['gpt-5.6-sol'])).toBe(true);
+    // A gated model NOT advertised is still dropped even with a non-empty set.
+    expect(shouldPassModelFlag('chatgpt', 'gpt-5.6-luna', ['gpt-5.6-sol'])).toBe(false);
+    // Baseline models are unaffected by (and don't require) extraAllowed.
+    expect(shouldPassModelFlag('chatgpt', 'gpt-5.5', [])).toBe(true);
+  });
+
   it('allowlist includes the current default so fresh sessions never get dropped', () => {
     // Keep in sync with server/config.ts → engineDefaultModels['codex-cli'].
     expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain('gpt-5.5');

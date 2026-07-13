@@ -43,11 +43,16 @@ export interface CodexAuthInfo {
  * filter there.
  */
 export const CODEX_CHATGPT_ALLOWED_MODELS: readonly string[] = [
-  // NOTE: gpt-5.6 is intentionally absent. The ChatGPT backend rejects it with
-  // HTTP 400 ("not supported when using Codex with a ChatGPT account") and the
-  // installed codex-cli warns it can't find its metadata, so a persisted/stale
-  // gpt-5.6 session must drop --model and fall back to the ChatGPT default
-  // rather than forward an ID that spins forever.
+  // This is the *baseline* — models accepted under ChatGPT OAuth by every
+  // codex-cli we ship against, safe to forward without a capability check.
+  //
+  // The gpt-5.6 family (gpt-5.6-sol/terra/luna) is intentionally NOT baseline:
+  // it needs codex-cli >= 0.144.0, and on an older binary the ChatGPT backend
+  // rejects it with HTTP 400 ("requires a newer version of Codex"). Those IDs
+  // are allowed through `shouldPassModelFlag`'s `extraAllowed` param ONLY when
+  // the installed CLI advertises them (see codex-model-capability.ts), so a
+  // stale/persisted gpt-5.6-* on an old host still drops --model and falls back
+  // to the ChatGPT default rather than spinning forever.
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',
@@ -95,8 +100,15 @@ export function detectCodexAuthMode(codexHome?: string): CodexAuthInfo {
 export function shouldPassModelFlag(
   mode: CodexAuthMode,
   model: string | null | undefined,
+  /**
+   * Capability-derived model IDs the installed codex-cli advertises (e.g.
+   * gpt-5.6-sol once the host is on >= 0.144.0). Allowed in addition to the
+   * static baseline so a selected+advertised newer model isn't stripped.
+   */
+  extraAllowed?: readonly string[],
 ): boolean {
   if (!model) return false;
   if (mode !== 'chatgpt') return true;
-  return CODEX_CHATGPT_ALLOWED_MODELS.includes(model);
+  if (CODEX_CHATGPT_ALLOWED_MODELS.includes(model)) return true;
+  return !!extraAllowed && extraAllowed.includes(model);
 }

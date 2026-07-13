@@ -23,9 +23,20 @@ export interface PublicModelConfig {
  * authenticated for. Unauthenticated engines surface an empty model list so
  * every client can hide/disable selection consistently.
  */
+export interface BuildModelConfigOpts {
+  /**
+   * Capability-resolved selectable model list for `codex-cli`, overriding the
+   * static `cfg.engineValidModels['codex-cli']`. Lets the route surface newer
+   * models (e.g. gpt-5.6-sol) only when the installed CLI advertises them, and
+   * hide them otherwise. When omitted, the static config list is used as-is.
+   */
+  codexSelectableModels?: readonly string[];
+}
+
 export function buildAuthenticatedModelConfig(
   cfg: AppConfig,
   auth: EngineAuthState,
+  opts?: BuildModelConfigOpts,
 ): PublicModelConfig {
   const engineValidModels: Record<string, string[]> = {};
   const engineDefaultModels: Record<string, string> = {};
@@ -34,7 +45,9 @@ export function buildAuthenticatedModelConfig(
 
   for (const [engine, models] of Object.entries(cfg.engineValidModels)) {
     const enabled = !!auth[engine as keyof EngineAuthState];
-    let allowed = enabled ? models.slice() : [];
+    const source =
+      engine === 'codex-cli' && opts?.codexSelectableModels ? opts.codexSelectableModels : models;
+    let allowed = enabled ? source.slice() : [];
 
     if (engine === 'cursor-agent' && allowed.length > 0) {
       allowed = allowed.filter((m) => cursorHub.has(m));

@@ -111,6 +111,11 @@ import {
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import { type ProjectAwsFiles, writeProjectAwsFiles } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import {
+  readCodexModelsCache,
+  advertisedCapabilityModels,
+  codexHomeFromEnv,
+} from './codex-model-capability.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
@@ -3195,7 +3200,15 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // than 400ing the turn. API-key / unknown modes keep the prior
         // pass-through behavior.
         const codexAuth = detectCodexAuthMode();
-        if (model && shouldPassModelFlag(codexAuth.mode, model)) {
+        // Capability-gated newer models (gpt-5.6-*) are allowed through only
+        // when the installed CLI advertises them in the spawn's codex home —
+        // matching what /api/config/models offers as selectable. On an older
+        // binary the model is absent from the cache, so it's stripped here and
+        // Codex falls back to its ChatGPT default instead of 400ing the turn.
+        const codexCapabilityModels = advertisedCapabilityModels(
+          readCodexModelsCache(codexHomeFromEnv(sessionCliEnv)),
+        );
+        if (model && shouldPassModelFlag(codexAuth.mode, model, codexCapabilityModels)) {
           args.push('--model', model);
         } else if (model) {
           console.warn(

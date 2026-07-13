@@ -92,6 +92,59 @@ describe('buildAuthenticatedModelConfig', () => {
     expect(out.engineDefaultModels['claude-code']).toBe('claude-opus-4-8');
   });
 
+  it('uses codexSelectableModels override for the codex engine when provided', () => {
+    const cfg = makeConfig();
+    cfg.engineDefaultModels['codex-cli'] = 'gpt-5.5';
+    cfg.engineValidModels['codex-cli'] = ['gpt-5.5', 'gpt-5.4'];
+    const out = buildAuthenticatedModelConfig(
+      cfg,
+      {
+        'claude-code': false,
+        'cursor-agent': false,
+        'gemini-cli': false,
+        'codex-cli': true,
+        'grok-cli': false,
+      },
+      { codexSelectableModels: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'] },
+    );
+    // Capability-resolved list wins over the static config list.
+    expect(out.engineValidModels['codex-cli']).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4']);
+    // Default stays gpt-5.5 (still present in the override) — no surprise jump.
+    expect(out.engineDefaultModels['codex-cli']).toBe('gpt-5.5');
+  });
+
+  it('override is ignored when codex is unauthenticated (empty list)', () => {
+    const cfg = makeConfig();
+    const out = buildAuthenticatedModelConfig(
+      cfg,
+      {
+        'claude-code': false,
+        'cursor-agent': false,
+        'gemini-cli': false,
+        'codex-cli': false,
+        'grok-cli': false,
+      },
+      { codexSelectableModels: ['gpt-5.6-sol', 'gpt-5.5'] },
+    );
+    expect(out.engineValidModels['codex-cli']).toEqual([]);
+  });
+
+  it('non-codex engines are unaffected by codexSelectableModels', () => {
+    const out = buildAuthenticatedModelConfig(
+      makeConfig(),
+      {
+        'claude-code': true,
+        'cursor-agent': false,
+        'gemini-cli': false,
+        'codex-cli': true,
+        'grok-cli': false,
+      },
+      { codexSelectableModels: ['gpt-5.6-sol'] },
+    );
+    expect(out.engineValidModels['claude-code']).toEqual(['claude-opus-4-8', 'claude-sonnet-4-6']);
+    expect(out.engineValidModels['codex-cli']).toEqual(['gpt-5.6-sol']);
+  });
+
   it('filters cursor-agent models to the Hub CLI allowlist when authenticated', () => {
     const cfg = makeConfig();
     cfg.engineValidModels['cursor-agent'] = [

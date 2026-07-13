@@ -15,6 +15,10 @@ import { deriveCardPrefix } from '../kanban-short-id.js';
 import { parsePrBaseBranchInput } from '../kanban-pr-base.js';
 import { invalidateCursorAuthCache } from '../cursor-auth-cache.js';
 import { buildAuthenticatedModelConfig } from '../model-config-auth.js';
+import {
+  readCodexModelsCacheForUser,
+  resolveSelectableCodexModels,
+} from '../codex-model-capability.js';
 import { probeEngineAvailability } from '../engine-availability.js';
 import {
   normalizeCronEngine,
@@ -432,14 +436,28 @@ export default function createConfigRoutes(deps: RouteDeps): Router {
       userId: authedReq.authUserId ?? null,
     });
 
+    // Capability-gated Codex list: surface newer models (gpt-5.6-*) only when
+    // the installed codex-cli advertises them in its models cache, so the
+    // picker self-heals across a host CLI upgrade instead of offering a model
+    // the binary can't serve. Falls back to the static baseline when no cache.
+    const codexCache = readCodexModelsCacheForUser(authedReq.authUserId ?? null, config.dataDir);
+    const codexSelectableModels = resolveSelectableCodexModels(
+      config.engineValidModels['codex-cli'] ?? [],
+      codexCache,
+    );
+
     res.json(
-      buildAuthenticatedModelConfig(config, {
-        'claude-code': engineStatus.claude,
-        'cursor-agent': engineStatus.cursor,
-        'gemini-cli': geminiAuthenticated,
-        'codex-cli': engineStatus.codex,
-        'grok-cli': grokProbe.available,
-      }),
+      buildAuthenticatedModelConfig(
+        config,
+        {
+          'claude-code': engineStatus.claude,
+          'cursor-agent': engineStatus.cursor,
+          'gemini-cli': geminiAuthenticated,
+          'codex-cli': engineStatus.codex,
+          'grok-cli': grokProbe.available,
+        },
+        { codexSelectableModels },
+      ),
     );
   });
 
