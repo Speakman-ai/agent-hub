@@ -200,6 +200,8 @@ import { handleMultiAgentCancel } from './session-multi-agent.js';
 import { initDesignChat, handleDesignChat, handleDesignCancel } from './design-chat.js';
 import { ensureDesignsRoot, getDesign as getDesignStore } from './designs-store.js';
 import { createSessionDesignFilesHandler } from './session-files-mount.js';
+import { createGitHostMediaHandler, validateGitHostMediaToken } from './git-host-media-mount.js';
+import { readRepoBlob } from './git-host/repo-read.js';
 
 import {
   initAutoGit,
@@ -849,6 +851,22 @@ app.use(
   '/session-files/:sessionId/design',
   createSessionDesignFilesHandler({
     getSession: (id) => stmts!.getSession.get(id) as SessionRow | undefined,
+  }),
+);
+
+// Hub-hosted repo README images: `![alt](docs/media/x.png)` refs are repo-
+// relative and would 404 against the SPA origin, so the README image slots
+// render blank. The client rewrites relative image srcs to this mount, which
+// streams the raw image blob out of the bare repo. Non-`/api/` path so an
+// `<img>` (which can't send the SPA bearer token) still loads it; image-only
+// content types keep it from becoming a general repo-file exfil channel.
+app.use(
+  '/git-host-media/:projectId',
+  createGitHostMediaHandler({
+    findProject: (id) => findProject(id) ?? null,
+    validateToken: (projectId, branch, token) =>
+      validateGitHostMediaToken(projectId, branch, token),
+    readBlob: (projectId, filePath, branch) => readRepoBlob(projectId, filePath, branch),
   }),
 );
 

@@ -12,6 +12,7 @@ import path from 'path';
 import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { getRequest } from '../test/helpers.js';
+import { validateGitHostMediaToken } from '../git-host-media-mount.js';
 
 let request: supertest.Agent;
 let gitHostRepoPath: typeof import('../git-host/repo-store.js').gitHostRepoPath;
@@ -313,6 +314,8 @@ describe('git-host repository browsing routes', () => {
       path: 'README.md',
       truncated: false,
     });
+    expect(typeof res.body.readme.mediaToken).toBe('string');
+    expect(validateGitHostMediaToken(id, 'main', res.body.readme.mediaToken)).toBe(true);
     expect(res.body.readme.content).toContain('# Hello Repo');
   });
 

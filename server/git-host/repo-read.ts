@@ -359,6 +359,49 @@ export async function readRepoFile(
   };
 }
 
+export interface RepoBlob {
+  /** Branch the blob was read from. */
+  branch: string;
+  /** Root-relative path that was read. */
+  path: string;
+  /** Raw bytes of the blob, byte-accurately truncated at the cap. */
+  buffer: Buffer;
+  truncated: boolean;
+}
+
+/**
+ * Read a single root-relative file from a Hub-hosted repo branch as raw
+ * bytes (binary-safe — no utf8 decode). Used to serve README-referenced
+ * images through the browser-loadable media mount. Returns null when the
+ * hosted repo, branch, or file is absent, or the path is unsafe.
+ */
+export async function readRepoBlob(
+  projectId: string,
+  filePath: string,
+  branch?: string,
+  dataDir: string = config.dataDir,
+  maxBytes = 10 * 1024 * 1024,
+): Promise<RepoBlob | null> {
+  if (!hostedRepoExists(projectId, dataDir)) return null;
+  if (!isSafeRepoPath(filePath)) return null;
+  const repoPath = gitHostRepoPath(projectId, dataDir);
+  const targetBranch = branch || (await hostedRepoDefaultBranch(projectId, dataDir));
+  if (!targetBranch || !isSafeBranchName(targetBranch)) return null;
+
+  const blob = await readGitBlobBounded(
+    repoPath,
+    `refs/heads/${targetBranch}:${filePath}`,
+    maxBytes,
+  );
+  if (!blob) return null;
+  return {
+    branch: targetBranch,
+    path: filePath,
+    buffer: blob.buffer,
+    truncated: blob.truncated,
+  };
+}
+
 /** Branch names come from URLs — refuse anything ref-unsafe. */
 export function isSafeBranchName(name: string): boolean {
   if (!name || name.length > 250) return false;

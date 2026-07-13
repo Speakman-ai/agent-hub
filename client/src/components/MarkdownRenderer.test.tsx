@@ -45,4 +45,17 @@ describe('MarkdownRenderer — server-hosted image resolution', () => {
       'https://hub.example.com/uploads/support-screenshot-abc.png',
     );
   });
+
+  it('uses imageSrcTransform output as the final image URL', () => {
+    const { container } = render(
+      <MarkdownContent
+        content={'![dashboard](docs/media/dashboard.png)'}
+        imageSrcTransform={() => '/git-host-media/agent-hub?path=docs%2Fmedia%2Fdashboard.png'}
+      />,
+    );
+    const img = container.querySelector('img');
+    expect(img.getAttribute('src')).toBe(
+      '/git-host-media/agent-hub?path=docs%2Fmedia%2Fdashboard.png',
+    );
+  });
 });

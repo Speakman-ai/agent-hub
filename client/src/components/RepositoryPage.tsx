@@ -31,6 +31,7 @@ import { relativePrTime } from '../utils/prFormatting';
 import { splitUnifiedDiff } from '../utils/commitDiff';
 import { FileDiffSection } from './FileDiffView';
 import { MarkdownContent } from './MarkdownRenderer';
+import { resolveRepoImageUrl } from '../utils/resolveRepoMediaUrl';
 import GitHostMirrorStatusBanner from './GitHostMirrorStatusBanner';
 
 function shortSha(sha: any) {
@@ -192,8 +193,21 @@ function CommitRow({ commit, onOpen }: any) {
  * `{ path, content, truncated }` payload from the git-host readme endpoint,
  * or null when the branch has no root README (the card hides itself).
  */
-function ReadmeCard({ readme }: any) {
+function ReadmeCard({ readme, projectId }: any) {
   const [open, setOpen] = useState(true);
+  // README-relative image srcs (e.g. `docs/media/x.png`) resolve against the
+  // SPA URL and 404 — remap them to the git-host media mount so they render.
+  const baseDir = readme?.path ? readme.path.split('/').slice(0, -1).join('/') : '';
+  const imageSrcTransform = useCallback(
+    (src: any) =>
+      resolveRepoImageUrl(src, {
+        projectId,
+        branch: readme?.branch,
+        mediaToken: readme?.mediaToken,
+        baseDir,
+      }),
+    [projectId, readme?.branch, readme?.mediaToken, baseDir],
+  );
   if (!readme) return null;
   return (
     <div
@@ -220,7 +234,7 @@ function ReadmeCard({ readme }: any) {
             className="prose prose-invert prose-sm max-w-none text-gray-300"
             data-testid="repo-readme-content"
           >
-            <MarkdownContent content={readme.content || ''} />
+            <MarkdownContent content={readme.content || ''} imageSrcTransform={imageSrcTransform} />
           </div>
           {readme.truncated && (
             <p className="text-[11px] text-amber-400 mt-2">
@@ -444,7 +458,7 @@ export default function RepositoryPage({ projectId, project, onOpenPulls, onToas
                     ))}
                   </select>
                 )}
-                <ReadmeCard readme={readme} />
+                <ReadmeCard readme={readme} projectId={projectId} />
                 <div className="space-y-1.5" data-testid="repo-commit-list">
                   {(commits || []).map((c: any) => (
                     <CommitRow key={c.sha} commit={c} onOpen={() => setCommitSha(c.sha)} />

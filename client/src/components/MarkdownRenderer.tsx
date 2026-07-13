@@ -190,13 +190,30 @@ export function MarkdownContent({
   components: componentsProp,
   className,
   rehypePlugins: rehypePluginsProp,
+  imageSrcTransform,
 }: any) {
   const rehypePlugins = rehypePluginsProp !== undefined ? rehypePluginsProp : [rehypeHighlight];
+  let components = componentsProp || markdownComponents;
+  // When a caller (e.g. the RepositoryPage README) needs relative image srcs
+  // remapped to a media endpoint, wrap the img handler; the base component set
+  // (code toolbar, mermaid, links) is otherwise preserved. The transform is the
+  // sole resolver here — it already returns the final URL (server base included
+  // for remote mode) and leaves absolute/`data:` srcs untouched — so we do NOT
+  // re-wrap in resolveServerMediaUrl, which would risk double-prefixing.
+  if (imageSrcTransform) {
+    const base = componentsProp || markdownComponents;
+    components = {
+      ...base,
+      img({ src, alt, ...props }: any) {
+        return <img src={src ? imageSrcTransform(src) : src} alt={alt} {...props} />;
+      },
+    };
+  }
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={rehypePlugins}
-      components={componentsProp || markdownComponents}
+      components={components}
       className={className}
     >
       {content}

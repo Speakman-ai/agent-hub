@@ -22,6 +22,7 @@ import {
   listRepoCommits,
   readRepoReadme,
 } from '../git-host/repo-read.js';
+import { issueGitHostMediaToken } from '../git-host-media-mount.js';
 import {
   gitHostRepoPath,
   hostedRepoDefaultBranch,
@@ -298,6 +299,7 @@ const RepoReadmeSchema = z
     path: z.string(),
     content: z.string(),
     truncated: z.boolean(),
+    mediaToken: z.string(),
   })
   .nullable();
 
@@ -461,7 +463,14 @@ export default function createGitHostRoutes(deps: RouteDeps): Router {
     }
     try {
       const readme = await readRepoReadme(project.id, branchParam || undefined);
-      res.json({ readme });
+      res.json({
+        readme: readme
+          ? {
+              ...readme,
+              mediaToken: issueGitHostMediaToken(project.id, readme.branch),
+            }
+          : null,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: `Failed to read README: ${msg.split('\n')[0]}` });
