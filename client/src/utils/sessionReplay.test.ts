@@ -51,6 +51,7 @@ import {
   DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
   MIN_CONTINUOUS_FLUSH_INTERVAL_MS,
   MAX_CONTINUOUS_FLUSH_INTERVAL_MS,
+  REPLAY_MAX_CHUNK_MS,
   SegmentReplayFlusher,
   submitReplaySegment,
   segmentBatchEndpoint,
@@ -1891,6 +1892,194 @@ describe('ContinuousReplayFlusher', () => {
     expect(f._pending.length).toBe(1); // re-queued for the next interval
   });
 
+  // ── 30-min chunk rotation (age-based) ──────────────────────────────
+  // A capture that runs past the chunk bound rotates to a fresh replay id so no
+  // stored blob spans more than ~30 min — a 4-hour session → ~8 chunks.
+
+  it('rotates to a fresh id without uploading post-boundary events to the old chunk', async () => {
+    let clock = 1_000;
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const requestSnapshot = vi.fn();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'chunk-1',
+      submitBatch,
+      now: () => clock,
+      maxChunkDurationMs: REPLAY_MAX_CHUNK_MS,
+      newReplayId: () => 'chunk-2',
+      requestSnapshot,
+    });
+
+    // Create the capture; the chunk clock anchors at creation time (1_000).
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    expect(f._created).toBe(true);
+    expect(f._captureStartedAt).toBe(1_000);
+
+    // A tick BEFORE the bound flushes the tail normally without rotating.
+    clock = 1_000 + REPLAY_MAX_CHUNK_MS - 1;
+    f.addEvent(cincr(clock));
+    await f._intervalTick();
+    expect(f.replayId).toBe('chunk-1');
+    expect(requestSnapshot).not.toHaveBeenCalled();
+
+    // A late tick can contain both in-boundary and post-boundary events. Only the
+    // in-boundary prefix is appended to the old replay; the post-boundary tail is
+    // dropped while rotation asks the recorder for a fresh snapshot.
+    const boundary = 1_000 + REPLAY_MAX_CHUNK_MS;
+    clock = boundary + 5 * 60 * 1000;
+    f.addEvent(cincr(boundary));
+    f.addEvent(cincr(boundary + 1));
+    await f._intervalTick();
+    const oldTail = submitBatch.mock.calls.at(-1)![0];
+    expect(oldTail.id).toBe('chunk-1');
+    expect(oldTail.events.map((e: any) => e.timestamp)).toEqual([boundary]);
+    expect(f.replayId).toBe('chunk-2');
+    expect(f._created).toBe(false);
+    expect(f._captureStartedAt).toBeNull();
+    expect(f._pending.length).toBe(0); // post-boundary tail dropped for the new snapshot
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
+
+    // The requested snapshot arrives → the next tick CREATES the new chunk under
+    // the fresh id and re-anchors its clock at the new creation time.
+    f.addEvent(cmeta(clock));
+    f.addEvent(csnap(clock + 1));
+    await f._intervalTick();
+    const last = submitBatch.mock.calls.at(-1)![0];
+    expect(last.id).toBe('chunk-2');
+    expect(hasFullSnapshot(last.events)).toBe(true);
+    expect(f._created).toBe(true);
+    expect(f._captureStartedAt).toBe(clock);
+  });
+
+  it('does not age-rotate when the in-boundary closing tail has a transient failure', async () => {
+    let clock = 1_000;
+    const submitBatch = vi
+      .fn()
+      .mockResolvedValueOnce({ created: true })
+      .mockRejectedValueOnce(statusErr(503));
+    const requestSnapshot = vi.fn();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'chunk-retry',
+      submitBatch,
+      now: () => clock,
+      maxChunkDurationMs: REPLAY_MAX_CHUNK_MS,
+      newReplayId: () => 'should-not-rotate',
+      requestSnapshot,
+    });
+
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+
+    const boundary = 1_000 + REPLAY_MAX_CHUNK_MS;
+    clock = boundary + 1;
+    f.addEvent(cincr(boundary));
+    f.addEvent(cincr(boundary + 1));
+    await f._intervalTick();
+
+    expect(f.replayId).toBe('chunk-retry');
+    expect(f._created).toBe(true);
+    expect(requestSnapshot).not.toHaveBeenCalled();
+    expect(f._pending.map((e: any) => e.timestamp)).toEqual([boundary, boundary + 1]);
+  });
+
+  it('continues age rotation after an existing in-flight flush rejects', async () => {
+    let clock = 1_000;
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const requestSnapshot = vi.fn();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'chunk-stale-flush',
+      submitBatch,
+      now: () => clock,
+      maxChunkDurationMs: REPLAY_MAX_CHUNK_MS,
+      newReplayId: () => 'chunk-after-stale-flush',
+      requestSnapshot,
+    });
+
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+
+    const boundary = 1_000 + REPLAY_MAX_CHUNK_MS;
+    clock = boundary;
+    f.addEvent(cincr(boundary));
+    f._flushing = Promise.reject(new Error('stale upload rejection'));
+
+    await f._intervalTick();
+
+    expect(submitBatch.mock.calls.at(-1)![0].id).toBe('chunk-stale-flush');
+    expect(submitBatch.mock.calls.at(-1)![0].events.map((e: any) => e.timestamp)).toEqual([
+      boundary,
+    ]);
+    expect(f.replayId).toBe('chunk-after-stale-flush');
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves unknown-timestamp snapshot starters for the new chunk', async () => {
+    let clock = 1_000;
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const requestSnapshot = vi.fn();
+    const f = new ContinuousReplayFlusher({
+      replayId: 'chunk-unknown-old',
+      submitBatch,
+      now: () => clock,
+      maxChunkDurationMs: REPLAY_MAX_CHUNK_MS,
+      newReplayId: () => 'chunk-unknown-new',
+      requestSnapshot,
+    });
+
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+
+    clock = 1_000 + REPLAY_MAX_CHUNK_MS + 1;
+    const unknownMeta = { type: RRWEB_META, data: {} };
+    const unknownSnapshot = { type: RRWEB_FULL_SNAPSHOT, data: { node: elemTree(3) } };
+    f.addEvent(unknownMeta);
+    f.addEvent(unknownSnapshot);
+
+    await f._intervalTick();
+
+    expect(submitBatch).toHaveBeenCalledTimes(1);
+    expect(f.replayId).toBe('chunk-unknown-new');
+    expect(f._pending).toEqual([unknownMeta, unknownSnapshot]);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
+
+    await f._intervalTick();
+
+    const newChunk = submitBatch.mock.calls.at(-1)![0];
+    expect(newChunk.id).toBe('chunk-unknown-new');
+    expect(newChunk.events).toEqual([unknownMeta, unknownSnapshot]);
+    expect(hasFullSnapshot(newChunk.events)).toBe(true);
+  });
+
+  it('does not age-rotate when the chunk bound is disabled (<=0)', async () => {
+    let clock = 0;
+    const submitBatch = vi.fn().mockResolvedValue({ created: true });
+    const f = new ContinuousReplayFlusher({
+      replayId: 'no-rotate',
+      submitBatch,
+      now: () => clock,
+      maxChunkDurationMs: 0,
+      newReplayId: () => 'never-used',
+    });
+    f.addEvent(cmeta(1));
+    f.addEvent(csnap(2));
+    await f.flush('interval');
+    clock = 10 * 60 * 60 * 1000; // 10h later — far past any chunk bound
+    f.addEvent(cincr(3));
+    await f._intervalTick();
+    expect(f.replayId).toBe('no-rotate');
+    expect(f._created).toBe(true);
+  });
+
+  it('defaults the chunk bound to REPLAY_MAX_CHUNK_MS (30 min)', () => {
+    const f = new ContinuousReplayFlusher({ replayId: 'x', submitBatch: vi.fn() });
+    expect(f.maxChunkDurationMs).toBe(REPLAY_MAX_CHUNK_MS);
+    expect(REPLAY_MAX_CHUNK_MS).toBe(30 * 60 * 1000);
+  });
+
   it('clears only the confirmed creating events, keeping ones queued mid-flight', async () => {
     let resolveCreate: any;
     const create = new Promise((r) => {
@@ -3241,22 +3430,39 @@ describe('RumSessionManager', () => {
     expect(rolled.viewId).toBe('id-4');
   });
 
-  it('rolls over to a fresh session.id after 4h continuous duration, even while active', () => {
+  it('rolls over to a fresh session.id after the 30-min chunk cap, even while active', () => {
     let t = 0;
     const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
     const first = m.notifyActivity();
 
     // Stay continuously active (refresh well inside the inactivity window) right
-    // up to the 4h cap — the max-duration bound must still end the session.
+    // up to the chunk cap — the max-duration bound must still end the session.
     const step = SESSION_INACTIVITY_TIMEOUT_MS - 1;
     let last = first;
     while (t < SESSION_MAX_DURATION_MS) {
       t += step;
       last = m.notifyActivity();
     }
-    // The step that crossed the 4h cap minted a fresh session.
+    // The step that crossed the chunk cap minted a fresh session.
     expect(last.sessionChanged).toBe(true);
     expect(last.sessionId).not.toBe(first.sessionId);
+  });
+
+  it('chunks a 4-hour continuous session into 8 sessions at the 30-min cap', () => {
+    let t = 0;
+    const m = new RumSessionManager({ now: () => t, generateId: counterIds() });
+    const ids = new Set<string>();
+    // Drive continuous activity in 1-min steps (well inside the 15-min
+    // inactivity window and an even divisor of the 30-min cap) so ONLY the
+    // max-duration chunk bound rolls the session, landing exactly on each cap.
+    const step = 60_000;
+    const fourHours = 4 * 60 * 60 * 1000;
+    while (t < fourHours) {
+      ids.add(m.notifyActivity().sessionId);
+      t += step;
+    }
+    // 4h / 30-min chunks = 8 distinct session ids rather than one 4h blob.
+    expect(ids.size).toBe(fourHours / REPLAY_MAX_CHUNK_MS);
   });
 
   it('mints a new view.id on navigation under the same session', () => {
@@ -3318,9 +3524,12 @@ describe('RumSessionManager', () => {
     expect(m.viewId).toBeNull();
   });
 
-  it('uses the Datadog default constants when none are injected', () => {
+  it('uses the default constants when none are injected (30-min chunk cap)', () => {
     expect(SESSION_INACTIVITY_TIMEOUT_MS).toBe(15 * 60 * 1000);
-    expect(SESSION_MAX_DURATION_MS).toBe(4 * 60 * 60 * 1000);
+    // Max session duration is the 30-min replay chunk bound, not Datadog's 4h —
+    // a long session is stored as consecutive 30-min chunks.
+    expect(REPLAY_MAX_CHUNK_MS).toBe(30 * 60 * 1000);
+    expect(SESSION_MAX_DURATION_MS).toBe(REPLAY_MAX_CHUNK_MS);
     const m = new RumSessionManager({});
     expect(m.inactivityTimeoutMs).toBe(SESSION_INACTIVITY_TIMEOUT_MS);
     expect(m.maxDurationMs).toBe(SESSION_MAX_DURATION_MS);

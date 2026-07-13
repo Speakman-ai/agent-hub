@@ -109,6 +109,18 @@ export const MIN_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const MAX_CONTINUOUS_FLUSH_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
+ * Hard cap on how long any single stored replay chunk may span (30 min). A
+ * continuous capture that runs longer is broken into fresh chunks so a long
+ * working session is stored as consecutive ~30-minute replays instead of one
+ * unbounded multi-hour blob (a 4-hour session → ~8 chunks). Both continuous
+ * tiers honour it: the segmented tier rolls a fresh session id at this bound
+ * (see `SESSION_MAX_DURATION_MS`), and the monolithic tier rotates to a fresh
+ * replay id (see `ContinuousReplayFlusher`). This also bounds how far back the
+ * bug-report button's continuous session can reach — the last 30 minutes.
+ */
+export const REPLAY_MAX_CHUNK_MS = 30 * 60 * 1000;
+
+/**
  * Clamp a continuous-flush cadence into the deliverable range. A non-finite /
  * unset value resolves to the 5-min default; a sub-minute value is raised to the
  * floor (the MVP storage can't go faster), an excessive one capped to the
@@ -910,6 +922,7 @@ export class ContinuousReplayFlusher {
     submitBatch = submitReplayBatch,
     now = () => Date.now(),
     flushIntervalMs = DEFAULT_CONTINUOUS_FLUSH_INTERVAL_MS,
+    maxChunkDurationMs = REPLAY_MAX_CHUNK_MS,
     minBatchEvents = 1,
     setIntervalFn = typeof setInterval === 'function' ? setInterval : null,
     clearIntervalFn = typeof clearInterval === 'function' ? clearInterval : null,
@@ -928,6 +941,13 @@ export class ContinuousReplayFlusher {
     this._now = now;
     // Clamp here too so a caller-supplied cadence can't sneak under the floor.
     this.flushIntervalMs = clampContinuousFlushInterval(flushIntervalMs);
+    // 30-min chunk bound: once the current capture has spanned this long, a
+    // periodic tick rotates to a fresh replay id so no stored blob exceeds it
+    // (a 4-hour session → ~8 chunks). <=0 / non-finite disables age rotation.
+    this.maxChunkDurationMs =
+      typeof maxChunkDurationMs === 'number' && Number.isFinite(maxChunkDurationMs)
+        ? maxChunkDurationMs
+        : REPLAY_MAX_CHUNK_MS;
     this.minBatchEvents = Math.max(1, minBatchEvents | 0);
     this._setIntervalFn = setIntervalFn;
     this._clearIntervalFn = clearIntervalFn;
@@ -950,6 +970,10 @@ export class ContinuousReplayFlusher {
 
     this._pending = [];
     this._created = false; // true once the creating (first) chunk lands
+    // Wall-clock at which the CURRENT capture was created (its first chunk
+    // confirmed); null before creation and after a rotation. Drives the 30-min
+    // chunk rotation in the periodic tick.
+    this._captureStartedAt = null;
     this.active = false;
     this._timer = null;
     this._flushing = null; // in-flight interval-flush promise (overlap guard)
@@ -968,8 +992,57 @@ export class ContinuousReplayFlusher {
     if (typeof this._setIntervalFn === 'function' && this.flushIntervalMs > 0) {
       this._timer = this._setIntervalFn(() => {
         // Fire-and-forget — the interval must never await an upload.
-        void this.flush('interval');
+        void this._intervalTick();
       }, this.flushIntervalMs);
+    }
+  }
+
+  /**
+   * True when the current (created) capture has spanned the 30-min chunk bound
+   * and should rotate to a fresh replay id so no stored blob exceeds it. False
+   * before creation, after a rotation, or when the bound is disabled (<=0).
+   */
+  _shouldRotateForAge() {
+    return (
+      this._created &&
+      this._captureStartedAt != null &&
+      this.maxChunkDurationMs > 0 &&
+      this._now() - this._captureStartedAt >= this.maxChunkDurationMs
+    );
+  }
+
+  /**
+   * Periodic tick: when the current capture has reached the 30-min chunk bound,
+   * close it without appending events that fall after the boundary. The in-bound
+   * leading prefix (if any) is uploaded to the old id first; the over-bound tail
+   * is dropped because it cannot replay in the fresh capture until a new snapshot
+   * arrives. Fire-and-forget; never throws (the interval must never surface an
+   * error).
+   */
+  async _intervalTick() {
+    try {
+      const inflight = this._flushing;
+      if (inflight) {
+        try {
+          await inflight;
+        } catch {
+          // ignore — continue with this tick's retry/rotation checks
+        }
+      }
+
+      if (this._shouldRotateForAge()) {
+        await this._rotateForAge('interval');
+        return;
+      }
+
+      await this.flush('interval');
+
+      // The upload can complete after the boundary, or new events can queue while
+      // it is in flight. Rotate now, dropping any post-boundary tail instead of
+      // sending it to an over-age replay on the next interval.
+      if (this._shouldRotateForAge()) await this._rotateForAge('interval');
+    } catch {
+      // ignore — the interval must never surface an error
     }
   }
 
@@ -1028,6 +1101,9 @@ export class ContinuousReplayFlusher {
         { endpointBase: this._endpointBase, rumToken: this._rumToken },
       );
       this._created = true;
+      // Anchor the chunk clock at the moment THIS capture was created, so age
+      // rotation measures from the first confirmed chunk, not from page load.
+      if (creating) this._captureStartedAt = this._now();
       this.lastResult = result || null;
       if (creating) {
         // Confirmed: NOW drop exactly the sent leading events. More may have been
@@ -1060,16 +1136,90 @@ export class ContinuousReplayFlusher {
   }
 
   /**
-   * Start a fresh capture under a new id. The rejected batch is DROPPED (its
-   * events predate the snapshot the new capture will open with, so they could
-   * never replay) and a new full snapshot is requested from the recorder — it
-   * arrives through the normal event sink, and `flush`'s existing "no creating
-   * chunk without a snapshot" guard holds the new capture back until it lands.
+   * Return the leading pending events whose timestamps can still belong to the
+   * current chunk. Unknown or post-bound timestamps stop the prefix; those events
+   * must not be uploaded to the old replay once the chunk is over age.
    */
-  _rotate() {
+  _pendingChunkBoundaryIndex() {
+    if (!this._shouldRotateForAge()) return this._pending.length;
+    const boundary = this._captureStartedAt + this.maxChunkDurationMs;
+    let i = 0;
+    while (i < this._pending.length) {
+      const ts = this._pending[i]?.timestamp;
+      if (typeof ts !== 'number' || !Number.isFinite(ts) || ts > boundary) break;
+      i += 1;
+    }
+    return i;
+  }
+
+  async _rotateForAge(reason: any) {
+    if (this._flushing) {
+      try {
+        await this._flushing;
+      } catch {
+        // ignore — the in-flight flush swallows its own errors
+      }
+    }
+    if (!this._shouldRotateForAge()) return;
+
+    const boundaryIndex = this._pendingChunkBoundaryIndex();
+    if (boundaryIndex <= 0) {
+      const headTs = this._pending[0]?.timestamp;
+      const preservePending =
+        this._pending.length > 0 && (typeof headTs !== 'number' || !Number.isFinite(headTs));
+      this._rotate({ preservePending });
+      return;
+    }
+
+    const batch = this._pending.slice(0, boundaryIndex);
+    this._pending = this._pending.slice(boundaryIndex);
+
+    const p = this._submitCreatedTailBeforeRotation(batch, reason);
+    const guard = p.then(() => null);
+    this._flushing = guard;
+    let status;
+    try {
+      status = await p;
+    } finally {
+      if (this._flushing === guard) this._flushing = null;
+    }
+
+    if (status === 'sent' && this._shouldRotateForAge()) this._rotate();
+  }
+
+  async _submitCreatedTailBeforeRotation(batch: any, reason: any) {
+    try {
+      const result = await this._submitBatch(
+        { id: this.replayId, events: batch, meta: this._batchMeta(reason) },
+        { endpointBase: this._endpointBase, rumToken: this._rumToken },
+      );
+      this.lastResult = result || null;
+      return 'sent';
+    } catch (err) {
+      const status = (err as any)?.status;
+      if (status === 413 || status === 409) {
+        this._rotate();
+        return 'rotated';
+      }
+      this._pending = batch.concat(this._pending);
+      return 'failed';
+    }
+  }
+
+  /**
+   * Start a fresh capture under a new id. By default, pending events are DROPPED
+   * (they predate the snapshot the new capture will open with, so they could
+   * never replay) and a new full snapshot is requested from the recorder. Age
+   * rotation can preserve a timestamp-less starter batch instead: if it already
+   * contains a full snapshot, the new capture can create from that batch.
+   */
+  _rotate({ preservePending = false }: any = {}) {
     this.replayId = String(this._newReplayId());
     this._created = false;
-    this._pending = [];
+    // New capture hasn't been created yet — re-anchor the chunk clock on its
+    // first confirmed chunk (in `_runFlush`), not carried over from the old one.
+    this._captureStartedAt = null;
+    if (!preservePending) this._pending = [];
     this.lastResult = null;
     if (typeof this._requestSnapshot === 'function') {
       try {
@@ -2010,8 +2160,16 @@ export class SegmentReplayFlusher {
 
 /** End a session after this long with no activity (Datadog parity: 15 min). */
 export const SESSION_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000;
-/** Hard cap on one session's continuous duration (Datadog parity: 4h). */
-export const SESSION_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+/**
+ * Hard cap on one session's continuous duration. Set to the 30-minute replay
+ * chunk bound (`REPLAY_MAX_CHUNK_MS`): a session that runs longer rolls to a
+ * fresh session id, so a long working session is stored as consecutive
+ * ~30-minute chunks rather than one multi-hour blob. Datadog's own parity value
+ * is 4h; we deliberately chunk tighter so a stored replay — and the bug-report
+ * button's continuous session — stays bounded at 30 minutes. Inactivity still
+ * ends a session at 15 min (`SESSION_INACTIVITY_TIMEOUT_MS`).
+ */
+export const SESSION_MAX_DURATION_MS = REPLAY_MAX_CHUNK_MS;
 
 /**
  * Mint an id for a session or a view. Prefers `crypto.randomUUID()`; falls back
