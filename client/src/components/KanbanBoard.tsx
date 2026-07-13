@@ -9,7 +9,6 @@ import {
   GitPullRequest,
   Lock,
   AlertTriangle,
-  Zap,
   PlayCircle,
   Check,
   Eye,
@@ -43,7 +42,6 @@ import { CSS } from '@dnd-kit/utilities';
 import { columnDroppableId, resolveDropTarget, computeMoveUpdates } from '../utils/kanbanReorder';
 import { api } from '../utils/api';
 import { useVisibleIntervalRefresh } from '../hooks/useVisibleIntervalRefresh';
-import { epicFormToUpdateBody } from '../utils/epics';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import {
   isPrematureDoneMoveError,
@@ -70,8 +68,6 @@ import { collectDistinctLabels, cardMatchesLabelFilter } from '../utils/kanbanLa
 import { cardMatchesUserFilter, usernameForUserId } from '../utils/kanbanUserFilter';
 import { MarkdownContent } from './MarkdownRenderer';
 import FinalizeCardBadge from './finalize/CardBadge';
-import EpicAutonomousDialog from './EpicAutonomousDialog';
-import { epicToAutonomousForm } from './EpicAutonomousPanel';
 import CardContextMenu from './CardContextMenu';
 import KanbanCardDetailModal from './kanban/KanbanCardDetailModal';
 import KanbanColumnDialog from './kanban/KanbanColumnDialog';
@@ -850,13 +846,10 @@ export default function KanbanBoard({
   // <DragOverlay> floating clone; null when no drag is in flight.
   const [activeId, setActiveId] = useState<any>(null);
 
-  // Epics (badges, autonomous dispatch)
+  // Epics (badges and filtering)
   const [epics, setEpics] = useState<any[]>([]);
   const [cardTemplates, setCardTemplates] = useState<any[]>([]);
   const [serverAvailableLabels, setServerAvailableLabels] = useState<string[] | null>(null);
-  const [showAutonomousDialog, setShowAutonomousDialog] = useState(false);
-  const [autonomousForm, setAutonomousForm] = useState<any>(null);
-  const [autonomousSaving, setAutonomousSaving] = useState(false);
 
   const [pendingMove, setPendingMove] = useState<any>(null); // { card, targetColumn, position }
   const [pendingBulkMove, setPendingBulkMove] = useState<any>(null); // { cards, targetColumn }
@@ -1835,11 +1828,6 @@ export default function KanbanBoard({
     onAvailableLabelsChange?.(allLabels);
   }, [allLabels, onAvailableLabelsChange]);
 
-  const soleSelectedEpicId = selectedEpicIds.size === 1 ? [...selectedEpicIds][0] : null;
-  const selectedEpic = soleSelectedEpicId
-    ? epics.find((e: any) => e.id === soleSelectedEpicId)
-    : null;
-
   // Board-wide card total from per-column counts (falls back to loaded count
   // before the first paged response lands). With pagination `cards` is only the
   // loaded slice, so summing `total` keeps the header honest.
@@ -1872,46 +1860,6 @@ export default function KanbanBoard({
       }
     }
   }, [filterActive, anyColumnHasMore, columns, drainColumn]);
-
-  const openAutonomousDialog = () => {
-    if (!selectedEpic) return;
-    setAutonomousForm(epicToAutonomousForm(selectedEpic));
-    setShowAutonomousDialog(true);
-  };
-
-  const closeAutonomousDialog = () => {
-    if (autonomousSaving) return;
-    setShowAutonomousDialog(false);
-    setAutonomousForm(null);
-  };
-
-  const handleAutonomousFormChange = (patch: any) => {
-    setAutonomousForm((prev: any) => ({ ...prev, ...patch }));
-  };
-
-  const handleSaveAutonomous = async () => {
-    if (!selectedEpic || !autonomousForm || autonomousSaving) return;
-    setAutonomousSaving(true);
-    try {
-      await api.updateEpic(
-        projectId,
-        selectedEpic.id,
-        epicFormToUpdateBody({
-          name: selectedEpic.name,
-          description: selectedEpic.description || '',
-          color: selectedEpic.color,
-          ...autonomousForm,
-        }),
-      );
-      setShowAutonomousDialog(false);
-      setAutonomousForm(null);
-      reconcileBoard();
-    } catch (err: any) {
-      console.error('Failed to save autonomous settings:', err);
-    } finally {
-      setAutonomousSaving(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -1985,21 +1933,6 @@ export default function KanbanBoard({
               Features
             </button>
           ) : null}
-          {selectedEpic ? (
-            <button
-              type="button"
-              onClick={openAutonomousDialog}
-              data-testid="open-autonomous-dialog"
-              className={`flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium border transition-colors ${
-                selectedEpic.autonomous === 1
-                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
-                  : 'border-white/[0.06] text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08]'
-              }`}
-            >
-              <Zap size={14} className={selectedEpic.autonomous === 1 ? 'text-emerald-400' : ''} />
-              Autonomous
-            </button>
-          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -2039,17 +1972,6 @@ export default function KanbanBoard({
           </button>
         </div>
       </div>
-
-      <EpicAutonomousDialog
-        open={showAutonomousDialog}
-        epic={selectedEpic}
-        form={autonomousForm || epicToAutonomousForm(selectedEpic || {})}
-        onChange={handleAutonomousFormChange}
-        modelConfig={modelConfig}
-        saving={autonomousSaving}
-        onSave={handleSaveAutonomous}
-        onClose={closeAutonomousDialog}
-      />
 
       <KanbanColumnDialog
         open={columnDialog != null}

@@ -270,10 +270,8 @@ describe('findEpic', () => {
     });
 });
 describe('epicDropdownLabel', () => {
-    it('prepends Auto: for autonomous epics', () => {
-        expect(epicDropdownLabel({ name: 'Live', autonomous: 1 })).toBe('Auto: Live');
-    });
-    it('omits the prefix for non-autonomous epics', () => {
+    it('does not expose obsolete feature-level autonomy state', () => {
+        expect(epicDropdownLabel({ name: 'Live', autonomous: 1 })).toBe('Live');
         expect(epicDropdownLabel({ name: 'Idle', autonomous: 0 })).toBe('Idle');
     });
     it('returns empty for nullish epic', () => {

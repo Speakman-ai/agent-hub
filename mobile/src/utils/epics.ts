@@ -164,14 +164,10 @@ export function findEpic(epics: any, epicId: any) {
         return null;
     return epics.find((e: any) => e.id === epicId) || null;
 }
-/**
- * Autonomous epics are prefixed with "Auto:" in dropdown labels.
- */
 export function epicDropdownLabel(epic: any) {
     if (!epic)
         return '';
-    const prefix = epic.autonomous ? 'Auto: ' : '';
-    return `${prefix}${epic.name}`;
+    return epic.name;
 }
 export function phaseFormToUpdateBody(form: any) {
     const autonomousOn = form.autonomous ? 1 : 0;

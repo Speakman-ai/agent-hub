@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { SidebarContext } from '../context/SidebarContext';
 import { api } from '../utils/api';
 import { colors } from '../theme/colors';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, } from '../utils/epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicBranchTogglePatch, } from '../utils/epics';
 import { findAgentByName, hasActiveSession, buildAssigneeOptions, filterAgentsByProject, validModelsForAgent, engineEntriesWithModels, assignedSessionId, } from '../utils/kanbanAssign';
 import { hasUnresolvedBlockers, shouldConfirmMove } from '../utils/blockers';
 import { isPrematureDoneMoveError, PREMATURE_DONE_MOVE_EXPLANATION, PREMATURE_DONE_MOVE_TITLE, } from '@shared/utils/prematureDoneMove';
@@ -126,7 +126,6 @@ export default function KanbanScreen({ route, navigation }: any) {
     const [editingEpic, setEditingEpic] = useState<any>(null); // null = creating new
     const [epicForm, setEpicForm] = useState(DEFAULT_EPIC_FORM);
     const [epicSaving, setEpicSaving] = useState(false);
-    const [showAutonomousModelModal, setShowAutonomousModelModal] = useState(false);
     const columns = board?.columns || DEFAULT_COLUMNS;
     const epics = board?.epics || [];
     const doneColumnIds = new Set(columns.filter((c: any) => /done|complete|closed/i.test(c.name || c.id || '')).map((c: any) => c.id));
@@ -380,18 +379,6 @@ export default function KanbanScreen({ route, navigation }: any) {
             .then(setModelConfig)
             .catch(() => setModelConfig(null));
     }, []);
-    const autonomousModelOptions = useMemo<any>(() => {
-        if (!modelConfig?.engineValidModels)
-            return [];
-        const s = new Set();
-        for (const arr of Object.values(modelConfig.engineValidModels as Record<string, any>)) {
-            for (const m of arr || []) {
-                if (m)
-                    s.add(m);
-            }
-        }
-        return Array.from(s).sort();
-    }, [modelConfig]);
     const cardsForColumn = (columnId: any) => {
         const scoped = filterCardsByEpic(cards, selectedEpicId);
         return scoped
@@ -478,12 +465,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                 await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
             }
             else {
-                const created = await api.createEpic(projectId, epicFormToCreateBody(epicForm));
-                // If the user toggled autonomous while creating, apply it via a
-                // follow-up PUT so the autonomous-exclusive rule runs server-side.
-                if (created?.id && epicForm.autonomous) {
-                    await api.updateEpic(projectId, created.id, epicFormToUpdateBody(epicForm));
-                }
+                await api.createEpic(projectId, epicFormToCreateBody(epicForm));
             }
             setShowEpicManager(false);
             setEditingEpic(null);
@@ -1624,11 +1606,22 @@ export default function KanbanScreen({ route, navigation }: any) {
               <Text style={styles.fieldLabel}>Name</Text>
               <TextInput style={styles.fieldInput} value={epicForm.name} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, name: v }))} placeholder="Feature name..." placeholderTextColor={colors.gray600} autoFocus/>
 
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+                <View style={{ flex: 1, paddingRight: 8 }}>
+                  <Text style={styles.fieldLabel}>Keep on feature branch</Text>
+                  <Text style={{ color: colors.gray500, fontSize: 11, lineHeight: 16 }}>
+                    Ticket pull requests skip CI. CI runs on the final pull request to the repo default branch.
+                  </Text>
+                </View>
+                <Switch value={!!epicForm.pr_base_branch?.trim()} onValueChange={(on: any) => setEpicForm((form: any) => ({ ...form, ...epicBranchTogglePatch(form, on) }))} trackColor={{ false: colors.gray700, true: colors.blue600 }} thumbColor={epicForm.pr_base_branch?.trim() ? colors.blue400 : colors.gray500}/>
+              </View>
+              {!!epicForm.pr_base_branch?.trim() && (<>
+                  <Text style={styles.fieldLabel}>Feature branch</Text>
+                  <TextInput style={styles.fieldInput} value={epicForm.pr_base_branch ?? ''} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, pr_base_branch: v }))} placeholder="feature/platform-reliability" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false}/>
+                </>)}
+
               <Text style={styles.fieldLabel}>Description</Text>
               <TextInput style={[styles.fieldInput, { minHeight: 60, textAlignVertical: 'top' }]} value={epicForm.description} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, description: v }))} placeholder="Short description (optional)" placeholderTextColor={colors.gray600} multiline/>
-
-              <Text style={styles.fieldLabel}>PR base branch (optional)</Text>
-              <TextInput style={styles.fieldInput} value={epicForm.pr_base_branch ?? ''} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, pr_base_branch: v }))} placeholder="e.g. feature/platform-reliability" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false}/>
 
               <Text style={styles.fieldLabel}>Color</Text>
               <View style={styles.colorRow}>
@@ -1638,49 +1631,6 @@ export default function KanbanScreen({ route, navigation }: any) {
                 epicForm.color === c && styles.colorSwatchActive,
             ]}/>))}
               </View>
-
-              {/* Autonomous — edit only (mirrors web) */}
-              {editingEpic && (<>
-                  <View style={styles.autonomousModeCard}>
-                    <View style={{ flex: 1, paddingRight: 8 }}>
-                      <Text style={styles.autonomousModeTitle}>Autonomous mode</Text>
-                      <Text style={styles.autonomousModeHint}>
-                        Automatically assign backlog cards in this feature when agent slots are free.
-                      </Text>
-                    </View>
-                    <Switch value={epicForm.autonomous === 1} onValueChange={(on: any) => setEpicForm((f: any) => ({ ...f, autonomous: on ? 1 : 0 }))} trackColor={{ false: colors.gray600, true: '#059669' }} thumbColor={Platform.OS === 'android' ? colors.white : undefined} ios_backgroundColor={colors.gray600}/>
-                  </View>
-
-                  {epicForm.autonomous === 1 && (<View style={styles.autonomousSettings}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.autonomousSettingLabel}>Max concurrent</Text>
-                        <TextInput style={styles.fieldInput} value={String(epicForm.autonomous_max_concurrent)} onChangeText={(v: any) => setEpicForm((f: any) => ({
-                    ...f,
-                    autonomous_max_concurrent: parseInt(v, 10) || 1,
-                }))} keyboardType="number-pad"/>
-                      </View>
-                    </View>)}
-                  {epicForm.autonomous === 1 && (<View style={{ marginTop: 10 }}>
-                      <Text style={styles.autonomousSettingLabel}>Session model</Text>
-                      <TouchableOpacity style={styles.fieldInput} onPress={() => setShowAutonomousModelModal(true)}>
-                        <Text style={{ fontSize: 13, color: colors.gray200 }} numberOfLines={1}>
-                          {epicForm.autonomous_model
-                    ? epicForm.autonomous_model
-                    : "Each agent's default"}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>)}
-                  {epicForm.autonomous === 1 && (<View style={[styles.autonomousModeCard, { marginTop: 10 }]}>
-                      <View style={{ flex: 1, paddingRight: 8 }}>
-                        <Text style={styles.autonomousModeTitle}>Auto Merge</Text>
-                        <Text style={styles.autonomousModeHint}>
-                          Start each dispatched session with auto-merge enabled (Finalize "Send
-                          It"), even when the project's auto-merge is off.
-                        </Text>
-                      </View>
-                      <Switch value={epicForm.autonomous_send_it === 1} onValueChange={(on: any) => setEpicForm((f: any) => ({ ...f, autonomous_send_it: on ? 1 : 0 }))} trackColor={{ false: colors.gray600, true: '#059669' }} thumbColor={Platform.OS === 'android' ? colors.white : undefined} ios_backgroundColor={colors.gray600}/>
-                    </View>)}
-                </>)}
 
               <View style={styles.epicModalActions}>
                 <TouchableOpacity style={styles.addCardCancel} onPress={() => {
@@ -1708,32 +1658,6 @@ export default function KanbanScreen({ route, navigation }: any) {
         </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={showAutonomousModelModal} transparent animationType="fade" onRequestClose={() => setShowAutonomousModelModal(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAutonomousModelModal(false)}>
-          <View style={[styles.modalContent, { width: 300, maxHeight: 420 }]}>
-            <Text style={styles.modalTitle}>Autonomous session model</Text>
-            <ScrollView style={{ maxHeight: 340 }}>
-              <TouchableOpacity style={styles.modalOption} onPress={() => {
-            setEpicForm((f: any) => ({ ...f, autonomous_model: '' }));
-            setShowAutonomousModelModal(false);
-        }}>
-                <Text style={styles.modalOptionText}>Each agent's default</Text>
-              </TouchableOpacity>
-              {autonomousModelOptions.map((m: any) => (<TouchableOpacity key={m} style={styles.modalOption} onPress={() => {
-                setEpicForm((f: any) => ({ ...f, autonomous_model: m }));
-                setShowAutonomousModelModal(false);
-            }}>
-                  <Text style={styles.modalOptionText} numberOfLines={2}>
-                    {m}
-                  </Text>
-                </TouchableOpacity>))}
-            </ScrollView>
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setShowAutonomousModelModal(false)}>
-              <Text style={styles.modalCancelText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
     </SafeAreaView>);
 }
 const styles = StyleSheet.create({
@@ -1999,27 +1923,6 @@ const styles = StyleSheet.create({
     },
     assignStartBtnDisabled: { backgroundColor: colors.gray700 },
     assignStartBtnText: { fontSize: 13, color: colors.white, fontWeight: '600' },
-    // Epic autonomous block
-    autonomousModeCard: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginTop: 10,
-        paddingVertical: 12,
-        paddingHorizontal: 12,
-        borderRadius: 8,
-        backgroundColor: colors.gray800,
-        borderWidth: 1,
-        borderColor: colors.gray700,
-    },
-    autonomousModeTitle: { fontSize: 14, fontWeight: '600', color: colors.gray200 },
-    autonomousModeHint: {
-        fontSize: 11,
-        color: colors.gray500,
-        marginTop: 4,
-        lineHeight: 15,
-    },
-    autonomousSettings: { flexDirection: 'row', gap: 10, marginTop: 8 },
-    autonomousSettingLabel: { fontSize: 11, color: colors.gray500, marginBottom: 4 },
     // Epic modal actions
     epicModalActions: {
         flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 16,

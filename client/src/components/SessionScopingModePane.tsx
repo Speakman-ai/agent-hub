@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GitBranch, GripVertical } from 'lucide-react';
 import { api } from '../utils/api';
-import { epicToAutonomousForm } from './EpicAutonomousPanel';
-import { defaultAutonomousModel, phaseFormToUpdateBody } from '../utils/epics';
+import {
+  autonomousFormFromRow,
+  defaultAutonomousModel,
+  phaseFormToUpdateBody,
+} from '../utils/epics';
 import EpicScopeWorkbench from './epic-scope/EpicScopeWorkbench';
 import { useResizablePaneWidth } from '../hooks/useResizablePaneWidth';
 import {
@@ -168,7 +171,7 @@ export default function SessionScopingModePane({
       const next: Record<string, any> = {};
       let changed = false;
       for (const phase of epicPhases) {
-        next[phase.id] = prev[phase.id] || epicToAutonomousForm(phase);
+        next[phase.id] = prev[phase.id] || autonomousFormFromRow(phase);
         if (!prev[phase.id]) changed = true;
       }
       for (const id of Object.keys(prev)) {

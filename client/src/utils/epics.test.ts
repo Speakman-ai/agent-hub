@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  autonomousFormFromRow,
   epicFormToUpdateBody,
   epicFormToCreateBody,
   epicsWithActiveCards,
@@ -12,6 +13,22 @@ import {
   epicBranchTogglePatch,
   featureBranchNameFromName,
 } from './epics';
+
+describe('autonomousFormFromRow', () => {
+  it('preserves hidden feature fields while defaulting unset Auto Merge to on', () => {
+    expect(
+      autonomousFormFromRow({
+        autonomous: 1,
+        autonomous_send_it: null,
+        pr_base_branch: 'feature/platform',
+      }),
+    ).toMatchObject({
+      autonomous: 1,
+      autonomous_send_it: 1,
+      pr_base_branch: 'feature/platform',
+    });
+  });
+});
 
 describe('epicStateLabel', () => {
   it('returns no label for empty epics without a lifecycle state', () => {

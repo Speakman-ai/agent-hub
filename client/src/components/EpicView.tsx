@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, LayoutGrid, List, MessagesSquare, Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../utils/api';
 import {
+  autonomousFormFromRow,
   defaultAutonomousModel,
   epicFormToCreateBody,
   epicFormToUpdateBody,
@@ -17,10 +18,7 @@ import {
 import { labelsFieldFromInput } from '../utils/epics';
 import { maybePromptAssignLeadToEpicCards } from '../utils/epicLeadUserCards';
 import EpicDetailsPanel, { EMPTY_EPIC_FORM } from './EpicDetailsPanel';
-import EpicAutonomousPanel, {
-  EMPTY_AUTONOMOUS_FORM,
-  epicToAutonomousForm,
-} from './EpicAutonomousPanel';
+import FeatureBranchPanel from './FeatureBranchPanel';
 import EpicCreateDialog from './epic-scope/EpicCreateDialog';
 import EpicManageListView from './epic-scope/EpicManageListView';
 import EpicBoardView from './epic-scope/EpicBoardView';
@@ -79,9 +77,9 @@ export default function EpicView({
   const [modelConfig, setModelConfig] = useState<any>(null);
 
   const [detailsForm, setDetailsForm] = useState({ ...EMPTY_EPIC_FORM });
-  const [autonomousForm, setAutonomousForm] = useState({ ...EMPTY_AUTONOMOUS_FORM });
+  const [branchForm, setBranchForm] = useState({ name: '', pr_base_branch: '' });
   const [detailsSaving, setDetailsSaving] = useState(false);
-  const [autonomousSaving, setAutonomousSaving] = useState(false);
+  const [branchSaving, setBranchSaving] = useState(false);
   const [creatingEpic, setCreatingEpic] = useState(false);
   const [scopingEpic, setScopingEpic] = useState(false);
   const [newEpicForm, setNewEpicForm] = useState({ ...EMPTY_EPIC_FORM });
@@ -106,7 +104,6 @@ export default function EpicView({
   const [phaseSavingId, setPhaseSavingId] = useState<any>(null);
   const [phaseForms, setPhaseForms] = useState<Record<string, any>>({});
   const [specSavingId, setSpecSavingId] = useState<any>(null);
-  const [showSettings, setShowSettings] = useState(false);
   const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
   const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
 
@@ -163,11 +160,6 @@ export default function EpicView({
   const epicRowLabels = epic?.labels;
   const epicRowAssignedUserId = epic?.assigned_user_id;
   const epicRowColor = epic?.color;
-  const epicRowAutonomous = epic?.autonomous;
-  const epicRowAutonomousInterval = epic?.autonomous_interval;
-  const epicRowAutonomousMaxConcurrent = epic?.autonomous_max_concurrent;
-  const epicRowAutonomousModel = epic?.autonomous_model;
-  const epicRowAutonomousSendIt = epic?.autonomous_send_it;
   const epicRowPrBaseBranch = epic?.pr_base_branch;
 
   const isFirstRefresh = useRef(true);
@@ -183,7 +175,7 @@ export default function EpicView({
   useEffect(() => {
     if (!epicRowId) {
       setDetailsForm({ ...EMPTY_EPIC_FORM });
-      setAutonomousForm({ ...EMPTY_AUTONOMOUS_FORM });
+      setBranchForm({ name: '', pr_base_branch: '' });
       return;
     }
     setDetailsForm({
@@ -193,12 +185,8 @@ export default function EpicView({
       assigned_user_id: epicRowAssignedUserId || '',
       color: epicRowColor || EMPTY_EPIC_FORM.color,
     });
-    setAutonomousForm({
-      autonomous: epicRowAutonomous || 0,
-      autonomous_interval: epicRowAutonomousInterval || 5,
-      autonomous_max_concurrent: epicRowAutonomousMaxConcurrent || 1,
-      autonomous_model: epicRowAutonomousModel || '',
-      autonomous_send_it: epicRowAutonomousSendIt === 0 ? 0 : 1,
+    setBranchForm({
+      name: epicRowName,
       pr_base_branch: epicRowPrBaseBranch || '',
     });
   }, [
@@ -208,11 +196,6 @@ export default function EpicView({
     epicRowLabels,
     epicRowAssignedUserId,
     epicRowColor,
-    epicRowAutonomous,
-    epicRowAutonomousInterval,
-    epicRowAutonomousMaxConcurrent,
-    epicRowAutonomousModel,
-    epicRowAutonomousSendIt,
     epicRowPrBaseBranch,
   ]);
 
@@ -251,7 +234,7 @@ export default function EpicView({
     setPhaseForms((prev: any) => {
       const next = { ...prev };
       for (const phase of epicPhases) {
-        if (!next[phase.id]) next[phase.id] = epicToAutonomousForm(phase);
+        if (!next[phase.id]) next[phase.id] = autonomousFormFromRow(phase);
       }
       return next;
     });
@@ -346,7 +329,7 @@ export default function EpicView({
         epic.id,
         epicFormToUpdateBody({
           ...detailsForm,
-          ...epicToAutonomousForm(epic),
+          ...autonomousFormFromRow(epic),
         }),
       );
       await maybePromptAssignLeadToEpicCards({
@@ -365,9 +348,9 @@ export default function EpicView({
     }
   };
 
-  const handleSaveAutonomous = async () => {
-    if (!epic || autonomousSaving) return;
-    setAutonomousSaving(true);
+  const handleSaveFeatureBranch = async () => {
+    if (!epic || branchSaving) return;
+    setBranchSaving(true);
     try {
       await api.updateEpic(
         projectId,
@@ -376,19 +359,22 @@ export default function EpicView({
           name: epic.name,
           description: epic.description || '',
           color: epic.color || EMPTY_EPIC_FORM.color,
-          ...autonomousForm,
+          labels: epic.labels,
+          assigned_user_id: epic.assigned_user_id,
+          ...autonomousFormFromRow(epic),
+          pr_base_branch: branchForm.pr_base_branch,
         }),
       );
       await fetchBoard();
     } catch (err: any) {
-      console.error('Failed to save feature settings:', err);
+      console.error('Failed to save feature branch:', err);
     } finally {
-      setAutonomousSaving(false);
+      setBranchSaving(false);
     }
   };
 
   const handleDeleteEpic = async () => {
-    if (!epic || detailsSaving || autonomousSaving) return;
+    if (!epic || detailsSaving || branchSaving) return;
     if (!window.confirm(`Delete feature "${epic.name}"? Cards will be unlinked.`)) return;
     setDetailsSaving(true);
     try {
@@ -712,13 +698,6 @@ export default function EpicView({
               <MessagesSquare size={13} />
               {scopingEpic ? 'Opening…' : 'Scope with agent'}
             </button>
-            <button
-              type="button"
-              onClick={() => setShowSettings((s) => !s)}
-              className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-white/[0.06]"
-            >
-              Settings
-            </button>
             <span
               className="w-3 h-3 rounded-full ring-1 ring-white/10"
               style={{ backgroundColor: epic.color }}
@@ -946,6 +925,73 @@ export default function EpicView({
                   {phaseRunError}
                 </div>
               )}
+              <div className="grid max-w-6xl gap-5 lg:grid-cols-2" data-testid="feature-controls">
+                <SectionCard
+                  title="Feature branch"
+                  description="Control where ticket pull requests merge before the feature ships."
+                  action={
+                    <button
+                      type="button"
+                      onClick={handleSaveFeatureBranch}
+                      disabled={branchSaving}
+                      data-testid="feature-branch-save-button"
+                      className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:bg-emerald-600/40"
+                    >
+                      {branchSaving ? 'Saving…' : 'Save'}
+                    </button>
+                  }
+                >
+                  <FeatureBranchPanel
+                    form={branchForm}
+                    onChange={(patch: any) => setBranchForm((form) => ({ ...form, ...patch }))}
+                  />
+                </SectionCard>
+
+                <SectionCard
+                  title="Feature details"
+                  description="Name, description, ownership, and color."
+                  action={
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDeleteEpic}
+                        disabled={detailsSaving || branchSaving}
+                        data-testid="epic-delete-button"
+                        className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+                      >
+                        <Trash2 size={12} />
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveDetails}
+                        disabled={!detailsForm.name.trim() || detailsSaving}
+                        data-testid="epic-save-button"
+                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:bg-indigo-600/40"
+                      >
+                        {detailsSaving ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                  }
+                >
+                  <EpicDetailsPanel
+                    form={detailsForm}
+                    onChange={(patch: any) => setDetailsForm((form) => ({ ...form, ...patch }))}
+                  />
+                  {assignableUsers.length > 0 ? (
+                    <div className="mt-5">
+                      <EpicLeadUserField
+                        users={assignableUsers}
+                        value={detailsForm.assigned_user_id || ''}
+                        onChange={(assigned_user_id) =>
+                          setDetailsForm((form: any) => ({ ...form, assigned_user_id }))
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </SectionCard>
+              </div>
+
               <EpicScopeWorkbench
                 variant="page"
                 epic={epic}
@@ -980,76 +1026,6 @@ export default function EpicView({
                   todos linked to this epic. Renders nothing when there are
                   none, so it only surfaces when the viewer has linked a todo. */}
               <LinkedTodosPanel targetType="epic" entity={epic} projectId={projectId} />
-
-              {showSettings && (
-                <div className="grid gap-5 lg:grid-cols-2 max-w-6xl">
-                  <SectionCard
-                    title="Feature details"
-                    description="Name, description, and color."
-                    action={
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleDeleteEpic}
-                          disabled={detailsSaving || autonomousSaving}
-                          data-testid="epic-delete-button"
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-50"
-                        >
-                          <Trash2 size={12} />
-                          Delete
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleSaveDetails}
-                          disabled={!detailsForm.name.trim() || detailsSaving}
-                          data-testid="epic-save-button"
-                          className="px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
-                        >
-                          {detailsSaving ? 'Saving…' : 'Save'}
-                        </button>
-                      </div>
-                    }
-                  >
-                    <EpicDetailsPanel
-                      form={detailsForm}
-                      onChange={(patch: any) => setDetailsForm((f: any) => ({ ...f, ...patch }))}
-                    />
-                    {assignableUsers.length > 0 ? (
-                      <div className="mt-5">
-                        <EpicLeadUserField
-                          users={assignableUsers}
-                          value={detailsForm.assigned_user_id || ''}
-                          onChange={(assigned_user_id) =>
-                            setDetailsForm((f: any) => ({ ...f, assigned_user_id }))
-                          }
-                        />
-                      </div>
-                    ) : null}
-                  </SectionCard>
-
-                  <SectionCard
-                    title="Feature settings"
-                    description="Feature branch staging and legacy feature-level autonomous settings."
-                    action={
-                      <button
-                        type="button"
-                        onClick={handleSaveAutonomous}
-                        disabled={autonomousSaving}
-                        data-testid="autonomous-save-button"
-                        className="px-3 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/40 text-white rounded-lg transition-colors"
-                      >
-                        {autonomousSaving ? 'Saving…' : 'Save'}
-                      </button>
-                    }
-                  >
-                    <EpicAutonomousPanel
-                      form={autonomousForm}
-                      onChange={(patch: any) => setAutonomousForm((f: any) => ({ ...f, ...patch }))}
-                      modelConfig={modelConfig}
-                    />
-                  </SectionCard>
-                </div>
-              )}
             </div>
           )}
         </div>

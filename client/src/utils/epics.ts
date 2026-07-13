@@ -93,6 +93,17 @@ export function epicBranchTogglePatch(form: any, enabled: boolean) {
   };
 }
 
+export function autonomousFormFromRow(row: any) {
+  return {
+    autonomous: row.autonomous || 0,
+    autonomous_interval: row.autonomous_interval || 5,
+    autonomous_max_concurrent: row.autonomous_max_concurrent || 1,
+    autonomous_model: row.autonomous_model || '',
+    autonomous_send_it: row.autonomous_send_it === 0 ? 0 : 1,
+    pr_base_branch: row.pr_base_branch || '',
+  };
+}
+
 /**
  * Filter the epics shown in the board's epic filter dropdown so empty epics
  * (no active / non-Done cards) drop out of the picker. The currently-selected

@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '../utils/api';
 import { useApp } from '../context/AppContext';
 import { colors } from '../theme/colors';
-import { EPIC_COLORS, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, epicDropdownLabel, EPIC_STATE_LABELS, epicStateLabel, epicBranchTogglePatch, } from '../utils/epics';
+import { EPIC_COLORS, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, countOpenCardsForEpic, EPIC_STATE_LABELS, epicStateLabel, epicBranchTogglePatch, } from '../utils/epics';
 import { groupEpicsByState } from '../utils/epicBoard';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
 import LinkedTodosPanel from '../components/LinkedTodosPanel';
@@ -85,10 +85,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                 await api.updateEpic(projectId, editingEpic.id, epicFormToUpdateBody(epicForm));
             }
             else {
-                const created = await api.createEpic(projectId, epicFormToCreateBody(epicForm));
-                if (created?.id && epicForm.autonomous) {
-                    await api.updateEpic(projectId, created.id, epicFormToUpdateBody(epicForm));
-                }
+                await api.createEpic(projectId, epicFormToCreateBody(epicForm));
             }
             setShowForm(false);
             setEditingEpic(null);
@@ -110,9 +107,6 @@ export default function EpicsScreen({ route, navigation }: any) {
         setSaving(true);
         try {
             const created = await api.createEpic(projectId, epicFormToCreateBody(epicForm));
-            if (created?.id && epicForm.autonomous) {
-                await api.updateEpic(projectId, created.id, epicFormToUpdateBody(epicForm));
-            }
             setShowForm(false);
             setEditingEpic(null);
             setEpicForm(DEFAULT_EPIC_FORM);
@@ -160,7 +154,7 @@ export default function EpicsScreen({ route, navigation }: any) {
         return (<TouchableOpacity key={epic.id} style={styles.epicCard} onPress={() => openEdit(epic)}>
             <View style={[styles.epicDot, { backgroundColor: epic.color || colors.indigo500 }]}/>
             <View style={styles.epicInfo}>
-              <Text style={styles.epicName}>{epicDropdownLabel(epic)}</Text>
+              <Text style={styles.epicName}>{epic.name}</Text>
               {epic.description ? (<Text style={styles.epicDesc} numberOfLines={2}>{epic.description}</Text>) : null}
               <Text style={styles.epicCount}>
                 {open} open · {total} total card{total === 1 ? '' : 's'}
@@ -189,6 +183,15 @@ export default function EpicsScreen({ route, navigation }: any) {
         </View>
 
         {showForm && (<View style={styles.formCard}>
+            <View style={styles.switchRow}>
+              <Text style={styles.label}>Keep on feature branch</Text>
+              <Switch value={!!epicForm.pr_base_branch?.trim()} onValueChange={(v: any) => setEpicForm({ ...epicForm, ...epicBranchTogglePatch(epicForm, v) })} trackColor={{ false: colors.gray700, true: colors.blue600 }} thumbColor={epicForm.pr_base_branch?.trim() ? colors.blue400 : colors.gray500}/>
+            </View>
+            {!!epicForm.pr_base_branch?.trim() && (<>
+              <Text style={styles.label}>Feature branch</Text>
+              <TextInput style={styles.input} value={epicForm.pr_base_branch} onChangeText={(v: any) => setEpicForm({ ...epicForm, pr_base_branch: v })} placeholder="feature/platform-reliability" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false}/>
+              <Text style={styles.branchHint}>Ticket pull requests skip CI. CI runs on the final pull request to the repo default branch.</Text>
+            </>)}
             <Text style={styles.label}>Name</Text>
             <TextInput style={styles.input} value={epicForm.name} onChangeText={(v: any) => setEpicForm({ ...epicForm, name: v })} placeholderTextColor={colors.gray600}/>
             <Text style={styles.label}>Description</Text>
@@ -201,18 +204,6 @@ export default function EpicsScreen({ route, navigation }: any) {
                     epicForm.color === c && styles.colorBtnActive,
                 ]} onPress={() => setEpicForm({ ...epicForm, color: c })}/>))}
             </View>
-            <View style={styles.switchRow}>
-              <Text style={styles.label}>Autonomous</Text>
-              <Switch value={!!epicForm.autonomous} onValueChange={(v: any) => setEpicForm({ ...epicForm, autonomous: v ? 1 : 0 })} trackColor={{ false: colors.gray700, true: colors.emerald800_50 }} thumbColor={epicForm.autonomous ? colors.emerald400 : colors.gray500}/>
-            </View>
-            <View style={styles.switchRow}>
-              <Text style={styles.label}>Keep on feature branch</Text>
-              <Switch value={!!epicForm.pr_base_branch?.trim()} onValueChange={(v: any) => setEpicForm({ ...epicForm, ...epicBranchTogglePatch(epicForm, v) })} trackColor={{ false: colors.gray700, true: colors.blue600 }} thumbColor={epicForm.pr_base_branch?.trim() ? colors.blue400 : colors.gray500}/>
-            </View>
-            {!!epicForm.pr_base_branch?.trim() && (<>
-              <Text style={styles.label}>Feature branch</Text>
-              <TextInput style={styles.input} value={epicForm.pr_base_branch} onChangeText={(v: any) => setEpicForm({ ...epicForm, pr_base_branch: v })} placeholderTextColor={colors.gray600}/>
-            </>)}
             <TouchableOpacity style={[styles.primaryBtn, saving && { opacity: 0.5 }]} onPress={handleSave} disabled={saving}>
               <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : editingEpic ? 'Update' : 'Create'}</Text>
             </TouchableOpacity>
@@ -291,6 +282,7 @@ const styles = StyleSheet.create({
     colorBtn: { width: 28, height: 28, borderRadius: 6 },
     colorBtnActive: { borderWidth: 2, borderColor: colors.white },
     switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+    branchHint: { color: colors.gray500, fontSize: 11, lineHeight: 16, marginTop: 6 },
     primaryBtn: {
         marginTop: 12,
         backgroundColor: colors.emerald800_50,

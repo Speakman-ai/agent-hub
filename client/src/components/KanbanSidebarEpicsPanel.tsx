@@ -1,16 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Bookmark,
-  CheckSquare,
-  Search,
-  Square,
-  Tag,
-  Target,
-  Trash2,
-  User,
-  X,
-  Zap,
-} from 'lucide-react';
+import { Bookmark, CheckSquare, Search, Square, Tag, Target, Trash2, User, X } from 'lucide-react';
 import KanbanUserFilterChips from './KanbanUserFilterChips';
 import { api } from '../utils/api';
 import { nonDoneEpicsForFilter } from '../utils/epics';
@@ -388,9 +377,6 @@ export default function KanbanSidebarEpicsPanel({
                     style={{ backgroundColor: epic.color || '#6B7280' }}
                   />
                   <span className="flex-1 min-w-0 truncate text-sm text-gray-200">{epic.name}</span>
-                  {epic.autonomous === 1 ? (
-                    <Zap size={12} className="text-emerald-400 flex-shrink-0" aria-hidden />
-                  ) : null}
                 </button>
               );
             })}

@@ -9,8 +9,8 @@
  *      operator opted in, so silence would be a lie).
  *
  *   2. **PR-level CI fallback** (`trigger_source: 'pr_push'`, automatic):
- *      an open native PR's head is NOT covered by a fully-validated
- *      Finalize run (review + checks on that exact sha) — someone pushed
+ *      an open native PR targeting the repo default branch is NOT covered by a
+ *      fully-validated Finalize run (review + checks on that exact sha). Someone pushed
  *      with "push anyway", pushed externally, or added commits after
  *      validation. Run CI against the PR head so the PR still shows
  *      check results. Validated heads SKIP this entirely — that's the
@@ -178,13 +178,13 @@ export function maybeRunPushCi(
 }
 
 /**
- * PR-level CI fallback — run CI against an open native PR's head UNLESS
- * that exact sha was already fully validated by Finalize (the
- * session-validation passthrough). Fire-and-forget safe.
+ * PR-level CI fallback: run CI against an open native PR's head only when
+ * it targets the repository's default branch and that exact sha was not fully
+ * validated by Finalize. Fire-and-forget safe.
  */
 export function maybeRunPrCi(
   project: Project,
-  pr: Pick<PullRequestRow, 'number' | 'head_branch'>,
+  pr: Pick<PullRequestRow, 'number' | 'head_branch' | 'base_branch'>,
   deps: PushCiDeps,
 ): Promise<void> {
   if (project.gitHost !== 'agenthub') return Promise.resolve();
@@ -193,6 +193,14 @@ export function maybeRunPrCi(
   if (!hostedRepoExists(project.id, dataDir)) return Promise.resolve();
 
   return enqueue(project.id, async () => {
+    const defaultBranch = (await hostedRepoDefaultBranch(project.id, dataDir)) ?? 'main';
+    if (pr.base_branch !== defaultBranch) {
+      console.log(
+        `[push-ci] pr#${pr.number} targets non-default branch ${pr.base_branch}, skipping PR CI`,
+      );
+      return;
+    }
+
     const bare = gitHostRepoPath(project.id, dataDir);
     const headSha = await revParse(bare, `refs/heads/${pr.head_branch}`);
     if (!headSha) return; // head branch gone (merged + deleted)
@@ -242,9 +250,9 @@ export function maybeRunPrCi(
 }
 
 /**
- * Combined push handler for the smart-HTTP notify endpoint: default-branch
- * CI on push, plus PR-level CI for any moved branch that backs an open
- * native PR (covers external pushes and "push anyway" bypasses).
+ * Combined push handler for the smart-HTTP notify endpoint: default-branch CI on push, plus
+ * PR-level CI for any moved branch that backs an open default-branch native PR (covers external
+ * pushes and "push anyway" bypasses).
  */
 export function handleHostedRepoPush(
   project: Project,

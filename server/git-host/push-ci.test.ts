@@ -59,14 +59,17 @@ const VALID_CI_YAML = [
 ].join('\n');
 
 /** Seed a hosted repo whose default branch carries a ci.yaml. */
-async function seedHostedProject(opts: { ciYaml?: string | null } = {}): Promise<{
+async function seedHostedProject(
+  opts: { ciYaml?: string | null; defaultBranch?: string } = {},
+): Promise<{
   project: Project;
   headSha: string;
 }> {
   const id = `pushci-${uuidv4().slice(0, 8)}`;
   const work = path.join(os.tmpdir(), `pushci-seed-${id}`);
+  const defaultBranch = opts.defaultBranch ?? 'main';
   mkdirSync(work, { recursive: true });
-  execSync('git init --initial-branch=main', { cwd: work, stdio: 'pipe' });
+  execSync(`git init --initial-branch=${defaultBranch}`, { cwd: work, stdio: 'pipe' });
   git(work, 'config user.email "t@example.com"');
   git(work, 'config user.name "T"');
   if (opts.ciYaml !== null) {
@@ -77,7 +80,7 @@ async function seedHostedProject(opts: { ciYaml?: string | null } = {}): Promise
   git(work, 'add -A');
   git(work, 'commit -m initial');
   await createHostedRepo({ id, cwd: work, repoUrl: null }, {});
-  const headSha = git(gitHostRepoPath(id), 'rev-parse refs/heads/main');
+  const headSha = git(gitHostRepoPath(id), `rev-parse refs/heads/${defaultBranch}`);
   const project = {
     id,
     name: id,
@@ -358,6 +361,32 @@ describe('push CI engine', () => {
 });
 
 describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => {
+  it('runs only for pull requests targeting the repository default branch', async () => {
+    const { project, headSha } = await seedHostedProject({ defaultBranch: 'trunk' });
+    const runJobPhase = vi.fn(async () => ({
+      status: 'success' as const,
+      stepResults: [],
+      activeSecondsBilled: 1,
+    }));
+    const deps = {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    };
+
+    await maybeRunPrCi(
+      project,
+      { number: 6, head_branch: 'trunk', base_branch: 'feature/integration' },
+      deps,
+    );
+    expect(runJobPhase).not.toHaveBeenCalled();
+    expect(runRowFor(project, headSha)).toBeUndefined();
+
+    await maybeRunPrCi(project, { number: 7, head_branch: 'trunk', base_branch: 'trunk' }, deps);
+    expect(runJobPhase).toHaveBeenCalledOnce();
+  });
+
   it('skips entirely when the head sha was fully validated by Finalize', async () => {
     const { project, headSha } = await seedHostedProject();
     // Seed a fully-validated finalize run for this exact (branch, sha).
@@ -387,7 +416,7 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
     const runJobPhase = vi.fn();
     await maybeRunPrCi(
       project,
-      { number: 1, head_branch: 'main' },
+      { number: 1, head_branch: 'main', base_branch: 'main' },
       { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
     );
 
@@ -429,7 +458,7 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
     const runJobPhase = vi.fn();
     await maybeRunPrCi(
       project,
-      { number: 291, head_branch: prBranch },
+      { number: 291, head_branch: prBranch, base_branch: 'main' },
       { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
     );
 
@@ -447,7 +476,7 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
 
     await maybeRunPrCi(
       project,
-      { number: 7, head_branch: 'main' },
+      { number: 7, head_branch: 'main', base_branch: 'main' },
       { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
     );
 
@@ -465,7 +494,7 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
     const runJobPhase = vi.fn();
     await maybeRunPrCi(
       project,
-      { number: 2, head_branch: 'main' },
+      { number: 2, head_branch: 'main', base_branch: 'main' },
       { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
     );
     expect(runJobPhase).not.toHaveBeenCalled();
@@ -489,7 +518,7 @@ describe('PR-level CI (maybeRunPrCi) — session-validation passthrough', () => 
     });
     await maybeRunPrCi(
       project,
-      { number: 3, head_branch: 'main' },
+      { number: 3, head_branch: 'main', base_branch: 'main' },
       { stmts, broadcast: () => {}, runJobPhase: second as never, mergeSecrets: () => {} },
     );
     expect(first).toHaveBeenCalledOnce();
@@ -512,7 +541,7 @@ describe('PR-level CI — legacy version-1 configs', () => {
     const runJobPhase = vi.fn();
     await maybeRunPrCi(
       project,
-      { number: 9, head_branch: 'main' },
+      { number: 9, head_branch: 'main', base_branch: 'main' },
       { stmts, broadcast: () => {}, runJobPhase: runJobPhase as never, mergeSecrets: () => {} },
     );
     expect(runJobPhase).not.toHaveBeenCalled();

@@ -1058,7 +1058,7 @@ describe('KanbanBoard Session engine dropdown', () => {
   });
 });
 
-describe('KanbanBoard epic filter and autonomous dispatch', () => {
+describe('KanbanBoard feature filter', () => {
   beforeEach(() => {
     (api.getBoard as any).mockReset();
     (api.get as any).mockReset();
@@ -1067,7 +1067,7 @@ describe('KanbanBoard epic filter and autonomous dispatch', () => {
     (api.updateEpic as any).mockResolvedValue({});
   });
 
-  it('filters cards by selected epic and opens autonomous settings', async () => {
+  it('filters cards by selected feature without obsolete feature autonomy', async () => {
     (api.getBoard as any).mockResolvedValueOnce({
       ...makeBoard([
         { id: 'c1', title: 'Epic one card', column_id: 'col-todo', position: 0, epic_id: 'e1' },
@@ -1091,9 +1091,8 @@ describe('KanbanBoard epic filter and autonomous dispatch', () => {
     await waitFor(() => expect(screen.getByText('Epic one card')).toBeInTheDocument());
     expect(screen.queryByText('Other epic card')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId('open-autonomous-dialog' as any) as any);
-    expect(screen.getByTestId('epic-autonomous-dialog')).toBeInTheDocument();
-    expect(screen.getByTestId('epic-autonomous-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('open-autonomous-dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Autonomous')).not.toBeInTheDocument();
   });
 });
 

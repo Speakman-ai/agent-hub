@@ -493,7 +493,7 @@ describe('EpicView', () => {
     );
   });
 
-  it('saves an existing epic with missing Auto Merge state as enabled by default', async () => {
+  it('shows branch controls at the top and preserves stored feature automation fields', async () => {
     const boardWithUnsetAutoMerge = {
       ...board,
       epics: [
@@ -525,14 +525,26 @@ describe('EpicView', () => {
       />,
     );
 
-    fireEvent.click(await screen.findByText('Settings'));
-    fireEvent.click(await screen.findByTestId('autonomous-save-button' as any));
+    const controls = await screen.findByTestId('feature-controls' as any);
+    expect(within(controls).getByText('Keep on feature branch')).toBeInTheDocument();
+    expect(screen.queryByText('Enable autonomous dispatch')).not.toBeInTheDocument();
+    expect(screen.queryByText('Settings')).not.toBeInTheDocument();
+
+    fireEvent.click(within(controls).getByRole('switch', { name: 'Keep on feature branch' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('feature-pr-base-input' as any)).toHaveValue('feature/platform'),
+    );
+    fireEvent.click(screen.getByTestId('feature-branch-save-button' as any));
 
     await waitFor(() =>
       expect(api.updateEpic).toHaveBeenCalledWith(
         'p1',
         'e1',
-        expect.objectContaining({ autonomousSendIt: 1 }),
+        expect.objectContaining({
+          autonomous: 1,
+          autonomousSendIt: 1,
+          prBaseBranch: 'feature/platform',
+        }),
       ),
     );
   });

@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, Layers, Zap } from 'lucide-react';
+import { Check, ChevronDown, Layers } from 'lucide-react';
 import { epicsWithActiveCards } from '../utils/epics';
 
 /**
- * Custom epic filter for the kanban toolbar — styled menu with epic colors,
- * autonomous badges, and active card counts.
+ * Custom epic filter for the kanban toolbar with epic colors and active card counts.
  */
 export default function EpicFilterDropdown({
   epics = [],
@@ -68,9 +67,6 @@ export default function EpicFilterDropdown({
         <span className="truncate flex-1 text-left">
           {selectedEpic ? selectedEpic.name : 'All epics'}
         </span>
-        {selectedEpic?.autonomous === 1 ? (
-          <Zap size={13} className="text-emerald-400 flex-shrink-0" aria-hidden />
-        ) : null}
         {selectedEpicId ? (
           <span className="text-[10px] font-medium tabular-nums px-1.5 py-0.5 rounded-md bg-white/[0.08] text-gray-400">
             {epicCardCount(selectedEpicId)}
@@ -132,9 +128,6 @@ export default function EpicFilterDropdown({
                     style={{ backgroundColor: epic.color }}
                   />
                   <span className="flex-1 min-w-0 truncate">{epic.name}</span>
-                  {epic.autonomous === 1 ? (
-                    <Zap size={13} className="text-emerald-400 flex-shrink-0" aria-hidden />
-                  ) : null}
                   <span className="text-[10px] tabular-nums text-gray-500">{count}</span>
                   {isSelected ? (
                     <Check size={14} className="text-indigo-400 flex-shrink-0" />
