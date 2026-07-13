@@ -970,3 +970,45 @@ describe('config.ts — dbReaderPool resolution', () => {
     expect(mod.default.dbReaderPool.size).toBe(2);
   });
 });
+
+describe('config.ts — grok-cli default model list', () => {
+  function freshDataDirNoConfig(tag: string): string {
+    const dir = path.join(
+      os.tmpdir(),
+      `agent-hub-grok-${tag}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    // Empty config.json → engine* maps are absent, so the built-in DEFAULT_*
+    // maps apply (config.json replaces whole maps, never deep-merges).
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({}), 'utf8');
+    return dir;
+  }
+
+  it('defaults grok-cli to grok-4.5 and lists it first (now powers Grok Build)', async () => {
+    // Regression: the list predated grok-4.5 (shipped 2026-07-08) so users
+    // could not select the model that now backs Grok Build upstream.
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDirNoConfig('default');
+    const mod = await import('./config.js');
+    const valid = mod.default.engineValidModels['grok-cli'];
+    expect(valid[0]).toBe('grok-4.5');
+    expect(valid).toContain('grok-build');
+    expect(valid).toContain('grok-composer-2.5-fast');
+    expect(mod.default.engineDefaultModels['grok-cli']).toBe('grok-4.5');
+  });
+
+  it('resolveGrokSpawnModel passes grok-4.5 through when allowlisted', async () => {
+    vi.resetModules();
+    process.env.AGENT_HUB_TEST_MODE = '1';
+    process.env.AGENT_HUB_DATA_DIR = freshDataDirNoConfig('spawn');
+    const mod = await import('./config.js');
+    const cfg = {
+      engineValidModels: mod.default.engineValidModels,
+      engineDefaultModels: mod.default.engineDefaultModels,
+    };
+    expect(mod.resolveGrokSpawnModel('grok-4.5', cfg)).toBe('grok-4.5');
+    // An unknown id still falls back to the grok-4.5 default.
+    expect(mod.resolveGrokSpawnModel('grok-9-imaginary', cfg)).toBe('grok-4.5');
+  });
+});

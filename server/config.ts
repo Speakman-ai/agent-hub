@@ -225,9 +225,10 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // ID is still persisted on a session (so resumes from old DBs do not spin
   // forever).
   'codex-cli': ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'],
-  // Grok Build CLI model slugs from `grok models` (2026-06). Keep in sync with
-  // client TopBar.jsx and mobile engineOptions.js.
-  'grok-cli': ['grok-build', 'grok-composer-2.5-fast'],
+  // Grok Build CLI model slugs from `grok models` (2026-07). grok-4.5 shipped
+  // 2026-07-08 and now powers Grok Build (500K ctx, configurable reasoning
+  // effort). Keep in sync with client TopBar.jsx and mobile engineOptions.js.
+  'grok-cli': ['grok-4.5', 'grok-build', 'grok-composer-2.5-fast'],
 };
 
 const mergedEngineValidModelsRaw =
@@ -246,7 +247,8 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   // gpt-5.3-codex. Older IDs like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max
   // are likewise rejected with HTTP 400 under ChatGPT OAuth.
   'codex-cli': 'gpt-5.5',
-  'grok-cli': 'grok-composer-2.5-fast',
+  // grok-4.5 now powers Grok Build upstream — make it the Hub default too.
+  'grok-cli': 'grok-4.5',
 };
 
 const mergedEngineDefaultModelsRaw =

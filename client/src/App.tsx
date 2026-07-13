@@ -4301,7 +4301,7 @@ export default function App({ initialView }: any = {}) {
       if (fromConfig) return fromConfig;
       if (engine === 'cursor-agent') return 'composer-2.5';
       if (engine === 'codex-cli') return 'gpt-5.5';
-      if (engine === 'grok-cli') return 'grok-composer-2.5-fast';
+      if (engine === 'grok-cli') return 'grok-4.5';
       return 'claude-opus-4-8';
     },
     [modelConfig],

@@ -175,7 +175,7 @@ export function AppProvider({ children }: any) {
         if (engine === 'codex-cli')
             return 'gpt-5.5';
         if (engine === 'grok-cli')
-            return 'grok-composer-2.5-fast';
+            return 'grok-4.5';
         return 'claude-opus-4-8';
     };
     const activeSessionIdRef = useRef(activeSessionId);

@@ -6,9 +6,13 @@ describe('mobile engine picker constants', () => {
         const ids = ENGINE_OPTIONS.map((e: any) => e.id);
         expect(ids).toEqual(['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli']);
     });
-    it('defaults grok-cli to grok-composer-2.5-fast', () => {
-        expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-composer-2.5-fast');
+    it('defaults grok-cli to grok-4.5 and lists it first', () => {
+        // grok-4.5 (2026-07-08) now powers Grok Build upstream — it must be the
+        // default and appear in the picker. Keep aligned with server/config.ts
+        // engineValidModels['grok-cli'] and client TopBar.tsx.
+        expect(ENGINE_DEFAULT_MODELS['grok-cli']).toBe('grok-4.5');
         const allowed = ENGINE_MODELS['grok-cli'].map((m: any) => m.id);
+        expect(allowed[0]).toBe('grok-4.5');
         expect(allowed).toContain('grok-build');
         expect(allowed).toContain('grok-composer-2.5-fast');
     });

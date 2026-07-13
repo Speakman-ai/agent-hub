@@ -43,6 +43,7 @@ const MODEL_LABELS = {
   'gpt-5.4': { label: 'GPT-5.4', short: '5.4' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', short: '5.4 Mini' },
   'gpt-5.2': { label: 'GPT-5.2', short: '5.2' },
+  'grok-4.5': { label: 'Grok 4.5', short: '4.5' },
   'grok-build': { label: 'Grok Build', short: 'Build' },
   'grok-composer-2.5-fast': { label: 'Composer 2.5 Fast', short: 'Composer' },
   'grok-build-0.1': { label: 'Grok Build', short: 'Build' },
@@ -59,7 +60,7 @@ function modelDisplay(id: any) {
 function fallbackModelsForEngine(engine: any) {
   if (engine === 'cursor-agent') return ['composer-2.5'];
   if (engine === 'codex-cli') return ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'];
-  if (engine === 'grok-cli') return ['grok-composer-2.5-fast', 'grok-build'];
+  if (engine === 'grok-cli') return ['grok-4.5', 'grok-build', 'grok-composer-2.5-fast'];
   return [
     'claude-fable-5',
     'claude-opus-4-8',
