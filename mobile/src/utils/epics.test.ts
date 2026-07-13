@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, it, expect } from 'vitest';
-import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, } from './epics';
+import { EPIC_COLORS, DEFAULT_EPIC_COLOR, DEFAULT_EPIC_FORM, DEFAULT_EPIC_LIST_STATE_FILTER, epicFormFromRow, epicFormToUpdateBody, epicFormToCreateBody, filterCardsByEpic, countOpenCardsForEpic, epicsWithActiveCards, findEpic, epicDropdownLabel, epicStateLabel, phaseFormToUpdateBody, autonomousModelOptions, defaultAutonomousModel, epicBranchTogglePatch, featureBranchNameFromName, } from './epics';
 describe('EPIC_COLORS', () => {
     it('matches the web palette', () => {
         expect(EPIC_COLORS).toEqual([
@@ -24,6 +24,28 @@ describe('epicStateLabel', () => {
     });
     it('defaults epic lists to in-progress work', () => {
         expect(DEFAULT_EPIC_LIST_STATE_FILTER).toBe('in_progress');
+    });
+});
+describe('featureBranchNameFromName', () => {
+    it('generates a safe feature branch from the feature name', () => {
+        expect(featureBranchNameFromName('  Billing & OAuth 2.0  ')).toBe('feature/billing-oauth-2-0');
+    });
+    it('does not generate Git-ref-unsafe dot or empty segments', () => {
+        expect(featureBranchNameFromName('Release 1..2')).toBe('feature/release-1-2');
+        expect(featureBranchNameFromName('...')).toBe('feature/feature');
+    });
+    it('keeps truncation from leaving an unsafe trailing separator', () => {
+        const branch = featureBranchNameFromName(`${'a'.repeat(72)} trailing`);
+        expect(branch).toBe(`feature/${'a'.repeat(72)}`);
+        expect(branch).toHaveLength(80);
+        expect(branch).not.toMatch(/[-.]$/);
+    });
+});
+describe('epicBranchTogglePatch', () => {
+    it('sets, preserves, and clears the feature branch field', () => {
+        expect(epicBranchTogglePatch({ name: 'Platform reliability', pr_base_branch: '' }, true)).toEqual({ pr_base_branch: 'feature/platform-reliability' });
+        expect(epicBranchTogglePatch({ name: 'Platform reliability', pr_base_branch: 'feature/manual' }, true)).toEqual({ pr_base_branch: 'feature/manual' });
+        expect(epicBranchTogglePatch({ name: 'Platform reliability', pr_base_branch: 'feature/manual' }, false)).toEqual({ pr_base_branch: '' });
     });
 });
 describe('DEFAULT_EPIC_FORM', () => {

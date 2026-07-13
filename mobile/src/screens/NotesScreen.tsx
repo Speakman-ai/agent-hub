@@ -235,7 +235,7 @@ export default function NotesScreen({ route }: any) {
         setScoping(true);
         try {
             await api.scopeFromNotes(projectId, { content: String(content), title: title || undefined });
-            Alert.alert('Scoping session started', 'An agent session will scope these notes into an epic, phases, and tickets.');
+            Alert.alert('Scoping session started', 'An agent session will scope these notes into a feature, phases, and tickets.');
         }
         catch (err: any) {
             Alert.alert('Error', err.message || 'Failed to start scoping session');

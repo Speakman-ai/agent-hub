@@ -124,7 +124,7 @@ describe('KanbanSidebarEpicsPanel', () => {
 
     const panel = screen.getByTestId('kanban-sidebar-epics-panel');
     await waitFor(() =>
-      expect(within(panel).getByText('No active epics to filter by.')).toBeInTheDocument(),
+      expect(within(panel).getByText('No active features to filter by.')).toBeInTheDocument(),
     );
     expect(within(panel).queryByTestId('kanban-sidebar-epic-list')).not.toBeInTheDocument();
   });

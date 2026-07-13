@@ -44,6 +44,22 @@ export function epicStateLabel(state: string | null | undefined): string {
   return EPIC_STATE_LABELS[(state || '') as EpicLifecycleState] || '';
 }
 
+export function featureBranchNameFromName(name: string | null | undefined): string {
+  const rawSlug = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const slug = rawSlug.slice(0, 72).replace(/-+$/g, '') || 'feature';
+  return `feature/${slug}`;
+}
+
+export function nextFeatureBranch(current: string | null | undefined, name: string): string {
+  const trimmed = typeof current === 'string' ? current.trim() : '';
+  return trimmed || featureBranchNameFromName(name);
+}
+
 /**
  * Normalize the web form shape into the server's camelCase update body.
  * The PUT /board/epics/:epicId endpoint accepts camelCase keys.
@@ -68,6 +84,12 @@ export function epicFormToUpdateBody(form: any) {
     ...(form.orchestrationBudgets !== undefined
       ? { orchestrationBudgets: form.orchestrationBudgets }
       : {}),
+  };
+}
+
+export function epicBranchTogglePatch(form: any, enabled: boolean) {
+  return {
+    pr_base_branch: enabled ? nextFeatureBranch(form.pr_base_branch, form.name) : '',
   };
 }
 

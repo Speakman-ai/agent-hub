@@ -737,10 +737,10 @@ export default function KanbanCardDetailModal({ detail, agents, assignableUsers 
                       }
                     />
                   ) : null}
-                  {/* Epic */}
+                  {/* Feature */}
                   <div>
                     <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-                      Epic
+                      Feature
                     </label>
                     <select
                       value={detailForm.epic_id}

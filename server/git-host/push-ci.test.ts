@@ -15,6 +15,7 @@ let stmts: Stmts;
 let maybeRunPushCi: typeof import('./push-ci.js').maybeRunPushCi;
 let maybeRunPrCi: typeof import('./push-ci.js').maybeRunPrCi;
 let rerunCiRun: typeof import('./push-ci.js').rerunCiRun;
+let isFeatureIntegrationBranch: typeof import('./push-ci.js').isFeatureIntegrationBranch;
 let __clearPushCiQueues: typeof import('./push-ci.js').__clearPushCiQueues;
 let setChecksPassedHook: typeof import('./push-ci.js').setChecksPassedHook;
 let createHostedRepo: typeof import('./repo-store.js').createHostedRepo;
@@ -25,8 +26,14 @@ beforeAll(async () => {
   const helpers = await import('../test/helpers.js');
   await helpers.getRequest(); // boots app + initDb into the test data dir
   stmts = (await import('../db.js')).stmts!;
-  ({ maybeRunPushCi, maybeRunPrCi, rerunCiRun, __clearPushCiQueues, setChecksPassedHook } =
-    await import('./push-ci.js'));
+  ({
+    maybeRunPushCi,
+    maybeRunPrCi,
+    rerunCiRun,
+    isFeatureIntegrationBranch,
+    __clearPushCiQueues,
+    setChecksPassedHook,
+  } = await import('./push-ci.js'));
   ({ createHostedRepo, gitHostRepoPath } = await import('./repo-store.js'));
   configDataDir = (await import('../config.js')).default.dataDir;
 });
@@ -226,6 +233,50 @@ describe('push CI engine', () => {
     await maybeRunPushCi({ ...project, ciOnPush: undefined }, ['refs/heads/main'], deps);
     await maybeRunPushCi({ ...project, gitHost: 'github' }, ['refs/heads/main'], deps);
     await maybeRunPushCi(project, ['refs/heads/feature-x'], deps);
+    expect(runJobPhase).not.toHaveBeenCalled();
+  });
+
+  it('recognizes configured feature integration branches and leaves them exempt from push CI', async () => {
+    const { project } = await seedHostedProject();
+    const boardId = uuidv4();
+    stmts.createKanbanBoard.run(boardId, project.id, 'Board', 'TST');
+    stmts.createKanbanEpic.run(uuidv4(), boardId, 'Feature A', null, '#6366F1', 0, null);
+    const epic = (stmts.getKanbanEpics.all(boardId) as Array<{ id: string }>)[0];
+    const row = stmts.getKanbanEpic.get(epic.id) as {
+      name: string;
+      description: string | null;
+      color: string;
+      autonomous: number;
+      autonomous_interval: number;
+      autonomous_max_concurrent: number;
+      autonomous_model: string | null;
+      orchestration_budgets_json?: string | null;
+      labels?: string | null;
+    };
+    stmts.updateKanbanEpic.run(
+      row.name,
+      row.description,
+      row.color,
+      row.autonomous,
+      row.autonomous_interval,
+      row.autonomous_max_concurrent,
+      row.autonomous_model,
+      row.orchestration_budgets_json ?? null,
+      'feature/feature-a',
+      row.labels ?? null,
+      epic.id,
+    );
+
+    expect(isFeatureIntegrationBranch(stmts, project.id, 'feature/feature-a')).toBe(true);
+
+    const runJobPhase = vi.fn();
+    await maybeRunPushCi(project, ['refs/heads/feature/feature-a'], {
+      stmts,
+      broadcast: () => {},
+      runJobPhase: runJobPhase as never,
+      mergeSecrets: () => {},
+    });
+
     expect(runJobPhase).not.toHaveBeenCalled();
   });
 

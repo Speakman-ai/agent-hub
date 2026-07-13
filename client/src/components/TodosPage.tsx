@@ -66,7 +66,7 @@ const PRIORITY_OPTIONS: TodoPriority[] = ['urgent', 'high', 'medium', 'low'];
 // Link badge color per polymorphic target type (spec TODO-TO-TICKET).
 const LINK_BADGE_CLASS: Record<string, string> = {
   Ticket: 'border-violet-800 bg-violet-900/30 text-violet-300',
-  Epic: 'border-indigo-800 bg-indigo-900/30 text-indigo-300',
+  Feature: 'border-indigo-800 bg-indigo-900/30 text-indigo-300',
   Session: 'border-teal-800 bg-teal-900/30 text-teal-300',
 };
 

@@ -137,7 +137,7 @@ export default function EpicSpecView({
           <div>
             <h3 className="text-sm font-semibold text-gray-100">Spec decisions</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Architecture choices for this epic — write them yourself or use Decide for me.
+              Architecture choices for this feature. Write them yourself or use Decide for me.
             </p>
           </div>
           <div className="flex items-center gap-2">

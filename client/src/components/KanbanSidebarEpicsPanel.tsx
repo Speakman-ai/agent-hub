@@ -344,7 +344,7 @@ export default function KanbanSidebarEpicsPanel({
       <div className="flex items-center justify-between gap-2 mb-2 px-2">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">
           <Target size={12} />
-          Epics
+          Features
         </div>
         {selectedEpicIds.size > 0 ? (
           <button
@@ -398,7 +398,7 @@ export default function KanbanSidebarEpicsPanel({
         </div>
       ) : (
         <div className="mb-4 px-3 py-2 text-xs text-gray-500 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-          {epics.length > 0 ? 'No active epics to filter by.' : 'No epics on the board yet.'}
+          {epics.length > 0 ? 'No active features to filter by.' : 'No features on the board yet.'}
         </div>
       )}
 

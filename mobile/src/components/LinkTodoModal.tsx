@@ -90,7 +90,7 @@ export function LinkTodoModalContent({
       ? agentId
         ? 'No sessions for this agent'
         : 'Pick an agent first'
-      : `No ${targetType === 'card' ? 'cards' : 'epics'} on this board`;
+      : `No ${targetType === 'card' ? 'cards' : 'features'} on this board`;
 
   return (
     <View style={styles.backdrop}>

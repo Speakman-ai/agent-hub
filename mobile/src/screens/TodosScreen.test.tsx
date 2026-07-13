@@ -133,16 +133,16 @@ describe('TodosScreen — TodoRow mobile parity', () => {
         expect(html).toContain('Ticket');
     });
 
-    it('shows an Epic badge for a linkedType of epic', () => {
+    it('shows a Feature badge for a linkedType of epic', () => {
         const html = renderRow({
             id: 'ep',
-            title: 'Epic link',
+            title: 'Feature link',
             status: 'open',
             dueAt: null,
             linkedType: 'epic',
         });
         expect(html).toContain('todo-link-badge');
-        expect(html).toContain('Epic');
+        expect(html).toContain('Feature');
     });
 
     it('shows a Session badge for a linkedType of session', () => {

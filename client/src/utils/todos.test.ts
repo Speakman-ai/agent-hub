@@ -144,7 +144,7 @@ describe('timeWindowLabel', () => {
 describe('todoLinkLabel', () => {
   it('maps each polymorphic link type to a label', () => {
     expect(todoLinkLabel({ linkedType: 'card' })).toBe('Ticket');
-    expect(todoLinkLabel({ linkedType: 'epic' })).toBe('Epic');
+    expect(todoLinkLabel({ linkedType: 'epic' })).toBe('Feature');
     expect(todoLinkLabel({ linkedType: 'session' })).toBe('Session');
   });
 

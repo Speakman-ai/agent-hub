@@ -54,8 +54,8 @@ function SectionCard({ title, description, children, action }: any) {
 }
 
 /**
- * Dedicated epic management screen — list epics, edit settings inline, and add tickets
- * linked to an epic without modal popups.
+ * Dedicated feature management screen. Internal names stay epic-shaped because
+ * the API/table scaffolding is shared with existing installs.
  */
 export default function EpicView({
   projectId,
@@ -327,8 +327,8 @@ export default function EpicView({
       await fetchBoard();
       if (created?.id) onOpenEpic(created.id);
     } catch (err: any) {
-      console.error('Failed to create epic:', err);
-      setCreateError(err?.message || 'Failed to create epic');
+      console.error('Failed to create feature:', err);
+      setCreateError(err?.message || 'Failed to create feature');
     } finally {
       setCreatingEpic(false);
     }
@@ -359,7 +359,7 @@ export default function EpicView({
       });
       await fetchBoard();
     } catch (err: any) {
-      console.error('Failed to save epic:', err);
+      console.error('Failed to save feature:', err);
     } finally {
       setDetailsSaving(false);
     }
@@ -381,7 +381,7 @@ export default function EpicView({
       );
       await fetchBoard();
     } catch (err: any) {
-      console.error('Failed to save autonomous settings:', err);
+      console.error('Failed to save feature settings:', err);
     } finally {
       setAutonomousSaving(false);
     }
@@ -389,14 +389,14 @@ export default function EpicView({
 
   const handleDeleteEpic = async () => {
     if (!epic || detailsSaving || autonomousSaving) return;
-    if (!window.confirm(`Delete epic "${epic.name}"? Cards will be unlinked.`)) return;
+    if (!window.confirm(`Delete feature "${epic.name}"? Cards will be unlinked.`)) return;
     setDetailsSaving(true);
     try {
       await api.deleteEpic(projectId, epic.id);
       onOpenEpicsList();
       await fetchBoard();
     } catch (err: any) {
-      console.error('Failed to delete epic:', err);
+      console.error('Failed to delete feature:', err);
     } finally {
       setDetailsSaving(false);
     }
@@ -404,13 +404,13 @@ export default function EpicView({
 
   const handleDeleteEpicFromList = async (target: any) => {
     if (!target?.id || deletingEpicId) return;
-    if (!window.confirm(`Delete epic "${target.name}"? Cards will be unlinked.`)) return;
+    if (!window.confirm(`Delete feature "${target.name}"? Cards will be unlinked.`)) return;
     setDeletingEpicId(target.id);
     try {
       await api.deleteEpic(projectId, target.id);
       await fetchBoard();
     } catch (err: any) {
-      console.error('Failed to delete epic:', err);
+      console.error('Failed to delete feature:', err);
     } finally {
       setDeletingEpicId(null);
     }
@@ -593,8 +593,8 @@ export default function EpicView({
         onOpenEpic(epicId);
       }
     } catch (err: any) {
-      console.error('Failed to create and scope epic:', err);
-      setCreateError(err?.message || 'Failed to create and scope epic');
+      console.error('Failed to create and scope feature:', err);
+      setCreateError(err?.message || 'Failed to create and scope feature');
       setCreateDialogOpen(true);
     } finally {
       setCreatingEpic(false);
@@ -637,7 +637,7 @@ export default function EpicView({
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 bg-gray-950 text-gray-500">
         <div className="h-8 w-8 rounded-full border-2 border-gray-700 border-t-indigo-500 animate-spin" />
-        <p className="text-sm">Loading epics…</p>
+        <p className="text-sm">Loading features…</p>
       </div>
     );
   }
@@ -646,7 +646,7 @@ export default function EpicView({
     return (
       <div className="flex-1 flex items-center justify-center bg-gray-950 text-gray-400">
         <div className="text-center max-w-sm px-6">
-          <p className="mb-1 text-base font-medium text-gray-200">Failed to load epics</p>
+          <p className="mb-1 text-base font-medium text-gray-200">Failed to load features</p>
           <p className="text-sm text-gray-500">{error}</p>
         </div>
       </div>
@@ -656,13 +656,13 @@ export default function EpicView({
   if (epicId && !epic) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 bg-gray-950 text-gray-400">
-        <p>Epic not found.</p>
+        <p>Feature not found.</p>
         <button
           type="button"
           onClick={onOpenEpicsList}
           className="px-4 py-2 text-sm text-gray-200 bg-white/[0.06] hover:bg-white/[0.1] rounded-lg"
         >
-          Back to epics
+          Back to features
         </button>
       </div>
     );
@@ -678,7 +678,7 @@ export default function EpicView({
             className="flex items-center gap-1.5 h-9 px-2.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-white/[0.06] transition-colors"
           >
             <ArrowLeft size={14} />
-            {epicId ? 'All epics' : 'Board'}
+            {epicId ? 'All features' : 'Board'}
           </button>
           {project?.color && (
             <span
@@ -688,14 +688,14 @@ export default function EpicView({
           )}
           <div className="min-w-0">
             <h1 className="text-base font-semibold text-gray-100 truncate">
-              {epicId ? epic.name : 'Epics'}
+              {epicId ? epic.name : 'Features'}
             </h1>
             <p className="text-xs text-gray-500 truncate">
               {epicId
                 ? epicSpecStats && epicSpecStats.total > 0
                   ? `${epicSpecStats.chosen}/${epicSpecStats.total} spec locked · ${epicTickets.length} ticket${epicTickets.length !== 1 ? 's' : ''}`
                   : `${epicTickets.length} ticket${epicTickets.length !== 1 ? 's' : ''} · ${epicPhases.length} phase${epicPhases.length !== 1 ? 's' : ''}`
-                : `${epics.length} epic${epics.length !== 1 ? 's' : ''} · ${project?.name || 'Project'}`}
+                : `${epics.length} feature${epics.length !== 1 ? 's' : ''} · ${project?.name || 'Project'}`}
             </p>
           </div>
         </div>
@@ -706,7 +706,7 @@ export default function EpicView({
               onClick={handleScopeEpic}
               disabled={scopingEpic}
               data-testid="epic-scope-button"
-              title="Open a scoping session that already knows this epic"
+              title="Open a scoping session that already knows this feature"
               className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-50 px-2.5 py-1.5 rounded-lg transition-colors"
             >
               <MessagesSquare size={13} />
@@ -744,14 +744,14 @@ export default function EpicView({
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white/[0.06] hover:bg-white/[0.10] disabled:opacity-40 text-gray-200 rounded-lg transition-colors"
                   >
                     <Plus size={13} />
-                    Create epic
+                    Create feature
                   </button>
                   <button
                     type="button"
                     onClick={() => openCreateDialog('scope')}
                     disabled={creatingEpic || scopingEpic}
                     data-testid="epic-list-create-scope-button"
-                    title="Create the epic and open a scoping session that already knows it"
+                    title="Create the feature and open a scoping session that already knows it"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/40 text-white rounded-lg transition-colors"
                   >
                     <MessagesSquare size={13} />
@@ -761,7 +761,7 @@ export default function EpicView({
                   <div
                     className="ml-auto inline-flex items-center gap-0.5 rounded-lg border border-white/[0.08] bg-white/[0.04] p-0.5"
                     role="group"
-                    aria-label="Epics view"
+                    aria-label="Features view"
                     data-testid="epic-view-toggle"
                   >
                     <button
@@ -807,7 +807,7 @@ export default function EpicView({
                       onChange={(event) =>
                         setListFilters((prev) => ({ ...prev, search: event.target.value }))
                       }
-                      placeholder="Search epics…"
+                      placeholder="Search features…"
                       data-testid="epic-list-search"
                       className="w-full rounded-lg border border-white/[0.08] bg-white/[0.04] py-2 pl-8 pr-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
                     />
@@ -823,7 +823,7 @@ export default function EpicView({
                     data-testid="epic-list-filter-scope"
                     className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2.5 py-2 text-xs text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
                   >
-                    <option value="all">All epics</option>
+                    <option value="all">All features</option>
                     <option value="with-tickets">With tickets</option>
                     <option value="empty">Empty</option>
                   </select>
@@ -907,7 +907,7 @@ export default function EpicView({
                   onDeleteEpic={handleDeleteEpicFromList}
                   deleteBusyEpicId={deletingEpicId}
                   emptyMessage={
-                    epics.length === 0 ? 'No epics yet.' : 'No epics match these filters.'
+                    epics.length === 0 ? 'No features yet.' : 'No features match these filters.'
                   }
                 />
               ) : (
@@ -921,7 +921,7 @@ export default function EpicView({
                   onDeleteEpic={handleDeleteEpicFromList}
                   deleteBusyEpicId={deletingEpicId}
                   emptyMessage={
-                    epics.length === 0 ? 'No epics yet.' : 'No epics match these filters.'
+                    epics.length === 0 ? 'No features yet.' : 'No features match these filters.'
                   }
                 />
               )}
@@ -984,7 +984,7 @@ export default function EpicView({
               {showSettings && (
                 <div className="grid gap-5 lg:grid-cols-2 max-w-6xl">
                   <SectionCard
-                    title="Epic details"
+                    title="Feature details"
                     description="Name, description, and color."
                     action={
                       <div className="flex items-center gap-2">
@@ -1028,8 +1028,8 @@ export default function EpicView({
                   </SectionCard>
 
                   <SectionCard
-                    title="Epic settings"
-                    description="PR base branch and legacy epic-level autonomous (phases preferred)."
+                    title="Feature settings"
+                    description="Feature branch staging and legacy feature-level autonomous settings."
                     action={
                       <button
                         type="button"

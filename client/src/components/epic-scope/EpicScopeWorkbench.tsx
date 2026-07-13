@@ -12,7 +12,7 @@ export type EpicScopeVariant = 'page' | 'compact';
 
 const COMPACT_TABS: { id: EpicScopeTab; label: string }[] = [
   { id: 'flowchart', label: 'Flowchart' },
-  { id: 'manage', label: 'Manage epics' },
+  { id: 'manage', label: 'Manage features' },
   { id: 'spec', label: 'Spec' },
 ];
 
@@ -252,7 +252,7 @@ export default function EpicScopeWorkbench({
       {tab === 'flowchart' && epic && phaseSection}
       {tab === 'flowchart' && !epic && (
         <p className="text-sm text-gray-500 py-6 text-center">
-          Select an epic to view its flowchart.
+          Select a feature to view its flowchart.
         </p>
       )}
 
@@ -288,7 +288,7 @@ export default function EpicScopeWorkbench({
 
       {tab === 'spec' && !epic && (
         <p className="text-sm text-gray-500 py-6 text-center">
-          Select an epic to view spec decisions.
+          Select a feature to view spec decisions.
         </p>
       )}
     </div>

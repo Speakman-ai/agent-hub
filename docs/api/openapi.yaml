@@ -1944,7 +1944,7 @@ components:
         - position
         - created_at
         - updated_at
-      description: A kanban epic — a group of related cards.
+      description: A kanban feature. The wire shape keeps the existing epic field names for compatibility.
     KanbanCardTemplate:
       type: object
       properties:
@@ -14890,7 +14890,7 @@ paths:
     get:
       tags:
         - Board
-      summary: List epics on a project board
+      summary: List features on a project board
       parameters:
         - schema:
             type: string
@@ -14901,7 +14901,7 @@ paths:
           in: path
       responses:
         "200":
-          description: Array of epics.
+          description: Array of features.
           content:
             application/json:
               schema:
@@ -14911,7 +14911,7 @@ paths:
     post:
       tags:
         - Board
-      summary: Create an epic
+      summary: Create a feature
       parameters:
         - schema:
             type: string
@@ -14947,7 +14947,7 @@ paths:
                 - name
       responses:
         "200":
-          description: New epic.
+          description: New feature.
           content:
             application/json:
               schema:
@@ -14962,7 +14962,7 @@ paths:
     put:
       tags:
         - Board
-      summary: Update an epic
+      summary: Update a feature
       description: Partial update. Setting `autonomous` to 1 on this epic clears the autonomous flag on any other autonomous epic on the same board (only one epic can be autonomous at a time).
       parameters:
         - schema:
@@ -15021,7 +15021,7 @@ paths:
                   nullable: true
       responses:
         "200":
-          description: Updated epic.
+          description: Updated feature.
           content:
             application/json:
               schema:
@@ -15033,7 +15033,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BoardErrorResponse"
         "404":
-          description: Epic not found.
+          description: Feature not found.
           content:
             application/json:
               schema:
@@ -15041,8 +15041,8 @@ paths:
     delete:
       tags:
         - Board
-      summary: Delete an epic
-      description: Unlinks every card that belonged to the epic, then removes the epic row.
+      summary: Delete a feature
+      description: Unlinks every card that belonged to the feature, then removes the epic row.
       parameters:
         - schema:
             type: string

@@ -9,12 +9,48 @@ import {
   defaultAutonomousModel,
   DEFAULT_EPIC_COLOR,
   epicStateLabel,
+  epicBranchTogglePatch,
+  featureBranchNameFromName,
 } from './epics';
 
 describe('epicStateLabel', () => {
   it('returns no label for empty epics without a lifecycle state', () => {
     expect(epicStateLabel(null)).toBe('');
     expect(epicStateLabel(undefined)).toBe('');
+  });
+});
+
+describe('featureBranchNameFromName', () => {
+  it('generates a safe feature branch from the feature name', () => {
+    expect(featureBranchNameFromName('  Billing & OAuth 2.0  ')).toBe('feature/billing-oauth-2-0');
+  });
+
+  it('does not generate Git-ref-unsafe dot or empty segments', () => {
+    expect(featureBranchNameFromName('Release 1..2')).toBe('feature/release-1-2');
+    expect(featureBranchNameFromName('...')).toBe('feature/feature');
+  });
+
+  it('keeps truncation from leaving an unsafe trailing separator', () => {
+    const branch = featureBranchNameFromName(`${'a'.repeat(72)} trailing`);
+    expect(branch).toBe(`feature/${'a'.repeat(72)}`);
+    expect(branch).toHaveLength(80);
+    expect(branch).not.toMatch(/[-.]$/);
+  });
+});
+
+describe('epicBranchTogglePatch', () => {
+  it('sets a generated branch when the feature branch toggle turns on', () => {
+    expect(
+      epicBranchTogglePatch({ name: 'Platform reliability', pr_base_branch: '' }, true),
+    ).toEqual({
+      pr_base_branch: 'feature/platform-reliability',
+    });
+  });
+
+  it('preserves a manually edited branch while enabled and clears it when disabled', () => {
+    const form = { name: 'Platform reliability', pr_base_branch: 'feature/manual' };
+    expect(epicBranchTogglePatch(form, true)).toEqual({ pr_base_branch: 'feature/manual' });
+    expect(epicBranchTogglePatch(form, false)).toEqual({ pr_base_branch: '' });
   });
 });
 

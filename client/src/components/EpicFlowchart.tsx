@@ -30,7 +30,7 @@ export default function EpicFlowchart({ epic, phases, cards, columns, className 
         <div>
           <h3 className="text-sm font-semibold text-gray-100">Scope flowchart</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Epic → Phases → Tickets with blocker dependencies
+            Feature → Phases → Tickets with blocker dependencies
           </p>
         </div>
       </div>

@@ -277,7 +277,10 @@ export const KanbanEpicComponent = registerComponent(
       created_at: z.string(),
       updated_at: z.string(),
     })
-    .openapi({ description: 'A kanban epic — a group of related cards.' }),
+    .openapi({
+      description:
+        'A kanban feature. The wire shape keeps the existing epic field names for compatibility.',
+    }),
 );
 
 export const KanbanCardTemplateComponent = registerComponent(
@@ -1066,11 +1069,11 @@ registerPath({
   method: 'get',
   path: '/api/projects/{projectId}/board/epics',
   tags: ['Board'],
-  summary: 'List epics on a project board',
+  summary: 'List features on a project board',
   request: { params: projectIdParams },
   responses: {
     200: {
-      description: 'Array of epics.',
+      description: 'Array of features.',
       content: jsonContent(z.array(KanbanEpicComponent)),
     },
   },
@@ -1081,13 +1084,13 @@ registerPath({
   method: 'post',
   path: '/api/projects/{projectId}/board/epics',
   tags: ['Board'],
-  summary: 'Create an epic',
+  summary: 'Create a feature',
   request: {
     params: projectIdParams,
     body: { content: jsonContent(CreateEpicRequestSchema) },
   },
   responses: {
-    200: { description: 'New epic.', content: jsonContent(KanbanEpicComponent) },
+    200: { description: 'New feature.', content: jsonContent(KanbanEpicComponent) },
     400: errorResponse('Validation failed.'),
   },
 });
@@ -1097,7 +1100,7 @@ registerPath({
   method: 'put',
   path: '/api/projects/{projectId}/board/epics/{epicId}',
   tags: ['Board'],
-  summary: 'Update an epic',
+  summary: 'Update a feature',
   description:
     'Partial update. Setting `autonomous` to 1 on this epic clears the autonomous flag on any other autonomous epic on the same board (only one epic can be autonomous at a time).',
   request: {
@@ -1105,9 +1108,9 @@ registerPath({
     body: { content: jsonContent(UpdateEpicRequestSchema) },
   },
   responses: {
-    200: { description: 'Updated epic.', content: jsonContent(KanbanEpicComponent) },
+    200: { description: 'Updated feature.', content: jsonContent(KanbanEpicComponent) },
     400: errorResponse('Validation failed.'),
-    404: errorResponse('Epic not found.'),
+    404: errorResponse('Feature not found.'),
   },
 });
 
@@ -1116,8 +1119,8 @@ registerPath({
   method: 'delete',
   path: '/api/projects/{projectId}/board/epics/{epicId}',
   tags: ['Board'],
-  summary: 'Delete an epic',
-  description: 'Unlinks every card that belonged to the epic, then removes the epic row.',
+  summary: 'Delete a feature',
+  description: 'Unlinks every card that belonged to the feature, then removes the epic row.',
   request: { params: projectEpicIdParams },
   responses: {
     200: {

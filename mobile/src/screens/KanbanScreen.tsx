@@ -469,7 +469,7 @@ export default function KanbanScreen({ route, navigation }: any) {
     };
     const handleSaveEpic = async () => {
         if (!epicForm.name.trim()) {
-            Alert.alert('Error', 'Epic name is required');
+            Alert.alert('Error', 'Feature name is required');
             return;
         }
         setEpicSaving(true);
@@ -491,7 +491,7 @@ export default function KanbanScreen({ route, navigation }: any) {
             await loadBoard();
         }
         catch (err: any) {
-            Alert.alert('Error', 'Failed to save epic');
+            Alert.alert('Error', 'Failed to save feature');
         }
         finally {
             setEpicSaving(false);
@@ -500,7 +500,7 @@ export default function KanbanScreen({ route, navigation }: any) {
     const handleDeleteEpic = () => {
         if (!editingEpic)
             return;
-        Alert.alert('Delete Epic', `Delete "${editingEpic.name}"? Cards linked to this epic will be unlinked but not deleted.`, [
+        Alert.alert('Delete feature', `Delete "${editingEpic.name}"? Cards linked to this feature will be unlinked but not deleted.`, [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Delete',
@@ -516,7 +516,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                         await loadBoard();
                     }
                     catch {
-                        Alert.alert('Error', 'Failed to delete epic');
+                        Alert.alert('Error', 'Failed to delete feature');
                     }
                 },
             },
@@ -532,7 +532,7 @@ export default function KanbanScreen({ route, navigation }: any) {
             await loadBoard();
         }
         catch {
-            Alert.alert('Error', 'Failed to link epic');
+            Alert.alert('Error', 'Failed to link feature');
         }
     };
     // Select an agent from the picker modal — stored as the agent's *name* in
@@ -1185,8 +1185,8 @@ export default function KanbanScreen({ route, navigation }: any) {
                   </TouchableOpacity>)}
               </View>)}
 
-            {/* Epic */}
-            <Text style={styles.fieldLabel}>Epic</Text>
+            {/* Feature */}
+            <Text style={styles.fieldLabel}>Feature</Text>
             <TouchableOpacity style={styles.epicPickerBtn} onPress={() => setShowEpicPickerForCard(true)}>
               {(() => {
                 const linked = findEpic(epics, editEpicId);
@@ -1372,11 +1372,11 @@ export default function KanbanScreen({ route, navigation }: any) {
           </TouchableOpacity>
         </Modal>
 
-        {/* Epic picker for linking card to epic */}
+        {/* Feature picker for linking card to feature */}
         <Modal visible={showEpicPickerForCard} transparent animationType="fade" onRequestClose={() => setShowEpicPickerForCard(false)}>
           <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowEpicPickerForCard(false)}>
             <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Link to epic</Text>
+              <Text style={styles.modalTitle}>Link to feature</Text>
               <ScrollView style={{ maxHeight: 320 }}>
                 <TouchableOpacity style={styles.modalOption} onPress={() => handleLinkCardEpic(null)}>
                   <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]}/>
@@ -1416,7 +1416,7 @@ export default function KanbanScreen({ route, navigation }: any) {
               <Text style={styles.epicFilterText} numberOfLines={1}>
                 {epicDropdownLabel(selectedEpic)}
               </Text>
-            </>) : (<Text style={styles.epicFilterText}>All Epics ({epics.length})</Text>)}
+            </>) : (<Text style={styles.epicFilterText}>All Features ({epics.length})</Text>)}
           <Text style={styles.epicPickerChevron}>{'\u25BE'}</Text>
         </TouchableOpacity>
 
@@ -1425,7 +1425,7 @@ export default function KanbanScreen({ route, navigation }: any) {
           </TouchableOpacity>)}
 
         <TouchableOpacity style={styles.epicNewBtn} onPress={openEpicCreate}>
-          <Text style={styles.epicNewBtnText}>+ Epic</Text>
+          <Text style={styles.epicNewBtnText}>+ Feature</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.epicEditBtn} onPress={() => setShowColumnsModal(true)}>
@@ -1564,14 +1564,14 @@ export default function KanbanScreen({ route, navigation }: any) {
       <Modal visible={showEpicFilterModal} transparent animationType="fade" onRequestClose={() => setShowEpicFilterModal(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowEpicFilterModal(false)}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Filter by epic</Text>
+            <Text style={styles.modalTitle}>Filter by feature</Text>
             <ScrollView style={{ maxHeight: 360 }}>
               <TouchableOpacity style={styles.modalOption} onPress={() => {
             setSelectedEpicId(null);
             setShowEpicFilterModal(false);
         }}>
                 <View style={[styles.modalOptionDot, { backgroundColor: colors.gray600 }]}/>
-                <Text style={styles.modalOptionText}>All Epics ({epics.length})</Text>
+                <Text style={styles.modalOptionText}>All Features ({epics.length})</Text>
               </TouchableOpacity>
               {epicsWithActiveCards(epics, (id: any) => countOpenCardsForEpic(cards, id, doneColumnIds), selectedEpicId).map((epic: any) => {
             const count = countOpenCardsForEpic(cards, epic.id, doneColumnIds);
@@ -1618,17 +1618,17 @@ export default function KanbanScreen({ route, navigation }: any) {
           <View style={[styles.modalContent, { width: 320 }]}>
             <ScrollView>
               <Text style={styles.modalTitle}>
-                {editingEpic ? 'Edit Epic' : 'New Epic'}
+                {editingEpic ? 'Edit Feature' : 'New Feature'}
               </Text>
 
               <Text style={styles.fieldLabel}>Name</Text>
-              <TextInput style={styles.fieldInput} value={epicForm.name} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, name: v }))} placeholder="Epic name..." placeholderTextColor={colors.gray600} autoFocus/>
+              <TextInput style={styles.fieldInput} value={epicForm.name} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, name: v }))} placeholder="Feature name..." placeholderTextColor={colors.gray600} autoFocus/>
 
               <Text style={styles.fieldLabel}>Description</Text>
               <TextInput style={[styles.fieldInput, { minHeight: 60, textAlignVertical: 'top' }]} value={epicForm.description} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, description: v }))} placeholder="Short description (optional)" placeholderTextColor={colors.gray600} multiline/>
 
               <Text style={styles.fieldLabel}>PR base branch (optional)</Text>
-              <TextInput style={styles.fieldInput} value={epicForm.pr_base_branch ?? ''} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, pr_base_branch: v }))} placeholder="e.g. feature/epic-integration" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false}/>
+              <TextInput style={styles.fieldInput} value={epicForm.pr_base_branch ?? ''} onChangeText={(v: any) => setEpicForm((f: any) => ({ ...f, pr_base_branch: v }))} placeholder="e.g. feature/platform-reliability" placeholderTextColor={colors.gray600} autoCapitalize="none" autoCorrect={false}/>
 
               <Text style={styles.fieldLabel}>Color</Text>
               <View style={styles.colorRow}>
@@ -1645,7 +1645,7 @@ export default function KanbanScreen({ route, navigation }: any) {
                     <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={styles.autonomousModeTitle}>Autonomous mode</Text>
                       <Text style={styles.autonomousModeHint}>
-                        Automatically assign backlog cards in this epic when agent slots are free.
+                        Automatically assign backlog cards in this feature when agent slots are free.
                       </Text>
                     </View>
                     <Switch value={epicForm.autonomous === 1} onValueChange={(on: any) => setEpicForm((f: any) => ({ ...f, autonomous: on ? 1 : 0 }))} trackColor={{ false: colors.gray600, true: '#059669' }} thumbColor={Platform.OS === 'android' ? colors.white : undefined} ios_backgroundColor={colors.gray600}/>
@@ -1701,7 +1701,7 @@ export default function KanbanScreen({ route, navigation }: any) {
               </View>
 
               {editingEpic && (<TouchableOpacity style={styles.deleteEpicBtn} onPress={handleDeleteEpic}>
-                  <Text style={styles.deleteEpicBtnText}>Delete Epic</Text>
+                  <Text style={styles.deleteEpicBtnText}>Delete Feature</Text>
                 </TouchableOpacity>)}
             </ScrollView>
           </View>

@@ -1,3 +1,5 @@
+import { epicBranchTogglePatch } from '../utils/epics';
+
 const LABEL_CLASS = 'block text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5';
 const FIELD_CLASS =
   'w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/40 focus:border-emerald-500/40 transition-colors';
@@ -59,9 +61,9 @@ export default function EpicAutonomousPanel({
   form,
   onChange,
   modelConfig,
-  scopeLabel = 'epic',
+  scopeLabel = 'feature',
 }: any) {
-  const scopeNoun = scopeLabel === 'phase' ? 'phase' : 'epic';
+  const scopeNoun = scopeLabel === 'phase' ? 'phase' : 'feature';
   return (
     <div className="space-y-5" data-testid="epic-autonomous-panel">
       <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
@@ -81,24 +83,42 @@ export default function EpicAutonomousPanel({
       </div>
 
       {scopeLabel !== 'phase' ? (
-        <div>
-          <FieldLabel htmlFor="autonomous-pr-base">PR base branch</FieldLabel>
-          <input
-            id="autonomous-pr-base"
-            type="text"
-            value={form.pr_base_branch ?? ''}
-            onChange={(e: any) => onChange({ pr_base_branch: e.target.value })}
-            placeholder="feature/epic-integration"
-            data-testid="autonomous-pr-base-input"
-            className={FIELD_MONO_CLASS}
-          />
-          <p className={HINT_CLASS}>
-            Default base branch for cards in this epic. Cards can override individually. Leave empty
-            to use the repo default. Integration branches enforce serial dispatch.
-          </p>
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-gray-100">Keep on feature branch</div>
+              <p className={`${HINT_CLASS} mt-0.5`}>
+                Merge this feature&apos;s cards into a shared feature branch before it lands on the
+                repo default branch.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={!!form.pr_base_branch?.trim()}
+              ariaLabel="Keep on feature branch"
+              onChange={(on: boolean) => onChange(epicBranchTogglePatch(form, on))}
+            />
+          </div>
+          {form.pr_base_branch?.trim() ? (
+            <div>
+              <FieldLabel htmlFor="autonomous-pr-base">Feature branch</FieldLabel>
+              <input
+                id="autonomous-pr-base"
+                type="text"
+                value={form.pr_base_branch ?? ''}
+                onChange={(e: any) => onChange({ pr_base_branch: e.target.value })}
+                placeholder="feature/platform-reliability"
+                data-testid="autonomous-pr-base-input"
+                className={FIELD_MONO_CLASS}
+              />
+              <p className={HINT_CLASS}>
+                The branch is prepared when the first worktree-backed code session starts. Cards can
+                still override their PR base individually.
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : (
-        <p className={HINT_CLASS}>Phases inherit the epic&apos;s PR base branch setting.</p>
+        <p className={HINT_CLASS}>Phases inherit the feature branch setting.</p>
       )}
 
       {form.autonomous === 1 ? (

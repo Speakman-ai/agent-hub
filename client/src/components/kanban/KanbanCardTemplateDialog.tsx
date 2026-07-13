@@ -153,7 +153,9 @@ export default function KanbanCardTemplateDialog({
           </label>
 
           <label className="block">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Epic</span>
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+              Feature
+            </span>
             <select
               value={form.epicId}
               onChange={(e) => setForm((f) => ({ ...f, epicId: e.target.value }))}

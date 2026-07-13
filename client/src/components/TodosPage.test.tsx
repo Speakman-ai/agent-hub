@@ -261,7 +261,7 @@ describe('TodosPage — do-date time window & link badge', () => {
     render(<TodosPage />);
     await screen.findByText('Linked to card');
     const badges = screen.getAllByTestId('todo-link-badge').map((b) => b.textContent);
-    expect(badges).toEqual(expect.arrayContaining(['Ticket', 'Epic', 'Session']));
+    expect(badges).toEqual(expect.arrayContaining(['Ticket', 'Feature', 'Session']));
   });
 
   it('falls back to a Ticket badge for a legacy linkedCardId', async () => {

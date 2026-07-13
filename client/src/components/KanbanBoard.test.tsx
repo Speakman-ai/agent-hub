@@ -260,7 +260,7 @@ describe('KanbanBoard card detail modal', () => {
     // Sidebar contains the metadata labels.
     expect(within(modal).getByText(/^Priority$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/^Agent$/i)).toBeInTheDocument();
-    expect(within(modal).getByText(/^Epic$/i)).toBeInTheDocument();
+    expect(within(modal).getByText(/^Feature$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/^Labels$/i)).toBeInTheDocument();
     expect(within(modal).getByText(/GitHub Issue URL/i)).toBeInTheDocument();
     expect(within(modal).getByText(/Pull Request/i)).toBeInTheDocument();
@@ -2093,7 +2093,7 @@ describe('KanbanBoard epics toolbar', () => {
     (api.get as any).mockResolvedValue([]);
   });
 
-  it('shows the Epics button without rendering the epic filter in the board header', async () => {
+  it('shows the Features button without rendering the epic filter in the board header', async () => {
     const onOpenEpics = vi.fn();
     const onSelectedEpicIdsChange = vi.fn();
     (api.getBoard as any).mockResolvedValue({

@@ -40,7 +40,6 @@ import { loadAssignableUsers, normalizeAssignedUserId } from '../kanban-assigned
 import { normalizeTemplatePriority, templateRowToClient } from '../kanban-card-templates.js';
 import { getDb } from '../db.js';
 import {
-  ensureOperatorBaseBranch,
   scheduleAutonomousPhase,
   startAutonomousPhase,
   stopAutonomousPhase,
@@ -1789,31 +1788,10 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
         );
       }
     }
-    const createdEpic = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
     if (shouldSetAssignedUser) {
       stmts.setKanbanEpicAssignedUser.run(normalizedAssignedUser, id);
     }
     const createdEpicFinal = stmts.getKanbanEpic.get(id) as KanbanEpicRow;
-    // Eager creation of the operator-set integration branch on origin. Without
-    // this, the branch is only created lazily by the next autonomous dispatch
-    // tick — any session dispatched against this epic in the meantime races
-    // ahead, opens its auto-PR before the umbrella exists, and ends up
-    // pointing at origin/main (or asks the agent to manually retarget).
-    // `ensureOperatorBaseBranch` self-debounces, swallows errors with a single
-    // logged line, and the autonomous loop's existing call remains the
-    // safety-net retry — so fire-and-forget keeps the HTTP response snappy.
-    if (hasEpicPrBase && createdEpic.pr_base_branch && createdEpic.pr_base_branch.trim()) {
-      const project = findProject(req.params.projectId as string);
-      if (project) {
-        const branch = createdEpic.pr_base_branch;
-        void ensureOperatorBaseBranch(project, branch, { config }).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[Board] ensureOperatorBaseBranch threw for project "${project.name}", branch "${branch}": ${msg}`,
-          );
-        });
-      }
-    }
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json(createdEpicFinal);
   });
@@ -1920,24 +1898,6 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
 
     const updatedEpic = stmts.getKanbanEpic.get(req.params.epicId) as KanbanEpicRow;
     scheduleAutonomousEpic(req.params.projectId as string, updatedEpic);
-
-    // Eager creation of the operator-set integration branch on origin (same
-    // rationale as POST /board/epics above). Only fires when the PUT payload
-    // explicitly set a non-blank `prBaseBranch`; preserving the existing
-    // value (key omitted) doesn't re-trigger the probe. Fire-and-forget so
-    // git network ops don't extend the response latency.
-    if (hasEpicPrBasePut && nextEpicPrBaseField && nextEpicPrBaseField.trim()) {
-      const project = findProject(req.params.projectId as string);
-      if (project) {
-        const branch = nextEpicPrBaseField;
-        void ensureOperatorBaseBranch(project, branch, { config }).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[Board] ensureOperatorBaseBranch threw for project "${project.name}", branch "${branch}": ${msg}`,
-          );
-        });
-      }
-    }
 
     broadcast({ type: 'kanban_update', projectId: req.params.projectId });
     res.json(updatedEpic);

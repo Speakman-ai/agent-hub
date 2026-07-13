@@ -23,6 +23,25 @@ export const DEFAULT_EPIC_LIST_STATE_FILTER = 'in_progress';
 export function epicStateLabel(state: string | null | undefined): string {
     return EPIC_STATE_LABELS[state || ''] || '';
 }
+export function featureBranchNameFromName(name: string | null | undefined): string {
+    const rawSlug = String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    const slug = rawSlug.slice(0, 72).replace(/-+$/g, '') || 'feature';
+    return `feature/${slug}`;
+}
+export function nextFeatureBranch(current: string | null | undefined, name: string): string {
+    const trimmed = typeof current === 'string' ? current.trim() : '';
+    return trimmed || featureBranchNameFromName(name);
+}
+export function epicBranchTogglePatch(form: any, enabled: boolean) {
+    return {
+        pr_base_branch: enabled ? nextFeatureBranch(form.pr_base_branch, form.name) : '',
+    };
+}
 export const DEFAULT_EPIC_FORM: Record<string, any> = {
     name: '',
     description: '',

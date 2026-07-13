@@ -243,7 +243,7 @@ export default function PromoteTodoModal({
                 htmlFor="promote-epic"
                 className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-400"
               >
-                Epic
+                Feature
               </label>
               <select
                 id="promote-epic"

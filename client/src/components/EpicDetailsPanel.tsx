@@ -32,7 +32,7 @@ function FieldLabel({ htmlFor, children }: any) {
   );
 }
 
-/** Inline epic metadata fields for the epic screen. */
+/** Inline feature metadata fields for the feature screen. */
 export default function EpicDetailsPanel({ form, onChange, autoFocusName = false }: any) {
   return (
     <div className="space-y-5" data-testid="epic-details-panel">
@@ -56,7 +56,7 @@ export default function EpicDetailsPanel({ form, onChange, autoFocusName = false
           id="epic-description"
           value={form.description}
           onChange={(e: any) => onChange({ description: e.target.value })}
-          placeholder="Optional summary or goals for this epic"
+          placeholder="Optional summary or goals for this feature"
           rows={3}
           data-testid="epic-description-input"
           className={`${FIELD_CLASS} resize-y min-h-[88px] leading-relaxed`}

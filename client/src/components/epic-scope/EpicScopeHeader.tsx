@@ -34,7 +34,7 @@ export default function EpicScopeHeader({
                 backgroundColor: `${epic.color || '#6366f1'}22`,
               }}
             >
-              Epic
+              Feature
             </span>
             <h2
               className={`font-semibold text-gray-100 truncate ${compact ? 'text-sm' : 'text-lg'}`}

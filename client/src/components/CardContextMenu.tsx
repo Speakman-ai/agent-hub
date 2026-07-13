@@ -131,7 +131,7 @@ export default function CardContextMenu({
       },
       {
         key: 'epic',
-        label: 'Epic',
+        label: 'Feature',
         icon: Target,
         submenu: [
           {

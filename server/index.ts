@@ -66,6 +66,7 @@ import {
 } from './heartbeat.js';
 import { startSlack } from './slack.js';
 import { startStalePrChecker } from './stale-pr-check.js';
+import { ensureOperatorBaseBranch } from './autonomous.js';
 import {
   startReplayRetentionSweeper,
   RETENTION_SWEEP_INTERVAL_MS,
@@ -416,7 +417,7 @@ try {
   console.warn('[skills] Startup sync failed:', (err as Error).message);
 }
 
-function ensureWorktree(
+async function ensureWorktree(
   session: SessionRow,
   projectCwd: string,
   agentId: string,
@@ -446,7 +447,19 @@ function ensureWorktree(
   hostedBarePath?: string | null,
 ): Promise<string> {
   if (!sessionUsesWorktree(session)) {
-    return Promise.resolve(projectCwd);
+    return projectCwd;
+  }
+  const trimmedPrBase = prBaseBranch?.trim();
+  if (trimmedPrBase && projectId) {
+    const project = findProject(projectId);
+    if (project) {
+      await ensureOperatorBaseBranch(project, trimmedPrBase, { config }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[Workspace] ensureOperatorBaseBranch threw for project "${project.name}", branch "${trimmedPrBase}": ${msg}`,
+        );
+      });
+    }
   }
   return ensureSessionWorkspace(
     session,

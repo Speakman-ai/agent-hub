@@ -99,6 +99,19 @@ export function ciOnPushEnabled(project: Project): boolean {
   return project.gitHost === 'agenthub' && project.ciOnPush?.enabled === true;
 }
 
+export function isFeatureIntegrationBranch(
+  stmts: Stmts,
+  projectId: string,
+  branch: string | null | undefined,
+): boolean {
+  const trimmed = branch?.trim();
+  if (!trimmed) return false;
+  const board = stmts.getKanbanBoard.get(projectId) as { id: string } | undefined;
+  if (!board) return false;
+  const epics = stmts.getKanbanEpics.all(board.id) as Array<{ pr_base_branch?: string | null }>;
+  return epics.some((epic) => epic.pr_base_branch?.trim() === trimmed);
+}
+
 /**
  * Test guard: vitest (server/test/setup.ts) sets this so app-wired
  * triggers (PR-create hooks, smart-HTTP pushes in route tests) never
@@ -144,6 +157,13 @@ export function maybeRunPushCi(
 
   return enqueue(project.id, async () => {
     const defaultBranch = (await hostedRepoDefaultBranch(project.id, dataDir)) ?? 'main';
+    for (const ref of updatedRefs) {
+      if (!ref.startsWith('refs/heads/')) continue;
+      const branch = ref.slice('refs/heads/'.length);
+      if (branch !== defaultBranch && isFeatureIntegrationBranch(deps.stmts, project.id, branch)) {
+        console.log(`[push-ci] ${branch} is a feature integration branch, skipping push CI`);
+      }
+    }
     if (!updatedRefs.includes(`refs/heads/${defaultBranch}`)) return;
     const bare = gitHostRepoPath(project.id, dataDir);
     const headSha = await revParse(bare, `refs/heads/${defaultBranch}`);
