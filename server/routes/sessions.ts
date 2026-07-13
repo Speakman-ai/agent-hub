@@ -129,6 +129,10 @@ import { enrichSessionWithAgents } from '../session-agents.js';
 import { getDesign } from '../designs-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import type { AuthenticatedRequest } from '../auth.js';
+import {
+  readCodexModelsCacheForUser,
+  resolveSelectableCodexModels,
+} from '../codex-model-capability.js';
 import { canViewProject } from '../project-visibility.js';
 import { resolveVisibilityCaller } from '../project-visibility-middleware.js';
 import {
@@ -1568,17 +1572,24 @@ export default function createSessionRoutes(deps: RouteDeps): Router {
     const parsed = parseBody(PutSessionModelRequestSchema, req, res);
     if (!parsed) return;
     const { model } = parsed;
-    const ALL_VALID_MODELS = config.allValidModels;
-    const ENGINE_VALID_MODELS = config.engineValidModels;
-    if (!ALL_VALID_MODELS.includes(model)) {
-      return res
-        .status(400)
-        .json({ error: `Invalid model. Must be one of: ${ALL_VALID_MODELS.join(', ')}` });
-    }
     const session = stmts.getSession.get(req.params.sessionId) as SessionRow | undefined;
     if (!session) return res.status(404).json({ error: 'Session not found' });
     const engine = session.engine || 'claude-code';
-    const allowed = ENGINE_VALID_MODELS[engine] || ENGINE_VALID_MODELS['claude-code'];
+    const staticAllowed =
+      config.engineValidModels[engine] || config.engineValidModels['claude-code'];
+    // For codex-cli, overlay the capability-gated models the installed CLI
+    // advertises so a save accepts whatever GET /api/config/models offered in the
+    // picker (self-heals across a codex upgrade). Without this, a selectable
+    // gpt-5.6-* was rejected here and the row silently stayed on the baseline,
+    // making the UI "revert" on the next refresh. Read the capability cache from
+    // the SESSION OWNER's codex home (availability is per-user), falling back to
+    // the request user.
+    let allowed: string[] = staticAllowed;
+    if (engine === 'codex-cli') {
+      const capUserId = session.owner_user_id ?? (req as AuthenticatedRequest).authUserId ?? null;
+      const codexCache = readCodexModelsCacheForUser(capUserId, config.dataDir);
+      allowed = resolveSelectableCodexModels(staticAllowed, codexCache);
+    }
     if (!allowed.includes(model)) {
       return res.status(400).json({
         error: `Model "${model}" is not valid for engine "${engine}". Allowed: ${allowed.join(', ')}`,
