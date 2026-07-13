@@ -365,6 +365,12 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
                     const isError = block.result?.isError;
                     const showDiffLayout = isFileModifyingTool(use.tool) && use.input;
                     const { headline, arg } = describeTool(use.tool, use.input);
+                    // Background Bash shell: turn-scoped, can't be monitored or
+                    // resumed after the turn ends (fresh CLI per turn). Flag it.
+                    const isBackgroundBash =
+                        use.tool === 'Bash' &&
+                        typeof use.input?.command === 'string' &&
+                        use.input?.run_in_background === true;
                     if (showDiffLayout) {
                         return (<View key={idx} style={[styles.diffWrapper, isError && styles.diffWrapperError]}>
                   <View style={styles.diffHeader}>
@@ -393,6 +399,9 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
                     <Text style={[styles.toolName, { color: toolColor }]} numberOfLines={1}>
                       {headline || use.tool}
                     </Text>
+                    {isBackgroundBash && (<Text style={styles.backgroundBadge} testID="bash-background-badge">
+                        background
+                      </Text>)}
                     {!hasResult && <Text style={styles.runningBadge}>running…</Text>}
                     {isError && <Text style={styles.errorBadge}>error</Text>}
                   </View>
@@ -413,6 +422,11 @@ function SessionTail({ message, events, agentColor, streaming, onEventsLoaded, o
                           {typeof use.input.description === 'string' &&
                                     use.input.description.trim() ? (<Text style={styles.bashDescription}>
                               {use.input.description.trim()}
+                            </Text>) : null}
+                          {isBackgroundBash ? (<Text style={styles.bashBackgroundNote} testID="bash-background-note">
+                              Launched in the background. Agent Hub runs a fresh CLI each turn, so this
+                              shell only lives for this turn. It can't be monitored or resumed after the
+                              turn ends.
                             </Text>) : null}
                           {block.result?.output ? (<Text style={[styles.bashOutput, isError && { color: colors.red400 }]}>
                               {block.result.output.slice(0, 2000)}
@@ -653,6 +667,17 @@ const styles = StyleSheet.create({
     toolName: { fontSize: 12, fontWeight: '700', flexShrink: 1 },
     runningBadge: { fontSize: 10, color: colors.blue400, fontStyle: 'italic' },
     errorBadge: { fontSize: 10, color: colors.red400, fontWeight: '600' },
+    backgroundBadge: {
+        fontSize: 9,
+        color: colors.amber400,
+        fontWeight: '600',
+        textTransform: 'uppercase',
+        backgroundColor: colors.amber900_40,
+        paddingHorizontal: 5,
+        paddingVertical: 1,
+        borderRadius: 4,
+        overflow: 'hidden',
+    },
     argMono: {
         fontSize: 10,
         color: colors.gray500,
@@ -689,6 +714,12 @@ const styles = StyleSheet.create({
         color: colors.gray500,
         fontStyle: 'italic',
         marginTop: 4,
+    },
+    bashBackgroundNote: {
+        fontSize: 10,
+        color: colors.amber400,
+        marginTop: 8,
+        lineHeight: 14,
     },
     bashOutput: {
         marginTop: 8,

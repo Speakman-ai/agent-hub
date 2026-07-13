@@ -1064,6 +1064,12 @@ export function ToolCard({ use, result, defaultOpen }: any) {
     use.tool === 'Bash' &&
     typeof use.input?.command === 'string' &&
     use.input.command.trim().length > 0;
+  // Claude Code's Bash tool can launch a shell with `run_in_background: true`.
+  // Agent Hub spawns a fresh CLI per turn, so such a shell lives only for the
+  // turn that started it — it can't be monitored (BashOutput) or resumed later.
+  // Surface it so the user isn't misled into thinking a background dev server
+  // keeps running after the turn ends.
+  const isBackgroundBash = isBash && use.input?.run_in_background === true;
 
   // File-modifying tools: always show the diff from the latest tool input. When
   // the CLI flags `is_error`, we still render the diff (what was attempted)
@@ -1112,6 +1118,14 @@ export function ToolCard({ use, result, defaultOpen }: any) {
           </code>
         )}
         <span className="ml-auto flex items-center gap-2 shrink-0">
+          {isBackgroundBash && (
+            <span
+              data-testid="bash-background-badge"
+              className="text-[10px] uppercase tracking-wide bg-amber-900/40 text-amber-300 px-1.5 py-0.5 rounded"
+            >
+              background
+            </span>
+          )}
           {stillRunning && (
             <span className="text-emerald-400 text-[10px] animate-pulse">running…</span>
           )}
@@ -1141,6 +1155,15 @@ export function ToolCard({ use, result, defaultOpen }: any) {
             {typeof use.input.description === 'string' && use.input.description.trim() && (
               <div className="mt-1 text-[10px] text-gray-500 italic">
                 {use.input.description.trim()}
+              </div>
+            )}
+            {isBackgroundBash && (
+              <div
+                data-testid="bash-background-note"
+                className="mt-2 text-[10px] text-amber-300/90 bg-amber-950/30 border border-amber-800/40 rounded px-2 py-1.5 not-italic"
+              >
+                Launched in the background. Agent Hub runs a fresh CLI each turn, so this shell only
+                lives for this turn. It can&apos;t be monitored or resumed after the turn ends.
               </div>
             )}
           </div>

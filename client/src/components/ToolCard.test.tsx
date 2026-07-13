@@ -87,6 +87,45 @@ describe('ToolCard — humanized headline', () => {
     expect(screen.getByText(/^Run ls -la$/)).toBeTruthy();
   });
 
+  it('flags a background Bash shell with a badge and lifecycle note', () => {
+    render(
+      <ToolCard
+        use={{
+          type: 'tool_use',
+          id: 'b3',
+          tool: 'Bash',
+          input: {
+            command: 'npm run dev',
+            description: 'Start the dev server',
+            run_in_background: true,
+          },
+        }}
+        result={{ output: '', isError: false }}
+        defaultOpen={true}
+      />,
+    );
+    expect(screen.getByTestId('bash-background-badge')).toBeTruthy();
+    const note = screen.getByTestId('bash-background-note');
+    expect(note.textContent).toMatch(/only\s+lives for this turn/i);
+  });
+
+  it('does not flag a foreground Bash command as background', () => {
+    render(
+      <ToolCard
+        use={{
+          type: 'tool_use',
+          id: 'b4',
+          tool: 'Bash',
+          input: { command: 'ls -la', run_in_background: false },
+        }}
+        result={{ output: '', isError: false }}
+        defaultOpen={true}
+      />,
+    );
+    expect(screen.queryByTestId('bash-background-badge')).toBeNull();
+    expect(screen.queryByTestId('bash-background-note')).toBeNull();
+  });
+
   it('humanizes Read/Grep tools (basename + verb)', () => {
     expect(describeTool('Read', { file_path: '/project/src/foo.ts' }).headline).toBe('Read foo.ts');
     expect(describeTool('Grep', { pattern: 'TODO' }).headline).toBe('Search for /TODO/');
