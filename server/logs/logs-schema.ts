@@ -144,6 +144,28 @@ export const LOGS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_log_source_audit_source
     ON log_source_audit(source_id, created_at DESC);
 
+  -- Append-only audit of prompt-safe context packs handed to an agent action
+  -- (decision LOG-TRUST: "Record who launched each action and which redacted
+  -- records were included"). One row per Analyze / Fix invocation: the acting
+  -- user, the issue, and the exact record ids embedded in the redacted excerpt.
+  -- Holds ids and counts only — never the redacted log text itself.
+  CREATE TABLE IF NOT EXISTS log_action_audit (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL,
+    issue_id      TEXT,
+    action        TEXT NOT NULL,
+    actor_user_id TEXT,
+    record_ids    TEXT NOT NULL,
+    record_count  INTEGER NOT NULL DEFAULT 0,
+    context_bytes INTEGER NOT NULL DEFAULT 0,
+    redactions    INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_log_action_audit_project
+    ON log_action_audit(project_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_log_action_audit_issue
+    ON log_action_audit(issue_id, created_at DESC);
+
   -- Per-project retention / quota overrides. Absent row → code defaults
   -- (DEFAULT_RETENTION_DAYS / DEFAULT_PROJECT_QUOTA_BYTES).
   CREATE TABLE IF NOT EXISTS log_retention_config (

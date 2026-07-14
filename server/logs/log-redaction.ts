@@ -11,6 +11,7 @@
  * a project's operator-configured extra keys / regexes and folds them into the
  * built-ins via {@link buildRedactionConfig}.
  */
+import { stripAnsiSequences } from '../untrusted-prompt.js';
 
 /** Shown in place of any redacted value or secret substring. */
 export const REDACTION_PLACEHOLDER = '[redacted]';
@@ -127,23 +128,22 @@ function escapeRegExp(s: string): string {
 }
 
 // Built from `\u` escapes (no literal control bytes in source):
-//   ANSI CSI escape sequences (ESC `[` … final byte) — stripped so ingested
-//   text can't smuggle terminal control codes into a later render.
-// eslint-disable-next-line no-control-regex -- intentionally matches ESC to strip ANSI
-const ANSI_ESCAPE = new RegExp('\\u001b\\[[0-9;?]*[ -/]*[@-~]', 'g');
 //   C0 (0x00-0x1f) + DEL (0x7f) + C1 (0x80-0x9f) control chars, keeping TAB
-//   (0x09) and LF (0x0a). CR is collapsed to LF before this runs.
+//   (0x09) and LF (0x0a). CR is collapsed to LF before this runs. ANSI escape
+//   sequences are removed as whole units first by `stripAnsiSequences` (OSC /
+//   DCS / CSI / Fe), so this only mops up stray control bytes.
 // eslint-disable-next-line no-control-regex -- intentionally matches control chars to strip them
 const CONTROL_CHARS = new RegExp('[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]', 'g');
 
 /**
  * Normalize untrusted log text so it renders as inert text: collapse CRLF/CR to
- * LF, drop ANSI escape sequences, and strip remaining control characters (TAB
- * and LF survive). This is what stops an ingested line from forging additional
- * log lines or injecting terminal escapes when later rendered.
+ * LF, drop complete ANSI escape sequences, and strip remaining control
+ * characters (TAB and LF survive). This is what stops an ingested line from
+ * forging additional log lines or injecting terminal escapes when later
+ * rendered.
  */
 export function normalizeLogText(input: string): string {
-  return input.replace(/\r\n?/g, '\n').replace(ANSI_ESCAPE, '').replace(CONTROL_CHARS, '');
+  return stripAnsiSequences(input.replace(/\r\n?/g, '\n')).replace(CONTROL_CHARS, '');
 }
 
 /**

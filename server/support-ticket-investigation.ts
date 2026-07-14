@@ -37,6 +37,7 @@ import {
   countUnreadSupportTickets,
 } from './support-tickets-store.js';
 import configDefault, { buildSpawnEnv } from './config.js';
+import { escapeUntrustedForPrompt } from './untrusted-prompt.js';
 
 /** Engines that can be selected for an operator-triggered investigation. */
 export const SUPPORT_INVESTIGATION_ENGINES: readonly SupportedEngine[] = [
@@ -59,18 +60,12 @@ export const TICKET_UNTRUSTED_END = '----- END UNTRUSTED SUPPORT-TICKET DATA ---
 /**
  * Neutralize an attacker-controlled field before embedding it in the
  * investigation prompt: normalize newlines, strip ASCII control characters,
- * and defang any line that tries to forge the BEGIN/END fence markers.
+ * and defang any line that tries to forge the BEGIN/END fence markers. Shares
+ * one implementation with the customer-log context pack via
+ * {@link escapeUntrustedForPrompt}.
  */
 export function escapeTicketUntrusted(value: string | null | undefined): string {
-  if (!value) return '';
-  return (
-    value
-      .replace(/\r\n?/g, '\n')
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
-      .replace(/^[ \t]*-{3,}[ \t]*(BEGIN|END)\b.*$/gim, (line) => line.replace(/-/g, '·'))
-      .trim()
-  );
+  return escapeUntrustedForPrompt(value);
 }
 
 /**
