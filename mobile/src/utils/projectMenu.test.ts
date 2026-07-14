@@ -99,6 +99,16 @@ describe('projectSettingsEntries', () => {
         expect(entry.screen).toBe('ProjectSecrets');
         expect(entry.label).toBe('Secrets');
     });
+    it('exposes the Dev Server settings screen (parity with the web sidebar)', () => {
+        const entry = projectSettingsEntries({}).find((e: any) => e.key === 'dev-server');
+        expect(entry).toBeTruthy();
+        expect(entry.screen).toBe('DevServer');
+        expect(entry.label).toBe('Dev Server');
+    });
+    it('omits Dev Server for workflow projects (mirrors the web !workflow gate)', () => {
+        const keys = projectSettingsEntries({ mode: 'workflow' }).map((e: any) => e.key);
+        expect(keys).not.toContain('dev-server');
+    });
     it('adds AWS when enabled', () => {
         const keys = projectSettingsEntries({ awsEnabled: true }).map((e: any) => e.key);
         expect(keys).toContain('aws');

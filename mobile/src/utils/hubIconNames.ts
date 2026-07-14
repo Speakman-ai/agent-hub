@@ -41,6 +41,7 @@ export const HUB_ICON_NAMES = [
     'Sparkles',
     'StickyNote',
     'Target',
+    'Terminal',
     'Trash2',
     'X',
 ];

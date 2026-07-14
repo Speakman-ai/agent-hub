@@ -49,6 +49,7 @@ export const HUB_NATIVE_ICONS: Record<string, any> = {
   Sparkles: { family: 'material', name: 'creation' },
   StickyNote: { family: 'feather', name: 'file-text' },
   Target: { family: 'feather', name: 'target' },
+  Terminal: { family: 'feather', name: 'terminal' },
   Trash2: { family: 'feather', name: 'trash-2' },
   X: { family: 'feather', name: 'x' },
 };

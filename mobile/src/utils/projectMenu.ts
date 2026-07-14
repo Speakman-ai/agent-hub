@@ -16,7 +16,7 @@ const WORKFLOW_EXCLUDED_LIFECYCLE_KEYS = new Set([
     'security',
     'replays',
 ]);
-const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum', 'logs']);
+const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum', 'logs', 'dev-server']);
 /**
  * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
  */
@@ -58,6 +58,7 @@ export function projectSettingsEntries(project: any) {
             screen: 'ProjectSettings',
         },
         { key: 'project-secrets', label: 'Secrets', icon: 'KeyRound', screen: 'ProjectSecrets' },
+        { key: 'dev-server', label: 'Dev Server', icon: 'Terminal', screen: 'DevServer' },
         { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
         { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
         { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
