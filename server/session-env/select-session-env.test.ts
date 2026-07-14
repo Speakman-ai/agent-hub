@@ -1,0 +1,118 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { HostSessionEnv } from './host-session-env.js';
+import {
+  createSessionEnv,
+  registerSessionEnvBackend,
+  registeredSessionEnvBackends,
+  resolveSessionEnvBackend,
+  unregisterSessionEnvBackend,
+} from './select-session-env.js';
+import { SessionEnv } from './session-env.js';
+
+// Config coercion (`coerceSessionEnvAdapterMode`) and the capability probe
+// live in sysbox-capability.ts and are tested in sysbox-capability.test.ts.
+
+afterEach(() => {
+  unregisterSessionEnvBackend('sysbox');
+});
+
+describe('resolveSessionEnvBackend', () => {
+  const registered = (kinds: Array<'host' | 'sysbox'>) =>
+    new Set(kinds) as ReadonlySet<'host' | 'sysbox'>;
+
+  it('explicit host always resolves to host', () => {
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'host',
+        sysboxAvailable: true,
+        registeredBackends: registered(['host', 'sysbox']),
+      }),
+    ).toBe('host');
+  });
+
+  it('explicit sysbox throws when sysbox-runc is absent (no silent degrade)', () => {
+    expect(() =>
+      resolveSessionEnvBackend({
+        configured: 'sysbox',
+        sysboxAvailable: false,
+        registeredBackends: registered(['host', 'sysbox']),
+      }),
+    ).toThrow(/sessionEnvAdapter is set to "sysbox" but sysbox-runc is not available/);
+  });
+
+  it('explicit sysbox throws when no adapter is registered', () => {
+    expect(() =>
+      resolveSessionEnvBackend({
+        configured: 'sysbox',
+        sysboxAvailable: true,
+        registeredBackends: registered(['host']),
+      }),
+    ).toThrow(/sessionEnvAdapter is set to "sysbox" but no sysbox adapter is registered/);
+  });
+
+  it('explicit sysbox resolves when available and registered', () => {
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'sysbox',
+        sysboxAvailable: true,
+        registeredBackends: registered(['host', 'sysbox']),
+      }),
+    ).toBe('sysbox');
+  });
+
+  it('auto prefers sysbox when available + registered, else host', () => {
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'auto',
+        sysboxAvailable: true,
+        registeredBackends: registered(['host', 'sysbox']),
+      }),
+    ).toBe('sysbox');
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'auto',
+        sysboxAvailable: true,
+        registeredBackends: registered(['host']),
+      }),
+    ).toBe('host');
+    expect(
+      resolveSessionEnvBackend({
+        configured: 'auto',
+        sysboxAvailable: false,
+        registeredBackends: registered(['host', 'sysbox']),
+      }),
+    ).toBe('host');
+  });
+
+  it('defaults registeredBackends to the live registry (host only today)', () => {
+    expect(resolveSessionEnvBackend({ configured: 'auto', sysboxAvailable: true })).toBe('host');
+  });
+});
+
+describe('backend registry / createSessionEnv', () => {
+  it('creates a host env with the built-in adapter', () => {
+    const env = createSessionEnv('host', {
+      sessionId: 'sess-42',
+      worktreePath: '/wt/sess-42',
+      hostDeps: { isDirectory: async () => true, baseEnv: {} },
+    });
+    expect(env).toBeInstanceOf(HostSessionEnv);
+    expect(env.kind).toBe('host');
+    expect(env.sessionId).toBe('sess-42');
+  });
+
+  it('throws for a backend with no registered adapter', () => {
+    expect(() => createSessionEnv('sysbox', { sessionId: 's', worktreePath: '/wt' })).toThrow(
+      /No SessionEnv adapter registered/,
+    );
+  });
+
+  it('registered backends feed resolution: auto flips to sysbox once an adapter registers', () => {
+    expect(registeredSessionEnvBackends().has('sysbox')).toBe(false);
+    const fake = { kind: 'sysbox', sessionId: 's' } as unknown as SessionEnv;
+    registerSessionEnvBackend('sysbox', () => fake);
+    expect(registeredSessionEnvBackends().has('sysbox')).toBe(true);
+    expect(resolveSessionEnvBackend({ configured: 'auto', sysboxAvailable: true })).toBe('sysbox');
+    expect(createSessionEnv('sysbox', { sessionId: 's', worktreePath: '/wt' })).toBe(fake);
+  });
+});
