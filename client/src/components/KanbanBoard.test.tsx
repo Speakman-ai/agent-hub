@@ -1704,6 +1704,17 @@ describe('KanbanBoard column management', () => {
     );
   });
 
+  it('keeps the inline add-column panel narrower than a board column', async () => {
+    (api.getBoard as any).mockResolvedValue(makeBoard([]));
+
+    render(<KanbanBoard projectId="p1" project={{ name: 'P' }} refreshKey={0} />);
+    await waitFor(() => expect(screen.getByTestId('kanban-add-column-inline')).toBeInTheDocument());
+
+    const addColumnPanel = screen.getByTestId('kanban-add-column-inline');
+    expect(addColumnPanel).toHaveClass('w-[140px]');
+    expect(addColumnPanel).not.toHaveClass('w-[220px]');
+  });
+
   it('updates a custom column from the column edit button', async () => {
     (api.getBoard as any).mockResolvedValue({
       ...makeBoard([]),

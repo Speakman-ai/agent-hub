@@ -2202,7 +2202,7 @@ export default function KanbanBoard({
               type="button"
               onClick={openCreateColumnDialog}
               data-testid="kanban-add-column-inline"
-              className="flex flex-col items-center justify-center flex-shrink-0 w-[220px] h-full min-h-[120px] rounded-xl border border-dashed border-white/[0.08] bg-white/[0.01] text-gray-500 hover:text-gray-300 hover:border-white/[0.14] hover:bg-white/[0.03] transition-colors"
+              className="flex flex-col items-center justify-center flex-shrink-0 w-[140px] h-full min-h-[120px] rounded-xl border border-dashed border-white/[0.08] bg-white/[0.01] text-gray-500 hover:text-gray-300 hover:border-white/[0.14] hover:bg-white/[0.03] transition-colors"
             >
               <Plus size={18} className="mb-1.5" />
               <span className="text-xs font-medium">Add column</span>
