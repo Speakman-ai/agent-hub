@@ -1,0 +1,413 @@
+import { EventEmitter } from 'events';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { HostChildLike, HostPtyFactory, HostPtyLike } from './host-session-env.js';
+import { SessionEnvClock } from './session-env.js';
+import { describeSessionEnvContract } from './session-env-contract.js';
+import { SYSBOX_SESSION_WORKSPACE } from './sysbox-exec-args.js';
+import { SysboxRunResult, SysboxSessionEnv, SysboxSessionEnvDeps } from './sysbox-session-env.js';
+
+// ── Fakes ─────────────────────────────────────────────────────────
+
+class FakeChild extends EventEmitter implements HostChildLike {
+  pid: number;
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  constructor(pid: number) {
+    super();
+    this.pid = pid;
+  }
+  kill(): boolean {
+    return true;
+  }
+  exit(code: number | null, signal: NodeJS.Signals | null = null): void {
+    this.emit('exit', code, signal);
+  }
+}
+
+interface SpawnRecord {
+  command: string;
+  args: readonly string[];
+  child: FakeChild;
+}
+
+class FakeClock implements SessionEnvClock {
+  private now = 1_000_000;
+  private sleepers: Array<{ dueAt: number; resolve: () => void }> = [];
+  nowMs(): number {
+    return this.now;
+  }
+  sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      this.sleepers.push({ dueAt: this.now + ms, resolve });
+    });
+  }
+  async advance(ms: number): Promise<void> {
+    this.now += ms;
+    const due = this.sleepers.filter((s) => s.dueAt <= this.now);
+    this.sleepers = this.sleepers.filter((s) => s.dueAt > this.now);
+    for (const s of due) s.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
+class FakePty implements HostPtyLike {
+  pid = 7777;
+  written: string[] = [];
+  kills: Array<string | undefined> = [];
+  private dataSubs = new Set<(d: string) => void>();
+  private exitSubs = new Set<(e: { exitCode: number; signal?: number }) => void>();
+  write(data: string): void {
+    this.written.push(data);
+  }
+  resize(): void {}
+  onData(cb: (d: string) => void) {
+    this.dataSubs.add(cb);
+    return { dispose: () => this.dataSubs.delete(cb) };
+  }
+  onExit(cb: (e: { exitCode: number; signal?: number }) => void) {
+    this.exitSubs.add(cb);
+    return { dispose: () => this.exitSubs.delete(cb) };
+  }
+  kill(signal?: string): void {
+    this.kills.push(signal);
+  }
+  emitExit(exitCode: number): void {
+    for (const cb of this.exitSubs) cb({ exitCode });
+  }
+}
+
+const ok: SysboxRunResult = { ok: true, stdout: '', stderr: '' };
+
+interface Fixture {
+  env: SysboxSessionEnv;
+  spawnRecords: SpawnRecord[];
+  /** Every one-shot docker invocation, in order. */
+  runCalls: string[][];
+  clock: FakeClock;
+  pty: FakePty;
+}
+
+function makeEnv(
+  overrides: Partial<SysboxSessionEnvDeps> = {},
+  respond?: (argv: string[]) => SysboxRunResult | undefined,
+): Fixture {
+  const spawnRecords: SpawnRecord[] = [];
+  const runCalls: string[][] = [];
+  const clock = new FakeClock();
+  const pty = new FakePty();
+  let nextPid = 1000;
+  const env = new SysboxSessionEnv({
+    sessionId: 'sess-1',
+    worktreePath: '/wt/session-1',
+    publishPorts: [5173],
+    spawn: (command, args) => {
+      const child = new FakeChild(nextPid++);
+      spawnRecords.push({ command, args, child });
+      return child;
+    },
+    runDocker: async (argv) => {
+      runCalls.push(argv);
+      return respond?.(argv) ?? ok;
+    },
+    openPty: async () => pty,
+    isDirectory: async () => true,
+    baseEnv: { NODE_ENV: 'development' },
+    dockerClientEnv: { PATH: '/usr/bin' },
+    clock,
+    logger: { warn: () => {} },
+    ...overrides,
+  });
+  return { env, spawnRecords, runCalls, clock, pty };
+}
+
+async function startedEnv(
+  overrides: Partial<SysboxSessionEnvDeps> = {},
+  respond?: (argv: string[]) => SysboxRunResult | undefined,
+): Promise<Fixture> {
+  const fixture = makeEnv(overrides, respond);
+  await fixture.env.mountWorktree();
+  return fixture;
+}
+
+const isRunArgv = (argv: string[]) => argv[1] === 'run';
+const isKillArgv = (argv: string[]) =>
+  argv[1] === 'exec' && argv.some((a) => a.includes('kill -s'));
+const isDockerInfoProbe = (argv: string[]) =>
+  argv[1] === 'exec' && argv[argv.length - 1] === 'info';
+
+// ── Interface contract (adapter-agnostic suite) ───────────────────
+
+const contractFixtures: Fixture[] = [];
+afterEach(() => {
+  contractFixtures.length = 0;
+});
+describeSessionEnvContract('sysbox adapter', {
+  async createEnv() {
+    // The sysbox container must be running before spawn(); production
+    // callers await mountWorktree() the same way. Port 5173 (the port the
+    // contract exercises) is declared up front — sysbox publishes are fixed
+    // at container start.
+    const fixture = await startedEnv();
+    contractFixtures.push(fixture);
+    return fixture.env;
+  },
+  exitProcess(env, pid, code) {
+    const fixture = contractFixtures.find((f) => f.env === env);
+    const rec = fixture?.spawnRecords.find((r) => r.child.pid === pid);
+    if (!rec) throw new Error(`no fake docker-exec child with pid ${pid}`);
+    rec.child.exit(code);
+  },
+  async advanceClock(ms) {
+    for (const f of contractFixtures) await f.clock.advance(ms);
+  },
+});
+
+// ── Container lifecycle ───────────────────────────────────────────
+
+describe('SysboxSessionEnv container start', () => {
+  it('starts once on mountWorktree: labeled graph volume, sysbox run, dockerd probe', async () => {
+    const { env, runCalls } = makeEnv();
+    const mount = await env.mountWorktree();
+    expect(mount).toEqual({ hostPath: '/wt/session-1', envPath: SYSBOX_SESSION_WORKSPACE });
+    expect(env.containerStarted).toBe(true);
+
+    expect(runCalls[0].slice(0, 3)).toEqual(['docker', 'volume', 'create']);
+    const run = runCalls.find(isRunArgv)!;
+    expect(run).toContain('--runtime=sysbox-runc');
+    expect(run).not.toContain('--privileged');
+    expect(run.join(' ')).toContain(`-v /wt/session-1:${SYSBOX_SESSION_WORKSPACE}:rw`);
+    expect(runCalls.some(isDockerInfoProbe)).toBe(true);
+
+    // Idempotent — a second mount does not start a second container.
+    await env.mountWorktree();
+    expect(runCalls.filter(isRunArgv)).toHaveLength(1);
+  });
+
+  it('publishes declared and pre-start mapPort ports loopback-only at start', async () => {
+    const { env, runCalls } = makeEnv({
+      publishPorts: [3000],
+      allocateHostPort: (internal) => 4100 + (internal % 100),
+    });
+    const mapped = await env.mapPort(5173);
+    expect(mapped).toEqual({
+      internalPort: 5173,
+      hostPort: 4173,
+      hostUrl: 'http://127.0.0.1:4173',
+    });
+
+    await env.mountWorktree();
+    const run = runCalls.find(isRunArgv)!.join(' ');
+    expect(run).toContain('-p 127.0.0.1:4100:3000');
+    expect(run).toContain('-p 127.0.0.1:4173:5173');
+  });
+
+  it('rejects mapPort for a new port once the container is running', async () => {
+    const { env } = await startedEnv();
+    await expect(env.mapPort(9999)).rejects.toThrow(/not declared before/);
+    // Already-published ports still resolve.
+    await expect(env.mapPort(5173)).resolves.toMatchObject({ internalPort: 5173 });
+  });
+
+  it('spawn before start throws an actionable error', () => {
+    const { env } = makeEnv();
+    expect(() => env.spawn('npm run dev')).toThrow(/mountWorktree/);
+  });
+
+  it('a failed docker run cleans up and allows a retry', async () => {
+    let fail = true;
+    const fixture = makeEnv({}, (argv) => {
+      if (isRunArgv(argv) && fail) return { ok: false, stdout: '', stderr: 'boom' };
+      return undefined;
+    });
+    await expect(fixture.env.mountWorktree()).rejects.toThrow(/boom/);
+    // Best-effort cleanup ran so the retry has no name/volume collision.
+    expect(fixture.runCalls.some((a) => a[1] === 'rm')).toBe(true);
+    expect(fixture.runCalls.some((a) => a[1] === 'volume' && a[2] === 'rm')).toBe(true);
+
+    fail = false;
+    await fixture.env.mountWorktree();
+    expect(fixture.env.containerStarted).toBe(true);
+  });
+
+  it('throws when the worktree directory is missing', async () => {
+    const { env } = makeEnv({ isDirectory: async () => false });
+    await expect(env.mountWorktree()).rejects.toThrow(/worktree not found/i);
+  });
+
+  it('waits for the inner dockerd and fails after the ready timeout', async () => {
+    let probes = 0;
+    const fixture = makeEnv({ readyPollMs: 400, readyTimeoutMs: 2000 }, (argv) => {
+      if (isDockerInfoProbe(argv)) {
+        probes += 1;
+        return { ok: probes >= 3, stdout: '', stderr: 'starting' };
+      }
+      return undefined;
+    });
+    const pending = fixture.env.mountWorktree();
+    // Let the async start chain reach its first readiness sleep before the
+    // manual clock moves; otherwise the sleep is scheduled in the future
+    // relative to the already-advanced fake time.
+    await new Promise((r) => setTimeout(r, 0));
+    await fixture.clock.advance(400); // probe 2 fails
+    await fixture.clock.advance(400); // probe 3 succeeds
+    await pending;
+    expect(probes).toBe(3);
+
+    const never = makeEnv({ readyPollMs: 400, readyTimeoutMs: 1000 }, (argv) =>
+      isDockerInfoProbe(argv) ? { ok: false, stdout: '', stderr: 'starting' } : undefined,
+    );
+    const failing = never.env.mountWorktree();
+    const assertion = expect(failing).rejects.toThrow(/not ready after 1000ms/);
+    await new Promise((r) => setTimeout(r, 0));
+    await never.clock.advance(400);
+    await never.clock.advance(400);
+    await never.clock.advance(400);
+    await assertion;
+    expect(never.runCalls).toContainEqual(['docker', 'rm', '-f', '-v', 'agenthub-session-sess-1']);
+    expect(never.runCalls).toContainEqual([
+      'docker',
+      'volume',
+      'rm',
+      '-f',
+      'agenthub-session-sess-1-graph',
+    ]);
+  });
+});
+
+// ── Spawn / kill via docker exec ──────────────────────────────────
+
+describe('SysboxSessionEnv.spawn', () => {
+  it('execs into the session container with resolved cwd and merged env', async () => {
+    const { env, spawnRecords } = await startedEnv();
+    env.spawn('npm run dev', { cwd: 'web', env: { PORT: '5173' } });
+
+    expect(spawnRecords).toHaveLength(1);
+    const rec = spawnRecords[0];
+    expect(rec.command).toBe('docker');
+    expect(rec.args[0]).toBe('exec');
+    const joined = rec.args.join(' ');
+    expect(joined).toContain('agenthub-session-sess-1');
+    expect(joined).toContain(`-w ${SYSBOX_SESSION_WORKSPACE}/web`);
+    expect(joined).toContain('-e NODE_ENV=development');
+    expect(joined).toContain('-e PORT=5173');
+    expect(rec.args[rec.args.length - 1]).toBe('npm run dev');
+  });
+
+  it('rejects absolute and worktree-escaping cwd', async () => {
+    const { env } = await startedEnv();
+    expect(() => env.spawn('ls', { cwd: '/etc' })).toThrow(/relative to the worktree/);
+    expect(() => env.spawn('ls', { cwd: '../other' })).toThrow(/escape the worktree/);
+  });
+
+  it('kill signals the in-container process via its pidfile, not the exec client', async () => {
+    const { env, runCalls } = await startedEnv();
+    const proc = env.spawn('npm run dev');
+    proc.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 0));
+
+    const kill = runCalls.find(isKillArgv)!;
+    expect(kill[kill.length - 1]).toBe('TERM');
+    expect(kill.join(' ')).toContain('/tmp/agenthub-proc-0.pid');
+  });
+
+  it('kill after exit is a no-op', async () => {
+    const { env, spawnRecords, runCalls } = await startedEnv();
+    const proc = env.spawn('true');
+    spawnRecords[0].child.exit(0);
+    const before = runCalls.length;
+    proc.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(runCalls.length).toBe(before);
+  });
+});
+
+// ── PTY ───────────────────────────────────────────────────────────
+
+describe('SysboxSessionEnv.openPty', () => {
+  it('starts the container if needed and opens an interactive docker exec', async () => {
+    const fixture = makeEnv();
+    const calls: Parameters<HostPtyFactory>[0][] = [];
+    const env = new SysboxSessionEnv({
+      sessionId: 'sess-1',
+      worktreePath: '/wt/session-1',
+      spawn: () => new FakeChild(1),
+      runDocker: async (argv) => {
+        fixture.runCalls.push(argv);
+        return ok;
+      },
+      openPty: async (opts) => {
+        calls.push(opts);
+        return fixture.pty;
+      },
+      isDirectory: async () => true,
+      dockerClientEnv: { PATH: '/usr/bin', SECRET: undefined },
+      clock: fixture.clock,
+      logger: { warn: () => {} },
+    });
+
+    const pty = await env.openPty({ cwd: 'web', cols: 120, rows: 40 });
+    expect(env.containerStarted).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe('docker');
+    expect(calls[0].args.slice(0, 2)).toEqual(['exec', '-it']);
+    expect(calls[0].args.join(' ')).toContain(`-w ${SYSBOX_SESSION_WORKSPACE}/web`);
+    expect(calls[0].cols).toBe(120);
+    // undefined client env entries are dropped for node-pty.
+    expect('SECRET' in calls[0].env).toBe(false);
+    expect(env.liveProcessCount()).toBe(1);
+    expect(pty.pid).toBe(7777);
+
+    fixture.pty.emitExit(0);
+    expect(env.liveProcessCount()).toBe(0);
+  });
+});
+
+// ── Dispose / teardown ────────────────────────────────────────────
+
+describe('SysboxSessionEnv.dispose', () => {
+  it('TERMs live work, then removes the container and graph volume, releasing ports', async () => {
+    const released: number[] = [];
+    const fixture = await startedEnv({
+      allocateHostPort: (internal) => internal + 1000,
+      releaseHostPort: (m) => released.push(m.hostPort),
+    });
+    const { env, runCalls, clock } = fixture;
+    env.spawn('npm run dev');
+
+    const disposed = env.dispose({ graceMs: 5000 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(runCalls.some(isKillArgv)).toBe(true);
+
+    // Process never exits within grace; container removal is the backstop.
+    await clock.advance(5001);
+    await disposed;
+
+    const rm = runCalls.find((a) => a[1] === 'rm')!;
+    expect(rm).toEqual(['docker', 'rm', '-f', '-v', 'agenthub-session-sess-1']);
+    const volRm = runCalls.find((a) => a[1] === 'volume' && a[2] === 'rm')!;
+    expect(volRm).toEqual(['docker', 'volume', 'rm', '-f', 'agenthub-session-sess-1-graph']);
+    // rm happens after the grace race, volume rm after container rm.
+    expect(runCalls.indexOf(rm)).toBeLessThan(runCalls.indexOf(volRm));
+    expect(released).toEqual([6173]);
+    expect(env.disposed).toBe(true);
+  });
+
+  it('skips docker teardown entirely when the container never started', async () => {
+    const { env, runCalls } = makeEnv();
+    await env.dispose({ graceMs: 1 });
+    expect(runCalls).toEqual([]);
+    expect(env.disposed).toBe(true);
+  });
+
+  it('completes teardown even when docker removal fails', async () => {
+    const warnings: string[] = [];
+    const fixture = await startedEnv({ logger: { warn: (m) => warnings.push(m) } }, (argv) =>
+      argv[1] === 'rm' || (argv[1] === 'volume' && argv[2] === 'rm')
+        ? { ok: false, stdout: '', stderr: 'daemon gone' }
+        : undefined,
+    );
+    await fixture.env.dispose({ graceMs: 1 });
+    expect(fixture.env.disposed).toBe(true);
+    expect(warnings.some((w) => /removal failed/.test(w))).toBe(true);
+  });
+});

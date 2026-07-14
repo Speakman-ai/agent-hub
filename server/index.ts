@@ -83,6 +83,7 @@ import {
   initSessionEnvSelection,
   logSessionEnvSelection,
 } from './session-env/sysbox-capability.js';
+import { reconcileSysboxSessionEnvs } from './session-env/sysbox-reconcile.js';
 import { ensureReviewerGhConfigDir } from './spawn-github-credentials.js';
 import { authMiddleware } from './auth.js';
 import { initOrgsDb, orgDataDir, getActiveOrgId } from './orgs.js';
@@ -1833,7 +1834,17 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
     // and cache the host/sysbox choice for the per-session env runtime.
     // Best-effort — a probe failure must not block boot.
     void initSessionEnvSelection(config.sessionEnvAdapter)
-      .then((selection) => logSessionEnvSelection(selection))
+      .then((selection) => {
+        logSessionEnvSelection(selection);
+        // Boot GC sweep: session envs live only in Hub memory, so every
+        // labeled session container/volume from a previous run is a leak.
+        // Only meaningful where sysbox is in play — the probe passing means
+        // docker is reachable.
+        if (selection.adapter === 'sysbox') {
+          return reconcileSysboxSessionEnvs().then(() => undefined);
+        }
+        return undefined;
+      })
       .catch((e) => console.error('[session-env] capability probe failed:', (e as Error).message));
 
     // Hosted-git notify hooks embed this process's port — refresh on every

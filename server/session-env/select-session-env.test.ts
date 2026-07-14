@@ -8,12 +8,23 @@ import {
   unregisterSessionEnvBackend,
 } from './select-session-env.js';
 import { SessionEnv } from './session-env.js';
+import { SysboxSessionEnv } from './sysbox-session-env.js';
 
 // Config coercion (`coerceSessionEnvAdapterMode`) and the capability probe
 // live in sysbox-capability.ts and are tested in sysbox-capability.test.ts.
 
 afterEach(() => {
-  unregisterSessionEnvBackend('sysbox');
+  // Tests may remove or replace the process-global registry entry. Restore
+  // the production built-in so cases never depend on file execution order.
+  registerSessionEnvBackend(
+    'sysbox',
+    (opts) =>
+      new SysboxSessionEnv({
+        sessionId: opts.sessionId,
+        worktreePath: opts.worktreePath,
+        ...opts.sysboxDeps,
+      }),
+  );
 });
 
 describe('resolveSessionEnvBackend', () => {
@@ -84,8 +95,8 @@ describe('resolveSessionEnvBackend', () => {
     ).toBe('host');
   });
 
-  it('defaults registeredBackends to the live registry (host only today)', () => {
-    expect(resolveSessionEnvBackend({ configured: 'auto', sysboxAvailable: true })).toBe('host');
+  it('defaults registeredBackends to the live registry (host + sysbox)', () => {
+    expect(resolveSessionEnvBackend({ configured: 'auto', sysboxAvailable: true })).toBe('sysbox');
   });
 });
 
@@ -101,13 +112,26 @@ describe('backend registry / createSessionEnv', () => {
     expect(env.sessionId).toBe('sess-42');
   });
 
+  it('creates a sysbox env with the built-in adapter', () => {
+    const env = createSessionEnv('sysbox', {
+      sessionId: 'sess-43',
+      worktreePath: '/wt/sess-43',
+      sysboxDeps: { isDirectory: async () => true, baseEnv: {} },
+    });
+    expect(env).toBeInstanceOf(SysboxSessionEnv);
+    expect(env.kind).toBe('sysbox');
+    expect(env.sessionId).toBe('sess-43');
+  });
+
   it('throws for a backend with no registered adapter', () => {
+    unregisterSessionEnvBackend('sysbox');
     expect(() => createSessionEnv('sysbox', { sessionId: 's', worktreePath: '/wt' })).toThrow(
       /No SessionEnv adapter registered/,
     );
   });
 
   it('registered backends feed resolution: auto flips to sysbox once an adapter registers', () => {
+    unregisterSessionEnvBackend('sysbox');
     expect(registeredSessionEnvBackends().has('sysbox')).toBe(false);
     const fake = { kind: 'sysbox', sessionId: 's' } as unknown as SessionEnv;
     registerSessionEnvBackend('sysbox', () => fake);

@@ -8,11 +8,10 @@
  *   - `host`   — direct host processes + node-pty + loopback host ports.
  *                The local-dev/Mac path and the fast fallback everywhere.
  *   - `sysbox` — per-session rootless container via sysbox-runc. The
- *                default boundary on a self-hosted Linux server. (Separate
- *                adapter; registered when it ships.)
+ *                default boundary on a self-hosted Linux server.
  *
- * Backend selection lives in `select-session-env.ts`; the host adapter in
- * `host-session-env.ts`.
+ * Backend selection lives in `select-session-env.ts`; adapters live in
+ * `host-session-env.ts` and `sysbox-session-env.ts`.
  */
 
 export type SessionEnvKind = 'host' | 'sysbox';

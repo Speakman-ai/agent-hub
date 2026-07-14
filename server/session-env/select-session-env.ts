@@ -15,13 +15,14 @@
  *     explicitly requested isolation boundary never silently degrades
  *     here; catching and degrading is the boot layer's decision.
  *
- * The registry decouples selection from adapter availability: only the
- * host adapter registers today; the sysbox adapter registers itself when
- * it ships and `auto` starts picking it up with no changes here.
+ * The registry decouples selection from adapter availability: both the
+ * host and sysbox adapters register here; the capability probe decides
+ * whether `auto` may actually pick sysbox on this host.
  */
 
 import { SessionEnv, SessionEnvBackendChoice, SessionEnvKind } from './session-env.js';
 import { HostSessionEnv, HostSessionEnvDeps } from './host-session-env.js';
+import { SysboxSessionEnv, SysboxSessionEnvDeps } from './sysbox-session-env.js';
 
 export function resolveSessionEnvBackend(opts: {
   configured: SessionEnvBackendChoice;
@@ -56,6 +57,7 @@ export interface CreateSessionEnvOpts {
   worktreePath: string;
   /** Adapter-specific dependency overrides (tests, custom allocators). */
   hostDeps?: Omit<HostSessionEnvDeps, 'sessionId' | 'worktreePath'>;
+  sysboxDeps?: Omit<SysboxSessionEnvDeps, 'sessionId' | 'worktreePath'>;
 }
 
 export type SessionEnvFactory = (opts: CreateSessionEnvOpts) => SessionEnv;
@@ -70,9 +72,18 @@ const backendRegistry = new Map<SessionEnvKind, SessionEnvFactory>([
         ...opts.hostDeps,
       }),
   ],
+  [
+    'sysbox',
+    (opts) =>
+      new SysboxSessionEnv({
+        sessionId: opts.sessionId,
+        worktreePath: opts.worktreePath,
+        ...opts.sysboxDeps,
+      }),
+  ],
 ]);
 
-/** Register (or replace) an adapter — the sysbox adapter calls this when it ships. */
+/** Register (or replace) an adapter. */
 export function registerSessionEnvBackend(kind: SessionEnvKind, factory: SessionEnvFactory): void {
   backendRegistry.set(kind, factory);
 }
