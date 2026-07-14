@@ -1232,6 +1232,264 @@ describe('detectAndHandleBaseBranchDrift — unit (direct invocation)', () => {
   });
 });
 
+describe('detectAndHandleBaseBranchDrift — targeted feature branch transplant', () => {
+  // Regression for "Targeted feature branches aren't working": when a card
+  // targets a feature/umbrella branch as its base and the session HEAD carries
+  // a commit that lives on origin/<default> but NOT on the feature base, the
+  // old hand-rolled `git rebase origin/<featureBase>` replayed that
+  // default-branch commit onto the feature base. When it touched the same file
+  // the feature base changed, the rebase conflicted, aborted, and reported
+  // `conflict: true` — so the agent was told to "resolve conflicts" every turn
+  // even though its own work was trivial. Routing through the shared
+  // transplant-aware `rebaseOntoBase` replays ONLY the true session commits.
+  const { detectAndHandleBaseBranchDrift } = __test;
+
+  let tmpRoot: string;
+  let originBare: string;
+  let sourceRepo: string;
+  let cloneDir: string;
+
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+  }
+
+  beforeEach(() => {
+    tmpRoot = path.join(
+      os.tmpdir(),
+      `drift-transplant-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tmpRoot, { recursive: true });
+
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare, { recursive: true });
+    execSync('git init --bare --initial-branch=main', { cwd: originBare, stdio: 'pipe' });
+
+    sourceRepo = path.join(tmpRoot, 'source');
+    execSync(`git clone --quiet "${originBare}" "${sourceRepo}"`, { stdio: 'pipe' });
+    git(sourceRepo, 'config user.email "test@example.com"');
+    git(sourceRepo, 'config user.name "Test"');
+    git(sourceRepo, 'checkout -b main');
+    writeFileSync(path.join(sourceRepo, 'README.md'), 'v1\n');
+    git(sourceRepo, 'add README.md');
+    git(sourceRepo, 'commit -m "initial"');
+    git(sourceRepo, 'push -u origin main');
+
+    // Feature/umbrella base: forks from main and edits README to its OWN value.
+    git(sourceRepo, 'checkout -b feature/base');
+    writeFileSync(path.join(sourceRepo, 'README.md'), 'v2-from-feature\n');
+    git(sourceRepo, 'add README.md');
+    git(sourceRepo, 'commit -m "feature base edits README"');
+    git(sourceRepo, 'push -u origin feature/base');
+
+    // Default branch advances with a CONFLICTING edit to the same file.
+    git(sourceRepo, 'checkout main');
+    writeFileSync(path.join(sourceRepo, 'README.md'), 'v2-from-main\n');
+    git(sourceRepo, 'add README.md');
+    git(sourceRepo, 'commit -m "main advances README"');
+    git(sourceRepo, 'push origin main');
+
+    // Session clone whose branch was cut from origin/main (so HEAD carries the
+    // main-only README edit), then does its own trivial, non-conflicting work.
+    cloneDir = path.join(tmpRoot, 'work');
+    execSync(`git clone --quiet "${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "clone@example.com"');
+    git(cloneDir, 'config user.name "Clone"');
+    // Make origin/HEAD deterministic so the transplant can resolve the default.
+    git(cloneDir, 'remote set-head origin main');
+    git(cloneDir, 'fetch origin feature/base:refs/remotes/origin/feature/base');
+    git(cloneDir, 'checkout -b session-branch origin/main');
+    writeFileSync(path.join(cloneDir, 'session-work.txt'), 'trivial session work\n');
+    git(cloneDir, 'add session-work.txt');
+    git(cloneDir, 'commit -m "session work"');
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('transplants session commits onto the feature base instead of conflicting on default-branch commits', async () => {
+    const result = await detectAndHandleBaseBranchDrift(cloneDir, 'session-id-tp', 'feature/base');
+
+    expect(result).not.toBeNull();
+    // The old naive `git rebase origin/feature/base` reported conflict:true here.
+    expect(result!.conflict).toBe(false);
+    expect(result!.rebased).toBe(true);
+
+    // HEAD sits directly on top of origin/feature/base (only the session commit
+    // was transplanted — the main-only README edit was left behind).
+    expect(git(cloneDir, 'rev-parse HEAD^')).toBe(git(cloneDir, 'rev-parse origin/feature/base'));
+    // The feature base's README value survives (not clobbered by main's edit).
+    expect(git(cloneDir, 'show HEAD:README.md')).toBe('v2-from-feature');
+    // The session's own work is preserved.
+    expect(existsSync(path.join(cloneDir, 'session-work.txt'))).toBe(true);
+    // Worktree is clean — no leftover rebase-in-progress state.
+    expect(git(cloneDir, 'status --porcelain')).toBe('');
+  });
+});
+
+describe('deepenBaseForMergeBase — shallow feature-branch merge-base recovery', () => {
+  // Regression for "6776 commits ahead / unsafe base branch": a shallow
+  // (network / file://) clone grafts history at depth 1, so a feature/epic
+  // base and the default branch share NO reachable common ancestor and every
+  // merge-base-dependent op (rebase, transplant, drift count) breaks. The
+  // bounded deepen restores just enough history for merge-base to resolve.
+  const { deepenBaseForMergeBase, mergeBaseResolves, isShallowClone } = __test;
+
+  let tmpRoot: string;
+  let originBare: string;
+  let cloneDir: string;
+  let expectedMergeBase: string;
+
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+  }
+
+  beforeEach(() => {
+    tmpRoot = path.join(os.tmpdir(), `deepen-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpRoot, { recursive: true });
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare, { recursive: true });
+    execSync('git init --bare --initial-branch=main', { cwd: originBare, stdio: 'pipe' });
+
+    const src = path.join(tmpRoot, 'source');
+    execSync(`git clone --quiet "${originBare}" "${src}"`, { stdio: 'pipe' });
+    git(src, 'config user.email "t@t.t"');
+    git(src, 'config user.name "T"');
+    git(src, 'checkout -b main');
+    // main: c1..c3
+    for (let i = 1; i <= 3; i++) {
+      writeFileSync(path.join(src, 'f.txt'), `c${i}\n`);
+      git(src, 'add f.txt');
+      git(src, `commit -m "c${i}"`);
+    }
+    // Feature base forks from c3 (the current main tip) → their merge-base is c3.
+    expectedMergeBase = git(src, 'rev-parse HEAD');
+    git(src, 'checkout -b feature/base');
+    writeFileSync(path.join(src, 'fb.txt'), 'fb1\n');
+    git(src, 'add fb.txt');
+    git(src, 'commit -m "fb1"');
+    // main advances past the fork point with more commits (c4, c5) so the
+    // shallow default tip is well beyond the merge-base.
+    git(src, 'checkout main');
+    for (let i = 4; i <= 5; i++) {
+      writeFileSync(path.join(src, 'f.txt'), `c${i}\n`);
+      git(src, 'add f.txt');
+      git(src, `commit -m "c${i}"`);
+    }
+    git(src, 'push -u origin main');
+    git(src, 'push -u origin feature/base');
+
+    // Shallow clone via file:// (honors --depth, unlike a bare local path).
+    cloneDir = path.join(tmpRoot, 'work');
+    execSync(`git clone --quiet --depth 1 "file://${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "c@c.c"');
+    git(cloneDir, 'config user.name "C"');
+    git(cloneDir, 'fetch origin feature/base:refs/remotes/origin/feature/base --depth 1');
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('starts shallow with an unreachable merge-base, then resolves it after deepen', async () => {
+    // Precondition: shallow, and merge-base is NOT computable yet.
+    expect(await isShallowClone(cloneDir)).toBe(true);
+    expect(await mergeBaseResolves(cloneDir, 'origin/feature/base', 'origin/main')).toBe(false);
+
+    await deepenBaseForMergeBase(cloneDir, [], 'feature/base', 'main');
+
+    // Post: merge-base now resolves to the true fork point (c3).
+    expect(await mergeBaseResolves(cloneDir, 'origin/feature/base', 'origin/main')).toBe(true);
+    expect(git(cloneDir, 'merge-base origin/feature/base origin/main')).toBe(expectedMergeBase);
+  });
+
+  it('is a no-op when base === default (straight-line history stays shallow)', async () => {
+    await deepenBaseForMergeBase(cloneDir, [], 'main', 'main');
+    // Still shallow — nothing was deepened.
+    expect(await isShallowClone(cloneDir)).toBe(true);
+  });
+});
+
+describe('ensureFeatureBaseBranchOnOrigin — auto-create epic base from default', () => {
+  const { ensureFeatureBaseBranchOnOrigin, originHasBranch } = __test;
+
+  let tmpRoot: string;
+  let originBare: string;
+  let cloneDir: string;
+  let mainTip: string;
+
+  function git(cwd: string, cmd: string): string {
+    return execSync(`git ${cmd}`, { cwd, stdio: 'pipe' }).toString().trim();
+  }
+
+  beforeEach(() => {
+    tmpRoot = path.join(os.tmpdir(), `mkbase-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpRoot, { recursive: true });
+    originBare = path.join(tmpRoot, 'origin.git');
+    mkdirSync(originBare, { recursive: true });
+    execSync('git init --bare --initial-branch=main', { cwd: originBare, stdio: 'pipe' });
+
+    const src = path.join(tmpRoot, 'source');
+    execSync(`git clone --quiet "${originBare}" "${src}"`, { stdio: 'pipe' });
+    git(src, 'config user.email "t@t.t"');
+    git(src, 'config user.name "T"');
+    git(src, 'checkout -b main');
+    writeFileSync(path.join(src, 'README.md'), 'v1\n');
+    git(src, 'add README.md');
+    git(src, 'commit -m "initial"');
+    git(src, 'push -u origin main');
+    mainTip = git(src, 'rev-parse HEAD');
+
+    cloneDir = path.join(tmpRoot, 'work');
+    execSync(`git clone --quiet "${originBare}" "${cloneDir}"`, { stdio: 'pipe' });
+    git(cloneDir, 'config user.email "c@c.c"');
+    git(cloneDir, 'config user.name "C"');
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpRoot)) rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('creates the missing integration branch on origin at the default tip', async () => {
+    expect(await originHasBranch(cloneDir, [], 'feature/roles-revamp')).toBe(false);
+
+    const result = await ensureFeatureBaseBranchOnOrigin(
+      cloneDir,
+      [],
+      'feature/roles-revamp',
+      'main',
+    );
+
+    expect(result).toBe('created');
+    // Origin now advertises the branch, pointing at the default-branch tip.
+    expect(git(originBare, 'rev-parse refs/heads/feature/roles-revamp')).toBe(mainTip);
+    expect(await originHasBranch(cloneDir, [], 'feature/roles-revamp')).toBe(true);
+  });
+
+  it('returns "existed" without pushing when the branch already exists', async () => {
+    // Pre-create the branch on origin at a DIFFERENT commit.
+    const src2 = path.join(tmpRoot, 'source');
+    writeFileSync(path.join(src2, 'x.txt'), 'x\n');
+    git(src2, 'add x.txt');
+    git(src2, 'commit -m "epic work"');
+    const epicTip = git(src2, 'rev-parse HEAD');
+    git(src2, 'push origin HEAD:refs/heads/feature/roles-revamp');
+
+    const result = await ensureFeatureBaseBranchOnOrigin(
+      cloneDir,
+      [],
+      'feature/roles-revamp',
+      'main',
+    );
+
+    expect(result).toBe('existed');
+    // Untouched — still at the epic's own tip, NOT reset to the default tip.
+    expect(git(originBare, 'rev-parse refs/heads/feature/roles-revamp')).toBe(epicTip);
+  });
+});
+
 describe('fetchWithRetry — retry policy on the reuse path', () => {
   const { fetchWithRetry, MAX_CLONE_ATTEMPTS } = __test;
   const noopSleep = async () => {};

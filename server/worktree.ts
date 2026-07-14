@@ -26,6 +26,7 @@ import {
 } from './clone-url-auth.js';
 import { gitAuthArgsForGithubPat, resolveUserGithubToken } from './skill-credentials-github.js';
 import { resolveOAuthAppCredentials } from './spawn-github-credentials.js';
+import { rebaseOntoBase } from './pre-push-rebase.js';
 
 /**
  * Root for all per-session / per-process git clones the workspace manager
@@ -708,6 +709,151 @@ async function resolveSyncBranch(
   const trimmed = override?.trim();
   if (trimmed) return trimmed;
   return getDefaultBranch(projectCwd);
+}
+
+/**
+ * Cumulative `--deepen` steps used to reach a feature/epic base branch's
+ * merge-base with the default branch on an otherwise shallow (network-cloned)
+ * worktree. Bounded on purpose: a branch cut from the default diverges by a
+ * small number of commits, so the first step almost always resolves the
+ * merge-base. The cap keeps a pathological history from unshallowing the whole
+ * repo — the per-session disk blow-up we explicitly avoid (a blanket
+ * `--unshallow` across ~hundreds of session worktrees would cost tens of GB).
+ */
+const MERGE_BASE_DEEPEN_STEPS = [128, 512, 2048] as const;
+
+async function isShallowClone(cwd: string): Promise<boolean> {
+  try {
+    return (await runGit(['rev-parse', '--is-shallow-repository'], { cwd })) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+async function mergeBaseResolves(cwd: string, refA: string, refB: string): Promise<boolean> {
+  try {
+    const mb = await runGit(['merge-base', refA, refB], { cwd });
+    return mb.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure a shallow session clone has enough history for
+ * `git merge-base origin/<base> origin/<default>` to resolve.
+ *
+ * Why: `git clone --depth 1` (honored for network / `file://` origins) grafts
+ * history at depth 1, so a feature/epic base branch and the default branch
+ * share NO reachable common ancestor. Every merge-base-dependent operation —
+ * the pre-push / Finalize rebase, `maybeTransplantDefaultBasedBranch`, the
+ * `rev-list --count` drift math — then returns garbage (the notorious "N
+ * thousand commits ahead of / unsafe base branch"). We deepen the two refs
+ * involved — and ONLY those two — until their merge-base is reachable, capped
+ * so a runaway history can never unshallow the entire repo.
+ *
+ * No-op when the repo is already complete (local-path clones ignore --depth,
+ * so forge/hosted worktrees are full and share objects with the bare repo via
+ * hardlinks) or when base === default (straight-line history works shallow).
+ */
+async function deepenBaseForMergeBase(
+  cloneDir: string,
+  authArgs: string[],
+  baseBranch: string,
+  defaultBranch: string,
+): Promise<void> {
+  if (!baseBranch || !defaultBranch || baseBranch === defaultBranch) return;
+  if (!(await isShallowClone(cloneDir))) return;
+  const baseRef = `origin/${baseBranch}`;
+  const defRef = `origin/${defaultBranch}`;
+  for (const step of MERGE_BASE_DEEPEN_STEPS) {
+    if (await mergeBaseResolves(cloneDir, baseRef, defRef)) return;
+    try {
+      await fetchWithRetry(
+        [
+          ...authArgs,
+          'fetch',
+          `--deepen=${step}`,
+          'origin',
+          `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+          `+refs/heads/${defaultBranch}:refs/remotes/origin/${defaultBranch}`,
+        ],
+        { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Workspace] deepen (+${step}) for merge-base(${baseBranch}, ${defaultBranch}) failed: ${message}`,
+      );
+      break;
+    }
+    if (!(await isShallowClone(cloneDir))) break; // fully unshallowed → done
+  }
+  if (!(await mergeBaseResolves(cloneDir, baseRef, defRef))) {
+    console.warn(
+      `[Workspace] merge-base(${baseBranch}, ${defaultBranch}) still unresolved after bounded deepen; feature-branch rebase math may be approximate`,
+    );
+  }
+}
+
+/**
+ * True/false when origin definitively has / lacks `refs/heads/<branch>`.
+ * Throws on a probe error (network/auth) so a transient failure never causes
+ * us to mis-create a branch.
+ */
+async function originHasBranch(
+  cloneDir: string,
+  authArgs: string[],
+  branch: string,
+): Promise<boolean> {
+  const refs = await runGit([...authArgs, 'ls-remote', '--heads', 'origin', branch], {
+    cwd: cloneDir,
+    timeoutMs: FETCH_TIMEOUT_MS,
+  });
+  return lsRemoteHasExactHead(refs, branch);
+}
+
+/**
+ * Create a missing feature/epic integration branch on origin, cut from the
+ * current tip of the default branch, so epic-linked sessions have a base to
+ * branch off and merge into. Previously a missing base hard-failed the
+ * session; now the platform provisions it "close to master" exactly as the
+ * epic workflow intends.
+ *
+ * Idempotent under races: the create pushes the resolved default sha to the
+ * new ref. If a concurrent session already created the branch at the same tip,
+ * the push is a no-op ("up to date"); if it created it with real work, the
+ * push is rejected as non-fast-forward and we adopt the existing ref instead
+ * of clobbering it.
+ */
+async function ensureFeatureBaseBranchOnOrigin(
+  cloneDir: string,
+  authArgs: string[],
+  baseBranch: string,
+  defaultBranch: string,
+): Promise<'existed' | 'created' | 'adopted-after-race'> {
+  if (await originHasBranch(cloneDir, authArgs, baseBranch)) return 'existed';
+  await fetchWithRetry(
+    [...authArgs, 'fetch', 'origin', `${defaultBranch}:refs/remotes/origin/${defaultBranch}`],
+    { cwd: cloneDir, timeoutMs: FETCH_TIMEOUT_MS },
+  );
+  const tip = await runGit(['rev-parse', `origin/${defaultBranch}`], { cwd: cloneDir });
+  try {
+    await runGit([...authArgs, 'push', 'origin', `${tip}:refs/heads/${baseBranch}`], {
+      cwd: cloneDir,
+      timeoutMs: FETCH_TIMEOUT_MS,
+    });
+    console.log(
+      `[Workspace] Created epic integration branch origin/${baseBranch} from origin/${defaultBranch}@${tip.slice(0, 7)}`,
+    );
+    return 'created';
+  } catch (err: unknown) {
+    // Lost the race (or a protected-branch hook rejected the create). If the
+    // branch now exists, adopt it; otherwise re-throw so the caller surfaces
+    // the failure via onFailure exactly as the old missing-base path did.
+    if (await originHasBranch(cloneDir, authArgs, baseBranch)) return 'adopted-after-race';
+    throw err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 function detectInstallCommand(dir: string): string | null {
@@ -1622,23 +1768,33 @@ async function detectAndHandleBaseBranchDrift(
     };
   }
 
-  // Clean tree → try auto-rebase. A successful rebase leaves the working
-  // tree at the new tip and there's nothing for the agent to do. A failed
-  // rebase ALWAYS gets `git rebase --abort` so the worktree returns to its
-  // prior state — never leave the tree in a half-rebased "rebase in progress"
-  // limbo where the agent's next git command will produce confusing errors.
-  try {
-    // `--empty=drop`: drop commits that become empty against the advanced base
-    // instead of pausing the rebase ("no conflicted files (possibly an empty
-    // commit)"), which would leave the worktree wedged mid-rebase.
-    await runGit(['rebase', '--empty=drop', `origin/${baseBranch}`], {
-      cwd: cloneDir,
-      // Rebase can take several seconds on a large stack; give it the
-      // fetch budget rather than the 5s short-op budget.
-      timeoutMs: FETCH_TIMEOUT_MS,
-    });
+  // Clean tree → try auto-rebase. Route through the SHARED `rebaseOntoBase`
+  // helper (the same one the pre-push Finalize path uses) rather than a
+  // hand-rolled `git rebase origin/<base>`. This is critical for
+  // **targeted feature branches** (cards whose `pr_base_branch` is a
+  // feature/umbrella branch rather than the repo default): when the session
+  // HEAD carries commits that live on `origin/<default>` but NOT on the
+  // feature base, a naive `git rebase origin/<featureBase>` replays those
+  // default-branch commits onto the feature base — dragging unrelated work
+  // into the diff and, when they touch the same files the feature base
+  // changed, producing spurious conflicts that abort the rebase and force
+  // the agent to "resolve conflicts" every single turn. `rebaseOntoBase`
+  // detects that shape and *transplants* only the true session commits onto
+  // `origin/<base>` (see `maybeTransplantDefaultBasedBranch`), so the two
+  // rebase code paths can never disagree on the exact git semantics.
+  //
+  // `rebaseOntoBase` guarantees the worktree is never left in a
+  // "rebase in progress" limbo: on conflict it always issues
+  // `git rebase --abort` internally before returning.
+  const outcome = await rebaseOntoBase({
+    cwd: cloneDir,
+    baseBranch,
+    env: gitEnv(),
+  });
+
+  if (outcome.kind === 'rebased' || outcome.kind === 'noop') {
     console.log(
-      `[Workspace] Auto-rebased session ${sessionId.slice(0, 8)} onto origin/${baseBranch} (${commitsAdvanced} commits)`,
+      `[Workspace] Auto-rebased session ${sessionId.slice(0, 8)} onto origin/${baseBranch} (${commitsAdvanced} commits, outcome=${outcome.kind})`,
     );
     return {
       sessionId,
@@ -1650,33 +1806,28 @@ async function detectAndHandleBaseBranchDrift(
       rebased: true,
       conflict: false,
     };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(
-      `[Workspace] Auto-rebase failed for session ${sessionId.slice(0, 8)} on origin/${baseBranch}: ${message} — aborting`,
-    );
-    try {
-      await runGit(['rebase', '--abort'], { cwd: cloneDir });
-    } catch (abortErr: unknown) {
-      const abortMsg = abortErr instanceof Error ? abortErr.message : String(abortErr);
-      // `git rebase --abort` exits non-zero when there's no rebase in
-      // progress (e.g. the rebase failed before touching anything). Not
-      // fatal — log and move on.
-      console.warn(
-        `[Workspace] git rebase --abort for session ${sessionId.slice(0, 8)} reported: ${abortMsg}`,
-      );
-    }
-    return {
-      sessionId,
-      baseBranch,
-      mergeBaseSha,
-      newTipSha,
-      commitsAdvanced,
-      cleanWorkingTree: true,
-      rebased: false,
-      conflict: true,
-    };
   }
+
+  // `conflict` — the helper already aborted the rebase; surface so the caller
+  // can post a "rebase first" notice. `skipped` (transient fetch/drift-check
+  // failure or an unsafe base ref) is NOT a conflict: leave the tree as-is and
+  // let the agent decide, exactly as a manual rebase would.
+  const isConflict = outcome.kind === 'conflict';
+  console.warn(
+    `[Workspace] Auto-rebase for session ${sessionId.slice(0, 8)} on origin/${baseBranch} did not complete (outcome=${outcome.kind}${
+      isConflict ? '' : `: ${outcome.reason}`
+    })`,
+  );
+  return {
+    sessionId,
+    baseBranch,
+    mergeBaseSha,
+    newTipSha,
+    commitsAdvanced,
+    cleanWorkingTree: true,
+    rebased: false,
+    conflict: isConflict,
+  };
 }
 
 interface RefreshSessionCloneRemotesOpts {
@@ -1756,6 +1907,23 @@ async function refreshSessionCloneRemotes(opts: RefreshSessionCloneRemotesOpts):
   }
 
   const trimmedBase = prBaseBranch?.trim();
+  if (fetchSucceeded && baseRefRefreshed && trimmedBase) {
+    // Ensure the reused (possibly shallow, network-cloned) worktree can still
+    // compute `merge-base(origin/<base>, origin/<default>)` before the drift
+    // auto-rebase runs — otherwise the feature-branch rebase math is garbage.
+    // Cheap no-op once the clone is deep or when base === default.
+    try {
+      const defaultBranch = await getDefaultBranch(projectCwd);
+      await deepenBaseForMergeBase(cloneDir, authArgs, trimmedBase, defaultBranch);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Workspace] deepen-on-reuse for origin/${trimmedBase} (session "${safeName}") failed:`,
+        message,
+      );
+    }
+  }
+
   if (fetchSucceeded && baseRefRefreshed && trimmedBase && onBaseBranchAdvanced) {
     try {
       const drift = await detectAndHandleBaseBranchDrift(cloneDir, sessionId, trimmedBase);
@@ -1984,59 +2152,76 @@ export async function ensureSessionWorkspace(
   let embeddedToken: string | null = null;
 
   try {
-    const remoteUrl = await getRemoteUrl(projectCwd);
-    if (remoteUrl) {
-      // Strip any userinfo from the URL before calling `classifyCloneUrl`.
-      // The `classifyCloneUrl` regex matches only the bare github.com host;
-      // a URL of the form `https://x-access-token:<TOKEN>@github.com/…`
-      // does NOT match and falls to `kind: 'other'`, which would pass the
-      // token-bearing URL verbatim to `git clone` and persist it in the
-      // session clone's `.git/config`. Stripping via `new URL()` is safe
-      // for any valid HTTP(S) URL and is a no-op for the already-clean case.
-      let canonRemoteUrl = remoteUrl;
-      try {
-        const u = new URL(remoteUrl);
-        if (u.password) {
-          embeddedToken = u.password;
-          u.username = '';
-          u.password = '';
-          canonRemoteUrl = u.toString();
-        } else if (u.username && u.username !== 'git') {
-          // Rare: token encoded as username-only (no password segment).
-          embeddedToken = u.username;
-          u.username = '';
-          canonRemoteUrl = u.toString();
-        }
-      } catch {
-        // Not a valid hierarchical URL (e.g. `git@github.com:…` SCP form).
-        // Leave canonRemoteUrl as-is; classifyCloneUrl handles SCP correctly.
-      }
-      // Canonicalize the source URL so a token previously embedded in the
-      // project repo's `remote.origin.url` (legacy installs that cloned
-      // with `https://x-access-token:…@github.com/…`) does NOT end up in
-      // the session clone's `.git/config`. For github-https we rebuild
-      // the clean `https://github.com/<owner>/<repo>.git` form and pair
-      // it with `authArgs` (per-invocation header injection) so the
-      // resulting clone has no token persisted anywhere on disk.
-      const parsedRemote = classifyCloneUrl(canonRemoteUrl);
-      const cloneSourceUrl =
-        parsedRemote.kind === 'github-https' && parsedRemote.owner && parsedRemote.repo
-          ? `https://github.com/${parsedRemote.owner}/${parsedRemote.repo}.git`
-          : canonRemoteUrl;
-      // Only forward auth args for github.com remotes — other hosts
-      // (bitbucket, internal mirrors) should pass through unauthenticated.
-      const cloneAuthArgs = parsedRemote.kind === 'github-https' ? authArgs : [];
+    if (hostedBarePath) {
+      // Agent Hub-hosted (forge) projects: clone from the LOCAL bare repo.
+      // Local-path clones ignore `--depth` (git hardlinks the full object
+      // store), so the worktree gets COMPLETE history — correct merge-base
+      // math for feature/epic bases — AND shares objects with the bare repo
+      // for ~zero marginal disk. That is the object-sharing we want for
+      // locally-hosted origins, and it sidesteps the shallow-clone "unsafe
+      // base branch" failure entirely. Non-hosted (GitHub-origin) projects
+      // fall through to the remote-URL path below (shallow clone + deepen).
       await cloneWithRetry(
-        [...cloneAuthArgs, 'clone', '--depth', '1', '--quiet', cloneSourceUrl, cloneDir],
+        ['clone', '--quiet', hostedBarePath, cloneDir],
         { cwd: projectCwd, timeoutMs: CLONE_TIMEOUT_MS },
         cloneDir,
       );
+      await ensureOriginPointsAtHostedRepo(cloneDir, hostedBarePath);
     } else {
-      await cloneWithRetry(
-        ['clone', '--depth', '1', '--quiet', projectCwd, cloneDir],
-        { timeoutMs: CLONE_TIMEOUT_MS },
-        cloneDir,
-      );
+      const remoteUrl = await getRemoteUrl(projectCwd);
+      if (remoteUrl) {
+        // Strip any userinfo from the URL before calling `classifyCloneUrl`.
+        // The `classifyCloneUrl` regex matches only the bare github.com host;
+        // a URL of the form `https://x-access-token:<TOKEN>@github.com/…`
+        // does NOT match and falls to `kind: 'other'`, which would pass the
+        // token-bearing URL verbatim to `git clone` and persist it in the
+        // session clone's `.git/config`. Stripping via `new URL()` is safe
+        // for any valid HTTP(S) URL and is a no-op for the already-clean case.
+        let canonRemoteUrl = remoteUrl;
+        try {
+          const u = new URL(remoteUrl);
+          if (u.password) {
+            embeddedToken = u.password;
+            u.username = '';
+            u.password = '';
+            canonRemoteUrl = u.toString();
+          } else if (u.username && u.username !== 'git') {
+            // Rare: token encoded as username-only (no password segment).
+            embeddedToken = u.username;
+            u.username = '';
+            canonRemoteUrl = u.toString();
+          }
+        } catch {
+          // Not a valid hierarchical URL (e.g. `git@github.com:…` SCP form).
+          // Leave canonRemoteUrl as-is; classifyCloneUrl handles SCP correctly.
+        }
+        // Canonicalize the source URL so a token previously embedded in the
+        // project repo's `remote.origin.url` (legacy installs that cloned
+        // with `https://x-access-token:…@github.com/…`) does NOT end up in
+        // the session clone's `.git/config`. For github-https we rebuild
+        // the clean `https://github.com/<owner>/<repo>.git` form and pair
+        // it with `authArgs` (per-invocation header injection) so the
+        // resulting clone has no token persisted anywhere on disk.
+        const parsedRemote = classifyCloneUrl(canonRemoteUrl);
+        const cloneSourceUrl =
+          parsedRemote.kind === 'github-https' && parsedRemote.owner && parsedRemote.repo
+            ? `https://github.com/${parsedRemote.owner}/${parsedRemote.repo}.git`
+            : canonRemoteUrl;
+        // Only forward auth args for github.com remotes — other hosts
+        // (bitbucket, internal mirrors) should pass through unauthenticated.
+        const cloneAuthArgs = parsedRemote.kind === 'github-https' ? authArgs : [];
+        await cloneWithRetry(
+          [...cloneAuthArgs, 'clone', '--depth', '1', '--quiet', cloneSourceUrl, cloneDir],
+          { cwd: projectCwd, timeoutMs: CLONE_TIMEOUT_MS },
+          cloneDir,
+        );
+      } else {
+        await cloneWithRetry(
+          ['clone', '--depth', '1', '--quiet', projectCwd, cloneDir],
+          { timeoutMs: CLONE_TIMEOUT_MS },
+          cloneDir,
+        );
+      }
     }
 
     // The branch the session worktree ends up on. Resolve-PR sessions try to
@@ -2126,12 +2311,20 @@ export async function ensureSessionWorkspace(
     }
 
     if (!positionedOnPrHead) {
+      const defaultBranch = await getDefaultBranch(projectCwd);
       const syncBranch = await resolveSyncBranch(projectCwd, prBaseBranch);
+      const baseIsFeatureBranch = !!syncBranch && syncBranch !== defaultBranch;
       try {
         await fetchWithRetry([...authArgs, 'fetch', 'origin', '--quiet'], {
           cwd: cloneDir,
           timeoutMs: FETCH_TIMEOUT_MS,
         });
+        // Epic/feature integration branch that doesn't exist yet → create it
+        // from the default branch so the session has a base to branch off and
+        // merge into. Previously a missing base hard-failed provisioning.
+        if (baseIsFeatureBranch) {
+          await ensureFeatureBaseBranchOnOrigin(cloneDir, authArgs, syncBranch, defaultBranch);
+        }
         await fetchWithRetry(
           [
             ...authArgs,
@@ -2147,6 +2340,12 @@ export async function ensureSessionWorkspace(
           },
         );
         await runGit(['reset', '--hard', `origin/${syncBranch}`], { cwd: cloneDir });
+        // Deepen so `merge-base(origin/<base>, origin/<default>)` is reachable
+        // for the Finalize / pre-push rebase + transplant math. No-op on
+        // full/local (forge) clones or when base === default.
+        if (baseIsFeatureBranch) {
+          await deepenBaseForMergeBase(cloneDir, authArgs, syncBranch, defaultBranch);
+        }
         const tip = await runGit(['rev-parse', `origin/${syncBranch}`], { cwd: cloneDir });
         console.log(
           `[Workspace] Fresh session clone synced to origin/${syncBranch} at ${tip.slice(0, 7)} before branching (${branchName})`,
@@ -2372,6 +2571,11 @@ export const __test = {
   cleanupPartialClone,
   defaultResolveInstallationToken,
   detectAndHandleBaseBranchDrift,
+  deepenBaseForMergeBase,
+  isShallowClone,
+  mergeBaseResolves,
+  originHasBranch,
+  ensureFeatureBaseBranchOnOrigin,
   normalizeInstallCommandForHost,
   detectInstallCommand,
   resolveSessionInstallCommand,
