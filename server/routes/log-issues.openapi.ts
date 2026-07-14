@@ -41,6 +41,8 @@ const LogIssue = registerComponent(
     firstRecordId: z.number().int().nullable(),
     lastRecordId: z.number().int().nullable(),
     analyzeSessionId: z.string().nullable(),
+    fixCardId: z.string().nullable(),
+    fixSessionId: z.string().nullable(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   }),
@@ -90,6 +92,51 @@ registerPath({
     },
     404: {
       description: 'Project not found or not visible.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
+});
+
+const FixResponse = registerComponent(
+  'LogIssueFixResponse',
+  z.object({
+    cardId: z.string(),
+    sessionId: z.string(),
+    agentId: z.string(),
+    automation: z.enum(['manual', 'review', 'push', 'merge']),
+    reused: z.boolean(),
+    issue: LogIssue,
+    card: z.record(z.string(), z.unknown()),
+  }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/logs/issues/{issueId}/fix',
+  tags: ['Logs'],
+  summary: 'Start or reuse a tracked Fix session for an error issue',
+  description:
+    "Creates one In Progress kanban card and one isolated worktree chat session per active issue. The session inherits the initiating user's project Finalize automation preference, falling back to manual/Build. The prompt includes the bounded, redacted issue context and requires a regression test. This action never uses board assignment defaults.",
+  request: { params: issueParam },
+  responses: {
+    200: {
+      description: 'The newly started or existing Fix workflow.',
+      content: { 'application/json': { schema: FixResponse } },
+    },
+    400: {
+      description: 'No eligible agent or malformed board configuration.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Project or issue not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    409: {
+      description: 'Another Fix workflow is being created for this issue.',
       content: { 'application/json': { schema: ErrorResponse } },
     },
   },

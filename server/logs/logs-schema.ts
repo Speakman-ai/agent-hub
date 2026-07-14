@@ -245,6 +245,11 @@ export const LOGS_SCHEMA = `
     -- runs Analyze; reused idempotently so a repeat click reopens the same
     -- session rather than spawning a duplicate investigation.
     analyze_session_id TEXT,
+    -- Linked active Fix card/session (decision LOG-FIX). These are denormalized
+    -- cross-database references; the claim table below is the concurrency
+    -- boundary and the main DB owns the actual card/session rows.
+    fix_card_id       TEXT,
+    fix_session_id    TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER NOT NULL,
     UNIQUE (project_id, fingerprint)
@@ -268,6 +273,22 @@ export const LOGS_SCHEMA = `
   );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_log_issue_analyze_claim_session
     ON log_issue_analyze_claims(session_id);
+
+  -- Database-enforced Fix claim. One active Fix workflow may exist per issue;
+  -- card and session ids are generated before the claim so concurrent clicks
+  -- converge on one winner without routing through board assignment.
+  CREATE TABLE IF NOT EXISTS log_issue_fix_claims (
+    project_id  TEXT NOT NULL,
+    issue_id    TEXT NOT NULL,
+    card_id     TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    claimed_at  INTEGER NOT NULL,
+    PRIMARY KEY (project_id, issue_id)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_log_issue_fix_claim_card
+    ON log_issue_fix_claims(card_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_log_issue_fix_claim_session
+    ON log_issue_fix_claims(session_id);
 
   -- Release / commit facets per issue (decision LOG-GROUP: "keep release and
   -- commit SHA as facets", NOT in the fingerprint). Empty string stands in for

@@ -11,6 +11,7 @@ vi.mock('../../utils/api', () => ({
     ignoreLogIssue: vi.fn(),
     reopenLogIssue: vi.fn(),
     analyzeLogIssue: vi.fn(),
+    fixLogIssue: vi.fn(),
   },
 }));
 
@@ -30,6 +31,8 @@ const openIssue = {
   statusUpdatedAt: null,
   statusUpdatedBy: null,
   analyzeSessionId: null,
+  fixSessionId: null,
+  fixCardId: null,
 };
 
 beforeEach(() => {
@@ -140,6 +143,29 @@ describe('IssuesView', () => {
 
     await waitFor(() => expect(api.reopenLogIssue).toHaveBeenCalledWith('p1', 'iss-1'));
     await waitFor(() => expect(showToast).toHaveBeenCalledWith('Issue open', 'success'));
+  });
+
+  it('starts the tracked Fix workflow and opens its session', async () => {
+    (api.listLogIssues as any).mockResolvedValue({ issues: [openIssue], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...openIssue, releases: [], samples: [] });
+    (api.fixLogIssue as any).mockResolvedValue({
+      cardId: 'card-fix-1',
+      sessionId: 'session-fix-1',
+      agentId: 'agent-dev',
+      reused: false,
+      issue: { ...openIssue, fixCardId: 'card-fix-1', fixSessionId: 'session-fix-1' },
+    });
+    const onOpenSession = vi.fn();
+
+    render(<IssuesView projectId="p1" onOpenSession={onOpenSession} />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Fix' }));
+
+    await waitFor(() => expect(api.fixLogIssue).toHaveBeenCalledWith('p1', 'iss-1'));
+    expect(onOpenSession).toHaveBeenCalledWith({
+      sessionId: 'session-fix-1',
+      agentId: 'agent-dev',
+    });
   });
 
   it('drops a stale list response when the status tab changed before it resolved', async () => {

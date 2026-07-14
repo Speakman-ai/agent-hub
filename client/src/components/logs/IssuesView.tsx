@@ -18,6 +18,7 @@ import {
   ChevronRight,
   ChevronDown,
   Search,
+  Wrench,
 } from 'lucide-react';
 import { api } from '../../utils/api';
 import { formatDateTime, relativeTime } from '../../utils/time';
@@ -48,6 +49,8 @@ interface LogIssue {
   statusUpdatedAt: number | null;
   statusUpdatedBy: string | null;
   analyzeSessionId: string | null;
+  fixCardId?: string | null;
+  fixSessionId?: string | null;
   releases?: IssueRelease[];
   samples?: LogRecord[];
 }
@@ -96,6 +99,7 @@ export default function IssuesView({
   const [detailLoading, setDetailLoading] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  const [fixingId, setFixingId] = useState<string | null>(null);
 
   // Monotonic request id. Each load captures its seq; a response whose seq is no
   // longer current (the status tab or project changed before it resolved) is
@@ -210,6 +214,29 @@ export default function IssuesView({
     [onOpenSession, projectId, showToast],
   );
 
+  const fix = useCallback(
+    async (issue: LogIssue) => {
+      setFixingId(issue.id);
+      try {
+        const result = (await api.fixLogIssue(projectId, issue.id)) as {
+          sessionId: string;
+          agentId: string;
+          reused: boolean;
+          issue: LogIssue;
+        };
+        setIssues((prev) => prev.map((i) => (i.id === issue.id ? { ...i, ...result.issue } : i)));
+        setDetail((prev) => (prev && prev.id === issue.id ? { ...prev, ...result.issue } : prev));
+        showToast?.(result.reused ? 'Fix session reopened' : 'Fix started', 'success');
+        onOpenSession?.({ sessionId: result.sessionId, agentId: result.agentId });
+      } catch (err) {
+        showToast?.(err instanceof Error ? err.message : 'Failed to start fix', 'error');
+      } finally {
+        setFixingId(null);
+      }
+    },
+    [onOpenSession, projectId, showToast],
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-gray-800 pb-2">
@@ -289,6 +316,19 @@ export default function IssuesView({
                   {isOpen ? (
                     <div className="border-t border-gray-800 px-3 py-3">
                       <div className="mb-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={fixingId === issue.id}
+                          onClick={() => fix(detail ?? issue)}
+                          className="inline-flex items-center gap-1 rounded border border-amber-600/40 bg-amber-600/10 px-2 py-1 text-xs text-amber-300 hover:bg-amber-600/20 disabled:opacity-50"
+                        >
+                          {fixingId === issue.id ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Wrench size={13} />
+                          )}
+                          {issue.fixSessionId ? 'Open fix' : 'Fix'}
+                        </button>
                         <button
                           type="button"
                           disabled={analyzingId === issue.id}

@@ -86,6 +86,27 @@ function migrateLogsSchema(db: Database.Database): void {
   } catch {
     db.exec('ALTER TABLE log_issues ADD COLUMN analyze_session_id TEXT');
   }
+  for (const column of ['fix_card_id', 'fix_session_id']) {
+    try {
+      db.prepare(`SELECT ${column} FROM log_issues LIMIT 1`).get();
+    } catch {
+      db.exec(`ALTER TABLE log_issues ADD COLUMN ${column} TEXT`);
+    }
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS log_issue_fix_claims (
+      project_id TEXT NOT NULL,
+      issue_id TEXT NOT NULL,
+      card_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, issue_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_log_issue_fix_claim_card
+      ON log_issue_fix_claims(card_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_log_issue_fix_claim_session
+      ON log_issue_fix_claims(session_id);
+  `);
 }
 
 export function initLogsDb(dataDir: string): Database.Database {

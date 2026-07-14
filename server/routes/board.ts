@@ -82,6 +82,7 @@ import { buildDecideForMeSessionContext, pickDefaultDecideAgent } from '../spec-
 import { buildNoteScopingKickoff } from '../note-scoping.js';
 import { resolveShouldAutoMerge } from '../auto-merge.js';
 import { parseSourceMeta, serializeSourceMeta } from '../source-provenance.js';
+import { releaseIssueFixClaimsForCard } from '../logs/log-issues-store.js';
 import type { AuthenticatedRequest } from '../auth.js';
 import { cardNeedsDevHubKey, getDevHubApiKey } from '../secrets.js';
 import {
@@ -1255,6 +1256,12 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
       }
       const previousColumnId = card.column_id;
       stmts.moveKanbanCard.run(columnId, position ?? 0, req.params.cardId);
+      if (targetColumn.name.toLowerCase() === 'done') {
+        // A completed Fix is no longer the active workflow for this issue;
+        // release its cross-database claim so a later recurrence can start a
+        // new tracked Fix instead of receiving a permanent 409.
+        releaseIssueFixClaimsForCard(req.params.cardId as string);
+      }
       recomputeEpicState(stmts, card.epic_id);
       broadcast({ type: 'kanban_update', projectId: req.params.projectId });
       const updatedCard = stmts.getKanbanCard.get(req.params.cardId) as KanbanCardRow;
@@ -1614,6 +1621,7 @@ export default function createBoardRoutes(deps: RouteDeps): Router {
     const card = stmts.getKanbanCard.get(cardId) as KanbanCardRow | undefined;
 
     lastDispatchedReviewId.delete(cardId);
+    releaseIssueFixClaimsForCard(cardId);
 
     stmts.deleteKanbanCard.run(cardId);
     recomputeEpicState(stmts, card?.epic_id);

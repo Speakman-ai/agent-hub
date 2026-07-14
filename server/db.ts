@@ -750,7 +750,7 @@ function initDb(dataDir: string): void {
       -- with user_todos so a card can be traced back to the Gmail message /
       -- Calendar event / todo it was captured from. NULL for cards created
       -- without a tracked origin. source_meta is a JSON deep-link blob.
-      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo')),
+      source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue')),
       source_id TEXT,
       source_meta TEXT,
       created_by TEXT,
@@ -2590,14 +2590,14 @@ function initDb(dataDir: string): void {
 
   // Capture provenance (spec CAPTURE-PROVENANCE): the shared source triple with
   // user_todos so a card can be traced back to the Gmail message / Calendar
-  // event / todo it was captured from. NULL on cards created without a tracked
+  // event / todo / grouped log issue it was captured from. NULL on cards created without a tracked
   // origin. The (source_type, source_id) index backs "did we already capture a
   // card from this origin?" dedup lookups.
   try {
     db.prepare('SELECT source_type FROM kanban_cards LIMIT 1').get();
   } catch {
     db.exec(
-      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo'))",
+      "ALTER TABLE kanban_cards ADD COLUMN source_type TEXT CHECK(source_type IS NULL OR source_type IN ('manual','email','calendar','todo','log_issue'))",
     );
   }
   try {
@@ -5077,6 +5077,14 @@ function initDb(dataDir: string): void {
       "UPDATE kanban_cards SET session_id = ?, assignee = ?, updated_at = datetime('now') WHERE id = ?",
     ),
     getKanbanCardBySession: db.prepare('SELECT * FROM kanban_cards WHERE session_id = ? LIMIT 1'),
+    getKanbanCardByLogIssueSource: db.prepare(
+      `SELECT c.* FROM kanban_cards c
+       JOIN kanban_boards b ON b.id = c.board_id
+       JOIN kanban_columns col ON col.id = c.column_id
+       WHERE b.project_id = ? AND c.source_type = 'log_issue' AND c.source_id = ?
+         AND lower(col.name) != 'done'
+       ORDER BY c.updated_at DESC, c.id DESC LIMIT 1`,
+    ),
     getKanbanCardByPrUrl: db.prepare('SELECT * FROM kanban_cards WHERE pr_url = ? LIMIT 1'),
     getNextUndocumentedCard: db.prepare(
       `SELECT c.*, col.name as column_name FROM kanban_cards c

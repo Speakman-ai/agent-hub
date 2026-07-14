@@ -462,6 +462,7 @@ export function IssuesView({
   const [detailLoading, setDetailLoading] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  const [fixingId, setFixingId] = useState<string | null>(null);
 
   // Monotonic request id. Each load captures its seq; a response whose seq is no
   // longer current (the status tab or project changed before it resolved) is
@@ -597,6 +598,29 @@ export function IssuesView({
     [onOpenSession, projectId, showToast],
   );
 
+  const fix = useCallback(
+    async (issue: LogIssue) => {
+      setFixingId(issue.id);
+      try {
+        const result = (await api.fixLogIssue(projectId, issue.id)) as {
+          sessionId: string;
+          agentId: string;
+          reused: boolean;
+          issue: LogIssue;
+        };
+        setIssues((prev) => applyIssueUpdate(prev, issue.id, result.issue));
+        setDetail((prev) => (prev && prev.id === issue.id ? { ...prev, ...result.issue } : prev));
+        showToast?.(result.reused ? 'Fix session reopened' : 'Fix started', 'success');
+        onOpenSession?.({ sessionId: result.sessionId, agentId: result.agentId });
+      } catch (err: any) {
+        showToast?.(err?.message || 'Failed to start fix', 'error');
+      } finally {
+        setFixingId(null);
+      }
+    },
+    [onOpenSession, projectId, showToast],
+  );
+
   const renderIssue = (issue: LogIssue) => {
     const isOpen = expandedId === issue.id;
     return (
@@ -625,6 +649,15 @@ export function IssuesView({
         {isOpen ? (
           <View style={styles.issueDetail}>
             <View style={styles.issueActions}>
+              <TouchableOpacity
+                disabled={fixingId === issue.id}
+                onPress={() => fix(detail ?? issue)}
+                style={[styles.issueActionBtn, fixingId === issue.id && styles.btnDisabled]}
+                testID="log-issue-fix"
+              >
+                {fixingId === issue.id ? <ActivityIndicator size="small" color={colors.amber400} /> : null}
+                <Text style={styles.issueActionText}>{issue.fixSessionId ? 'Open fix' : 'Fix'}</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 disabled={analyzingId === issue.id}
                 onPress={() => analyze(detail ?? issue)}

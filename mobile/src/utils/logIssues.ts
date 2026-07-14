@@ -35,6 +35,8 @@ export interface LogIssue {
   statusUpdatedAt: number | null;
   statusUpdatedBy: string | null;
   analyzeSessionId: string | null;
+  fixCardId?: string | null;
+  fixSessionId?: string | null;
   releases?: IssueRelease[];
   samples?: LogRecord[];
 }

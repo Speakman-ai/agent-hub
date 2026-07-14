@@ -780,6 +780,10 @@ export const api = {
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/analyze`, {
       method: 'POST',
     }),
+  fixLogIssue: (projectId: any, issueId: any) =>
+    fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/fix`, {
+      method: 'POST',
+    }),
   // Single-path configure + secrets + compose boot test. Admin+.
   buildPreviewEnvironment: (projectId: any, body: any) =>
     fetchJSON(`/projects/${projectId}/preview/build`, {

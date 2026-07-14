@@ -1755,6 +1755,7 @@ components:
             - email
             - calendar
             - todo
+            - log_issue
             - null
           description: "Capture provenance (spec CAPTURE-PROVENANCE): the origin this card was captured from. `todo` means it was promoted from a personal todo; `email`/`calendar` a direct dashboard capture; `manual`/null a card with no tracked origin."
         source_id:
@@ -6358,6 +6359,12 @@ components:
         analyzeSessionId:
           type: string
           nullable: true
+        fixCardId:
+          type: string
+          nullable: true
+        fixSessionId:
+          type: string
+          nullable: true
         createdAt:
           type: integer
         updatedAt:
@@ -6380,6 +6387,8 @@ components:
         - firstRecordId
         - lastRecordId
         - analyzeSessionId
+        - fixCardId
+        - fixSessionId
         - createdAt
         - updatedAt
     LogIssueDetail:
@@ -6420,6 +6429,38 @@ components:
           type: string
       required:
         - error
+    LogIssueFixResponse:
+      type: object
+      properties:
+        cardId:
+          type: string
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        automation:
+          type: string
+          enum:
+            - manual
+            - review
+            - push
+            - merge
+        reused:
+          type: boolean
+        issue:
+          $ref: "#/components/schemas/LogIssue"
+        card:
+          type: object
+          additionalProperties:
+            nullable: true
+      required:
+        - cardId
+        - sessionId
+        - agentId
+        - automation
+        - reused
+        - issue
+        - card
     LogIssueAnalyzeResponse:
       type: object
       properties:
@@ -15225,6 +15266,7 @@ paths:
                         - email
                         - calendar
                         - todo
+                        - log_issue
                     sourceId:
                       type: string
                       nullable: true
@@ -26042,6 +26084,54 @@ paths:
                 $ref: "#/components/schemas/LogIssueErrorResponse"
         "404":
           description: Project not found or not visible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/{issueId}/fix:
+    post:
+      tags:
+        - Logs
+      summary: Start or reuse a tracked Fix session for an error issue
+      description: Creates one In Progress kanban card and one isolated worktree chat session per active issue. The session inherits the initiating user's project Finalize automation preference, falling back to manual/Build. The prompt includes the bounded, redacted issue context and requires a regression test. This action never uses board assignment defaults.
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: issueId
+          in: path
+      responses:
+        "200":
+          description: The newly started or existing Fix workflow.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueFixResponse"
+        "400":
+          description: No eligible agent or malformed board configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "409":
+          description: Another Fix workflow is being created for this issue.
           content:
             application/json:
               schema:
