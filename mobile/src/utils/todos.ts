@@ -155,7 +155,7 @@ export function todoLinkLabel(todo: {
         case 'card':
             return 'Ticket';
         case 'epic':
-            return 'Feature';
+            return 'Epic';
         case 'session':
             return 'Session';
         default:

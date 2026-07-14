@@ -1930,7 +1930,7 @@ export default function KanbanBoard({
               className="flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium text-gray-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-colors"
             >
               <Pencil size={14} />
-              Features
+              Epics
             </button>
           ) : null}
           <button

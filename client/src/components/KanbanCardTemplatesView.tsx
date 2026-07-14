@@ -272,8 +272,7 @@ export default function KanbanCardTemplatesView({
                     ) : null}
                     {template.epicId ? (
                       <span className="rounded bg-white/[0.04] px-2 py-0.5">
-                        Feature:{' '}
-                        {epics.find((e) => e.id === template.epicId)?.name || template.epicId}
+                        Epic: {epics.find((e) => e.id === template.epicId)?.name || template.epicId}
                       </span>
                     ) : null}
                   </div>

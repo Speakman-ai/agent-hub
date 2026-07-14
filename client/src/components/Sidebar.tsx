@@ -28,6 +28,7 @@ import {
   Lock,
   GripVertical,
   ScanEye,
+  Target,
   ChevronRight,
   ChevronDown,
   Bot,
@@ -858,6 +859,21 @@ export default function Sidebar({
                             <LayoutGrid size={14} className="flex-shrink-0" />
                             <span className="truncate">Board</span>
                           </button>
+
+                          {!workflowProject && (
+                            <button
+                              type="button"
+                              data-testid={`sidebar-epics-link-${project.id}`}
+                              onClick={() => onNavigate(`epics:${project.id}`)}
+                              className={projectMenuLinkClass(
+                                currentView === `epics:${project.id}` ||
+                                  currentView.startsWith(`epic:${project.id}:`),
+                              )}
+                            >
+                              <Target size={14} className="flex-shrink-0" />
+                              <span className="truncate">Epics</span>
+                            </button>
+                          )}
 
                           <button
                             type="button"

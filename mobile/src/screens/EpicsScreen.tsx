@@ -50,7 +50,7 @@ export default function EpicsScreen({ route, navigation }: any) {
             setBoard(data);
         }
         catch (err: any) {
-            Alert.alert('Error', err?.message || 'Failed to load features');
+            Alert.alert('Error', err?.message || 'Failed to load epics');
             setBoard(null);
         }
         finally {
@@ -76,7 +76,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     };
     const handleSave = async () => {
         if (!epicForm.name.trim()) {
-            Alert.alert('Error', 'Feature name is required');
+            Alert.alert('Error', 'Epic name is required');
             return;
         }
         setSaving(true);
@@ -93,7 +93,7 @@ export default function EpicsScreen({ route, navigation }: any) {
             await loadBoard();
         }
         catch {
-            Alert.alert('Error', 'Failed to save feature');
+            Alert.alert('Error', 'Failed to save epic');
         }
         finally {
             setSaving(false);
@@ -101,7 +101,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     };
     const handleCreateAndScope = async () => {
         if (!epicForm.name.trim()) {
-            Alert.alert('Error', 'Feature name is required');
+            Alert.alert('Error', 'Epic name is required');
             return;
         }
         setSaving(true);
@@ -115,7 +115,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                 await openScopingSession(created.id);
         }
         catch {
-            Alert.alert('Error', 'Failed to create feature');
+            Alert.alert('Error', 'Failed to create epic');
         }
         finally {
             setSaving(false);
@@ -124,7 +124,7 @@ export default function EpicsScreen({ route, navigation }: any) {
     const handleDelete = () => {
         if (!editingEpic)
             return;
-        Alert.alert('Delete feature', `Delete "${editingEpic.name}"? Linked cards will be unlinked.`, [
+        Alert.alert('Delete epic', `Delete "${editingEpic.name}"? Linked cards will be unlinked.`, [
             { text: 'Cancel', style: 'cancel' },
             {
                 text: 'Delete',
@@ -137,7 +137,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                         await loadBoard();
                     }
                     catch {
-                        Alert.alert('Error', 'Failed to delete feature');
+                        Alert.alert('Error', 'Failed to delete epic');
                     }
                 },
             },
@@ -173,10 +173,10 @@ export default function EpicsScreen({ route, navigation }: any) {
     };
     const boardColumns = groupEpicsByState(epics);
     return (<SafeAreaView style={styles.screen} edges={['top']}>
-      <ProjectScreenHeader title="Features" project={project} onBack={() => navigation.goBack()}/>
+      <ProjectScreenHeader title="Epics" project={project} onBack={() => navigation.goBack()}/>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.headerRow}>
-          <Text style={styles.desc}>Group kanban cards into features for this project.</Text>
+          <Text style={styles.desc}>Group kanban cards into epics for this project.</Text>
           <TouchableOpacity onPress={() => (showForm ? setShowForm(false) : openCreate())}>
             <Text style={styles.link}>{showForm ? 'Cancel' : '+ New'}</Text>
           </TouchableOpacity>
@@ -214,7 +214,7 @@ export default function EpicsScreen({ route, navigation }: any) {
                 <Text style={styles.scopeBtnText}>{scopingId ? 'Opening…' : 'Scope with agent'}</Text>
               </TouchableOpacity>)}
             {editingEpic && (<TouchableOpacity style={styles.deleteBtn} onPress={handleDelete}>
-                <Text style={styles.deleteBtnText}>Delete feature</Text>
+                <Text style={styles.deleteBtnText}>Delete epic</Text>
               </TouchableOpacity>)}
             {/* Reverse (bidirectional) display: the caller's own personal todos
                 linked to this epic. Renders nothing when there are none. */}
@@ -241,15 +241,15 @@ export default function EpicsScreen({ route, navigation }: any) {
             </TouchableOpacity>))}
         </View>)}
 
-        {loading ? (<ActivityIndicator color={colors.gray400} style={{ marginTop: 24 }}/>) : epics.length === 0 ? (<Text style={styles.empty}>No features yet.</Text>) : viewMode === 'board' ? (<View>
+        {loading ? (<ActivityIndicator color={colors.gray400} style={{ marginTop: 24 }}/>) : epics.length === 0 ? (<Text style={styles.empty}>No epics yet.</Text>) : viewMode === 'board' ? (<View>
             {boardColumns.map((column) => (<View key={column.key} style={styles.boardSection}>
               <View style={styles.boardSectionHeader}>
                 <Text style={styles.boardSectionTitle}>{column.label}</Text>
                 <Text style={styles.boardSectionCount}>{column.epics.length}</Text>
               </View>
-              {column.epics.length === 0 ? (<Text style={styles.boardSectionEmpty}>No features</Text>) : column.epics.map(renderEpicCard)}
+              {column.epics.length === 0 ? (<Text style={styles.boardSectionEmpty}>No epics</Text>) : column.epics.map(renderEpicCard)}
             </View>))}
-          </View>) : visibleEpics.length === 0 ? (<Text style={styles.empty}>No features match this state.</Text>) : (visibleEpics.map(renderEpicCard))}
+          </View>) : visibleEpics.length === 0 ? (<Text style={styles.empty}>No epics match this state.</Text>) : (visibleEpics.map(renderEpicCard))}
       </ScrollView>
     </SafeAreaView>);
 }

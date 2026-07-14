@@ -70,7 +70,7 @@ const PRIORITY_OPTIONS: TodoPriority[] = ['urgent', 'high', 'medium', 'low'];
 // the web `LINK_BADGE_CLASS`.
 const LINK_BADGE_STYLE: Record<string, { bg: string; text: string; border: string }> = {
     Ticket: { bg: colors.purple900_40, text: colors.purple400, border: colors.purple500 },
-    Feature: { bg: colors.indigo900_40, text: colors.indigo300, border: colors.indigo500 },
+    Epic: { bg: colors.indigo900_40, text: colors.indigo300, border: colors.indigo500 },
     Session: { bg: colors.teal900_30, text: colors.teal300, border: colors.teal500 },
 };
 

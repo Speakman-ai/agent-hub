@@ -23,7 +23,7 @@ export default function EpicManageListView({
   onDeleteEpic,
   deleteBusyEpicId,
   assignableUsers = [],
-  emptyMessage = 'No features yet.',
+  emptyMessage = 'No epics yet.',
 }: any) {
   const colMap = columnNameById(columns);
 
@@ -32,7 +32,7 @@ export default function EpicManageListView({
       {(projectName || onCreateEpic) && (
         <div className="flex items-center justify-between gap-3 mb-4">
           {projectName ? (
-            <h3 className="text-sm font-semibold text-gray-200">Features in {projectName}</h3>
+            <h3 className="text-sm font-semibold text-gray-200">Epics in {projectName}</h3>
           ) : (
             <span />
           )}
@@ -44,7 +44,7 @@ export default function EpicManageListView({
               className="inline-flex items-center gap-1 text-xs font-medium text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 px-2.5 py-1.5 rounded-lg transition-colors"
             >
               <Plus size={12} />
-              New feature
+              New epic
             </button>
           ) : null}
         </div>

@@ -167,7 +167,7 @@ export function PromoteTodoModalContent({
 
           {epics.length > 0 ? (
             <>
-              <Text style={styles.label}>Feature</Text>
+              <Text style={styles.label}>Epic</Text>
               <View style={styles.chipWrap}>
                 <TouchableOpacity
                   testID="promote-epic-none"

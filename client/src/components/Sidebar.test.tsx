@@ -143,6 +143,44 @@ describe('Sidebar — global Todos nav (per-user, no Google dependency)', () => 
   });
 });
 
+describe('Sidebar — per-project Epics nav', () => {
+  it('renders an Epics link in the project menu and navigates to the epics view', () => {
+    const onNavigate = vi.fn();
+    render(<Sidebar {...buildProps({ onNavigate })} />);
+    const epicsLink = screen.getByTestId(`sidebar-epics-link-${PROJECT_ID}`);
+    expect(epicsLink).toHaveTextContent('Epics');
+    fireEvent.click(epicsLink);
+    expect(onNavigate).toHaveBeenCalledWith(`epics:${PROJECT_ID}`);
+  });
+
+  it('marks the Epics link active on both the list and the epic-detail views', () => {
+    const { rerender } = render(
+      <Sidebar {...buildProps({ currentView: `epics:${PROJECT_ID}` })} />,
+    );
+    expect(screen.getByTestId(`sidebar-epics-link-${PROJECT_ID}`).className).toContain(
+      'bg-gray-800',
+    );
+    rerender(<Sidebar {...buildProps({ currentView: `epic:${PROJECT_ID}:ep-9` })} />);
+    expect(screen.getByTestId(`sidebar-epics-link-${PROJECT_ID}`).className).toContain(
+      'bg-gray-800',
+    );
+  });
+
+  it('does not render the Epics link for workflow-mode projects', () => {
+    const projects = [
+      {
+        id: PROJECT_ID,
+        name: 'Workflow Project',
+        color: '#22d3ee',
+        mode: 'workflow',
+        agents: [{ id: AGENT_ID, name: 'Primary Agent', color: '#22d3ee', active: true }],
+      },
+    ];
+    render(<Sidebar {...buildProps({ projects })} />);
+    expect(screen.queryByTestId(`sidebar-epics-link-${PROJECT_ID}`)).not.toBeInTheDocument();
+  });
+});
+
 describe('Sidebar — no Sheets/Drive pages', () => {
   it('does not expose Sheets or Drive navigation in the Dashboard tier', () => {
     const onNavigate = vi.fn();
@@ -1224,7 +1262,7 @@ describe('Sidebar — per-project settings menu', () => {
 
     // Lifecycle links are always visible (no Settings expand needed).
     expect(screen.getByRole('button', { name: 'Board' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Epics' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Epics' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Skills' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Notes' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Threads' })).toBeInTheDocument();

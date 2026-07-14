@@ -142,7 +142,7 @@ describe('TodosScreen — TodoRow mobile parity', () => {
             linkedType: 'epic',
         });
         expect(html).toContain('todo-link-badge');
-        expect(html).toContain('Feature');
+        expect(html).toContain('Epic');
     });
 
     it('shows a Session badge for a linkedType of session', () => {

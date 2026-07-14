@@ -377,7 +377,7 @@ describe('EpicView', () => {
     fireEvent.click(screen.getByTestId('epic-manage-delete-e1' as any));
 
     await waitFor(() => expect(api.deleteEpic).toHaveBeenCalledWith('p1', 'e1'));
-    await waitFor(() => expect(screen.getByText('No features yet.')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('No epics yet.')).toBeInTheDocument());
   });
 
   it('adds a ticket to a phase on the epic detail screen', async () => {

@@ -3,7 +3,7 @@
  *
  * The mobile equivalent of the web `CardContextMenu`: a long-press opens an
  * action sheet whose top-level rows mirror the web menu (Status, Priority,
- * Assignee, Labels, Feature, Copy, Delete). Each row either carries `options`
+ * Assignee, Labels, Epic, Copy, Delete). Each row either carries `options`
  * (a second sheet of choices) or is a `leaf` that fires immediately.
  *
  * `buildCardActions` is pure — it maps a card + board metadata into a
@@ -88,7 +88,7 @@ export function buildCardActions(card: any, { columns = [], epics = [], agents =
         },
         {
             key: 'epic',
-            label: 'Feature',
+            label: 'Epic',
             title: 'Link to epic',
             options: [
                 {

@@ -21,7 +21,7 @@ const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum', 'logs']);
  * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
  */
 /**
- * Top-level lifecycle destinations (Board, Features, Notes, etc.)
+ * Top-level lifecycle destinations (Board, Epics, Notes, etc.)
  *
  * @param {{ githubRepo?: string, gitHost?: string, mode?: string, awsEnabled?: boolean }|null|undefined} project
  * @returns {MenuEntry[]}
@@ -37,7 +37,7 @@ export function projectLifecycleEntries(project: any) {
     // Calendar is intentionally NOT a per-project entry: it's a per-USER Google
     // surface that lives in the global Dashboard tier of the drawer. See card
     // 1287 / the Google Workspace spec.
-    entries.push({ key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' }, { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' }, { key: 'epics', label: 'Features', icon: 'Target', screen: 'Epics' }, { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' }, { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' }, { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' }, { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' }, { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' }, { key: 'wiki', label: 'Wiki', screen: 'Wiki', icon: 'BookOpen' });
+    entries.push({ key: 'deployments', label: 'Deployments', icon: 'Cloud', screen: 'Deployments' }, { key: 'board', label: 'Board', icon: 'LayoutGrid', screen: 'Kanban' }, { key: 'epics', label: 'Epics', icon: 'Target', screen: 'Epics' }, { key: 'notes', label: 'Notes', icon: 'StickyNote', screen: 'Notes' }, { key: 'threads', label: 'Threads', icon: 'List', screen: 'Threads' }, { key: 'support', label: 'Support', icon: 'LifeBuoy', screen: 'CustomerSupport' }, { key: 'replays', label: 'Replays', icon: 'MonitorPlay', screen: 'Replays' }, { key: 'security', label: 'Security', icon: 'ShieldAlert', screen: 'Security' }, { key: 'wiki', label: 'Wiki', screen: 'Wiki', icon: 'BookOpen' });
     if (isWorkflowProject(project)) {
         return entries.filter((entry) => !WORKFLOW_EXCLUDED_LIFECYCLE_KEYS.has(entry.key));
     }

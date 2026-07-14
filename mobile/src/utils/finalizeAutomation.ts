@@ -53,7 +53,7 @@ export const DESIGN_AUTOMATION_OPTION: Record<string, any> = {
 export const SCOPING_AUTOMATION_OPTION: Record<string, any> = {
   value: 'scoping',
   label: 'Scoping',
-  description: 'Plan work as Feature → Phase → Ticket with a live flowchart panel',
+  description: 'Plan work as Epic → Phase → Ticket with a live flowchart panel',
 };
 export const SKILL_BUILDER_AUTOMATION_OPTION: Record<string, any> = {
   value: 'skill-builder',
