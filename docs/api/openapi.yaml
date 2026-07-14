@@ -6921,6 +6921,43 @@ components:
             important:
               type: number
               nullable: true
+            messages:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    nullable: true
+                  threadId:
+                    type: string
+                    nullable: true
+                  from:
+                    type: string
+                    nullable: true
+                  subject:
+                    type: string
+                    nullable: true
+                  snippet:
+                    type: string
+                    nullable: true
+                  date:
+                    type: string
+                    nullable: true
+                  internalDate:
+                    type: string
+                    nullable: true
+                  unread:
+                    type: boolean
+                required:
+                  - id
+                  - threadId
+                  - from
+                  - subject
+                  - snippet
+                  - date
+                  - internalDate
+                  - unread
             error:
               type: string
               nullable: true
@@ -6929,6 +6966,7 @@ components:
             - unread
             - starred
             - important
+            - messages
             - error
       required:
         - configured

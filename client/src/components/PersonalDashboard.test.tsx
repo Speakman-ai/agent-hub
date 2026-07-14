@@ -66,7 +66,14 @@ function payload(overrides: Partial<MeDashboardWire> = {}): MeDashboardWire {
       email: null,
       reconnectRequired: false,
       calendar: { scopeGranted: false, date: null, timeZone: null, events: [], error: null },
-      mail: { scopeGranted: false, unread: null, starred: null, important: null, error: null },
+      mail: {
+        scopeGranted: false,
+        unread: null,
+        starred: null,
+        important: null,
+        messages: [],
+        error: null,
+      },
     },
     ...overrides,
   };
@@ -97,7 +104,7 @@ describe('PersonalDashboard', () => {
     expect(screen.queryByText(/all day/i)).not.toBeInTheDocument();
   });
 
-  it('renders live Calendar events and Gmail counts when connected with scopes', async () => {
+  it('renders live Calendar events and a recent-mail list when connected with scopes', async () => {
     vi.mocked(api.getMeDashboard).mockResolvedValue(
       payload({
         google: {
@@ -123,7 +130,35 @@ describe('PersonalDashboard', () => {
             ],
             error: null,
           },
-          mail: { scopeGranted: true, unread: 7, starred: 2, important: 3, error: null },
+          mail: {
+            scopeGranted: true,
+            unread: 7,
+            starred: 2,
+            important: 3,
+            messages: [
+              {
+                id: 'm1',
+                threadId: 'th1',
+                from: 'Jane Doe <jane@example.com>',
+                subject: 'Lunch tomorrow?',
+                snippet: 'Are you free…',
+                date: 'Tue, 07 Jul 2026 08:00:00 +0000',
+                internalDate: '1783065600000',
+                unread: true,
+              },
+              {
+                id: 'm2',
+                threadId: 'th2',
+                from: 'billing@stripe.com',
+                subject: 'Your receipt',
+                snippet: 'Thanks for your payment',
+                date: 'Mon, 06 Jul 2026 12:00:00 +0000',
+                internalDate: '1782993600000',
+                unread: false,
+              },
+            ],
+            error: null,
+          },
         },
       }),
     );
@@ -133,9 +168,14 @@ describe('PersonalDashboard', () => {
     );
 
     await waitFor(() => expect(screen.getByText('Standup')).toBeInTheDocument());
-    // Gmail summary shows the unread count (also mirrored in the pane header).
-    expect(screen.getAllByText('7').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Unread')).toBeInTheDocument();
+    // The Gmail pane now lists recent senders + subjects instead of counters.
+    expect(screen.getByText('Jane Doe')).toBeInTheDocument();
+    expect(screen.getByText('Lunch tomorrow?')).toBeInTheDocument();
+    expect(screen.getByText('billing@stripe.com')).toBeInTheDocument();
+    expect(screen.getByText('Your receipt')).toBeInTheDocument();
+    // The old counter labels are gone.
+    expect(screen.queryByText('Starred')).not.toBeInTheDocument();
+    expect(screen.queryByText('Important')).not.toBeInTheDocument();
     // No connect affordance once both surfaces are ready.
     expect(screen.queryByRole('button', { name: /connect google/i })).not.toBeInTheDocument();
   });
@@ -149,7 +189,14 @@ describe('PersonalDashboard', () => {
           email: 'me@example.com',
           reconnectRequired: false,
           calendar: { scopeGranted: false, date: null, timeZone: null, events: [], error: null },
-          mail: { scopeGranted: false, unread: null, starred: null, important: null, error: null },
+          mail: {
+            scopeGranted: false,
+            unread: null,
+            starred: null,
+            important: null,
+            messages: [],
+            error: null,
+          },
         },
       }),
     );

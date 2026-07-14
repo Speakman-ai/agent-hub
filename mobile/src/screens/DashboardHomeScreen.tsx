@@ -17,6 +17,7 @@ import { colors } from '../theme/colors';
 import HubIcon from '../components/HubIcon';
 import { dueLabel, dueState, todoDoDate } from '../utils/todos';
 import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils/dashboardPanes';
+import { mailSenderName, formatMailDate, type DashboardMailMessage } from '../utils/mail';
 
 /**
  * Personal Dashboard home — the mobile 1:1 peer of the web `PersonalDashboard`
@@ -222,31 +223,25 @@ export function CalendarRow({ ev }: { ev: any }) {
     );
 }
 
-export function MailSummary({
-    unread,
-    starred,
-    important,
-    onOpen,
-}: {
-    unread: number;
-    starred: number;
-    important: number;
-    onOpen: () => void;
-}) {
-    const stats = [
-        { label: 'Unread', value: unread },
-        { label: 'Starred', value: starred },
-        { label: 'Important', value: important },
-    ];
+export function MailRow({ msg, onOpen }: { msg: DashboardMailMessage; onOpen: () => void }) {
+    const sender = mailSenderName(msg.from);
+    const when = formatMailDate(msg.internalDate, msg.date);
     return (
-        <View style={styles.mailGrid}>
-            {stats.map((s) => (
-                <TouchableOpacity key={s.label} style={styles.mailStat} onPress={onOpen}>
-                    <Text style={styles.mailValue}>{s.value}</Text>
-                    <Text style={styles.mailLabel}>{s.label}</Text>
-                </TouchableOpacity>
-            ))}
-        </View>
+        <TouchableOpacity style={styles.mailRow} onPress={onOpen}>
+            <View style={styles.mailRowTop}>
+                {msg.unread ? <View style={styles.mailUnreadDot} /> : null}
+                <Text
+                    style={[styles.mailSender, msg.unread ? styles.mailSenderUnread : null]}
+                    numberOfLines={1}
+                >
+                    {sender}
+                </Text>
+                {when ? <Text style={styles.mailWhen}>{when}</Text> : null}
+            </View>
+            <Text style={styles.mailSubject} numberOfLines={1}>
+                {msg.subject || '(no subject)'}
+            </Text>
+        </TouchableOpacity>
     );
 }
 
@@ -430,13 +425,16 @@ export default function DashboardHomeScreen({ navigation }: any) {
                             />
                         ) : google?.mail?.error ? (
                             <EmptyState text={`Gmail unavailable: ${google.mail.error}`} />
+                        ) : (google?.mail?.messages?.length ?? 0) === 0 ? (
+                            <EmptyState text="No recent mail." />
                         ) : (
-                            <MailSummary
-                                unread={google?.mail?.unread ?? 0}
-                                starred={google?.mail?.starred ?? 0}
-                                important={google?.mail?.important ?? 0}
-                                onOpen={() => navigation.navigate('Gmail')}
-                            />
+                            google.mail.messages.map((msg: DashboardMailMessage, i: number) => (
+                                <MailRow
+                                    key={msg.id ?? i}
+                                    msg={msg}
+                                    onOpen={() => navigation.navigate('Gmail')}
+                                />
+                            ))
                         )}
                     </Pane>
                 </ScrollView>
@@ -685,27 +683,41 @@ const styles = StyleSheet.create({
         color: colors.blue400,
         fontSize: 12,
     },
-    mailGrid: {
-        flexDirection: 'row',
-        gap: 8,
-    },
-    mailStat: {
-        flex: 1,
-        alignItems: 'center',
-        gap: 4,
+    mailRow: {
         borderWidth: 1,
         borderColor: colors.gray800,
         backgroundColor: colors.gray950,
         borderRadius: 10,
-        paddingVertical: 16,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        gap: 2,
     },
-    mailValue: {
+    mailRowTop: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    mailUnreadDot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: colors.blue400,
+    },
+    mailSender: {
+        color: colors.gray300,
+        fontSize: 14,
+        flex: 1,
+    },
+    mailSenderUnread: {
         color: colors.gray100,
-        fontSize: 22,
         fontWeight: '600',
     },
-    mailLabel: {
+    mailWhen: {
         color: colors.gray500,
+        fontSize: 12,
+    },
+    mailSubject: {
+        color: colors.gray400,
         fontSize: 12,
     },
     errorText: {

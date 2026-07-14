@@ -14,11 +14,13 @@ import {
   type MeDashboardWire,
   type DashboardWorkCardWire,
   type DashboardCalendarEventWire,
+  type DashboardMailMessageWire,
   type DashboardCardPriority,
   type UserTodoWire,
 } from '../utils/api';
 import { calendarPaneState, mailPaneState, type GooglePaneState } from '../utils/dashboardPanes';
 import { dueLabel, dueState, todoDoDate } from '../utils/todos';
+import { mailSenderName, formatMailDate } from '../utils/mail';
 
 /**
  * Personal Dashboard home — the User Module's global (non-project) landing page
@@ -341,13 +343,14 @@ export default function PersonalDashboard({
               />
             ) : google?.mail.error ? (
               <EmptyState text={`Gmail unavailable: ${google.mail.error}`} />
+            ) : (google?.mail.messages.length ?? 0) === 0 ? (
+              <EmptyState text="No recent mail." />
             ) : (
-              <MailSummary
-                unread={google?.mail.unread ?? 0}
-                starred={google?.mail.starred ?? 0}
-                important={google?.mail.important ?? 0}
-                onOpen={() => onNavigate('gmail')}
-              />
+              <ul className="space-y-1.5">
+                {google!.mail.messages.map((msg, i) => (
+                  <MailRow key={msg.id ?? i} msg={msg} onOpen={() => onNavigate('gmail')} />
+                ))}
+              </ul>
             )}
           </Pane>
         </div>
@@ -422,35 +425,32 @@ function CalendarRow({ ev }: { ev: DashboardCalendarEventWire }) {
   );
 }
 
-function MailSummary({
-  unread,
-  starred,
-  important,
-  onOpen,
-}: {
-  unread: number;
-  starred: number;
-  important: number;
-  onOpen: () => void;
-}) {
-  const stats = [
-    { label: 'Unread', value: unread },
-    { label: 'Starred', value: starred },
-    { label: 'Important', value: important },
-  ];
+function MailRow({ msg, onOpen }: { msg: DashboardMailMessageWire; onOpen: () => void }) {
+  const sender = mailSenderName(msg.from);
+  const when = formatMailDate(msg.internalDate, msg.date);
   return (
-    <div className="grid grid-cols-3 gap-2">
-      {stats.map((s) => (
-        <button
-          key={s.label}
-          type="button"
-          onClick={onOpen}
-          className="flex flex-col items-center gap-1 rounded-lg border border-gray-800 bg-gray-900/60 hover:bg-gray-800/70 px-2 py-4 transition-colors"
-        >
-          <span className="text-2xl font-semibold text-gray-100 tabular-nums">{s.value}</span>
-          <span className="text-xs text-gray-500">{s.label}</span>
-        </button>
-      ))}
-    </div>
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="w-full text-left rounded-lg border border-gray-800 bg-gray-900/60 hover:bg-gray-800/70 px-3 py-2 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          {msg.unread && (
+            <span
+              className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-400"
+              aria-label="Unread"
+            />
+          )}
+          <span
+            className={`text-sm flex-1 truncate ${msg.unread ? 'font-semibold text-gray-100' : 'text-gray-300'}`}
+          >
+            {sender}
+          </span>
+          {when && <span className="text-xs text-gray-500 flex-shrink-0 tabular-nums">{when}</span>}
+        </div>
+        <div className="mt-0.5 text-xs text-gray-400 truncate">{msg.subject || '(no subject)'}</div>
+      </button>
+    </li>
   );
 }

@@ -86,6 +86,18 @@ const DashboardMail = z.object({
   unread: z.number().nullable(),
   starred: z.number().nullable(),
   important: z.number().nullable(),
+  messages: z.array(
+    z.object({
+      id: z.string().nullable(),
+      threadId: z.string().nullable(),
+      from: z.string().nullable(),
+      subject: z.string().nullable(),
+      snippet: z.string().nullable(),
+      date: z.string().nullable(),
+      internalDate: z.string().nullable(),
+      unread: z.boolean(),
+    }),
+  ),
   error: z.string().nullable(),
 });
 

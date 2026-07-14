@@ -94,7 +94,14 @@ const disconnectedGoogle: DashboardGoogle = {
   email: null,
   reconnectRequired: false,
   calendar: { scopeGranted: false, date: null, timeZone: null, events: [], error: null },
-  mail: { scopeGranted: false, unread: null, starred: null, important: null, error: null },
+  mail: {
+    scopeGranted: false,
+    unread: null,
+    starred: null,
+    important: null,
+    messages: [],
+    error: null,
+  },
 };
 
 function makeDeps(): RouteDeps {
@@ -259,13 +266,33 @@ describe('GET /api/me/dashboard', () => {
         ],
         error: null,
       },
-      mail: { scopeGranted: true, unread: 3, starred: 1, important: 2, error: null },
+      mail: {
+        scopeGranted: true,
+        unread: 3,
+        starred: 1,
+        important: 2,
+        messages: [
+          {
+            id: 'm1',
+            threadId: 'th1',
+            from: 'Jane Doe <jane@example.com>',
+            subject: 'Lunch tomorrow?',
+            snippet: 'Are you free…',
+            date: 'Tue, 07 Jul 2026 08:00:00 +0000',
+            internalDate: '1783065600000',
+            unread: true,
+          },
+        ],
+        error: null,
+      },
     };
     const reader = vi.fn<GoogleReader>().mockResolvedValue(connected);
     const res = await request(mount(userA, reader)).get('/api/me/dashboard').expect(200);
     expect(res.body.google.email).toBe('a@example.com');
     expect(res.body.google.calendar.events).toHaveLength(1);
     expect(res.body.google.mail.unread).toBe(3);
+    expect(res.body.google.mail.messages).toHaveLength(1);
+    expect(res.body.google.mail.messages[0].subject).toBe('Lunch tomorrow?');
   });
 
   it('401s when unauthenticated', async () => {

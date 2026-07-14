@@ -34,7 +34,7 @@ import {
     WorkCardRow,
     TodoRow,
     CalendarRow,
-    MailSummary,
+    MailRow,
     GoogleGate,
     EmptyState,
 } from './DashboardHomeScreen';
@@ -96,14 +96,27 @@ describe('DashboardHomeScreen — aggregation render (mobile parity)', () => {
         expect(html).toContain('Holiday');
     });
 
-    it('renders the Gmail summary counts', () => {
+    it('renders a recent-mail row with sender and subject', () => {
         const html = renderToStaticMarkup(
-            <MailSummary unread={7} starred={2} important={3} onOpen={noop} />,
+            <MailRow
+                msg={{
+                    id: 'm1',
+                    threadId: 'th1',
+                    from: 'Jane Doe <jane@example.com>',
+                    subject: 'Lunch tomorrow?',
+                    snippet: 'Are you free…',
+                    internalDate: '1783065600000',
+                    date: 'Tue, 07 Jul 2026 08:00:00 +0000',
+                    unread: true,
+                }}
+                onOpen={noop}
+            />,
         );
-        expect(html).toContain('Unread');
-        expect(html).toContain('7');
-        expect(html).toContain('Starred');
-        expect(html).toContain('Important');
+        expect(html).toContain('Jane Doe');
+        expect(html).toContain('Lunch tomorrow?');
+        // Counter labels no longer appear.
+        expect(html).not.toContain('Starred');
+        expect(html).not.toContain('Important');
     });
 });
 

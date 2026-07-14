@@ -134,8 +134,20 @@ export interface DashboardGoogleWire {
     unread: number | null;
     starred: number | null;
     important: number | null;
+    messages: DashboardMailMessageWire[];
     error: string | null;
   };
+}
+
+export interface DashboardMailMessageWire {
+  id: string | null;
+  threadId: string | null;
+  from: string | null;
+  subject: string | null;
+  snippet: string | null;
+  date: string | null;
+  internalDate: string | null;
+  unread: boolean;
 }
 
 export interface MeDashboardWire {

@@ -14,7 +14,7 @@
  * proxy): we resolve a fresh access token via `getActiveAccessToken` and call
  * Google in-process, returning only counts and lightly-shaped event summaries.
  */
-import { google } from 'googleapis';
+import { google, type gmail_v1 } from 'googleapis';
 import { getActiveAccessToken, getGoogleConnectionStatus } from './google-connections-store.js';
 import { hasCalendarReadScope, hasGmailReadScope } from './google-scopes.js';
 import type { AppConfig } from './types.js';
@@ -39,11 +39,27 @@ export interface DashboardCalendar {
   error: string | null;
 }
 
+/** A single recent Gmail message, trimmed to what a dashboard row needs. */
+export interface DashboardMailMessage {
+  id: string | null;
+  threadId: string | null;
+  from: string | null;
+  subject: string | null;
+  snippet: string | null;
+  /** The RFC 2822 `Date` header, as-sent (may be null). */
+  date: string | null;
+  /** Gmail's receive time in epoch-ms as a string — reliable sort key. */
+  internalDate: string | null;
+  unread: boolean;
+}
+
 export interface DashboardMail {
   scopeGranted: boolean;
   unread: number | null;
   starred: number | null;
   important: number | null;
+  /** The newest messages in the mailbox (up to `RECENT_MAIL_LIMIT`). */
+  messages: DashboardMailMessage[];
   error: string | null;
 }
 
@@ -82,7 +98,14 @@ function emptyCalendar(scopeGranted: boolean): DashboardCalendar {
 }
 
 function emptyMail(scopeGranted: boolean): DashboardMail {
-  return { scopeGranted, unread: null, starred: null, important: null, error: null };
+  return {
+    scopeGranted,
+    unread: null,
+    starred: null,
+    important: null,
+    messages: [],
+    error: null,
+  };
 }
 
 function notConnected(configured: boolean, reconnectRequired = false): DashboardGoogle {
@@ -247,6 +270,78 @@ async function readCalendar(
   }
 }
 
+/** How many recent messages the Gmail pane renders. */
+export const RECENT_MAIL_LIMIT = 6;
+
+function mailHeaderValue(
+  headers: gmail_v1.Schema$MessagePartHeader[] | undefined,
+  name: string,
+): string | null {
+  const target = name.toLowerCase();
+  const hit = headers?.find((h) => (h.name ?? '').toLowerCase() === target);
+  return hit?.value ?? null;
+}
+
+/** Trim a `metadata`-format Gmail message to a dashboard row. Pure — exported for tests. */
+export function shapeMailMessage(message: gmail_v1.Schema$Message): DashboardMailMessage {
+  const headers = message.payload?.headers;
+  const labels = message.labelIds ?? [];
+  return {
+    id: message.id ?? null,
+    threadId: message.threadId ?? null,
+    from: mailHeaderValue(headers, 'From'),
+    subject: mailHeaderValue(headers, 'Subject'),
+    snippet: message.snippet ?? null,
+    date: mailHeaderValue(headers, 'Date'),
+    internalDate: message.internalDate ?? null,
+    unread: labels.includes('UNREAD'),
+  };
+}
+
+/**
+ * The newest `RECENT_MAIL_LIMIT` received messages, shaped for the dashboard.
+ *
+ * Scoped to `INBOX` so the feed shows mail the user *received* — without the
+ * label filter Gmail returns everything but SPAM/TRASH, interleaving the user's
+ * own SENT and DRAFT items, which reads as a bug in a "recent mail" pane.
+ *
+ * Resilient on two levels: the whole read is wrapped so a `messages.list`
+ * failure returns `[]` (never wiping the label counts that share the mail
+ * block), and each per-message `get` is settled independently so one failed
+ * fetch drops just that row instead of the entire batch. `messages.list`
+ * returns newest-first; `allSettled` preserves that order among the survivors.
+ */
+export async function readRecentMessages(gmail: gmail_v1.Gmail): Promise<DashboardMailMessage[]> {
+  try {
+    const list = await gmail.users.messages.list({
+      userId: 'me',
+      maxResults: RECENT_MAIL_LIMIT,
+      labelIds: ['INBOX'],
+    });
+    const ids = (list.data.messages ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => Boolean(id));
+    const settled = await Promise.allSettled(
+      ids.map((id) =>
+        gmail.users.messages.get({
+          userId: 'me',
+          id,
+          format: 'metadata',
+          metadataHeaders: ['From', 'Subject', 'Date'],
+        }),
+      ),
+    );
+    // Keep the survivors in messages.list order; a rejected get drops just its row.
+    const rows: DashboardMailMessage[] = [];
+    for (const r of settled) {
+      if (r.status === 'fulfilled') rows.push(shapeMailMessage(r.value.data));
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
 async function readMail(accessToken: string): Promise<DashboardMail> {
   try {
     const auth = new google.auth.OAuth2();
@@ -254,16 +349,18 @@ async function readMail(accessToken: string): Promise<DashboardMail> {
     const gmail = google.gmail({ version: 'v1', auth });
     // System-label counts are a single cheap read each (no message bodies).
     // UNREAD = unread across the mailbox, STARRED / IMPORTANT = flagged buckets.
-    const [unread, starred, important] = await Promise.all([
+    const [unread, starred, important, messages] = await Promise.all([
       gmail.users.labels.get({ userId: 'me', id: 'UNREAD' }),
       gmail.users.labels.get({ userId: 'me', id: 'STARRED' }),
       gmail.users.labels.get({ userId: 'me', id: 'IMPORTANT' }),
+      readRecentMessages(gmail),
     ]);
     return {
       scopeGranted: true,
       unread: unread.data.messagesUnread ?? unread.data.messagesTotal ?? 0,
       starred: starred.data.messagesTotal ?? 0,
       important: important.data.messagesTotal ?? 0,
+      messages,
       error: null,
     };
   } catch (err) {
@@ -272,6 +369,7 @@ async function readMail(accessToken: string): Promise<DashboardMail> {
       unread: null,
       starred: null,
       important: null,
+      messages: [],
       error: shortError(err),
     };
   }
