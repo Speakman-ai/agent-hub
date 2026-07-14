@@ -33,7 +33,7 @@ import { spawn, execFile } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
-import { resolveEffectiveEngineAndModel } from '../effective-model.js';
+import { resolveEffectiveModel } from '../effective-model.js';
 import { mergeSkillCredentialSpawnEnv } from '../skill-credentials-spawn.js';
 import { mergeProjectSecretsSpawnEnv } from '../project-secrets-spawn.js';
 import { mergeProjectAwsSpawnEnv } from '../project-aws-spawn.js';
@@ -258,15 +258,19 @@ export async function runReviewerTurn(
 
     // No org-owner fallback — only the session's own owner.
     const roomOwnerId = session.owner_user_id || null;
-    const resolvedEngineModel = resolveEffectiveEngineAndModel(config, {
-      agentEngine: reviewer.engine,
+    // The Reviewer page owns this shared engine assignment. Do not apply a
+    // per-user agentEngineOverrides entry here: reviewer agents are hidden
+    // from the personal Agents settings UI, but users can still carry a stale
+    // override from older releases. Letting that hidden value win makes the
+    // visible Reviewer setting lie (for example, Codex is displayed while
+    // Finalize still spawns Claude). The model remains per-user by design.
+    const engine = normalizeSessionMultiEngine(reviewer.engine);
+    const model = resolveEffectiveModel(config, engine, {
       agentModel: reviewer.model as string | undefined,
       ownerUserId: roomOwnerId,
-      // Honor the reviewer-page per-user engine/model dropdowns for the session owner.
+      // Honor the Reviewer page's per-user model dropdown for the session owner.
       agentId: reviewer.id,
     });
-    const engine = normalizeSessionMultiEngine(resolvedEngineModel.engine);
-    const model = resolvedEngineModel.model;
 
     // Use session worktree by default; fall back to the runId-attached
     // worktree path (passed in by the orchestrator) when the session row

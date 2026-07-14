@@ -27,7 +27,7 @@ import {
   ALL_SUPPORTED_ENGINES,
   type SupportedEngine,
 } from '../engine-availability.js';
-import { resolveEffectiveEngineAndModel } from '../effective-model.js';
+import { resolveEffectiveModel } from '../effective-model.js';
 import { resolveSessionCliSpawnEnv } from '../per-user-cli-spawn.js';
 import { setSessionOwner } from '../session-ownership.js';
 import { isKnownHubUserId } from './author-user.js';
@@ -145,10 +145,11 @@ export async function maybeRunPrAutoReview(
     const taskId = uuidv4();
 
     // Resolve the engine/model the review runs on — always the Reviewer agent's
-    // assignment (plus per-user overrides when we know the acting Hub user).
-    // Matches Finalize's in-session reviewer: never substitute a host-global
-    // fallback engine (e.g. grok-cli) when codex-cli is what the Reviewer is
-    // configured to use.
+    // shared engine assignment plus the acting user's model pick. Reviewer
+    // agents are hidden from personal Agents settings, so an old per-user
+    // engine override can be stale and must not shadow the visible Reviewer
+    // setting. Matches Finalize's in-session reviewer: never substitute a
+    // host-global or legacy personal engine when Codex is configured here.
     const trigger = opts.trigger ?? 'head_update';
     const actingUserId = resolveAutoReviewActingUser(opts, pr);
     if (trigger === 'head_update' && !actingUserId) {
@@ -158,14 +159,12 @@ export async function maybeRunPrAutoReview(
       dispatched.delete(key);
       return;
     }
-    const resolved = resolveEffectiveEngineAndModel(deps.config, {
-      agentId: reviewer.id,
-      agentEngine: reviewer.engine || 'claude-code',
+    const engine = reviewer.engine || 'claude-code';
+    const model = resolveEffectiveModel(deps.config, engine, {
       agentModel: reviewer.model ?? null,
       ownerUserId: actingUserId,
+      agentId: reviewer.id,
     });
-    const engine = resolved.engine;
-    const model = resolved.model;
 
     // Resolve the SAME per-user spawn env handleChat will build for the owned
     // reviewer session — HOME pinned to the acting user's per-user tree and

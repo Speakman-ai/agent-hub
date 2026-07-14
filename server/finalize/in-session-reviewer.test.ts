@@ -350,12 +350,14 @@ describe('runReviewerTurn — happy path (approved)', () => {
     expect(messages[0]?.agentId).toBe('rev-1');
   });
 
-  it('honors the session owner reviewer engine override when spawning finalize review', async () => {
+  it('uses the configured reviewer engine instead of a stale per-user engine override', async () => {
     const ownerId = 'codex-review-owner';
     initOrgsDb();
     createUser({ id: ownerId, username: 'codex-review-owner', passwordHash: 'x' });
     replaceUserPreferencesJson(ownerId, {
-      agentEngineOverrides: { 'rev-1': { engine: 'codex-cli' } },
+      // Reviewer agents are no longer editable in personal Agents settings,
+      // but this legacy value can remain in preferences from older releases.
+      agentEngineOverrides: { 'rev-1': { engine: 'claude-code' } },
     });
 
     const assistantText = `Looks fine.
@@ -364,7 +366,12 @@ describe('runReviewerTurn — happy path (approved)', () => {
 {"verdict":"approved","threads":[]}
 </agenthub:review-verdict>`;
     const { spawnFn, capturedArgs } = makeCodexSpawnFake(assistantText);
-    const { deps } = makeDeps(spawnFn);
+    const { deps } = makeDeps(spawnFn, {
+      getEnrichedAgent: vi.fn().mockReturnValue({
+        ...makeReviewer(),
+        engine: 'codex-cli',
+      }),
+    });
     const getSession = (
       deps as unknown as { stmts: { getSession: { get: ReturnType<typeof vi.fn> } } }
     ).stmts.getSession.get;

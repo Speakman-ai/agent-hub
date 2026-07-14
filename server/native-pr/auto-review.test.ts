@@ -20,6 +20,8 @@ import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import type { Project, RouteDeps } from '../types.js';
 import * as engineAvailability from '../engine-availability.js';
+import { createUser } from '../users-store.js';
+import { replaceUserPreferencesJson } from '../user-preferences-store.js';
 
 let maybeRunPrAutoReview: typeof import('./auto-review.js').maybeRunPrAutoReview;
 let __clearAutoReviewDispatches: typeof import('./auto-review.js').__clearAutoReviewDispatches;
@@ -386,6 +388,36 @@ describe('maybeRunPrAutoReview', () => {
       'codex-cli',
       config,
       expect.objectContaining({ userId: 'ryan' }),
+    );
+  });
+
+  it('uses the reviewer assignment instead of a stale personal reviewer engine', async () => {
+    const { project, branch } = await hostedPrProject();
+    const reviewer = project.agents.find((a) => a.role === 'reviewer')!;
+    reviewer.engine = 'codex-cli';
+
+    const ownerId = `legacy-reviewer-owner-${uuidv4().slice(0, 8)}`;
+    createUser({ id: ownerId, username: ownerId, passwordHash: 'x' });
+    replaceUserPreferencesJson(ownerId, {
+      agentEngineOverrides: { [reviewer.id]: { engine: 'claude-code' } },
+    });
+
+    const handleChat = vi.fn();
+    await maybeRunPrAutoReview(
+      project,
+      { number: 1, head_branch: branch, status: 'open', author: ownerId },
+      { stmts, config, broadcast: vi.fn(), handleChat: handleChat as RouteDeps['handleChat'] },
+      { force: true, trigger: 'pr_create' },
+    );
+
+    expect(handleChat).toHaveBeenCalledOnce();
+    const msg = handleChat.mock.calls[0]![1] as { sessionId: string };
+    const session = stmts.getSession.get(msg.sessionId) as { engine: string };
+    expect(session.engine).toBe('codex-cli');
+    expect(probeSpy).toHaveBeenCalledWith(
+      'codex-cli',
+      config,
+      expect.objectContaining({ userId: ownerId }),
     );
   });
 
