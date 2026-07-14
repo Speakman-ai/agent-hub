@@ -4,6 +4,7 @@ import EpicScopeHeader from './EpicScopeHeader';
 import PhaseFlowchartView from './PhaseFlowchartView';
 import EpicManageListView from './EpicManageListView';
 import EpicSpecView from './EpicSpecView';
+import UnassignedTicketsView from './UnassignedTicketsView';
 import { AddPhaseForm } from './ScopeForms';
 import { specProgress } from '../../utils/epicScopeStats';
 
@@ -66,6 +67,8 @@ export default function EpicScopeWorkbench({
   onDecideForMe,
   specSavingId,
   onOpenCard,
+  onAssignTicket,
+  assigningTicketId,
   modelConfig,
   variant = 'page',
   defaultTab = 'flowchart',
@@ -203,6 +206,14 @@ export default function EpicScopeWorkbench({
               are locked.
             </p>
           )}
+          <UnassignedTicketsView
+            tickets={tickets}
+            phases={epicPhases}
+            columns={columns}
+            assigningTicketId={assigningTicketId}
+            onAssignTicket={onAssignTicket}
+            onOpenCard={onOpenCard}
+          />
           {phaseSection}
         </div>
       </div>
@@ -266,6 +277,16 @@ export default function EpicScopeWorkbench({
         </p>
       )}
 
+      {tab === 'flowchart' && epic && (
+        <UnassignedTicketsView
+          tickets={tickets}
+          phases={epicPhases}
+          columns={columns}
+          assigningTicketId={assigningTicketId}
+          onAssignTicket={onAssignTicket}
+          onOpenCard={onOpenCard}
+        />
+      )}
       {tab === 'flowchart' && epic && phaseSection}
       {tab === 'flowchart' && !epic && (
         <p className="text-sm text-gray-500 py-6 text-center">

@@ -105,6 +105,7 @@ export default function EpicView({
   const [specSavingId, setSpecSavingId] = useState<any>(null);
   const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
   const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
+  const [assigningTicketId, setAssigningTicketId] = useState<string | null>(null);
 
   const epic = epicId ? epics.find((e: any) => e.id === epicId) : null;
 
@@ -436,6 +437,21 @@ export default function EpicView({
       console.error('Failed to create ticket:', err);
     } finally {
       setAddingTicketPhaseId(null);
+    }
+  };
+
+  const handleAssignTicketToPhase = async (ticketId: string, phaseId: string) => {
+    if (!phaseId || assigningTicketId) return;
+    setAssigningTicketId(ticketId);
+    setPhaseRunError(null);
+    try {
+      await api.updateCard(projectId, ticketId, { phaseId });
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to assign ticket to phase:', err);
+      setPhaseRunError(err?.message || 'Failed to assign ticket to phase');
+    } finally {
+      setAssigningTicketId(null);
     }
   };
 
@@ -1043,6 +1059,8 @@ export default function EpicView({
                 onReorderPhases={handleReorderPhases}
                 onAutoSortPhases={handleAutoSortPhases}
                 phaseStoppingId={phaseStoppingId}
+                assigningTicketId={assigningTicketId}
+                onAssignTicket={handleAssignTicketToPhase}
                 onOpenEpic={onOpenEpic}
                 onAddSpecItem={handleAddSpecItem}
                 onUpdateSpecItem={handleUpdateSpecItem}

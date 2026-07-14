@@ -10,6 +10,7 @@ import { api } from '../utils/api';
     createEpic: vi.fn(),
     scopeEpic: vi.fn(),
     createCard: vi.fn(),
+    updateCard: vi.fn(),
     updateEpic: vi.fn(),
     deleteEpic: vi.fn(),
     createPhase: vi.fn(),
@@ -95,6 +96,85 @@ describe('EpicView', () => {
 
     await waitFor(() => expect(api.scopeEpic).toHaveBeenCalledWith('p1', 'e1'));
     await waitFor(() => expect(onNavigateToSession).toHaveBeenCalledWith('a-1', 's-1'));
+  });
+
+  it('shows unassigned epic tickets and assigns them to a phase', async () => {
+    const unassignedBoard = {
+      ...board,
+      cards: [
+        ...board.cards,
+        {
+          id: 'c2',
+          title: 'Unassigned ticket',
+          column_id: 'col-backlog',
+          epic_id: 'e1',
+          phase_id: null,
+          position: 1,
+        },
+      ],
+    };
+    (api.getBoard as any).mockResolvedValue(unassignedBoard);
+    (api.updateCard as any).mockResolvedValue({ ...unassignedBoard.cards[1], phase_id: 'ph1' });
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId('unassigned-tickets')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('assign-phase-c2'), {
+      target: { value: 'ph1' },
+    });
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'c2', { phaseId: 'ph1' }),
+    );
+  });
+
+  it('shows an error when assigning an unassigned ticket fails', async () => {
+    const unassignedBoard = {
+      ...board,
+      cards: [
+        ...board.cards,
+        {
+          id: 'c2',
+          title: 'Unassigned ticket',
+          column_id: 'col-backlog',
+          epic_id: 'e1',
+          phase_id: null,
+          position: 1,
+        },
+      ],
+    };
+    (api.getBoard as any).mockResolvedValue(unassignedBoard);
+    (api.updateCard as any).mockRejectedValue(new Error('Phase assignment failed'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(
+      <EpicView
+        projectId="p1"
+        epicId="e1"
+        project={{ name: 'P' }}
+        refreshKey={0}
+        onBackToBoard={vi.fn()}
+        onOpenEpicsList={vi.fn()}
+        onOpenEpic={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(await screen.findByTestId('assign-phase-c2'), {
+      target: { value: 'ph1' },
+    });
+
+    await waitFor(() => expect(screen.getByText('Phase assignment failed')).toBeInTheDocument());
+    consoleError.mockRestore();
   });
 
   it('creates an epic and opens a scoping session for it via Create & scope', async () => {

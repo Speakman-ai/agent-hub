@@ -11,6 +11,7 @@ import { api } from '../utils/api';
     stopPhase: vi.fn().mockResolvedValue({}),
     runAutonomous: vi.fn().mockResolvedValue({}),
     createCard: vi.fn(),
+    updateCard: vi.fn(),
     createPhase: vi.fn(),
     createSpecItem: vi.fn(),
     updateSpecItem: vi.fn(),
@@ -97,6 +98,73 @@ describe('SessionScopingModePane', () => {
 
     await waitFor(() => expect(api.stopPhase).toHaveBeenCalledWith('p1', 'ph1'));
     expect(api.runAutonomous).not.toHaveBeenCalled();
+  });
+
+  it('assigns an unphased ticket to a phase from the compact workbench', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...boardWith(),
+      cards: [
+        {
+          id: 'ticket-1',
+          title: 'Unphased ticket',
+          column_id: 'col-todo',
+          epic_id: 'e1',
+          phase_id: null,
+        },
+      ],
+    });
+    (api.updateCard as any).mockResolvedValue({});
+
+    render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        onLinkEpic={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId('unassigned-tickets')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('assign-phase-ticket-1'), {
+      target: { value: 'ph1' },
+    });
+
+    await waitFor(() =>
+      expect(api.updateCard).toHaveBeenCalledWith('p1', 'ticket-1', { phaseId: 'ph1' }),
+    );
+  });
+
+  it('shows an error when compact phase assignment fails', async () => {
+    (api.getBoard as any).mockResolvedValue({
+      ...boardWith(),
+      cards: [
+        {
+          id: 'ticket-1',
+          title: 'Unphased ticket',
+          column_id: 'col-todo',
+          epic_id: 'e1',
+          phase_id: null,
+        },
+      ],
+    });
+    (api.updateCard as any).mockRejectedValue(new Error('Compact assignment failed'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(
+      <SessionScopingModePane
+        sessionId="s1"
+        projectId="p1"
+        linkedEpicId="e1"
+        onLinkEpic={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(await screen.findByTestId('assign-phase-ticket-1'), {
+      target: { value: 'ph1' },
+    });
+
+    await waitFor(() => expect(screen.getByText('Compact assignment failed')).toBeInTheDocument());
+    consoleError.mockRestore();
   });
 
   it('auto-selects a newly created epic when nothing is linked yet', async () => {

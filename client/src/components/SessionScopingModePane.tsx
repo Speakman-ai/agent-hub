@@ -51,6 +51,7 @@ export default function SessionScopingModePane({
   const [addingTicketPhaseId, setAddingTicketPhaseId] = useState<string | null>(null);
   const [specSavingId, setSpecSavingId] = useState<any>(null);
   const [phaseStoppingId, setPhaseStoppingId] = useState<string | null>(null);
+  const [assigningTicketId, setAssigningTicketId] = useState<string | null>(null);
   const [phaseRunError, setPhaseRunError] = useState<string | null>(null);
   const [modelConfig, setModelConfig] = useState<any>(null);
 
@@ -299,6 +300,21 @@ export default function SessionScopingModePane({
     }
   };
 
+  const handleAssignTicketToPhase = async (ticketId: string, phaseId: string) => {
+    if (!projectId || !phaseId || assigningTicketId) return;
+    setAssigningTicketId(ticketId);
+    setPhaseRunError(null);
+    try {
+      await api.updateCard(projectId, ticketId, { phaseId });
+      await fetchBoard();
+    } catch (err: any) {
+      console.error('Failed to assign ticket to phase:', err);
+      setPhaseRunError(err?.message || 'Failed to assign ticket to phase');
+    } finally {
+      setAssigningTicketId(null);
+    }
+  };
+
   const handleAddSpecItem = async ({ tag, title }: { tag: string; title: string }) => {
     if (!projectId || !linkedEpicId || specSavingId) return;
     setSpecSavingId('new');
@@ -402,6 +418,8 @@ export default function SessionScopingModePane({
             onRunPhase={handleRunPhase}
             onStopPhase={handleStopPhase}
             phaseStoppingId={phaseStoppingId}
+            assigningTicketId={assigningTicketId}
+            onAssignTicket={handleAssignTicketToPhase}
             onOpenEpic={onLinkEpic}
             onAddSpecItem={handleAddSpecItem}
             onUpdateSpecItem={handleUpdateSpecItem}
