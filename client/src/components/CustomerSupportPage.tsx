@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   LifeBuoy,
   AlertCircle,
@@ -142,6 +142,14 @@ const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all').map((f: an
   value: f.key,
   label: f.label,
 }));
+
+const INVESTIGATION_ENGINE_LABELS: Record<string, string> = {
+  'claude-code': 'Claude',
+  'cursor-agent': 'Cursor',
+  'codex-cli': 'Codex',
+  'grok-cli': 'Grok',
+};
+const INVESTIGATION_ENGINES = Object.keys(INVESTIGATION_ENGINE_LABELS);
 
 function sortTickets(list: any) {
   return [...list].sort((a: any, b: any) => {
@@ -752,6 +760,103 @@ function SupportTicketCard({
   );
 }
 
+function TicketInvestigationControl({ projectId, ticket, modelConfig, onUpdated, onNotify }: any) {
+  const engineOptions = useMemo(
+    () =>
+      INVESTIGATION_ENGINES.filter(
+        (engine) => (modelConfig?.engineValidModels?.[engine]?.length ?? 0) > 0,
+      ),
+    [modelConfig],
+  );
+  const [engine, setEngine] = useState(engineOptions[0] || '');
+  const [model, setModel] = useState('__default__');
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    if (!engineOptions.includes(engine)) setEngine(engineOptions[0] || '');
+  }, [engine, engineOptions]);
+
+  useEffect(() => {
+    setModel('__default__');
+  }, [engine]);
+
+  if (engineOptions.length === 0) return null;
+
+  const models = modelConfig.engineValidModels[engine] || [];
+  const defaultModel = modelConfig.engineDefaultModels?.[engine] || models[0] || '';
+
+  const run = async () => {
+    if (!engine || running) return;
+    setRunning(true);
+    try {
+      const response = await api.runSupportTicketInvestigation(projectId, ticket.id, {
+        engine,
+        model: model === '__default__' ? null : model,
+      });
+      if (response?.ticket) onUpdated?.(response.ticket);
+      onNotify?.(`AI investigation queued with ${INVESTIGATION_ENGINE_LABELS[engine]}`, 'success');
+    } catch (err: any) {
+      onNotify?.(err?.message || 'Could not start AI investigation', 'error');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-md border border-gray-800 bg-gray-950/50 px-3 py-2.5"
+      data-testid="ticket-investigation-control"
+    >
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-2">
+        Run AI investigation
+      </div>
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <label className="flex items-center gap-2 text-xs text-gray-500">
+          <span>Engine</span>
+          <select
+            value={engine}
+            onChange={(e: any) => setEngine(e.target.value)}
+            disabled={running}
+            data-testid="ticket-investigation-engine"
+            className="bg-gray-900 border border-gray-700 text-gray-200 rounded px-2 py-1 max-w-[150px] text-xs disabled:opacity-50"
+          >
+            {engineOptions.map((id) => (
+              <option key={id} value={id}>
+                {INVESTIGATION_ENGINE_LABELS[id]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs text-gray-500">
+          <span>Model</span>
+          <select
+            value={model}
+            onChange={(e: any) => setModel(e.target.value)}
+            disabled={running}
+            data-testid="ticket-investigation-model"
+            className="bg-gray-900 border border-gray-700 text-gray-200 rounded px-2 py-1 max-w-[210px] text-xs disabled:opacity-50"
+          >
+            <option value="__default__">Default ({defaultModel})</option>
+            {models.map((id: string) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={run}
+          disabled={running}
+          className="inline-flex items-center justify-center rounded border border-violet-500/40 px-2.5 py-1 text-xs text-violet-200 hover:bg-violet-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {running ? 'Queueing…' : 'Run'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SupportTicketDetailModal({
   ticket: liveTicket,
   projectId,
@@ -761,6 +866,7 @@ function SupportTicketDetailModal({
   onConverted,
   onUpdated,
   onNotify,
+  modelConfig,
 }: any) {
   // Only the *fetched enrichment* is held locally — the complete
   // ai_investigation the list rows truncate to ai_summary. Every other field is
@@ -934,6 +1040,14 @@ function SupportTicketDetailModal({
               </div>
             ) : null}
 
+            <TicketInvestigationControl
+              projectId={projectId}
+              ticket={ticket}
+              modelConfig={modelConfig}
+              onUpdated={onUpdated}
+              onNotify={onNotify}
+            />
+
             {screenshotUrl ? (
               <div data-testid="detail-screenshot">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
@@ -1080,7 +1194,7 @@ function SupportTicketDetailModal({
 }
 
 function CustomerSupportPageInner(
-  { projectId, agents = [], onNotify, initialTicketId }: any,
+  { projectId, agents = [], modelConfig = null, onNotify, initialTicketId }: any,
   ref: any,
 ) {
   const [tickets, setTickets] = useState<any[]>([]);
@@ -1345,6 +1459,7 @@ function CustomerSupportPageInner(
           onConverted={removeTicket}
           onUpdated={upsertTicket}
           onNotify={onNotify}
+          modelConfig={modelConfig}
         />
       ) : null}
     </div>

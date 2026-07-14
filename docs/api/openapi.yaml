@@ -10713,6 +10713,29 @@ components:
         - created_at
         - updated_at
       description: A single support ticket row.
+    RunSupportTicketInvestigationResponse:
+      type: object
+      properties:
+        queued:
+          type: boolean
+          enum:
+            - true
+        engine:
+          type: string
+          enum:
+            - claude-code
+            - cursor-agent
+            - codex-cli
+            - grok-cli
+        model:
+          type: string
+        ticket:
+          $ref: "#/components/schemas/SupportTicket"
+      required:
+        - queued
+        - engine
+        - model
+        - ticket
     ConvertSupportTicketResponse:
       type: object
       properties:
@@ -33759,6 +33782,67 @@ paths:
                   - unreadCount
         "404":
           description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+  /api/projects/{projectId}/support-tickets/{id}/investigate:
+    post:
+      tags:
+        - Support
+      summary: Queue a support ticket AI investigation
+      description: Queues a one-shot investigation using the selected authenticated engine and model. The updated ticket is broadcast over WebSocket when the run completes.
+      parameters:
+        - schema:
+            type: string
+            description: Project slug or id.
+          required: true
+          description: Project slug or id.
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Support ticket id.
+          required: true
+          description: Support ticket id.
+          name: id
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                engine:
+                  type: string
+                  enum:
+                    - claude-code
+                    - cursor-agent
+                    - codex-cli
+                    - grok-cli
+                model:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  description: Model id for the selected engine. Omit or send null to use that engine’s configured default.
+              required:
+                - engine
+              description: Engine and optional model for a queued AI investigation.
+      responses:
+        "202":
+          description: Investigation queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSupportTicketInvestigationResponse"
+        "400":
+          description: Invalid engine/model or unavailable engine credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SupportTicketErrorResponse"
+        "404":
+          description: Project or ticket not found.
           content:
             application/json:
               schema:

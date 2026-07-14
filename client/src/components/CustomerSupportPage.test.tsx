@@ -8,6 +8,7 @@ import { api } from '../utils/api';
   api: {
     getSupportTickets: vi.fn(),
     getSupportTicket: vi.fn(),
+    runSupportTicketInvestigation: vi.fn(),
     retryReleaseNotification: vi.fn(),
     convertSupportTicketToCard: vi.fn(),
     assignCard: vi.fn(),
@@ -361,6 +362,44 @@ describe('CustomerSupportPage — ticket detail view', () => {
     expect(link!.getAttribute('href')).toBe('https://example.com');
     expect(within(modal).getByRole('heading', { name: 'Root cause' })).toBeInTheDocument();
     expect(within(modal).getByText('handler').tagName).toBe('CODE');
+  });
+
+  it('queues a ticket investigation with the selected engine and model', async () => {
+    const item = ticket({ id: 'model-pick', subject: 'Choose a model' });
+    (api.getSupportTickets as any).mockResolvedValue([item]);
+    (api.getSupportTicket as any).mockResolvedValue(item);
+    (api.runSupportTicketInvestigation as any).mockResolvedValue({ queued: true, ticket: item });
+
+    render(
+      <CustomerSupportPage
+        projectId="proj-1"
+        modelConfig={{
+          engineValidModels: {
+            'claude-code': ['claude-opus-4-8', 'claude-sonnet-4-6'],
+            'codex-cli': ['gpt-5.5'],
+          },
+          engineDefaultModels: { 'claude-code': 'claude-opus-4-8', 'codex-cli': 'gpt-5.5' },
+        }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Choose a model')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /open support ticket/i }) as any);
+    const modal = await screen.findByTestId('support-ticket-detail-modal');
+
+    fireEvent.change(within(modal).getByTestId('ticket-investigation-engine'), {
+      target: { value: 'codex-cli' },
+    });
+    fireEvent.change(within(modal).getByTestId('ticket-investigation-model'), {
+      target: { value: 'gpt-5.5' },
+    });
+    fireEvent.click(within(modal).getByRole('button', { name: 'Run' }) as any);
+
+    await waitFor(() =>
+      expect(api.runSupportTicketInvestigation).toHaveBeenCalledWith('proj-1', 'model-pick', {
+        engine: 'codex-cli',
+        model: 'gpt-5.5',
+      }),
+    );
   });
 
   it('uses a non-interactive card container with a dedicated open button, not nested interactive controls', async () => {

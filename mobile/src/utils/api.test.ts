@@ -44,6 +44,16 @@ describe('api threads helpers — URL + method parity with web client', () => {
         expect(url).toBe('https://example.test/api/projects/agent-hub/threads');
         expect(init?.method).toBeUndefined();
     });
+    it('runSupportTicketInvestigation sends the selected engine and model', async () => {
+        await api.runSupportTicketInvestigation('agent-hub', 'tkt-model', {
+            engine: 'codex-cli',
+            model: 'gpt-5.5',
+        });
+        const [url, init] = lastCall();
+        expect(url).toBe('https://example.test/api/projects/agent-hub/support-tickets/tkt-model/investigate');
+        expect(init?.method).toBe('POST');
+        expect(JSON.parse(init.body)).toEqual({ engine: 'codex-cli', model: 'gpt-5.5' });
+    });
     it('getThreads(projectId, type) appends the type query', async () => {
         await api.getThreads('agent-hub', 'cron');
         const [url] = lastCall();

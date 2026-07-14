@@ -29,12 +29,22 @@ import path from 'path';
 import type { AppConfig, BroadcastFn, SupportTicketRow } from './types.js';
 import { resolveOneShotEngine } from './engine-resolver.js';
 import { runOneShotPrompt } from './one-shot-spawn.js';
+import type { SupportedEngine } from './engine-availability.js';
+import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import {
   getSupportTicket,
   recordSupportTicketInvestigation,
   countUnreadSupportTickets,
 } from './support-tickets-store.js';
 import configDefault, { buildSpawnEnv } from './config.js';
+
+/** Engines that can be selected for an operator-triggered investigation. */
+export const SUPPORT_INVESTIGATION_ENGINES: readonly SupportedEngine[] = [
+  'claude-code',
+  'cursor-agent',
+  'codex-cli',
+  'grok-cli',
+] as const;
 
 /** Cap on how much replay text we splice into the prompt. */
 const MAX_REPLAY_CONTEXT_CHARS = 4000;
@@ -258,11 +268,33 @@ export type InvestigationRunner = (input: {
   prompt: string;
   cfg: AppConfig;
   cwd: string;
+  preferredEngine?: SupportedEngine | null;
+  preferredModel?: string | null;
+  userId?: string | null;
 }) => Promise<string>;
 
-const defaultRunner: InvestigationRunner = async ({ prompt, cfg, cwd }) => {
-  const resolved = await resolveOneShotEngine(cfg, { preferred: 'claude-code', userId: null });
-  const env = buildSpawnEnv(cfg, { userId: null, engine: resolved.engine });
+const defaultRunner: InvestigationRunner = async ({
+  prompt,
+  cfg,
+  cwd,
+  preferredEngine,
+  preferredModel,
+  userId,
+}) => {
+  const resolved = await resolveOneShotEngine(cfg, {
+    preferred: preferredEngine ?? 'claude-code',
+    preferredModel,
+    userId: userId ?? null,
+    fallbackChain: preferredEngine ? [preferredEngine] : undefined,
+  });
+  const env = userId
+    ? resolveSessionCliSpawnEnv({
+        cfg,
+        ownerId: userId,
+        credsOwnerId: userId,
+        engine: resolved.engine,
+      })
+    : buildSpawnEnv(cfg, { userId: null, engine: resolved.engine });
   return runOneShotPrompt(
     {
       engine: resolved.engine,
@@ -281,6 +313,9 @@ export interface InvestigateDeps {
   broadcast?: BroadcastFn;
   serverDir?: string;
   cwd?: string;
+  preferredEngine?: SupportedEngine | null;
+  preferredModel?: string | null;
+  userId?: string | null;
   /** Override the model runner — tests pass a stub to avoid spawning a CLI. */
   runner?: InvestigationRunner;
 }
@@ -306,7 +341,14 @@ export async function investigateSupportTicket(
   const replayContext = resolveReplayContext(ticket.replay_ref, serverDir);
   const prompt = buildSupportTicketInvestigationPrompt(ticket, { replayContext });
 
-  const raw = await runner({ prompt, cfg, cwd });
+  const raw = await runner({
+    prompt,
+    cfg,
+    cwd,
+    preferredEngine: deps.preferredEngine,
+    preferredModel: deps.preferredModel,
+    userId: deps.userId,
+  });
   const { summary, details } = parseInvestigationResponse(raw);
   if (summary === null && details === null) {
     // Model produced nothing usable — stamp nothing rather than wiping fields.

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useContext, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useContext, useRef } from 'react';
 import { View, Text, TouchableOpacity, FlatList, ScrollView, StyleSheet, ActivityIndicator, Image, Linking, Alert, Modal, TextInput, Switch, } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../context/AppContext';
@@ -48,6 +48,13 @@ const TYPE_FILTERS = [
     { key: 'other', label: 'Other' },
 ];
 const TYPE_OPTIONS = TYPE_FILTERS.filter((f: any) => f.key !== 'all');
+const INVESTIGATION_ENGINE_LABELS: Record<string, string> = {
+    'claude-code': 'Claude',
+    'cursor-agent': 'Cursor',
+    'codex-cli': 'Codex',
+    'grok-cli': 'Grok',
+};
+const INVESTIGATION_ENGINES = Object.keys(INVESTIGATION_ENGINE_LABELS);
 function reporterText(ticket: any) {
     const parts = [ticket.reporter, ticket.reporter_email].filter(Boolean);
     return parts.length ? `Reported by ${parts.join(' · ')}` : '';
@@ -228,8 +235,84 @@ function TicketCard({ item, projectId, onOpenReplay, onDeleted, onPress, onSetSt
         </View>) : null}
     </TouchableOpacity>);
 }
+
+function TicketInvestigationControl({ projectId, ticket, modelConfig, onUpdated }: any) {
+    const engineOptions = useMemo(() => INVESTIGATION_ENGINES.filter((engine) => (modelConfig?.engineValidModels?.[engine]?.length ?? 0) > 0), [modelConfig]);
+    const [engine, setEngine] = useState(engineOptions[0] || '');
+    const [model, setModel] = useState('__default__');
+    const [picker, setPicker] = useState<'engine' | 'model' | null>(null);
+    const [running, setRunning] = useState(false);
+    useEffect(() => {
+        if (!engineOptions.includes(engine))
+            setEngine(engineOptions[0] || '');
+    }, [engine, engineOptions]);
+    useEffect(() => {
+        setModel('__default__');
+    }, [engine]);
+    if (engineOptions.length === 0)
+        return null;
+    const models = modelConfig.engineValidModels[engine] || [];
+    const defaultModel = modelConfig.engineDefaultModels?.[engine] || models[0] || '';
+    const choices = picker === 'engine' ? engineOptions : ['__default__', ...models];
+    const choiceLabel = (value: string) => value === '__default__' ? `Default (${defaultModel})` : (INVESTIGATION_ENGINE_LABELS[value] || value);
+    const select = (value: string) => {
+        if (picker === 'engine')
+            setEngine(value);
+        else
+            setModel(value);
+        setPicker(null);
+    };
+    const run = async () => {
+        if (running || !engine)
+            return;
+        setRunning(true);
+        try {
+            const response = await api.runSupportTicketInvestigation(projectId, ticket.id, {
+                engine,
+                model: model === '__default__' ? null : model,
+            });
+            if (response?.ticket)
+                onUpdated?.(response.ticket);
+            Alert.alert('Customer Support', `AI investigation queued with ${INVESTIGATION_ENGINE_LABELS[engine]}`);
+        }
+        catch (err: any) {
+            Alert.alert('Investigation failed', err?.message || 'Could not start AI investigation');
+        }
+        finally {
+            setRunning(false);
+        }
+    };
+    return (<View style={styles.investigationBox} testID="ticket-investigation-control">
+      <Text style={styles.investigationLabel}>Run AI investigation</Text>
+      <View style={styles.investigationRow}>
+        <TouchableOpacity style={styles.investigationPicker} onPress={() => setPicker('engine')} disabled={running} testID="ticket-investigation-engine">
+          <Text style={styles.investigationPickerText}>{INVESTIGATION_ENGINE_LABELS[engine]}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.investigationPicker} onPress={() => setPicker('model')} disabled={running} testID="ticket-investigation-model">
+          <Text style={styles.investigationPickerText}>{choiceLabel(model)}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.investigateButton, running && styles.convertButtonDisabled]} onPress={run} disabled={running}>
+          <Text style={styles.investigateButtonText}>{running ? 'Queueing…' : 'Run'}</Text>
+        </TouchableOpacity>
+      </View>
+      <Modal visible={picker !== null} transparent animationType="fade" onRequestClose={() => setPicker(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{picker === 'engine' ? 'Choose engine' : 'Choose model'}</Text>
+            {choices.map((value: string) => (<TouchableOpacity key={value} onPress={() => select(value)} style={styles.reclassifyOption}>
+              <Text style={styles.statusActionText}>{choiceLabel(value)}</Text>
+            </TouchableOpacity>))}
+            <TouchableOpacity onPress={() => setPicker(null)} style={styles.modalCancel}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </View>);
+}
+
 export default function CustomerSupportScreen({ route }: any) {
-    const { projects, lastSupportTicketEvent, refreshSupportUnreadCount, setSupportUnreadCount, } = useApp();
+    const { projects, modelConfig, lastSupportTicketEvent, refreshSupportUnreadCount, setSupportUnreadCount, } = useApp();
     const { openSidebar } = useContext(SidebarContext);
     const projectId = route?.params?.projectId || projects?.[0]?.id;
     const project = projects?.find((p: any) => p.id === projectId);
@@ -465,6 +548,7 @@ export default function CustomerSupportScreen({ route }: any) {
               <Text style={styles.aiLabel}>AI investigation</Text>
               <Text style={styles.aiText}>{selectedTicket.ai_summary}</Text>
             </View>) : null}
+          <TicketInvestigationControl projectId={projectId} ticket={selectedTicket} modelConfig={modelConfig} onUpdated={upsertOrDrop}/>
           <View style={styles.notificationSection}>
             <Text style={styles.notificationTitle}>Notifications</Text>
             {releaseNotifications.length === 0 ? (<Text style={styles.notificationEmpty}>No release notifications recorded.</Text>) : releaseNotifications.map((notification: any) => {
@@ -687,6 +771,39 @@ const styles = StyleSheet.create({
         marginBottom: 2,
     },
     aiText: { fontSize: 12, color: colors.gray300 },
+    investigationBox: {
+        marginTop: 12,
+        borderWidth: 1,
+        borderColor: colors.gray800,
+        borderRadius: 8,
+        backgroundColor: colors.gray950,
+        padding: 10,
+    },
+    investigationLabel: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: colors.gray500,
+        textTransform: 'uppercase',
+        marginBottom: 8,
+    },
+    investigationRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    investigationPicker: {
+        flex: 1,
+        borderWidth: 1,
+        borderColor: colors.gray700,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 7,
+    },
+    investigationPickerText: { color: colors.gray300, fontSize: 11 },
+    investigateButton: {
+        borderWidth: 1,
+        borderColor: colors.purple400,
+        borderRadius: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+    },
+    investigateButtonText: { color: colors.purple400, fontSize: 11, fontWeight: '700' },
     replayLink: { fontSize: 12, color: colors.blue400, marginTop: 8 },
     screenshot: {
         marginTop: 8,

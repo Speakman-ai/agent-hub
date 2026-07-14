@@ -30,6 +30,18 @@ import { getOrCreateBoard, serializeCardForRequest } from './board.js';
 import { linkReplay } from '../replays/replay-store.js';
 import { getDb } from '../db.js';
 import { ConvertSupportTicketRequestSchema } from './support-tickets.openapi.js';
+import { resolveOneShotEngine, NoEnginesAvailableError } from '../engine-resolver.js';
+import type { SupportedEngine } from '../engine-availability.js';
+import type { AuthenticatedRequest } from '../auth.js';
+import { resolveOwnerUserId } from '../session-ownership.js';
+import { triggerSupportTicketInvestigation } from '../support-ticket-investigation.js';
+
+const SUPPORT_INVESTIGATION_ENGINES = [
+  'claude-code',
+  'cursor-agent',
+  'codex-cli',
+  'grok-cli',
+] as const;
 import {
   defaultReporterEmail,
   serializeSupportTicket,
@@ -197,6 +209,78 @@ export default function createSupportTicketRoutes(deps: RouteDeps): Router {
     }
     res.json(serializeForRequest(req, ticket, { includeReleaseNotifications: true }));
   });
+
+  router.post(
+    '/api/projects/:projectId/support-tickets/:id/investigate',
+    async (req: Request, res: Response) => {
+      const project = findProject(req.params.projectId as string);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+
+      const ticket = getSupportTicket(req.params.id as string);
+      if (!ticket || ticket.project_id !== project.id) {
+        return res.status(404).json({ error: 'Support ticket not found' });
+      }
+
+      const body = req.body as { engine?: unknown; model?: unknown };
+      const engine = typeof body?.engine === 'string' ? body.engine.trim() : '';
+      const rawModel = body?.model;
+      if (
+        rawModel !== undefined &&
+        rawModel !== null &&
+        (typeof rawModel !== 'string' || rawModel.trim().length === 0)
+      ) {
+        return res.status(400).json({ error: 'model must be a non-empty string or null' });
+      }
+      const model = typeof rawModel === 'string' ? rawModel.trim() : '';
+      if (!(SUPPORT_INVESTIGATION_ENGINES as readonly string[]).includes(engine)) {
+        return res.status(400).json({
+          error: `engine must be one of: ${SUPPORT_INVESTIGATION_ENGINES.join(', ')}`,
+        });
+      }
+
+      const allowedModels = deps.config.engineValidModels?.[engine] ?? [];
+      if (model && !allowedModels.includes(model)) {
+        return res.status(400).json({
+          error: `model must be valid for engine ${engine}`,
+        });
+      }
+
+      const userId = resolveOwnerUserId(req as AuthenticatedRequest);
+      // Always resolve before queueing. Agent engines require an acting user,
+      // and the runner uses this same owner context for credentials.
+      let resolved: Awaited<ReturnType<typeof resolveOneShotEngine>>;
+      try {
+        resolved = await resolveOneShotEngine(deps.config, {
+          preferred: engine as SupportedEngine,
+          preferredModel: model || null,
+          fallbackChain: [engine as SupportedEngine],
+          userId,
+        });
+      } catch (err) {
+        if (err instanceof NoEnginesAvailableError) {
+          return res.status(400).json({ code: err.code, error: err.message });
+        }
+        return res.status(400).json({ error: (err as Error).message });
+      }
+
+      triggerSupportTicketInvestigation(ticket.id, {
+        config: deps.config,
+        broadcast: deps.broadcast,
+        serverDir: deps.serverDir,
+        cwd: project.cwd,
+        preferredEngine: engine as SupportedEngine,
+        preferredModel: model || null,
+        userId,
+      });
+
+      res.status(202).json({
+        queued: true,
+        engine,
+        model: resolved.model,
+        ticket: serializeForRequest(req, ticket),
+      });
+    },
+  );
 
   router.post('/api/projects/:projectId/support-tickets', async (req: Request, res: Response) => {
     const project = findProject(req.params.projectId as string);

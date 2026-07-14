@@ -1058,6 +1058,10 @@ export const api = {
         return fetchJSON(`/support-tickets${qs ? `?${qs}` : ''}`);
     },
     getSupportTicket: (projectId: any, id: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`),
+    runSupportTicketInvestigation: (projectId: any, id: any, selection: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}/investigate`, {
+        method: 'POST',
+        body: JSON.stringify(selection),
+    }),
     // Change a ticket's lifecycle status. Pass `wontDoReason` (required by the
     // server) when status is 'wont_do'.
     setSupportTicketStatus: (projectId: any, id: any, status: any, wontDoReason: any) => fetchJSON(`/projects/${projectId}/support-tickets/${id}`, {

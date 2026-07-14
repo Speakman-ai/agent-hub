@@ -5733,6 +5733,7 @@ export default function App({ initialView }: any = {}) {
                   projectId={supportProjectId}
                   initialTicketId={supportTicketId}
                   agents={agents.filter((a: any) => a.projectId === supportProjectId)}
+                  modelConfig={modelConfig}
                   onNotify={(message: any, type: any = 'info') => showToast(message, type, 8000)}
                 />
               ) : currentView === 'home' ? (

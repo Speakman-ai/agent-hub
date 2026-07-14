@@ -14,6 +14,7 @@ const TYPES = ['bug', 'question', 'feature_request', 'incident', 'other'] as con
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
 const STATUSES = ['new', 'investigating', 'converted', 'closed', 'duplicate', 'wont_do'] as const;
 const RELEASE_STATES = ['fixed_pending_release', 'released_to_prod', 'customer_notified'] as const;
+const INVESTIGATION_ENGINES = ['claude-code', 'cursor-agent', 'codex-cli', 'grok-cli'] as const;
 
 const SupportTicketReleaseNotificationComponent = registerComponent(
   'SupportTicketReleaseNotification',
@@ -236,6 +237,47 @@ registerPath({
       ),
     },
     404: errorResponse('Project not found.'),
+  },
+});
+
+const RunSupportTicketInvestigationRequestSchema = z
+  .object({
+    engine: z.enum(INVESTIGATION_ENGINES),
+    model: z.string().min(1).nullable().optional().openapi({
+      description:
+        'Model id for the selected engine. Omit or send null to use that engine’s configured default.',
+    }),
+  })
+  .openapi({ description: 'Engine and optional model for a queued AI investigation.' });
+
+const RunSupportTicketInvestigationResponse = registerComponent(
+  'RunSupportTicketInvestigationResponse',
+  z.object({
+    queued: z.literal(true),
+    engine: z.enum(INVESTIGATION_ENGINES),
+    model: z.string(),
+    ticket: SupportTicketComponent,
+  }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/support-tickets/{id}/investigate',
+  tags: ['Support'],
+  summary: 'Queue a support ticket AI investigation',
+  description:
+    'Queues a one-shot investigation using the selected authenticated engine and model. The updated ticket is broadcast over WebSocket when the run completes.',
+  request: {
+    params: ticketParams,
+    body: { content: jsonContent(RunSupportTicketInvestigationRequestSchema) },
+  },
+  responses: {
+    202: {
+      description: 'Investigation queued.',
+      content: jsonContent(RunSupportTicketInvestigationResponse),
+    },
+    400: errorResponse('Invalid engine/model or unavailable engine credentials.'),
+    404: errorResponse('Project or ticket not found.'),
   },
 });
 

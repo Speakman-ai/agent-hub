@@ -16,6 +16,29 @@ import {
 import createSupportTicketRoutes, { serializeSupportTicket } from './support-tickets.js';
 import createBoardRoutes from './board.js';
 
+const routeMocks = vi.hoisted(() => ({
+  resolveOwnerUserId: vi.fn(() => null as string | null),
+  resolveOneShotEngine: vi.fn(
+    async (
+      _config: unknown,
+      input: { userId: string | null; preferred?: string; preferredModel?: string | null },
+    ) => {
+      if (!input.userId) throw new Error('No acting user for selected engine');
+      return { engine: input.preferred, model: input.preferredModel || 'resolved-default' };
+    },
+  ),
+}));
+
+vi.mock('../session-ownership.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../session-ownership.js')>();
+  return { ...actual, resolveOwnerUserId: routeMocks.resolveOwnerUserId };
+});
+
+vi.mock('../engine-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../engine-resolver.js')>();
+  return { ...actual, resolveOneShotEngine: routeMocks.resolveOneShotEngine };
+});
+
 // Screenshot files land in the server's real /uploads dir (serverDir = server/).
 const UPLOADS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'uploads');
 function screenshotFiles(): string[] {
@@ -574,6 +597,100 @@ describe('support-tickets routes', () => {
       .post(`/api/projects/${projectId}/support-tickets`)
       .send({ body: 'how do I export?', type: 'question' })
       .expect(201);
+    expect(triggerInvestigation).not.toHaveBeenCalled();
+  });
+
+  it('rejects a selected investigation when no owner can be resolved', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'customer cannot sign in', type: 'question' })
+      .expect(201);
+
+    triggerInvestigation.mockClear();
+    const response = await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
+      .send({ engine: 'claude-code', model: 'claude-opus-4-8' })
+      .expect(400);
+
+    expect(response.body.error).toContain('No acting user');
+    expect(triggerInvestigation).not.toHaveBeenCalled();
+  });
+
+  it('queues a selected investigation with the resolved owner', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'customer cannot sign in', type: 'question' })
+      .expect(201);
+
+    routeMocks.resolveOwnerUserId.mockReturnValueOnce('user-selected');
+    routeMocks.resolveOneShotEngine.mockClear();
+    routeMocks.resolveOneShotEngine.mockResolvedValueOnce({
+      engine: 'codex-cli',
+      model: 'capability-fallback-model',
+    });
+    triggerInvestigation.mockClear();
+    const response = await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
+      .send({ engine: 'codex-cli', model: 'gpt-5.5' })
+      .expect(202);
+
+    expect(response.body).toMatchObject({
+      queued: true,
+      engine: 'codex-cli',
+      model: 'capability-fallback-model',
+    });
+    expect(triggerInvestigation).toHaveBeenCalledTimes(1);
+    expect(triggerInvestigation).toHaveBeenCalledWith(
+      created.body.id,
+      expect.objectContaining({
+        preferredEngine: 'codex-cli',
+        preferredModel: 'gpt-5.5',
+        userId: 'user-selected',
+      }),
+    );
+    expect(routeMocks.resolveOneShotEngine).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        preferred: 'codex-cli',
+        preferredModel: 'gpt-5.5',
+        userId: 'user-selected',
+        fallbackChain: ['codex-cli'],
+      }),
+    );
+    expect(routeMocks.resolveOneShotEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an unsupported model before queueing an investigation', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'bad model request', type: 'bug' })
+      .expect(201);
+
+    triggerInvestigation.mockClear();
+    await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
+      .send({ engine: 'claude-code', model: 'not-a-real-model' })
+      .expect(400);
+    expect(triggerInvestigation).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-string model values before queueing an investigation', async () => {
+    const projectId = await newProjectId();
+    const created = await request
+      .post(`/api/projects/${projectId}/support-tickets`)
+      .send({ body: 'wrong model type', type: 'bug' })
+      .expect(201);
+
+    triggerInvestigation.mockClear();
+    const response = await request
+      .post(`/api/projects/${projectId}/support-tickets/${created.body.id}/investigate`)
+      .send({ engine: 'claude-code', model: 123 })
+      .expect(400);
+
+    expect(response.body.error).toContain('non-empty string or null');
     expect(triggerInvestigation).not.toHaveBeenCalled();
   });
 
