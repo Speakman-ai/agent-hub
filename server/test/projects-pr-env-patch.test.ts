@@ -594,6 +594,90 @@ describe('PATCH /api/projects/:projectId — prEnv', () => {
     });
   });
 
+  it('persists a devServer block with defaults applied, on a disabled parent', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: false,
+          devServer: {
+            env: { LOG_LEVEL: 'debug' },
+            secretKeys: ['DATABASE_URL'],
+            portMap: [{ internalPort: 5173, label: 'vite' }],
+          },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: Record<string, unknown> };
+    expect(body.prEnv).toEqual({
+      enabled: false,
+      devServer: {
+        startCommand: 'npm run dev',
+        env: { LOG_LEVEL: 'debug' },
+        secretKeys: ['DATABASE_URL'],
+        portMap: [{ internalPort: 5173, label: 'vite', primary: true }],
+      },
+    });
+  });
+
+  it('rejects with 400 when devServer carries a reserved env key', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: false,
+          devServer: { env: { AGENT_HUB_URL: 'http://evil' } },
+        },
+      })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/prEnv\.devServer\.env/);
+    expect(body.error).toMatch(/reserved/);
+  });
+
+  it('rejects with 400 when a devServer secret key duplicates an env key', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: false,
+          devServer: { env: { DB_URL: 'plain' }, secretKeys: ['DB_URL'] },
+        },
+      })
+      .expect(400);
+    const body = res.body as { error: string };
+    expect(body.error).toMatch(/both env and secretKeys/);
+  });
+
+  it('persists devServer alongside an enabled PR-env config', async () => {
+    const project = await createProject();
+    const projectId = project.id as string;
+    const res = await request
+      .patch(`/api/projects/${projectId}`)
+      .send({
+        prEnv: {
+          enabled: true,
+          startScript: 'npm start',
+          internalPort: 3000,
+          devServer: { startCommand: 'yarn dev' },
+        },
+      })
+      .expect(200);
+    const body = res.body as { prEnv?: { devServer?: Record<string, unknown> } };
+    expect(body.prEnv?.devServer).toEqual({
+      startCommand: 'yarn dev',
+      env: {},
+      secretKeys: [],
+      portMap: [],
+    });
+  });
+
   it('clears the prEnv slot when sent as null', async () => {
     const project = await createProject();
     const projectId = project.id as string;

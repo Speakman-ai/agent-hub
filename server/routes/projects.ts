@@ -6,6 +6,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createStreamParser } from '../stream-parser.js';
+import { parseDevServerConfig, type DevServerConfig } from '../dev-server-config.js';
 import { trackChild, killProcessGroup } from '../process-groups.js';
 import { buildSpawnEnv } from '../config.js';
 import {
@@ -555,6 +556,7 @@ export interface ValidatedPrEnvConfig {
   dockerfilePath?: string;
   env?: Record<string, string>;
   preview?: ValidatedPrEnvPreviewConfig;
+  devServer?: DevServerConfig;
 }
 
 export interface ValidatedPrEnvPreviewConfig {
@@ -1259,6 +1261,13 @@ export function validatePrEnvProjectConfig(
     const previewResult = validatePrEnvPreview(obj.preview);
     if (!previewResult.ok) return { ok: false, error: previewResult.error };
     if (previewResult.value) value.preview = previewResult.value;
+    // Like `preview`, the dev-server block is session-scoped and read by
+    // the in-session runtime regardless of the parent PR-env flag.
+    if (obj.devServer !== undefined && obj.devServer !== null) {
+      const devServerResult = parseDevServerConfig(obj.devServer);
+      if (!devServerResult.ok) return { ok: false, error: devServerResult.error };
+      value.devServer = devServerResult.value;
+    }
     return { ok: true, value };
   }
 
@@ -1332,6 +1341,11 @@ export function validatePrEnvProjectConfig(
   if (dockerfilePath) value.dockerfilePath = dockerfilePath;
   if (envResult.value) value.env = envResult.value;
   if (previewResult.value) value.preview = previewResult.value;
+  if (obj.devServer !== undefined && obj.devServer !== null) {
+    const devServerResult = parseDevServerConfig(obj.devServer);
+    if (!devServerResult.ok) return { ok: false, error: devServerResult.error };
+    value.devServer = devServerResult.value;
+  }
   return { ok: true, value };
 }
 

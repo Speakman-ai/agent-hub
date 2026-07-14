@@ -1,5 +1,8 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import type Database from 'better-sqlite3';
+import type { DevServerConfig } from './dev-server-config.js';
+
+export type { DevServerConfig, DevServerPortMapEntry } from './dev-server-config.js';
 
 // ─── Database Row Types ──────────────────────────────────────────
 
@@ -2971,6 +2974,20 @@ export interface PrEnvProjectConfig {
    * rejects that combination.
    */
   preview?: PrEnvPreviewConfig;
+  /**
+   * Optional dev-server config: the project runs as a managed long-lived
+   * process started from `startCommand` (default `npm run dev`) inside the
+   * session env, with the Hub owning start/stop/restart, log streaming,
+   * env/secret injection, and port mapping through the authenticated
+   * preview proxy. Replaces the compose app-wrapping model for session
+   * previews; independent of the parent `enabled` flag (which gates the
+   * PR-env runner only), same as `preview`.
+   *
+   * Secrets are key references into the project-secrets store
+   * (`secretKeys[]`) — plaintext values never live in this block. Schema +
+   * validation in `dev-server-config.ts`.
+   */
+  devServer?: DevServerConfig;
 }
 
 /**
