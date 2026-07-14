@@ -126,6 +126,7 @@ function makeRouteHarness(
     config: {},
   } as unknown as RouteDeps;
   const app = express();
+  app.use(express.json());
   app.use((req, _res, next) => {
     const auth = req as unknown as {
       authRole: string;
@@ -247,6 +248,32 @@ describe('POST /logs/issues/:issueId/analyze', () => {
     });
     expect(harness.createSession).toHaveBeenCalledTimes(1);
     expect(harness.handleChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts another analysis only when explicitly requested', async () => {
+    const lead = { id: 'lead-1', name: 'Lead', role: 'lead' } as Partial<Agent>;
+    const project = makeProject([lead]);
+    const issue = makeIssue();
+    const harness = makeRouteHarness(project);
+    const endpoint = `/api/projects/${PROJECT_ID}/logs/issues/${issue.id}/analyze`;
+
+    const first = await supertest(harness.app).post(endpoint).expect(200);
+    const second = await supertest(harness.app)
+      .post(endpoint)
+      .send({ startAnother: true })
+      .expect(200);
+
+    expect(second.body.reused).toBe(false);
+    expect(second.body.sessionId).not.toBe(first.body.sessionId);
+    expect(harness.createSession).toHaveBeenCalledTimes(2);
+    expect(harness.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'log_issue_action',
+        issueId: issue.id,
+        action: 'analyze',
+        status: 'completed',
+      }),
+    );
   });
 
   it('replaces a deleted linked session through the atomic claim', async () => {

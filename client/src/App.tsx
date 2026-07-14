@@ -2442,6 +2442,11 @@ export default function App({ initialView }: any = {}) {
         case 'analyze-error':
           window.dispatchEvent(new CustomEvent('analyze-ws', { detail: data }));
           break;
+        case 'log_issue_action':
+          // Logs issue detail owns the project-scoped action state. Forward the
+          // event without putting log-derived text into the global app store.
+          window.dispatchEvent(new CustomEvent('agenthub:log_issue_action', { detail: data }));
+          break;
         case 'clone-progress':
         case 'clone-complete':
         case 'clone-error':

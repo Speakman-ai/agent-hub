@@ -144,6 +144,31 @@ describe('POST /logs/issues/:issueId/fix', () => {
     expect(prompt.content).toContain('BEGIN UNTRUSTED LOG DATA');
   });
 
+  it('creates another Fix workflow only through the explicit start-another path', async () => {
+    const issue = makeIssue();
+    const harness = makeHarness();
+    const endpoint = `/api/projects/${PROJECT_ID}/logs/issues/${issue.id}/fix`;
+
+    const first = await supertest(harness.app).post(endpoint).expect(200);
+    const second = await supertest(harness.app)
+      .post(endpoint)
+      .send({ startAnother: true })
+      .expect(200);
+
+    expect(second.body.reused).toBe(false);
+    expect(second.body.cardId).not.toBe(first.body.cardId);
+    expect(second.body.sessionId).not.toBe(first.body.sessionId);
+    expect(harness.handleChat).toHaveBeenCalledTimes(2);
+    expect(harness.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'log_issue_action',
+        issueId: issue.id,
+        action: 'fix',
+        status: 'completed',
+      }),
+    );
+  });
+
   it('falls back to manual and rolls the linked workflow back on synchronous chat failure', async () => {
     const issue = makeIssue();
     const harness = makeHarness(() => {

@@ -31,6 +31,7 @@ import {
   setIssueStatus,
   claimIssueAnalyzeSession,
   releaseIssueAnalyzeSession,
+  ownsIssueAnalyzeSessionClaim,
   claimIssueFixSession,
   releaseIssueFixSession,
   releaseIssueFixClaimsForCard,
@@ -48,7 +49,7 @@ import { markSessionFinalizeAutomation } from '../session-ship.js';
 import { enrichSessionForClient } from '../session-checkpoint-rewind.js';
 import { defaultSessionUseWorktreeFlag } from '../project-mode.js';
 import { getUserProjectDefaultFinalizeAutomation } from '../user-project-settings.js';
-import { IssueListParamsSchema } from './log-issues.openapi.js';
+import { IssueListParamsSchema, LogIssueActionRequest } from './log-issues.openapi.js';
 
 /** Recent raw records surfaced on an issue detail response. */
 const ISSUE_SAMPLE_LIMIT = 20;
@@ -141,6 +142,19 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
 
   function actorId(req: Request): string | null {
     return (req as AuthenticatedRequest).authUserId ?? null;
+  }
+
+  function broadcastAction(event: {
+    projectId: string;
+    issueId: string;
+    action: 'analyze' | 'fix';
+    status: 'in_flight' | 'completed' | 'failed';
+    sessionId?: string | null;
+    agentId?: string | null;
+    cardId?: string | null;
+    error?: string | null;
+  }): void {
+    broadcast({ type: 'log_issue_action', ...event });
   }
 
   function updateStatus(req: Request, res: Response, status: IssueStatus): void {
@@ -242,6 +256,12 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       if (!requireVisibleProject(req, res)) return;
       const projectId = req.params.projectId as string;
       const issueId = req.params.issueId as string;
+      const actionRequest = LogIssueActionRequest.safeParse(req.body ?? {});
+      if (!actionRequest.success) {
+        res.status(400).json({ error: actionRequest.error.issues[0]?.message ?? 'Invalid action' });
+        return;
+      }
+      const startAnother = actionRequest.data.startAnother;
 
       const issue = getIssue(projectId, issueId);
       if (!issue) {
@@ -258,7 +278,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       // Idempotency: reuse the linked session while it still exists (not soft-
       // deleted). "Reopen" is just returning that session so the client can
       // navigate to it — a second Analyze click must not spawn a duplicate.
-      if (issue.analyze_session_id) {
+      if (!startAnother && issue.analyze_session_id) {
         const existing = stmts.getSession.get(issue.analyze_session_id) as SessionRow | undefined;
         if (existing && !existing.deleted_at) {
           res.json({
@@ -294,7 +314,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         const winner = winnerId
           ? (stmts.getSession.get(winnerId) as SessionRow | undefined)
           : undefined;
-        if (winner && !winner.deleted_at) {
+        if (winner && !winner.deleted_at && !startAnother) {
           res.json({
             sessionId: winner.id,
             agentId: winner.agent_id,
@@ -303,15 +323,32 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
           });
           return;
         }
-        // A prior process may have died after claiming but before creating its
-        // session. Replace only that exact stale claim; a concurrent live
-        // creator cannot be displaced because its session now exists.
-        claim = claimIssueAnalyzeSession(projectId, issueId, sessionId, winnerId);
-        if (!claim.claimed) {
-          res.status(409).json({ error: 'Analyze session is starting; retry shortly' });
-          return;
+        if (startAnother && winnerId) {
+          claim = claimIssueAnalyzeSession(projectId, issueId, sessionId, winnerId);
+          if (!claim.claimed) {
+            res.status(409).json({ error: 'Analyze session is starting; retry shortly' });
+            return;
+          }
+        } else {
+          // A prior process may have died after claiming but before creating its
+          // session. Replace only that exact stale claim; a concurrent live
+          // creator cannot be displaced because its session now exists.
+          claim = claimIssueAnalyzeSession(projectId, issueId, sessionId, winnerId);
+          if (!claim.claimed) {
+            res.status(409).json({ error: 'Analyze session is starting; retry shortly' });
+            return;
+          }
         }
       }
+
+      broadcastAction({
+        projectId,
+        issueId,
+        action: 'analyze',
+        status: 'in_flight',
+        sessionId,
+        agentId: agent.id,
+      });
 
       let pack: ReturnType<typeof buildAuditedLogContextPack>['pack'];
       const title = `Analyze: ${safeSessionTitleFragment(issue)}`;
@@ -357,7 +394,38 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       } catch (err) {
         releaseIssueAnalyzeSession(projectId, issueId, sessionId);
         const message = err instanceof Error ? err.message : String(err);
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'analyze',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          error: message,
+        });
         res.status(500).json({ error: `Failed to start analysis session: ${message}` });
+        return;
+      }
+      if (!ownsIssueAnalyzeSessionClaim(projectId, issueId, sessionId)) {
+        const message = 'Analyze session claim was superseded; retry shortly';
+        try {
+          stmts.deleteSession.run(sessionId);
+        } catch (cleanupErr) {
+          console.error(
+            `[Analyze] failed to delete superseded session ${sessionId}:`,
+            cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          );
+        }
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'analyze',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          error: message,
+        });
+        res.status(409).json({ error: message });
         return;
       }
       markSessionFinalizeAutomation(stmts, sessionId, 'manual');
@@ -404,6 +472,15 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
           sessionId,
           message: `Failed to start analysis session: ${message}`,
         });
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'analyze',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          error: message,
+        });
       };
       let initialChat: Promise<void>;
       try {
@@ -423,6 +500,14 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         type: 'session_created',
         agentId: agent.id,
         session: enrichSessionForClient(sessionRow, stmts),
+      });
+      broadcastAction({
+        projectId,
+        issueId,
+        action: 'analyze',
+        status: 'completed',
+        sessionId,
+        agentId: agent.id,
       });
 
       res.json({
@@ -446,6 +531,12 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       if (!requireVisibleProject(req, res)) return;
       const projectId = req.params.projectId as string;
       const issueId = req.params.issueId as string;
+      const actionRequest = LogIssueActionRequest.safeParse(req.body ?? {});
+      if (!actionRequest.success) {
+        res.status(400).json({ error: actionRequest.error.issues[0]?.message ?? 'Invalid action' });
+        return;
+      }
+      const startAnother = actionRequest.data.startAnother;
       const issue = getIssue(projectId, issueId);
       if (!issue) {
         res.status(404).json({ error: 'Issue not found' });
@@ -457,7 +548,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         return;
       }
 
-      const existing = activeFixRows(stmts, projectId, issue);
+      const existing = startAnother ? null : activeFixRows(stmts, projectId, issue);
       if (existing) {
         res.json({
           cardId: existing.card.id,
@@ -493,7 +584,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       if (!claim.claimed) {
         const winnerIssue = getIssue(projectId, issueId);
         const winner = winnerIssue ? activeFixRows(stmts, projectId, winnerIssue) : null;
-        if (winner) {
+        if (winner && !startAnother) {
           res.json({
             cardId: winner.card.id,
             sessionId: winner.session.id,
@@ -505,7 +596,17 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
           });
           return;
         }
-        if (isStaleFixClaim(stmts, projectId, claim)) {
+        if (startAnother && claim.cardId && claim.sessionId) {
+          const replaced = claimIssueFixSession(projectId, issueId, cardId, sessionId, {
+            cardId: claim.cardId,
+            sessionId: claim.sessionId,
+          });
+          if (!replaced.claimed) {
+            res.status(409).json({ error: 'Fix session is starting; retry shortly' });
+            return;
+          }
+          claim = replaced;
+        } else if (isStaleFixClaim(stmts, projectId, claim)) {
           // Compare-and-swap the exact stale winner. If another request
           // replaced it first, this call returns the new winner and we keep
           // the 409 rather than risking two active Fix workflows.
@@ -548,6 +649,16 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         }
       }
 
+      broadcastAction({
+        projectId,
+        issueId,
+        action: 'fix',
+        status: 'in_flight',
+        sessionId,
+        agentId: agent.id,
+        cardId,
+      });
+
       let contextBlock: string;
       try {
         const nowMs = Date.now();
@@ -567,6 +678,16 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       } catch (err) {
         releaseIssueFixSession(projectId, issueId, cardId, sessionId);
         const message = err instanceof Error ? err.message : String(err);
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'fix',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          cardId,
+          error: message,
+        });
         res.status(500).json({ error: `Failed to prepare fix context: ${message}` });
         return;
       }
@@ -576,6 +697,16 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
       // opening that transaction. This prevents a stale/replaced owner from
       // publishing a card after another request won the CAS race.
       if (!ownsIssueFixSessionClaim(projectId, issueId, cardId, sessionId)) {
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'fix',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          cardId,
+          error: 'Fix session claim was superseded; retry shortly',
+        });
         res.status(409).json({ error: 'Fix session claim was superseded; retry shortly' });
         return;
       }
@@ -608,6 +739,7 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
             ? (stmts.getKanbanColumn.get(existingSource.column_id) as KanbanColumnRow | undefined)
             : undefined;
           if (
+            !startAnother &&
             existingSource &&
             existingSourceSession &&
             !existingSourceSession.deleted_at &&
@@ -698,6 +830,16 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         return;
       }
       if (!created) {
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'fix',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          cardId,
+          error: 'Fix session claim was superseded; retry shortly',
+        });
         res.status(409).json({ error: 'Fix session claim was superseded; retry shortly' });
         return;
       }
@@ -738,6 +880,16 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
           sessionId,
           message: `Failed to start fix session: ${message}`,
         });
+        broadcastAction({
+          projectId,
+          issueId,
+          action: 'fix',
+          status: 'failed',
+          sessionId,
+          agentId: agent.id,
+          cardId,
+          error: message,
+        });
       };
       let initialChat: Promise<void>;
       try {
@@ -755,6 +907,15 @@ export default function createLogIssueRoutes(deps: RouteDeps): Router {
         type: 'session_created',
         agentId: agent.id,
         session: enrichSessionForClient(created.session, stmts),
+      });
+      broadcastAction({
+        projectId,
+        issueId,
+        action: 'fix',
+        status: 'completed',
+        sessionId,
+        agentId: agent.id,
+        cardId,
       });
       res.json({
         cardId,

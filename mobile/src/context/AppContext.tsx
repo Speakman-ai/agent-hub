@@ -86,6 +86,9 @@ export function AppProvider({ children }: any) {
     // Last `support_ticket_*` WS event for the Customer Support screen.
     //   { type, projectId, ticket?, ticketId?, bump }
     const [lastSupportTicketEvent, setLastSupportTicketEvent] = useState<any>(null);
+    // Last Logs Analyze/Fix lifecycle event. LogsScreen passes this through to
+    // its issue detail so action state stays live on mobile too.
+    const [lastLogIssueActionEvent, setLastLogIssueActionEvent] = useState<any>(null);
     // Unread support-ticket counts keyed by projectId — drives the Support drawer
     // badge. Seeded on demand and kept live by the unreadCount the
     // support_ticket_* events carry.
@@ -808,6 +811,9 @@ export function AppProvider({ children }: any) {
                     projectId: data.projectId,
                     bump: Date.now(),
                 });
+                break;
+            case 'log_issue_action':
+                setLastLogIssueActionEvent({ ...data, bump: Date.now() });
                 break;
             case 'design_message_added':
             case 'design_stream':
@@ -2095,6 +2101,7 @@ export function AppProvider({ children }: any) {
         lastDesignEvent,
         wsSend: send,
         lastSupportTicketEvent,
+        lastLogIssueActionEvent,
         unreadTicketCounts,
         openPullCounts,
         refreshSupportUnreadCount,

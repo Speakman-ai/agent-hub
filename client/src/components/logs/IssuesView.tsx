@@ -24,6 +24,16 @@ import { api } from '../../utils/api';
 import { formatDateTime, relativeTime } from '../../utils/time';
 import { severityTone, SEVERITY_NUMBER, type LogRecord } from '../../utils/logStream';
 import LogRecordRow from './LogRecordRow';
+import {
+  logIssueActionKey,
+  logIssueActionLinks,
+  logIssueActionEventIsStale,
+  logIssueActionEventIsOutOfOrder,
+  logIssueActionLabel,
+  type LogIssueAction,
+  type LogIssueActionEvent,
+  type LogIssueActionLinks,
+} from '@shared/utils/logIssueActions';
 
 interface IssueRelease {
   release: string | null;
@@ -100,6 +110,11 @@ export default function IssuesView({
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [analyzingId, setAnalyzingId] = useState<string | null>(null);
   const [fixingId, setFixingId] = useState<string | null>(null);
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [actionEvents, setActionEvents] = useState<Record<string, LogIssueActionEvent>>({});
+  const actionInFlightRef = useRef(new Set<string>());
+  const actionFallbackLinksRef = useRef<Record<string, LogIssueActionLinks>>({});
+  const actionEventRef = useRef<Record<string, LogIssueActionEvent>>({});
 
   // Monotonic request id. Each load captures its seq; a response whose seq is no
   // longer current (the status tab or project changed before it resolved) is
@@ -147,6 +162,98 @@ export default function IssuesView({
     void load({ append: false });
   }, [load]);
 
+  // The App WebSocket bridge turns the server's project-scoped action events
+  // into a DOM event. This keeps the issue detail live when another tab or
+  // mobile client starts/fails/completes an action.
+  useEffect(() => {
+    const onAction = (event: Event) => {
+      const data = (event as CustomEvent<LogIssueActionEvent>).detail;
+      if (!data || data.projectId !== projectId || !data.issueId) return;
+      const key = logIssueActionKey(data.issueId, data.action);
+      const previousEvent = actionEventRef.current[key];
+      if (logIssueActionEventIsOutOfOrder(previousEvent, data)) return;
+      actionEventRef.current[key] = data;
+      const reconcile = (
+        issue: LogIssue,
+        fallbackLinks = actionFallbackLinksRef.current[key],
+      ): LogIssue => {
+        const links = logIssueActionLinks(issue, data.action);
+        if (logIssueActionEventIsStale(links, data)) return issue;
+        if (data.status === 'failed') {
+          if (fallbackLinks) {
+            return data.action === 'analyze'
+              ? { ...issue, analyzeSessionId: fallbackLinks.sessionId }
+              : {
+                  ...issue,
+                  fixSessionId: fallbackLinks.sessionId,
+                  fixCardId: fallbackLinks.cardId,
+                };
+          }
+          return data.action === 'analyze'
+            ? { ...issue, analyzeSessionId: null }
+            : { ...issue, fixSessionId: null, fixCardId: null };
+        }
+        return data.action === 'analyze'
+          ? { ...issue, analyzeSessionId: data.sessionId || issue.analyzeSessionId }
+          : {
+              ...issue,
+              fixSessionId: data.sessionId || issue.fixSessionId,
+              fixCardId: data.cardId || issue.fixCardId,
+            };
+      };
+      const captureFallback = (issue: LogIssue): void => {
+        const links = logIssueActionLinks(issue, data.action);
+        const replacesExisting =
+          (data.sessionId && links.sessionId && data.sessionId !== links.sessionId) ||
+          (data.cardId && links.cardId && data.cardId !== links.cardId);
+        if (
+          data.status === 'in_flight' &&
+          replacesExisting &&
+          (links.sessionId || links.cardId) &&
+          !actionFallbackLinksRef.current[key]
+        ) {
+          actionFallbackLinksRef.current[key] = links;
+        }
+      };
+      setActionEvents((prev) => ({ ...prev, [key]: data }));
+      if (data.status === 'failed') {
+        setActionErrors((prev) => ({ ...prev, [key]: data.error || 'Action failed' }));
+        setIssues((prev) =>
+          prev.map((issue) => (issue.id === data.issueId ? reconcile(issue) : issue)),
+        );
+        setDetail((prev) => (prev?.id === data.issueId ? reconcile(prev) : prev));
+      } else if (data.status === 'in_flight') {
+        setActionErrors((prev) => {
+          if (!prev[key]) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        setIssues((prev) =>
+          prev.map((issue) => {
+            if (issue.id !== data.issueId) return issue;
+            captureFallback(issue);
+            return reconcile(issue);
+          }),
+        );
+        setDetail((prev) => {
+          if (prev?.id !== data.issueId) return prev;
+          captureFallback(prev);
+          return reconcile(prev);
+        });
+      }
+      if (data.status === 'completed') {
+        delete actionFallbackLinksRef.current[key];
+        setIssues((prev) =>
+          prev.map((issue) => (issue.id === data.issueId ? reconcile(issue) : issue)),
+        );
+        setDetail((prev) => (prev?.id === data.issueId ? reconcile(prev) : prev));
+      }
+    };
+    window.addEventListener('agenthub:log_issue_action', onAction);
+    return () => window.removeEventListener('agenthub:log_issue_action', onAction);
+  }, [projectId]);
+
   const openDetail = useCallback(
     async (issue: LogIssue) => {
       if (expandedId === issue.id) {
@@ -191,47 +298,104 @@ export default function IssuesView({
     [projectId, showToast],
   );
 
-  const analyze = useCallback(
-    async (issue: LogIssue) => {
-      setAnalyzingId(issue.id);
-      try {
-        const result = (await api.analyzeLogIssue(projectId, issue.id)) as {
-          sessionId: string;
-          agentId: string;
-          reused: boolean;
-          issue: LogIssue;
-        };
-        setIssues((prev) => prev.map((i) => (i.id === issue.id ? { ...i, ...result.issue } : i)));
-        setDetail((prev) => (prev && prev.id === issue.id ? { ...prev, ...result.issue } : prev));
-        showToast?.(result.reused ? 'Analysis session reopened' : 'Analysis started', 'success');
-        onOpenSession?.({ sessionId: result.sessionId, agentId: result.agentId });
-      } catch (err) {
-        showToast?.(err instanceof Error ? err.message : 'Failed to start analysis', 'error');
-      } finally {
-        setAnalyzingId(null);
+  const runAction = useCallback(
+    async (action: LogIssueAction, issue: LogIssue, startAnother = false) => {
+      const key = logIssueActionKey(issue.id, action);
+      if (actionInFlightRef.current.has(key)) return;
+      actionInFlightRef.current.add(key);
+      if (startAnother && !actionFallbackLinksRef.current[key]) {
+        const links = logIssueActionLinks(issue, action);
+        if (links.sessionId || links.cardId) actionFallbackLinksRef.current[key] = links;
       }
-    },
-    [onOpenSession, projectId, showToast],
-  );
-
-  const fix = useCallback(
-    async (issue: LogIssue) => {
-      setFixingId(issue.id);
+      if (action === 'analyze') setAnalyzingId(issue.id);
+      else setFixingId(issue.id);
+      setActionErrors((prev) => {
+        if (!prev[key]) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       try {
-        const result = (await api.fixLogIssue(projectId, issue.id)) as {
+        const result = (await (action === 'analyze'
+          ? startAnother
+            ? api.analyzeLogIssue(projectId, issue.id, { startAnother: true })
+            : api.analyzeLogIssue(projectId, issue.id)
+          : startAnother
+            ? api.fixLogIssue(projectId, issue.id, { startAnother: true })
+            : api.fixLogIssue(projectId, issue.id))) as {
           sessionId: string;
           agentId: string;
           reused: boolean;
           issue: LogIssue;
+          cardId?: string;
         };
         setIssues((prev) => prev.map((i) => (i.id === issue.id ? { ...i, ...result.issue } : i)));
         setDetail((prev) => (prev && prev.id === issue.id ? { ...prev, ...result.issue } : prev));
-        showToast?.(result.reused ? 'Fix session reopened' : 'Fix started', 'success');
+        const completedEvent: LogIssueActionEvent = {
+          type: 'log_issue_action',
+          projectId,
+          issueId: issue.id,
+          action,
+          status: 'completed',
+          sessionId: result.sessionId,
+          agentId: result.agentId,
+          cardId: result.cardId || result.issue?.fixCardId,
+        };
+        actionEventRef.current[key] = completedEvent;
+        setActionEvents((prev) => ({ ...prev, [key]: completedEvent }));
+        delete actionFallbackLinksRef.current[key];
+        showToast?.(
+          result.reused
+            ? `${logIssueActionLabel(action)} ${action === 'analyze' ? 'session' : 'workflow'} reopened`
+            : `${logIssueActionLabel(action)} started`,
+          'success',
+        );
         onOpenSession?.({ sessionId: result.sessionId, agentId: result.agentId });
       } catch (err) {
-        showToast?.(err instanceof Error ? err.message : 'Failed to start fix', 'error');
+        const message = err instanceof Error ? err.message : `Failed to start ${action}`;
+        const fallbackLinks = actionFallbackLinksRef.current[key];
+        if (fallbackLinks) {
+          setIssues((prev) =>
+            prev.map((current) =>
+              current.id !== issue.id
+                ? current
+                : action === 'analyze'
+                  ? { ...current, analyzeSessionId: fallbackLinks.sessionId }
+                  : {
+                      ...current,
+                      fixSessionId: fallbackLinks.sessionId,
+                      fixCardId: fallbackLinks.cardId,
+                    },
+            ),
+          );
+          setDetail((current) =>
+            current?.id !== issue.id
+              ? current
+              : action === 'analyze'
+                ? { ...current, analyzeSessionId: fallbackLinks.sessionId }
+                : {
+                    ...current,
+                    fixSessionId: fallbackLinks.sessionId,
+                    fixCardId: fallbackLinks.cardId,
+                  },
+          );
+        }
+        setActionErrors((prev) => ({ ...prev, [key]: message }));
+        const failedEvent: LogIssueActionEvent = {
+          type: 'log_issue_action',
+          projectId,
+          issueId: issue.id,
+          action,
+          status: 'failed',
+          error: message,
+        };
+        actionEventRef.current[key] = failedEvent;
+        setActionEvents((prev) => ({ ...prev, [key]: failedEvent }));
+        showToast?.(message, 'error');
       } finally {
-        setFixingId(null);
+        actionInFlightRef.current.delete(key);
+        if (action === 'analyze') setAnalyzingId(null);
+        else setFixingId(null);
       }
     },
     [onOpenSession, projectId, showToast],
@@ -315,33 +479,106 @@ export default function IssuesView({
 
                   {isOpen ? (
                     <div className="border-t border-gray-800 px-3 py-3">
+                      <p className="mb-3 rounded border border-gray-800 bg-gray-950/60 px-2 py-1.5 text-[11px] text-gray-400">
+                        Analyze is read-only and makes no edits. Fix creates an isolated worktree
+                        and inherits your project Finalize automation default.
+                      </p>
                       <div className="mb-3 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          disabled={fixingId === issue.id}
-                          onClick={() => fix(detail ?? issue)}
-                          className="inline-flex items-center gap-1 rounded border border-amber-600/40 bg-amber-600/10 px-2 py-1 text-xs text-amber-300 hover:bg-amber-600/20 disabled:opacity-50"
-                        >
-                          {fixingId === issue.id ? (
-                            <Loader2 size={13} className="animate-spin" />
-                          ) : (
-                            <Wrench size={13} />
-                          )}
-                          {issue.fixSessionId ? 'Open fix' : 'Fix'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={analyzingId === issue.id}
-                          onClick={() => analyze(detail ?? issue)}
-                          className="inline-flex items-center gap-1 rounded border border-violet-600/40 bg-violet-600/10 px-2 py-1 text-xs text-violet-300 hover:bg-violet-600/20 disabled:opacity-50"
-                        >
-                          {analyzingId === issue.id ? (
-                            <Loader2 size={13} className="animate-spin" />
-                          ) : (
-                            <Search size={13} />
-                          )}
-                          {issue.analyzeSessionId ? 'Open analysis' : 'Analyze'}
-                        </button>
+                        {(() => {
+                          const analyzeKey = logIssueActionKey(issue.id, 'analyze');
+                          const fixKey = logIssueActionKey(issue.id, 'fix');
+                          const analyzeLinks = logIssueActionLinks(issue, 'analyze');
+                          const fixLinks = logIssueActionLinks(issue, 'fix');
+                          const analyzeBusy =
+                            analyzingId === issue.id ||
+                            actionEvents[analyzeKey]?.status === 'in_flight';
+                          const fixBusy =
+                            fixingId === issue.id || actionEvents[fixKey]?.status === 'in_flight';
+                          const fixCompleted = actionEvents[fixKey]?.status === 'completed';
+                          const analyzeCompleted = actionEvents[analyzeKey]?.status === 'completed';
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                disabled={fixBusy}
+                                onClick={() => void runAction('fix', detail ?? issue)}
+                                aria-label={fixLinks.sessionId ? 'Open fix' : 'Fix'}
+                                className="inline-flex items-center gap-1 rounded border border-amber-600/40 bg-amber-600/10 px-2 py-1 text-xs text-amber-300 hover:bg-amber-600/20 disabled:opacity-50"
+                              >
+                                {fixBusy ? (
+                                  <Loader2 size={13} className="animate-spin" />
+                                ) : (
+                                  <Wrench size={13} />
+                                )}
+                                {fixBusy
+                                  ? 'Starting Fix…'
+                                  : fixLinks.sessionId
+                                    ? 'Open fix'
+                                    : 'Fix'}
+                              </button>
+                              {fixLinks.sessionId ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void runAction('fix', detail ?? issue, true)}
+                                  className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                                >
+                                  Start another fix
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                disabled={analyzeBusy}
+                                onClick={() => void runAction('analyze', detail ?? issue)}
+                                aria-label={analyzeLinks.sessionId ? 'Open analysis' : 'Analyze'}
+                                className="inline-flex items-center gap-1 rounded border border-violet-600/40 bg-violet-600/10 px-2 py-1 text-xs text-violet-300 hover:bg-violet-600/20 disabled:opacity-50"
+                              >
+                                {analyzeBusy ? (
+                                  <Loader2 size={13} className="animate-spin" />
+                                ) : (
+                                  <Search size={13} />
+                                )}
+                                {analyzeBusy
+                                  ? 'Starting Analyze…'
+                                  : analyzeLinks.sessionId
+                                    ? 'Open analysis'
+                                    : 'Analyze'}
+                              </button>
+                              {analyzeLinks.sessionId ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void runAction('analyze', detail ?? issue, true)}
+                                  className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                                >
+                                  Start another analysis
+                                </button>
+                              ) : null}
+                              {actionErrors[fixKey] ? (
+                                <span role="alert" className="basis-full text-xs text-red-300">
+                                  Fix failed: {actionErrors[fixKey]}
+                                </span>
+                              ) : null}
+                              {actionErrors[analyzeKey] ? (
+                                <span role="alert" className="basis-full text-xs text-red-300">
+                                  Analyze failed: {actionErrors[analyzeKey]}
+                                </span>
+                              ) : null}
+                              {fixLinks.cardId ? (
+                                <span className="basis-full text-[11px] text-amber-300">
+                                  {fixCompleted ? 'Fix completed · ' : 'Fix card linked · '}
+                                  {fixLinks.cardId.slice(0, 8)}
+                                </span>
+                              ) : null}
+                              {analyzeLinks.sessionId ? (
+                                <span className="basis-full text-[11px] text-violet-300">
+                                  {analyzeCompleted
+                                    ? 'Analyze completed · '
+                                    : 'Analysis session linked · '}
+                                  {analyzeLinks.sessionId.slice(0, 8)}
+                                </span>
+                              ) : null}
+                            </>
+                          );
+                        })()}
                         {issue.status !== 'resolved' ? (
                           <button
                             type="button"

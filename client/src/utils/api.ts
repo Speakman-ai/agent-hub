@@ -776,13 +776,15 @@ export const api = {
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/reopen`, {
       method: 'POST',
     }),
-  analyzeLogIssue: (projectId: any, issueId: any) =>
+  analyzeLogIssue: (projectId: any, issueId: any, options: { startAnother?: boolean } = {}) =>
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/analyze`, {
       method: 'POST',
+      body: JSON.stringify({ startAnother: options.startAnother === true }),
     }),
-  fixLogIssue: (projectId: any, issueId: any) =>
+  fixLogIssue: (projectId: any, issueId: any, options: { startAnother?: boolean } = {}) =>
     fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/fix`, {
       method: 'POST',
+      body: JSON.stringify({ startAnother: options.startAnother === true }),
     }),
   // Single-path configure + secrets + compose boot test. Admin+.
   buildPreviewEnvironment: (projectId: any, body: any) =>

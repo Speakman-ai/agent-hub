@@ -168,6 +168,198 @@ describe('IssuesView', () => {
     });
   });
 
+  it('does not issue duplicate requests while an action is in flight', async () => {
+    let resolveAction: (value: unknown) => void = () => {};
+    (api.listLogIssues as any).mockResolvedValue({ issues: [openIssue], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...openIssue, releases: [], samples: [] });
+    (api.analyzeLogIssue as any).mockReturnValue(
+      new Promise((resolve) => (resolveAction = resolve)),
+    );
+
+    render(<IssuesView projectId="p1" />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+    const analyze = screen.getByRole('button', { name: 'Analyze' });
+    fireEvent.click(analyze);
+    fireEvent.click(analyze);
+
+    expect(api.analyzeLogIssue).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Starting Analyze…')).toBeInTheDocument();
+    await act(async () => resolveAction({ ...openIssue, analyzeSessionId: 's1' }));
+  });
+
+  it('shows a failed action and allows retry recovery', async () => {
+    (api.listLogIssues as any).mockResolvedValue({ issues: [openIssue], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...openIssue, releases: [], samples: [] });
+    (api.analyzeLogIssue as any)
+      .mockRejectedValueOnce(new Error('agent unavailable'))
+      .mockResolvedValueOnce({
+        sessionId: 'session-retry',
+        agentId: 'agent-lead',
+        reused: false,
+        issue: { ...openIssue, analyzeSessionId: 'session-retry' },
+      });
+    const toast = vi.fn();
+
+    render(<IssuesView projectId="p1" showToast={toast} />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Analyze failed: agent unavailable');
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze' }));
+    await waitFor(() => expect(api.analyzeLogIssue).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/Analyze completed/)).toBeInTheDocument();
+  });
+
+  it('uses the explicit start-another path while retaining canonical reopen', async () => {
+    const linked = { ...openIssue, analyzeSessionId: 'canonical-session' };
+    (api.listLogIssues as any).mockResolvedValue({ issues: [linked], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...linked, releases: [], samples: [] });
+    (api.analyzeLogIssue as any).mockResolvedValue({
+      sessionId: 'second-session',
+      agentId: 'agent-lead',
+      reused: false,
+      issue: { ...linked, analyzeSessionId: 'second-session' },
+    });
+
+    render(<IssuesView projectId="p1" />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Start another analysis' }));
+
+    await waitFor(() =>
+      expect(api.analyzeLogIssue).toHaveBeenCalledWith('p1', 'iss-1', { startAnother: true }),
+    );
+  });
+
+  it('reconciles a completed WebSocket action into the linked state', async () => {
+    (api.listLogIssues as any).mockResolvedValue({ issues: [openIssue], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...openIssue, releases: [], samples: [] });
+    render(<IssuesView projectId="p1" />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub:log_issue_action', {
+          detail: {
+            type: 'log_issue_action',
+            projectId: 'p1',
+            issueId: 'iss-1',
+            action: 'fix',
+            status: 'completed',
+            sessionId: 'fix-ws-session',
+            cardId: 'fix-ws-card',
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText(/Fix completed/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open fix' })).toBeInTheDocument();
+  });
+
+  it('reconciles a remote start-another workflow over an existing canonical link', async () => {
+    const linked = { ...openIssue, fixSessionId: 'old-session', fixCardId: 'old-card' };
+    (api.listLogIssues as any).mockResolvedValue({ issues: [linked], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...linked, releases: [], samples: [] });
+    render(<IssuesView projectId="p1" />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub:log_issue_action', {
+          detail: {
+            type: 'log_issue_action',
+            projectId: 'p1',
+            issueId: 'iss-1',
+            action: 'fix',
+            status: 'in_flight',
+            sessionId: 'new-session',
+            cardId: 'new-card',
+          },
+        }),
+      );
+    });
+    expect(await screen.findByText('Starting Fix…')).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub:log_issue_action', {
+          detail: {
+            type: 'log_issue_action',
+            projectId: 'p1',
+            issueId: 'iss-1',
+            action: 'fix',
+            status: 'completed',
+            sessionId: 'old-session',
+            cardId: 'old-card',
+          },
+        }),
+      );
+    });
+    expect(await screen.findByText('Starting Fix…')).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub:log_issue_action', {
+          detail: {
+            type: 'log_issue_action',
+            projectId: 'p1',
+            issueId: 'iss-1',
+            action: 'fix',
+            status: 'completed',
+            sessionId: 'new-session',
+            cardId: 'new-card',
+          },
+        }),
+      );
+    });
+    expect(await screen.findByText(/Fix completed · new-card/)).toBeInTheDocument();
+  });
+
+  it('restores the old canonical link when a replacement workflow fails', async () => {
+    const linked = { ...openIssue, fixSessionId: 'old-session', fixCardId: 'old-card' };
+    (api.listLogIssues as any).mockResolvedValue({ issues: [linked], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...linked, releases: [], samples: [] });
+    render(<IssuesView projectId="p1" />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub:log_issue_action', {
+          detail: {
+            type: 'log_issue_action',
+            projectId: 'p1',
+            issueId: 'iss-1',
+            action: 'fix',
+            status: 'in_flight',
+            sessionId: 'replacement-session',
+            cardId: 'replacement-card',
+          },
+        }),
+      );
+    });
+    expect(await screen.findByText('Starting Fix…')).toBeInTheDocument();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent('agenthub:log_issue_action', {
+          detail: {
+            type: 'log_issue_action',
+            projectId: 'p1',
+            issueId: 'iss-1',
+            action: 'fix',
+            status: 'failed',
+            sessionId: 'replacement-session',
+            cardId: 'replacement-card',
+            error: 'agent unavailable',
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText(/Fix failed: agent unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open fix' })).toBeInTheDocument();
+    expect(screen.getByText(/Fix card linked · old-card/)).toBeInTheDocument();
+  });
+
   it('drops a stale list response when the status tab changed before it resolved', async () => {
     let resolveOpen: () => void = () => {};
     let resolveIgnored: () => void = () => {};
