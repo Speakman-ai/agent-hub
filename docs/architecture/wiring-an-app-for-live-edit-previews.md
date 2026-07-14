@@ -1,6 +1,8 @@
 # Wiring an App for Live-Edit Session Previews
 
-**Audience:** project authors wiring their app's `docker-compose.preview.yml` so that Agent Hub session previews render correctly *and* pick up agent edits without a restart. Both halves are opt-in per project — apps that don't follow these steps keep working the way they did before, just without the live-edit and with a broken iframe for frameworks that emit absolute asset URLs.
+> **Superseded by the dev-server pivot.** The two opt-ins below (`entryWorkdir` + `shadowDirs` live-mount, and `AGENT_HUB_PREVIEW_BASE_PATH` asset-URL wiring) belonged to the compose **app-wrapping** model. That model is retired: the app now runs as a **managed host process** (`prEnv.devServer.startCommand`) that reads the worktree directly, so live edits are native (nothing to bind-mount). For apps compatible with the proxy mount path, asset URLs resolve through the `portMap` preview proxy without per-app base-path plumbing; apps that hardcode `/` for HMR or assets still need the opt-in subdomain mode. To wire an app now, author `prEnv.devServer` (see the **preview-setup** skill) and, for legacy `preview.compose` projects, run the migration plan at `GET /api/projects/:projectId/preview/migrate-devserver-plan`. Canonical model: [`devserver-preview-pivot-adr`](./devserver-preview-pivot-adr.md). The steps below are kept for historical context only.
+
+**Audience:** project authors wiring their app's `docker-compose.preview.yml` so that Agent Hub session previews render correctly _and_ pick up agent edits without a restart. Both halves are opt-in per project — apps that don't follow these steps keep working the way they did before, just without the live-edit and with a broken iframe for frameworks that emit absolute asset URLs.
 
 Read alongside [`preview-model-worktree-previews-only`](./preview-model-worktree-previews-only.md) (canonical preview model) and [`session-previews-devcontainer-style-bind-mount-and-url-routing`](./session-previews-devcontainer-style-bind-mount-and-url-routing.md) (the RFC these features ship from).
 
@@ -28,11 +30,11 @@ Project config additions:
       "compose": {
         "entryService": "frontend",
         "entryPort": 4200,
-        "entryWorkdir": "/workspace",          // ← absolute in-container path
-        "shadowDirs": ["node_modules", "dist"] // ← keep image-baked
-      }
-    }
-  }
+        "entryWorkdir": "/workspace", // ← absolute in-container path
+        "shadowDirs": ["node_modules", "dist"], // ← keep image-baked
+      },
+    },
+  },
 }
 ```
 
@@ -42,11 +44,11 @@ Agent Hub then emits a per-session compose override:
 services:
   frontend:
     ports: !override
-      - "4123:4200"
+      - '4123:4200'
     volumes: !override
-      - ".:/workspace"               # bind source = --project-directory
-      - "/workspace/node_modules"    # anonymous; preserves image's deps
-      - "/workspace/dist"            # anonymous; preserves build output
+      - '.:/workspace' # bind source = --project-directory
+      - '/workspace/node_modules' # anonymous; preserves image's deps
+      - '/workspace/dist' # anonymous; preserves build output
 ```
 
 ### Two things the app side must get right
@@ -58,14 +60,14 @@ services:
 
 **Shadow every directory the app writes to.** `node_modules` is the obvious one. Less obvious cases:
 
-| Framework | Directories to shadow |
-|---|---|
-| Next.js | `node_modules`, `.next` |
-| Vite + Tailwind | `node_modules`, `dist`, `node_modules/.vite` |
-| Angular CLI | `node_modules`, `dist`, `.angular` |
-| Django (collectstatic) | `staticfiles` |
-| Rails (precompile) | `tmp`, `public/assets` |
-| Go (with build cache) | `bin`, `vendor` (if checked in: don't shadow) |
+| Framework              | Directories to shadow                         |
+| ---------------------- | --------------------------------------------- |
+| Next.js                | `node_modules`, `.next`                       |
+| Vite + Tailwind        | `node_modules`, `dist`, `node_modules/.vite`  |
+| Angular CLI            | `node_modules`, `dist`, `.angular`            |
+| Django (collectstatic) | `staticfiles`                                 |
+| Rails (precompile)     | `tmp`, `public/assets`                        |
+| Go (with build cache)  | `bin`, `vendor` (if checked in: don't shadow) |
 
 If you miss one, the symptom is usually slow first-request (the dev server rebuilds artifacts that should have been image-cached) or, in some cases, an immediate import-resolution failure.
 
@@ -110,7 +112,7 @@ export default defineConfig({
 ```yaml
 services:
   frontend:
-    command: ["npx", "vite", "--host", "0.0.0.0", "--port", "5173"]
+    command: ['npx', 'vite', '--host', '0.0.0.0', '--port', '5173']
     # no extra env needed — agent-hub injects AGENT_HUB_PREVIEW_BASE_PATH
 ```
 
@@ -157,7 +159,7 @@ Subdomain previews (one host per session) would make all of this redundant — t
 Your manifest URL is resolving outside the proxy mount — the browser receives HTML (the Hub auth gate or SPA fallback) where it expected `application/manifest+json`. Check:
 
 1. The HTML `<base href>` shows the proxy mount path (Hub rewrites this automatically; if not, your upstream may be emitting `<base href>` with attributes the regex doesn't match — file a bug with the exact tag).
-2. `<link rel="manifest" href="…">` is *relative* (no leading `/`). If it's absolute (`href="/manifest.webmanifest"`), the `<base href>` doesn't help — change to relative or use Step 2's env var so the dev server emits the right absolute path.
+2. `<link rel="manifest" href="…">` is _relative_ (no leading `/`). If it's absolute (`href="/manifest.webmanifest"`), the `<base href>` doesn't help — change to relative or use Step 2's env var so the dev server emits the right absolute path.
 
 ### "Page renders but blank/empty white area"
 
@@ -199,10 +201,10 @@ Concrete config verified on a dev deploy (`https://agenthub.dev.example.com`):
         "entryService": "frontend",
         "entryPort": 4200,
         "entryWorkdir": "/app",
-        "shadowDirs": ["node_modules", "dist", ".angular"]
-      }
-    }
-  }
+        "shadowDirs": ["node_modules", "dist", ".angular"],
+      },
+    },
+  },
 }
 ```
 

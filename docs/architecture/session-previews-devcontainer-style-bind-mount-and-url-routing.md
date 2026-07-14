@@ -1,5 +1,7 @@
 # Session Previews — Devcontainer-Style Bind-Mount + URL Routing Plan
 
+> **Superseded on the app-wrapping half by the dev-server pivot.** This RFC's live-edit mechanism (bind-mounting the worktree into the entry-service *container*) no longer applies: the app runs as a **managed host process** that reads the worktree directly, so hot-reload is native and there is nothing to bind-mount. The URL-routing half (serving through the authenticated preview proxy, base-href injection, HMR-WS tunnelling) survives and is now driven by the `portMap` model. Canonical runtime model: [`devserver-preview-pivot-adr`](./devserver-preview-pivot-adr.md).
+
 **Status:** Draft / RFC, 2026-05-26. Not implemented. Read alongside [`preview-model-worktree-previews-only`](./preview-model-worktree-previews-only.md) — this proposal upgrades the runtime behaviour of that model; it does **not** propose bringing back the PR-environments subsystem (#886).
 
 This page answers the operator question: **"Why doesn't the preview iframe show the change my agent just made, and what should change so it does?"**

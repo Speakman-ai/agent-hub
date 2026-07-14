@@ -1,6 +1,8 @@
 # Preview Model — Worktree Previews Only
 
-**Status:** Canonical as of 2026-05-11 (epic *Strip PR Environments — In-Session Worktree Previews Only*).
+> **Annotated for the dev-server pivot.** The "worktree previews only" answer below is still correct: previews run against the active session worktree, and per-PR public preview environments are not Agent Hub's job. **But the app no longer boots via compose app-wrapping.** It now runs as a **managed host process** started from `prEnv.devServer.startCommand` (default `npm run dev`), with `docker compose` kept for backing services only. The `<agenthub:preview>` control block is retired — a human starts the preview with the **Start preview** toolbar action and agents observe/drive it via the ReAct `preview` tool. See [`devserver-preview-pivot-adr`](./devserver-preview-pivot-adr.md) for the canonical runtime model.
+
+**Status:** Canonical as of 2026-05-11 (epic *Strip PR Environments — In-Session Worktree Previews Only*). Runtime model updated by the dev-server pivot (see banner above).
 
 This page is the answer to: **"When I'm working in Agent Hub, how do I see the change I just made?"** It also answers: **"How do I show stakeholders a preview of an open PR?"** — and the answer to the second question is no longer Agent Hub's responsibility.
 

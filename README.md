@@ -131,7 +131,7 @@ products — one bill, one data boundary, one place to look:
 | Standalone secret scanners          | Per-commit secret scanning                 |
 
 And because the same agents can author the config, an agent stands the platform up for itself —
-point it at your repo and it writes the `ci.yaml`, `deploy.yaml`, and preview compose files.
+point it at your repo and it writes the `ci.yaml`, `deploy.yaml`, and dev-server preview config.
 
 ---
 
