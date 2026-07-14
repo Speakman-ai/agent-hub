@@ -83,7 +83,7 @@ import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection';
 import PreviewSection from './components/PreviewSection';
 import RumSettingsSection from './components/RumSettingsSection';
-import LogSourcesSettingsSection from './components/LogSourcesSettingsSection';
+import LogsPage from './components/logs/LogsPage';
 import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
@@ -4046,12 +4046,6 @@ export default function App({ initialView }: any = {}) {
     return projects.filter((p: any) => p.id === id);
   }, [currentView, projects]);
 
-  const logsScopedProjects = useMemo(() => {
-    if (!currentView.startsWith('logs:')) return [];
-    const id = currentView.slice('logs:'.length);
-    return projects.filter((p: any) => p.id === id);
-  }, [currentView, projects]);
-
   const chatGithubRepo = activeChatProject?.githubRepo ?? null;
   const chatProjectIsWorkflow = activeChatProject?.mode === 'workflow';
 
@@ -5635,14 +5629,24 @@ export default function App({ initialView }: any = {}) {
                   </div>
                 </div>
               ) : currentView.startsWith('logs:') ? (
-                <div className="flex-1 overflow-y-auto p-4 md:p-6">
-                  <div className="max-w-4xl mx-auto">
-                    <LogSourcesSettingsSection
-                      projects={logsScopedProjects}
-                      showToast={showToast}
-                    />
-                  </div>
-                </div>
+                (() => {
+                  // Resolve the selected project by id (not positionally) so the
+                  // Logs header and Sources tab always show the project named in
+                  // the route, even in a multi-project workspace.
+                  const logsProjectId = currentView.slice('logs:'.length);
+                  const logsProject = projects.find((p: any) => p.id === logsProjectId);
+                  return (
+                    <div className="flex-1 overflow-hidden p-4 md:p-6">
+                      <div className="mx-auto flex h-full max-w-6xl flex-col">
+                        <LogsPage
+                          projectId={logsProjectId}
+                          projectName={logsProject?.name}
+                          showToast={showToast}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
               ) : currentView.startsWith('aws:') ? (
                 <div className="flex-1 overflow-y-auto p-4 md:p-6">
                   <div className="max-w-4xl mx-auto">
