@@ -174,10 +174,13 @@ export function AppProvider({ children }: any) {
         const fromConfig = modelConfig?.engineDefaultModels?.[engine];
         if (fromConfig)
             return fromConfig;
+        const available = modelConfig?.engineValidModels?.[engine];
+        if (Array.isArray(available) && available.length > 0)
+            return available[0];
         if (engine === 'cursor-agent')
             return 'composer-2.5';
         if (engine === 'codex-cli')
-            return 'gpt-5.5';
+            return 'gpt-5.6-luna';
         if (engine === 'grok-cli')
             return 'grok-4.5';
         return 'claude-opus-4-8';

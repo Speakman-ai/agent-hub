@@ -239,7 +239,10 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       const codexCache = readCodexModelsCacheForUser(userId, deps.config.dataDir);
       allowed = resolveSelectableCodexModels(staticAllowed, codexCache);
     }
-    let resolved = defaultModelForEngine(engine);
+    const configuredDefault = defaultModelForEngine(engine);
+    let resolved = allowed.includes(configuredDefault)
+      ? configuredDefault
+      : allowed[0] || configuredDefault;
     if (model && allowed.includes(model)) {
       resolved = model;
     }
@@ -468,6 +471,18 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       return res.status(409).json({ error: 'Agent id already exists' });
     }
     const agentEngine = engine || 'claude-code';
+    let defaultAgentModel = defaultModelForEngine(agentEngine);
+    if (agentEngine === 'codex-cli') {
+      const userId = (req as AuthenticatedRequest).authUserId?.trim();
+      const staticAllowed = deps.config.engineValidModels[agentEngine] || [];
+      const allowed = resolveSelectableCodexModels(
+        staticAllowed,
+        readCodexModelsCacheForUser(userId, deps.config.dataDir),
+      );
+      if (allowed.length > 0 && !allowed.includes(defaultAgentModel)) {
+        defaultAgentModel = allowed[0];
+      }
+    }
     // The schema is partial — fields like `interval` / `prompt` on the
     // heartbeat config are optional. Build a fully-populated record so
     // downstream readers (heartbeat scheduler, settings UI) don't have to
@@ -483,7 +498,7 @@ export default function createAgentRoutes(deps: RouteDeps): Router {
       id,
       name: name || id,
       engine: agentEngine,
-      model: model || defaultModelForEngine(agentEngine),
+      model: model || defaultAgentModel,
       systemPrompt: systemPrompt || '',
       color: color || project.color || '#6b7280',
       heartbeat: heartbeatConfig,

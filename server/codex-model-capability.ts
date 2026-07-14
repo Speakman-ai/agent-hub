@@ -49,6 +49,8 @@ export const CODEX_CAPABILITY_MODELS: readonly string[] = [
   'gpt-5.6-luna',
 ];
 
+export const CODEX_DEFAULT_MODEL = 'gpt-5.6-luna';
+
 export interface CodexModelsCache {
   /** `client_version` stamp the cache was written by, or null if absent. */
   clientVersion: string | null;
@@ -131,6 +133,18 @@ function parseModelsCacheFile(path: string): CodexModelsCache | null {
 export function advertisedCapabilityModels(cache: CodexModelsCache | null): string[] {
   if (!cache) return [];
   return CODEX_CAPABILITY_MODELS.filter((slug) => cache.modelSlugs.has(slug));
+}
+
+/** Capability-gated models advertised by the Codex home used for a spawn. */
+export function advertisedCapabilityModelsForHome(codexHome: string): string[] {
+  return advertisedCapabilityModels(readCodexModelsCache(codexHome));
+}
+
+export function advertisedCapabilityModelsForEnv(env: {
+  CODEX_HOME?: string | undefined;
+  HOME?: string | undefined;
+}): string[] {
+  return advertisedCapabilityModelsForHome(codexHomeFromEnv(env));
 }
 
 /**

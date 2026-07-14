@@ -108,11 +108,7 @@ import {
 import { enrichCodexFileChangeDiffs } from './codex-file-change-diff.js';
 import { type ProjectAwsFiles, writeProjectAwsFiles } from './project-aws-config-file.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
-import {
-  readCodexModelsCache,
-  advertisedCapabilityModels,
-  codexHomeFromEnv,
-} from './codex-model-capability.js';
+import { advertisedCapabilityModelsForEnv } from './codex-model-capability.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import { claudePermissionModeForSpawn, disableNativeSkillToolArgs } from './claude-cli-args.js';
 import {
@@ -3212,9 +3208,7 @@ export default function createChatHandler(deps: ChatHandlerDeps): ChatHandlerRes
         // matching what /api/config/models offers as selectable. On an older
         // binary the model is absent from the cache, so it's stripped here and
         // Codex falls back to its ChatGPT default instead of 400ing the turn.
-        const codexCapabilityModels = advertisedCapabilityModels(
-          readCodexModelsCache(codexHomeFromEnv(sessionCliEnv)),
-        );
+        const codexCapabilityModels = advertisedCapabilityModelsForEnv(sessionCliEnv);
         if (model && shouldPassModelFlag(codexAuth.mode, model, codexCapabilityModels)) {
           args.push('--model', model);
         } else if (model) {

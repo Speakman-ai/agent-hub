@@ -114,6 +114,26 @@ describe('buildAuthenticatedModelConfig', () => {
     expect(out.engineDefaultModels['codex-cli']).toBe('gpt-5.5');
   });
 
+  it('uses the capability-gated Luna default only when the CLI advertises it', () => {
+    const cfg = makeConfig();
+    cfg.engineDefaultModels['codex-cli'] = 'gpt-5.6-luna';
+    cfg.engineValidModels['codex-cli'] = ['gpt-5.5', 'gpt-5.4'];
+    const auth = {
+      'claude-code': false,
+      'cursor-agent': false,
+      'gemini-cli': false,
+      'codex-cli': true,
+      'grok-cli': false,
+    } as const;
+
+    expect(buildAuthenticatedModelConfig(cfg, auth).engineDefaultModels['codex-cli']).toBe('');
+    expect(
+      buildAuthenticatedModelConfig(cfg, auth, {
+        codexSelectableModels: ['gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4'],
+      }).engineDefaultModels['codex-cli'],
+    ).toBe('gpt-5.6-luna');
+  });
+
   it('override is ignored when codex is unauthenticated (empty list)', () => {
     const cfg = makeConfig();
     const out = buildAuthenticatedModelConfig(

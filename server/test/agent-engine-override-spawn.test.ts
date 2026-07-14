@@ -31,6 +31,10 @@ import { createUser } from '../users-store.js';
 import { createMembership } from '../memberships-store.js';
 import { getActiveOrgId } from '../orgs.js';
 import config from '../config.js';
+import {
+  readCodexModelsCacheForUser,
+  resolveSelectableCodexModels,
+} from '../codex-model-capability.js';
 
 interface User {
   id: string;
@@ -172,7 +176,10 @@ describe('Per-user per-agent engine override — session spawn', () => {
     expect(res.body.engine).toBe('codex-cli');
     // The model should be valid for codex-cli (i.e., should NOT be
     // whatever the agent shared as its claude-code default).
-    const codexModels = config.engineValidModels['codex-cli'] || [];
+    const codexModels = resolveSelectableCodexModels(
+      config.engineValidModels['codex-cli'] || [],
+      readCodexModelsCacheForUser(userA.id, config.dataDir),
+    );
     expect(codexModels).toContain(res.body.model);
   });
 });

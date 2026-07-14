@@ -287,7 +287,7 @@ describe('config.ts — codex-cli model defaults', () => {
     return (await import('./config.js')).default;
   }
 
-  it('offers exactly the ChatGPT-OAuth-accepted Codex models, default gpt-5.5', async () => {
+  it('offers the baseline Codex models and configures Luna as the default', async () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['codex-cli']).toEqual([
       'gpt-5.5',
@@ -295,29 +295,21 @@ describe('config.ts — codex-cli model defaults', () => {
       'gpt-5.4-mini',
       'gpt-5.2',
     ]);
-    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.5');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6-luna');
   });
 
-  it('does NOT offer gpt-5.6 — rejected under ChatGPT OAuth, unknown to codex-cli', async () => {
-    // Regression: gpt-5.6 was briefly the default but the ChatGPT backend
-    // rejects it (HTTP 400 "not supported when using Codex with a ChatGPT
-    // account") and the installed codex-cli can't resolve its metadata, so a
-    // default of gpt-5.6 broke every ChatGPT-account Codex session. It must not
-    // be selectable or the default.
+  it('keeps capability-gated Luna out of the static baseline', async () => {
     const cfg = await importDefaults();
-    expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.6');
-    expect(cfg.engineDefaultModels['codex-cli']).not.toBe('gpt-5.6');
+    expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.6-luna');
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6-luna');
   });
 
-  it('the codex default model is forwardable under ChatGPT OAuth (would have caught the gpt-5.6 bug)', async () => {
-    // Root-cause invariant behind support ticket "5.6 not working": the codex
-    // default was gpt-5.6, which is NOT in CODEX_CHATGPT_ALLOWED_MODELS, so every
-    // ChatGPT-account session on the default forwarded `--model gpt-5.6` and got
-    // an HTTP 400. The default must always be a model the ChatGPT backend accepts.
+  it('forwards the Codex default only when capability metadata advertises it', async () => {
     const cfg = await importDefaults();
     const codexDefault = cfg.engineDefaultModels['codex-cli'];
-    expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain(codexDefault);
-    expect(shouldPassModelFlag('chatgpt', codexDefault)).toBe(true);
+    expect(CODEX_CHATGPT_ALLOWED_MODELS).not.toContain(codexDefault);
+    expect(shouldPassModelFlag('chatgpt', codexDefault)).toBe(false);
+    expect(shouldPassModelFlag('chatgpt', codexDefault, [codexDefault])).toBe(true);
   });
 
   it('does NOT offer gpt-5.3-codex — deprecated, rejected under ChatGPT OAuth', async () => {
@@ -326,8 +318,7 @@ describe('config.ts — codex-cli model defaults', () => {
     const cfg = await importDefaults();
     expect(cfg.engineValidModels['codex-cli']).not.toContain('gpt-5.3-codex');
     expect(cfg.engineDefaultModels['codex-cli']).not.toBe('gpt-5.3-codex');
-    // The default must always be a member of the valid list.
-    expect(cfg.engineValidModels['codex-cli']).toContain(cfg.engineDefaultModels['codex-cli']);
+    expect(cfg.engineDefaultModels['codex-cli']).toBe('gpt-5.6-luna');
   });
 });
 

@@ -21,6 +21,10 @@
  * through the override engine — never the agent's shared engine.
  */
 import { defaultModelForEngine } from './config.js';
+import {
+  readCodexModelsCacheForUser,
+  resolveSelectableCodexModels,
+} from './codex-model-capability.js';
 import { getUserPreferencesRow } from './user-preferences-store.js';
 import type { AppConfig } from './types.js';
 
@@ -134,7 +138,14 @@ export function resolveEffectiveModel(
   const explicit = opts.explicitModel?.trim();
   if (explicit) return explicit;
 
-  const allowed = cfg.engineValidModels?.[engine];
+  const staticAllowed = cfg.engineValidModels?.[engine];
+  const allowed =
+    engine === 'codex-cli' && Array.isArray(staticAllowed)
+      ? resolveSelectableCodexModels(
+          staticAllowed,
+          readCodexModelsCacheForUser(opts.ownerUserId ?? null, cfg.dataDir),
+        )
+      : staticAllowed;
 
   // Per-user "default model" pick (from the agent / reviewer model dropdown).
   // Only honored when it's still a valid model for the resolved engine, so a
@@ -157,5 +168,15 @@ export function resolveEffectiveModel(
     if (Array.isArray(allowed) && allowed.includes(agentM)) return agentM;
   }
 
-  return cfg.engineDefaultModels?.[engine] ?? cfg.defaultModel ?? defaultModelForEngine(engine);
+  const configuredDefault =
+    cfg.engineDefaultModels?.[engine] ?? cfg.defaultModel ?? defaultModelForEngine(engine);
+  if (
+    engine === 'codex-cli' &&
+    Array.isArray(allowed) &&
+    allowed.length > 0 &&
+    !allowed.includes(configuredDefault)
+  ) {
+    return allowed[0];
+  }
+  return configuredDefault;
 }

@@ -149,22 +149,20 @@ describe('<TopBar /> engine picker', () => {
     expect(onEngineChange!).toHaveBeenCalledWith('codex-cli');
   });
 
-  it('reflects codex-cli as the active engine and exposes only ChatGPT-accepted models', () => {
+  it('reflects codex-cli as the active engine and exposes current Codex models', () => {
     // Regression: previously the Codex dropdown offered gpt-5, gpt-5-mini,
     // gpt-5-codex, gpt-5.2-codex, and gpt-5.1-codex-max — all rejected with
     // HTTP 400 under ChatGPT OAuth. The current allowlist must only offer
-    // models the ChatGPT backend accepts. As of June 2026 gpt-5.3-codex is
-    // also no longer accepted under ChatGPT OAuth, and as of July 2026 gpt-5.6
-    // is likewise rejected (and unknown to the installed codex-cli) — neither
-    // must be selectable. Keep in sync with server/config.ts →
-    // engineValidModels['codex-cli'].
-    renderTopBar({ sessionEngine: 'codex-cli', sessionModel: 'gpt-5.5' });
+    // models the ChatGPT backend accepts. Luna is capability-gated by the
+    // server and included in the offline fallback for the web picker.
+    renderTopBar({ sessionEngine: 'codex-cli', sessionModel: 'gpt-5.6-luna' });
     const trigger = screen.getByRole('button', { name: /select engine/i });
     expect((trigger as any).textContent).toMatch(/Codex/);
 
     const modelTrigger = screen.getByTitle(/^Model: /);
     fireEvent.click(modelTrigger as any);
     // Present:
+    expect(screen.getAllByText(/^GPT-5.6 Luna$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^GPT-5.5$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^GPT-5.4$/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/GPT-5.4 Mini/).length).toBeGreaterThan(0);

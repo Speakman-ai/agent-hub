@@ -40,6 +40,7 @@ import { appendCodexShellEnvironmentPolicyArgs } from './codex-exec-sandbox.js';
 import { resolveGrokSpawnModel } from './config.js';
 import type { AppConfig } from './types.js';
 import { resolveCodexHomeForProbe } from './host-cli-home.js';
+import { advertisedCapabilityModelsForHome } from './codex-model-capability.js';
 import type { SupportedEngine } from './engine-availability.js';
 
 export interface OneShotSpawnInput {
@@ -137,7 +138,10 @@ export function buildOneShotSpawnArgs(
     // through models on the curated allowlist.
     const codexHome = resolveCodexHomeForProbe(input.env ?? process.env, cfg.dataDir);
     const auth = detectCodexAuthMode(codexHome);
-    if (trimmedModel && shouldPassModelFlag(auth.mode, trimmedModel)) {
+    if (
+      trimmedModel &&
+      shouldPassModelFlag(auth.mode, trimmedModel, advertisedCapabilityModelsForHome(codexHome))
+    ) {
       args.push('--model', trimmedModel);
     }
     // `?.trim()` guards against an in-memory PATCH config value that wasn't

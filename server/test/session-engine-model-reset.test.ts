@@ -15,8 +15,8 @@
  * resets the `model` column to `defaultModelForEngine(engine)` so the
  * session is never left in a mixed/invalid state.
  *
- * The codex default asserted below is gpt-5.5 (gpt-5.6 was removed: rejected
- * under ChatGPT OAuth and unknown to the installed codex-cli).
+ * The reset model is the first capability-resolved Codex model when the
+ * configured Luna default is not advertised by the installed CLI.
  */
 
 import './setup.js';
@@ -58,8 +58,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
       .send({ engine: 'codex-cli' })
       .expect(200);
     expect(switched.body.engine).toBe('codex-cli');
-    // Default codex model per config.ts.
-    expect(switched.body.model).toBe('gpt-5.5');
+    expect(switched.body.model).toBeTruthy();
 
     // Sanity check: a subsequent `PUT .../model` with the reset-to value
     // round-trips cleanly (the client no longer has a stale mismatched
@@ -67,9 +66,9 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
     // server accepts it).
     const replay = await request
       .put(`/api/sessions/${sessionId}/model`)
-      .send({ model: 'gpt-5.5' })
+      .send({ model: switched.body.model })
       .expect(200);
-    expect(replay.body.model).toBe('gpt-5.5');
+    expect(replay.body.model).toBe(switched.body.model);
   });
 
   it('preserves the model on a same-engine PUT (no unnecessary reset)', async () => {
@@ -106,7 +105,7 @@ describe('PUT /api/sessions/:id/engine — model reset semantics', () => {
       .send({ engine: 'codex-cli' })
       .expect(200);
     expect(switched.body.engine).toBe('codex-cli');
-    expect(switched.body.model).toBe('gpt-5.5');
+    expect(switched.body.model).toBeTruthy();
   });
 
   it('returns 404 when the session does not exist (no silent model write)', async () => {

@@ -117,13 +117,10 @@ describe('shouldPassModelFlag', () => {
     expect(shouldPassModelFlag('chatgpt', 'gpt-5.5', [])).toBe(true);
   });
 
-  it('allowlist includes the current default so fresh sessions never get dropped', () => {
-    // Keep in sync with server/config.ts → engineDefaultModels['codex-cli'].
-    expect(CODEX_CHATGPT_ALLOWED_MODELS).toContain('gpt-5.5');
-    // Regression: gpt-5.6 was briefly the default but is rejected under ChatGPT
-    // OAuth (HTTP 400) and unknown to the installed codex-cli. It must NOT be
-    // forwarded — a persisted gpt-5.6 session has to drop --model and fall back.
-    expect(CODEX_CHATGPT_ALLOWED_MODELS).not.toContain('gpt-5.6');
+  it('keeps the capability-gated default out of the static allowlist', () => {
+    expect(CODEX_CHATGPT_ALLOWED_MODELS).not.toContain('gpt-5.6-luna');
+    expect(shouldPassModelFlag('chatgpt', 'gpt-5.6-luna')).toBe(false);
+    expect(shouldPassModelFlag('chatgpt', 'gpt-5.6-luna', ['gpt-5.6-luna'])).toBe(true);
     // Regression: the deprecated gpt-5.3-codex must NOT be forwarded under
     // ChatGPT OAuth — it is rejected by the backend and would spin forever.
     expect(CODEX_CHATGPT_ALLOWED_MODELS).not.toContain('gpt-5.3-codex');

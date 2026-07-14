@@ -29,6 +29,7 @@ import {
 } from './preview/preview-ready-timeout-bounds.js';
 import { normalizeSmtpConfig } from './smtp-config.js';
 import { coerceSessionEnvAdapterMode } from './session-env/sysbox-capability.js';
+import { CODEX_DEFAULT_MODEL } from './codex-model-capability.js';
 
 export { refreshShellPath, getCachedShellPath };
 
@@ -214,11 +215,9 @@ const DEFAULT_ENGINE_VALID_MODELS: Record<string, string[]> = {
   // Empirically the following fail under ChatGPT:
   //   gpt-5, gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max,
   //   gpt-5.3-codex-spark (Pro-only research preview), gpt-5.3-codex (no longer
-  //   accepted as of June 2026), and gpt-5.6 (as of July 2026: rejected with the
-  //   same HTTP 400, and the installed codex-cli doesn't even recognize it,
-  //   warning "Model metadata for 'gpt-5.6' not found"). gpt-5.6 was removed
-  //   from the selectable list and is no longer the default; its display label
-  //   is retained for historical sessions in systemBannerModel.ts.
+  //   accepted as of June 2026), and the bare gpt-5.6 id (as of July 2026:
+  //   rejected with the same HTTP 400 and not recognized by codex-cli). The
+  //   tiered gpt-5.6 family is exposed separately through capability gating.
   // These currently succeed under ChatGPT OAuth and are the only IDs we
   // allow the UI to select. The client (TopBar) and mobile (engineOptions) read
   // this list from GET /api/config/models, so there is nothing to hand-sync
@@ -240,14 +239,10 @@ const DEFAULT_ENGINE_DEFAULT_MODELS: Record<string, string> = {
   'claude-code': 'claude-opus-4-8',
   'cursor-agent': 'composer-2.5',
   'gemini-cli': 'gemini-2.5-pro',
-  // Codex: default is gpt-5.5, the strongest general coding model accepted
-  // under BOTH auth modes (ChatGPT OAuth and API-key). The prior default
-  // gpt-5.6 turned out to be rejected under ChatGPT OAuth (HTTP 400, "not
-  // supported when using Codex with a ChatGPT account") and unknown to the
-  // installed codex-cli, so it was removed from selection just like the earlier
-  // gpt-5.3-codex. Older IDs like gpt-5.2-codex / gpt-5-codex / gpt-5.1-codex-max
-  // are likewise rejected with HTTP 400 under ChatGPT OAuth.
-  'codex-cli': 'gpt-5.5',
+  // Codex: Luna is the preferred model when the installed CLI advertises the
+  // capability-gated gpt-5.6 family. Older CLIs keep the baseline list and
+  // runtime forwarding drops Luna when its metadata is unavailable.
+  'codex-cli': CODEX_DEFAULT_MODEL,
   // grok-4.5 now powers Grok Build upstream — make it the Hub default too.
   'grok-cli': 'grok-4.5',
 };

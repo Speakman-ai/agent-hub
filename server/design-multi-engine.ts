@@ -3,6 +3,7 @@
  * for `design-chat.ts`. See `design-multi-engine.test.ts` for Vitest coverage.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { advertisedCapabilityModelsForEnv } from './codex-model-capability.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import config, { resolveGrokSpawnModel } from './config.js';
 import {
@@ -223,7 +224,14 @@ export function buildDesignSpawnArgs(input: BuildDesignSpawnArgsInput): {
     }
     appendCodexShellEnvironmentPolicyArgs(args, codexEnv);
     const codexAuth = detectCodexAuthMode();
-    if (model && shouldPassModelFlag(codexAuth.mode, model)) {
+    if (
+      model &&
+      shouldPassModelFlag(
+        codexAuth.mode,
+        model,
+        advertisedCapabilityModelsForEnv(codexEnv ?? process.env),
+      )
+    ) {
       args.push('--model', model);
     } else if (model) {
       console.warn(

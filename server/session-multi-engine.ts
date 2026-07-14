@@ -3,6 +3,7 @@
  * read-only advisor turns in multi-agent sessions.
  */
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { advertisedCapabilityModelsForEnv } from './codex-model-capability.js';
 import {
   appendCodexExecSandboxFlags,
   appendCodexShellEnvironmentPolicyArgs,
@@ -141,7 +142,14 @@ export function buildSessionMultiSpawnArgs(
     });
     appendCodexShellEnvironmentPolicyArgs(args, input.codexEnv);
     const codexAuth = detectCodexAuthMode();
-    if (model && shouldPassModelFlag(codexAuth.mode, model)) {
+    if (
+      model &&
+      shouldPassModelFlag(
+        codexAuth.mode,
+        model,
+        advertisedCapabilityModelsForEnv(input.codexEnv ?? process.env),
+      )
+    ) {
       args.push('--model', model);
     } else if (model) {
       console.warn(

@@ -4,7 +4,10 @@
 // builder is what could silently regress when adding a new engine, so
 // it's the highest-value layer to lock down.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { buildOneShotSpawnArgs } from './one-shot-spawn.js';
 import type { AppConfig } from './types.js';
 
@@ -15,6 +18,28 @@ const CFG: AppConfig = {
   codexBin: '/bin/codex',
   grokBin: '/bin/grok',
 } as AppConfig;
+
+const tempHomes: string[] = [];
+
+afterEach(() => {
+  for (const home of tempHomes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
+function writeCodexHomeWithModels(home: string, models: string[]): void {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt' }));
+  writeFileSync(
+    join(home, 'models_cache.json'),
+    JSON.stringify({ client_version: '0.144.3', models: models.map((slug) => ({ slug })) }),
+  );
+}
+
+function codexHomeWithModels(models: string[]): string {
+  const home = mkdtempSync(join(tmpdir(), 'agent-hub-codex-models-'));
+  writeCodexHomeWithModels(home, models);
+  tempHomes.push(home);
+  return home;
+}
 
 describe('buildOneShotSpawnArgs — claude-code', () => {
   it('emits --print + permission mode + model + system + prompt with -- terminator', () => {
@@ -128,6 +153,39 @@ describe('buildOneShotSpawnArgs — grok-cli', () => {
 });
 
 describe('buildOneShotSpawnArgs — codex-cli', () => {
+  it('passes the Luna default when the installed CLI advertises it', () => {
+    const home = codexHomeWithModels(['gpt-5.6-luna']);
+    const out = buildOneShotSpawnArgs(
+      { engine: 'codex-cli', model: 'gpt-5.6-luna', prompt: 'P', env: { CODEX_HOME: home } },
+      CFG,
+    );
+    expect(out.args).toContain('--model');
+    expect(out.args).toContain('gpt-5.6-luna');
+  });
+
+  it('drops the Luna default when the installed CLI does not advertise it', () => {
+    const home = codexHomeWithModels(['gpt-5.5']);
+    const out = buildOneShotSpawnArgs(
+      { engine: 'codex-cli', model: 'gpt-5.6-luna', prompt: 'P', env: { CODEX_HOME: home } },
+      CFG,
+    );
+    expect(out.args).not.toContain('--model');
+    expect(out.args).not.toContain('gpt-5.6-luna');
+  });
+
+  it('uses the resolved data-dir Codex home for both auth and capability probes', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'agent-hub-codex-data-'));
+    tempHomes.push(dataDir);
+    const codexHome = join(dataDir, 'host-creds', 'home', '.codex');
+    writeCodexHomeWithModels(codexHome, ['gpt-5.6-luna']);
+    const out = buildOneShotSpawnArgs(
+      { engine: 'codex-cli', model: 'gpt-5.6-luna', prompt: 'P', env: {} },
+      { ...CFG, dataDir } as AppConfig,
+    );
+    expect(out.args).toContain('--model');
+    expect(out.args).toContain('gpt-5.6-luna');
+  });
+
   it('emits exec --json --skip-git-repo-check --sandbox read-only and the body', () => {
     const out = buildOneShotSpawnArgs(
       {

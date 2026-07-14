@@ -22,10 +22,11 @@ export const ENGINE_MODELS: Record<string, any> = {
     'cursor-agent': [{ id: 'composer-2.5', label: 'Composer 2.5', short: 'Composer 2.5' }],
     // Codex — only models accepted under ChatGPT OAuth. Older IDs (gpt-5,
     // gpt-5-mini, gpt-5-codex, gpt-5.2-codex, gpt-5.1-codex-max) plus gpt-5.3-codex
-    // and gpt-5.6 are rejected with HTTP 400 by the ChatGPT backend. This is only
-    // the offline fallback; the live list comes from GET /api/config/models. Keep
-    // in sync with server/config.ts → engineValidModels['codex-cli'].
+    // and the bare gpt-5.6 id are rejected with HTTP 400 by the ChatGPT backend.
+    // Luna is capability-gated by the server. This is only the offline fallback;
+    // the live list comes from GET /api/config/models.
     'codex-cli': [
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', short: '5.6 Luna' },
         { id: 'gpt-5.5', label: 'GPT-5.5', short: '5.5' },
         { id: 'gpt-5.4', label: 'GPT-5.4', short: '5.4' },
         { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', short: '5.4 Mini' },
@@ -42,7 +43,7 @@ export const ENGINE_MODELS: Record<string, any> = {
 export const ENGINE_DEFAULT_MODELS: Record<string, any> = {
     'claude-code': 'claude-opus-4-8',
     'cursor-agent': 'composer-2.5',
-    'codex-cli': 'gpt-5.5',
+    'codex-cli': 'gpt-5.6-luna',
     'grok-cli': 'grok-4.5',
 };
 // Display labels for models that are no longer selectable but may still appear

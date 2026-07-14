@@ -13,9 +13,8 @@
  *   - `high` (default) → model_reasoning_effort=high
  *   - `pro`            → model_reasoning_effort=xhigh  (max thinking, same model)
  *
- * Both presets run the same `gpt-5.5` (or whatever Codex model the session
- * selected) — "Pro" only turns the reasoning effort up, it does not switch
- * models.
+ * Both presets run the selected Codex model. "Pro" only turns the reasoning
+ * effort up, it does not switch models.
  */
 
 export const CODEX_REASONING_PRESETS = ['high', 'pro'] as const;

@@ -4,6 +4,7 @@ import { resolveSessionCliSpawnEnv } from './per-user-cli-spawn.js';
 import { resolveEffectiveModel } from './effective-model.js';
 import { trackChild, killProcessGroup } from './process-groups.js';
 import { detectCodexAuthMode, shouldPassModelFlag } from './codex-auth.js';
+import { advertisedCapabilityModelsForEnv } from './codex-model-capability.js';
 import { codexReasoningArgs } from './codex-reasoning.js';
 import {
   appendCodexAwsAccessDirs,
@@ -232,7 +233,10 @@ function buildDelegateCliSpec(
         appendCodexAwsAccessDirs(args, awsAccessEnv);
       }
       appendCodexShellEnvironmentPolicyArgs(args, codexEnv);
-      if (model && shouldPassModelFlag(codexAuth.mode, model)) {
+      if (
+        model &&
+        shouldPassModelFlag(codexAuth.mode, model, advertisedCapabilityModelsForEnv(codexEnv))
+      ) {
         args.push('--model', model);
       }
       // `?.trim()` guards against an in-memory PATCH config value that wasn't
