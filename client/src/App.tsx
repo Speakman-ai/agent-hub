@@ -82,6 +82,7 @@ import ProjectWorkflowBuilder from './components/ProjectWorkflowBuilder';
 import FinalizeSettingsSection from './components/FinalizeSettingsSection';
 import PreviewSection from './components/PreviewSection';
 import RumSettingsSection from './components/RumSettingsSection';
+import LogSourcesSettingsSection from './components/LogSourcesSettingsSection';
 import ProjectAwsProfilesEditor from './components/ProjectAwsProfilesEditor';
 import ShortcutsHelpModal from './components/ShortcutsHelpModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
@@ -4038,6 +4039,12 @@ export default function App({ initialView }: any = {}) {
     return projects.filter((p: any) => p.id === id);
   }, [currentView, projects]);
 
+  const logsScopedProjects = useMemo(() => {
+    if (!currentView.startsWith('logs:')) return [];
+    const id = currentView.slice('logs:'.length);
+    return projects.filter((p: any) => p.id === id);
+  }, [currentView, projects]);
+
   const chatGithubRepo = activeChatProject?.githubRepo ?? null;
   const chatProjectIsWorkflow = activeChatProject?.mode === 'workflow';
 
@@ -5607,6 +5614,15 @@ export default function App({ initialView }: any = {}) {
                       onOpenSession={({ sessionId, agentId }: any) =>
                         focusAgentSession(agentId, sessionId)
                       }
+                      showToast={showToast}
+                    />
+                  </div>
+                </div>
+              ) : currentView.startsWith('logs:') ? (
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                  <div className="max-w-4xl mx-auto">
+                    <LogSourcesSettingsSection
+                      projects={logsScopedProjects}
                       showToast={showToast}
                     />
                   </div>

@@ -28,7 +28,7 @@
 
 import { createHash, randomBytes } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { getLogsDb } from './logs-db.js';
+import { getLogsDb, getLastIngestAtBySource, getLastIngestAtForSource } from './logs-db.js';
 import {
   LOG_SOURCE_TOKEN_PREFIX,
   MAX_SOURCE_NAME_LENGTH,
@@ -61,6 +61,13 @@ export interface LogSourceRecord {
   createdAt: number;
   rotatedAt: number | null;
   revokedAt: number | null;
+  /**
+   * Wall-clock ms of the most recent record ingested under this source, or
+   * `null` if it has never ingested. Surfaced read-only in the settings UI so
+   * operators can tell a live source from a silent one. Not part of the row —
+   * overlaid from `log_records` in {@link listLogSources} / {@link getLogSource}.
+   */
+  lastIngestAt: number | null;
 }
 
 /** A create/rotate result — carries the plaintext token exactly once. */
@@ -139,6 +146,9 @@ function rowToRecord(row: LogSourceRow): LogSourceRecord {
     createdAt: row.created_at,
     rotatedAt: row.rotated_at,
     revokedAt: row.revoked_at,
+    // Overlaid by the caller (list/get) from log_records; a freshly created or
+    // rotated source has no ingest yet, so default to null here.
+    lastIngestAt: null,
   };
 }
 
@@ -196,7 +206,11 @@ export function listLogSources(projectId: string): LogSourceRecord[] {
   const rows = getLogsDb()
     .prepare('SELECT * FROM log_sources WHERE project_id = ? ORDER BY created_at DESC')
     .all(projectId) as LogSourceRow[];
-  return rows.map(rowToRecord);
+  const lastIngest = getLastIngestAtBySource(projectId);
+  return rows.map((row) => ({
+    ...rowToRecord(row),
+    lastIngestAt: lastIngest.get(row.id) ?? null,
+  }));
 }
 
 /** One source scoped to its project, or null if not found. */
@@ -204,7 +218,13 @@ export function getLogSource(projectId: string, sourceId: string): LogSourceReco
   const row = getLogsDb()
     .prepare('SELECT * FROM log_sources WHERE id = ? AND project_id = ?')
     .get(sourceId, projectId) as LogSourceRow | undefined;
-  return row ? rowToRecord(row) : null;
+  if (!row) return null;
+  // Source-scoped index seek (not the project-wide grouped scan the batch
+  // helper does) — this fires on every rotate/revoke/get response.
+  return {
+    ...rowToRecord(row),
+    lastIngestAt: getLastIngestAtForSource(projectId, row.id),
+  };
 }
 
 /** Lifecycle audit for a single source, newest-first. */

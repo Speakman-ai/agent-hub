@@ -16,6 +16,7 @@ import {
   Play,
   Cloud,
   Activity,
+  ScrollText,
   AlertTriangle,
   BarChart3,
   House,
@@ -295,6 +296,7 @@ export default function Sidebar({
     view === `runners:${pid}` ||
     view === `preview:${pid}` ||
     view === `rum:${pid}` ||
+    view === `logs:${pid}` ||
     view === `aws:${pid}` ||
     (view === 'reviewer' && reviewerProjectId === pid);
 
@@ -1059,6 +1061,22 @@ export default function Sidebar({
                                 >
                                   <Activity size={14} className="flex-shrink-0" />
                                   <span className="truncate">RUM</span>
+                                </button>
+                              )}
+
+                              {!workflowProject && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    expandProjectMenu(project.id);
+                                    onNavigate(`logs:${project.id}`);
+                                  }}
+                                  className={projectMenuLinkClass(
+                                    currentView === `logs:${project.id}`,
+                                  )}
+                                >
+                                  <ScrollText size={14} className="flex-shrink-0" />
+                                  <span className="truncate">Logs</span>
                                 </button>
                               )}
 

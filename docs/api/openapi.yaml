@@ -6411,6 +6411,10 @@ components:
         revokedAt:
           type: integer
           nullable: true
+        lastIngestAt:
+          type: integer
+          nullable: true
+          description: Wall-clock ms of the most recent record ingested under this source, or null if it has never ingested.
       required:
         - id
         - projectId
@@ -6422,6 +6426,7 @@ components:
         - createdAt
         - rotatedAt
         - revokedAt
+        - lastIngestAt
       description: A project log source. Never carries token material.
     LogSourceWithToken:
       type: object
@@ -6454,6 +6459,10 @@ components:
         revokedAt:
           type: integer
           nullable: true
+        lastIngestAt:
+          type: integer
+          nullable: true
+          description: Wall-clock ms of the most recent record ingested under this source, or null if it has never ingested.
         token:
           type: string
           description: Plaintext `ahlog_` ingest token. Returned ONCE at create/rotate; only its hash is stored. Surface it to the user immediately — it cannot be retrieved later.
@@ -6468,6 +6477,7 @@ components:
         - createdAt
         - rotatedAt
         - revokedAt
+        - lastIngestAt
         - token
       description: A log source plus its freshly minted plaintext ingest token.
     LogSourceList:

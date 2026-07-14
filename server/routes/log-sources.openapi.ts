@@ -45,6 +45,10 @@ const LogSourceComponent = registerComponent(
       createdAt: z.number().int(),
       rotatedAt: z.number().int().nullable(),
       revokedAt: z.number().int().nullable(),
+      lastIngestAt: z.number().int().nullable().openapi({
+        description:
+          'Wall-clock ms of the most recent record ingested under this source, or null if it has never ingested.',
+      }),
     })
     .openapi({ description: 'A project log source. Never carries token material.' }),
 );
@@ -63,6 +67,10 @@ const LogSourceWithTokenComponent = registerComponent(
       createdAt: z.number().int(),
       rotatedAt: z.number().int().nullable(),
       revokedAt: z.number().int().nullable(),
+      lastIngestAt: z.number().int().nullable().openapi({
+        description:
+          'Wall-clock ms of the most recent record ingested under this source, or null if it has never ingested.',
+      }),
       token: z.string().openapi({
         description:
           'Plaintext `ahlog_` ingest token. Returned ONCE at create/rotate; only its hash is stored. Surface it to the user immediately — it cannot be retrieved later.',

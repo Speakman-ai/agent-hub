@@ -16,7 +16,7 @@ const WORKFLOW_EXCLUDED_LIFECYCLE_KEYS = new Set([
     'security',
     'replays',
 ]);
-const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum']);
+const WORKFLOW_EXCLUDED_SETTINGS_KEYS = new Set(['runners', 'rum', 'logs']);
 /**
  * @typedef {{ key: string, label: string, icon: string, screen: string, gate?: string }} MenuEntry
  */
@@ -61,6 +61,7 @@ export function projectSettingsEntries(project: any) {
         { key: 'project-agents', label: 'Agents', icon: 'Bot', screen: 'ProjectAgents' },
         { key: 'runners', label: 'Runners', icon: 'Play', screen: 'Runners' },
         { key: 'rum', label: 'RUM', icon: 'Activity', screen: 'RumSettings' },
+        { key: 'logs', label: 'Logs', icon: 'ScrollText', screen: 'LogSources' },
     ];
     if (project?.awsEnabled) {
         entries.push({ key: 'aws', label: 'AWS', icon: 'Cloud', screen: 'AwsProfiles' });

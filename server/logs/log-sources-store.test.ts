@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { initLogsDb, closeLogsDb, getLogsDb } from './logs-db.js';
+import { initLogsDb, closeLogsDb, getLogsDb, insertLogRecords } from './logs-db.js';
 import {
   createLogSource,
   listLogSources,
@@ -235,5 +235,35 @@ describe('deleteLogSource', () => {
 
   it('returns false for an unknown source', () => {
     expect(deleteLogSource('p', 'ghost', 'u1', NOW)).toBe(false);
+  });
+});
+
+describe('lastIngestAt overlay', () => {
+  it('is null for a source with no records and reflects the newest ingest once records land', () => {
+    const a = createLogSource({ projectId: 'p', name: 'a' }, NOW);
+    const b = createLogSource({ projectId: 'p', name: 'b' }, NOW);
+
+    // No records yet — both null in list and get.
+    expect(listLogSources('p').every((s) => s.lastIngestAt === null)).toBe(true);
+    expect(getLogSource('p', a.id)?.lastIngestAt).toBeNull();
+
+    insertLogRecords(
+      [
+        { projectId: 'p', sourceId: a.id, timeUnixNano: NOW * 1_000_000, body: 'first' },
+        { projectId: 'p', sourceId: a.id, timeUnixNano: NOW * 1_000_000, body: 'second' },
+      ],
+      NOW + 1000,
+    );
+    insertLogRecords(
+      [{ projectId: 'p', sourceId: a.id, timeUnixNano: NOW * 1_000_000, body: 'third' }],
+      NOW + 5000,
+    );
+
+    // Source a reflects the newest ingested_at; source b stays null.
+    expect(getLogSource('p', a.id)?.lastIngestAt).toBe(NOW + 5000);
+    expect(getLogSource('p', b.id)?.lastIngestAt).toBeNull();
+    const listed = listLogSources('p');
+    expect(listed.find((s) => s.id === a.id)?.lastIngestAt).toBe(NOW + 5000);
+    expect(listed.find((s) => s.id === b.id)?.lastIngestAt).toBeNull();
   });
 });

@@ -719,6 +719,26 @@ export const api = {
   // Revoke (soft-delete) an ingest client.
   revokeRumClient: (projectId: any, clientId: any) =>
     fetchJSON(`/projects/${projectId}/rum/clients/${clientId}`, { method: 'DELETE' }),
+  // ── Application log sources (write-only `ahlog_` ingest credentials) ──
+  // List a project's log sources — metadata only, never token material.
+  getLogSources: (projectId: any) => fetchJSON(`/projects/${projectId}/log-sources`),
+  // Create a source + mint its ingest token. Plaintext `token` returned ONCE.
+  createLogSource: (projectId: any, body: any) =>
+    fetchJSON(`/projects/${projectId}/log-sources`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  // Rotate a source's token — new plaintext `token` returned ONCE.
+  rotateLogSource: (projectId: any, sourceId: any) =>
+    fetchJSON(`/projects/${projectId}/log-sources/${sourceId}/rotate`, { method: 'POST' }),
+  // Revoke a source's token (write-disable; row kept for audit).
+  revokeLogSource: (projectId: any, sourceId: any) =>
+    fetchJSON(`/projects/${projectId}/log-sources/${sourceId}/revoke`, { method: 'POST' }),
+  // Delete a source and its token entirely.
+  deleteLogSource: (projectId: any, sourceId: any) =>
+    fetchJSON(`/projects/${projectId}/log-sources/${sourceId}`, { method: 'DELETE' }),
+  // Per-project log-store health metrics (quota, retention, db bytes, …).
+  getLogsMetrics: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/metrics`),
   // Single-path configure + secrets + compose boot test. Admin+.
   buildPreviewEnvironment: (projectId: any, body: any) =>
     fetchJSON(`/projects/${projectId}/preview/build`, {

@@ -233,6 +233,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ name }),
     }),
+    // ── Application log sources (write-only `ahlog_` ingest creds) ──
+    // Mirrors client/src/utils/api.ts. List/create/rotate/revoke/delete sources;
+    // create + rotate return the plaintext `token` exactly once.
+    getLogSources: (projectId: any) => fetchJSON(`/projects/${projectId}/log-sources`),
+    createLogSource: (projectId: any, body: any) => fetchJSON(`/projects/${projectId}/log-sources`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+    }),
+    rotateLogSource: (projectId: any, sourceId: any) => fetchJSON(`/projects/${projectId}/log-sources/${sourceId}/rotate`, { method: 'POST' }),
+    revokeLogSource: (projectId: any, sourceId: any) => fetchJSON(`/projects/${projectId}/log-sources/${sourceId}/revoke`, { method: 'POST' }),
+    deleteLogSource: (projectId: any, sourceId: any) => fetchJSON(`/projects/${projectId}/log-sources/${sourceId}`, { method: 'DELETE' }),
+    getLogsMetrics: (projectId: any) => fetchJSON(`/projects/${projectId}/logs/metrics`),
     // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──
     // Segmented (continuous) session playback. The manifest lists every segment
     // for a client-minted session in playback order (chronological across views,

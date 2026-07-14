@@ -482,6 +482,49 @@ export function getProjectByteSize(projectId: string): number {
 }
 
 /**
+ * Latest ingest wall-clock time (ms) per source for a project, keyed by
+ * `source_id`. Sources with no records yet are absent from the map. The
+ * `(project_id, source_id, id DESC)` index groups the rows per source cheaply;
+ * SQLite still reads each group's matching rows to compute `MAX(ingested_at)`
+ * (the aggregate column is not the index sort key), so cost scales with the
+ * project's record count. Use the batch form only for the multi-source list
+ * path; single-source fetches must use {@link getLastIngestAtForSource}.
+ */
+export function getLastIngestAtBySource(projectId: string): Map<string, number> {
+  const rows = getLogsDb()
+    .prepare(
+      `SELECT source_id, MAX(ingested_at) AS last
+         FROM log_records WHERE project_id = ? GROUP BY source_id`,
+    )
+    .all(projectId) as Array<{ source_id: string; last: number | null }>;
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    if (r.last != null) map.set(r.source_id, r.last);
+  }
+  return map;
+}
+
+/**
+ * Latest ingest wall-clock time (ms) for a single source, or `null` if it has
+ * never ingested. Scoped to one `(project_id, source_id)` so the
+ * `(project_id, source_id, id DESC)` index seeks straight to that source's
+ * newest row (`ORDER BY id DESC LIMIT 1`) — an index seek, not a project-wide
+ * grouped scan. Use this on the single-source get path (rotate/revoke/delete
+ * responses) instead of {@link getLastIngestAtBySource}.
+ */
+export function getLastIngestAtForSource(projectId: string, sourceId: string): number | null {
+  const row = getLogsDb()
+    .prepare(
+      `SELECT ingested_at AS last
+         FROM log_records
+        WHERE project_id = ? AND source_id = ?
+        ORDER BY id DESC LIMIT 1`,
+    )
+    .get(projectId, sourceId) as { last: number | null } | undefined;
+  return row?.last ?? null;
+}
+
+/**
  * On-disk footprint of logs.db, in bytes (page_count × page_size). Used for the
  * `dbBytes` health gauge (decision LOG-SCOPE). Reflects the main database file;
  * the WAL is checkpointed into it periodically (see `wal_autocheckpoint`).
