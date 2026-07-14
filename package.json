@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "2.31.37",
+  "version": "2.31.38",
   "license": "Apache-2.0",
   "private": true,
   "main": "electron/main.js",
