@@ -9,6 +9,8 @@ import {
   getIssueReleases,
   setIssueStatus,
   RECURRENCE_ACTOR,
+  claimIssueAnalyzeSession,
+  releaseIssueAnalyzeSession,
 } from './log-issues-store.js';
 import { deriveIssueGrouping } from './log-fingerprint.js';
 import { SEVERITY_NUMBER } from './logs-schema.js';
@@ -183,6 +185,29 @@ describe('recurrence and lifecycle', () => {
     const issue = listIssues({ projectId: 'p1' }).issues[0]!;
     expect(setIssueStatus('p2', issue.id, 'resolved', 'user-a', NOW)).toBeNull();
     expect(getIssue('p2', issue.id)).toBeNull();
+  });
+
+  it('atomically allows only one Analyze claim and supports stale-claim replacement', () => {
+    insertLogRecords([errRecord('p1', 'x failed', 100)], NOW);
+    const issue = listIssues({ projectId: 'p1' }).issues[0]!;
+
+    expect(claimIssueAnalyzeSession('p1', issue.id, 'session-a')).toEqual({
+      claimed: true,
+      sessionId: 'session-a',
+    });
+    expect(claimIssueAnalyzeSession('p1', issue.id, 'session-b')).toEqual({
+      claimed: false,
+      sessionId: 'session-a',
+    });
+    expect(getIssue('p1', issue.id)?.analyze_session_id).toBe('session-a');
+
+    expect(claimIssueAnalyzeSession('p1', issue.id, 'session-b', 'session-a')).toEqual({
+      claimed: true,
+      sessionId: 'session-b',
+    });
+    expect(getIssue('p1', issue.id)?.analyze_session_id).toBe('session-b');
+    releaseIssueAnalyzeSession('p1', issue.id, 'session-b');
+    expect(getIssue('p1', issue.id)?.analyze_session_id).toBeNull();
   });
 });
 

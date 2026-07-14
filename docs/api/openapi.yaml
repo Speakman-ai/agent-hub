@@ -6355,6 +6355,9 @@ components:
         lastRecordId:
           type: integer
           nullable: true
+        analyzeSessionId:
+          type: string
+          nullable: true
         createdAt:
           type: integer
         updatedAt:
@@ -6376,6 +6379,7 @@ components:
         - statusUpdatedBy
         - firstRecordId
         - lastRecordId
+        - analyzeSessionId
         - createdAt
         - updatedAt
     LogIssueDetail:
@@ -6416,6 +6420,22 @@ components:
           type: string
       required:
         - error
+    LogIssueAnalyzeResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentId:
+          type: string
+        reused:
+          type: boolean
+        issue:
+          $ref: "#/components/schemas/LogIssue"
+      required:
+        - sessionId
+        - agentId
+        - reused
+        - issue
     LogStoreMetrics:
       type: object
       properties:
@@ -26154,6 +26174,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogIssue"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+        "404":
+          description: Project or issue not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
+  /api/projects/{projectId}/logs/issues/{issueId}/analyze:
+    post:
+      tags:
+        - Logs
+      summary: Start (or reopen) a read-only Analyze chat session for an error issue
+      description: "Idempotently starts a normal chat session on the project default dev/lead agent, seeded with a bounded, redacted, fenced log context pack and a read-only investigation brief (finalize_automation=manual, isolated worktree when supported). While a live linked session exists, repeat calls return it (`reused: true`). The linked session id is exposed as `analyzeSessionId` on issue detail."
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: projectId
+          in: path
+        - schema:
+            type: string
+          required: true
+          name: issueId
+          in: path
+      responses:
+        "200":
+          description: The linked Analyze session (newly started or reused).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueAnalyzeResponse"
+        "400":
+          description: No eligible agent for the project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogIssueErrorResponse"
         "403":
           description: Insufficient role.
           content:

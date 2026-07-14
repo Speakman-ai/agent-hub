@@ -17,6 +17,7 @@ import {
   Tag,
   ChevronRight,
   ChevronDown,
+  Search,
 } from 'lucide-react';
 import { api } from '../../utils/api';
 import { formatDateTime, relativeTime } from '../../utils/time';
@@ -46,6 +47,7 @@ interface LogIssue {
   status: 'open' | 'resolved' | 'ignored';
   statusUpdatedAt: number | null;
   statusUpdatedBy: string | null;
+  analyzeSessionId: string | null;
   releases?: IssueRelease[];
   samples?: LogRecord[];
 }
@@ -53,6 +55,7 @@ interface LogIssue {
 interface IssuesViewProps {
   projectId: string;
   showToast?: (message: string, kind?: string) => void;
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
 }
 
 const STATUS_TABS: ReadonlyArray<{ key: string; label: string }> = [
@@ -77,7 +80,11 @@ function statusBadge(status: LogIssue['status']): React.ReactElement {
   );
 }
 
-export default function IssuesView({ projectId, showToast }: IssuesViewProps): React.ReactElement {
+export default function IssuesView({
+  projectId,
+  showToast,
+  onOpenSession,
+}: IssuesViewProps): React.ReactElement {
   const [status, setStatus] = useState('open');
   const [issues, setIssues] = useState<LogIssue[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
@@ -88,6 +95,7 @@ export default function IssuesView({ projectId, showToast }: IssuesViewProps): R
   const [detail, setDetail] = useState<LogIssue | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
 
   // Monotonic request id. Each load captures its seq; a response whose seq is no
   // longer current (the status tab or project changed before it resolved) is
@@ -179,6 +187,29 @@ export default function IssuesView({ projectId, showToast }: IssuesViewProps): R
     [projectId, showToast],
   );
 
+  const analyze = useCallback(
+    async (issue: LogIssue) => {
+      setAnalyzingId(issue.id);
+      try {
+        const result = (await api.analyzeLogIssue(projectId, issue.id)) as {
+          sessionId: string;
+          agentId: string;
+          reused: boolean;
+          issue: LogIssue;
+        };
+        setIssues((prev) => prev.map((i) => (i.id === issue.id ? { ...i, ...result.issue } : i)));
+        setDetail((prev) => (prev && prev.id === issue.id ? { ...prev, ...result.issue } : prev));
+        showToast?.(result.reused ? 'Analysis session reopened' : 'Analysis started', 'success');
+        onOpenSession?.({ sessionId: result.sessionId, agentId: result.agentId });
+      } catch (err) {
+        showToast?.(err instanceof Error ? err.message : 'Failed to start analysis', 'error');
+      } finally {
+        setAnalyzingId(null);
+      }
+    },
+    [onOpenSession, projectId, showToast],
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-gray-800 pb-2">
@@ -258,6 +289,19 @@ export default function IssuesView({ projectId, showToast }: IssuesViewProps): R
                   {isOpen ? (
                     <div className="border-t border-gray-800 px-3 py-3">
                       <div className="mb-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={analyzingId === issue.id}
+                          onClick={() => analyze(detail ?? issue)}
+                          className="inline-flex items-center gap-1 rounded border border-violet-600/40 bg-violet-600/10 px-2 py-1 text-xs text-violet-300 hover:bg-violet-600/20 disabled:opacity-50"
+                        >
+                          {analyzingId === issue.id ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : (
+                            <Search size={13} />
+                          )}
+                          {issue.analyzeSessionId ? 'Open analysis' : 'Analyze'}
+                        </button>
                         {issue.status !== 'resolved' ? (
                           <button
                             type="button"

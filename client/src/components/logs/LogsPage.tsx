@@ -22,6 +22,7 @@ interface LogsPageProps {
   projectId: string;
   projectName?: string;
   showToast?: (message: string, kind?: string) => void;
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
   /** Forwarded to the Live view's `useLogTail` (tests inject a socket). */
   tailOptions?: UseLogTailOptions;
   initialTab?: LogsTab;
@@ -37,6 +38,7 @@ export default function LogsPage({
   projectId,
   projectName,
   showToast,
+  onOpenSession,
   tailOptions,
   initialTab = 'live',
 }: LogsPageProps): React.ReactElement {
@@ -79,7 +81,7 @@ export default function LogsPage({
         {tab === 'live' ? (
           <LiveLogsView projectId={projectId} tailOptions={tailOptions} />
         ) : tab === 'issues' ? (
-          <IssuesView projectId={projectId} showToast={showToast} />
+          <IssuesView projectId={projectId} showToast={showToast} onOpenSession={onOpenSession} />
         ) : (
           <LogSourcesSettingsSection
             projects={[{ id: projectId, name: projectName || projectId }]}

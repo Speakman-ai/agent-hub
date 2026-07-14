@@ -29,6 +29,7 @@ import { api } from '../utils/api';
 import { colors } from '../theme/colors';
 import { relativeTime } from '../utils/time';
 import ProjectScreenHeader from '../components/ProjectScreenHeader';
+import { useApp } from '../context/AppContext';
 import { LogSourcesPanel } from './LogSourcesScreen';
 import { useLogTail, type LogTailStatus } from '../hooks/useLogTail';
 import {
@@ -50,6 +51,7 @@ import {
   STATUS_TABS,
   issueDisplayTitle,
   mergeIssuePage,
+  applyIssueUpdate,
   applyTransitionToList,
   transitionRemovesFromTab,
   availableActions,
@@ -443,9 +445,11 @@ function IssueStatusChip({ status }: { status: LogIssue['status'] }) {
 export function IssuesView({
   projectId,
   showToast,
+  onOpenSession,
 }: {
   projectId: string;
   showToast?: (message: string, kind?: string) => void;
+  onOpenSession?: (target: { sessionId: string; agentId: string }) => void;
 }) {
   const [status, setStatus] = useState('open');
   const [issues, setIssues] = useState<LogIssue[]>([]);
@@ -457,6 +461,7 @@ export function IssuesView({
   const [detail, setDetail] = useState<LogIssue | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
 
   // Monotonic request id. Each load captures its seq; a response whose seq is no
   // longer current (the status tab or project changed before it resolved) is
@@ -569,6 +574,29 @@ export function IssuesView({
     [projectId, showToast, status],
   );
 
+  const analyze = useCallback(
+    async (issue: LogIssue) => {
+      setAnalyzingId(issue.id);
+      try {
+        const result = (await api.analyzeLogIssue(projectId, issue.id)) as {
+          sessionId: string;
+          agentId: string;
+          reused: boolean;
+          issue: LogIssue;
+        };
+        setIssues((prev) => applyIssueUpdate(prev, issue.id, result.issue));
+        setDetail((prev) => (prev && prev.id === issue.id ? { ...prev, ...result.issue } : prev));
+        showToast?.(result.reused ? 'Analysis session reopened' : 'Analysis started', 'success');
+        onOpenSession?.({ sessionId: result.sessionId, agentId: result.agentId });
+      } catch (err: any) {
+        showToast?.(err?.message || 'Failed to start analysis', 'error');
+      } finally {
+        setAnalyzingId(null);
+      }
+    },
+    [onOpenSession, projectId, showToast],
+  );
+
   const renderIssue = (issue: LogIssue) => {
     const isOpen = expandedId === issue.id;
     return (
@@ -597,6 +625,15 @@ export function IssuesView({
         {isOpen ? (
           <View style={styles.issueDetail}>
             <View style={styles.issueActions}>
+              <TouchableOpacity
+                disabled={analyzingId === issue.id}
+                onPress={() => analyze(detail ?? issue)}
+                style={[styles.issueActionBtn, analyzingId === issue.id && styles.btnDisabled]}
+                testID="log-issue-analyze"
+              >
+                {analyzingId === issue.id ? <ActivityIndicator size="small" color={colors.purple400} /> : null}
+                <Text style={styles.issueActionText}>{issue.analyzeSessionId ? 'Open analysis' : 'Analyze'}</Text>
+              </TouchableOpacity>
               {availableActions(issue.status).map((action) => (
                 <TouchableOpacity
                   key={action}
@@ -724,7 +761,16 @@ const TABS: ReadonlyArray<{ key: LogsTab; label: string }> = [
 
 export default function LogsScreen({ route, navigation }: any) {
   const { projectId, project, initialTab } = route.params || {};
+  const { setActiveAgentId, setActiveSessionId } = useApp();
   const [tab, setTab] = useState<LogsTab>(initialTab || 'live');
+  const openSession = useCallback(
+    ({ sessionId, agentId }: { sessionId: string; agentId: string }) => {
+      setActiveAgentId(agentId);
+      setActiveSessionId(sessionId);
+      navigation.navigate('Chat');
+    },
+    [navigation, setActiveAgentId, setActiveSessionId],
+  );
 
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
@@ -747,6 +793,7 @@ export default function LogsScreen({ route, navigation }: any) {
       ) : tab === 'issues' ? (
         <IssuesView
           projectId={projectId}
+          onOpenSession={openSession}
           showToast={(message, kind) => {
             // No global toast on mobile; a successful transition is already
             // visible via the status chip, so only surface failures.

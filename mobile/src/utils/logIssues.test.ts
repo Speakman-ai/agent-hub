@@ -25,6 +25,7 @@ function issue(overrides: Partial<LogIssue> & { id: string }): LogIssue {
     status: 'open',
     statusUpdatedAt: null,
     statusUpdatedBy: null,
+    analyzeSessionId: null,
     ...overrides,
   };
 }

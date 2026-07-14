@@ -73,6 +73,21 @@ export function isLogFtsAvailable(): boolean {
  * and run the idempotent schema/migrations. Safe to call more than once for
  * the same dir — the second call is a no-op that keeps the cached handle.
  */
+/**
+ * Idempotent column migrations for pre-existing `logs.db` files. The
+ * `CREATE TABLE IF NOT EXISTS` in {@link LOGS_SCHEMA} only applies its columns
+ * to a freshly-created table, so a column added to an existing install needs an
+ * explicit `ALTER TABLE`. Each migration probes for its column and adds it only
+ * when missing, so re-running init on an up-to-date DB is a no-op.
+ */
+function migrateLogsSchema(db: Database.Database): void {
+  try {
+    db.prepare('SELECT analyze_session_id FROM log_issues LIMIT 1').get();
+  } catch {
+    db.exec('ALTER TABLE log_issues ADD COLUMN analyze_session_id TEXT');
+  }
+}
+
 export function initLogsDb(dataDir: string): Database.Database {
   // Same fail-closed rail as initDb(): never let a test-runner process open a
   // database outside os.tmpdir(). See server/db-safety.ts.
@@ -111,6 +126,7 @@ export function initLogsDb(dataDir: string): Database.Database {
   }
 
   db.exec(LOGS_SCHEMA);
+  migrateLogsSchema(db);
 
   // FTS5 is optional at the SQLite-build level. Degrade to "no message search"
   // rather than failing store init if the extension is missing.

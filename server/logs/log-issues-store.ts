@@ -53,6 +53,8 @@ export interface LogIssueRow {
   status_updated_by: string | null;
   first_record_id: number | null;
   last_record_id: number | null;
+  /** Linked Analyze chat session (LOG-ANALYZE), or null before Analyze runs. */
+  analyze_session_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -282,6 +284,85 @@ export function setIssueStatus(
   return getIssue(projectId, issueId);
 }
 
+/**
+ * Atomically claim the Analyze slot before creating a session in agent-hub.db.
+ * `replaceSessionId` is only supplied when the issue points at a deleted
+ * session; the compare-and-swap keeps two stale-link retries from both
+ * replacing the winner. The claim table is the coordination boundary because
+ * the issue store and sessions live in separate SQLite databases.
+ */
+export function claimIssueAnalyzeSession(
+  projectId: string,
+  issueId: string,
+  sessionId: string,
+  replaceSessionId: string | null = null,
+): { claimed: boolean; sessionId: string | null } {
+  const db = getLogsDb();
+  return db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT session_id FROM log_issue_analyze_claims
+         WHERE project_id = ? AND issue_id = ?`,
+      )
+      .get(projectId, issueId) as { session_id: string } | undefined;
+
+    if (!current) {
+      const inserted = db
+        .prepare(
+          `INSERT INTO log_issue_analyze_claims
+             (project_id, issue_id, session_id, claimed_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(project_id, issue_id) DO NOTHING`,
+        )
+        .run(projectId, issueId, sessionId, Date.now());
+      if (inserted.changes === 0) {
+        const winner = db
+          .prepare(
+            `SELECT session_id FROM log_issue_analyze_claims
+             WHERE project_id = ? AND issue_id = ?`,
+          )
+          .get(projectId, issueId) as { session_id: string } | undefined;
+        return { claimed: false, sessionId: winner?.session_id ?? null };
+      }
+    } else if (replaceSessionId && current.session_id === replaceSessionId) {
+      db.prepare(
+        `UPDATE log_issue_analyze_claims
+            SET session_id = ?, claimed_at = ?
+          WHERE project_id = ? AND issue_id = ? AND session_id = ?`,
+      ).run(sessionId, Date.now(), projectId, issueId, replaceSessionId);
+    } else {
+      return { claimed: false, sessionId: current.session_id };
+    }
+
+    db.prepare(
+      `UPDATE log_issues
+          SET analyze_session_id = ?
+        WHERE project_id = ? AND id = ?`,
+    ).run(sessionId, projectId, issueId);
+    return { claimed: true, sessionId };
+  })();
+}
+
+/** Release a claim if session creation failed; compare-and-swap protects a replacement winner. */
+export function releaseIssueAnalyzeSession(
+  projectId: string,
+  issueId: string,
+  sessionId: string,
+): void {
+  const db = getLogsDb();
+  db.transaction(() => {
+    db.prepare(
+      `DELETE FROM log_issue_analyze_claims
+        WHERE project_id = ? AND issue_id = ? AND session_id = ?`,
+    ).run(projectId, issueId, sessionId);
+    db.prepare(
+      `UPDATE log_issues
+          SET analyze_session_id = NULL
+        WHERE project_id = ? AND id = ? AND analyze_session_id = ?`,
+    ).run(projectId, issueId, sessionId);
+  })();
+}
+
 // ── Serialization ───────────────────────────────────────────────────────────
 
 /** Wire (camelCase) representation of an issue for the REST API. */
@@ -306,6 +387,7 @@ export function serializeLogIssue(
     statusUpdatedBy: row.status_updated_by,
     firstRecordId: row.first_record_id,
     lastRecordId: row.last_record_id,
+    analyzeSessionId: row.analyze_session_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

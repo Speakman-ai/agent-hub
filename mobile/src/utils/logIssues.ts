@@ -34,6 +34,7 @@ export interface LogIssue {
   status: IssueStatus;
   statusUpdatedAt: number | null;
   statusUpdatedBy: string | null;
+  analyzeSessionId: string | null;
   releases?: IssueRelease[];
   samples?: LogRecord[];
 }

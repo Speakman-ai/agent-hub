@@ -29,6 +29,7 @@ function issueRow(overrides: Partial<LogIssueRow> = {}): LogIssueRow {
     status_updated_by: null,
     first_record_id: 1,
     last_record_id: 2,
+    analyze_session_id: null,
     created_at: NOW,
     updated_at: NOW,
     ...overrides,

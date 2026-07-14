@@ -40,6 +40,7 @@ const LogIssue = registerComponent(
     statusUpdatedBy: z.string().nullable(),
     firstRecordId: z.number().int().nullable(),
     lastRecordId: z.number().int().nullable(),
+    analyzeSessionId: z.string().nullable(),
     createdAt: z.number().int(),
     updatedAt: z.number().int(),
   }),
@@ -153,4 +154,42 @@ registerPath({
   summary: 'Reopen an error issue',
   request: { params: issueParam },
   responses: transitionResponses,
+});
+
+const AnalyzeResponse = registerComponent(
+  'LogIssueAnalyzeResponse',
+  z.object({
+    sessionId: z.string(),
+    agentId: z.string(),
+    reused: z.boolean(),
+    issue: LogIssue,
+  }),
+);
+
+registerPath({
+  method: 'post',
+  path: '/api/projects/{projectId}/logs/issues/{issueId}/analyze',
+  tags: ['Logs'],
+  summary: 'Start (or reopen) a read-only Analyze chat session for an error issue',
+  description:
+    'Idempotently starts a normal chat session on the project default dev/lead agent, seeded with a bounded, redacted, fenced log context pack and a read-only investigation brief (finalize_automation=manual, isolated worktree when supported). While a live linked session exists, repeat calls return it (`reused: true`). The linked session id is exposed as `analyzeSessionId` on issue detail.',
+  request: { params: issueParam },
+  responses: {
+    200: {
+      description: 'The linked Analyze session (newly started or reused).',
+      content: { 'application/json': { schema: AnalyzeResponse } },
+    },
+    400: {
+      description: 'No eligible agent for the project.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    403: {
+      description: 'Insufficient role.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+    404: {
+      description: 'Project or issue not found.',
+      content: { 'application/json': { schema: ErrorResponse } },
+    },
+  },
 });

@@ -10,6 +10,7 @@ vi.mock('../../utils/api', () => ({
     resolveLogIssue: vi.fn(),
     ignoreLogIssue: vi.fn(),
     reopenLogIssue: vi.fn(),
+    analyzeLogIssue: vi.fn(),
   },
 }));
 
@@ -28,6 +29,7 @@ const openIssue = {
   status: 'open' as const,
   statusUpdatedAt: null,
   statusUpdatedBy: null,
+  analyzeSessionId: null,
 };
 
 beforeEach(() => {
@@ -101,6 +103,28 @@ describe('IssuesView', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith('Issue resolved', 'success'));
     // The row badge now reflects the resolved state.
     await waitFor(() => expect(screen.getAllByText('resolved').length).toBeGreaterThan(0));
+  });
+
+  it('starts Analyze and opens the linked normal chat session', async () => {
+    (api.listLogIssues as any).mockResolvedValue({ issues: [openIssue], nextCursor: null });
+    (api.getLogIssue as any).mockResolvedValue({ ...openIssue, releases: [], samples: [] });
+    (api.analyzeLogIssue as any).mockResolvedValue({
+      sessionId: 'session-analyze-1',
+      agentId: 'agent-lead',
+      reused: false,
+      issue: { ...openIssue, analyzeSessionId: 'session-analyze-1' },
+    });
+    const onOpenSession = vi.fn();
+
+    render(<IssuesView projectId="p1" onOpenSession={onOpenSession} />);
+    fireEvent.click(await screen.findByText(/cannot read property x of undefined/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze' }));
+
+    await waitFor(() => expect(api.analyzeLogIssue).toHaveBeenCalledWith('p1', 'iss-1'));
+    expect(onOpenSession).toHaveBeenCalledWith({
+      sessionId: 'session-analyze-1',
+      agentId: 'agent-lead',
+    });
   });
 
   it('reopens a resolved issue', async () => {

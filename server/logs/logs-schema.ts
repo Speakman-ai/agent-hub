@@ -241,6 +241,10 @@ export const LOGS_SCHEMA = `
     -- Representative raw records: earliest + most-recent occurrence row ids.
     first_record_id   INTEGER,
     last_record_id    INTEGER,
+    -- Linked "Analyze" chat session (decision LOG-ANALYZE). NULL until a user
+    -- runs Analyze; reused idempotently so a repeat click reopens the same
+    -- session rather than spawning a duplicate investigation.
+    analyze_session_id TEXT,
     created_at        INTEGER NOT NULL,
     updated_at        INTEGER NOT NULL,
     UNIQUE (project_id, fingerprint)
@@ -250,6 +254,20 @@ export const LOGS_SCHEMA = `
     ON log_issues(project_id, status, last_seen DESC);
   CREATE INDEX IF NOT EXISTS idx_log_issues_project_lastseen
     ON log_issues(project_id, last_seen DESC);
+
+  -- Database-enforced Analyze claim. The issue link alone is not a safe
+  -- lock because two requests can both observe a NULL/stale session link
+  -- before either creates its session. One claim row per project/issue makes
+  -- the first request win before it touches the sessions database.
+  CREATE TABLE IF NOT EXISTS log_issue_analyze_claims (
+    project_id  TEXT NOT NULL,
+    issue_id    TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    claimed_at  INTEGER NOT NULL,
+    PRIMARY KEY (project_id, issue_id)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_log_issue_analyze_claim_session
+    ON log_issue_analyze_claims(session_id);
 
   -- Release / commit facets per issue (decision LOG-GROUP: "keep release and
   -- commit SHA as facets", NOT in the fingerprint). Empty string stands in for

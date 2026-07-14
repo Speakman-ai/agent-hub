@@ -273,6 +273,7 @@ export const api = {
     resolveLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/resolve`, { method: 'POST' }),
     ignoreLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/ignore`, { method: 'POST' }),
     reopenLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/reopen`, { method: 'POST' }),
+    analyzeLogIssue: (projectId: any, issueId: any) => fetchJSON(`/projects/${projectId}/logs/issues/${encodeURIComponent(issueId)}/analyze`, { method: 'POST' }),
     // ── Replays / RUM dashboard (mirrors client/src/utils/api.ts) ──
     // Segmented (continuous) session playback. The manifest lists every segment
     // for a client-minted session in playback order (chronological across views,

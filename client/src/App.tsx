@@ -5678,6 +5678,9 @@ export default function App({ initialView }: any = {}) {
                           projectId={logsProjectId}
                           projectName={logsProject?.name}
                           showToast={showToast}
+                          onOpenSession={({ sessionId, agentId }: any) =>
+                            focusAgentSession(agentId, sessionId)
+                          }
                         />
                       </div>
                     </div>
