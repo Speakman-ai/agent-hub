@@ -735,7 +735,10 @@ export const api = {
     // when none exists yet. Used by the mobile FinalizeButton for both initial
     // load and (as a polling fallback) live-state tracking — there's no WS
     // bridge for `finalize_run_*` events on mobile yet.
-    getLatestFinalizeRunForSession: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/finalize-runs/latest`),
+    // `includeStale=0` skips the server's `git rev-parse HEAD` spawn — mobile
+    // consumes only `run`/`steps`, not `stale`, and the spawn on this poll's
+    // hot path delays queued step rows during a busy run.
+    getLatestFinalizeRunForSession: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/finalize-runs/latest?includeStale=0`),
     getSessionWorktreeChanges: (sessionId: any) => fetchJSON(`/sessions/${sessionId}/worktree-changes`),
     // Kick off a finalize run for a card-linked session. Server returns the
     // run id + status (and a `reused` flag when the existing non-terminal row

@@ -187,6 +187,17 @@ function isFinalizeRunStale(
   return !isActiveValidationRun(run);
 }
 
+/**
+ * A query flag is "off" when it is explicitly one of the falsey tokens.
+ * Everything else (absent, empty, `1`, `true`, …) reads as on, so the default
+ * stays backward-compatible with the CLI callers that pass no flag at all.
+ */
+function isFalseyQueryFlag(raw: unknown): boolean {
+  const value = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  if (typeof value !== 'string') return false;
+  return ['0', 'false', 'no', 'off'].includes(value.trim().toLowerCase());
+}
+
 export default function createFinalizeRoutes(deps: RouteDeps): Router {
   const { stmts, findProject } = deps;
   const stepLogStore = createFinalizeStepLogStore(deps.config);
@@ -233,15 +244,22 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
       const run = stmts.getLatestFinalizeRunForSession.get(sessionId) as FinalizeRunRow | undefined;
       const steps = run ? listFinalizeRunSteps(stmts, run.id) : [];
 
-      // Staleness: the latest run row may predate new commits the agent made
-      // after it finished. An agent reading these results (via the web panel
-      // or `finalize.sh latest`) would otherwise treat an old commit's failure
-      // as the current state and loop re-fixing forever. Resolve the worktree's
-      // live HEAD and flag when the run no longer reflects it. Fail-safe: any
-      // resolution failure leaves `stale=false` so we never cry stale wrongly.
+      // Staleness resolves the worktree's live HEAD with a `git rev-parse`
+      // subprocess. That spawn sits on the hot path of a poll the web/mobile
+      // live-checks views hammer (mount, every phase change, reconnect), and it
+      // is exactly when the host is busiest (an active run's DinD checks
+      // saturate CPU / the worktree is mid-rebase), so the spawn can stall for
+      // seconds. Because the panel's *queued* step rows only arrive via this
+      // refetch (running rows stream in over `finalize_run_step_state`), a slow
+      // spawn is what makes queued shards fail to appear until a lucky refresh
+      // (support ticket 2dd6df35). The UI never reads `stale`/`currentHeadSha`
+      // — only the agent CLI (`finalize.sh latest`) needs them to avoid
+      // re-fix loops — so callers that don't need staleness pass
+      // `?includeStale=0` to skip the spawn entirely and get steps immediately.
+      const includeStale = !isFalseyQueryFlag(req.query.includeStale);
       const session = stmts.getSession.get(sessionId) as SessionRow | undefined;
       let currentHeadSha: string | null = null;
-      if (session?.worktree_path) {
+      if (includeStale && session?.worktree_path) {
         try {
           const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
             cwd: session.worktree_path,
@@ -253,7 +271,10 @@ export default function createFinalizeRoutes(deps: RouteDeps): Router {
           currentHeadSha = null;
         }
       }
-      const stale = isFinalizeRunStale(run, currentHeadSha);
+      // When staleness is skipped we cannot know HEAD, so report the fail-safe
+      // (`stale: false`, `currentHeadSha: null`) — identical to the shape the
+      // CLI path returns when HEAD can't be resolved.
+      const stale = includeStale ? isFinalizeRunStale(run, currentHeadSha) : false;
       // Per-phase done-state for the split "Run Tests" / "Reviewer" buttons.
       // Each phase may be satisfied by its own phase-scoped run OR by a
       // combined 'full' run, so they're resolved independently here rather

@@ -576,6 +576,76 @@ describe('GET /api/sessions/:sessionId/finalize-runs/latest — staleness', () =
     expect(res.body.currentHeadSha).toBeNull();
     expect(res.body.stale).toBe(false);
   });
+
+  // Regression for support ticket 2dd6df35 ("CI module loading issues" —
+  // queued test rows only appear after refreshing several times). The queued
+  // step rows reach the live-checks panel only via this refetch, but the
+  // endpoint spawned `git rev-parse HEAD` on every call, and that spawn stalls
+  // under an active run's load. The UI now passes `includeStale=0` to skip the
+  // spawn: a run whose head_sha is obsolete (which normally flags stale=true)
+  // must return stale=false + currentHeadSha=null when the flag is off, proving
+  // no git subprocess ran — while still returning the persisted step rows.
+  it('skips the git HEAD spawn and returns steps immediately when includeStale=0', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    // Obsolete head_sha: with staleness on this would flag stale=true.
+    const runId = seedRunWithHead(
+      projectId,
+      sessionId,
+      'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      { status: 'running', phase: 'tasks', endedAt: null },
+    );
+    getStmts().upsertFinalizeRunStep.run(
+      runId,
+      1,
+      'backend-tests / 0 / Backend tests (shard 0/3)',
+      'queued',
+      null,
+      null,
+      null,
+      'backend-tests',
+      '0',
+    );
+
+    const res = await request
+      .get(`/api/sessions/${sessionId}/finalize-runs/latest?includeStale=0`)
+      .expect(200);
+    // Spawn skipped: no HEAD resolved, fail-safe stale=false despite the
+    // obsolete head_sha that the default path would flag stale.
+    expect(res.body.currentHeadSha).toBeNull();
+    expect(res.body.stale).toBe(false);
+    // Steps still come back so the live panel renders queued rows at once.
+    expect(res.body.steps).toHaveLength(1);
+    expect(res.body.steps[0].state).toBe('queued');
+  });
+
+  it('still computes staleness by default (no flag) for the agent CLI path', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir, headSha } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const res = await request.get(`/api/sessions/${sessionId}/finalize-runs/latest`).expect(200);
+    expect(res.body.currentHeadSha).toBe(headSha);
+    expect(res.body.stale).toBe(true);
+  });
+
+  it('treats includeStale=1 as staleness-on', async () => {
+    const projectId = await freshProject();
+    const sessionId = `sess-${uuidv4().slice(0, 8)}`;
+    const { dir, headSha } = makeGitRepo();
+    seedSessionWithWorktree(sessionId, dir);
+    seedRunWithHead(projectId, sessionId, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const res = await request
+      .get(`/api/sessions/${sessionId}/finalize-runs/latest?includeStale=1`)
+      .expect(200);
+    expect(res.body.currentHeadSha).toBe(headSha);
+    expect(res.body.stale).toBe(true);
+  });
 });
 
 describe('GET /api/projects/:projectId/finalize/:runId/steps/:stepIndex/output', () => {

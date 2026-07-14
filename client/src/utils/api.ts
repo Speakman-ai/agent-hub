@@ -1022,7 +1022,12 @@ export const api = {
    * can't resolve into a stale React state setter after teardown.
    */
   getLatestFinalizeRunForSession: (sessionId: any, opts: any = {}) =>
-    fetchJSON(`/sessions/${sessionId}/finalize-runs/latest`, { signal: opts.signal }),
+    // `includeStale=0` skips the server's `git rev-parse HEAD` spawn: the UI
+    // only consumes `run`/`steps`/`phases`, and the spawn on this hot-path poll
+    // is what delays queued step rows from appearing during a busy run.
+    fetchJSON(`/sessions/${sessionId}/finalize-runs/latest?includeStale=0`, {
+      signal: opts.signal,
+    }),
   /**
    * Start a new Finalize Code Changes run for a card. The server resolves
    * the bound session's worktree + branch + HEAD sha, idempotency-keys the

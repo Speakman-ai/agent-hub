@@ -212,6 +212,15 @@ registerPath({
     params: z.object({
       sessionId: z.string().openapi({ description: 'sessions.id.' }),
     }),
+    query: z.object({
+      includeStale: z
+        .enum(['0', '1', 'true', 'false', 'yes', 'no', 'on', 'off'])
+        .optional()
+        .openapi({
+          description:
+            'Pass `0`/`false`/`no`/`off` to skip the `git rev-parse HEAD` spawn that computes `stale`/`currentHeadSha`. The web/mobile live-checks views pass `0` because they only read `run`/`steps`/`phases`; skipping the spawn removes it from a hot-path poll so queued step rows render immediately during a busy run. Defaults to on, so the agent CLI (`finalize.sh latest`) still gets staleness without changing its call.',
+        }),
+    }),
   },
   responses: {
     200: {
