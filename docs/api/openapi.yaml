@@ -6287,6 +6287,99 @@ components:
       required:
         - error
       description: Ingest error envelope.
+    LogStoreMetrics:
+      type: object
+      properties:
+        queue:
+          type: object
+          properties:
+            depth:
+              type: integer
+              description: Records pending in the write queue.
+            depthLimit:
+              type: integer
+              description: Queue depth cap; a full queue applies 429 backpressure.
+          required:
+            - depth
+            - depthLimit
+          description: Hub-wide batch-writer queue state.
+        counters:
+          type: object
+          properties:
+            accepted:
+              type: integer
+            written:
+              type: integer
+            rejected:
+              type: integer
+            dropped:
+              type: integer
+            redacted:
+              type: integer
+            writeErrors:
+              type: integer
+            expiredDeleted:
+              type: integer
+            quotaDeleted:
+              type: integer
+          required:
+            - accepted
+            - written
+            - rejected
+            - dropped
+            - redacted
+            - writeErrors
+            - expiredDeleted
+            - quotaDeleted
+          description: Monotonic ingest/reaper counters since boot.
+        latency:
+          type: object
+          properties:
+            meanFlushMs:
+              type: number
+            flushCount:
+              type: integer
+          required:
+            - meanFlushMs
+            - flushCount
+          description: Writer flush latency.
+        storage:
+          type: object
+          properties:
+            projectBytes:
+              type: integer
+              description: Normalized bytes stored for this project.
+            dbBytes:
+              type: integer
+              description: On-disk size of logs.db.
+            quotaBytes:
+              type: integer
+            retentionDays:
+              type: integer
+            retentionLagRecords:
+              type: integer
+              description: Records past retention not yet reaped for this project.
+          required:
+            - projectBytes
+            - dbBytes
+            - quotaBytes
+            - retentionDays
+            - retentionLagRecords
+          description: Per-project storage + retention gauges.
+      required:
+        - queue
+        - counters
+        - latency
+        - storage
+      description: Log-store health metrics (decision LOG-SCOPE).
+    LogMetricsErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
     LogSource:
       type: object
       properties:
@@ -25487,6 +25580,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LogIngestError"
+  /api/projects/{projectId}/logs/metrics:
+    get:
+      tags:
+        - Log Sources
+      summary: Log-store health metrics
+      description: Returns batch-writer queue depth, ingest/reaper counters (accepted, written, rejected, dropped, redacted, write errors, reaper deletions), writer latency, and per-project storage + retention-lag gauges. Requires Admin and project access.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Metrics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogStoreMetrics"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogMetricsErrorResponse"
+        "404":
+          description: Project not found or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogMetricsErrorResponse"
   /api/projects/{projectId}/log-sources:
     get:
       tags:

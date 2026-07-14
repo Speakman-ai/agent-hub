@@ -12,6 +12,7 @@ import { afterEach, beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { getRequest, createProject } from '../test/helpers.js';
 import { queryLogRecords } from '../logs/logs-db.js';
 import { MAX_REQUEST_BYTES } from '../logs/logs-schema.js';
+import { flushLogWriteQueue, resetLogWriteQueueForTests } from '../logs/log-write-queue.js';
 import {
   _ipRateBuckets,
   _resetLogIngestRateLimit,
@@ -96,6 +97,9 @@ beforeEach(() => {
 });
 
 function recordsFor(): ReturnType<typeof queryLogRecords>['records'] {
+  // Writes are deferred to the batch-writer queue; drain it so a read-after-
+  // ingest assertion is deterministic instead of racing the background flusher.
+  flushLogWriteQueue();
   return queryLogRecords({ projectId, sourceId, limit: 500 }).records;
 }
 
@@ -149,6 +153,7 @@ describe('POST /api/logs/ingest (Agent Hub JSON batch)', () => {
         }),
       )
       .expect(200);
+    flushLogWriteQueue();
     const rows = queryLogRecords({ projectId, sourceId, text: 'connecting', limit: 5 }).records;
     const row = rows[0]!;
     const storedBody = JSON.parse(row.body!);
@@ -436,6 +441,38 @@ describe('ingest limits (rate limit + decompression bomb)', () => {
       .send(Buffer.alloc(MAX_REQUEST_BYTES + 1, 0x61))
       .expect(413);
     expect(res.body.error).toMatch(/size cap/i);
+  });
+
+  it('429s with Retry-After when the write queue is saturated (backpressure)', async () => {
+    // Rebuild the shared queue with a depth cap of 1 and no background flusher,
+    // so the first record fills it and the second batch is refused whole.
+    process.env.LOG_WRITE_QUEUE_MAX_RECORDS = '1';
+    process.env.LOG_WRITE_QUEUE_FLUSH_INTERVAL_MS = '0';
+    resetLogWriteQueueForTests();
+    try {
+      const body = JSON.stringify({ records: [{ message: 'bp' }] });
+      // First request fills the single queue slot (nothing drains it).
+      await request
+        .post('/api/logs/ingest')
+        .set(auth())
+        .set('Content-Type', 'application/json')
+        .send(body)
+        .expect(200);
+      // Second request overflows the depth cap → 429 backpressure, not a 4xx.
+      const res = await request
+        .post('/api/logs/ingest')
+        .set(auth())
+        .set('Content-Type', 'application/json')
+        .send(body)
+        .expect(429);
+      expect(res.headers['retry-after']).toBe('5');
+      expect(res.body.error).toMatch(/saturated|queue/i);
+    } finally {
+      delete process.env.LOG_WRITE_QUEUE_MAX_RECORDS;
+      delete process.env.LOG_WRITE_QUEUE_FLUSH_INTERVAL_MS;
+      // Restore the default queue so later suites flush normally.
+      resetLogWriteQueueForTests();
+    }
   });
 
   it('evicts expired rate-limit buckets during the periodic sweep', () => {

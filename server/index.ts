@@ -105,6 +105,7 @@ import createToolErrorRoutes from './routes/tool-errors.js';
 import createWikiRoutes from './routes/wiki.js';
 import createCodeRagRoutes from './routes/code-rag.js';
 import createLogSourceRoutes from './routes/log-sources.js';
+import createLogMetricsRoutes from './routes/log-metrics.js';
 import createLogIngestRoutes from './routes/log-ingest.js';
 import createHeartbeatRoutes from './routes/heartbeats.js';
 import createCronRoutes from './routes/crons.js';
@@ -253,6 +254,7 @@ import {
   runReleaseNotificationOutboxWorker,
 } from './release-notification-worker.js';
 import { initLogsDb } from './logs/logs-db.js';
+import { startLogWriteQueue, flushLogWriteQueue } from './logs/log-write-queue.js';
 import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
@@ -354,6 +356,10 @@ initProjects(config.dataDir);
 // operational state. Best-effort: a failure here must not block boot.
 try {
   initLogsDb(config.dataDir);
+  // Start the bounded batch-writer queue's background flusher once the store is
+  // open (decision LOG-STORE). The timer is unref'd, so it never keeps the
+  // process alive; ingest routes enqueue into the same singleton.
+  startLogWriteQueue();
 } catch (err) {
   console.error('[logs] Failed to initialize logs.db:', (err as Error).message);
 }
@@ -1278,6 +1284,7 @@ app.use(createToolErrorRoutes(routeDeps));
 app.use(createWikiRoutes(routeDeps));
 app.use(createCodeRagRoutes(routeDeps));
 app.use(createLogSourceRoutes(routeDeps));
+app.use(createLogMetricsRoutes(routeDeps));
 // Write-only customer-log ingest (OTLP/HTTP + Agent Hub JSON batch). Public
 // (see auth.ts PUBLIC_METHOD_PATTERNS); self-authenticate from an `ahlog_` token.
 app.use(createLogIngestRoutes(routeDeps));
@@ -1827,6 +1834,15 @@ if (!process.env.AGENT_HUB_TEST_MODE) {
   // SIGTERM/SIGINT → drain spawned CLI children before exit, so pm2 restarts
   // (e.g. max_memory_restart) don't reparent in-flight claudes to init.
   const markActiveSessionsForShutdown = (signal: string): void => {
+    // Best-effort: flush any records still pending in the log write queue so a
+    // graceful restart doesn't lose the tail of a burst.
+    try {
+      const flushed = flushLogWriteQueue();
+      if (flushed > 0)
+        console.info(`[shutdown] flushed ${flushed} pending log record(s) (${signal})`);
+    } catch (err) {
+      console.warn('[shutdown] log write queue flush failed:', (err as Error).message);
+    }
     for (const sessionId of activeProcesses.keys()) {
       markSessionTermination(sessionId, 'server_shutdown');
       console.info(

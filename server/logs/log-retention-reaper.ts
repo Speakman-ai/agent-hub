@@ -16,6 +16,7 @@
  */
 
 import { getLogsDb, pruneExpiredLogRecords, enforceProjectQuota } from './logs-db.js';
+import { incLogMetric } from './log-metrics.js';
 
 /** Runs every 10 minutes — frequent enough to bound the store, cheap given the time index. */
 export const LOG_RETENTION_REAPER_CRON = '*/10 * * * *';
@@ -59,6 +60,9 @@ export function runLogRetentionReaper(
       remaining -= deleted;
     }
   }
+
+  if (expiredDeleted > 0) incLogMetric('expiredDeleted', expiredDeleted);
+  if (quotaDeleted > 0) incLogMetric('quotaDeleted', quotaDeleted);
 
   return { expiredDeleted, quotaDeleted };
 }

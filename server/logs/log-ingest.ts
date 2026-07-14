@@ -19,8 +19,8 @@
  * returned records and adds the store's oversize rejections to `rejected`.
  */
 
-import type { LogRecordInput } from './logs-db.js';
-import { MAX_BATCH_RECORDS, SEVERITY_NUMBER } from './logs-schema.js';
+import { recordByteSize, type LogRecordInput } from './logs-db.js';
+import { MAX_BATCH_RECORDS, MAX_RECORD_BYTES, SEVERITY_NUMBER } from './logs-schema.js';
 import { redactStructured, type RedactionConfig } from './log-redaction.js';
 import type {
   JsonAnyValue,
@@ -44,7 +44,7 @@ export interface IngestContext {
 
 export interface NormalizeResult {
   records: LogRecordInput[];
-  /** Records rejected pre-store (batch overflow). */
+  /** Records rejected pre-store: batch overflow (>1000) or oversize (>256 KiB). */
   rejected: number;
   /** Total secret substrings / keys masked across the batch (metric). */
   redactions: number;
@@ -243,6 +243,33 @@ function capBatch(built: BuiltRecord[]): { kept: BuiltRecord[]; rejected: number
   return { kept: built.slice(0, MAX_BATCH_RECORDS), rejected: built.length - MAX_BATCH_RECORDS };
 }
 
+/**
+ * Finalize the kept records into store inputs, sizing each and dropping any that
+ * normalize past `MAX_RECORD_BYTES` (decision LOG-STORE). Sizing here — rather
+ * than at write time — keeps the oversize rejection count in the synchronous
+ * ingest response even though the actual write is deferred to the batch-writer
+ * queue, and stamps `byteSize` so the writer never recomputes it.
+ */
+function finalizeBatch(
+  kept: BuiltRecord[],
+  ctx: IngestContext,
+): { records: LogRecordInput[]; rejectedOversize: number; redactions: number } {
+  const counter = { redactions: 0 };
+  const records: LogRecordInput[] = [];
+  let rejectedOversize = 0;
+  for (const b of kept) {
+    const rec = finalizeRecord(b, ctx, counter);
+    const size = recordByteSize(rec);
+    if (size > MAX_RECORD_BYTES) {
+      rejectedOversize++;
+      continue;
+    }
+    rec.byteSize = size;
+    records.push(rec);
+  }
+  return { records, rejectedOversize, redactions: counter.redactions };
+}
+
 // ─── OTLP normalization ─────────────────────────────────────────────
 
 function resolveSeverity(
@@ -320,9 +347,12 @@ export function normalizeOtlpLogsData(data: JsonLogsData, ctx: IngestContext): N
     }
   }
   const { kept, rejected } = capBatch(built);
-  const counter = { redactions: 0 };
-  const records = kept.map((b) => finalizeRecord(b, ctx, counter));
-  return { records, rejected, redactions: counter.redactions };
+  const fin = finalizeBatch(kept, ctx);
+  return {
+    records: fin.records,
+    rejected: rejected + fin.rejectedOversize,
+    redactions: fin.redactions,
+  };
 }
 
 // ─── Agent Hub JSON batch normalization ─────────────────────────────
@@ -405,7 +435,10 @@ export function normalizeAhBatch(batch: AhLogBatch, ctx: IngestContext): Normali
   const batchResource = batch.resource && typeof batch.resource === 'object' ? batch.resource : {};
   const built = (batch.records ?? []).map((r) => buildAhRecord(r, batchResource, ctx));
   const { kept, rejected } = capBatch(built);
-  const counter = { redactions: 0 };
-  const records = kept.map((b) => finalizeRecord(b, ctx, counter));
-  return { records, rejected, redactions: counter.redactions };
+  const fin = finalizeBatch(kept, ctx);
+  return {
+    records: fin.records,
+    rejected: rejected + fin.rejectedOversize,
+    redactions: fin.redactions,
+  };
 }

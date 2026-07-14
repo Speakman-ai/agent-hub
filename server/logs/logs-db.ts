@@ -249,6 +249,12 @@ export interface LogRecordInput {
   resourceJson?: string | null;
   attributesJson?: string | null;
   scopeJson?: string | null;
+  /**
+   * Pre-computed normalized byte size. When the ingest normalizer has already
+   * sized (and oversize-filtered) the record, the writer reuses this instead of
+   * recomputing; absent, `insertLogRecords` computes it from the text columns.
+   */
+  byteSize?: number;
 }
 
 export interface LogRecordRow {
@@ -282,7 +288,7 @@ function byteLen(s: string | null | undefined): number {
  * variable-length text columns. Used for the per-project quota accounting;
  * an exact page count is not needed, only a stable proportional measure.
  */
-function recordByteSize(r: LogRecordInput): number {
+export function recordByteSize(r: LogRecordInput): number {
   return (
     byteLen(r.body) +
     byteLen(r.severityText) +
@@ -331,7 +337,7 @@ export function insertLogRecords(records: LogRecordInput[], nowMs: number): Inse
   const result: InsertResult = { inserted: 0, rejectedOversize: 0 };
   const run = db.transaction((rows: LogRecordInput[]) => {
     for (const r of rows) {
-      const size = recordByteSize(r);
+      const size = r.byteSize ?? recordByteSize(r);
       if (size > MAX_RECORD_BYTES) {
         result.rejectedOversize++;
         continue;
@@ -473,6 +479,34 @@ export function getProjectByteSize(projectId: string): number {
     .prepare('SELECT COALESCE(SUM(byte_size), 0) AS bytes FROM log_records WHERE project_id = ?')
     .get(projectId) as { bytes: number };
   return row.bytes;
+}
+
+/**
+ * On-disk footprint of logs.db, in bytes (page_count × page_size). Used for the
+ * `dbBytes` health gauge (decision LOG-SCOPE). Reflects the main database file;
+ * the WAL is checkpointed into it periodically (see `wal_autocheckpoint`).
+ */
+export function getLogsDbFileBytes(): number {
+  const db = getLogsDb();
+  const pageCount = Number(db.pragma('page_count', { simple: true }));
+  const pageSize = Number(db.pragma('page_size', { simple: true }));
+  if (!Number.isFinite(pageCount) || !Number.isFinite(pageSize)) return 0;
+  return pageCount * pageSize;
+}
+
+/**
+ * Retention lag: records for a project that are already past its retention
+ * window but not yet reaped (a healthy Hub keeps this near zero; a growing
+ * value means the reaper is falling behind — decision LOG-SCOPE). Uses the
+ * (project_id, time_unix_nano) index so it is an index-only COUNT, no scan.
+ */
+export function countExpiredLogRecords(projectId: string, nowMs: number): number {
+  const { retentionDays } = getRetentionConfig(projectId);
+  const cutoffNano = (nowMs - retentionDays * 24 * 60 * 60 * 1000) * 1_000_000;
+  const row = getLogsDb()
+    .prepare('SELECT COUNT(*) AS n FROM log_records WHERE project_id = ? AND time_unix_nano < ?')
+    .get(projectId, cutoffNano) as { n: number };
+  return row.n;
 }
 
 // ── Cleanup hooks ─────────────────────────────────────────────────────────

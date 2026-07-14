@@ -32,7 +32,8 @@ import express from 'express';
 import { gunzipSync } from 'zlib';
 import type { RouteDeps } from '../types.js';
 import { resolveLogSourceByToken } from '../logs/log-sources-store.js';
-import { insertLogRecords } from '../logs/logs-db.js';
+import { enqueueLogRecords } from '../logs/log-write-queue.js';
+import { incLogMetric } from '../logs/log-metrics.js';
 import { MAX_REQUEST_BYTES } from '../logs/logs-schema.js';
 import { buildRedactionConfig } from '../logs/log-redaction.js';
 import {
@@ -268,25 +269,40 @@ export default function createLogIngestRoutes({ findProject }: RouteDeps): Route
     return { ctx, body: decoded.buf };
   }
 
-  /** Persist normalized records; returns total accepted / rejected or a 503. */
+  /**
+   * Hand normalized records to the bounded batch-writer queue (decision
+   * LOG-STORE). The queue absorbs the write asynchronously so the source app is
+   * never blocked on SQLite fsync. `accepted` is the count admitted to the
+   * queue; oversize / batch-overflow rejections were already counted
+   * synchronously during normalization. A full queue (backpressure) returns 429
+   * with Retry-After so the caller retries instead of losing the batch silently;
+   * an unexpected enqueue failure returns a bounded 503. Neither ever throws
+   * back to the source app.
+   */
   function persist(
     normalized: NormalizeResult,
-    ctx: IngestContext,
+    _ctx: IngestContext,
     res: Response,
   ): { accepted: number; rejected: number } | null {
+    let enqueued: number;
+    let dropped: number;
     try {
-      const result = insertLogRecords(normalized.records, ctx.nowMs);
-      return {
-        accepted: result.inserted,
-        rejected: normalized.rejected + result.rejectedOversize,
-      };
+      ({ enqueued, dropped } = enqueueLogRecords(normalized.records));
     } catch (err) {
-      // Store failure must not blow up the source app — bounded 503 backpressure.
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn('[log-ingest] store write failed:', msg);
+      console.warn('[log-ingest] enqueue failed:', msg);
       res.status(503).json({ error: 'log store temporarily unavailable' });
       return null;
     }
+    if (dropped > 0) {
+      // Queue at its depth cap: transient overload, not a client error.
+      res.setHeader('Retry-After', '5');
+      res.status(429).json({ error: 'log write queue saturated, retry shortly' });
+      return null;
+    }
+    incLogMetric('rejected', normalized.rejected);
+    incLogMetric('redacted', normalized.redactions);
+    return { accepted: enqueued, rejected: normalized.rejected };
   }
 
   // ─── OTLP/HTTP logs ───────────────────────────────────────────────
