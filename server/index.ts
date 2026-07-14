@@ -245,6 +245,8 @@ import {
   RELEASE_NOTIFICATION_OUTBOX_WORKER_CRON,
   runReleaseNotificationOutboxWorker,
 } from './release-notification-worker.js';
+import { initLogsDb } from './logs/logs-db.js';
+import { runLogRetentionReaper, LOG_RETENTION_REAPER_CRON } from './logs/log-retention-reaper.js';
 import { resolveDockerAvailability } from './docker-availability.js';
 import cron from 'node-cron';
 
@@ -338,6 +340,16 @@ try {
 }
 
 initProjects(config.dataDir);
+
+// Dedicated customer-application log store (decision LOG-STORE). Anchored at
+// the base data dir like orgs.db — a single Hub-wide logs.db, never mixed
+// into agent-hub.db / orgs.db so high-volume log writes can't contend with
+// operational state. Best-effort: a failure here must not block boot.
+try {
+  initLogsDb(config.dataDir);
+} catch (err) {
+  console.error('[logs] Failed to initialize logs.db:', (err as Error).message);
+}
 
 const _startupOrgId: string = getActiveOrgId();
 if (_startupOrgId !== 'default') {
@@ -1110,6 +1122,21 @@ if (process.env.NODE_ENV !== 'test' && !process.env.AGENT_HUB_TEST_MODE) {
       }
     },
     { name: 'runner-job-log-reaper' },
+  );
+
+  // Customer-application log retention + quota reaper — bound the dedicated
+  // logs.db store by time window and per-project byte quota (decision
+  // LOG-STORE). Pure SQLite against logs.db; runs on every Hub.
+  cron.schedule(
+    LOG_RETENTION_REAPER_CRON,
+    () => {
+      try {
+        runLogRetentionReaper();
+      } catch (err) {
+        console.warn('[log-retention-reaper] tick failed:', (err as Error).message);
+      }
+    },
+    { name: 'log-retention-reaper' },
   );
 
   void runReleaseNotificationOutboxWorker({ broadcast });
