@@ -6176,6 +6176,159 @@ components:
       required:
         - error
       description: Error envelope for hook routes.
+    LogSource:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        serviceName:
+          type: string
+          nullable: true
+        environment:
+          type: string
+          nullable: true
+        tokenPrefix:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - active
+            - revoked
+        createdAt:
+          type: integer
+        rotatedAt:
+          type: integer
+          nullable: true
+        revokedAt:
+          type: integer
+          nullable: true
+      required:
+        - id
+        - projectId
+        - name
+        - serviceName
+        - environment
+        - tokenPrefix
+        - status
+        - createdAt
+        - rotatedAt
+        - revokedAt
+      description: A project log source. Never carries token material.
+    LogSourceWithToken:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        serviceName:
+          type: string
+          nullable: true
+        environment:
+          type: string
+          nullable: true
+        tokenPrefix:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - active
+            - revoked
+        createdAt:
+          type: integer
+        rotatedAt:
+          type: integer
+          nullable: true
+        revokedAt:
+          type: integer
+          nullable: true
+        token:
+          type: string
+          description: Plaintext `ahlog_` ingest token. Returned ONCE at create/rotate; only its hash is stored. Surface it to the user immediately — it cannot be retrieved later.
+      required:
+        - id
+        - projectId
+        - name
+        - serviceName
+        - environment
+        - tokenPrefix
+        - status
+        - createdAt
+        - rotatedAt
+        - revokedAt
+        - token
+      description: A log source plus its freshly minted plaintext ingest token.
+    LogSourceList:
+      type: object
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogSource"
+      required:
+        - sources
+      description: Project sources.
+    LogSourceAuditEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        sourceId:
+          type: string
+          nullable: true
+        action:
+          type: string
+          enum:
+            - create
+            - update
+            - rotate
+            - revoke
+            - delete
+        actorUserId:
+          type: string
+          nullable: true
+        detail:
+          type: string
+          nullable: true
+        createdAt:
+          type: integer
+      required:
+        - id
+        - projectId
+        - sourceId
+        - action
+        - actorUserId
+        - detail
+        - createdAt
+      description: A source/token lifecycle audit event.
+    LogSourceAuditList:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogSourceAuditEntry"
+      required:
+        - entries
+      description: Lifecycle audit for a source.
+    LogSourceErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+      description: Error envelope.
     McpServersErrorResponse:
       type: object
       properties:
@@ -24969,6 +25122,365 @@ paths:
                     type: string
                 required:
                   - error
+  /api/projects/{projectId}/log-sources:
+    get:
+      tags:
+        - Log Sources
+      summary: List a project’s log sources
+      description: Returns all log sources for the project, newest-first. Never includes token material — only the non-secret `tokenPrefix`. Requires Admin and project access.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      responses:
+        "200":
+          description: Sources.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceList"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project not found or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+    post:
+      tags:
+        - Log Sources
+      summary: Create a log source and mint its ingest token
+      description: Registers a named source and returns its `ahlog_` ingest token exactly once (only the hash is stored). Source names are unique per project (409 on collision). Requires Admin and project access.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                serviceName:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+                environment:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+              required:
+                - name
+      responses:
+        "201":
+          description: Source created; token revealed once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceWithToken"
+        "400":
+          description: Body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project not found or not visible to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "409":
+          description: A source with this name already exists in the project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+  /api/projects/{projectId}/log-sources/{sourceId}:
+    get:
+      tags:
+        - Log Sources
+      summary: Get one log source
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Log source ID.
+          required: true
+          description: Log source ID.
+          name: sourceId
+          in: path
+      responses:
+        "200":
+          description: Source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSource"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project or source not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+    patch:
+      tags:
+        - Log Sources
+      summary: Update a log source’s metadata
+      description: Updates name / serviceName / environment. Token material is untouched. Requires Admin and project access.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Log source ID.
+          required: true
+          description: Log source ID.
+          name: sourceId
+          in: path
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                serviceName:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+                environment:
+                  type: string
+                  nullable: true
+                  maxLength: 200
+      responses:
+        "200":
+          description: Updated source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSource"
+        "400":
+          description: Body validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project or source not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "409":
+          description: A source with this name already exists in the project.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+    delete:
+      tags:
+        - Log Sources
+      summary: Delete a log source and its token
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Log source ID.
+          required: true
+          description: Log source ID.
+          name: sourceId
+          in: path
+      responses:
+        "204":
+          description: Deleted.
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project or source not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+  /api/projects/{projectId}/log-sources/{sourceId}/rotate:
+    post:
+      tags:
+        - Log Sources
+      summary: Rotate a log source’s ingest token
+      description: Mints a fresh token (invalidating the previous one) and re-activates a revoked source. The new plaintext token is returned exactly once. Requires Admin and project access.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Log source ID.
+          required: true
+          description: Log source ID.
+          name: sourceId
+          in: path
+      responses:
+        "200":
+          description: Rotated; new token revealed once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceWithToken"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project or source not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+  /api/projects/{projectId}/log-sources/{sourceId}/revoke:
+    post:
+      tags:
+        - Log Sources
+      summary: Revoke a log source’s ingest token
+      description: "Write-disables the source: its token can no longer ingest. The row is kept for audit. Idempotent. Requires Admin and project access."
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Log source ID.
+          required: true
+          description: Log source ID.
+          name: sourceId
+          in: path
+      responses:
+        "200":
+          description: Revoked source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSource"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project or source not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+  /api/projects/{projectId}/log-sources/{sourceId}/audit:
+    get:
+      tags:
+        - Log Sources
+      summary: List a log source’s lifecycle audit
+      description: Returns create/update/rotate/revoke/delete events for the source, newest-first, attributed to the acting user. Requires Admin and project access.
+      parameters:
+        - schema:
+            type: string
+            description: Project ID (slug).
+          required: true
+          description: Project ID (slug).
+          name: projectId
+          in: path
+        - schema:
+            type: string
+            description: Log source ID.
+          required: true
+          description: Log source ID.
+          name: sourceId
+          in: path
+      responses:
+        "200":
+          description: Audit entries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceAuditList"
+        "403":
+          description: Insufficient role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
+        "404":
+          description: Project or source not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogSourceErrorResponse"
   /api/mcp-catalog:
     get:
       tags:

@@ -63,6 +63,14 @@ export const MAX_QUERY_LIMIT = 500;
 /** Default page size when a query omits `limit`. */
 export const DEFAULT_QUERY_LIMIT = 100;
 
+// ── Log-source management bounds (decision LOG-AUTH) ───────────────────────
+/** Ingest-token wire prefix — `ahlog_<random>`; identifies the token scheme. */
+export const LOG_SOURCE_TOKEN_PREFIX = 'ahlog_';
+/** Max length of a source's display name. */
+export const MAX_SOURCE_NAME_LENGTH = 100;
+/** Max length of the `service_name` / `environment` facets carried on a source. */
+export const MAX_SOURCE_FACET_LENGTH = 200;
+
 /**
  * DDL for `logs.db`. Idempotent (`IF NOT EXISTS` throughout) so it doubles as
  * the migration entrypoint. The FTS5 virtual table is created separately in
@@ -90,6 +98,24 @@ export const LOGS_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_log_sources_project ON log_sources(project_id);
   CREATE UNIQUE INDEX IF NOT EXISTS idx_log_sources_token_hash
     ON log_sources(token_hash) WHERE token_hash IS NOT NULL;
+
+  -- Append-only audit of source/token lifecycle events (decision LOG-AUTH:
+  -- "audit credential lifecycle"). One row per create / update / rotate /
+  -- revoke / delete, attributed to the acting Agent Hub user. Never holds a
+  -- token or its hash — only that a lifecycle event happened, by whom, when.
+  CREATE TABLE IF NOT EXISTS log_source_audit (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL,
+    source_id     TEXT,
+    action        TEXT NOT NULL,
+    actor_user_id TEXT,
+    detail        TEXT,
+    created_at    INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_log_source_audit_project
+    ON log_source_audit(project_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_log_source_audit_source
+    ON log_source_audit(source_id, created_at DESC);
 
   -- Per-project retention / quota overrides. Absent row → code defaults
   -- (DEFAULT_RETENTION_DAYS / DEFAULT_PROJECT_QUOTA_BYTES).
